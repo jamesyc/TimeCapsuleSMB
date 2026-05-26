@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AppReadinessBannerView: View {
     @ObservedObject var store: AppReadinessStore
@@ -8,7 +10,7 @@ struct AppReadinessBannerView: View {
         switch store.state {
         case .idle, .ready:
             EmptyView()
-        case .resolvingBundle, .checkingCapabilities, .validatingInstall:
+        case .resolvingBundle, .checkingVersion, .checkingCapabilities, .validatingInstall:
             HStack(spacing: 10) {
                 ProgressView()
                     .controlSize(.small)
@@ -45,6 +47,8 @@ struct AppReadinessBannerView: View {
         switch store.state.kind {
         case .resolvingBundle:
             return L10n.string("readiness.state.resolving_bundle")
+        case .checkingVersion:
+            return L10n.string("readiness.state.checking_version")
         case .checkingCapabilities:
             return L10n.string("readiness.state.checking_capabilities")
         case .validatingInstall:
@@ -91,10 +95,11 @@ struct AppReadinessBlockedView: View {
 
 struct AppDiagnosticsView: View {
     @ObservedObject var store: AppReadinessStore
-    let events: [BackendEvent]
+    let exportContext: (_ includeBackendEvents: Bool) -> DiagnosticsExportContext
     @Binding var showBackendEvents: Bool
     @Binding var helperPath: String
     @Environment(\.dismiss) private var dismiss
+    @State private var exportStatus: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -102,6 +107,21 @@ struct AppDiagnosticsView: View {
                 Text(L10n.string("diagnostics.title"))
                     .font(.title2.weight(.semibold))
                 Spacer()
+                if let exportStatus {
+                    Text(exportStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    copyDiagnostics()
+                } label: {
+                    Label(L10n.string("diagnostics.copy"), systemImage: "doc.on.doc")
+                }
+                Button {
+                    saveDiagnostics()
+                } label: {
+                    Label(L10n.string("diagnostics.save"), systemImage: "square.and.arrow.down")
+                }
                 Button(L10n.string("action.done")) {
                     dismiss()
                 }
@@ -154,11 +174,44 @@ struct AppDiagnosticsView: View {
             Toggle(L10n.string("diagnostics.backend_events"), isOn: $showBackendEvents)
                 .font(.headline)
             if showBackendEvents {
-                EventList(events: events)
+                EventList(events: exportContext(true).events)
             }
         }
         .padding()
         .frame(minWidth: 720, minHeight: 520)
+    }
+
+    private func copyDiagnostics() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(exportText(), forType: .string)
+        exportStatus = L10n.string("diagnostics.copied")
+    }
+
+    private func saveDiagnostics() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "TimeCapsuleSMB-Diagnostics.txt"
+        panel.allowedContentTypes = [.plainText]
+        let text = exportText()
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else {
+                return
+            }
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                Task { @MainActor in
+                    exportStatus = L10n.string("diagnostics.saved")
+                }
+            } catch {
+                Task { @MainActor in
+                    exportStatus = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func exportText() -> String {
+        DiagnosticsExportBuilder().build(context: exportContext(showBackendEvents))
     }
 }
 

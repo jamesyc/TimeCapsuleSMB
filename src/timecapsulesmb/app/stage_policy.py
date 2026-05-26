@@ -112,6 +112,20 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("repair-xattrs", "report_findings"): StagePolicy(LOCAL_READ, True, "Render xattr findings and repair candidates."),
     ("repair-xattrs", "confirm_repair"): StagePolicy(LOCAL_READ, True, "Confirm local metadata repairs."),
     ("repair-xattrs", "repair_findings"): StagePolicy(DESTRUCTIVE, False, "Repair local file metadata on the mounted SMB share."),
+    ("flash", "load_config"): StagePolicy(LOCAL_READ, True, "Read flash configuration."),
+    ("flash", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
+    ("flash", "check_compatibility"): StagePolicy(REMOTE_READ, True, "Check NetBSD4 flash compatibility."),
+    ("flash", "read_flash"): StagePolicy(REMOTE_READ, True, "Read both firmware banks from the device."),
+    ("flash", "save_raw_backup"): StagePolicy(LOCAL_WRITE, False, "Save raw firmware bank backups locally."),
+    ("flash", "inspect_backup"): StagePolicy(LOCAL_READ, True, "Read and inspect the saved flash backup."),
+    ("flash", "analyze_flash"): StagePolicy(LOCAL_READ, True, "Analyze firmware bank safety metadata."),
+    ("flash", "plan_flash"): StagePolicy(LOCAL_WRITE, True, "Build and save the firmware flash plan."),
+    ("flash", "save_backup"): StagePolicy(LOCAL_WRITE, False, "Write flash backup manifest."),
+    ("flash", "confirm_write"): StagePolicy(DESTRUCTIVE, True, "Confirm firmware flash write."),
+    ("flash", "pre_write_validation"): StagePolicy(REMOTE_READ, True, "Verify the live target bank still matches the saved backup."),
+    ("flash", "write_primary_bank"): StagePolicy(DESTRUCTIVE, False, "Write the primary firmware bank."),
+    ("flash", "write_active_bank"): StagePolicy(DESTRUCTIVE, False, "Write the active firmware bank."),
+    ("flash", "post_write_validation"): StagePolicy(REMOTE_READ, True, "Read back and validate the written firmware bank."),
 }
 
 

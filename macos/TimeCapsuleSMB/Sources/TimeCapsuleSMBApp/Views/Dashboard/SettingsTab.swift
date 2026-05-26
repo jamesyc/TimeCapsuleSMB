@@ -9,7 +9,13 @@ struct SettingsTab: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.string("dashboard.tab.settings"))
                 .font(.title2.weight(.semibold))
-            DeviceProfileEditorView(profile: profile, store: session.profileEditorStore)
+            DeviceProfileEditorView(
+                profile: profile,
+                store: session.profileEditorStore,
+                diagnosticsText: {
+                    DiagnosticsExportBuilder().build(context: appStore.diagnosticsExportContext(includeBackendEvents: true))
+                }
+            )
             SummaryGrid(rows: [
                 (L10n.string("advanced.profile_id"), profile.id),
                 (L10n.string("advanced.config"), profile.configPath),
@@ -23,6 +29,7 @@ struct SettingsTab: View {
 private struct DeviceProfileEditorView: View {
     let profile: DeviceProfile
     @ObservedObject var store: DeviceProfileEditorStore
+    let diagnosticsText: () -> String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -77,7 +84,7 @@ private struct DeviceProfileEditorView: View {
                 StageLine(stage: stage)
             }
             if let error = store.error {
-                ErrorRecoveryView(error: error) { _ in }
+                ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { _ in }
             }
         }
         .onAppear {
@@ -95,32 +102,38 @@ private struct DeviceProfileAdvancedSettingsView: View {
 
     var body: some View {
         DashboardDisclosureSection(title: L10n.string("profile_editor.advanced")) {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow {
-                    Text(L10n.string("field.mount_wait"))
-                        .foregroundStyle(.secondary)
-                    TextField(L10n.string("field.mount_wait"), text: $store.draft.mountWaitSeconds)
-                        .frame(width: 160)
-                }
-                GridRow {
-                    Text(L10n.string("field.ata_idle_seconds"))
-                        .foregroundStyle(.secondary)
-                    TextField(L10n.string("field.ata_idle_seconds"), text: $store.draft.ataIdleSeconds)
-                        .frame(width: 160)
-                }
-                GridRow {
-                    Text(L10n.string("field.ata_standby"))
-                        .foregroundStyle(.secondary)
-                    TextField(L10n.string("field.ata_standby"), text: $store.draft.ataStandby)
-                        .frame(width: 160)
-                }
-                GridRow {
-                    Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.draft.nbnsEnabled)
-                    Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.draft.internalShareUseDiskRoot)
-                }
-                GridRow {
-                    Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
-                    Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.string("profile_editor.advanced.deploy_notice"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    GridRow {
+                        Text(L10n.string("field.mount_wait"))
+                            .foregroundStyle(.secondary)
+                        TextField(L10n.string("field.mount_wait"), text: $store.draft.mountWaitSeconds)
+                            .frame(width: 160)
+                    }
+                    GridRow {
+                        Text(L10n.string("field.ata_idle_seconds"))
+                            .foregroundStyle(.secondary)
+                        TextField(L10n.string("field.ata_idle_seconds"), text: $store.draft.ataIdleSeconds)
+                            .frame(width: 160)
+                    }
+                    GridRow {
+                        Text(L10n.string("field.ata_standby"))
+                            .foregroundStyle(.secondary)
+                        TextField(L10n.string("field.ata_standby"), text: $store.draft.ataStandby)
+                            .frame(width: 160)
+                    }
+                    GridRow {
+                        Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.draft.nbnsEnabled)
+                        Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.draft.internalShareUseDiskRoot)
+                    }
+                    GridRow {
+                        Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
+                        Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+                    }
                 }
             }
         }

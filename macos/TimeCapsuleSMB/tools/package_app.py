@@ -14,8 +14,15 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+sys.path.insert(0, str(SRC_ROOT))
+
+from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE  # noqa: E402
+
 APP_NAME = "TimeCapsuleSMB"
 PRODUCT_NAME = "TimeCapsuleSMB"
+APP_VERSION = CLI_VERSION
+APP_VERSION_CODE = str(CLI_VERSION_CODE)
 ARTIFACT_MANIFEST = REPO_ROOT / "src" / "timecapsulesmb" / "assets" / "artifact-manifest.json"
 
 
@@ -57,8 +64,8 @@ def write_info_plist(contents_dir: Path) -> None:
         "CFBundleIdentifier": "com.timecapsulesmb.TimeCapsuleSMB",
         "CFBundleName": APP_NAME,
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "1",
+        "CFBundleShortVersionString": APP_VERSION,
+        "CFBundleVersion": APP_VERSION_CODE,
         "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     }
@@ -119,6 +126,7 @@ def copy_distribution(resources_dir: Path) -> None:
         shutil.rmtree(distribution)
     distribution.mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "bin", distribution / "bin")
+    shutil.copy2(ARTIFACT_MANIFEST, distribution / "artifact-manifest.json")
     assert_distribution_artifacts(distribution)
 
 
@@ -199,6 +207,7 @@ def assert_bundle_layout(app: Path) -> None:
     helper = app / "Contents" / "Helpers" / "tcapsule"
     python = app / "Contents" / "Resources" / "Python" / "bin" / "python"
     distribution = app / "Contents" / "Resources" / "Distribution"
+    artifact_manifest = distribution / "artifact-manifest.json"
     tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
     required_executables = [helper, python]
     missing_executables = [path for path in required_executables if not path.is_file() or not os.access(path, os.X_OK)]
@@ -207,6 +216,8 @@ def assert_bundle_layout(app: Path) -> None:
         raise RuntimeError(f"App bundle is missing required executable(s):\n  - {joined}")
     if not (distribution / "bin").is_dir():
         raise RuntimeError(f"App bundle is missing bundled payload directory: {distribution / 'bin'}")
+    if not artifact_manifest.is_file():
+        raise RuntimeError(f"App bundle is missing bundled artifact manifest: {artifact_manifest}")
     if not tools_bin.is_dir():
         raise RuntimeError(f"App bundle is missing bundled tools directory: {tools_bin}")
     assert_distribution_artifacts(distribution)

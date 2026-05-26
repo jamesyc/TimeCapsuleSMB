@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -39,6 +39,7 @@ from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.services.app import AppOperationError, jsonable
+from timecapsulesmb.services.flash import STALE_BACKUP_AFTER_WRITE_MESSAGE, require_backup_fresh_for_plan
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -155,6 +156,22 @@ def managed_runtime_probe(ready: bool = True) -> ManagedRuntimeProbeResult:
 
 
 class AppApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._exit_stack = ExitStack()
+        self._telemetry_client = mock.Mock()
+        # App API tests exercise GUI/backend telemetry-enabled operations.
+        # Keep telemetry mocked here so unit tests never POST to the live telemetry service.
+        self._telemetry_factory = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config", return_value=self._telemetry_client)
+        )
+        # This tripwire catches future tests that accidentally bypass the app-service telemetry mock.
+        self._telemetry_urlopen = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.telemetry.urllib.request.urlopen", side_effect=AssertionError("tests must not send telemetry"))
+        )
+
+    def tearDown(self) -> None:
+        self._exit_stack.close()
+
     def assert_single_terminal_event(self, collector: CollectingSink, event_type: str) -> dict[str, object]:
         terminals = collector.events_of_type("result") + collector.events_of_type("error")
         self.assertEqual([event["type"] for event in terminals], [event_type])
@@ -298,8 +315,253 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("capabilities", payload["operations"])
         self.assertIn("set-telemetry", payload["operations"])
         self.assertIn("version-check", payload["operations"])
+        self.assertIn("flash", payload["operations"])
         self.assertIn("helper_version", payload)
         self.assertIn("artifact_manifest_sha256", payload)
+
+    def test_flash_backup_operation_returns_manifest_payload(self) -> None:
+        collector = CollectingSink()
+        manifest = {
+            "backup_dir": "/tmp/flash-backup",
+            "banks": [{"name": "primary"}, {"name": "secondary"}],
+        }
+        bundle = SimpleNamespace(manifest=manifest)
+
+        with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
+            with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=object()):
+                with mock.patch("timecapsulesmb.app.ops.flash.backup_flash", return_value=bundle) as backup_mock:
+                    rc = service.run_api_request(
+                        {"operation": "flash", "params": {"action": "backup", "credentials": {"password": "pw"}}},
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 0)
+        backup_mock.assert_called_once()
+        self.assertIn("stage", backup_mock.call_args.kwargs)
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertEqual(payload["backup_dir"], "/tmp/flash-backup")
+        self.assertEqual(payload["counts"], {"banks": 2})
+
+    def test_flash_backup_accepts_request_scoped_password(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values(
+            {"TC_HOST": "root@10.0.0.2"},
+            file_values={"TC_HOST": "root@10.0.0.2"},
+        )
+        manifest = {
+            "backup_dir": "/tmp/flash-backup",
+            "banks": [{"name": "primary"}],
+        }
+        bundle = SimpleNamespace(manifest=manifest)
+
+        with mock.patch("timecapsulesmb.app.ops.flash.load_env_config", return_value=config):
+            with mock.patch(
+                "timecapsulesmb.app.ops.flash.require_connection_compatibility",
+                return_value=supported_compatibility("netbsd4be_samba4"),
+            ):
+                with mock.patch("timecapsulesmb.app.ops.flash.backup_flash", return_value=bundle) as backup_mock:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "flash",
+                            "params": {"action": "backup", "credentials": {"password": "request-pw"}},
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 0)
+        target = backup_mock.call_args.kwargs["target"]
+        self.assertEqual(target.connection.password, "request-pw")
+        self.assertFalse(config.has_file_value("TC_PASSWORD"))
+
+    def test_flash_plan_operation_uses_saved_backup_without_device_config(self) -> None:
+        collector = CollectingSink()
+        manifest = {
+            "backup_dir": "/tmp/flash-backup",
+            "flash_plan": {
+                "mode": "check_apple",
+                "write_requested": False,
+                "already_satisfied": True,
+                "apple_match": {
+                    "matched": True,
+                    "template_source": "catalog",
+                    "template_version": "7.8.1",
+                    "template_product_id": "116",
+                    "template_sha256": "template-sha",
+                    "inner_sha256": "inner-sha",
+                    "inner_size": 123,
+                    "key_id": "key-one",
+                    "inner_model": 116,
+                    "inner_version": "0x00070801",
+                },
+            },
+        }
+        bundle = SimpleNamespace(manifest=manifest)
+
+        with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, object())) as plan_mock:
+            with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", side_effect=AssertionError("plan should not load device config")):
+                rc = service.run_api_request(
+                    {
+                        "operation": "flash",
+                        "params": {
+                            "action": "plan",
+                            "backup_dir": "/tmp/flash-backup",
+                            "mode": "check_apple",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 0)
+        plan_mock.assert_called_once()
+        self.assertEqual(plan_mock.call_args.kwargs["operation"], "check_apple")
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertEqual(payload["mode"], "check_apple")
+        self.assertFalse(payload["write_requested"])
+        self.assertEqual(payload["summary"], "Active firmware bank matches Apple stock firmware 7.8.1.")
+        self.assertEqual(payload["apple_firmware_match"]["matched"], True)
+        self.assertEqual(payload["apple_firmware_match"]["template_version"], "7.8.1")
+        self.assertIsNone(payload["firmware_payload"])
+
+    def test_flash_plan_payload_promotes_download_payload_and_saved_path(self) -> None:
+        payload = contracts.flash_plan_payload({
+            "backup_dir": "/tmp/flash-backup",
+            "files": {
+                "secondary_download_only_basebinary_payload": "/tmp/flash-backup/secondary.download_only.basebinary",
+            },
+            "flash_plan": {
+                "mode": "download_only",
+                "target_bank": "secondary",
+                "write_requested": False,
+                "already_satisfied": False,
+                "apple_match": {
+                    "matched": False,
+                    "template_source": "catalog",
+                    "template_version": "7.8.1",
+                },
+                "payload": {
+                    "template_source": "catalog",
+                    "template_path": "/Users/example/Library/Application Support/TimeCapsuleSMB/firmware.basebinary",
+                    "template_product_id": "116",
+                    "template_version": "7.8.1",
+                    "template_sha256": "template-sha",
+                    "payload_sha256": "payload-sha",
+                    "payload_size": 456,
+                    "expected_prefix_sha256": "prefix-sha",
+                    "expected_prefix_size": 123,
+                    "key_id": "key-one",
+                    "inner_model": 116,
+                    "inner_version": "0x00070801",
+                    "inner_payload_size": 123,
+                },
+            },
+        })
+
+        self.assertEqual(payload["summary"], "Apple restore firmware validated (version 7.8.1, product 116).")
+        self.assertEqual(payload["firmware_payload"]["payload_sha256"], "payload-sha")
+        self.assertEqual(
+            payload["firmware_payload_path"],
+            "/tmp/flash-backup/secondary.download_only.basebinary",
+        )
+        self.assertEqual(payload["apple_firmware_match"]["matched"], False)
+
+    def test_flash_plan_rejects_backup_manifest_used_for_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            (backup_dir / "manifest.json").write_text(json.dumps({
+                "write_outcome": {
+                    "status": "validated",
+                    "mode": "patch",
+                    "write_may_have_modified_device": True,
+                },
+            }))
+            collector = CollectingSink()
+
+            rc = service.run_api_request(
+                {
+                    "operation": "flash",
+                    "params": {
+                        "action": "plan",
+                        "backup_dir": str(backup_dir),
+                        "mode": "restore",
+                    },
+                },
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertEqual(error["message"], STALE_BACKUP_AFTER_WRITE_MESSAGE)
+
+    def test_flash_backup_freshness_allows_noop_or_cancelled_write_outcomes(self) -> None:
+        for status in ("not_needed", "cancelled"):
+            with self.subTest(status=status):
+                require_backup_fresh_for_plan({
+                    "write_outcome": {
+                        "status": status,
+                        "write_may_have_modified_device": False,
+                    },
+                })
+
+    def test_flash_write_requires_confirmation_then_validates_and_writes(self) -> None:
+        manifest = {
+            "backup_dir": "/tmp/flash-backup",
+            "write_outcome": {
+                "status": "validated",
+                "mode": "patch",
+                "write_validated": True,
+            },
+        }
+        target_bank = SimpleNamespace(name="primary", sha256="bank-sha")
+        plan = SimpleNamespace(already_satisfied=False, target_bank=target_bank)
+        bundle = SimpleNamespace(manifest=manifest, backup_dir=Path("/tmp/flash-backup"))
+        target = SimpleNamespace(acp_host="10.0.0.2", connection=object())
+
+        def run(params: dict[str, object]) -> CollectingSink:
+            collector = CollectingSink()
+            with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
+                with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
+                    with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
+                        with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup") as validate_mock:
+                            with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
+                                rc = service.run_api_request({"operation": "flash", "params": params}, collector.sink)
+                                collector.rc = rc  # type: ignore[attr-defined]
+                                collector.validate_mock = validate_mock  # type: ignore[attr-defined]
+                                collector.write_mock = write_mock  # type: ignore[attr-defined]
+            return collector
+
+        first = run({"action": "write", "backup_dir": "/tmp/flash-backup", "mode": "patch"})
+
+        self.assertEqual(first.rc, 1)  # type: ignore[attr-defined]
+        details = self.assert_confirmation(first, "flash.patch_write", {"host": "10.0.0.2", "mode": "patch"})
+        first.validate_mock.assert_not_called()  # type: ignore[attr-defined]
+        first.write_mock.assert_not_called()  # type: ignore[attr-defined]
+
+        second = run({
+            "action": "write",
+            "backup_dir": "/tmp/flash-backup",
+            "mode": "patch",
+            "confirmation_id": details["confirmation_id"],
+        })
+
+        self.assertEqual(second.rc, 0)  # type: ignore[attr-defined]
+        second.validate_mock.assert_called_once()  # type: ignore[attr-defined]
+        second.write_mock.assert_called_once()  # type: ignore[attr-defined]
+        payload = self.assert_single_terminal_event(second, "result")["payload"]
+        self.assertEqual(payload["write_status"], "validated")
+        self.assertTrue(payload["write_validated"])
+
+    def test_flash_write_payload_restore_summary_mentions_manual_power_cycle(self) -> None:
+        payload = contracts.flash_write_payload({
+            "backup_dir": "/tmp/flash-backup",
+            "write_outcome": {
+                "status": "validated",
+                "mode": "restore",
+                "write_validated": True,
+            },
+        })
+
+        self.assertEqual(payload["summary"], "flash restore write validated; manual power cycle required.")
 
     def test_set_telemetry_operation_updates_bootstrap_preference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -345,7 +607,7 @@ class AppApiTests(unittest.TestCase):
                 checked_url="https://example.invalid/version.json",
                 message="Please update.",
                 download_url="https://example.invalid/download",
-                local_version_code=20004,
+                local_version_code=20000,
                 current_version=20005,
                 min_supported_version=20005,
                 latest_tag="v2.0.5",
@@ -463,7 +725,6 @@ class AppApiTests(unittest.TestCase):
 
     def test_dispatcher_emits_api_operation_telemetry(self) -> None:
         collector = CollectingSink()
-        telemetry = mock.Mock()
 
         def run_fsck(params, sink):
             sink.stage("fsck", "run_fsck")
@@ -481,25 +742,24 @@ class AppApiTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
                     with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                         with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
-                            with mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config", return_value=telemetry):
-                                rc = service.run_api_request(
-                                    {
-                                        "operation": "fsck",
-                                        "params": {
-                                            "volume": "Data",
-                                            "dry_run": False,
-                                            "no_reboot": False,
-                                            "no_wait": False,
-                                            "mount_wait": 30,
-                                        },
+                            rc = service.run_api_request(
+                                {
+                                    "operation": "fsck",
+                                    "params": {
+                                        "volume": "Data",
+                                        "dry_run": False,
+                                        "no_reboot": False,
+                                        "no_wait": False,
+                                        "mount_wait": 30,
                                     },
-                                    collector.sink,
-                                )
+                                },
+                                collector.sink,
+                            )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(telemetry.emit.call_count, 2)
-        started = telemetry.emit.call_args_list[0]
-        finished = telemetry.emit.call_args_list[1]
+        self.assertEqual(self._telemetry_client.emit.call_count, 2)
+        started = self._telemetry_client.emit.call_args_list[0]
+        finished = self._telemetry_client.emit.call_args_list[1]
         self.assertEqual(started.args, ("fsck_started",))
         self.assertEqual(started.kwargs["operation"], "fsck")
         self.assertEqual(started.kwargs["phase"], "started")
@@ -527,7 +787,6 @@ class AppApiTests(unittest.TestCase):
 
     def test_dispatcher_emits_confirmation_required_telemetry(self) -> None:
         collector = CollectingSink()
-        telemetry = mock.Mock()
 
         def run_fsck(params, sink):
             sink.stage("fsck", "select_fsck_volume")
@@ -548,15 +807,14 @@ class AppApiTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
                 with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                     with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
-                        with mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config", return_value=telemetry):
-                            rc = service.run_api_request(
-                                {"operation": "fsck", "params": {"volume": "Data"}},
-                                collector.sink,
-                            )
+                        rc = service.run_api_request(
+                            {"operation": "fsck", "params": {"volume": "Data"}},
+                            collector.sink,
+                        )
 
         self.assertEqual(rc, 1)
-        self.assertEqual(telemetry.emit.call_count, 2)
-        finished_kwargs = telemetry.emit.call_args_list[1].kwargs
+        self.assertEqual(self._telemetry_client.emit.call_count, 2)
+        finished_kwargs = self._telemetry_client.emit.call_args_list[1].kwargs
         self.assertEqual(finished_kwargs["result"], "confirmation_required")
         self.assertIsNone(finished_kwargs["error"])
         self.assertEqual(finished_kwargs["risk"], "destructive")
@@ -565,12 +823,30 @@ class AppApiTests(unittest.TestCase):
 
     def test_dispatcher_does_not_emit_readiness_operation_telemetry(self) -> None:
         collector = CollectingSink()
+        self._telemetry_factory.reset_mock()
 
-        with mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config") as telemetry_factory:
-            rc = service.run_api_request({"operation": "paths", "params": {}}, collector.sink)
+        rc = service.run_api_request({"operation": "paths", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 0)
-        telemetry_factory.assert_not_called()
+        self._telemetry_factory.assert_not_called()
+
+    def test_app_api_telemetry_tests_do_not_open_network_connections(self) -> None:
+        collector = CollectingSink()
+
+        def run_fsck(_params, sink):
+            sink.stage("fsck", "run_fsck")
+            return service.OperationResult(True, {"returncode": 0, "summary": "fsck completed."})
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        self._telemetry_factory.assert_called_once()
+        self.assertEqual(self._telemetry_client.emit.call_count, 2)
+        self._telemetry_urlopen.assert_not_called()
 
     def test_discover_operation_returns_snapshot_payload(self) -> None:
         collector = CollectingSink()

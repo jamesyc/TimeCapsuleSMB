@@ -17,8 +17,14 @@ public enum BundleRuntimeIssueCode: String, CaseIterable, Equatable, Sendable {
     case pythonRuntimeMissing
     case pythonExecutableMissing
     case distributionRootMissing
+    case artifactManifestMissing
+    case artifactManifestInvalid
     case distributionArtifactsMissing
     case toolsDirectoryMissing
+    case applicationSupportUnavailable
+    case stateDirectoryUnavailable
+    case unsupportedVersion
+    case versionMetadataUnavailable
     case installValidationFailed
     case helperLaunchFailed
     case contractDecodeFailed
@@ -54,6 +60,7 @@ public struct BundleLayout: Equatable, Sendable {
     public let resourceURL: URL
     public let helperURL: URL
     public let distributionRootURL: URL
+    public let artifactManifestURL: URL
     public let toolsBinURL: URL
     public let pythonRuntimeURL: URL?
     public let applicationSupportURL: URL
@@ -66,6 +73,7 @@ public struct BundleLayout: Equatable, Sendable {
         resourceURL: URL,
         helperURL: URL,
         distributionRootURL: URL? = nil,
+        artifactManifestURL: URL? = nil,
         toolsBinURL: URL? = nil,
         pythonRuntimeURL: URL? = nil,
         applicationSupportURL: URL,
@@ -76,7 +84,10 @@ public struct BundleLayout: Equatable, Sendable {
         self.executableURL = executableURL
         self.resourceURL = resourceURL
         self.helperURL = helperURL
-        self.distributionRootURL = distributionRootURL ?? resourceURL.appendingPathComponent("Distribution", isDirectory: true)
+        let resolvedDistributionRoot = distributionRootURL ?? resourceURL.appendingPathComponent("Distribution", isDirectory: true)
+        self.distributionRootURL = resolvedDistributionRoot
+        self.artifactManifestURL = artifactManifestURL
+            ?? resolvedDistributionRoot.appendingPathComponent("artifact-manifest.json")
         self.toolsBinURL = toolsBinURL ?? resourceURL.appendingPathComponent("Tools/bin", isDirectory: true)
         self.pythonRuntimeURL = pythonRuntimeURL ?? resourceURL.appendingPathComponent("Python", isDirectory: true)
         self.applicationSupportURL = applicationSupportURL
@@ -156,13 +167,17 @@ public struct BundleLayout: Equatable, Sendable {
                 message: "The bundled TimeCapsuleSMB distribution is missing.",
                 recovery: "Reinstall TimeCapsuleSMB."
             ))
-        } else if !isDirectory(distributionRootURL.appendingPathComponent("bin", isDirectory: true), fileManager: fileManager) {
-            issues.append(BundleRuntimeIssue(
-                code: .distributionArtifactsMissing,
-                severity: .error,
-                message: "The bundled TimeCapsuleSMB payload artifacts are missing.",
-                recovery: "Reinstall TimeCapsuleSMB."
-            ))
+        } else {
+            let binURL = distributionRootURL.appendingPathComponent("bin", isDirectory: true)
+            if !isDirectory(binURL, fileManager: fileManager) {
+                issues.append(BundleRuntimeIssue(
+                    code: .distributionArtifactsMissing,
+                    severity: .error,
+                    message: "The bundled TimeCapsuleSMB payload artifacts are missing.",
+                    recovery: "Reinstall TimeCapsuleSMB."
+                ))
+            }
+            issues.append(contentsOf: artifactManifestIssues(fileManager: fileManager))
         }
         if !isDirectory(toolsBinURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
@@ -172,11 +187,107 @@ public struct BundleLayout: Equatable, Sendable {
                 recovery: "Some diagnostics may be unavailable until the app bundle is repaired."
             ))
         }
+        if !isWritableDirectory(applicationSupportURL, fileManager: fileManager) {
+            issues.append(BundleRuntimeIssue(
+                code: .applicationSupportUnavailable,
+                severity: .error,
+                message: "TimeCapsuleSMB cannot write its Application Support directory.",
+                recovery: "Repair permissions for the TimeCapsuleSMB Application Support folder or reinstall the app."
+            ))
+        }
+        if stateDirectoryURL != applicationSupportURL,
+           !isWritableDirectory(stateDirectoryURL, fileManager: fileManager) {
+            issues.append(BundleRuntimeIssue(
+                code: .stateDirectoryUnavailable,
+                severity: .error,
+                message: "TimeCapsuleSMB cannot write its runtime state directory.",
+                recovery: "Repair permissions for the configured state directory."
+            ))
+        }
         return issues
+    }
+
+    private func artifactManifestIssues(fileManager: FileManager) -> [BundleRuntimeIssue] {
+        guard fileManager.fileExists(atPath: artifactManifestURL.path) else {
+            return [BundleRuntimeIssue(
+                code: .artifactManifestMissing,
+                severity: .error,
+                message: "The bundled artifact manifest is missing.",
+                recovery: "Reinstall TimeCapsuleSMB."
+            )]
+        }
+        do {
+            let data = try Data(contentsOf: artifactManifestURL)
+            let manifest = try JSONDecoder().decode(ArtifactManifest.self, from: data)
+            guard !manifest.artifactPaths.contains(where: isUnsafeArtifactPath) else {
+                return [BundleRuntimeIssue(
+                    code: .artifactManifestInvalid,
+                    severity: .error,
+                    message: "The bundled artifact manifest contains an unsafe artifact path.",
+                    recovery: "Reinstall TimeCapsuleSMB."
+                )]
+            }
+            let missing = manifest.artifactPaths.filter {
+                !fileManager.fileExists(atPath: distributionRootURL.appendingPathComponent($0).path)
+            }
+            guard missing.isEmpty else {
+                return [BundleRuntimeIssue(
+                    code: .distributionArtifactsMissing,
+                    severity: .error,
+                    message: "The bundled TimeCapsuleSMB distribution is missing \(missing.count) payload artifact(s).",
+                    recovery: "Reinstall TimeCapsuleSMB."
+                )]
+            }
+            return []
+        } catch {
+            return [BundleRuntimeIssue(
+                code: .artifactManifestInvalid,
+                severity: .error,
+                message: "The bundled artifact manifest could not be read.",
+                recovery: "Reinstall TimeCapsuleSMB."
+            )]
+        }
+    }
+
+    private func isWritableDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        do {
+            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+        guard isDirectory(url, fileManager: fileManager) else {
+            return false
+        }
+        let probe = url.appendingPathComponent(".timecapsulesmb-write-test-\(UUID().uuidString)")
+        do {
+            try Data().write(to: probe)
+            try? fileManager.removeItem(at: probe)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func isUnsafeArtifactPath(_ path: String) -> Bool {
+        path.isEmpty
+            || path.hasPrefix("/")
+            || path.split(separator: "/").contains("..")
     }
 
     private func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
         var isDirectory: ObjCBool = false
         return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
+}
+
+private struct ArtifactManifest: Decodable {
+    let artifacts: [String: ArtifactRecord]
+
+    var artifactPaths: [String] {
+        artifacts.values.map(\.path).sorted()
+    }
+}
+
+private struct ArtifactRecord: Decodable {
+    let path: String
 }

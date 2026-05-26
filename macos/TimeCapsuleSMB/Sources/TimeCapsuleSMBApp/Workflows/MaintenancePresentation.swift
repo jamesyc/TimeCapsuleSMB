@@ -85,6 +85,10 @@ struct MaintenanceCompletionPresentation: Equatable {
 struct MaintenanceTimelinePresentation: Equatable {
     let items: [OperationTimelineItem]
 
+    init(items: [OperationTimelineItem]) {
+        self.items = items
+    }
+
     init(events: [BackendEvent], currentStage: OperationStageState?, workflow: MaintenanceWorkflow) {
         let operation = workflow.operationName
         var items = OperationTimelineBuilder.timeline(from: events)

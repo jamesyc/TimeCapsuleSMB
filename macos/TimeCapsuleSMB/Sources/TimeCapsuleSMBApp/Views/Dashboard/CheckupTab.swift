@@ -5,6 +5,7 @@ struct CheckupTab: View {
     @ObservedObject var session: DeviceDashboardSession
     let appSettings: AppSettings
     let showDiagnostics: () -> Void
+    let diagnosticsText: () -> String
 
     var body: some View {
         let store = session.doctorStore
@@ -51,7 +52,7 @@ struct CheckupTab: View {
                     CheckupAdvancedOptionsView(store: store)
 
                     if let error = store.error {
-                        ErrorRecoveryView(error: error) { action in
+                        ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { action in
                             handleRecovery(action: action, error: error)
                         }
                     }

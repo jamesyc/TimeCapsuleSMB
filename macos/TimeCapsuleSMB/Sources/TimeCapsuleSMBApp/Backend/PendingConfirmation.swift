@@ -93,6 +93,12 @@ private struct ConfirmationPresentation {
                 return nil
             }
             return format(template, path)
+        case "flash.patch_write",
+             "flash.restore_write":
+            guard let host = stringValue(values, "host") else {
+                return nil
+            }
+            return format(template, host)
         default:
             return template
         }

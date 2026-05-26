@@ -4,6 +4,7 @@ import Foundation
 enum AppReadinessStateKind: String, CaseIterable, Equatable {
     case idle
     case resolvingBundle
+    case checkingVersion
     case checkingCapabilities
     case validatingInstall
     case ready
@@ -16,6 +17,8 @@ enum AppReadinessStateKind: String, CaseIterable, Equatable {
             return L10n.string("app_readiness.state.idle")
         case .resolvingBundle:
             return L10n.string("app_readiness.state.resolving_bundle")
+        case .checkingVersion:
+            return L10n.string("app_readiness.state.checking_version")
         case .checkingCapabilities:
             return L10n.string("app_readiness.state.checking_capabilities")
         case .validatingInstall:
@@ -41,6 +44,7 @@ struct AppReadinessSummary: Equatable {
 enum AppReadinessState: Equatable {
     case idle
     case resolvingBundle
+    case checkingVersion
     case checkingCapabilities
     case validatingInstall
     case ready(AppReadinessSummary)
@@ -53,6 +57,8 @@ enum AppReadinessState: Equatable {
             return .idle
         case .resolvingBundle:
             return .resolvingBundle
+        case .checkingVersion:
+            return .checkingVersion
         case .checkingCapabilities:
             return .checkingCapabilities
         case .validatingInstall:
@@ -64,6 +70,14 @@ enum AppReadinessState: Equatable {
         case .blocked:
             return .blocked
         }
+    }
+}
+
+struct AppReadinessVersionCheck: Equatable {
+    var url: String
+
+    func params() -> [String: JSONValue] {
+        OperationParams.versionCheck(url: url)
     }
 }
 
@@ -79,6 +93,7 @@ final class AppReadinessStore: ObservableObject {
     @Published private(set) var state: AppReadinessState = .idle
     @Published private(set) var capabilities: CapabilitiesPayload?
     @Published private(set) var validation: InstallValidationPayload?
+    @Published private(set) var versionCheckPayload: VersionCheckPayload?
     @Published private(set) var issues: [BundleRuntimeIssue] = []
     @Published private(set) var currentStage: OperationStageState?
 
@@ -87,7 +102,8 @@ final class AppReadinessStore: ObservableObject {
     private let runtimeResolver: any AppRuntimeResolving
     private let helperPathProvider: () -> String
     private var runtimeMode: BundleRuntimeMode = .developmentCheckout
-    private var pendingOperation: String?
+    private var versionCheck: AppReadinessVersionCheck?
+    private var pendingOperation: PendingReadinessOperation?
     private var lastProcessedEventCount = 0
     private var cancellables: Set<AnyCancellable> = []
 
@@ -128,11 +144,16 @@ final class AppReadinessStore: ObservableObject {
         !backend.isRunning
     }
 
+    func applyVersionCheck(_ versionCheck: AppReadinessVersionCheck?) {
+        self.versionCheck = versionCheck
+    }
+
     func start() {
         guard !backend.isRunning else { return }
         backend.clear()
         capabilities = nil
         validation = nil
+        versionCheckPayload = nil
         issues = []
         currentStage = nil
         pendingOperation = nil
@@ -158,14 +179,19 @@ final class AppReadinessStore: ObservableObject {
             return
         }
 
-        state = .checkingCapabilities
-        backend.run(operation: "capabilities")
+        if let versionCheck {
+            pendingOperation = PendingReadinessOperation(operation: "version-check", params: versionCheck.params())
+        } else {
+            pendingOperation = PendingReadinessOperation(operation: "capabilities")
+        }
+        runPendingOperation()
     }
 
     func clear() {
         backend.clear()
         capabilities = nil
         validation = nil
+        versionCheckPayload = nil
         issues = []
         currentStage = nil
         pendingOperation = nil
@@ -187,7 +213,7 @@ final class AppReadinessStore: ObservableObject {
     }
 
     private func handle(_ event: BackendEvent) {
-        guard ["capabilities", "validate-install"].contains(event.operation) else {
+        guard ["version-check", "capabilities", "validate-install"].contains(event.operation) else {
             return
         }
 
@@ -197,6 +223,12 @@ final class AppReadinessStore: ObservableObject {
         }
 
         if event.type == "error" {
+            if event.operation == "version-check" {
+                issues.append(versionMetadataIssue(message: event.message ?? event.summary))
+                pendingOperation = PendingReadinessOperation(operation: "capabilities")
+                runPendingOperation()
+                return
+            }
             state = .blocked(issue(from: event))
             return
         }
@@ -206,12 +238,43 @@ final class AppReadinessStore: ObservableObject {
         }
 
         switch event.operation {
+        case "version-check":
+            applyVersionCheckResult(event)
         case "capabilities":
             applyCapabilitiesResult(event)
         case "validate-install":
             applyValidationResult(event)
         default:
             break
+        }
+    }
+
+    private func applyVersionCheckResult(_ event: BackendEvent) {
+        do {
+            let payload = try event.decodePayload(VersionCheckPayload.self)
+            versionCheckPayload = payload
+            guard event.ok == true else {
+                issues.append(versionMetadataIssue(message: payload.summary))
+                pendingOperation = PendingReadinessOperation(operation: "capabilities")
+                runPendingOperation()
+                return
+            }
+            if payload.source == "unavailable" {
+                issues.append(versionMetadataIssue(message: payload.summary))
+            }
+            guard !payload.shouldBlock else {
+                state = .blocked(BundleRuntimeIssue(
+                    code: .unsupportedVersion,
+                    severity: .error,
+                    message: payload.message,
+                    recovery: L10n.format("app_readiness.recovery.update_required", payload.downloadURL)
+                ))
+                return
+            }
+            pendingOperation = PendingReadinessOperation(operation: "capabilities")
+            runPendingOperation()
+        } catch {
+            state = .blocked(contractIssue(operation: "version-check", error: error))
         }
     }
 
@@ -228,7 +291,7 @@ final class AppReadinessStore: ObservableObject {
                 ))
                 return
             }
-            pendingOperation = "validate-install"
+            pendingOperation = PendingReadinessOperation(operation: "validate-install")
             runPendingOperation()
         } catch {
             state = .blocked(contractIssue(operation: "capabilities", error: error))
@@ -267,14 +330,18 @@ final class AppReadinessStore: ObservableObject {
     }
 
     private func runPendingOperation() {
-        guard let operation = pendingOperation, !backend.isRunning else {
+        guard let pending = pendingOperation, !backend.isRunning else {
             return
         }
         pendingOperation = nil
-        if operation == "validate-install" {
+        if pending.operation == "version-check" {
+            state = .checkingVersion
+        } else if pending.operation == "capabilities" {
+            state = .checkingCapabilities
+        } else if pending.operation == "validate-install" {
             state = .validatingInstall
         }
-        backend.run(operation: operation)
+        backend.run(operation: pending.operation, params: pending.params)
     }
 
     private func issue(from event: BackendEvent) -> BundleRuntimeIssue {
@@ -304,8 +371,27 @@ final class AppReadinessStore: ObservableObject {
         )
     }
 
+    private func versionMetadataIssue(message: String) -> BundleRuntimeIssue {
+        BundleRuntimeIssue(
+            code: .versionMetadataUnavailable,
+            severity: .warning,
+            message: message,
+            recovery: L10n.string("app_readiness.recovery.version_metadata_unavailable")
+        )
+    }
+
     private func normalized(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private struct PendingReadinessOperation {
+    let operation: String
+    let params: [String: JSONValue]
+
+    init(operation: String, params: [String: JSONValue] = [:]) {
+        self.operation = operation
+        self.params = params
     }
 }

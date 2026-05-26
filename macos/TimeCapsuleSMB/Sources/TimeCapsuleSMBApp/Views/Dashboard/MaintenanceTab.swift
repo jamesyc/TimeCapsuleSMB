@@ -5,6 +5,7 @@ struct MaintenanceTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
     let showDiagnostics: () -> Void
+    let diagnosticsText: () -> String
 
     var body: some View {
         let store = session.maintenanceStore
@@ -31,11 +32,20 @@ struct MaintenanceTab: View {
                 )
 
                 if FlashBootHookVisibilityPolicy.isVisible(for: profile) {
-                    FlashBootHookSection(profile: profile)
+                    FlashBootHookSection(
+                        profile: profile,
+                        store: session.flashStore,
+                        performAction: { action in
+                            session.performFlashAction(action, profile: profile)
+                        },
+                        chooseFirmwareTemplate: {
+                            chooseFirmwareTemplate(store: session.flashStore)
+                        }
+                    )
                 }
 
                 if let error = store.error {
-                    ErrorRecoveryView(error: error) { action in
+                    ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { action in
                         handleRecovery(action: action, error: error)
                     }
                 }
@@ -60,6 +70,17 @@ struct MaintenanceTab: View {
         panel.prompt = L10n.string("maintenance.action.choose")
         if panel.runModal() == .OK, let url = panel.url {
             store.repairPath = url.path
+        }
+    }
+
+    private func chooseFirmwareTemplate(store: FlashWorkflowStore) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = L10n.string("maintenance.action.choose")
+        if panel.runModal() == .OK, let url = panel.url {
+            store.firmwareTemplatePath = url.path
         }
     }
 }
@@ -274,7 +295,7 @@ private struct MaintenanceCompletionView: View {
     }
 }
 
-private struct MaintenanceTimelineView: View {
+struct MaintenanceTimelineView: View {
     let presentation: MaintenanceTimelinePresentation
 
     var body: some View {
