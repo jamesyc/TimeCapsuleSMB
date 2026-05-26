@@ -589,7 +589,10 @@ class AppApiTests(unittest.TestCase):
             ],
         )
 
-        with mock.patch("timecapsulesmb.app.ops.readiness.discover_snapshot", return_value=snapshot):
+        with mock.patch(
+            "timecapsulesmb.app.ops.readiness.discover_snapshot_merged_detailed",
+            return_value=(snapshot, SimpleNamespace()),
+        ):
             rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
 
         self.assertEqual(rc, 0)
@@ -629,7 +632,10 @@ class AppApiTests(unittest.TestCase):
         ]
         snapshot = BonjourDiscoverySnapshot(instances=[], resolved=raw_records)
 
-        with mock.patch("timecapsulesmb.app.ops.readiness.discover_snapshot", return_value=snapshot):
+        with mock.patch(
+            "timecapsulesmb.app.ops.readiness.discover_snapshot_merged_detailed",
+            return_value=(snapshot, SimpleNamespace()),
+        ):
             rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
 
         self.assertEqual(rc, 0)
@@ -643,7 +649,7 @@ class AppApiTests(unittest.TestCase):
         for timeout in ("bad", "nan", -1, True):
             with self.subTest(timeout=timeout):
                 collector = CollectingSink()
-                with mock.patch("timecapsulesmb.app.ops.readiness.discover_snapshot") as discover:
+                with mock.patch("timecapsulesmb.app.ops.readiness.discover_snapshot_merged_detailed") as discover:
                     rc = service.run_api_request(
                         {"operation": "discover", "params": {"timeout": timeout}},
                         collector.sink,
@@ -659,7 +665,10 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         snapshot = BonjourDiscoverySnapshot(instances=[], resolved=[])
 
-        with mock.patch("timecapsulesmb.app.ops.readiness.discover_snapshot", return_value=snapshot) as discover:
+        with mock.patch(
+            "timecapsulesmb.app.ops.readiness.discover_snapshot_merged_detailed",
+            return_value=(snapshot, SimpleNamespace()),
+        ) as discover:
             rc = service.run_api_request(
                 {"operation": "discover", "params": {"timeout": "0.25"}},
                 collector.sink,

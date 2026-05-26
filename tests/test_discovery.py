@@ -17,23 +17,23 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
+    BonjourDiscoveryError,
+    BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
+    BonjourMergedDiscoveryDiagnostics,
     BonjourPtrRecordObservation,
     BonjourResolvedService,
     BonjourServiceEvent,
     BonjourServiceInstance,
     Collector,
     DNS_RECORD_TYPE_PTR,
-    Discovered,
     SMB_SERVICE,
     PtrRecordObserver,
     ServiceObservation,
-    discover,
+    discover_snapshot_merged_detailed,
     discover_snapshot_detailed,
-    discover_resolved_records,
     discovered_record_root_host,
     resolved_service_from_info,
-    record_has_service,
     _open_zeroconf,
     _source_ipv4_for_target,
     _source_ipv6_for_target,
@@ -44,31 +44,54 @@ from timecapsulesmb.cli.discover import run_cli  # noqa: E402
 
 
 def make_fake_ip_version() -> types.SimpleNamespace:
-    return types.SimpleNamespace(V4Only=object(), V6Only=object(), All=object())
+    return types.SimpleNamespace(V4Only=object(), V6Only=object())
 
 
 class DiscoveryTests(unittest.TestCase):
-    def test_preferred_host_uses_hostname_then_ipv4(self) -> None:
-        record = Discovered(name="TC", hostname="capsule.local", ipv4=["10.0.0.2"])
-        self.assertEqual(record.prefer_host(), "capsule.local")
+    def test_preferred_connection_host_uses_address_policy_before_hostname(self) -> None:
+        record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=["10.0.0.2"])
+        self.assertEqual(record.preferred_connection_host(), "10.0.0.2")
+        self.assertEqual(record.display_host(), "10.0.0.2")
 
     def test_discovered_record_root_host_prefers_routable_ipv4(self) -> None:
-        record = Discovered(name="TC", hostname="capsule.local", ipv4=["169.254.1.2", "10.0.0.4"])
+        record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=["169.254.1.2", "10.0.0.4"])
         self.assertEqual(discovered_record_root_host(record), "root@10.0.0.4")
 
+    def test_discovered_record_root_host_prefers_routable_ipv4_over_ipv6(self) -> None:
+        record = BonjourResolvedService(
+            name="TC",
+            hostname="capsule.local",
+            ipv4=["169.254.1.2", "10.0.0.4"],
+            ipv6=["fd00::4"],
+        )
+        self.assertEqual(discovered_record_root_host(record), "root@10.0.0.4")
+
+    def test_discovered_record_root_host_uses_ipv6_when_no_routable_ipv4_exists(self) -> None:
+        record = BonjourResolvedService(
+            name="TC",
+            hostname="capsule.local",
+            ipv4=["169.254.1.2"],
+            ipv6=["fd00::4"],
+        )
+        self.assertEqual(discovered_record_root_host(record), "root@fd00::4")
+
+    def test_discovered_record_root_host_supports_ipv6_only_records(self) -> None:
+        record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=[], ipv6=["fd00::4"])
+        self.assertEqual(discovered_record_root_host(record), "root@fd00::4")
+
     def test_discovered_record_root_host_rejects_link_local_only_ipv4(self) -> None:
-        record = Discovered(name="TC", hostname="capsule.local", ipv4=["169.254.1.2"])
+        record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=["169.254.1.2"])
         self.assertIsNone(discovered_record_root_host(record))
 
     def test_discovered_record_root_host_falls_back_to_hostname(self) -> None:
-        record = Discovered(name="TC", hostname="capsule.local", ipv4=[])
+        record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=[])
         self.assertEqual(discovered_record_root_host(record), "root@capsule.local")
 
     def test_discovered_record_root_host_returns_none_when_no_host_data_exists(self) -> None:
-        record = Discovered(name="TC", hostname="", ipv4=[], ipv6=[])
+        record = BonjourResolvedService(name="TC", hostname="", ipv4=[], ipv6=[])
         self.assertIsNone(discovered_record_root_host(record))
 
-    def test_discover_uses_dual_stack_zeroconf(self) -> None:
+    def test_discover_defaults_to_ipv4_only_zeroconf(self) -> None:
         fake_zc = mock.Mock()
         fake_collector = mock.Mock()
         fake_collector.results.return_value = []
@@ -79,9 +102,9 @@ class DiscoveryTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
             with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
                 with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
-                    discover_resolved_records(timeout=0)
+                    discover_snapshot_detailed(timeout=0)
 
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.All)
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
         fake_collector.start.assert_called_once()
         fake_collector.resolve_pending.assert_called_once_with(timeout_ms=3000)
         fake_zc.close.assert_called_once()
@@ -112,7 +135,7 @@ class DiscoveryTests(unittest.TestCase):
                             _snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0, target_ip="10.0.1.77")
 
         source_mock.assert_called_once_with("10.0.1.77")
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.All)
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.V4Only)
         self.assertEqual(diagnostics.zeroconf_interfaces, "10.0.1.42")
 
     def test_discover_can_use_explicit_ipv4_family_and_interfaces(self) -> None:
@@ -206,28 +229,185 @@ class DiscoveryTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
                             _snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0, target_ip="10.0.1.77")
 
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.All)
-        self.assertEqual(diagnostics.zeroconf_interfaces, "All")
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
+        self.assertEqual(diagnostics.zeroconf_interfaces, "system-default")
 
-    def test_target_interfaces_include_ipv6_addresses_from_selected_adapter(self) -> None:
-        class FakeAdapterIP:
-            def __init__(self, ip: object) -> None:
-                self.ip = ip
+    def test_merged_discovery_runs_ipv4_and_ipv6_and_merges_records(self) -> None:
+        instance = BonjourServiceInstance("_airport._tcp.local.", "Time Capsule", "Time Capsule._airport._tcp.local.")
+        snapshot_v4 = BonjourDiscoverySnapshot(
+            instances=[instance],
+            resolved=[
+                BonjourResolvedService(
+                    "Time Capsule",
+                    "capsule.local",
+                    "_airport._tcp.local.",
+                    port=5009,
+                    ipv4=["10.0.0.2"],
+                    properties={"syAP": "119"},
+                    fullname="Time Capsule._airport._tcp.local.",
+                )
+            ],
+        )
+        snapshot_v6 = BonjourDiscoverySnapshot(
+            instances=[instance],
+            resolved=[
+                BonjourResolvedService(
+                    "Time Capsule",
+                    "capsule.local",
+                    "_airport._tcp.local.",
+                    port=5009,
+                    ipv6=["fd00::2"],
+                    properties={"syVs": "7.9.1"},
+                    fullname="Time Capsule._airport._tcp.local.",
+                )
+            ],
+        )
+        calls: list[tuple[str | None, float, str]] = []
 
-        class FakeAdapter:
-            ips = [
-                FakeAdapterIP("192.168.50.9"),
-                FakeAdapterIP(("fe80::1234", 0, 4)),
-                FakeAdapterIP(("fd00::1234", 0, 4)),
-            ]
+        def fake_discover(service, timeout, *, family, **_kwargs):
+            calls.append((service, timeout, family))
+            snapshot = snapshot_v4 if family == "ipv4" else snapshot_v6
+            diagnostics = BonjourDiscoveryDiagnostics(
+                service=service,
+                service_types=["_airport._tcp.local."],
+                timeout_sec=timeout,
+                elapsed_sec=timeout,
+                ip_version="V4Only" if family == "ipv4" else "V6Only",
+                instance_count=len(snapshot.instances),
+                resolved_count=len(snapshot.resolved),
+                pending_count=0,
+                service_added_count=1,
+                service_updated_count=0,
+                resolve_attempt_count=1,
+                resolve_success_count=1,
+                resolve_error_count=0,
+                instances=list(snapshot.instances),
+                resolved=list(snapshot.resolved),
+            )
+            return snapshot, diagnostics
 
-        fake_ifaddr = types.SimpleNamespace(get_adapters=mock.Mock(return_value=[FakeAdapter()]))
+        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=fake_discover):
+            snapshot, diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0.25)
 
-        with mock.patch.dict(sys.modules, {"ifaddr": fake_ifaddr}):
-            with mock.patch("timecapsulesmb.discovery.bonjour._source_ipv4_for_target", return_value="192.168.50.9"):
-                interfaces = _zeroconf_interfaces_for_target("192.168.50.77")
+        self.assertEqual({call[2] for call in calls}, {"ipv4", "ipv6"})
+        self.assertEqual(len(snapshot.instances), 1)
+        self.assertEqual(len(snapshot.resolved), 1)
+        self.assertEqual(snapshot.resolved[0].ipv4, ["10.0.0.2"])
+        self.assertEqual(snapshot.resolved[0].ipv6, ["fd00::2"])
+        self.assertEqual(snapshot.resolved[0].properties["syAP"], "119")
+        self.assertEqual(snapshot.resolved[0].properties["syVs"], "7.9.1")
+        self.assertEqual(diagnostics.instance_count, 1)
+        self.assertEqual(diagnostics.resolved_count, 1)
+        self.assertEqual([attempt.family for attempt in diagnostics.attempts], ["ipv4", "ipv6"])
 
-        self.assertEqual(interfaces, ["192.168.50.9", "fe80::1234", "fd00::1234"])
+    def test_merged_discovery_keeps_same_name_with_different_hosts_separate(self) -> None:
+        snapshot_v4 = BonjourDiscoverySnapshot(
+            instances=[],
+            resolved=[
+                BonjourResolvedService("Time Capsule", "capsule-v4.local", "_airport._tcp.local.", ipv4=["10.0.0.2"])
+            ],
+        )
+        snapshot_v6 = BonjourDiscoverySnapshot(
+            instances=[],
+            resolved=[
+                BonjourResolvedService("Time Capsule", "capsule-v6.local", "_airport._tcp.local.", ipv6=["fd00::2"])
+            ],
+        )
+
+        def fake_discover(service, timeout, *, family, **_kwargs):
+            snapshot = snapshot_v4 if family == "ipv4" else snapshot_v6
+            diagnostics = BonjourDiscoveryDiagnostics(
+                service=service,
+                service_types=["_airport._tcp.local."],
+                timeout_sec=timeout,
+                elapsed_sec=timeout,
+                ip_version="V4Only" if family == "ipv4" else "V6Only",
+                instance_count=0,
+                resolved_count=1,
+                pending_count=0,
+                service_added_count=0,
+                service_updated_count=0,
+                resolve_attempt_count=1,
+                resolve_success_count=1,
+                resolve_error_count=0,
+                resolved=list(snapshot.resolved),
+            )
+            return snapshot, diagnostics
+
+        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=fake_discover):
+            snapshot, _diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0)
+
+        self.assertEqual(
+            [(record.hostname, record.ipv4, record.ipv6) for record in snapshot.resolved],
+            [
+                ("capsule-v4.local", ["10.0.0.2"], []),
+                ("capsule-v6.local", [], ["fd00::2"]),
+            ],
+        )
+
+    def test_merged_discovery_returns_partial_success_and_raises_when_empty_with_errors(self) -> None:
+        snapshot_v4 = BonjourDiscoverySnapshot(
+            instances=[],
+            resolved=[BonjourResolvedService("Time Capsule", "capsule.local", "_airport._tcp.local.", ipv4=["10.0.0.2"])],
+        )
+
+        def partial_discover(service, timeout, *, family, **_kwargs):
+            if family == "ipv6":
+                raise RuntimeError("ipv6 browse failed")
+            diagnostics = BonjourDiscoveryDiagnostics(
+                service=service,
+                service_types=["_airport._tcp.local."],
+                timeout_sec=timeout,
+                elapsed_sec=timeout,
+                ip_version="V4Only",
+                instance_count=0,
+                resolved_count=1,
+                pending_count=0,
+                service_added_count=0,
+                service_updated_count=0,
+                resolve_attempt_count=1,
+                resolve_success_count=1,
+                resolve_error_count=0,
+                resolved=list(snapshot_v4.resolved),
+            )
+            return snapshot_v4, diagnostics
+
+        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=partial_discover):
+            snapshot, diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0)
+
+        self.assertEqual(snapshot.resolved[0].ipv4, ["10.0.0.2"])
+        self.assertEqual(diagnostics.attempts[1].family, "ipv6")
+        self.assertIn("RuntimeError: ipv6 browse failed", diagnostics.attempts[1].error or "")
+
+        def empty_with_error(service, timeout, *, family, **_kwargs):
+            if family == "ipv6":
+                raise RuntimeError("ipv6 browse failed")
+            return BonjourDiscoverySnapshot([], []), BonjourDiscoveryDiagnostics(
+                service=service,
+                service_types=["_airport._tcp.local."],
+                timeout_sec=timeout,
+                elapsed_sec=timeout,
+                ip_version="V4Only",
+                instance_count=0,
+                resolved_count=0,
+                pending_count=0,
+                service_added_count=0,
+                service_updated_count=0,
+                resolve_attempt_count=0,
+                resolve_success_count=0,
+                resolve_error_count=0,
+            )
+
+        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot_detailed", side_effect=empty_with_error):
+            with self.assertRaises(BonjourDiscoveryError) as exc:
+                discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=0)
+        self.assertIn("ipv6: RuntimeError: ipv6 browse failed", str(exc.exception))
+
+    def test_target_interfaces_default_to_selected_ipv4_only(self) -> None:
+        with mock.patch("timecapsulesmb.discovery.bonjour._source_ipv4_for_target", return_value="192.168.50.9"):
+            interfaces = _zeroconf_interfaces_for_target("192.168.50.77")
+
+        self.assertEqual(interfaces, ["192.168.50.9"])
 
     def test_source_ipv4_for_target_uses_udp_route_selection(self) -> None:
         fake_sock = mock.Mock()
@@ -289,9 +469,9 @@ class DiscoveryTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
                 with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[0.0, 0.0, 0.6, 0.6]):
                     with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep") as fake_sleep:
-                        discover_resolved_records(timeout=0.5)
+                        discover_snapshot_detailed(timeout=0.5)
 
-        fake_sleep.assert_called_once_with(0.5)
+        self.assertIn(mock.call(0.5), fake_sleep.call_args_list)
         fake_collector.resolve_pending.assert_has_calls([
             mock.call(timeout_ms=500),
             mock.call(timeout_ms=3000),
@@ -349,7 +529,7 @@ class DiscoveryTests(unittest.TestCase):
         ])
         self.assertEqual(diagnostics.service, "_smb")
         self.assertEqual(diagnostics.service_types, ["_smb._tcp.local."])
-        self.assertEqual(diagnostics.ip_version, "All")
+        self.assertEqual(diagnostics.ip_version, "V4Only")
         self.assertEqual(diagnostics.elapsed_sec, 6.125)
         self.assertEqual(diagnostics.instance_count, 1)
         self.assertEqual(diagnostics.resolved_count, 1)
@@ -361,26 +541,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(diagnostics.resolve_error_count, 1)
         self.assertEqual(diagnostics.service_events, [event])
         self.assertEqual(diagnostics.ptr_records, [ptr_record])
-
-    def test_discover_includes_unresolved_browse_instances(self) -> None:
-        fake_zc = mock.Mock()
-        fake_collector = mock.Mock()
-        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        fake_collector.results.return_value = []
-        fake_collector.service_instances.return_value = [instance]
-        fake_ip_version = make_fake_ip_version()
-        fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
-
-        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
-                    records = discover(timeout=0)
-
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].service_type, "_smb._tcp.local.")
-        self.assertEqual(records[0].name, "Home")
-        self.assertEqual(records[0].hostname, "")
-        self.assertEqual(records[0].fullname, "Home._smb._tcp.local.")
 
     def test_resolve_service_instance_returns_resolved_record(self) -> None:
         class FakeQuestionType:
@@ -430,13 +590,29 @@ class DiscoveryTests(unittest.TestCase):
                 record = resolve_service_instance(instance, timeout_ms=750, target_ip="10.0.1.77")
 
         self.assertIsNone(record)
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.All)
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.V4Only)
         fake_zc.get_service_info.assert_called_once_with(
             "_smb._tcp.local.",
             "Home._smb._tcp.local.",
             750,
             question_type=FakeQuestionType.QM,
         )
+
+    def test_resolved_service_from_info_uses_parsed_addresses_to_include_ipv6(self) -> None:
+        class FakeInfo:
+            name = "Home._smb._tcp.local."
+            server = "home.local."
+            port = 445
+            properties: dict[bytes, bytes] = {}
+            addresses = [bytes([192, 168, 1, 217])]
+
+            def parsed_scoped_addresses(self, _version) -> list[str]:
+                return ["192.168.1.217", "169.254.155.207", "fdbb:5737:6e53:9bf7::5868"]
+
+        record = resolved_service_from_info("_smb._tcp.local.", FakeInfo())
+
+        self.assertEqual(record.ipv4, ["192.168.1.217", "169.254.155.207"])
+        self.assertEqual(record.ipv6, ["fdbb:5737:6e53:9bf7::5868"])
 
     def test_resolved_service_from_info_splits_airport_packed_txt_value(self) -> None:
         class FakeInfo:
@@ -722,25 +898,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(observer.error, "RuntimeError: listener unavailable")
         fake_zc.remove_listener.assert_not_called()
 
-    def test_record_has_service_matches_requested_service(self) -> None:
-        airport = Discovered(
-            name="James's AirPort Time Capsule",
-            hostname="Jamess-AirPort-Time-Capsule.local",
-            service_type="_airport._tcp.local.",
-            ipv4=["192.168.1.217"],
-            properties={"syAP": "119", "syVs": "7.9.1"},
-        )
-        samba = Discovered(
-            name="Time Capsule Samba 4",
-            hostname="timecapsulesamba4.local",
-            service_type="_smb._tcp.local.",
-            ipv4=["192.168.1.217"],
-            properties={"model": "TimeCapsule8,119"},
-        )
-        self.assertFalse(record_has_service(airport, SMB_SERVICE))
-        self.assertTrue(record_has_service(samba, SMB_SERVICE))
-        self.assertTrue(record_has_service(samba, "_smb._tcp.local"))
-
     def test_collector_results_preserve_raw_service_records(self) -> None:
         observations = {
             ("_airport._tcp.local.", "AirPort Time Capsule", "airport.local"): ServiceObservation(
@@ -766,7 +923,7 @@ class DiscoveryTests(unittest.TestCase):
         }
         fake_collector = mock.Mock()
         fake_collector.results.return_value = [
-            Discovered(
+            BonjourResolvedService(
                 name=observation.name,
                 hostname=observation.hostname,
                 service_type=observation.service_type,
@@ -783,7 +940,8 @@ class DiscoveryTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
             with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
                 with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
-                    records = discover_resolved_records(timeout=0)
+                    snapshot, _diagnostics = discover_snapshot_detailed(timeout=0)
+                    records = snapshot.resolved
 
         self.assertEqual(
             {(record.service_type, record.name, record.hostname, tuple(record.ipv4)) for record in records},
@@ -793,10 +951,6 @@ class DiscoveryTests(unittest.TestCase):
                 ("_device-info._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local", ("192.168.1.217",)),
             },
         )
-
-    def test_record_has_service_accepts_service_prefix_for_airport(self) -> None:
-        airport = Discovered(name="AirPort Time Capsule", hostname="airport.local", service_type="_airport._tcp.local")
-        self.assertTrue(record_has_service(airport, AIRPORT_SERVICE))
 
     def test_run_cli_prints_browse_and_resolved_tables(self) -> None:
         snapshot = BonjourDiscoverySnapshot(
@@ -815,7 +969,15 @@ class DiscoveryTests(unittest.TestCase):
             ],
         )
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
+        diagnostics = BonjourMergedDiscoveryDiagnostics(
+            service=None,
+            service_types=[],
+            timeout_sec=6.0,
+            elapsed_sec=0.0,
+            instance_count=len(snapshot.instances),
+            resolved_count=len(snapshot.resolved),
+        )
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", return_value=(snapshot, diagnostics)):
             with redirect_stdout(output):
                 rc = run_cli([])
         text = output.getvalue()
@@ -826,7 +988,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("home.local", text)
 
     def test_run_cli_reports_bonjour_dependency_errors_as_system_exit(self) -> None:
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", side_effect=RuntimeError("zeroconf missing")):
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", side_effect=RuntimeError("zeroconf missing")):
             with self.assertRaises(SystemExit) as cm:
                 run_cli([])
 

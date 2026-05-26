@@ -19,7 +19,7 @@ from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourDiscoverySnapshot,
     BonjourResolvedService,
-    discover_snapshot,
+    discover_snapshot_merged_detailed,
     discovered_record_root_host,
     discovery_record_to_jsonable,
     service_instance_to_jsonable,
@@ -82,7 +82,7 @@ def discover_operation(params: dict[str, object], sink: EventSink) -> OperationR
     operation = "discover"
     timeout = float_param(params, "timeout", DEFAULT_BROWSE_TIMEOUT_SEC)
     sink.stage(operation, "bonjour_discovery")
-    snapshot = discover_snapshot(timeout=timeout)
+    snapshot, _diagnostics = discover_snapshot_merged_detailed(timeout=timeout)
     return OperationResult(True, discover_payload(snapshot_payload(snapshot)))
 
 

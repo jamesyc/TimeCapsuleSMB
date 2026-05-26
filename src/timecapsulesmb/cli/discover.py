@@ -9,7 +9,7 @@ from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourResolvedService,
     BonjourServiceInstance,
-    discover_snapshot,
+    discover_snapshot_merged_detailed,
     discovery_record_to_jsonable,
     service_instance_to_jsonable,
 )
@@ -47,7 +47,7 @@ def print_table(records: list[BonjourResolvedService]) -> None:
     if not records:
         print("No resolved Bonjour service records discovered.")
         return
-    headers = ["#", "Service", "Name", "Hostname (preferred)", "Port", "IPv4", "IPv6"]
+    headers = ["#", "Service", "Name", "Hostname", "Port", "IPv4", "IPv6"]
     rows = []
     for i, record in enumerate(records, start=1):
         rows.append(
@@ -85,7 +85,7 @@ def _run_discover(args: argparse.Namespace, command_context: CommandContext | No
     try:
         if command_context is not None:
             command_context.set_stage("bonjour_discovery")
-        snapshot = discover_snapshot(timeout=args.timeout)
+        snapshot, diagnostics = discover_snapshot_merged_detailed(timeout=args.timeout)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     records = snapshot.resolved
@@ -97,7 +97,7 @@ def _run_discover(args: argparse.Namespace, command_context: CommandContext | No
             bonjour_instance_count=len(snapshot.instances),
             bonjour_resolved_count=len(records),
         )
-        command_context.add_debug_fields(discovery_snapshot=snapshot)
+        command_context.add_debug_fields(discovery_snapshot=snapshot, discovery_diagnostics=diagnostics)
     if args.json:
         print_json({
             "instances": [service_instance_to_jsonable(instance) for instance in snapshot.instances],
@@ -138,7 +138,7 @@ def _run_discover(args: argparse.Namespace, command_context: CommandContext | No
             if not (1 <= idx <= len(records)):
                 print("Out of range.")
                 continue
-            print(records[idx - 1].prefer_host())
+            print(records[idx - 1].display_host())
             if command_context is not None:
                 command_context.update_fields(selected_index=idx)
                 command_context.succeed()

@@ -11,7 +11,6 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     discovered_record_root_host,
     discovery_record_to_jsonable,
-    record_has_service,
 )
 
 _GENERIC_MDNS_MODELS = frozenset({"AirPort", "TimeCapsule", "Time Capsule"})
@@ -42,7 +41,7 @@ def device_candidates_from_records(
     airport_only: bool = True,
 ) -> list[DiscoveredDeviceCandidate]:
     materialized = list(records)
-    source_records = [record for record in materialized if record_has_service(record, AIRPORT_SERVICE)]
+    source_records = [record for record in materialized if _record_has_service(record, AIRPORT_SERVICE)]
     if not airport_only and not source_records:
         source_records = materialized
     candidates = [
@@ -102,6 +101,17 @@ def _candidate_from_record(record: BonjourResolvedService, index: int) -> Discov
         service_type=record.service_type or "",
         fullname=fullname,
         selected_record=record,
+    )
+
+
+def _record_has_service(record: BonjourResolvedService, service: str) -> bool:
+    raw_service = getattr(record, "service_type", "")
+    if isinstance(raw_service, str) and raw_service.startswith(service):
+        return True
+    services = getattr(record, "services", set())
+    return isinstance(services, (set, frozenset, list, tuple)) and any(
+        isinstance(value, str) and value.startswith(service)
+        for value in services
     )
 
 

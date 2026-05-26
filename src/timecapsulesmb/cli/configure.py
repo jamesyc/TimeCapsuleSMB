@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 import getpass
 import uuid
+from collections.abc import Callable, Sequence
 from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    saved_syap_value_for_candidates,
     saved_value_choice,
     valid_existing_config_value,
     validated_value_or_empty,
@@ -17,7 +17,6 @@ from timecapsulesmb.core.config import (
     AppConfig,
     CONFIG_VALIDATORS,
     DEFAULTS,
-    ENV_PATH,
     infer_mdns_device_model_from_airport_syap,
     parse_env_file,
     parse_bool,
@@ -26,29 +25,27 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_tcp_port_state
 from timecapsulesmb.cli.runtime import (
-    add_bonjour_timeout_argument,
     add_config_argument,
     confirm as confirm_prompt,
     ssh_target_link_local_resolution_error,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.core.net import extract_host, is_link_local_ipv4
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
-    RemoteInterfaceCandidatesProbeResult,
     probe_connection_state,
-    probe_remote_interface_candidates_conn,
 )
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     AIRPORT_SERVICE,
-    discover_resolved_records,
+    DEFAULT_BROWSE_TIMEOUT_SEC,
+    BonjourMergedDiscoveryDiagnostics,
+    discover_snapshot_merged_detailed,
     discovered_record_root_host,
 )
-from timecapsulesmb.discovery.devices import DiscoveredDeviceCandidate, device_candidates_from_records
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
@@ -56,9 +53,7 @@ from timecapsulesmb.cli.util import color_cyan, color_red
 
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
-REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
-CONFIGURE_DETAIL_FIELDS = [
-]
+REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect")
 
 
 def non_negative_integer_arg(value: str) -> str:
@@ -90,15 +85,16 @@ def confirm(prompt_text: str, default_no: bool = False) -> bool:
     return confirm_prompt(prompt_text, default=not default_no, eof_default=False)
 
 
-def list_devices(candidates: list[DiscoveredDeviceCandidate]) -> None:
+def list_devices(records: Sequence[BonjourResolvedService]) -> None:
     print("Found devices:")
-    for i, candidate in enumerate(candidates, start=1):
-        pref = candidate.host or "-"
-        ipv4 = ",".join(candidate.ipv4) if candidate.ipv4 else "-"
-        print(f"  {i}. {candidate.name} | host: {pref} | IPv4: {ipv4}")
+    for i, record in enumerate(records, start=1):
+        pref = record.display_host() or "-"
+        ipv4 = ",".join(record.ipv4) if record.ipv4 else "-"
+        ipv6 = ",".join(record.ipv6) if record.ipv6 else "-"
+        print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4} | IPv6: {ipv6}")
 
 
-def choose_device(candidates: list[DiscoveredDeviceCandidate]) -> DiscoveredDeviceCandidate | None:
+def choose_device(records: Sequence[BonjourResolvedService]) -> Optional[BonjourResolvedService]:
     while True:
         try:
             raw = input("Select a device by number (q to skip discovery): ").strip()
@@ -111,40 +107,42 @@ def choose_device(candidates: list[DiscoveredDeviceCandidate]) -> DiscoveredDevi
             print("Please enter a valid number.")
             continue
         idx = int(raw)
-        if not (1 <= idx <= len(candidates)):
+        if not (1 <= idx <= len(records)):
             print("Out of range.")
             continue
-        return candidates[idx - 1]
+        return records[idx - 1]
 
 
-def discover_default_record(existing: dict[str, str], *, timeout: float) -> Optional[BonjourResolvedService]:
+def discover_default_record(
+    existing: dict[str, str],
+    *,
+    on_diagnostics: Callable[[BonjourMergedDiscoveryDiagnostics], None] | None = None,
+) -> Optional[BonjourResolvedService]:
     print("Attempting to discover Time Capsule/Airport Extreme devices on the local network via mDNS...", flush=True)
-    records = discover_resolved_records(AIRPORT_SERVICE, timeout=timeout)
-    candidates = device_candidates_from_records(records, airport_only=False)
-    if not candidates:
+    snapshot, diagnostics = discover_snapshot_merged_detailed(AIRPORT_SERVICE, timeout=DEFAULT_BROWSE_TIMEOUT_SEC)
+    if on_diagnostics is not None:
+        on_diagnostics(diagnostics)
+    records = snapshot.resolved
+    if not records:
         print("No Time Capsule/Airport Extreme devices discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
-    list_devices(candidates)
-    selected = choose_device(candidates)
+    list_devices(records)
+    selected = choose_device(records)
     if selected is None:
         existing_target = valid_existing_config_value(existing, "TC_HOST", "Device SSH target") or DEFAULTS["TC_HOST"]
         print(f"Discovery skipped. Falling back to {existing_target}.\n", flush=True)
         return None
 
-    chosen_host = selected.ssh_host
-    selected_host = (
-        chosen_host.removeprefix("root@")
-        if chosen_host
-        else selected.hostname or "manual SSH target required"
-    )
+    chosen_host = discovered_record_root_host(selected)
+    selected_host = selected.display_host() or "manual SSH target required"
     print(f"Selected: {selected.name} ({selected_host})\n", flush=True)
-    if chosen_host is None and selected.link_local_only:
+    if chosen_host is None and any(is_link_local_ipv4(ip) for ip in selected.ipv4):
         print(
             "Selected device only advertised 169.254.x.x link-local IPv4. "
             "Enter the device's LAN IP or LAN-resolving hostname manually.\n",
             flush=True,
         )
-    return selected.selected_record
+    return selected
 
 
 def exception_summary(exc: BaseException) -> str:
@@ -307,10 +305,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     add_config_argument(parser)
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
-    add_bonjour_timeout_argument(parser)
     args = parser.parse_args(argv)
 
     ensure_install_id()
@@ -340,7 +336,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         args=args,
         configure_id=configure_id,
     ) as command_context:
-        command_context.update_fields(configure_id=configure_id, bonjour_timeout=args.bonjour_timeout)
+        command_context.update_fields(configure_id=configure_id)
         command_context.set_stage("dependency_check")
         missing_module = missing_required_python_module(REQUIRED_PYTHON_MODULES)
         if missing_module is not None:
@@ -371,12 +367,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         values["TC_ANY_PROTOCOL"] = (
             "true" if args.any_protocol or existing_any_protocol else "false"
         )
-        existing_debug_logging = parse_bool(
-            existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
-        )
-        values["TC_DEBUG_LOGGING"] = (
-            "true" if args.debug_logging or existing_debug_logging else "false"
-        )
         existing_ata_idle_seconds = existing_config_value_or_default(
             existing,
             "TC_ATA_IDLE_SECONDS",
@@ -393,7 +383,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         values["TC_ATA_STANDBY"] = args.ata_standby if args.ata_standby is not None else existing_ata_standby
         command_context.set_stage("bonjour_discovery")
         try:
-            discovered_record = discover_default_record(existing, timeout=args.bonjour_timeout)
+            discovered_record = discover_default_record(
+                existing,
+                on_diagnostics=lambda diagnostics: command_context.add_debug_fields(
+                    bonjour_discovery=diagnostics,
+                ),
+            )
         except Exception as exc:
             error_text = exception_summary(exc)
             print(f"Warning: mDNS discovery failed: {error_text}")

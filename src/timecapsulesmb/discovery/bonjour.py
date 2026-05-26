@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal
@@ -31,6 +32,7 @@ MAX_DIAGNOSTIC_OBSERVATIONS = 100
 DNS_RECORD_TYPE_PTR = 12
 MDNS_PORT = 5353
 BonjourIPFamily = Literal["ipv4", "ipv6"]
+SPLIT_FAMILIES: tuple[BonjourIPFamily, ...] = ("ipv4", "ipv6")
 
 
 @dataclass
@@ -60,8 +62,25 @@ class BonjourResolvedService:
         elif not self.service_type and len(self.services) == 1:
             self.service_type = next(iter(self.services))
 
-    def prefer_host(self) -> str:
-        return self.hostname or (self.ipv4[0] if self.ipv4 else (self.ipv6[0] if self.ipv6 else ""))
+    def preferred_ipv4(self) -> str | None:
+        for ip in self.ipv4:
+            if not is_link_local_ipv4(ip):
+                return ip
+        return None
+
+    def preferred_ip(self) -> str | None:
+        return self.preferred_ipv4() or (self.ipv6[0] if self.ipv6 else None)
+
+    def preferred_connection_host(self) -> str:
+        preferred_ip = self.preferred_ip()
+        if preferred_ip:
+            return preferred_ip
+        if self.ipv4:
+            return ""
+        return self.hostname
+
+    def display_host(self) -> str:
+        return self.preferred_connection_host() or self.hostname or (self.ipv4[0] if self.ipv4 else "")
 
 
 @dataclass
@@ -106,8 +125,7 @@ class BonjourDiscoveryDiagnostics:
     resolve_success_count: int
     resolve_error_count: int
     zeroconf_version: str = ""
-    zeroconf_interfaces: str = "All"
-    zeroconf_apple_p2p: bool = False
+    zeroconf_interfaces: str = "system-default"
     instances: list[BonjourServiceInstance] = field(default_factory=list)
     resolved: list[BonjourResolvedService] = field(default_factory=list)
     service_events: list[BonjourServiceEvent] = field(default_factory=list)
@@ -115,7 +133,35 @@ class BonjourDiscoveryDiagnostics:
     ptr_record_error: str | None = None
 
 
-Discovered = BonjourResolvedService
+@dataclass
+class BonjourFamilyDiscoveryAttempt:
+    family: BonjourIPFamily
+    snapshot: BonjourDiscoverySnapshot | None = None
+    diagnostics: BonjourDiscoveryDiagnostics | None = None
+    error: str | None = None
+
+
+@dataclass
+class BonjourMergedDiscoveryDiagnostics:
+    service: str | None
+    service_types: list[str]
+    timeout_sec: float
+    elapsed_sec: float
+    instance_count: int
+    resolved_count: int
+    attempts: list[BonjourFamilyDiscoveryAttempt] = field(default_factory=list)
+
+
+class BonjourDiscoveryError(RuntimeError):
+    def __init__(self, attempts: Sequence[BonjourFamilyDiscoveryAttempt]) -> None:
+        self.attempts = list(attempts)
+        errors = [
+            f"{attempt.family}: {attempt.error}"
+            for attempt in self.attempts
+            if attempt.error
+        ]
+        detail = "; ".join(errors) if errors else "no split-family attempts completed"
+        super().__init__(f"Bonjour discovery failed for all usable address families ({detail})")
 
 
 @dataclass
@@ -131,15 +177,7 @@ class ServiceObservation:
 
 
 def discovered_record_root_host(rec: BonjourResolvedService) -> str | None:
-    chosen_host = ""
-    for ip in rec.ipv4:
-        if not is_link_local_ipv4(ip):
-            chosen_host = ip
-            break
-    if not chosen_host and rec.ipv4:
-        return None
-    if not chosen_host:
-        chosen_host = rec.prefer_host()
+    chosen_host = rec.preferred_connection_host()
     return f"root@{chosen_host}" if chosen_host else None
 
 
@@ -152,6 +190,83 @@ def _bytes_to_ip(addr_bytes: bytes) -> str:
         if len(addr_bytes) == 16:
             return socket.inet_ntop(socket.AF_INET6, addr_bytes)
         return ""
+
+
+def _append_service_info_ip(values: list[str], value: object) -> None:
+    ip = ""
+    if isinstance(value, (bytes, bytearray)):
+        ip = _bytes_to_ip(bytes(value))
+    elif isinstance(value, str):
+        ip = value.strip()
+    if not ip:
+        return
+    try:
+        ip = str(ipaddress.ip_address(ip))
+    except ValueError:
+        if "%" not in ip:
+            return
+        base_ip, scope_id = ip.split("%", 1)
+        if not scope_id:
+            return
+        try:
+            parsed_base_ip = ipaddress.ip_address(base_ip)
+        except ValueError:
+            return
+        if parsed_base_ip.version != 6:
+            return
+        ip = f"{parsed_base_ip}%{scope_id}"
+    if ip not in values:
+        values.append(ip)
+
+
+def _service_info_ip_version_values() -> tuple[Any, Any] | None:
+    try:
+        from zeroconf import IPVersion
+    except Exception:
+        return None
+    return (
+        getattr(IPVersion, "V4Only", None),
+        getattr(IPVersion, "V6Only", None),
+    )
+
+
+def _service_info_addresses_from_method(info: Any, method_name: str) -> list[str]:
+    versions = _service_info_ip_version_values()
+    if versions is None:
+        return []
+    method = getattr(info, "addresses_by_version", None)
+    if method_name != "addresses_by_version":
+        method = getattr(info, method_name, None)
+    if versions is None or not callable(method):
+        return []
+
+    addresses: list[str] = []
+    for version in versions:
+        if version is None:
+            continue
+        try:
+            raw_addresses = method(version)
+        except Exception:
+            continue
+        for raw_address in raw_addresses or []:
+            _append_service_info_ip(addresses, raw_address)
+    return addresses
+
+
+def _service_info_addresses(info: Any) -> list[str]:
+    for method_name in ("parsed_scoped_addresses", "parsed_addresses", "addresses_by_version"):
+        addresses = _service_info_addresses_from_method(info, method_name)
+        if addresses:
+            return addresses
+
+    addresses: list[str] = []
+    try:
+        raw_addresses = list(info.addresses or [])
+    except Exception:
+        raw_addresses = []
+    for raw_address in raw_addresses:
+        _append_service_info_ip(addresses, raw_address)
+    return addresses
 
 
 def _decode_props(props: dict[bytes, bytes]) -> dict[str, str]:
@@ -556,17 +671,9 @@ def resolved_service_from_info(stype: str, info: Any) -> BonjourResolvedService:
     ipv4: list[str] = []
     ipv6: list[str] = []
 
-    try:
-        addrs = list(info.addresses or [])
-    except Exception:
-        addrs = []
-
-    for addr in addrs:
-        ip = _bytes_to_ip(addr)
-        if not ip:
-            continue
+    for ip in _service_info_addresses(info):
         try:
-            ip_obj = ipaddress.ip_address(ip)
+            ip_obj = ipaddress.ip_address(ip.split("%", 1)[0])
             (ipv6 if ip_obj.version == 6 else ipv4).append(ip)
         except Exception:
             continue
@@ -583,48 +690,6 @@ def resolved_service_from_info(stype: str, info: Any) -> BonjourResolvedService:
     )
 
 
-def _ip_text(value: object) -> str | None:
-    if isinstance(value, tuple):
-        value = value[0] if value else ""
-    if not isinstance(value, str):
-        return None
-    try:
-        return str(ipaddress.ip_address(value))
-    except Exception:
-        return None
-
-
-def _adapter_ipv6_addresses_for_ipv4(source_ipv4: str) -> list[str]:
-    try:
-        import ifaddr
-    except Exception:
-        return []
-
-    try:
-        adapters = ifaddr.get_adapters()
-    except Exception:
-        return []
-
-    for adapter in adapters:
-        adapter_has_source_ipv4 = False
-        ipv6_addresses: list[str] = []
-        for adapter_ip in getattr(adapter, "ips", []):
-            ip_text = _ip_text(getattr(adapter_ip, "ip", None))
-            if not ip_text:
-                continue
-            try:
-                ip_obj = ipaddress.ip_address(ip_text)
-            except Exception:
-                continue
-            if ip_obj.version == 4 and ip_text == source_ipv4:
-                adapter_has_source_ipv4 = True
-            elif ip_obj.version == 6 and not ip_obj.is_loopback and ip_text not in ipv6_addresses:
-                ipv6_addresses.append(ip_text)
-        if adapter_has_source_ipv4:
-            return ipv6_addresses
-    return []
-
-
 def _zeroconf_interfaces_for_target(target_ip: str | None, *, family: BonjourIPFamily | None = None) -> list[str] | None:
     if family == "ipv6":
         source_ipv6 = _source_ipv6_for_target(target_ip)
@@ -633,37 +698,32 @@ def _zeroconf_interfaces_for_target(target_ip: str | None, *, family: BonjourIPF
     source_ipv4 = _source_ipv4_for_target(target_ip)
     if not source_ipv4:
         return None
-    if family == "ipv4":
-        return [source_ipv4]
-    return [source_ipv4, *_adapter_ipv6_addresses_for_ipv4(source_ipv4)]
+    return [source_ipv4]
 
 
 def _zeroconf_ip_version(IPVersion: Any, *, family: BonjourIPFamily | None = None) -> tuple[Any, str]:
-    if family == "ipv4":
-        return IPVersion.V4Only, "V4Only"
     if family == "ipv6":
         try:
             return IPVersion.V6Only, "V6Only"
         except AttributeError:
-            return IPVersion.All, "All"
-    try:
-        return IPVersion.All, "All"
-    except AttributeError:
-        return IPVersion.V4Only, "V4Only"
+            raise RuntimeError("Installed zeroconf does not support IPv6-only browsing")
+    # Do not use IPVersion.All here. Current zeroconf can miss IPv4 answers in
+    # that mode on macOS; callers that need dual-stack must run split browses.
+    return IPVersion.V4Only, "V4Only"
 
 
 def _zeroconf_ip_version_name(*, family: BonjourIPFamily | None = None) -> str:
     try:
         from zeroconf import IPVersion
     except Exception:
-        return "All"
+        return "V4Only"
     _ip_version, ip_version_name = _zeroconf_ip_version(IPVersion, family=family)
     return ip_version_name
 
 
 def _format_zeroconf_interfaces(interfaces: Sequence[str] | None) -> str:
     if not interfaces:
-        return "All"
+        return "system-default"
     return ",".join(interfaces)
 
 
@@ -713,6 +773,84 @@ def _sort_instances(instances: list[BonjourServiceInstance]) -> list[BonjourServ
 
 def _sort_records(records: list[BonjourResolvedService]) -> list[BonjourResolvedService]:
     return sorted(records, key=lambda record: (record.service_type or "", record.hostname or "", record.name or ""))
+
+
+def _append_unique(values: list[str], candidates: Sequence[str]) -> None:
+    for candidate in candidates:
+        if candidate and candidate not in values:
+            values.append(candidate)
+
+
+def _merge_snapshots(snapshots: Sequence[BonjourDiscoverySnapshot]) -> BonjourDiscoverySnapshot:
+    instances: dict[tuple[str, str, str], BonjourServiceInstance] = {}
+    records: dict[tuple[str, str, str], BonjourResolvedService] = {}
+
+    for snapshot in snapshots:
+        for instance in snapshot.instances:
+            key = (
+                instance.service_type,
+                instance.fullname or instance.name,
+                instance.name,
+            )
+            instances.setdefault(
+                key,
+                BonjourServiceInstance(
+                    service_type=instance.service_type,
+                    name=instance.name,
+                    fullname=instance.fullname,
+                ),
+            )
+
+        for record in snapshot.resolved:
+            key = (
+                record.service_type,
+                record.name.strip(),
+                _normalize_hostname(record.hostname),
+            )
+            existing = records.get(key)
+            if existing is None:
+                records[key] = BonjourResolvedService(
+                    name=record.name,
+                    hostname=record.hostname.rstrip("."),
+                    service_type=record.service_type,
+                    port=record.port,
+                    ipv4=list(record.ipv4),
+                    ipv6=list(record.ipv6),
+                    services=set(record.services),
+                    properties=dict(record.properties),
+                    fullname=record.fullname,
+                )
+                continue
+
+            if not existing.port and record.port:
+                existing.port = record.port
+            if not existing.fullname and record.fullname:
+                existing.fullname = record.fullname
+            _append_unique(existing.ipv4, record.ipv4)
+            _append_unique(existing.ipv6, record.ipv6)
+            existing.services.update(record.services)
+            existing.properties.update({prop_key: value for prop_key, value in record.properties.items() if value})
+
+    return BonjourDiscoverySnapshot(
+        instances=_sort_instances(list(instances.values())),
+        resolved=_sort_records(list(records.values())),
+    )
+
+
+def _format_attempt_error(exc: BaseException) -> str:
+    message = str(exc)
+    name = type(exc).__name__
+    return f"{name}: {message}" if message else name
+
+
+def _ordered_attempts(
+    attempts_by_family: dict[BonjourIPFamily, BonjourFamilyDiscoveryAttempt],
+) -> list[BonjourFamilyDiscoveryAttempt]:
+    return [
+        attempts_by_family[family]
+        for family in SPLIT_FAMILIES
+        if family in attempts_by_family
+    ]
 
 
 def discover_snapshot_detailed(
@@ -778,7 +916,6 @@ def discover_snapshot_detailed(
         resolve_error_count=collector.resolve_error_count,
         zeroconf_version=_installed_zeroconf_version(),
         zeroconf_interfaces=_format_zeroconf_interfaces(zeroconf_interfaces),
-        zeroconf_apple_p2p=False,
         instances=sorted_instances,
         resolved=sorted_records,
         service_events=service_events,
@@ -788,79 +925,59 @@ def discover_snapshot_detailed(
     return snapshot, diagnostics
 
 
-def discover_snapshot(
+def discover_snapshot_merged_detailed(
     service: str | None = None,
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
-    *,
-    target_ip: str | None = None,
-    family: BonjourIPFamily | None = None,
-    interfaces: Sequence[str] | None = None,
-) -> BonjourDiscoverySnapshot:
-    snapshot, _diagnostics = discover_snapshot_detailed(
-        service=service,
-        timeout=timeout,
-        target_ip=target_ip,
-        family=family,
-        interfaces=interfaces,
-    )
-    return snapshot
+) -> tuple[BonjourDiscoverySnapshot, BonjourMergedDiscoveryDiagnostics]:
+    service_types = _matching_service_types(service)
+    start = time.monotonic()
+    attempts_by_family: dict[BonjourIPFamily, BonjourFamilyDiscoveryAttempt] = {}
 
+    with ThreadPoolExecutor(max_workers=len(SPLIT_FAMILIES)) as executor:
+        # Run one browse per family instead of IPVersion.All; All has proven
+        # unreliable for returning IPv4 records in this environment.
+        futures = {
+            executor.submit(
+                discover_snapshot_detailed,
+                service,
+                timeout,
+                family=family,
+            ): family
+            for family in SPLIT_FAMILIES
+        }
+        for future in as_completed(futures):
+            family = futures[future]
+            try:
+                snapshot, diagnostics = future.result()
+            except Exception as exc:
+                attempts_by_family[family] = BonjourFamilyDiscoveryAttempt(
+                    family=family,
+                    error=_format_attempt_error(exc),
+                )
+                continue
 
-def _records_with_unresolved_instances(snapshot: BonjourDiscoverySnapshot) -> list[BonjourResolvedService]:
-    records = list(snapshot.resolved)
-    resolved_keys = {(record.service_type, record.fullname) for record in records if record.fullname}
-    for instance in snapshot.instances:
-        if (instance.service_type, instance.fullname) in resolved_keys:
-            continue
-        records.append(
-            BonjourResolvedService(
-                name=instance.name,
-                hostname="",
-                service_type=instance.service_type,
-                fullname=instance.fullname,
+            attempts_by_family[family] = BonjourFamilyDiscoveryAttempt(
+                family=family,
+                snapshot=snapshot,
+                diagnostics=diagnostics,
             )
-        )
-    return _sort_records(records)
 
+    attempts = _ordered_attempts(attempts_by_family)
+    snapshots = [attempt.snapshot for attempt in attempts if attempt.snapshot is not None]
+    merged_snapshot = _merge_snapshots(snapshots)
+    if not merged_snapshot.instances and not merged_snapshot.resolved and any(attempt.error for attempt in attempts):
+        raise BonjourDiscoveryError(attempts)
 
-def discover_resolved_records(
-    service: str | None = None,
-    timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
-    *,
-    target_ip: str | None = None,
-    family: BonjourIPFamily | None = None,
-    interfaces: Sequence[str] | None = None,
-) -> list[BonjourResolvedService]:
-    return discover_snapshot(
+    diagnostics = BonjourMergedDiscoveryDiagnostics(
         service=service,
-        timeout=timeout,
-        target_ip=target_ip,
-        family=family,
-        interfaces=interfaces,
-    ).resolved
-
-
-def discover(
-    timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
-    *,
-    target_ip: str | None = None,
-    family: BonjourIPFamily | None = None,
-    interfaces: Sequence[str] | None = None,
-) -> list[BonjourResolvedService]:
-    return _records_with_unresolved_instances(
-        discover_snapshot(timeout=timeout, target_ip=target_ip, family=family, interfaces=interfaces)
+        service_types=list(service_types),
+        timeout_sec=timeout,
+        elapsed_sec=round(time.monotonic() - start, 3),
+        instance_count=len(merged_snapshot.instances),
+        resolved_count=len(merged_snapshot.resolved),
+        attempts=attempts,
     )
-
-
-def record_has_service(record: BonjourResolvedService, service: str) -> bool:
-    raw_service = getattr(record, "service_type", "")
-    if isinstance(raw_service, str) and raw_service.startswith(service):
-        return True
-    services = getattr(record, "services", set())
-    return isinstance(services, (set, frozenset, list, tuple)) and any(
-        isinstance(value, str) and value.startswith(service)
-        for value in services
-    )
+    return merged_snapshot, diagnostics
 
 
 def discovery_record_to_jsonable(record: BonjourResolvedService) -> dict[str, object]:

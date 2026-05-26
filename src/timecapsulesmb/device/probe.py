@@ -490,14 +490,6 @@ class RemoteInterfaceCandidate:
 
 
 @dataclass(frozen=True)
-class RemoteInterfaceCandidatesProbeResult:
-    candidates: tuple[RemoteInterfaceCandidate, ...]
-    preferred_iface: str | None
-    detail: str
-    target_ip_matches: tuple[RemoteInterfaceCandidate, ...] = ()
-
-
-@dataclass(frozen=True)
 class ManagedSmbdProbeResult:
     ready: bool
     detail: str
@@ -1066,42 +1058,6 @@ def runtime_ipv4_cidr_from_ifconfig(output: str, hint_ip: str = "") -> str | Non
         ip_addr, prefix = selected
         return f"{ip_addr}/{prefix}"
     return None
-
-
-def probe_remote_interface_candidates_conn(
-    connection: SshConnection,
-    *,
-    target_ips: Iterable[str] = (),
-) -> RemoteInterfaceCandidatesProbeResult:
-    proc = run_ssh(connection, "/sbin/ifconfig -a", check=False, timeout=30)
-    if proc.returncode != 0:
-        return RemoteInterfaceCandidatesProbeResult(
-            candidates=(),
-            preferred_iface=None,
-            detail=f"ifconfig -a failed: rc={proc.returncode}",
-        )
-    candidates = _parse_ifconfig_candidates(proc.stdout)
-    target_ip_tuple = tuple(value for value in target_ips if value)
-    target_ip_set = set(target_ip_tuple)
-    target_ip_matches = tuple(
-        candidate
-        for candidate in candidates
-        if not candidate.loopback and target_ip_set.intersection(candidate.ipv4_addrs)
-    )
-    preferred_iface = preferred_interface_name(candidates, target_ips=target_ip_tuple)
-    if preferred_iface is None:
-        return RemoteInterfaceCandidatesProbeResult(
-            candidates=candidates,
-            preferred_iface=None,
-            detail="no non-loopback IPv4 interface candidates found",
-            target_ip_matches=target_ip_matches,
-        )
-    return RemoteInterfaceCandidatesProbeResult(
-        candidates=candidates,
-        preferred_iface=preferred_iface,
-        detail=f"preferred interface {preferred_iface}",
-        target_ip_matches=target_ip_matches,
-    )
 
 
 def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:

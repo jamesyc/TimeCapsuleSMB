@@ -28,7 +28,7 @@ from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
-from timecapsulesmb.discovery.bonjour import Discovered
+from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 from timecapsulesmb.telemetry.debug import render_debug_mapping
 from timecapsulesmb.transport.ssh import SshConnection, SshError
@@ -589,7 +589,7 @@ class TelemetryTests(unittest.TestCase):
                         with self.assertRaises(SystemExit):
                             with CommandContext(client, "configure", "configure_started", "configure_finished") as command:
                                 command.add_debug_fields(
-                                    selected_bonjour_record=Discovered(
+                                    selected_bonjour_record=BonjourResolvedService(
                                         name="AirPort Time Capsule",
                                         hostname="AirPort-Time-Capsule.local",
                                         service_type="_airport._tcp.local.",

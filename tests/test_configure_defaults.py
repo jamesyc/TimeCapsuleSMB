@@ -12,7 +12,6 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.configure_defaults import (  # noqa: E402
     ConfigureValueChoice,
-    saved_syap_value_for_candidates,
     saved_value_choice,
 )
 from timecapsulesmb.core.net import ipv4_literal  # noqa: E402
@@ -31,12 +30,6 @@ class ConfigureDefaultsTests(unittest.TestCase):
             saved_value_choice({"TC_AIRPORT_SYAP": "119"}, "TC_AIRPORT_SYAP", "Airport Utility syAP code"),
             ConfigureValueChoice("119", "saved"),
         )
-
-    def test_saved_syap_must_match_detected_candidates(self) -> None:
-        choice = ConfigureValueChoice("119", "saved")
-
-        self.assertEqual(saved_syap_value_for_candidates(choice, ("119", "120")), "119")
-        self.assertIsNone(saved_syap_value_for_candidates(choice, ("113",)))
 
 if __name__ == "__main__":
     unittest.main()

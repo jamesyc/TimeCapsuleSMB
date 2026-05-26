@@ -55,6 +55,7 @@ from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
     DEFAULTS,
+    ENV_PATH,
     MANAGED_PAYLOAD_DIR_NAME,
     airport_exact_display_name_from_config,
     airport_family_display_name_from_config,
@@ -71,8 +72,6 @@ from timecapsulesmb.device.probe import (
     RUNTIME_ACTIVATION_STATE_NOT_READY,
     RUNTIME_ACTIVATION_STATE_READY,
     RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
-    RemoteInterfaceCandidate,
-    RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
     RuntimeActivationProbeResult,
 )
@@ -108,7 +107,12 @@ from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.flash_payloads import find_apple_firmware_match
 from timecapsulesmb.flash import PATCHED_LOGIN_SCRIPT, STOCK_LOGIN_NETBSD4_DUMMY, sha256_hex
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
-from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
+from timecapsulesmb.discovery.bonjour import (
+    BonjourDiscoverySnapshot,
+    BonjourMergedDiscoveryDiagnostics,
+    BonjourServiceInstance,
+    BonjourResolvedService,
+)
 from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
@@ -363,24 +367,6 @@ class CliTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=None))
-        self._exit_stack.enter_context(
-            mock.patch(
-                "timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn",
-                return_value=RemoteInterfaceCandidatesProbeResult(
-                    candidates=(
-                        RemoteInterfaceCandidate(
-                            name="bridge0",
-                            ipv4_addrs=("192.168.1.217",),
-                            up=True,
-                            active=True,
-                            loopback=False,
-                        ),
-                    ),
-                    preferred_iface="bridge0",
-                    detail="preferred interface bridge0",
-                ),
-            )
-        )
         def fake_configure_acp_probe(_connection, command_context, **_kwargs):
             command_context.add_debug_fields(
                 configure_acp_enable_attempted=True,
@@ -727,13 +713,12 @@ class CliTests(unittest.TestCase):
         argv: list[str] | None = None,
         *,
         existing_values: dict[str, str] | None = None,
-        discovered_records: list[Discovered] | None = None,
+        discovered_records: list[BonjourResolvedService] | None = None,
         discovery_side_effect=None,
         discovered_root_host: str | None = None,
         input_side_effect=None,
         prompt_side_effect=None,
         probe_state: ProbedDeviceState | None = None,
-        interface_probe: RemoteInterfaceCandidatesProbeResult | None = None,
         confirm: bool | None = None,
         write_side_effect=None,
         command_context=None,
@@ -757,12 +742,25 @@ class CliTests(unittest.TestCase):
                 mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=dict(existing_values or {}))
             )
             if discovery_side_effect is not None:
-                mocks.discover_resolved_records = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", side_effect=discovery_side_effect)
+                mocks.discover_snapshot_merged_detailed = stack.enter_context(
+                    mock.patch("timecapsulesmb.cli.configure.discover_snapshot_merged_detailed", side_effect=discovery_side_effect)
                 )
             else:
-                mocks.discover_resolved_records = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=list(discovered_records or []))
+                discovery_records = list(discovered_records or [])
+                discovery_snapshot = BonjourDiscoverySnapshot(instances=[], resolved=discovery_records)
+                discovery_diagnostics = BonjourMergedDiscoveryDiagnostics(
+                    service="_airport",
+                    service_types=["_airport._tcp.local."],
+                    timeout_sec=6.0,
+                    elapsed_sec=0.0,
+                    instance_count=0,
+                    resolved_count=len(discovery_records),
+                )
+                mocks.discover_snapshot_merged_detailed = stack.enter_context(
+                    mock.patch(
+                        "timecapsulesmb.cli.configure.discover_snapshot_merged_detailed",
+                        return_value=(discovery_snapshot, discovery_diagnostics),
+                    )
                 )
             if discovered_root_host is not None:
                 mocks.discovered_record_root_host = stack.enter_context(
@@ -775,10 +773,6 @@ class CliTests(unittest.TestCase):
             if probe_state is not None:
                 mocks.probe_connection_state = stack.enter_context(
                     mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=probe_state)
-                )
-            if interface_probe is not None:
-                mocks.probe_remote_interface_candidates_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe)
                 )
             if confirm is not None:
                 mocks.confirm = stack.enter_context(mock.patch("timecapsulesmb.cli.configure.confirm", return_value=confirm))
@@ -1524,7 +1518,6 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
-        self.assertEqual(fake_values["TC_DEBUG_LOGGING"], "false")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
@@ -1537,7 +1530,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(command_context.finish.call_args.kwargs["device_model"], "TimeCapsule8,119")
         text = result.text
         self.assertIn("This writes a local .env configuration file", text)
-        self.assertIn(f"Review the .env file configuration: wrote {configure.ENV_PATH}", text)
+        self.assertIn(f"Review the .env file configuration: wrote {ENV_PATH}", text)
         self.assertNotIn("set-ssh", text)
         self.assertIn("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:", text)
         self.assertIn("    .venv/bin/tcapsule deploy", text)
@@ -1605,17 +1598,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "true")
 
-    def test_configure_hidden_debug_logging_arg_writes_true(self) -> None:
-        result = self.run_configure_cli(
-            ["--debug-logging"],
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "true")
-
     def test_configure_hidden_ata_args_write_drive_settings(self) -> None:
         result = self.run_configure_cli(
             ["--ata-idle-seconds", "0", "--ata-standby", "0"],
@@ -1627,29 +1609,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_ATA_IDLE_SECONDS"], "0")
         self.assertEqual(result.values["TC_ATA_STANDBY"], "0")
-
-    def test_configure_bonjour_timeout_reaches_discovery(self) -> None:
-        result = self.run_configure_cli(
-            ["--bonjour-timeout", "1.25"],
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        result.mocks.discover_resolved_records.assert_called_once()
-        self.assertEqual(result.mocks.discover_resolved_records.call_args.kwargs["timeout"], 1.25)
-
-    def test_configure_preserves_existing_debug_logging_when_arg_is_omitted(self) -> None:
-        result = self.run_configure_cli(
-            existing_values={"TC_DEBUG_LOGGING": "true"},
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "true")
 
     def test_configure_preserves_existing_ata_settings(self) -> None:
         result = self.run_configure_cli(
@@ -1699,18 +1658,9 @@ class CliTests(unittest.TestCase):
                 raise AssertionError("mDNS device model should be derived from the final syAP")
             return default
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),
-            interface_probe=interface_probe,
         )
 
         self.assertEqual(result.rc, 0)
@@ -1718,7 +1668,6 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "false")
-        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "false")
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         prompt_values = iter([
@@ -1786,7 +1735,16 @@ class CliTests(unittest.TestCase):
             env_path = Path(tmp) / ".env"
             env_path.write_text("TC_HOST=root@10.0.0.2\n")
             with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={"TC_HOST": "root@10.0.0.2"}):
-                with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
+                empty_snapshot = BonjourDiscoverySnapshot(instances=[], resolved=[])
+                empty_diagnostics = BonjourMergedDiscoveryDiagnostics(
+                    service="_airport",
+                    service_types=["_airport._tcp.local."],
+                    timeout_sec=6.0,
+                    elapsed_sec=0.0,
+                    instance_count=0,
+                    resolved_count=0,
+                )
+                with mock.patch("timecapsulesmb.cli.configure.discover_snapshot_merged_detailed", return_value=(empty_snapshot, empty_diagnostics)):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=KeyboardInterrupt):
                         with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_config"):
                             with self.assertRaises(KeyboardInterrupt):
@@ -1863,7 +1821,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
                 with mock.patch(
-                    "timecapsulesmb.cli.configure.discover_resolved_records",
+                    "timecapsulesmb.cli.configure.discover_snapshot_merged_detailed",
                     side_effect=KeyboardInterrupt,
                 ):
                     with self.assertRaises(KeyboardInterrupt):
@@ -1993,7 +1951,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("selected_net_iface=", error)
 
     def test_configure_uses_discovered_host_when_available(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule",
             hostname="capsule.local",
             service_type="_airport._tcp.local.",
@@ -2082,19 +2040,9 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=(), up=True, active=False, loopback=False),
-            ),
-            preferred_iface="bcmeth1",
-            detail="preferred interface bcmeth1",
-        )
-
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
@@ -2106,7 +2054,7 @@ class CliTests(unittest.TestCase):
     @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_discovered_ip_for_interface_default_when_host_is_name(self) -> None:
         seen_defaults = {}
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["10.0.1.1"],
@@ -2131,22 +2079,12 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             discovered_records=[record],
             discovered_root_host="root@AirPort-Time-Capsule.local",
             input_side_effect=["1"],
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
@@ -2176,20 +2114,10 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             existing_values=existing,
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
@@ -2219,20 +2147,10 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             existing_values=existing,
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
@@ -2244,7 +2162,7 @@ class CliTests(unittest.TestCase):
     @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_private_discovered_ip_beats_loopback_ssh_target(self) -> None:
         seen_defaults = {}
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.217"],
@@ -2272,22 +2190,12 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("169.254.44.9",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             discovered_records=[record],
             discovered_root_host="root@AirPort-Time-Capsule.local",
             input_side_effect=["1"],
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
@@ -2316,19 +2224,9 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("169.254.44.9",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
@@ -2356,18 +2254,9 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
@@ -2392,20 +2281,11 @@ class CliTests(unittest.TestCase):
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
-
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
 
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
             extra_patches={"timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(return_value=addrinfo)},
         )
         self.assertEqual(result.rc, 0)
@@ -2434,19 +2314,9 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
@@ -2459,7 +2329,7 @@ class CliTests(unittest.TestCase):
     @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_ssh_target_ip_before_discovered_ip_for_interface_default(self) -> None:
         seen_defaults = {}
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.217"],
@@ -2487,22 +2357,12 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             discovered_records=[record],
             discovered_root_host="root@AirPort-Time-Capsule.local",
             input_side_effect=["1"],
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
@@ -2525,25 +2385,9 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="lo0", ipv4_addrs=("127.0.0.1",), up=True, active=True, loopback=True),
-                RemoteInterfaceCandidate(
-                    name="bridge0",
-                    ipv4_addrs=("0.0.0.0", "169.254.44.9"),
-                    up=True,
-                    active=True,
-                    loopback=False,
-                ),
-            ),
-            preferred_iface=None,
-            detail="no non-loopback IPv4 interface candidates found",
-        )
-
         result = self.run_configure_cli(
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 1)
         self.assertNotIn("Network interface on the device", seen_defaults)
@@ -2552,7 +2396,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("169.254.x.x self-assigned addresses are only suitable for temporary SSH recovery", result.text)
 
     def test_configure_skipped_mdns_netbsd6_little_autofills_syap_and_model(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.72"],
@@ -2610,7 +2454,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
     def test_configure_skipped_mdns_netbsd6_big_fails_fast(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.72"],
@@ -2636,7 +2480,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("Using probed TC_AIRPORT_SYAP", result.text)
 
     def test_configure_skipped_mdns_netbsd6_unknown_fails_fast(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.72"],
@@ -2662,7 +2506,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("Using probed TC_AIRPORT_SYAP", result.text)
 
     def test_configure_skipped_mdns_netbsd_other_fails_fast(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.72"],
@@ -2688,7 +2532,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("Using probed TC_AIRPORT_SYAP", result.text)
 
     def test_configure_skipped_mdns_netbsd4le_shows_syap_table_and_restricts_candidates(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.72"],
@@ -2728,7 +2572,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_probed_netbsd4be_shows_syap_table_and_restricts_candidates(self) -> None:
         syap_defaults: list[str] = []
-        record = Discovered(
+        record = BonjourResolvedService(
             name="AirPort Time Capsule",
             hostname="AirPort-Time-Capsule.local",
             ipv4=["192.168.1.72"],
@@ -2820,7 +2664,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule6,113", result.text)
 
     def test_configure_uses_discovered_airport_syap_without_prompting(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -2858,7 +2702,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_discovered_syap_beats_invalid_existing_syap(self) -> None:
         seen_labels: list[str] = []
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -2897,7 +2741,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_discovered_missing_syap_uses_probed_syap_after_acp(self) -> None:
         seen_defaults = {}
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -2939,7 +2783,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_selected_smb_record_without_airport_syap_uses_probe_before_saved_syap(self) -> None:
         seen_labels: list[str] = []
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -2991,19 +2835,10 @@ class CliTests(unittest.TestCase):
                 raise AssertionError("mDNS device model should be derived from the final syAP")
             return default
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             existing_values={"TC_AIRPORT_SYAP": "113"},
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),
-            interface_probe=interface_probe,
         )
 
         self.assertEqual(result.rc, 0)
@@ -3015,7 +2850,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_discovered_invalid_syap_uses_probed_syap_after_acp(self) -> None:
         seen_defaults = {}
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -3058,7 +2893,7 @@ class CliTests(unittest.TestCase):
     def test_configure_discovered_invalid_syap_reprompts_until_valid_when_existing_syap_invalid(self) -> None:
         syap_defaults: list[str] = []
         syap_attempts = iter(["999", "113"])
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -3101,7 +2936,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("The configured syAP is invalid.", result.text)
 
     def test_configure_can_skip_single_discovered_device(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -3141,7 +2976,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_does_not_default_to_discovered_link_local_ipv4(self) -> None:
         seen_defaults = {}
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["169.254.44.9"],
@@ -3167,20 +3002,11 @@ class CliTests(unittest.TestCase):
                 raise AssertionError(f"{label} should be auto-filled")
             return next(prompt_values)
 
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
         result = self.run_configure_cli(
             discovered_records=[record],
             input_side_effect=["1"],
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Device SSH target"], DEFAULTS["TC_HOST"])
@@ -3188,8 +3014,40 @@ class CliTests(unittest.TestCase):
         self.assertIn("Selected device only advertised 169.254.x.x link-local IPv4", result.text)
         self.assertNotIn("host: 169.254.44.9", result.text)
 
+    def test_configure_defaults_to_ipv6_when_discovery_has_no_routable_ipv4(self) -> None:
+        seen_defaults = {}
+        ipv6 = "fdbb:5737:6e53:9bf7:82ea:96ff:fee6:5868"
+        record = BonjourResolvedService(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["169.254.44.9"],
+            ipv6=[ipv6],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Device root password":
+                return "rootpw"
+            return default
+
+        result = self.run_configure_cli(
+            discovered_records=[record],
+            input_side_effect=["1"],
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(seen_defaults["Device SSH target"], f"root@{ipv6}")
+        self.assertEqual(result.values["TC_HOST"], f"root@{ipv6}")
+        self.assertIn(f"host: {ipv6}", result.text)
+        self.assertIn(f"IPv6: {ipv6}", result.text)
+        self.assertNotIn("Selected device only advertised 169.254.x.x link-local IPv4", result.text)
+
     def test_configure_ctrl_c_during_discovery_selection_cancels(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
             ipv4=["192.168.1.217"],
@@ -8228,7 +8086,7 @@ class CliTests(unittest.TestCase):
 
     def test_discover_json_outputs_records(self) -> None:
         output = io.StringIO()
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule",
             hostname="capsule.local",
             ipv4=["10.0.0.2"],
@@ -8242,8 +8100,16 @@ class CliTests(unittest.TestCase):
             ],
             resolved=[record],
         )
+        diagnostics = BonjourMergedDiscoveryDiagnostics(
+            service=None,
+            service_types=[],
+            timeout_sec=6.0,
+            elapsed_sec=0.0,
+            instance_count=len(snapshot.instances),
+            resolved_count=len(snapshot.resolved),
+        )
         with mock.patch("timecapsulesmb.cli.discover.ensure_install_id"):
-            with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
+            with mock.patch("timecapsulesmb.cli.discover.discover_snapshot_merged_detailed", return_value=(snapshot, diagnostics)):
                 with redirect_stdout(output):
                     rc = discover.main(["--json"])
         self.assertEqual(rc, 0)
