@@ -13,8 +13,14 @@ final class BundleLayoutTests: XCTestCase {
                 .pythonRuntimeMissing,
                 .pythonExecutableMissing,
                 .distributionRootMissing,
+                .artifactManifestMissing,
+                .artifactManifestInvalid,
                 .distributionArtifactsMissing,
                 .toolsDirectoryMissing,
+                .applicationSupportUnavailable,
+                .stateDirectoryUnavailable,
+                .unsupportedVersion,
+                .versionMetadataUnavailable,
                 .installValidationFailed,
                 .helperLaunchFailed,
                 .contractDecodeFailed,
@@ -61,6 +67,46 @@ final class BundleLayoutTests: XCTestCase {
         XCTAssertTrue(issues.contains(where: { $0.code == .distributionArtifactsMissing && $0.severity == .error }))
     }
 
+    func testMissingArtifactManifestIsBlockingIssue() throws {
+        let layout = try makeLayout(createArtifactManifest: false)
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .artifactManifestMissing && $0.severity == .error }))
+    }
+
+    func testInvalidArtifactManifestIsBlockingIssue() throws {
+        let layout = try makeLayout(artifactManifestContents: "{")
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .artifactManifestInvalid && $0.severity == .error }))
+    }
+
+    func testUnsafeArtifactManifestPathIsBlockingIssue() throws {
+        let layout = try makeLayout(artifactManifestContents: """
+        {
+          "artifacts": {
+            "one": {
+              "path": "../outside"
+            }
+          }
+        }
+        """)
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .artifactManifestInvalid && $0.severity == .error }))
+    }
+
+    func testManifestMissingArtifactIsBlockingIssue() throws {
+        let layout = try makeLayout(createManifestArtifact: false)
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .distributionArtifactsMissing && $0.severity == .error }))
+    }
+
     func testMissingPythonRuntimeIsBlockingIssue() throws {
         let layout = try makeLayout(createPythonRuntime: false)
 
@@ -85,23 +131,40 @@ final class BundleLayoutTests: XCTestCase {
         XCTAssertTrue(issues.contains(where: { $0.code == .toolsDirectoryMissing && $0.severity == .warning }))
     }
 
+    func testApplicationSupportPathMustBeWritableDirectory() throws {
+        let temp = try TemporaryDirectory()
+        let appSupportFile = temp.url.appendingPathComponent("Application Support")
+        try "not a directory".write(to: appSupportFile, atomically: true, encoding: .utf8)
+        let layout = try makeLayout(applicationSupportURL: appSupportFile)
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .applicationSupportUnavailable && $0.severity == .error }))
+    }
+
     private func makeLayout(
         createHelper: Bool = true,
         helperPermissions: Int = 0o755,
         createDistribution: Bool = true,
         createDistributionBin: Bool = true,
+        createArtifactManifest: Bool = true,
+        artifactManifestContents: String? = nil,
+        createManifestArtifact: Bool = true,
         createPythonRuntime: Bool = true,
         createPythonExecutable: Bool = true,
-        createTools: Bool = true
+        createTools: Bool = true,
+        applicationSupportURL: URL? = nil
     ) throws -> BundleLayout {
         let temp = try TemporaryDirectory()
         let app = temp.url.appendingPathComponent("TimeCapsuleSMB.app", isDirectory: true)
         let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
         let helpers = app.appendingPathComponent("Contents/Helpers", isDirectory: true)
-        let appSupport = temp.url.appendingPathComponent("Application Support", isDirectory: true)
+        let appSupport = applicationSupportURL ?? temp.url.appendingPathComponent("Application Support", isDirectory: true)
         try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: helpers, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        if applicationSupportURL == nil {
+            try FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        }
 
         let helper = helpers.appendingPathComponent("tcapsule")
         if createHelper {
@@ -112,9 +175,30 @@ final class BundleLayoutTests: XCTestCase {
             let distribution = resources.appendingPathComponent("Distribution", isDirectory: true)
             try FileManager.default.createDirectory(at: distribution, withIntermediateDirectories: true)
             if createDistributionBin {
-                try FileManager.default.createDirectory(
-                    at: distribution.appendingPathComponent("bin", isDirectory: true),
-                    withIntermediateDirectories: true
+                let artifactDirectory = distribution.appendingPathComponent("bin/payloads", isDirectory: true)
+                try FileManager.default.createDirectory(at: artifactDirectory, withIntermediateDirectories: true)
+                if createManifestArtifact {
+                    try "payload".write(
+                        to: artifactDirectory.appendingPathComponent("one"),
+                        atomically: true,
+                        encoding: .utf8
+                    )
+                }
+            }
+            if createArtifactManifest {
+                let manifest = artifactManifestContents ?? """
+                {
+                  "artifacts": {
+                    "one": {
+                      "path": "bin/payloads/one"
+                    }
+                  }
+                }
+                """
+                try manifest.write(
+                    to: distribution.appendingPathComponent("artifact-manifest.json"),
+                    atomically: true,
+                    encoding: .utf8
                 )
             }
         }

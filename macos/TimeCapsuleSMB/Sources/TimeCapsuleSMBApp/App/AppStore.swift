@@ -175,7 +175,9 @@ final class AppStore: ObservableObject {
         if previousSettings.telemetryEnabled != settings.telemetryEnabled {
             syncTelemetryPreference(settings.telemetryEnabled)
         }
-        if previousSettings.helperPathOverride != settings.helperPathOverride {
+        if previousSettings.helperPathOverride != settings.helperPathOverride
+            || readinessVersionCheck(for: previousSettings) != readinessVersionCheck(for: settings)
+        {
             appReadinessStore.start()
         }
     }
@@ -225,6 +227,29 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func diagnosticsExportContext(includeBackendEvents: Bool = true) -> DiagnosticsExportContext {
+        DiagnosticsExportContext(
+            generatedAt: Date(),
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
+            appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "development",
+            applicationSupportPath: appSettingsStore.settingsURL.deletingLastPathComponent().path,
+            helperPath: backend.helperPath,
+            appSettings: appSettingsStore.settings,
+            readinessState: appReadinessStore.state.kind,
+            readinessVersionPayload: appReadinessStore.versionCheckPayload,
+            capabilities: appReadinessStore.capabilities,
+            validation: appReadinessStore.validation,
+            runtimeIssues: appReadinessStore.issues,
+            updateState: appUpdateStore.state,
+            updatePayload: appUpdateStore.payload,
+            updateError: appUpdateStore.error,
+            selectedProfile: selectedProfile,
+            activeOperations: operationCoordinator.activeOperations,
+            pendingConfirmation: operationCoordinator.pendingConfirmation,
+            events: includeBackendEvents ? operationCoordinator.allLanes.flatMap { $0.backend.events } : []
+        )
+    }
+
     private func effectivePasswordState(for profile: DeviceProfile) -> DevicePasswordState {
         if profile.passwordState == .invalid {
             return .invalid
@@ -236,7 +261,12 @@ final class AppStore: ObservableObject {
         if backend.helperPath != settings.helperPathOverride {
             backend.helperPath = settings.helperPathOverride
         }
+        appReadinessStore.applyVersionCheck(readinessVersionCheck(for: settings))
         discoveryMonitor.applyAppSettings(settings)
+    }
+
+    private func readinessVersionCheck(for settings: AppSettings) -> AppReadinessVersionCheck {
+        AppReadinessVersionCheck(url: settings.versionCheckURL)
     }
 
     private func syncTelemetryPreference(_ enabled: Bool) {

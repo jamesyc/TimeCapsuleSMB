@@ -6,6 +6,7 @@ from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.configure import configure_operation
 from timecapsulesmb.app.ops.deploy import deploy_operation
 from timecapsulesmb.app.ops.doctor import doctor_operation
+from timecapsulesmb.app.ops.flash import flash_operation
 from timecapsulesmb.app.ops.maintenance import (
     activate_operation,
     fsck_operation,
@@ -31,6 +32,7 @@ OPERATIONS: dict[str, Callable[[dict[str, object], EventSink], OperationResult]]
     "deploy": deploy_operation,
     "discover": discover_operation,
     "doctor": doctor_operation,
+    "flash": flash_operation,
     "fsck": fsck_operation,
     "paths": paths_operation,
     "repair-xattrs": repair_xattrs_operation,
@@ -47,6 +49,7 @@ TELEMETRY_OPERATIONS = frozenset({
     "configure",
     "deploy",
     "doctor",
+    "flash",
     "fsck",
     "repair-xattrs",
     "uninstall",

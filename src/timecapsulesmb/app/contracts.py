@@ -302,6 +302,117 @@ def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema(payload)
 
 
+def flash_backup_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    banks = raw.get("banks")
+    bank_count = len(banks) if isinstance(banks, list) else 0
+    return _with_schema({
+        **raw,
+        "counts": {"banks": bank_count},
+        "summary": f"flash backup saved to {raw.get('backup_dir')}.",
+    })
+
+
+def _flash_plan_dict(raw: Mapping[str, object]) -> dict[str, object]:
+    plan = raw.get("flash_plan")
+    return plan if isinstance(plan, dict) else {}
+
+
+def _flash_plan_child(plan: Mapping[str, object], key: str) -> dict[str, object] | None:
+    value = plan.get(key)
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _firmware_payload_path(raw: Mapping[str, object], plan: Mapping[str, object]) -> str | None:
+    target_bank = plan.get("target_bank")
+    mode = plan.get("mode")
+    if not isinstance(target_bank, str) or not isinstance(mode, str):
+        return None
+    files = raw.get("files")
+    if not isinstance(files, dict):
+        return None
+    value = files.get(f"{target_bank}_{mode}_basebinary_payload")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _apple_firmware_summary(mode: str, match: Mapping[str, object] | None, payload: Mapping[str, object] | None) -> str | None:
+    if mode == "check_apple":
+        version = None if match is None else match.get("template_version")
+        version_text = f" {version}" if isinstance(version, str) and version.strip() else ""
+        if match is not None and match.get("matched") is True:
+            return f"Active firmware bank matches Apple stock firmware{version_text}."
+        return f"Active firmware bank does not match Apple stock firmware{version_text}."
+    if mode == "download_only":
+        version = None if payload is None else payload.get("template_version")
+        product = None if payload is None else payload.get("template_product_id")
+        detail_parts = []
+        if isinstance(version, str) and version.strip():
+            detail_parts.append(f"version {version}")
+        if isinstance(product, str) and product.strip():
+            detail_parts.append(f"product {product}")
+        detail = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        return f"Apple restore firmware validated{detail}."
+    return None
+
+
+def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    plan = _flash_plan_dict(raw)
+    mode = "unknown"
+    write_requested = False
+    already_satisfied = False
+    if plan:
+        mode = str(plan.get("mode") or mode)
+        write_requested = bool(plan.get("write_requested"))
+        already_satisfied = bool(plan.get("already_satisfied"))
+    apple_firmware_match = _flash_plan_child(plan, "apple_match")
+    firmware_payload = _flash_plan_child(plan, "payload")
+    firmware_payload_path = _firmware_payload_path(raw, plan)
+    apple_summary = _apple_firmware_summary(mode, apple_firmware_match, firmware_payload)
+    if apple_summary is not None:
+        summary = apple_summary
+    elif already_satisfied:
+        summary = "flash plan is already satisfied; no write is needed."
+    elif write_requested:
+        summary = f"flash {mode} write plan generated."
+    else:
+        summary = f"flash {mode} plan generated."
+    return _with_schema({
+        **raw,
+        "mode": mode,
+        "write_requested": write_requested,
+        "already_satisfied": already_satisfied,
+        "apple_firmware_match": apple_firmware_match,
+        "firmware_payload": firmware_payload,
+        "firmware_payload_path": firmware_payload_path,
+        "summary": summary,
+    })
+
+
+def flash_write_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    outcome = raw.get("write_outcome")
+    status = "unknown"
+    mode = "unknown"
+    write_validated = False
+    if isinstance(outcome, dict):
+        status = str(outcome.get("status") or status)
+        mode = str(outcome.get("mode") or mode)
+        write_validated = bool(outcome.get("write_validated"))
+    if status == "not_needed":
+        summary = "flash write was not needed."
+    elif write_validated and mode == "patch":
+        summary = "flash patch write validated; manual power cycle required."
+    elif write_validated:
+        summary = f"flash {mode} write validated; manual power cycle required."
+    else:
+        summary = "flash write completed."
+    return _with_schema({
+        **raw,
+        "mode": mode,
+        "write_status": status,
+        "write_validated": write_validated,
+        "summary": summary,
+    })
+
+
 def doctor_payload(
     *,
     fatal: bool,

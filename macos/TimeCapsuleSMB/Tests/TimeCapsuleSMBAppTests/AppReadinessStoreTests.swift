@@ -6,7 +6,7 @@ final class AppReadinessStoreTests: XCTestCase {
     func testStateInventoryIsExplicit() {
         XCTAssertEqual(
             AppReadinessStateKind.allCases,
-            [.idle, .resolvingBundle, .checkingCapabilities, .validatingInstall, .ready, .degraded, .blocked]
+            [.idle, .resolvingBundle, .checkingVersion, .checkingCapabilities, .validatingInstall, .ready, .degraded, .blocked]
         )
     }
 
@@ -14,6 +14,7 @@ final class AppReadinessStoreTests: XCTestCase {
         XCTAssertEqual(AppReadinessStateKind.allCases.map(\.title), [
             "Idle",
             "Preparing app runtime",
+            "Checking version",
             "Checking helper",
             "Validating bundled files",
             "Ready",
@@ -48,6 +49,104 @@ final class AppReadinessStoreTests: XCTestCase {
         XCTAssertEqual(summary.helperVersion, "1.2.3")
         XCTAssertEqual(summary.distributionRoot, "/bundle/Distribution")
         XCTAssertEqual(summary.validationCounts["pass"], 1)
+    }
+
+    func testReadinessVersionCheckRunsBeforeCapabilitiesWhenConfigured() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "version-check", ok: true, payload: versionCheckPayload(shouldBlock: false))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "capabilities", ok: true, payload: capabilitiesPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "validate-install", ok: true, payload: validationPayload(ok: true))
+            ])
+        ])
+        let store = makeStore(
+            runner: runner,
+            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+        )
+
+        store.start()
+
+        try await waitUntilStoreState { store.state.kind == .ready }
+        XCTAssertEqual(runner.calls.map(\.operation), ["version-check", "capabilities", "validate-install"])
+        XCTAssertEqual(runner.calls.first?.params["url"], .string("https://example.invalid/version.json"))
+        XCTAssertNil(runner.calls.first?.params["local_version_code"])
+    }
+
+    func testBlockingVersionCheckStopsReadinessBeforeCapabilities() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "version-check", ok: true, payload: versionCheckPayload(shouldBlock: true))
+            ])
+        ])
+        let store = makeStore(
+            runner: runner,
+            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+        )
+
+        store.start()
+
+        try await waitUntilStoreState { store.state.kind == .blocked }
+        XCTAssertEqual(runner.calls.map(\.operation), ["version-check"])
+        guard case .blocked(let issue) = store.state else {
+            return XCTFail("Expected blocked state.")
+        }
+        XCTAssertEqual(issue.code, .unsupportedVersion)
+        XCTAssertEqual(issue.message, "Please update.")
+        XCTAssertEqual(issue.recovery, "Download the latest version from https://example.invalid/download.")
+    }
+
+    func testUnavailableVersionMetadataDegradesButFailsOpenToReadinessChecks() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "version-check", ok: true, payload: versionCheckPayload(shouldBlock: false, source: "unavailable"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "capabilities", ok: true, payload: capabilitiesPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "validate-install", ok: true, payload: validationPayload(ok: true))
+            ])
+        ])
+        let store = makeStore(
+            runner: runner,
+            versionCheck: AppReadinessVersionCheck(url: "")
+        )
+
+        store.start()
+
+        try await waitUntilStoreState { store.state.kind == .degraded }
+        XCTAssertEqual(runner.calls.map(\.operation), ["version-check", "capabilities", "validate-install"])
+        XCTAssertEqual(runner.calls.first?.params, [:])
+        XCTAssertEqual(store.versionCheckPayload?.source, "unavailable")
+        XCTAssertTrue(store.issues.contains(where: { $0.code == .versionMetadataUnavailable && $0.severity == .warning }))
+    }
+
+    func testVersionCheckErrorDegradesButContinuesReadiness() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "error", operation: "version-check", code: "network_failed", message: "offline")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
+            .init(events: [
+                BackendEvent(type: "result", operation: "capabilities", ok: true, payload: capabilitiesPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "validate-install", ok: true, payload: validationPayload(ok: true))
+            ])
+        ])
+        let store = makeStore(
+            runner: runner,
+            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+        )
+
+        store.start()
+
+        try await waitUntilStoreState { store.state.kind == .degraded }
+        XCTAssertEqual(runner.calls.map(\.operation), ["version-check", "capabilities", "validate-install"])
+        XCTAssertTrue(store.issues.contains(where: { $0.code == .versionMetadataUnavailable && $0.message == "offline" }))
     }
 
     func testValidationFailureBlocksApp() async throws {
@@ -223,6 +322,7 @@ final class AppReadinessStoreTests: XCTestCase {
         XCTAssertEqual(store.state.kind, .idle)
         XCTAssertNil(store.capabilities)
         XCTAssertNil(store.validation)
+        XCTAssertNil(store.versionCheckPayload)
         XCTAssertEqual(store.issues, [])
         XCTAssertNil(store.currentStage)
     }
@@ -230,15 +330,18 @@ final class AppReadinessStoreTests: XCTestCase {
     private func makeStore(
         runner: StoreTestRunner,
         issues: [BundleRuntimeIssue] = [],
-        resolveError: Error? = nil
+        resolveError: Error? = nil,
+        versionCheck: AppReadinessVersionCheck? = nil
     ) -> AppReadinessStore {
         let backend = BackendClient(runner: runner)
         let resolver = TestRuntimeResolver(issues: issues, resolveError: resolveError)
-        return AppReadinessStore(
+        let store = AppReadinessStore(
             backend: backend,
             runtimeResolver: resolver,
             helperPathProvider: { "" }
         )
+        store.applyVersionCheck(versionCheck)
+        return store
     }
 
     private func capabilitiesPayload() -> JSONValue {
@@ -272,6 +375,22 @@ final class AppReadinessStoreTests: XCTestCase {
                 "fail": .number(ok ? 0 : 1)
             ]),
             "summary": .string(ok ? "install validation passed." : "install validation failed.")
+        ])
+    }
+
+    private func versionCheckPayload(shouldBlock: Bool, source: String = "network") -> JSONValue {
+        .object([
+            "schema_version": .number(1),
+            "should_block": .bool(shouldBlock),
+            "checked_url": .string("https://example.invalid/version.json"),
+            "message": .string("Please update."),
+            "download_url": .string("https://example.invalid/download"),
+            "local_version_code": .number(20000),
+            "current_version": .number(20125),
+            "min_supported_version": .number(20125),
+            "latest_tag": .string("v2.1.4"),
+            "source": .string(source),
+            "summary": .string(shouldBlock ? "update required." : "TimeCapsuleSMB is up to date.")
         ])
     }
 }

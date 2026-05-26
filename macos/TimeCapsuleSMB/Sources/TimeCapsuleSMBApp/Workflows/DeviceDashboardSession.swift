@@ -13,6 +13,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     var deployStore: DeployWorkflowStore
     var doctorStore: DoctorStore
     var maintenanceStore: MaintenanceStore
+    var flashStore: FlashWorkflowStore
     let profileEditorStore: DeviceProfileEditorStore
 
     private let urlOpener: URLOpening
@@ -43,6 +44,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         self.deployStore = DeployWorkflowStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
         self.doctorStore = DoctorStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
         self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
+        self.flashStore = FlashWorkflowStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
         self.profileEditorStore = DeviceProfileEditorStore(profile: profile, appStore: appStore)
         applyProfileSettings(profile.settings)
         forwardChildChanges()
@@ -165,6 +167,31 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             maintenanceStore.runRepairXattrs()
         case .viewDiagnostics:
             showDiagnostics()
+        }
+    }
+
+    func performFlashAction(_ action: FlashUserAction, profile: DeviceProfile) {
+        switch action {
+        case .backupAndInspect:
+            if let password = maintenancePassword(for: profile) {
+                flashStore.backupAndInspect(password: password, profile: profile)
+            }
+        case .planPatch:
+            flashStore.planFlash(mode: .patch, profile: profile)
+        case .planRestore:
+            flashStore.planFlash(mode: .restore, profile: profile)
+        case .checkApple:
+            flashStore.planFlash(mode: .checkApple, profile: profile)
+        case .downloadApple:
+            flashStore.planFlash(mode: .downloadOnly, profile: profile)
+        case .writePatch:
+            if let password = maintenancePassword(for: profile) {
+                flashStore.write(mode: .patch, password: password, profile: profile)
+            }
+        case .writeRestore:
+            if let password = maintenancePassword(for: profile) {
+                flashStore.write(mode: .restore, password: password, profile: profile)
+            }
         }
     }
 
@@ -332,6 +359,15 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 }
             }
             .store(in: &cancellables)
+        flashStore.$passwordInvalidProfileID
+            .sink { [weak self] profileID in
+                guard let profileID else { return }
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                }
+            }
+            .store(in: &cancellables)
         maintenanceStore.$uninstallState
             .sink { [weak self] state in
                 Task { @MainActor in
@@ -398,6 +434,11 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
             .store(in: &cancellables)
         maintenanceStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        flashStore.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }

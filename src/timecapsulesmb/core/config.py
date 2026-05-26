@@ -566,7 +566,6 @@ MANAGED_REQUIRED_FILE_KEYS = (
 )
 FLASH_REQUIRED_FILE_KEYS = (
     "TC_HOST",
-    "TC_PASSWORD",
 )
 FLASH_VALIDATED_KEYS = (
     "TC_HOST",
@@ -608,6 +607,7 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
     ),
     "flash": ConfigProfile(
         required_file_values=FLASH_REQUIRED_FILE_KEYS,
+        required_values=("TC_PASSWORD",),
         validated_keys=FLASH_VALIDATED_KEYS,
     ),
     "repair_xattrs": ConfigProfile(

@@ -18,6 +18,17 @@ struct ErrorBlock: View {
 struct ErrorRecoveryView: View {
     let error: BackendErrorViewModel
     let onAction: (RecoveryAction) -> Void
+    let diagnosticsText: (() -> String)?
+
+    init(
+        error: BackendErrorViewModel,
+        diagnosticsText: (() -> String)? = nil,
+        onAction: @escaping (RecoveryAction) -> Void
+    ) {
+        self.error = error
+        self.diagnosticsText = diagnosticsText
+        self.onAction = onAction
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -49,7 +60,10 @@ struct ErrorRecoveryView: View {
     private func copyDiagnostics() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString("\(error.operation) \(error.code): \(error.message)", forType: .string)
+        pasteboard.setString(
+            diagnosticsText?() ?? "\(error.operation) \(error.code): \(error.message)",
+            forType: .string
+        )
     }
 
     private func icon(for kind: RecoveryActionKind) -> String {

@@ -5,6 +5,7 @@ enum AppUpdateState: String, Equatable {
     case idle
     case checking
     case current
+    case unavailable
     case updateAvailable
     case failed
 
@@ -16,6 +17,8 @@ enum AppUpdateState: String, Equatable {
             return L10n.string("app_update.state.checking")
         case .current:
             return L10n.string("app_update.state.current")
+        case .unavailable:
+            return L10n.string("app_update.state.unavailable")
         case .updateAvailable:
             return L10n.string("app_update.state.update_available")
         case .failed:
@@ -69,12 +72,7 @@ final class AppUpdateStore: ObservableObject {
         error = nil
         currentStage = nil
 
-        var params: [String: JSONValue] = [:]
-        let url = settings.versionCheckURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !url.isEmpty {
-            params["url"] = .string(url)
-        }
-
+        let params = OperationParams.versionCheck(url: settings.versionCheckURL)
         switch lane.run(operation: "version-check", params: params, context: nil, activeDeviceID: nil) {
         case .started(let operation):
             activeOperation = operation
@@ -125,7 +123,13 @@ final class AppUpdateStore: ObservableObject {
         do {
             let result = try event.decodePayload(VersionCheckPayload.self)
             payload = result
-            state = result.shouldBlock ? .updateAvailable : .current
+            if result.shouldBlock {
+                state = .updateAvailable
+            } else if result.source == "unavailable" {
+                state = .unavailable
+            } else {
+                state = .current
+            }
             error = nil
             activeOperation = nil
         } catch {

@@ -104,7 +104,9 @@ public struct ContentView: View {
         .sheet(isPresented: $diagnosticsPresented) {
             AppDiagnosticsView(
                 store: appStore.appReadinessStore,
-                events: appStore.backend.events,
+                exportContext: { includeBackendEvents in
+                    appStore.diagnosticsExportContext(includeBackendEvents: includeBackendEvents)
+                },
                 showBackendEvents: $diagnosticsShowBackendEvents,
                 helperPath: Binding(
                     get: { appStore.backend.helperPath },

@@ -27,17 +27,24 @@ struct DeviceDashboardView: View {
                         profile: profile,
                         session: session,
                         appSettings: appStore.appSettingsStore.settings,
-                        showDiagnostics: showDiagnostics
+                        showDiagnostics: showDiagnostics,
+                        diagnosticsText: diagnosticsText
                     )
                 case .checkup:
                     CheckupTab(
                         profile: profile,
                         session: session,
                         appSettings: appStore.appSettingsStore.settings,
-                        showDiagnostics: showDiagnostics
+                        showDiagnostics: showDiagnostics,
+                        diagnosticsText: diagnosticsText
                     )
                 case .maintenance:
-                    MaintenanceTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
+                    MaintenanceTab(
+                        profile: profile,
+                        session: session,
+                        showDiagnostics: showDiagnostics,
+                        diagnosticsText: diagnosticsText
+                    )
                 case .settings:
                     ScrollView {
                         SettingsTab(profile: profile, session: session, appStore: appStore)
@@ -48,5 +55,31 @@ struct DeviceDashboardView: View {
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .alert(
+            session.flashStore.manualPowerCycleNotice?.title ?? "",
+            isPresented: manualPowerCycleNoticePresented,
+            presenting: session.flashStore.manualPowerCycleNotice
+        ) { notice in
+            Button(notice.actionTitle, role: .cancel) {
+                session.flashStore.dismissManualPowerCycleNotice()
+            }
+        } message: { notice in
+            Text(notice.message)
+        }
+    }
+
+    private var manualPowerCycleNoticePresented: Binding<Bool> {
+        Binding(
+            get: { session.flashStore.manualPowerCycleNotice != nil },
+            set: { isPresented in
+                if !isPresented {
+                    session.flashStore.dismissManualPowerCycleNotice()
+                }
+            }
+        )
+    }
+
+    private func diagnosticsText() -> String {
+        DiagnosticsExportBuilder().build(context: appStore.diagnosticsExportContext(includeBackendEvents: true))
     }
 }

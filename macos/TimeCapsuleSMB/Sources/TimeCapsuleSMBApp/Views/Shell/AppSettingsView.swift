@@ -139,7 +139,7 @@ struct AppSettingsView: View {
 
     private var updateStatusColor: Color {
         switch appStore.appUpdateStore.state {
-        case .updateAvailable, .failed:
+        case .updateAvailable, .unavailable, .failed:
             return .yellow
         case .current:
             return .green

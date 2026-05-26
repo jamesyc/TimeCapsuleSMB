@@ -698,6 +698,284 @@ struct RepairXattrsPayload: Decodable, Equatable {
     }
 }
 
+struct FlashBankPayload: Decodable, Equatable, Identifiable {
+    let name: String
+    let device: String
+    let size: Int
+    let sha256: String
+    let backupValid: Bool
+    let activeCandidate: Bool
+    let wouldWrite: Bool
+    let writeDecision: String
+    let login: JSONValue?
+    let footer: JSONValue?
+    let patch: JSONValue?
+    let patchError: String?
+    let analysisError: String?
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case device
+        case size
+        case sha256
+        case backupValid = "backup_valid"
+        case activeCandidate = "active_candidate"
+        case wouldWrite = "would_write"
+        case writeDecision = "write_decision"
+        case login
+        case footer
+        case patch
+        case patchError = "patch_error"
+        case analysisError = "analysis_error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        self.device = try container.decodeIfPresent(String.self, forKey: .device) ?? ""
+        self.size = try container.decodeIfPresent(Int.self, forKey: .size) ?? 0
+        self.sha256 = try container.decodeIfPresent(String.self, forKey: .sha256) ?? ""
+        self.backupValid = try container.decodeIfPresent(Bool.self, forKey: .backupValid) ?? false
+        self.activeCandidate = try container.decodeIfPresent(Bool.self, forKey: .activeCandidate) ?? false
+        self.wouldWrite = try container.decodeIfPresent(Bool.self, forKey: .wouldWrite) ?? false
+        self.writeDecision = try container.decodeIfPresent(String.self, forKey: .writeDecision) ?? ""
+        self.login = try container.decodeIfPresent(JSONValue.self, forKey: .login)
+        self.footer = try container.decodeIfPresent(JSONValue.self, forKey: .footer)
+        self.patch = try container.decodeIfPresent(JSONValue.self, forKey: .patch)
+        self.patchError = try container.decodeIfPresent(String.self, forKey: .patchError)
+        self.analysisError = try container.decodeIfPresent(String.self, forKey: .analysisError)
+    }
+}
+
+struct FlashBackupPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let backupDir: String
+    let host: String?
+    let syap: String?
+    let deviceModel: String?
+    let osRelease: String?
+    let activeBank: String?
+    let banks: [FlashBankPayload]
+    let counts: [String: Int]
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case backupDir = "backup_dir"
+        case host
+        case syap
+        case deviceModel = "device_model"
+        case osRelease = "os_release"
+        case activeBank = "active_bank"
+        case banks
+        case counts
+        case summary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        self.backupDir = try container.decode(String.self, forKey: .backupDir)
+        self.host = try container.decodeIfPresent(String.self, forKey: .host)
+        self.syap = try container.decodeIfPresent(String.self, forKey: .syap)
+        self.deviceModel = try container.decodeIfPresent(String.self, forKey: .deviceModel)
+        self.osRelease = try container.decodeIfPresent(String.self, forKey: .osRelease)
+        self.activeBank = try container.decodeIfPresent(String.self, forKey: .activeBank)
+        self.banks = try container.decodeIfPresent([FlashBankPayload].self, forKey: .banks) ?? []
+        self.counts = try container.decodeIfPresent([String: Int].self, forKey: .counts) ?? [:]
+        self.summary = try container.decode(String.self, forKey: .summary)
+    }
+}
+
+struct FlashAppleFirmwareMatchPayload: Decodable, Equatable {
+    let matched: Bool
+    let templateSource: String
+    let templatePath: String?
+    let templateProductID: String?
+    let templateVersion: String?
+    let templateSHA256: String?
+    let innerSHA256: String?
+    let innerSize: Int?
+    let keyID: String?
+    let innerModel: Int?
+    let innerVersion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case matched
+        case templateSource = "template_source"
+        case templatePath = "template_path"
+        case templateProductID = "template_product_id"
+        case templateVersion = "template_version"
+        case templateSHA256 = "template_sha256"
+        case innerSHA256 = "inner_sha256"
+        case innerSize = "inner_size"
+        case keyID = "key_id"
+        case innerModel = "inner_model"
+        case innerVersion = "inner_version"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.matched = try container.decodeIfPresent(Bool.self, forKey: .matched) ?? false
+        self.templateSource = try container.decodeIfPresent(String.self, forKey: .templateSource) ?? ""
+        self.templatePath = try container.decodeIfPresent(String.self, forKey: .templatePath)
+        self.templateProductID = try container.decodeIfPresent(String.self, forKey: .templateProductID)
+        self.templateVersion = try container.decodeIfPresent(String.self, forKey: .templateVersion)
+        self.templateSHA256 = try container.decodeIfPresent(String.self, forKey: .templateSHA256)
+        self.innerSHA256 = try container.decodeIfPresent(String.self, forKey: .innerSHA256)
+        self.innerSize = try container.decodeIfPresent(Int.self, forKey: .innerSize)
+        self.keyID = try container.decodeIfPresent(String.self, forKey: .keyID)
+        self.innerModel = try container.decodeIfPresent(Int.self, forKey: .innerModel)
+        self.innerVersion = try container.decodeIfPresent(String.self, forKey: .innerVersion)
+    }
+}
+
+struct FlashFirmwarePayload: Decodable, Equatable {
+    let templateSource: String
+    let templatePath: String?
+    let templateProductID: String?
+    let templateVersion: String?
+    let templateSHA256: String?
+    let payloadSHA256: String?
+    let payloadSize: Int?
+    let expectedPrefixSHA256: String?
+    let expectedPrefixSize: Int?
+    let expectedLoginClassification: String?
+    let keyID: String?
+    let innerModel: Int?
+    let innerVersion: String?
+    let innerPayloadSize: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case templateSource = "template_source"
+        case templatePath = "template_path"
+        case templateProductID = "template_product_id"
+        case templateVersion = "template_version"
+        case templateSHA256 = "template_sha256"
+        case payloadSHA256 = "payload_sha256"
+        case payloadSize = "payload_size"
+        case expectedPrefixSHA256 = "expected_prefix_sha256"
+        case expectedPrefixSize = "expected_prefix_size"
+        case expectedLoginClassification = "expected_login_classification"
+        case keyID = "key_id"
+        case innerModel = "inner_model"
+        case innerVersion = "inner_version"
+        case innerPayloadSize = "inner_payload_size"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.templateSource = try container.decodeIfPresent(String.self, forKey: .templateSource) ?? ""
+        self.templatePath = try container.decodeIfPresent(String.self, forKey: .templatePath)
+        self.templateProductID = try container.decodeIfPresent(String.self, forKey: .templateProductID)
+        self.templateVersion = try container.decodeIfPresent(String.self, forKey: .templateVersion)
+        self.templateSHA256 = try container.decodeIfPresent(String.self, forKey: .templateSHA256)
+        self.payloadSHA256 = try container.decodeIfPresent(String.self, forKey: .payloadSHA256)
+        self.payloadSize = try container.decodeIfPresent(Int.self, forKey: .payloadSize)
+        self.expectedPrefixSHA256 = try container.decodeIfPresent(String.self, forKey: .expectedPrefixSHA256)
+        self.expectedPrefixSize = try container.decodeIfPresent(Int.self, forKey: .expectedPrefixSize)
+        self.expectedLoginClassification = try container.decodeIfPresent(String.self, forKey: .expectedLoginClassification)
+        self.keyID = try container.decodeIfPresent(String.self, forKey: .keyID)
+        self.innerModel = try container.decodeIfPresent(Int.self, forKey: .innerModel)
+        self.innerVersion = try container.decodeIfPresent(String.self, forKey: .innerVersion)
+        self.innerPayloadSize = try container.decodeIfPresent(Int.self, forKey: .innerPayloadSize)
+    }
+}
+
+struct FlashPlanPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let backupDir: String
+    let mode: FlashPlanMode
+    let writeRequested: Bool
+    let alreadySatisfied: Bool
+    let activeBank: String?
+    let banks: [FlashBankPayload]
+    let flashPlan: JSONValue?
+    let appleFirmwareMatch: FlashAppleFirmwareMatchPayload?
+    let firmwarePayload: FlashFirmwarePayload?
+    let firmwarePayloadPath: String?
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case backupDir = "backup_dir"
+        case mode
+        case writeRequested = "write_requested"
+        case alreadySatisfied = "already_satisfied"
+        case activeBank = "active_bank"
+        case banks
+        case flashPlan = "flash_plan"
+        case appleFirmwareMatch = "apple_firmware_match"
+        case firmwarePayload = "firmware_payload"
+        case firmwarePayloadPath = "firmware_payload_path"
+        case summary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        self.backupDir = try container.decode(String.self, forKey: .backupDir)
+        self.mode = try container.decodeIfPresent(FlashPlanMode.self, forKey: .mode) ?? .patch
+        self.writeRequested = try container.decodeIfPresent(Bool.self, forKey: .writeRequested) ?? false
+        self.alreadySatisfied = try container.decodeIfPresent(Bool.self, forKey: .alreadySatisfied) ?? false
+        self.activeBank = try container.decodeIfPresent(String.self, forKey: .activeBank)
+        self.banks = try container.decodeIfPresent([FlashBankPayload].self, forKey: .banks) ?? []
+        self.flashPlan = try container.decodeIfPresent(JSONValue.self, forKey: .flashPlan)
+        self.appleFirmwareMatch = try container.decodeIfPresent(FlashAppleFirmwareMatchPayload.self, forKey: .appleFirmwareMatch)
+        self.firmwarePayload = try container.decodeIfPresent(FlashFirmwarePayload.self, forKey: .firmwarePayload)
+        self.firmwarePayloadPath = try container.decodeIfPresent(String.self, forKey: .firmwarePayloadPath)
+        self.summary = try container.decode(String.self, forKey: .summary)
+    }
+}
+
+struct FlashWritePayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let backupDir: String
+    let mode: FlashPlanMode
+    let writeStatus: String
+    let writeValidated: Bool
+    let writeOutcome: JSONValue?
+    let writeResult: JSONValue?
+    let writeMayHaveModifiedDevice: Bool
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case backupDir = "backup_dir"
+        case mode
+        case writeStatus = "write_status"
+        case writeValidated = "write_validated"
+        case writeOutcome = "write_outcome"
+        case writeResult = "write_result"
+        case summary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        self.backupDir = try container.decode(String.self, forKey: .backupDir)
+        self.mode = try container.decodeIfPresent(FlashPlanMode.self, forKey: .mode) ?? .patch
+        self.writeStatus = try container.decodeIfPresent(String.self, forKey: .writeStatus) ?? ""
+        self.writeValidated = try container.decodeIfPresent(Bool.self, forKey: .writeValidated) ?? false
+        self.writeOutcome = try container.decodeIfPresent(JSONValue.self, forKey: .writeOutcome)
+        self.writeResult = try container.decodeIfPresent(JSONValue.self, forKey: .writeResult)
+        self.writeMayHaveModifiedDevice = Self.decodeWriteMayHaveModifiedDevice(from: writeOutcome)
+        self.summary = try container.decode(String.self, forKey: .summary)
+    }
+
+    private static func decodeWriteMayHaveModifiedDevice(from value: JSONValue?) -> Bool {
+        guard let value, case .object(let values) = value else {
+            return false
+        }
+        guard case .bool(let mayHaveModified)? = values["write_may_have_modified_device"] else {
+            return false
+        }
+        return mayHaveModified
+    }
+}
+
 struct MaintenanceResultPayload: Decodable, Equatable {
     let schemaVersion: Int
     let summary: String

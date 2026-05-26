@@ -105,6 +105,7 @@ def capabilities_operation(params: dict[str, object], sink: EventSink) -> Operat
             "deploy",
             "discover",
             "doctor",
+            "flash",
             "fsck",
             "paths",
             "repair-xattrs",

@@ -28,6 +28,15 @@ enum OperationParams {
         ["timeout": .number(timeout)]
     }
 
+    static func versionCheck(url: String) -> [String: JSONValue] {
+        var params: [String: JSONValue] = [:]
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedURL.isEmpty {
+            params["url"] = .string(trimmedURL)
+        }
+        return params
+    }
+
     static func configure(
         host: String = "",
         selectedRecord: JSONValue? = nil,
@@ -199,6 +208,61 @@ enum OperationParams {
 
     static func repairXattrsRun(path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
         repairXattrsParams(path: path, dryRun: false, options: options)
+    }
+
+    static func flashBackup(password: String) -> [String: JSONValue] {
+        withCredentials([
+            "action": .string("backup")
+        ], password: password)
+    }
+
+    static func flashPlan(
+        backupDir: String,
+        mode: FlashPlanMode,
+        force: Bool = false,
+        firmwareVersion: String = "",
+        firmwareTemplate: String = ""
+    ) -> [String: JSONValue] {
+        var params: [String: JSONValue] = [
+            "action": .string("plan"),
+            "backup_dir": .string(backupDir),
+            "mode": .string(mode.rawValue),
+            "force": .bool(force)
+        ]
+        let trimmedVersion = firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedVersion.isEmpty {
+            params["firmware_version"] = .string(trimmedVersion)
+        }
+        let trimmedTemplate = firmwareTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTemplate.isEmpty {
+            params["firmware_template"] = .string(trimmedTemplate)
+        }
+        return params
+    }
+
+    static func flashWrite(
+        backupDir: String,
+        mode: FlashPlanMode,
+        force: Bool = false,
+        firmwareVersion: String = "",
+        firmwareTemplate: String = "",
+        password: String
+    ) -> [String: JSONValue] {
+        var params: [String: JSONValue] = [
+            "action": .string("write"),
+            "backup_dir": .string(backupDir),
+            "mode": .string(mode.rawValue),
+            "force": .bool(force)
+        ]
+        let trimmedVersion = firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedVersion.isEmpty {
+            params["firmware_version"] = .string(trimmedVersion)
+        }
+        let trimmedTemplate = firmwareTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTemplate.isEmpty {
+            params["firmware_template"] = .string(trimmedTemplate)
+        }
+        return withCredentials(params, password: password)
     }
 
     private static func repairXattrsParams(path: String, dryRun: Bool, options: RepairXattrsOptions) -> [String: JSONValue] {
