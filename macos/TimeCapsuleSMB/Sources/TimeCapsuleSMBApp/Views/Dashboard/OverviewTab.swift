@@ -70,7 +70,7 @@ private struct DashboardHeaderView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(presentation.title)
                         .font(.title2.weight(.semibold))
-                    Text(presentation.host)
+                    Text(presentation.connectionTarget)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

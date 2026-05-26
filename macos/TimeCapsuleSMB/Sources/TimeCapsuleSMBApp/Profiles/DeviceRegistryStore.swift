@@ -196,16 +196,19 @@ final class DeviceRegistryStore: ObservableObject {
     }
 
     func matchingProfile(host: String, bonjourFullname: String?) -> DeviceProfile? {
-        let normalizedFullname = bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let normalizedFullname, !normalizedFullname.isEmpty,
-           let profile = profiles.first(where: { $0.bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedFullname }) {
-            return profile
-        }
-        let normalizedHost = DeviceProfile.normalizedHost(host)
-        guard !normalizedHost.isEmpty else {
-            return nil
-        }
-        return profiles.first { $0.normalizedHost == normalizedHost }
+        let identity = DeviceNetworkIdentity(configuredSSHTarget: host, bonjourFullname: bonjourFullname)
+        return profiles.first { $0.network.matches(identity) }
+    }
+
+    func matchingProfile(for device: DiscoveredDevice) -> DeviceProfile? {
+        let identity = DeviceNetworkIdentity(
+            configuredSSHTarget: device.connectionTarget,
+            hostname: device.hostname,
+            bonjourName: device.name,
+            bonjourFullname: device.fullname,
+            addresses: device.networkAddresses
+        )
+        return profiles.first { $0.network.matches(identity) }
     }
 
     private func applyBackgroundMutation(_ mutate: () async throws -> [DeviceProfile]?) async {
@@ -314,7 +317,7 @@ private actor DeviceRegistryRepository {
         existingProfileID: DeviceProfile.ID? = nil
     ) -> DeviceProfile {
         let existing = existingProfileID.flatMap { id in profiles.first { $0.id == id } }
-            ?? matchingProfile(host: configuredDevice.host, bonjourFullname: discoveredDevice?.fullname)
+            ?? matchingProfile(configuredHost: configuredDevice.host, discoveredDevice: discoveredDevice)
         var profile = DeviceProfile.make(
             id: preferredID,
             configuredDevice: configuredDevice,
@@ -456,16 +459,13 @@ private actor DeviceRegistryRepository {
     }
 
     private func matchingProfile(host: String, bonjourFullname: String?) -> DeviceProfile? {
-        let normalizedFullname = normalizedBonjourFullname(bonjourFullname)
-        if let normalizedFullname,
-           let profile = profiles.first(where: { normalizedBonjourFullname($0.bonjourFullname) == normalizedFullname }) {
-            return profile
-        }
-        let normalizedHost = DeviceProfile.normalizedHost(host)
-        guard !normalizedHost.isEmpty else {
-            return nil
-        }
-        return profiles.first { $0.normalizedHost == normalizedHost }
+        let identity = DeviceNetworkIdentity(configuredSSHTarget: host, bonjourFullname: bonjourFullname)
+        return profiles.first { $0.network.matches(identity) }
+    }
+
+    private func matchingProfile(configuredHost: String, discoveredDevice: DiscoveredDevice?) -> DeviceProfile? {
+        let identity = DeviceNetworkIdentity.make(configuredSSHTarget: configuredHost, discoveredDevice: discoveredDevice)
+        return profiles.first { $0.network.matches(identity) }
     }
 
     private func duplicateConflict(for profile: DeviceProfile, excluding profileID: DeviceProfile.ID) -> DeviceRegistryError? {
@@ -485,9 +485,39 @@ private actor DeviceRegistryRepository {
            let conflicting = profiles.first(where: { $0.id != profileID && $0.normalizedHost == normalizedHost }) {
             return .duplicateProfile(
                 field: "host",
-                value: normalizedHost,
+                value: DeviceEndpointPolicy.hostComponent(profile.host) ?? normalizedHost,
                 conflictingProfileID: conflicting.id
             )
+        }
+        let normalizedHostname = profile.network.normalizedHostname
+        if !normalizedHostname.isEmpty,
+           let conflicting = profiles.first(where: {
+               $0.id != profileID && $0.network.normalizedHostname == normalizedHostname
+           }) {
+            return .duplicateProfile(
+                field: "hostname",
+                value: normalizedHostname,
+                conflictingProfileID: conflicting.id
+            )
+        }
+        if let conflict = addressConflict(for: profile, excluding: profileID) {
+            return conflict
+        }
+        return nil
+    }
+
+    private func addressConflict(for profile: DeviceProfile, excluding profileID: DeviceProfile.ID) -> DeviceRegistryError? {
+        let keys = profile.network.addressKeys
+        guard !keys.isEmpty else {
+            return nil
+        }
+        for existing in profiles where existing.id != profileID {
+            let overlap = keys.intersection(existing.network.addressKeys)
+            guard let key = overlap.first else {
+                continue
+            }
+            let value = profile.network.addresses.first { $0.identityKey == key }?.value ?? key
+            return .duplicateProfile(field: "address", value: value, conflictingProfileID: existing.id)
         }
         return nil
     }

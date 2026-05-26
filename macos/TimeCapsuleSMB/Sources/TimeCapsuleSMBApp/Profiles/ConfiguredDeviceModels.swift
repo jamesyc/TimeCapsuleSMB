@@ -3,19 +3,37 @@ import Foundation
 struct DiscoveredDevice: Identifiable, Equatable {
     let id: String
     let name: String
-    let host: String
+    let connectionTarget: String
+    let sshHost: String?
     let hostname: String
-    let addresses: [String]
+    let networkAddresses: [DeviceNetworkAddress]
     let syap: String?
     let model: String?
     let rawRecord: JSONValue
 
+    var host: String { connectionTarget }
+    var addresses: [String] { networkAddresses.map(\.value) }
+    var addressSummary: String { DeviceEndpointPolicy.addressSummary(networkAddresses) }
+
     init(payload: DiscoveredDevicePayload, index: Int) {
+        let addresses = Self.networkAddresses(ipv4: payload.ipv4, ipv6: payload.ipv6, fallback: payload.addresses)
+        let sshHost = Self.nonEmpty(payload.sshHost)
+        let backendTarget = sshHost.flatMap(DeviceEndpointPolicy.hostComponent)
+            ?? DeviceEndpointPolicy.hostComponent(payload.host)
+        let identity = DeviceNetworkIdentity(
+            configuredSSHTarget: backendTarget ?? "",
+            hostname: payload.hostname,
+            bonjourName: payload.name,
+            bonjourFullname: payload.fullname,
+            addresses: addresses
+        )
+
         self.id = payload.id.isEmpty ? "discovered-\(index)" : payload.id
         self.name = payload.name.isEmpty ? (payload.hostname.isEmpty ? "AirPort Device" : payload.hostname) : payload.name
-        self.host = payload.host
+        self.connectionTarget = backendTarget ?? identity.preferredSetupTarget
+        self.sshHost = sshHost
         self.hostname = payload.hostname
-        self.addresses = payload.addresses.isEmpty ? payload.ipv4 + payload.ipv6 : payload.addresses
+        self.networkAddresses = identity.addresses
         self.syap = Self.nonEmpty(payload.syap)
         self.model = Self.nonEmpty(payload.model) ?? Self.recordProperty(payload.selectedRecord, keys: ["model", "am"])
         self.rawRecord = payload.selectedRecord
@@ -35,11 +53,21 @@ struct DiscoveredDevice: Identifiable, Equatable {
             .filter { !$0.isEmpty }
             .joined(separator: "|")
 
+        let resolvedName = record.name.isEmpty ? (record.hostname.isEmpty ? "AirPort Device" : record.hostname) : record.name
         self.id = stableID.isEmpty ? "discovered-\(index)" : stableID
-        self.name = record.name.isEmpty ? (record.hostname.isEmpty ? "AirPort Device" : record.hostname) : record.name
+        self.name = resolvedName
         self.hostname = record.hostname
-        self.addresses = record.ipv4 + record.ipv6
-        self.host = Self.displayHost(record)
+        let addresses = Self.networkAddresses(ipv4: record.ipv4, ipv6: record.ipv6, fallback: [])
+        self.networkAddresses = addresses
+        let identity = DeviceNetworkIdentity(
+            configuredSSHTarget: "",
+            hostname: record.hostname,
+            bonjourName: resolvedName,
+            bonjourFullname: record.fullname,
+            addresses: addresses
+        )
+        self.connectionTarget = identity.preferredSetupTarget
+        self.sshHost = DeviceEndpointPolicy.rootSSHTarget(connectionTarget)
         self.syap = Self.nonEmpty(record.properties["syAP"] ?? record.properties["syap"])
         self.model = Self.nonEmpty(record.properties["model"] ?? record.properties["am"])
         self.rawRecord = record.jsonValue
@@ -47,13 +75,6 @@ struct DiscoveredDevice: Identifiable, Equatable {
 
     var discoveryModelText: String {
         Self.nonEmpty(model) ?? ""
-    }
-
-    private static func displayHost(_ record: BonjourResolvedServicePayload) -> String {
-        if let address = record.ipv4.first ?? record.ipv6.first {
-            return address
-        }
-        return record.hostname
     }
 
     private static func recordProperty(_ record: JSONValue, keys: [String]) -> String? {
@@ -73,6 +94,15 @@ struct DiscoveredDevice: Identifiable, Equatable {
             return nil
         }
         return trimmed
+    }
+
+    private static func networkAddresses(ipv4: [String], ipv6: [String], fallback: [String]) -> [DeviceNetworkAddress] {
+        var addresses = ipv4.compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+        addresses += ipv6.compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+        if addresses.isEmpty {
+            addresses = fallback.compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+        }
+        return DeviceEndpointPolicy.uniqueAddresses(addresses)
     }
 }
 

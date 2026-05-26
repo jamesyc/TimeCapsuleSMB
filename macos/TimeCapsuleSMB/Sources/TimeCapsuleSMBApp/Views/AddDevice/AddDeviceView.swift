@@ -175,9 +175,12 @@ private struct DeviceCandidateRow: View {
                 .foregroundStyle(selected ? Color.accentColor : Color.secondary)
             VStack(alignment: .leading) {
                 Text(device.name)
-                Text([device.host, device.hostname].filter { !$0.isEmpty }.joined(separator: "  "))
+                Text([device.hostname, device.addressSummary].filter { !$0.isEmpty }.joined(separator: "  "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text(L10n.format("add_device.setup_target", device.connectionTarget))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
             Spacer()
             if !device.discoveryModelText.isEmpty {

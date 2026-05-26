@@ -11,11 +11,7 @@ struct RepairXattrsOptions: Equatable {
 
 enum OperationParams {
     private static func rootSSHTarget(_ host: String) -> String {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.contains("@") else {
-            return trimmed
-        }
-        return "root@\(trimmed)"
+        DeviceEndpointPolicy.rootSSHTarget(host)
     }
 
     private static func withCredentials(_ params: [String: JSONValue], password: String) -> [String: JSONValue] {

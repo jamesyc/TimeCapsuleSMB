@@ -122,7 +122,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
     }
 
     func matchingProfile(for device: DiscoveredDevice) -> DeviceProfile? {
-        registry.matchingProfile(host: device.host, bonjourFullname: device.fullname)
+        registry.matchingProfile(for: device)
     }
 
     func lastSeenText(for profile: DeviceProfile) -> String? {

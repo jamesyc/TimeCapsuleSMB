@@ -43,7 +43,7 @@ struct DeviceListOverviewView: View {
                             VStack(alignment: .leading) {
                                 Text(profile.title)
                                     .font(.body.weight(.medium))
-                                Text(profile.host)
+                                Text(profile.addressSummary.isEmpty ? profile.displayTarget : profile.addressSummary)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -155,7 +155,7 @@ private struct OverviewDiscoveredDeviceRow: View {
                 Text(device.name)
                     .font(.body.weight(.medium))
                 HStack(spacing: 6) {
-                    Text(device.host)
+                    Text(device.addressSummary.isEmpty ? device.connectionTarget : device.addressSummary)
                     if !device.discoveryModelText.isEmpty {
                         Text(device.discoveryModelText)
                     }

@@ -15,6 +15,12 @@ enum SMBAddressPolicy {
         if let hostname = normalizedAddressHost(profile.hostname) {
             return hostname
         }
+        if let address = profile.network.addresses.first(where: { $0.scope == .regular }) {
+            return address.value
+        }
+        if let address = profile.network.addresses.first {
+            return address.value
+        }
         return normalizedAddressHost(profile.host)
     }
 
@@ -22,7 +28,7 @@ enum SMBAddressPolicy {
         unique([
             normalizedAddressHost(profile.hostname),
             normalizedAddressHost(profile.host)
-        ])
+        ] + profile.network.addresses.map { normalizedAddressHost($0.value) })
     }
 
     private static func bonjourSMBServiceHost(for profile: DeviceProfile) -> String? {
@@ -48,41 +54,11 @@ enum SMBAddressPolicy {
     }
 
     private static func url(host: String, account: String?) -> URL? {
-        guard let encodedHost = host.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) else {
-            return nil
-        }
-        let accountPrefix: String
-        if let account = account?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !account.isEmpty,
-           let encodedAccount = account.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed) {
-            accountPrefix = "\(encodedAccount)@"
-        } else {
-            accountPrefix = ""
-        }
-        return URL(string: "smb://\(accountPrefix)\(encodedHost)")
+        DeviceEndpointPolicy.smbURL(host: host, account: account)
     }
 
     private static func normalizedAddressHost(_ value: String?) -> String? {
-        guard var candidate = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !candidate.isEmpty else {
-            return nil
-        }
-
-        if let parsedURL = URL(string: candidate), let parsedHost = parsedURL.host, !parsedHost.isEmpty {
-            candidate = parsedHost
-        } else {
-            candidate = candidate.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
-                .first
-                .map(String.init) ?? candidate
-            candidate = candidate.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
-                .last
-                .map(String.init) ?? candidate
-        }
-
-        let normalized = candidate
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        return normalized.isEmpty ? nil : normalized
+        DeviceEndpointPolicy.hostComponent(value)
     }
 
     private static func unique(_ values: [String?]) -> [String] {

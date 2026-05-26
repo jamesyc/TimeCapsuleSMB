@@ -252,8 +252,9 @@ final class AddDeviceFlowStore: ObservableObject {
             return
         }
 
-        let targetHost = selectedDevice?.host ?? trimmedHost
-        let existing = registry.matchingProfile(host: targetHost, bonjourFullname: selectedDevice?.fullname)
+        let targetHost = selectedDevice?.connectionTarget ?? trimmedHost
+        let existing = selectedDevice.map { registry.matchingProfile(for: $0) }
+            ?? registry.matchingProfile(host: targetHost, bonjourFullname: nil)
         let profileID = existing?.id ?? UUID().uuidString.lowercased()
         let configureSettings = existing?.settings ?? defaultDeviceSettings
 
@@ -310,8 +311,8 @@ final class AddDeviceFlowStore: ObservableObject {
     func select(_ device: DiscoveredDevice) {
         entryMode = .discover
         selectedDeviceID = device.id
-        manualHost = device.host
-        if let existing = registry.matchingProfile(host: device.host, bonjourFullname: device.fullname) {
+        manualHost = device.connectionTarget
+        if let existing = registry.matchingProfile(for: device) {
             savedProfile = existing
             state = .saved
             error = nil
@@ -474,7 +475,7 @@ final class AddDeviceFlowStore: ObservableObject {
                 DiscoveredDevice(payload: device, index: index)
             }
             selectedDeviceID = devices.count == 1 ? devices[0].id : nil
-            manualHost = devices.count == 1 ? devices[0].host : ""
+            manualHost = devices.count == 1 ? devices[0].connectionTarget : ""
             state = devices.isEmpty ? .discoveryEmpty : .discoveryReady
             error = nil
             activeOperation = nil
