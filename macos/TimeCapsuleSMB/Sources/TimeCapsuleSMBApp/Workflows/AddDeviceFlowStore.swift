@@ -9,6 +9,7 @@ enum AddDeviceFlowState: String, CaseIterable, Equatable {
     case manualEntry
     case passwordEntry
     case configuring
+    case awaitingConfirmation
     case savingProfile
     case saved
     case authFailed
@@ -31,6 +32,8 @@ enum AddDeviceFlowState: String, CaseIterable, Equatable {
             return L10n.string("add_device.state.password_entry")
         case .configuring:
             return L10n.string("add_device.state.configuring")
+        case .awaitingConfirmation:
+            return L10n.string("add_device.state.awaiting_confirmation")
         case .savingProfile:
             return L10n.string("add_device.state.saving_profile")
         case .saved:
@@ -123,7 +126,7 @@ final class AddDeviceFlowStore: ObservableObject {
     var isRunning: Bool {
         switch activeLaneKey {
         case .some(let key):
-            return coordinator.lane(for: key).backend.isRunning
+            return coordinator.lane(for: key).isBusy
         case .none:
             return false
         }
@@ -445,6 +448,9 @@ final class AddDeviceFlowStore: ObservableObject {
         }
         if let stage = OperationStageState(event: event) {
             currentStage = stage
+            if event.operation == "configure", state == .awaitingConfirmation {
+                state = .configuring
+            }
             return
         }
         if event.type == "error" {
@@ -526,6 +532,15 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     private func applyError(_ event: BackendEvent) {
+        if event.code == "confirmation_required" {
+            error = nil
+            state = .awaitingConfirmation
+            return
+        }
+        if event.code == "confirmation_cancelled" {
+            applyConfirmationCancelled()
+            return
+        }
         error = BackendErrorViewModel(event: event)
         switch event.code {
         case "auth_failed":
@@ -538,6 +553,18 @@ final class AddDeviceFlowStore: ObservableObject {
         activeOperation = nil
         activeLaneKey = nil
         pendingExistingProfileID = nil
+    }
+
+    private func applyConfirmationCancelled() {
+        error = nil
+        currentStage = nil
+        savedProfile = nil
+        activeOperation = nil
+        activeLaneKey = nil
+        pendingProfileID = nil
+        pendingExistingProfileID = nil
+        pendingDiscoveredDevice = nil
+        state = .passwordEntry
     }
 
     private func failFromResult(_ event: BackendEvent) {

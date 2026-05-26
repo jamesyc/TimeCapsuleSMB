@@ -24,6 +24,7 @@ struct AddDeviceProgressPresentation: Equatable, BlockingProgressPresenting {
              .discoveryReady,
              .manualEntry,
              .passwordEntry,
+             .awaitingConfirmation,
              .saved,
              .authFailed,
              .unsupported,

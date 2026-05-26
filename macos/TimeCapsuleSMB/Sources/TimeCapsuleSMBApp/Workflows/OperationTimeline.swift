@@ -109,6 +109,8 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.finding_time_capsules")
         case ("configure", "ssh_probe"), ("configure", "ssh_probe_after_acp"):
             return L10n.string("timeline.stage.checking_ssh")
+        case ("configure", "confirm_enable_ssh"):
+            return L10n.string("timeline.stage.confirming_ssh_enable")
         case ("configure", "acp_enable_ssh"):
             return L10n.string("timeline.stage.enabling_ssh")
         case ("configure", "wait_for_ssh_after_acp"):

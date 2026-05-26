@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.contracts import configure_payload
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.readiness import selected_record_host, selected_record_properties
@@ -36,6 +37,40 @@ def configure_ssh_target(value: str) -> str:
     if not host or "@" in host:
         return host
     return f"root@{host}"
+
+
+def selected_record_name(params: dict[str, object]) -> str:
+    selected = params.get("selected_record")
+    if not isinstance(selected, dict):
+        return ""
+    name = str(selected.get("name") or "").strip()
+    return name
+
+
+def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> None:
+    device_name = selected_record_name(params) or extract_host(host)
+    require_confirmation(
+        params,
+        build_confirmation(
+            operation="configure",
+            params=params,
+            title="Enable SSH and reboot?",
+            message=f"SSH is closed on {device_name}. Enable SSH using AirPort ACP and reboot this Time Capsule?",
+            action_title="Enable SSH and reboot",
+            risk="reboot",
+            summary="Enable SSH through AirPort ACP and reboot the Time Capsule",
+            context={
+                "host": host,
+                "device_name": device_name,
+                "requires_reboot": True,
+            },
+            presentation_id="configure.enable_ssh_reboot",
+            presentation_values={
+                "device_name": device_name,
+                "requires_reboot": True,
+            },
+        ),
+    )
 
 
 def configure_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
@@ -91,6 +126,8 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
     if not probe.ssh_port_reachable:
         if not bool_param(params, "enable_ssh", True):
             raise AppOperationError("SSH is not reachable and enable_ssh is false.", code="remote_error")
+        sink.stage(operation, "confirm_enable_ssh")
+        require_enable_ssh_confirmation(params, host=host)
         sink.stage(operation, "acp_enable_ssh")
         try:
             enable_ssh(extract_host(host), password, reboot_device=True, log=lambda message: sink.log(operation, message))

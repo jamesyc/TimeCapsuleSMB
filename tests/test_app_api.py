@@ -859,6 +859,108 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(values["TC_ATA_STANDBY"], "")
 
+    def test_configure_requires_confirmation_before_enabling_ssh(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+                with mock.patch("timecapsulesmb.app.ops.configure.enable_ssh") as enable_ssh:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "configure",
+                            "params": {
+                                "config": str(config_path),
+                                "host": "root@10.0.0.2",
+                                "password": "secret",
+                            },
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        self.assertFalse(config_path.exists())
+        details = self.assert_confirmation(
+            collector,
+            "configure.enable_ssh_reboot",
+            {"device_name": "10.0.0.2", "requires_reboot": True},
+        )
+        self.assertEqual(details["context"]["host"], "root@10.0.0.2")
+        self.assertNotIn("secret", json.dumps(collector.events))
+
+    def test_configure_confirmed_ssh_enable_reprobes_and_writes_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            first_collector = CollectingSink()
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+                service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "secret",
+                        },
+                    },
+                    first_collector.sink,
+                )
+            confirmation_id = self.assert_confirmation(first_collector, "configure.enable_ssh_reboot")["confirmation_id"]
+
+            confirmed_collector = CollectingSink()
+            with mock.patch(
+                "timecapsulesmb.app.ops.configure.probe_connection_state",
+                side_effect=[unreachable_probed_state(), probed_state()],
+            ) as probe:
+                with mock.patch("timecapsulesmb.app.ops.configure.enable_ssh") as enable_ssh:
+                    with mock.patch("timecapsulesmb.app.ops.configure.wait_for_ssh_port", return_value=True) as wait_for_ssh:
+                        rc = service.run_api_request(
+                            {
+                                "operation": "configure",
+                                "params": {
+                                    "config": str(config_path),
+                                    "host": "root@10.0.0.2",
+                                    "password": "secret",
+                                    "confirmation_id": confirmation_id,
+                                },
+                            },
+                            confirmed_collector.sink,
+                        )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(probe.call_count, 2)
+        enable_ssh.assert_called_once()
+        wait_for_ssh.assert_called_once_with("root@10.0.0.2", timeout_seconds=180)
+        self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
+        self.assertNotIn("secret", json.dumps(confirmed_collector.events))
+
+    def test_configure_enable_ssh_false_fails_without_confirmation(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+                with mock.patch("timecapsulesmb.app.ops.configure.enable_ssh") as enable_ssh:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "configure",
+                            "params": {
+                                "config": str(config_path),
+                                "host": "root@10.0.0.2",
+                                "password": "secret",
+                                "enable_ssh": False,
+                            },
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        self.assertFalse(config_path.exists())
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertNotEqual(error.get("details", {}).get("presentation_id"), "configure.enable_ssh_reboot")
+
     def test_configure_reports_acp_auth_failure_without_writing_env(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -872,6 +974,7 @@ class AppApiTests(unittest.TestCase):
                                 "config": str(config_path),
                                 "host": "root@10.0.0.2",
                                 "password": "badpw",
+                                "yes": True,
                             },
                         },
                         collector.sink,
@@ -923,6 +1026,7 @@ class AppApiTests(unittest.TestCase):
                                 "host": "root@10.0.0.2",
                                 "password": "pw",
                                 "ssh_wait_timeout": True,
+                                "yes": True,
                             },
                         },
                         collector.sink,

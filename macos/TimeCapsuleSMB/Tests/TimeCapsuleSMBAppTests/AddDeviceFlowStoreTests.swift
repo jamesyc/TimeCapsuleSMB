@@ -12,6 +12,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             .manualEntry,
             .passwordEntry,
             .configuring,
+            .awaitingConfirmation,
             .savingProfile,
             .saved,
             .authFailed,
@@ -351,6 +352,78 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["persist_password"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["password"], .string("secret"))
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
+    }
+
+    func testConfigureSSHEnableConfirmationCanBeConfirmedAndSavesProfile() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "error",
+                    operation: "configure",
+                    code: "confirmation_required",
+                    message: "SSH is closed.",
+                    details: .object([
+                        "confirmation_id": .string("confirm-ssh"),
+                        "presentation_id": .string("configure.enable_ssh_reboot"),
+                        "presentation_values": .object(["device_name": .string("Office Capsule")])
+                    ])
+                )
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
+            ])
+        ])
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .awaitingConfirmation }
+        XCTAssertFalse(fixture.store.canConfigure)
+        XCTAssertEqual(fixture.registry.profiles, [])
+
+        fixture.store.coordinator.confirmPending()
+
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        XCTAssertEqual(fixture.runner.calls.count, 2)
+        XCTAssertEqual(fixture.runner.calls[1].params["confirmation_id"], .string("confirm-ssh"))
+        XCTAssertEqual(fixture.store.savedProfile?.host, "root@10.0.0.2")
+        XCTAssertEqual(fixture.registry.profiles.count, 1)
+    }
+
+    func testConfigureSSHEnableConfirmationCancellationReturnsToPasswordEntry() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "error",
+                    operation: "configure",
+                    code: "confirmation_required",
+                    message: "SSH is closed.",
+                    details: .object([
+                        "confirmation_id": .string("confirm-ssh"),
+                        "presentation_id": .string("configure.enable_ssh_reboot"),
+                        "presentation_values": .object(["device_name": .string("Office Capsule")])
+                    ])
+                )
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+        ])
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+
+        fixture.store.runConfigure()
+        try await waitUntilStoreState { fixture.store.state == .awaitingConfirmation }
+
+        fixture.store.coordinator.cancelPendingConfirmation()
+
+        try await waitUntilStoreState { fixture.store.state == .passwordEntry }
+        XCTAssertNil(fixture.store.error)
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertEqual(fixture.store.manualHost, "10.0.0.2")
+        XCTAssertEqual(fixture.store.password, "secret")
+        XCTAssertTrue(fixture.store.canConfigure)
+        XCTAssertEqual(fixture.registry.profiles, [])
     }
 
     func testNewManualProfileUsesAppDefaultDeviceSettings() async throws {
