@@ -10,8 +10,7 @@ final class BundleLayoutTests: XCTestCase {
             [
                 .helperMissing,
                 .helperNotExecutable,
-                .pythonRuntimeMissing,
-                .pythonExecutableMissing,
+                .pythonPackagesMissing,
                 .distributionRootMissing,
                 .artifactManifestMissing,
                 .artifactManifestInvalid,
@@ -107,20 +106,12 @@ final class BundleLayoutTests: XCTestCase {
         XCTAssertTrue(issues.contains(where: { $0.code == .distributionArtifactsMissing && $0.severity == .error }))
     }
 
-    func testMissingPythonRuntimeIsBlockingIssue() throws {
-        let layout = try makeLayout(createPythonRuntime: false)
+    func testMissingPythonPackagesAreBlockingIssue() throws {
+        let layout = try makeLayout(createPythonPackages: false)
 
         let issues = layout.validationIssues()
 
-        XCTAssertTrue(issues.contains(where: { $0.code == .pythonRuntimeMissing && $0.severity == .error }))
-    }
-
-    func testMissingPythonExecutableIsBlockingIssue() throws {
-        let layout = try makeLayout(createPythonExecutable: false)
-
-        let issues = layout.validationIssues()
-
-        XCTAssertTrue(issues.contains(where: { $0.code == .pythonExecutableMissing && $0.severity == .error }))
+        XCTAssertTrue(issues.contains(where: { $0.code == .pythonPackagesMissing && $0.severity == .error }))
     }
 
     func testMissingToolsDirectoryIsWarningIssue() throws {
@@ -150,8 +141,7 @@ final class BundleLayoutTests: XCTestCase {
         createArtifactManifest: Bool = true,
         artifactManifestContents: String? = nil,
         createManifestArtifact: Bool = true,
-        createPythonRuntime: Bool = true,
-        createPythonExecutable: Bool = true,
+        createPythonPackages: Bool = true,
         createTools: Bool = true,
         applicationSupportURL: URL? = nil
     ) throws -> BundleLayout {
@@ -202,16 +192,11 @@ final class BundleLayoutTests: XCTestCase {
                 )
             }
         }
-        if createPythonRuntime {
-            let pythonBin = resources
+        if createPythonPackages {
+            let pythonPackages = resources
                 .appendingPathComponent("Python", isDirectory: true)
-                .appendingPathComponent("bin", isDirectory: true)
-            try FileManager.default.createDirectory(at: pythonBin, withIntermediateDirectories: true)
-            if createPythonExecutable {
-                let python = pythonBin.appendingPathComponent("python")
-                try "#!/bin/sh\nexit 0\n".write(to: python, atomically: true, encoding: .utf8)
-                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
-            }
+                .appendingPathComponent("site-packages", isDirectory: true)
+            try FileManager.default.createDirectory(at: pythonPackages, withIntermediateDirectories: true)
         }
         if createTools {
             try FileManager.default.createDirectory(

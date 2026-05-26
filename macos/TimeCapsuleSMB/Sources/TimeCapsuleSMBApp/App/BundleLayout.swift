@@ -14,8 +14,7 @@ public enum BundleRuntimeIssueSeverity: String, CaseIterable, Equatable, Sendabl
 public enum BundleRuntimeIssueCode: String, CaseIterable, Equatable, Sendable {
     case helperMissing
     case helperNotExecutable
-    case pythonRuntimeMissing
-    case pythonExecutableMissing
+    case pythonPackagesMissing
     case distributionRootMissing
     case artifactManifestMissing
     case artifactManifestInvalid
@@ -62,7 +61,7 @@ public struct BundleLayout: Equatable, Sendable {
     public let distributionRootURL: URL
     public let artifactManifestURL: URL
     public let toolsBinURL: URL
-    public let pythonRuntimeURL: URL?
+    public let pythonPackagesURL: URL
     public let applicationSupportURL: URL
     public let configURL: URL
     public let stateDirectoryURL: URL
@@ -75,7 +74,7 @@ public struct BundleLayout: Equatable, Sendable {
         distributionRootURL: URL? = nil,
         artifactManifestURL: URL? = nil,
         toolsBinURL: URL? = nil,
-        pythonRuntimeURL: URL? = nil,
+        pythonPackagesURL: URL? = nil,
         applicationSupportURL: URL,
         configURL: URL? = nil,
         stateDirectoryURL: URL? = nil
@@ -89,7 +88,10 @@ public struct BundleLayout: Equatable, Sendable {
         self.artifactManifestURL = artifactManifestURL
             ?? resolvedDistributionRoot.appendingPathComponent("artifact-manifest.json")
         self.toolsBinURL = toolsBinURL ?? resourceURL.appendingPathComponent("Tools/bin", isDirectory: true)
-        self.pythonRuntimeURL = pythonRuntimeURL ?? resourceURL.appendingPathComponent("Python", isDirectory: true)
+        self.pythonPackagesURL = pythonPackagesURL
+            ?? resourceURL
+                .appendingPathComponent("Python", isDirectory: true)
+                .appendingPathComponent("site-packages", isDirectory: true)
         self.applicationSupportURL = applicationSupportURL
         self.configURL = configURL ?? applicationSupportURL.appendingPathComponent(".env")
         self.stateDirectoryURL = stateDirectoryURL ?? applicationSupportURL
@@ -140,25 +142,13 @@ public struct BundleLayout: Equatable, Sendable {
                 recovery: "Reinstall TimeCapsuleSMB."
             ))
         }
-        if let pythonRuntimeURL {
-            if !isDirectory(pythonRuntimeURL, fileManager: fileManager) {
-                issues.append(BundleRuntimeIssue(
-                    code: .pythonRuntimeMissing,
-                    severity: .error,
-                    message: "The bundled Python runtime is missing.",
-                    recovery: "Reinstall TimeCapsuleSMB."
-                ))
-            } else {
-                let python = pythonRuntimeURL.appendingPathComponent("bin/python")
-                if !fileManager.isExecutableFile(atPath: python.path) {
-                    issues.append(BundleRuntimeIssue(
-                        code: .pythonExecutableMissing,
-                        severity: .error,
-                        message: "The bundled Python executable is missing or not executable.",
-                        recovery: "Reinstall TimeCapsuleSMB."
-                    ))
-                }
-            }
+        if !isDirectory(pythonPackagesURL, fileManager: fileManager) {
+            issues.append(BundleRuntimeIssue(
+                code: .pythonPackagesMissing,
+                severity: .error,
+                message: "The bundled Python packages are missing.",
+                recovery: "Reinstall TimeCapsuleSMB."
+            ))
         }
         if !isDirectory(distributionRootURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
