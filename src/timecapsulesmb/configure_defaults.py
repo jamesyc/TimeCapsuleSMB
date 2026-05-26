@@ -32,14 +32,3 @@ def saved_value_choice(existing: dict[str, str], key: str, label: str) -> Option
     if not value:
         return None
     return ConfigureValueChoice(value=value, source="saved")
-
-
-def saved_syap_value_for_candidates(
-    saved_syap_choice: ConfigureValueChoice | None,
-    candidate_syaps: tuple[str, ...],
-) -> str | None:
-    if saved_syap_choice is None:
-        return None
-    if candidate_syaps and saved_syap_choice.value not in candidate_syaps:
-        return None
-    return saved_syap_choice.value

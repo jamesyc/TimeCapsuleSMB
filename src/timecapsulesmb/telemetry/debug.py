@@ -4,10 +4,12 @@ from collections.abc import Mapping, Sequence
 from functools import singledispatch
 
 from timecapsulesmb.device.compat import DeviceCompatibility
-from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceCandidatesProbeResult
+from timecapsulesmb.device.probe import ProbedDeviceState
 from timecapsulesmb.discovery.bonjour import (
+    BonjourFamilyDiscoveryAttempt,
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
+    BonjourMergedDiscoveryDiagnostics,
     BonjourPtrRecordObservation,
     BonjourResolvedService,
     BonjourServiceEvent,
@@ -138,7 +140,6 @@ def _(value: BonjourDiscoveryDiagnostics) -> dict[str, object]:
         "ip_version": value.ip_version,
         "zeroconf_version": value.zeroconf_version,
         "zeroconf_interfaces": value.zeroconf_interfaces,
-        "zeroconf_apple_p2p": value.zeroconf_apple_p2p,
         "instance_count": value.instance_count,
         "resolved_count": value.resolved_count,
         "pending_count": value.pending_count,
@@ -157,6 +158,34 @@ def _(value: BonjourDiscoveryDiagnostics) -> dict[str, object]:
     if value.ptr_record_error:
         summary["ptr_record_error"] = _truncate_debug_text(value.ptr_record_error, MAX_DEBUG_ERROR_TEXT)
     return summary
+
+
+@debug_summary.register
+def _(value: BonjourFamilyDiscoveryAttempt) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "family": value.family,
+        "status": "error" if value.error else "ok",
+    }
+    if value.error:
+        summary["error"] = _truncate_debug_text(value.error, MAX_DEBUG_ERROR_TEXT)
+    if value.diagnostics is not None:
+        summary["diagnostics"] = debug_summary(value.diagnostics)
+    elif value.snapshot is not None:
+        summary["snapshot"] = debug_summary(value.snapshot)
+    return summary
+
+
+@debug_summary.register
+def _(value: BonjourMergedDiscoveryDiagnostics) -> dict[str, object]:
+    return {
+        "service": value.service,
+        "service_types": list(value.service_types),
+        "timeout_sec": value.timeout_sec,
+        "elapsed_sec": value.elapsed_sec,
+        "instance_count": value.instance_count,
+        "resolved_count": value.resolved_count,
+        "attempts": [debug_summary(attempt) for attempt in value.attempts],
+    }
 
 
 def _native_dns_sd_event_summary(value: NativeDnsSdServiceEvent) -> dict[str, object]:
@@ -200,18 +229,6 @@ def _(value: NativeDnsSdDiagnostics) -> dict[str, object]:
         "elapsed_sec": value.elapsed_sec,
         "browses": [debug_summary(browse) for browse in value.browses],
     }
-
-
-@debug_summary.register
-def _(value: RemoteInterfaceCandidatesProbeResult) -> list[dict[str, object]]:
-    return [
-        {
-            "name": candidate.name,
-            "ipv4": list(candidate.ipv4_addrs),
-            "loopback": candidate.loopback,
-        }
-        for candidate in value.candidates
-    ]
 
 
 @debug_summary.register

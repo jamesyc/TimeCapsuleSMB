@@ -14,17 +14,14 @@ from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
     ProbeResult,
     ProbedDeviceState,
-    RemoteInterfaceCandidate,
-    RemoteInterfaceCandidatesProbeResult,
 )
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
     BonjourPtrRecordObservation,
-    BonjourResolvedService,
     BonjourServiceEvent,
     BonjourServiceInstance,
-    Discovered,
+    BonjourResolvedService,
 )
 from timecapsulesmb.discovery.native_dns_sd import (
     NativeDnsSdBrowseResult,
@@ -40,7 +37,7 @@ from timecapsulesmb.telemetry.debug import (
 
 class TelemetryDebugTests(unittest.TestCase):
     def test_debug_summary_for_discovered_record_keeps_relevant_bonjour_fields(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="James's AirPort Time Capsule",
             hostname="Jamess-AirPort-Time-Capsule.local",
             service_type="_airport._tcp.local.",
@@ -160,8 +157,7 @@ class TelemetryDebugTests(unittest.TestCase):
         summary = debug_summary(diagnostics)
 
         self.assertEqual(summary["zeroconf_version"], "0.148.0")
-        self.assertEqual(summary["zeroconf_interfaces"], "All")
-        self.assertFalse(summary["zeroconf_apple_p2p"])
+        self.assertEqual(summary["zeroconf_interfaces"], "system-default")
         self.assertEqual(summary["service_event_count"], 55)
         self.assertEqual(summary["ptr_record_count"], 55)
         self.assertEqual(len(summary["service_events"]), 50)
@@ -205,24 +201,6 @@ class TelemetryDebugTests(unittest.TestCase):
         self.assertEqual(summary["browses"][0]["parse_error_count"], 2)
         self.assertEqual(len(summary["browses"][0]["events"]), 50)
         self.assertEqual(summary["browses"][0]["events"][0]["name"], "Device 0")
-
-    def test_debug_summary_for_interface_candidates_is_compact(self) -> None:
-        result = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate("bridge0", ("192.168.1.217",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate("lo0", ("127.0.0.1",), up=True, active=True, loopback=True),
-            ),
-            preferred_iface="bridge0",
-            detail="ok",
-        )
-
-        self.assertEqual(
-            debug_summary(result),
-            [
-                {"name": "bridge0", "ipv4": ["192.168.1.217"], "loopback": False},
-                {"name": "lo0", "ipv4": ["127.0.0.1"], "loopback": True},
-            ],
-        )
 
     def test_probe_debug_summary_suppresses_first_class_telemetry_fields(self) -> None:
         state = ProbedDeviceState(
@@ -302,7 +280,7 @@ class TelemetryDebugTests(unittest.TestCase):
         self.assertEqual(lines, ["TC_HOST=root@192.168.1.217", "TC_INTERNAL_SHARE_USE_DISK_ROOT=true"])
 
     def test_render_debug_value_summarizes_registered_objects(self) -> None:
-        record = Discovered(
+        record = BonjourResolvedService(
             name="Time Capsule Samba",
             hostname="timecapsulesamba.local",
             service_type="_smb._tcp.local.",
