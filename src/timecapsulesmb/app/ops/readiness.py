@@ -108,6 +108,7 @@ def capabilities_operation(params: dict[str, object], sink: EventSink) -> Operat
             "flash",
             "fsck",
             "paths",
+            "reachability",
             "repair-xattrs",
             "set-telemetry",
             "telemetry-identity",

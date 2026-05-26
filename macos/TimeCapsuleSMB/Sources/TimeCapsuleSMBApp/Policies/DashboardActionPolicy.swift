@@ -9,9 +9,6 @@ enum DashboardActionPolicy {
         if summary.profile.lastDeploy != nil && summary.primaryAction != .openSMB {
             actions.append(.openFinder)
         }
-        if !requiresPasswordReplacement(summary.passwordState) {
-            actions.append(.replacePassword)
-        }
         actions.append(.settings)
         return removingDuplicates(actions.filter { isAvailable($0, for: summary) })
     }
@@ -52,7 +49,8 @@ enum DashboardActionPolicy {
         switch action {
         case .runCheckup:
             return summary.displayStatus != .checking
-        case .installUpdate,
+        case .refreshStatus,
+             .installUpdate,
              .openFinder,
              .replacePassword,
              .viewCheckup,
@@ -88,7 +86,7 @@ enum DashboardActionPolicy {
     }
 }
 
-private extension DashboardPrimaryAction {
+extension DashboardPrimaryAction {
     var isMutatingOverviewAction: Bool {
         switch self {
         case .runCheckup, .installSMB:
@@ -99,10 +97,10 @@ private extension DashboardPrimaryAction {
     }
 }
 
-private extension DashboardSecondaryAction {
+extension DashboardSecondaryAction {
     var isMutatingOverviewAction: Bool {
         switch self {
-        case .runCheckup, .installUpdate:
+        case .refreshStatus, .runCheckup, .installUpdate:
             return true
         case .openFinder, .replacePassword, .viewCheckup, .startSMB, .settings:
             return false

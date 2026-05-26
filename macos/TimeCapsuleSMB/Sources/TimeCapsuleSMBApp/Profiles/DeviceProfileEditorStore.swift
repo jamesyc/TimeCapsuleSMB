@@ -159,6 +159,10 @@ final class DeviceProfileEditorStore: ObservableObject {
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var savedProfile: DeviceProfile?
+    @Published var replacementPassword = "" {
+        didSet { markDirtyAfterPasswordChange() }
+    }
+    @Published private(set) var passwordError: String?
 
     private let appStore: AppStore
     private let coordinator: OperationCoordinator
@@ -171,6 +175,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     private var pendingPassword: String?
     private var lastProcessedEventCount = 0
     private var isApplyingDraft = false
+    private var isApplyingPasswordDraft = false
     private var cancellables: Set<AnyCancellable> = []
 
     init(
@@ -196,7 +201,15 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     var canSave: Bool {
-        !isRunning && draft != baselineDraft
+        !isRunning && hasPendingChanges
+    }
+
+    private var hasPendingPasswordChange: Bool {
+        !replacementPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasPendingChanges: Bool {
+        draft != baselineDraft || hasPendingPasswordChange
     }
 
     func sync(to profile: DeviceProfile) {
@@ -205,7 +218,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             return
         }
 
-        let wasClean = draft == baselineDraft
+        let wasClean = !hasPendingChanges
         baselineDraft = profileDraft
         guard !isRunning else {
             return
@@ -227,6 +240,8 @@ final class DeviceProfileEditorStore: ObservableObject {
         let profileDraft = DeviceProfileEditorDraft(profile: profile)
         baselineDraft = profileDraft
         applyDraft(profileDraft)
+        applyPasswordDraft("")
+        passwordError = nil
         validationErrors = []
         error = nil
         currentStage = nil
@@ -254,16 +269,40 @@ final class DeviceProfileEditorStore: ObservableObject {
             return
         }
 
+        let pendingReplacementPassword = hasPendingPasswordChange ? replacementPassword : nil
+
         if draft.hostChanged(from: profile) {
-            guard let password = appStore.password(for: profile) else {
+            guard let password = pendingReplacementPassword ?? appStore.password(for: profile) else {
                 self.validationErrors = [.passwordRequired]
+                passwordError = L10n.string("password.error.required")
                 error = nil
                 state = .invalid
                 return
             }
             startReconfigure(profile: profile, password: password, settings: settings)
         } else {
-            await saveRegistryOnly(profile: profile)
+            await saveRegistryOnly(profile: profile, replacementPassword: pendingReplacementPassword)
+        }
+    }
+
+    func requestPasswordReplacement(error: String?) {
+        if !hasPendingPasswordChange {
+            applyPasswordDraft("")
+        }
+        passwordError = error
+        if error != nil {
+            validationErrors = []
+            self.error = nil
+            state = .invalid
+        } else {
+            updateDraftChangeState()
+        }
+    }
+
+    func clearPasswordAttention() {
+        passwordError = nil
+        if state == .invalid && validationErrors.isEmpty {
+            updateDraftChangeState()
         }
     }
 
@@ -298,19 +337,28 @@ final class DeviceProfileEditorStore: ObservableObject {
         return errors
     }
 
-    private func saveRegistryOnly(profile: DeviceProfile) async {
+    private func saveRegistryOnly(profile: DeviceProfile, replacementPassword: String?) async {
         state = .saving
         validationErrors = []
         error = nil
         currentStage = nil
         do {
-            let saved = try await appStore.saveProfileEdits(profile: profile, fields: draft.editableFields())
+            let saved = try await appStore.saveProfileEdits(
+                profile: profile,
+                fields: draft.editableFields(),
+                replacementPassword: replacementPassword
+            )
             savedProfile = saved
             let savedDraft = DeviceProfileEditorDraft(profile: saved)
             baselineDraft = savedDraft
             applyDraft(savedDraft)
+            applyPasswordDraft("")
+            passwordError = nil
             state = .saved
         } catch {
+            if replacementPassword != nil {
+                passwordError = error.localizedDescription
+            }
             failSave(error)
         }
     }
@@ -422,6 +470,8 @@ final class DeviceProfileEditorStore: ObservableObject {
                 let savedDraft = DeviceProfileEditorDraft(profile: saved)
                 baselineDraft = savedDraft
                 applyDraft(savedDraft)
+                applyPasswordDraft("")
+                passwordError = nil
                 error = nil
                 validationErrors = []
                 currentStage = nil
@@ -492,6 +542,12 @@ final class DeviceProfileEditorStore: ObservableObject {
         isApplyingDraft = false
     }
 
+    private func applyPasswordDraft(_ password: String) {
+        isApplyingPasswordDraft = true
+        replacementPassword = password
+        isApplyingPasswordDraft = false
+    }
+
     private func markDirtyAfterDraftChange() {
         guard !isApplyingDraft, !isRunning else {
             return
@@ -499,10 +555,18 @@ final class DeviceProfileEditorStore: ObservableObject {
         updateDraftChangeState()
     }
 
+    private func markDirtyAfterPasswordChange() {
+        guard !isApplyingPasswordDraft, !isRunning else {
+            return
+        }
+        passwordError = nil
+        updateDraftChangeState()
+    }
+
     private func updateDraftChangeState() {
         error = nil
         validationErrors = []
         savedProfile = nil
-        state = draft == baselineDraft ? .clean : .dirty
+        state = hasPendingChanges ? .dirty : .clean
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 
 enum DashboardSecondaryAction: String, CaseIterable, Equatable, Hashable, Identifiable {
+    case refreshStatus
     case runCheckup
     case installUpdate
     case openFinder
@@ -13,6 +14,8 @@ enum DashboardSecondaryAction: String, CaseIterable, Equatable, Hashable, Identi
 
     var title: String {
         switch self {
+        case .refreshStatus:
+            return L10n.string("dashboard.action.refresh_status")
         case .runCheckup:
             return L10n.string("dashboard.action.run_checkup")
         case .installUpdate:
@@ -32,6 +35,8 @@ enum DashboardSecondaryAction: String, CaseIterable, Equatable, Hashable, Identi
 
     var systemImage: String {
         switch self {
+        case .refreshStatus:
+            return "arrow.clockwise"
         case .runCheckup:
             return "stethoscope"
         case .installUpdate:
@@ -71,11 +76,79 @@ struct DeviceDashboardHeaderPresentation: Equatable {
             PresentationRow(label: L10n.string("dashboard.overview.connection_target"), value: profile.connectionTarget),
             PresentationRow(label: L10n.string("dashboard.overview.addresses"), value: profile.addressSummary.isEmpty ? L10n.string("value.unknown") : profile.addressSummary),
             PresentationRow(label: L10n.string("dashboard.overview.model"), value: profile.model ?? L10n.string("value.unknown")),
-            PresentationRow(label: L10n.string("dashboard.overview.generation"), value: profile.deviceGeneration ?? L10n.string("value.unknown")),
+            PresentationRow(label: L10n.string("dashboard.overview.generation"), value: Self.generationValue(for: profile)),
             PresentationRow(label: L10n.string("dashboard.overview.payload"), value: profile.payloadFamily ?? L10n.string("value.unknown")),
             PresentationRow(label: L10n.string("dashboard.overview.password"), value: summary.passwordState.title),
             PresentationRow(label: L10n.string("dashboard.overview.last_install"), value: profile.lastDeploy?.summary ?? L10n.string("value.never"))
         ]
+    }
+
+    private static func generationValue(for profile: DeviceProfile) -> String {
+        if let syapGeneration = generationFromSyAP(profile.syap) {
+            return syapGeneration
+        }
+        if let modelGeneration = generationFromModel(profile.model) {
+            return modelGeneration
+        }
+        if let coarseGeneration = generationFromCoarseValue(profile.deviceGeneration) {
+            return coarseGeneration
+        }
+        return L10n.string("value.unknown")
+    }
+
+    private static func generationFromSyAP(_ syap: String?) -> String? {
+        guard let syap = syap?.trimmingCharacters(in: .whitespacesAndNewlines), !syap.isEmpty else {
+            return nil
+        }
+        return [
+            "104": "1st generation",
+            "105": "2nd generation",
+            "106": "1st generation",
+            "108": "3rd generation",
+            "109": "2nd generation",
+            "113": "3rd generation",
+            "114": "4th generation",
+            "116": "4th generation",
+            "117": "5th generation",
+            "119": "5th generation",
+            "120": "6th generation"
+        ][syap]
+    }
+
+    private static func generationFromModel(_ model: String?) -> String? {
+        guard let model else {
+            return nil
+        }
+        let pattern = #"([0-9]+(?:st|nd|rd|th) generation)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(model.startIndex..<model.endIndex, in: model)
+        guard let match = regex.firstMatch(in: model, range: range),
+              let matchRange = Range(match.range(at: 1), in: model) else {
+            return nil
+        }
+        return String(model[matchRange])
+    }
+
+    private static func generationFromCoarseValue(_ value: String?) -> String? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "gen1", "tc_gen1":
+            return "1st generation"
+        case "gen2", "tc_gen2":
+            return "2nd generation"
+        case "gen3", "tc_gen3":
+            return "3rd generation"
+        case "gen4", "tc_gen4":
+            return "4th generation"
+        case "gen5", "tc_gen5":
+            return "5th generation"
+        case "gen6", "tc_gen6":
+            return "6th generation"
+        default:
+            return nil
+        }
     }
 
     private static func formattedDate(_ date: Date) -> String {
@@ -180,16 +253,28 @@ struct DeviceDashboardOverviewPresentation: Equatable {
     let hostWarning: HostCompatibilityWarning?
     let requiresPasswordReplacement: Bool
 
-    init(summary: DeviceDashboardSummary, currentCheckupSummary: DoctorSummary? = nil) {
+    init(
+        summary: DeviceDashboardSummary,
+        currentCheckupSummary: DoctorSummary? = nil,
+        reachabilitySnapshot: DeviceReachabilitySnapshot? = nil,
+        isReachabilityRunning: Bool = false
+    ) {
         let secondaryActions = DashboardActionPolicy.secondaryActions(for: summary)
         self.header = DeviceDashboardHeaderPresentation(summary: summary)
         self.primaryAction = summary.primaryAction
         self.isPrimaryActionEnabled = DashboardActionPolicy.isEnabled(summary.primaryAction, for: summary)
+            && !(isReachabilityRunning && summary.primaryAction.isMutatingOverviewAction)
         self.secondaryActions = secondaryActions
         self.disabledSecondaryActions = Set(DashboardSecondaryAction.allCases.filter {
             !DashboardActionPolicy.isEnabled($0, for: summary)
+                || (isReachabilityRunning && $0.isMutatingOverviewAction)
         })
-        self.healthSections = Self.healthSections(for: summary, currentCheckupSummary: currentCheckupSummary)
+        self.healthSections = Self.healthSections(
+            for: summary,
+            currentCheckupSummary: currentCheckupSummary,
+            reachabilitySnapshot: reachabilitySnapshot,
+            isReachabilityRunning: isReachabilityRunning
+        )
         self.hostWarning = summary.hostWarning
         self.requiresPasswordReplacement = DashboardActionPolicy.requiresPasswordReplacement(summary.passwordState)
     }
@@ -200,10 +285,18 @@ struct DeviceDashboardOverviewPresentation: Equatable {
 
     private static func healthSections(
         for summary: DeviceDashboardSummary,
-        currentCheckupSummary: DoctorSummary?
+        currentCheckupSummary: DoctorSummary?,
+        reachabilitySnapshot: DeviceReachabilitySnapshot?,
+        isReachabilityRunning: Bool
     ) -> [DashboardHealthSection] {
         [
-            DashboardHealthSection(domain: .connection, rows: [connectionRow(for: summary)]),
+            DashboardHealthSection(domain: .connection, rows: [
+                connectionRow(
+                    for: summary,
+                    reachabilitySnapshot: reachabilitySnapshot,
+                    isReachabilityRunning: isReachabilityRunning
+                )
+            ]),
             DashboardHealthSection(domain: .runtime, rows: [runtimeRow(for: summary, currentCheckupSummary: currentCheckupSummary)]),
             DashboardHealthSection(domain: .checkup, rows: [
                 checkupRow(summary: summary, currentCheckupSummary: currentCheckupSummary)
@@ -211,7 +304,11 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         ]
     }
 
-    private static func connectionRow(for summary: DeviceDashboardSummary) -> DashboardHealthRow {
+    private static func connectionRow(
+        for summary: DeviceDashboardSummary,
+        reachabilitySnapshot: DeviceReachabilitySnapshot?,
+        isReachabilityRunning: Bool
+    ) -> DashboardHealthRow {
         switch summary.displayStatus {
         case .checking, .installing, .maintaining:
             return DashboardHealthRow(
@@ -225,39 +322,73 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             break
         }
 
-        switch summary.passwordState {
-        case .available:
+        if isReachabilityRunning {
             return DashboardHealthRow(
-                id: "connection-password-available",
+                id: "connection-refreshing",
                 title: DashboardHealthDomain.connection.title,
-                detail: L10n.string("dashboard.health.connection.password_available"),
-                status: .good
-            )
-        case .unknown, .missing:
-            return DashboardHealthRow(
-                id: "connection-password-missing",
-                title: DashboardHealthDomain.connection.title,
-                detail: L10n.string("dashboard.health.connection.password_missing"),
-                status: .warning,
-                action: .replacePassword
-            )
-        case .invalid:
-            return DashboardHealthRow(
-                id: "connection-password-invalid",
-                title: DashboardHealthDomain.connection.title,
-                detail: L10n.string("dashboard.health.connection.password_invalid"),
-                status: .failed,
-                action: .replacePassword
-            )
-        case .keychainUnavailable:
-            return DashboardHealthRow(
-                id: "connection-keychain-unavailable",
-                title: DashboardHealthDomain.connection.title,
-                detail: L10n.string("dashboard.health.connection.keychain_unavailable"),
-                status: .failed,
-                action: .replacePassword
+                detail: L10n.string("dashboard.health.connection.refreshing"),
+                status: .running
             )
         }
+
+        switch summary.passwordState {
+        case .invalid:
+            return passwordIssueRow(id: "connection-password-invalid", detailKey: "dashboard.health.connection.password_invalid")
+        case .keychainUnavailable:
+            return passwordIssueRow(id: "connection-keychain-unavailable", detailKey: "dashboard.health.connection.keychain_unavailable")
+        case .available, .unknown, .missing:
+            break
+        }
+
+        if let reachabilitySnapshot {
+            return reachabilityRow(from: reachabilitySnapshot)
+        }
+
+        switch summary.passwordState {
+        case .available, .unknown, .missing:
+            return DashboardHealthRow(
+                id: "connection-not-refreshed",
+                title: DashboardHealthDomain.connection.title,
+                detail: L10n.string("dashboard.health.connection.not_refreshed"),
+                status: .unknown,
+                action: .refreshStatus
+            )
+        case .invalid:
+            return passwordIssueRow(id: "connection-password-invalid", detailKey: "dashboard.health.connection.password_invalid")
+        case .keychainUnavailable:
+            return passwordIssueRow(id: "connection-keychain-unavailable", detailKey: "dashboard.health.connection.keychain_unavailable")
+        }
+    }
+
+    private static func passwordIssueRow(id: String, detailKey: String) -> DashboardHealthRow {
+        DashboardHealthRow(
+            id: id,
+            title: DashboardHealthDomain.connection.title,
+            detail: L10n.string(detailKey),
+            status: .failed,
+            action: .replacePassword
+        )
+    }
+
+    private static func reachabilityRow(from snapshot: DeviceReachabilitySnapshot) -> DashboardHealthRow {
+        let status: DashboardHealthStatus
+        switch snapshot.payload.status.lowercased() {
+        case "reachable":
+            status = .good
+        case "partial":
+            status = .warning
+        case "unreachable":
+            status = .failed
+        default:
+            status = .unknown
+        }
+        return DashboardHealthRow(
+            id: "connection-reachability-\(snapshot.payload.status.lowercased())",
+            title: DashboardHealthDomain.connection.title,
+            detail: snapshot.payload.summary,
+            status: status,
+            action: .refreshStatus
+        )
     }
 
     private static func runtimeRow(

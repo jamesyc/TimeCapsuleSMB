@@ -192,6 +192,10 @@ extension FlashManualPowerCycleNotice {
     var actionTitle: String {
         L10n.string("action.ok")
     }
+
+    var viewCheckupActionTitle: String {
+        L10n.string("dashboard.action.view_checkup")
+    }
 }
 
 extension FlashPlanMode {

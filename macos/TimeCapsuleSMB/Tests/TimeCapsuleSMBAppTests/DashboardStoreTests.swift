@@ -93,11 +93,11 @@ final class DashboardStoreTests: XCTestCase {
         session.performPrimaryAction(.viewCheckup, profile: profile)
         XCTAssertEqual(session.selectedTab, .checkup)
 
-        session.replacementPassword = "draft"
+        session.profileEditorStore.replacementPassword = "draft"
         session.performPrimaryAction(.replacePassword, profile: profile)
-        XCTAssertEqual(session.selectedTab, .overview)
-        XCTAssertEqual(session.replacementPassword, "")
-        XCTAssertTrue(session.isReplacingPassword)
+        XCTAssertEqual(session.selectedTab, .settings)
+        XCTAssertEqual(session.profileEditorStore.replacementPassword, "draft")
+        XCTAssertNil(session.profileEditorStore.passwordError)
 
         session.performPrimaryAction(.openSMB, profile: profile)
         XCTAssertEqual(opener.openedURLs.map(\.absoluteString), ["smb://10.0.0.2"])
@@ -132,7 +132,30 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(opener.openedURLs.map(\.absoluteString), ["smb://jameschang@Office%20Capsule._smb._tcp.local"])
     }
 
-    func testPasswordReplacementSaveUpdatesPasswordStateAndHidesEditor() async throws {
+    func testRefreshStatusSecondaryActionRunsReachability() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+
+        session.performSecondaryAction(.refreshStatus, profile: profile)
+        try await waitUntilStoreState { fixture.appStore.reachabilityStore.snapshot(for: profile) != nil }
+
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["reachability"])
+        XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
+        XCTAssertEqual(fixture.appStore.reachabilityStore.snapshot(for: profile)?.payload.status, "reachable")
+    }
+
+    func testProfileEditorPasswordSaveUpdatesPasswordStateAndClearsDraft() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -142,18 +165,17 @@ final class DashboardStoreTests: XCTestCase {
         )
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
         session.performPrimaryAction(.replacePassword, profile: profile)
-        session.replacementPassword = "new-password"
+        session.profileEditorStore.replacementPassword = "new-password"
 
-        await session.saveReplacementPassword(for: profile)
+        await session.profileEditorStore.save(profile: profile)
 
-        XCTAssertFalse(session.isReplacingPassword)
-        XCTAssertEqual(session.replacementPassword, "")
-        XCTAssertNil(session.passwordError)
+        XCTAssertEqual(session.profileEditorStore.replacementPassword, "")
+        XCTAssertNil(session.profileEditorStore.passwordError)
         XCTAssertEqual(try fixture.passwordStore.password(for: profile.keychainAccount), "new-password")
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .available)
     }
 
-    func testPasswordReplacementSaveFailureKeepsEditorOpen() async throws {
+    func testProfileEditorPasswordSaveFailureKeepsDraft() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -163,12 +185,12 @@ final class DashboardStoreTests: XCTestCase {
         )
         fixture.passwordStore.saveFailure = .save
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
-        session.replacementPassword = "new-password"
+        session.profileEditorStore.replacementPassword = "new-password"
 
-        await session.saveReplacementPassword(for: profile)
+        await session.profileEditorStore.save(profile: profile)
 
-        XCTAssertTrue(session.isReplacingPassword)
-        XCTAssertEqual(session.passwordError, "In-memory password store save failed.")
+        XCTAssertEqual(session.profileEditorStore.replacementPassword, "new-password")
+        XCTAssertEqual(session.profileEditorStore.passwordError, "In-memory password store save failed.")
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .missing)
     }
 
@@ -190,7 +212,7 @@ final class DashboardStoreTests: XCTestCase {
 
         let firstSession = dashboard.session(for: first)
         firstSession.selectedTab = .maintenance
-        firstSession.replacementPassword = "draft"
+        firstSession.profileEditorStore.replacementPassword = "draft"
         firstSession.deployStore.mountWait = "77"
         firstSession.maintenanceStore.selectedWorkflow = .fsck
 
@@ -198,7 +220,7 @@ final class DashboardStoreTests: XCTestCase {
 
         XCTAssertFalse(firstSession === secondSession)
         XCTAssertEqual(secondSession.selectedTab, .overview)
-        XCTAssertEqual(secondSession.replacementPassword, "")
+        XCTAssertEqual(secondSession.profileEditorStore.replacementPassword, "")
         XCTAssertEqual(secondSession.deployStore.mountWait, "30")
         XCTAssertEqual(secondSession.maintenanceStore.selectedWorkflow, .activate)
     }
@@ -539,7 +561,8 @@ final class DashboardStoreTests: XCTestCase {
 
         session.runCheckup(profile: profile)
 
-        XCTAssertEqual(session.passwordError, "Password is required.")
+        XCTAssertEqual(session.profileEditorStore.passwordError, "Password is required.")
+        XCTAssertEqual(session.selectedTab, .settings)
         try await waitUntilStoreState {
             fixture.registry.profile(id: profile.id)?.passwordState == .missing
         }
@@ -607,8 +630,8 @@ final class DashboardStoreTests: XCTestCase {
             error: error,
             profile: profile
         ))
-        XCTAssertEqual(session.selectedTab, .overview)
-        XCTAssertTrue(session.isReplacingPassword)
+        XCTAssertEqual(session.selectedTab, .settings)
+        XCTAssertNil(session.profileEditorStore.passwordError)
     }
 
     func testRecoveryRunCheckupAndInstallActionsStartBackendOperations() async throws {

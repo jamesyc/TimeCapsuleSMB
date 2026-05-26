@@ -3,6 +3,11 @@ import Foundation
 
 @MainActor
 final class AppStore: ObservableObject {
+    private enum PasswordRollback {
+        case delete
+        case restore(String)
+    }
+
     @Published var selectedDeviceID: DeviceProfile.ID?
     @Published var showingAddDevice = false
     @Published var showingActivity = false
@@ -16,6 +21,7 @@ final class AppStore: ObservableObject {
     let passwordStore: PasswordStore
     let activityStore: ActivityStore
     let discoveryMonitor: DeviceDiscoveryMonitorStore
+    let reachabilityStore: DeviceReachabilityStore
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -39,7 +45,8 @@ final class AppStore: ObservableObject {
         passwordStore: PasswordStore,
         activityStore: ActivityStore? = nil,
         appUpdateStore: AppUpdateStore? = nil,
-        discoveryMonitor: DeviceDiscoveryMonitorStore? = nil
+        discoveryMonitor: DeviceDiscoveryMonitorStore? = nil,
+        reachabilityStore: DeviceReachabilityStore? = nil
     ) {
         self.appReadinessStore = appReadinessStore
         self.appSettingsStore = appSettingsStore ?? AppSettingsStore()
@@ -53,6 +60,7 @@ final class AppStore: ObservableObject {
             readinessStore: appReadinessStore,
             registry: deviceRegistry
         )
+        self.reachabilityStore = reachabilityStore ?? DeviceReachabilityStore(coordinator: operationCoordinator)
 
         appReadinessStore.objectWillChange
             .sink { [weak self] _ in
@@ -85,6 +93,11 @@ final class AppStore: ObservableObject {
             }
             .store(in: &cancellables)
         self.discoveryMonitor.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        self.reachabilityStore.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
@@ -197,17 +210,33 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func savePassword(_ password: String, for profile: DeviceProfile) async throws {
-        try passwordStore.save(password, for: profile.keychainAccount)
-        await deviceRegistry.updatePasswordState(.available, for: profile.id)
-    }
-
     @discardableResult
-    func saveProfileEdits(profile: DeviceProfile, fields: DeviceProfileEditableFields) async throws -> DeviceProfile {
+    func saveProfileEdits(
+        profile: DeviceProfile,
+        fields: DeviceProfileEditableFields,
+        replacementPassword: String? = nil
+    ) async throws -> DeviceProfile {
         var updated = profile
         updated.displayName = fields.displayName
         updated.settings = fields.settings
-        return try await deviceRegistry.updateProfile(updated)
+
+        let rollback: PasswordRollback?
+        if let replacementPassword {
+            rollback = try passwordRollback(for: profile.keychainAccount)
+            try passwordStore.save(replacementPassword, for: profile.keychainAccount)
+            updated.passwordState = .available
+        } else {
+            rollback = nil
+        }
+
+        do {
+            return try await deviceRegistry.updateProfile(updated)
+        } catch {
+            if let rollback {
+                rollbackPassword(rollback, account: profile.keychainAccount)
+            }
+            throw error
+        }
     }
 
     func forget(_ profile: DeviceProfile) async throws {
@@ -258,15 +287,39 @@ final class AppStore: ObservableObject {
     }
 
     private func applyAppSettings(_ settings: AppSettings) {
+        let previousLanguage = L10n.currentLanguage
+        L10n.apply(language: settings.language)
         if backend.helperPath != settings.helperPathOverride {
             backend.helperPath = settings.helperPathOverride
         }
         appReadinessStore.applyVersionCheck(readinessVersionCheck(for: settings))
         discoveryMonitor.applyAppSettings(settings)
+        if previousLanguage != settings.language {
+            objectWillChange.send()
+        }
     }
 
     private func readinessVersionCheck(for settings: AppSettings) -> AppReadinessVersionCheck {
         AppReadinessVersionCheck(url: settings.versionCheckURL)
+    }
+
+    private func passwordRollback(for account: String) throws -> PasswordRollback {
+        do {
+            return .restore(try passwordStore.password(for: account))
+        } catch PasswordStoreError.missing {
+            return .delete
+        } catch {
+            throw error
+        }
+    }
+
+    private func rollbackPassword(_ rollback: PasswordRollback, account: String) {
+        switch rollback {
+        case .delete:
+            try? passwordStore.deletePassword(for: account)
+        case .restore(let password):
+            try? passwordStore.save(password, for: account)
+        }
     }
 
     private func syncTelemetryPreference(_ enabled: Bool) {

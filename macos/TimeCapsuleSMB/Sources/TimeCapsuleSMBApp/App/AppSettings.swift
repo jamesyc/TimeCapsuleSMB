@@ -1,7 +1,62 @@
 import Combine
 import Foundation
 
+enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
+    case system
+    case english = "en"
+    case simplifiedChinese = "zh-Hans"
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .system:
+            return L10n.string("app_language.system")
+        case .english:
+            return L10n.string("app_language.english")
+        case .simplifiedChinese:
+            return L10n.string("app_language.simplified_chinese")
+        }
+    }
+
+    var localizationIdentifier: String? {
+        switch self {
+        case .system:
+            return nil
+        case .english:
+            return rawValue
+        case .simplifiedChinese:
+            return rawValue
+        }
+    }
+
+    var locale: Locale {
+        switch self {
+        case .system:
+            return .current
+        case .english:
+            return Locale(identifier: "en")
+        case .simplifiedChinese:
+            return Locale(identifier: "zh-Hans")
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = AppLanguage(rawValue: rawValue) ?? .system
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
 struct AppSettings: Codable, Equatable {
+    var language: AppLanguage
     var defaultBonjourTimeoutSeconds: Double
     var defaultDeviceSettings: DeviceProfileSettings
     var telemetryEnabled: Bool
@@ -12,6 +67,7 @@ struct AppSettings: Codable, Equatable {
     var timeMachineWarningsEnabled: Bool
 
     static let `default` = AppSettings(
+        language: .system,
         defaultBonjourTimeoutSeconds: 6,
         defaultDeviceSettings: .default,
         telemetryEnabled: true,
@@ -23,6 +79,7 @@ struct AppSettings: Codable, Equatable {
     )
 
     init(
+        language: AppLanguage = .system,
         defaultBonjourTimeoutSeconds: Double,
         defaultDeviceSettings: DeviceProfileSettings,
         telemetryEnabled: Bool,
@@ -32,6 +89,7 @@ struct AppSettings: Codable, Equatable {
         versionCheckURL: String,
         timeMachineWarningsEnabled: Bool
     ) {
+        self.language = language
         self.defaultBonjourTimeoutSeconds = defaultBonjourTimeoutSeconds
         self.defaultDeviceSettings = defaultDeviceSettings
         self.telemetryEnabled = telemetryEnabled
@@ -43,6 +101,7 @@ struct AppSettings: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case language
         case defaultBonjourTimeoutSeconds
         case defaultDeviceSettings
         case telemetryEnabled
@@ -56,6 +115,7 @@ struct AppSettings: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let defaults = Self.default
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? defaults.language
         defaultBonjourTimeoutSeconds = Self.decodeNonNegativeDouble(
             from: container,
             forKey: .defaultBonjourTimeoutSeconds,
@@ -240,6 +300,7 @@ private actor AppSettingsRepository {
 }
 
 struct AppSettingsDraft: Equatable {
+    var language: AppLanguage
     var defaultBonjourTimeoutSeconds: String
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
@@ -256,6 +317,7 @@ struct AppSettingsDraft: Equatable {
     var timeMachineWarningsEnabled: Bool
 
     init(settings: AppSettings) {
+        language = settings.language
         defaultBonjourTimeoutSeconds = Self.formatDouble(settings.defaultBonjourTimeoutSeconds)
         nbnsEnabled = settings.defaultDeviceSettings.nbnsEnabled
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
@@ -298,6 +360,7 @@ struct AppSettingsDraft: Equatable {
         }
 
         return AppSettings(
+            language: language,
             defaultBonjourTimeoutSeconds: bonjourTimeout,
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: nbnsEnabled,

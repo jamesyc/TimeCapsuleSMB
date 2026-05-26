@@ -60,6 +60,9 @@ struct DeviceDashboardView: View {
             isPresented: manualPowerCycleNoticePresented,
             presenting: session.flashStore.manualPowerCycleNotice
         ) { notice in
+            Button(notice.viewCheckupActionTitle) {
+                session.viewCheckupAfterFlashNotice()
+            }
             Button(notice.actionTitle, role: .cancel) {
                 session.flashStore.dismissManualPowerCycleNotice()
             }

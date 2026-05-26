@@ -126,6 +126,34 @@ struct VersionCheckPayload: Decodable, Equatable {
     }
 }
 
+struct ReachabilityPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let status: String
+    let sshHost: String?
+    let smbHost: String?
+    let checks: [ReachabilityCheckPayload]
+    let counts: [String: Int]
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case status
+        case sshHost = "ssh_host"
+        case smbHost = "smb_host"
+        case checks
+        case counts
+        case summary
+    }
+}
+
+struct ReachabilityCheckPayload: Decodable, Equatable {
+    let id: String
+    let status: String
+    let message: String
+    let host: String?
+    let detail: String?
+}
+
 struct InstallCheckPayload: Decodable, Equatable {
     let id: String
     let ok: Bool

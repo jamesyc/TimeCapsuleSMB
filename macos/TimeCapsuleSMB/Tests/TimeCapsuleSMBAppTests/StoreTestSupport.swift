@@ -306,7 +306,8 @@ func testConfigurePayload(
     configPath: String = "/tmp/profile/.env",
     syap: String = "119",
     model: String = "Time Capsule",
-    payloadFamily: String = "netbsd6_samba4"
+    payloadFamily: String = "netbsd6_samba4",
+    deviceGeneration: String = "tc_gen4"
 ) -> JSONValue {
     .object([
         "schema_version": .number(1),
@@ -322,7 +323,7 @@ func testConfigurePayload(
             "arch": .string("powerpc"),
             "elf_endianness": .string("big"),
             "payload_family": .string(payloadFamily),
-            "device_generation": .string("tc_gen4"),
+            "device_generation": .string(deviceGeneration),
             "supported": .bool(true),
             "syap_candidates": .array([.string(syap)]),
             "model_candidates": .array([.string(model)])
@@ -341,14 +342,16 @@ func testConfiguredDevice(
     configPath: String = "/tmp/profile/.env",
     syap: String = "119",
     model: String = "Time Capsule",
-    payloadFamily: String = "netbsd6_samba4"
+    payloadFamily: String = "netbsd6_samba4",
+    deviceGeneration: String = "tc_gen4"
 ) throws -> ConfiguredDeviceState {
     ConfiguredDeviceState(payload: try testConfigurePayload(
         host: host,
         configPath: configPath,
         syap: syap,
         model: model,
-        payloadFamily: payloadFamily
+        payloadFamily: payloadFamily,
+        deviceGeneration: deviceGeneration
     ).decode(ConfigurePayload.self))
 }
 
@@ -377,6 +380,37 @@ func testDoctorCheck(status: String, message: String, domain: String) -> JSONVal
         "status": .string(status),
         "message": .string(message),
         "details": .object(["domain": .string(domain)])
+    ])
+}
+
+func testReachabilityPayload(
+    status: String = "reachable",
+    summary: String = "SSH reachable; SMB port reachable."
+) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "status": .string(status),
+        "ssh_host": .string("root@10.0.0.2"),
+        "smb_host": .string("10.0.0.2"),
+        "checks": .array([
+            .object([
+                "id": .string("ssh_port"),
+                "status": .string(status == "unreachable" ? "FAIL" : "PASS"),
+                "message": .string("SSH port checked."),
+                "host": .string("10.0.0.2")
+            ]),
+            .object([
+                "id": .string("smb_port"),
+                "status": .string(status == "reachable" ? "PASS" : "FAIL"),
+                "message": .string("SMB port checked."),
+                "host": .string("10.0.0.2")
+            ])
+        ]),
+        "counts": .object([
+            "PASS": .number(status == "reachable" ? 2 : (status == "partial" ? 1 : 0)),
+            "FAIL": .number(status == "reachable" ? 0 : (status == "partial" ? 1 : 2))
+        ]),
+        "summary": .string(summary)
     ])
 }
 
