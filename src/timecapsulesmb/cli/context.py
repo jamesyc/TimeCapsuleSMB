@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from timecapsulesmb.cli import runtime
 from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
 from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.device.compat import require_compatibility as require_device_compatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import probe_connection_state, probe_remote_airport_identity_conn
 from timecapsulesmb.device.storage import (
@@ -469,7 +470,7 @@ class CommandContext:
             raise RuntimeError("CommandContext connection is not set.")
         if self.probe_state is None:
             self.probe_state = probe_connection_state(self.connection)
-        self.compatibility = runtime.require_compatibility(
+        self.compatibility = require_device_compatibility(
             self.probe_state.compatibility,
             fallback_error=self.probe_state.probe_result.error or "Failed to determine remote device OS compatibility.",
         )
