@@ -52,7 +52,8 @@ enum DashboardSecondaryAction: String, CaseIterable, Equatable, Hashable, Identi
 
 struct DeviceDashboardHeaderPresentation: Equatable {
     let title: String
-    let host: String
+    let connectionTarget: String
+    let addressSummary: String
     let status: DeviceDisplayStatus
     let lastChecked: String
     let rows: [PresentationRow]
@@ -60,12 +61,15 @@ struct DeviceDashboardHeaderPresentation: Equatable {
     init(summary: DeviceDashboardSummary) {
         let profile = summary.profile
         self.title = profile.title
-        self.host = profile.host
+        self.connectionTarget = profile.displayTarget
+        self.addressSummary = profile.addressSummary
         self.status = summary.displayStatus
         self.lastChecked = profile.lastCheckup
             .map { Self.formattedDate($0.checkedAt) }
             ?? L10n.string("value.never")
         self.rows = [
+            PresentationRow(label: L10n.string("dashboard.overview.connection_target"), value: profile.connectionTarget),
+            PresentationRow(label: L10n.string("dashboard.overview.addresses"), value: profile.addressSummary.isEmpty ? L10n.string("value.unknown") : profile.addressSummary),
             PresentationRow(label: L10n.string("dashboard.overview.model"), value: profile.model ?? L10n.string("value.unknown")),
             PresentationRow(label: L10n.string("dashboard.overview.generation"), value: profile.deviceGeneration ?? L10n.string("value.unknown")),
             PresentationRow(label: L10n.string("dashboard.overview.payload"), value: profile.payloadFamily ?? L10n.string("value.unknown")),

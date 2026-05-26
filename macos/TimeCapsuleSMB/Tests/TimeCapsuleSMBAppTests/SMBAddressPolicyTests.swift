@@ -24,6 +24,19 @@ final class SMBAddressPolicyTests: XCTestCase {
         XCTAssertEqual(SMBAddressPolicy.url(for: profile)?.absoluteString, "smb://10.0.0.2")
     }
 
+    func testFallsBackToAddressInventoryBeforeConfiguredHostAndFormatsIPv6URLs() {
+        let profile = makeProfile(
+            host: "root@capsule.local",
+            bonjourName: nil,
+            bonjourFullname: nil,
+            hostname: nil,
+            addresses: ["fd00::2"]
+        )
+
+        XCTAssertEqual(SMBAddressPolicy.preferredHost(for: profile), "fd00::2")
+        XCTAssertEqual(SMBAddressPolicy.url(for: profile, account: "James Chang")?.absoluteString, "smb://James%20Chang@[fd00::2]")
+    }
+
     func testTrimsURLPathAndTrailingDotFromHostCandidates() {
         let profile = makeProfile(
             host: "smb://office-capsule.local./Data",
@@ -61,7 +74,8 @@ final class SMBAddressPolicyTests: XCTestCase {
         host: String,
         bonjourName: String? = "Office Capsule",
         bonjourFullname: String? = "Office Capsule._airport._tcp.local.",
-        hostname: String?
+        hostname: String?,
+        addresses: [String] = []
     ) -> DeviceProfile {
         DeviceProfile(
             id: "device-one",
@@ -70,7 +84,7 @@ final class SMBAddressPolicyTests: XCTestCase {
             bonjourName: bonjourName,
             bonjourFullname: bonjourFullname,
             hostname: hostname,
-            addresses: [],
+            addresses: addresses,
             syap: "119",
             model: "TimeCapsule6,116",
             osName: nil,

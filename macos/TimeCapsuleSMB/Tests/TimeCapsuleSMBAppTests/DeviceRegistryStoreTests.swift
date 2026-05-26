@@ -94,6 +94,19 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(fullnameDuplicate.id, first.id)
         XCTAssertEqual(store.profiles.count, 1)
 
+        let addressDuplicate = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "other.local."),
+            discoveredDevice: try discovered(record: testDeviceRecord(
+                hostname: "other.local.",
+                ipv4: ["10.0.0.2"],
+                fullname: "Other._airport._tcp.local."
+            )),
+            passwordState: .available,
+            preferredID: "device-address"
+        )
+        XCTAssertEqual(addressDuplicate.id, first.id)
+        XCTAssertEqual(store.profiles.count, 1)
+
         _ = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.10", syap: "119", model: "Updated Model"),
             discoveredDevice: nil,

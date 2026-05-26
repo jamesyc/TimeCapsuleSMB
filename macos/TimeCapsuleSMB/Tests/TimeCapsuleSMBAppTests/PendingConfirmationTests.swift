@@ -117,6 +117,16 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertNil(params["any_protocol"])
     }
 
+    func testConfigureParamsDefaultBareIPv6ManualHostToRootUser() {
+        let params = OperationParams.configure(
+            host: " fd00::2 ",
+            password: "pw",
+            debugLogging: false
+        )
+
+        XCTAssertEqual(params["host"], .string("root@fd00::2"))
+    }
+
     func testPendingConfirmationBuildsFromBackendEvent() throws {
         let event = BackendEvent(
             type: "error",

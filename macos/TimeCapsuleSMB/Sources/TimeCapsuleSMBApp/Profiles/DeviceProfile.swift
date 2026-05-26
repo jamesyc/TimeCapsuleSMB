@@ -151,11 +151,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
 
     var id: ID
     var displayName: String
-    var host: String
-    var bonjourName: String?
-    var bonjourFullname: String?
-    var hostname: String?
-    var addresses: [String]
+    var network: DeviceNetworkIdentity
     var syap: String?
     var model: String?
     var osName: String?
@@ -173,6 +169,43 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     var settings: DeviceProfileSettings
     var passwordState: DevicePasswordState
 
+    var host: String {
+        get { network.configuredSSHTarget }
+        set { network.setConfiguredSSHTarget(newValue) }
+    }
+
+    var bonjourName: String? {
+        get { network.bonjourName }
+        set { network.bonjourName = newValue }
+    }
+
+    var bonjourFullname: String? {
+        get { network.bonjourFullname }
+        set { network.bonjourFullname = newValue }
+    }
+
+    var hostname: String? {
+        get { network.hostname }
+        set { network.hostname = newValue }
+    }
+
+    var addresses: [String] {
+        get { network.addressValues }
+        set { network.setAddressValues(newValue) }
+    }
+
+    var connectionTarget: String {
+        network.preferredSetupTarget
+    }
+
+    var displayTarget: String {
+        network.displayTarget
+    }
+
+    var addressSummary: String {
+        network.addressSummary
+    }
+
     var title: String {
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedName.isEmpty {
@@ -184,7 +217,7 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         if let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
             return model
         }
-        return normalizedHost.isEmpty ? "Time Capsule" : normalizedHost
+        return displayTarget.isEmpty ? "Time Capsule" : displayTarget
     }
 
     var normalizedHost: String {
@@ -203,22 +236,11 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     }
 
     static func normalizedHost(_ host: String) -> String {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        let withoutUser = trimmed.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).last.map(String.init) ?? trimmed
-        return withoutUser
-            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            .lowercased()
+        DeviceEndpointPolicy.normalizedHostKey(host)
     }
 
     static func matches(_ left: DeviceProfile, _ right: DeviceProfile) -> Bool {
-        if let leftFullname = normalizedOptional(left.bonjourFullname),
-           let rightFullname = normalizedOptional(right.bonjourFullname),
-           leftFullname == rightFullname {
-            return true
-        }
-        let leftHost = left.normalizedHost
-        let rightHost = right.normalizedHost
-        return !leftHost.isEmpty && leftHost == rightHost
+        left.network.matches(right.network)
     }
 
     static func make(
@@ -234,11 +256,11 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         return DeviceProfile(
             id: resolvedID,
             displayName: existing?.displayName ?? discoveredDevice?.name ?? configuredDevice.model ?? "Time Capsule",
-            host: configuredDevice.host,
-            bonjourName: discoveredDevice?.name ?? existing?.bonjourName,
-            bonjourFullname: discoveredDevice?.fullname ?? existing?.bonjourFullname,
-            hostname: discoveredDevice?.hostname ?? existing?.hostname,
-            addresses: discoveredDevice?.addresses ?? existing?.addresses ?? [],
+            network: DeviceNetworkIdentity.make(
+                configuredSSHTarget: configuredDevice.host,
+                discoveredDevice: discoveredDevice,
+                existing: existing?.network
+            ),
             syap: configuredDevice.syap ?? existing?.syap,
             model: configuredDevice.model ?? existing?.model,
             osName: compatibility?.osName ?? existing?.osName,
@@ -258,13 +280,102 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         )
     }
 
-    private static func normalizedOptional(_ value: String?) -> String? {
-        guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !normalized.isEmpty else {
-            return nil
-        }
-        return normalized
+    init(
+        id: ID,
+        displayName: String,
+        network: DeviceNetworkIdentity,
+        syap: String?,
+        model: String?,
+        osName: String?,
+        osRelease: String?,
+        arch: String?,
+        elfEndianness: String?,
+        payloadFamily: String?,
+        deviceGeneration: String?,
+        configPath: String,
+        keychainAccount: String,
+        createdAt: Date,
+        updatedAt: Date,
+        lastCheckup: DeviceCheckupSnapshot?,
+        lastDeploy: DeviceDeploySnapshot?,
+        settings: DeviceProfileSettings,
+        passwordState: DevicePasswordState
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.network = network
+        self.syap = syap
+        self.model = model
+        self.osName = osName
+        self.osRelease = osRelease
+        self.arch = arch
+        self.elfEndianness = elfEndianness
+        self.payloadFamily = payloadFamily
+        self.deviceGeneration = deviceGeneration
+        self.configPath = configPath
+        self.keychainAccount = keychainAccount
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastCheckup = lastCheckup
+        self.lastDeploy = lastDeploy
+        self.settings = settings
+        self.passwordState = passwordState
     }
+
+    init(
+        id: ID,
+        displayName: String,
+        host: String,
+        bonjourName: String?,
+        bonjourFullname: String?,
+        hostname: String?,
+        addresses: [String],
+        syap: String?,
+        model: String?,
+        osName: String?,
+        osRelease: String?,
+        arch: String?,
+        elfEndianness: String?,
+        payloadFamily: String?,
+        deviceGeneration: String?,
+        configPath: String,
+        keychainAccount: String,
+        createdAt: Date,
+        updatedAt: Date,
+        lastCheckup: DeviceCheckupSnapshot?,
+        lastDeploy: DeviceDeploySnapshot?,
+        settings: DeviceProfileSettings,
+        passwordState: DevicePasswordState
+    ) {
+        self.init(
+            id: id,
+            displayName: displayName,
+            network: DeviceNetworkIdentity(
+                configuredSSHTarget: host,
+                hostname: hostname,
+                bonjourName: bonjourName,
+                bonjourFullname: bonjourFullname,
+                addresses: addresses.compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+            ),
+            syap: syap,
+            model: model,
+            osName: osName,
+            osRelease: osRelease,
+            arch: arch,
+            elfEndianness: elfEndianness,
+            payloadFamily: payloadFamily,
+            deviceGeneration: deviceGeneration,
+            configPath: configPath,
+            keychainAccount: keychainAccount,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            lastCheckup: lastCheckup,
+            lastDeploy: lastDeploy,
+            settings: settings,
+            passwordState: passwordState
+        )
+    }
+
 }
 
 extension DiscoveredDevice {

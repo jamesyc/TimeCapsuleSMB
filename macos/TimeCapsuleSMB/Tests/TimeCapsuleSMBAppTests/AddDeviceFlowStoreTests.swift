@@ -152,6 +152,66 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.devices[1].addresses, ["169.254.44.9", "10.0.0.2"])
     }
 
+    func testDiscoverPreservesDualStackAddressesAndUsesRegularIPv4SetupTarget() async throws {
+        let record = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office.local.",
+            ipv4: ["169.254.44.9", "10.0.0.2"],
+            ipv6: ["fd00::2"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
+            ])
+        ])
+
+        fixture.store.runDiscover()
+
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        let device = try XCTUnwrap(fixture.store.devices.first)
+        XCTAssertEqual(device.addresses, ["169.254.44.9", "10.0.0.2", "fd00::2"])
+        XCTAssertEqual(device.connectionTarget, "10.0.0.2")
+        XCTAssertEqual(device.addressSummary, "IPv4 10.0.0.2  IPv6 fd00::2")
+        XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.2")
+    }
+
+    func testIPv6OnlyDiscoveryConfiguresAndSavesNetworkIdentity() async throws {
+        let record = testDeviceRecord(
+            name: "IPv6 Capsule",
+            hostname: "ipv6-capsule.local.",
+            ipv4: [],
+            ipv6: ["fd00::2"],
+            fullname: "IPv6 Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@fd00::2"))
+            ])
+        ])
+
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        let device = try XCTUnwrap(fixture.store.devices.first)
+        XCTAssertEqual(device.connectionTarget, "fd00::2")
+        XCTAssertEqual(fixture.store.hostFieldText, "fd00::2")
+
+        fixture.store.select(device)
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        let profile = try XCTUnwrap(fixture.store.savedProfile)
+        XCTAssertEqual(profile.connectionTarget, "fd00::2")
+        XCTAssertEqual(profile.addresses, ["fd00::2"])
+        XCTAssertEqual(profile.addressSummary, "IPv6 fd00::2")
+        XCTAssertNotNil(fixture.runner.calls[1].params["selected_record"])
+        XCTAssertNil(fixture.runner.calls[1].params["host"])
+    }
+
     func testMalformedDiscoverPayloadFailsContract() async throws {
         let fixture = try await makeStore(responses: [
             .init(events: [

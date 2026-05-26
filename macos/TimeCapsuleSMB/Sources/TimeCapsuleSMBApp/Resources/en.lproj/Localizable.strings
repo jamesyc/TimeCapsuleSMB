@@ -16,7 +16,7 @@
 "add_device.error.choose_target" = "Choose a discovered device or enter a host.";
 "add_device.error.invalid_bonjour_timeout" = "Bonjour timeout must be a non-negative number.";
 "add_device.error.password_required" = "Time Capsule password is required.";
-"add_device.host_or_ip" = "Host or IP";
+"add_device.host_or_ip" = "Hostname or IP address";
 "add_device.password" = "Time Capsule password";
 "add_device.progress.configuring.message" = "Verifying access and preparing this Time Capsule. This can take a few seconds...";
 "add_device.progress.configuring.title" = "Connecting to Time Capsule";
@@ -27,6 +27,7 @@
 "add_device.reset" = "Reset";
 "add_device.save_device" = "Save Device";
 "add_device.saved" = "Saved %@";
+"add_device.setup_target" = "Setup target: %@";
 "add_device.state.auth_failed" = "Password Rejected";
 "add_device.state.configuring" = "Configuring";
 "add_device.state.discovering" = "Discovering";
@@ -190,7 +191,9 @@
 "dashboard.health.time_machine" = "Time Machine";
 "dashboard.health.unchecked" = "Run Checkup to inspect this area.";
 "dashboard.overview.generation" = "Generation";
-"dashboard.overview.host" = "Host";
+"dashboard.overview.addresses" = "Addresses";
+"dashboard.overview.connection_target" = "Connection Target";
+"dashboard.overview.host" = "Connection Target";
 "dashboard.overview.last_checkup" = "Last Checkup";
 "dashboard.overview.last_install" = "Last Install";
 "dashboard.overview.model" = "Model";

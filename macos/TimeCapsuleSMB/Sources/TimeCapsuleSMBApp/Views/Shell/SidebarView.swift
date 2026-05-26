@@ -12,7 +12,7 @@ struct DeviceSidebarRow: View {
                 Text(profile.title)
                     .lineLimit(1)
                 HStack(spacing: 4) {
-                    Text(profile.host)
+                    Text(profile.displayTarget)
                         .lineLimit(1)
                     if let lastSeenText {
                         Text("- \(lastSeenText)")
