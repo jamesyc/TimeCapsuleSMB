@@ -18,7 +18,6 @@ from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
     ConfigValidationError,
-    build_adisk_share_txt,
     build_mdns_device_model_txt,
     DEFAULTS,
     extract_host,
@@ -34,16 +33,10 @@ from timecapsulesmb.core.config import (
     validate_bool,
     validate_mdns_device_model_matches_syap,
     validate_mdns_device_model,
-    validate_mdns_host_label,
-    validate_mdns_instance_name,
-    validate_netbios_name,
-    validate_net_iface,
-    validate_payload_dir_name,
-    validate_samba_user,
     validate_ssh_target,
     write_env_file,
 )
-from timecapsulesmb.core.paths import manifest_artifact_paths, resolve_app_paths, resolve_project_root
+from timecapsulesmb.core.paths import manifest_artifact_paths, resolve_app_paths, resolve_distribution_root
 
 
 class ConfigTests(unittest.TestCase):
@@ -117,7 +110,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn(f"Missing required setting in {path}: TC_HOST", str(ctx.exception))
         self.assertIn("before running `deploy`", str(ctx.exception))
 
-    def test_resolve_project_root_prefers_start_project_markers(self) -> None:
+    def test_resolve_distribution_root_prefers_start_project_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             nested = root / "nested"
@@ -128,7 +121,7 @@ class ConfigTests(unittest.TestCase):
                 artifact_path = root / relative_path
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
                 artifact_path.write_bytes(b"payload")
-            self.assertEqual(resolve_project_root(nested), root)
+            self.assertEqual(resolve_distribution_root(nested), root)
             self.assertEqual(resolve_app_paths(nested).env_path, root / ".env")
 
     def test_render_env_text_contains_config_keys(self) -> None:
@@ -353,12 +346,6 @@ class ConfigTests(unittest.TestCase):
     def test_build_mdns_device_model_txt(self) -> None:
         self.assertEqual(build_mdns_device_model_txt("TimeCapsule"), "model=TimeCapsule")
 
-    def test_build_adisk_share_txt(self) -> None:
-        self.assertEqual(
-            build_adisk_share_txt("Data"),
-            "dk2=adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
-        )
-
     def test_validate_mdns_device_model_accepts_supported_values(self) -> None:
         for value in (
             "TimeCapsule",
@@ -387,93 +374,6 @@ class ConfigTests(unittest.TestCase):
             "mDNS device model hint is not a supported AirPort storage device model.",
         )
         self.assertEqual(validate_mdns_device_model("", "mDNS device model hint"), "mDNS device model hint cannot be blank.")
-
-    def test_validate_mdns_instance_name_allows_spaces(self) -> None:
-        self.assertIsNone(validate_mdns_instance_name("Time Capsule Samba 4", "mDNS SMB instance name"))
-        self.assertIsNone(validate_mdns_instance_name("Living Room Backup", "mDNS SMB instance name"))
-
-    def test_validate_mdns_instance_name_rejects_bad_values(self) -> None:
-        self.assertEqual(validate_mdns_instance_name("", "mDNS SMB instance name"), "mDNS SMB instance name cannot be blank.")
-        self.assertEqual(validate_mdns_instance_name("time.capsule", "mDNS SMB instance name"), "mDNS SMB instance name must not contain dots.")
-        self.assertEqual(validate_mdns_instance_name("a" * 64, "mDNS SMB instance name"), "mDNS SMB instance name must be 63 bytes or fewer.")
-
-    def test_validate_mdns_host_label_accepts_dns_safe_values(self) -> None:
-        self.assertIsNone(validate_mdns_host_label("timecapsulesamba4", "mDNS host label"))
-        self.assertIsNone(validate_mdns_host_label("time-capsule-4", "mDNS host label"))
-
-    def test_validate_mdns_host_label_rejects_spaces_and_bad_values(self) -> None:
-        self.assertEqual(
-            validate_mdns_host_label("Time Capsule", "mDNS host label"),
-            "mDNS host label may contain only letters, numbers, and hyphens.",
-        )
-        self.assertEqual(validate_mdns_host_label("time.capsule", "mDNS host label"), "mDNS host label must not contain dots.")
-        self.assertEqual(
-            validate_mdns_host_label("10.0.1.99", "mDNS host label"),
-            "mDNS host label must be a single DNS label, not an IP address.",
-        )
-        self.assertEqual(
-            validate_mdns_host_label("fe80::1", "mDNS host label"),
-            "mDNS host label must be a single DNS label, not an IP address.",
-        )
-        self.assertEqual(validate_mdns_host_label("-timecapsule", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
-        self.assertEqual(validate_mdns_host_label("timecapsule-", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
-
-    def test_validate_netbios_name_rejects_long_values(self) -> None:
-        self.assertEqual(
-            validate_netbios_name("A" * 16, "Samba NetBIOS name"),
-            "Samba NetBIOS name must be 15 bytes or fewer.",
-        )
-
-    def test_validate_netbios_name_accepts_safe_values(self) -> None:
-        self.assertIsNone(validate_netbios_name("TimeCapsule", "Samba NetBIOS name"))
-        self.assertIsNone(validate_netbios_name("TC_4-Backup", "Samba NetBIOS name"))
-
-    def test_validate_netbios_name_rejects_spaces_and_punctuation(self) -> None:
-        self.assertEqual(
-            validate_netbios_name("Time Capsule", "Samba NetBIOS name"),
-            "Samba NetBIOS name may contain only letters, numbers, underscores, and hyphens.",
-        )
-        self.assertEqual(
-            validate_netbios_name("Time.Capsule", "Samba NetBIOS name"),
-            "Samba NetBIOS name may contain only letters, numbers, underscores, and hyphens.",
-        )
-
-    def test_validate_samba_user_accepts_safe_values(self) -> None:
-        self.assertIsNone(validate_samba_user("admin", "Samba username"))
-        self.assertIsNone(validate_samba_user("time.machine_user-1", "Samba username"))
-
-    def test_validate_samba_user_rejects_bad_values(self) -> None:
-        self.assertEqual(validate_samba_user("", "Samba username"), "Samba username cannot be blank.")
-        self.assertEqual(validate_samba_user("time machine", "Samba username"), "Samba username must not contain whitespace.")
-        self.assertEqual(
-            validate_samba_user("bad:user", "Samba username"),
-            "Samba username may contain only letters, numbers, dots, underscores, and hyphens.",
-        )
-        self.assertEqual(validate_samba_user("a" * 33, "Samba username"), "Samba username must be 32 bytes or fewer.")
-
-    def test_validate_payload_dir_name_accepts_safe_values(self) -> None:
-        self.assertIsNone(validate_payload_dir_name(".samba4", "Persistent payload directory name"))
-        self.assertIsNone(validate_payload_dir_name("samba4", "Persistent payload directory name"))
-        self.assertIsNone(validate_payload_dir_name("tc_samba-4.8", "Persistent payload directory name"))
-
-    def test_validate_payload_dir_name_rejects_bad_values(self) -> None:
-        self.assertEqual(validate_payload_dir_name("", "Persistent payload directory name"), "Persistent payload directory name cannot be blank.")
-        self.assertEqual(validate_payload_dir_name(".", "Persistent payload directory name"), "Persistent payload directory name must not be . or ...")
-        self.assertEqual(validate_payload_dir_name("..", "Persistent payload directory name"), "Persistent payload directory name must not be . or ...")
-        self.assertEqual(validate_payload_dir_name("foo/bar", "Persistent payload directory name"), "Persistent payload directory name must be a single directory name, not a path.")
-        self.assertEqual(validate_payload_dir_name("-samba4", "Persistent payload directory name"), "Persistent payload directory name must not start with a hyphen.")
-
-    def test_validate_net_iface_accepts_safe_values(self) -> None:
-        self.assertIsNone(validate_net_iface("bridge0", "Network interface on the device"))
-        self.assertIsNone(validate_net_iface("bge0.100", "Network interface on the device"))
-
-    def test_validate_net_iface_rejects_bad_values(self) -> None:
-        self.assertEqual(validate_net_iface("", "Network interface on the device"), "Network interface on the device cannot be blank.")
-        self.assertEqual(validate_net_iface("bridge 0", "Network interface on the device"), "Network interface on the device must not contain whitespace.")
-        self.assertEqual(
-            validate_net_iface("bridge0;reboot", "Network interface on the device"),
-            "Network interface on the device may contain only letters, numbers, dots, underscores, colons, and hyphens.",
-        )
 
     def test_validate_ssh_target_accepts_user_at_host_targets(self) -> None:
         self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Device SSH target"))

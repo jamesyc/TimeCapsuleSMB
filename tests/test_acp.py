@@ -136,7 +136,7 @@ class ACPTests(unittest.TestCase):
         response = acp._compose_header(command=acp.COMMAND_GETPROP, payload=body) + body
         fake_socket = FakeSocket(response)
         with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
-            value = acp.get_dbug("10.0.0.2", "pw")
+            value = acp.get_property_int("10.0.0.2", "pw", "dbug")
 
         self.assertEqual(value, 0x3000)
 
@@ -148,7 +148,7 @@ class ACPTests(unittest.TestCase):
         fake_socket = FakeSocket(response)
         with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
             with self.assertRaises(acp.ACPProtocolError) as raised:
-                acp.get_dbug("10.0.0.2", "pw")
+                acp.get_property_int("10.0.0.2", "pw", "dbug")
 
         self.assertIn("body checksum mismatch", str(raised.exception))
 

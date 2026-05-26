@@ -8,12 +8,10 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    saved_value_choice,
     valid_existing_config_value,
     validated_value_or_empty,
 )
 from timecapsulesmb.core.config import (
-    AIRPORT_DEVICE_IDENTITIES,
     AppConfig,
     CONFIG_VALIDATORS,
     DEFAULTS,
@@ -51,8 +49,6 @@ from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
 from timecapsulesmb.cli.util import color_cyan, color_red
 
-HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
-NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect")
 
 
@@ -182,21 +178,6 @@ def prompt_host_and_password(
     values["TC_PASSWORD"] = prompt("Device root password", password_default, True)
 
 
-def print_syap_prompt_help(syap_candidates: tuple[str, ...] | None = None) -> None:
-    print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
-    print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
-    print("")
-    print("Device                           Model identifier    syAP")
-    print("-------------------------------  ------------------  ----")
-    identities = AIRPORT_DEVICE_IDENTITIES
-    if syap_candidates is not None:
-        allowed = set(syap_candidates)
-        identities = tuple(identity for identity in identities if identity.syap in allowed)
-    for identity in identities:
-        print(f"{identity.display_name:<31}  {identity.mdns_model:<18}  {identity.syap}")
-    print("")
-
-
 def prompt_valid_config_value(key: str, label: str, current: str, secret: bool = False) -> str:
     validator = CONFIG_VALIDATORS.get(key)
     while True:
@@ -209,27 +190,6 @@ def prompt_valid_config_value(key: str, label: str, current: str, secret: bool =
         return candidate
 
 
-def prompt_config_value_from_candidates(
-    key: str,
-    label: str,
-    current: str,
-    allowed_values: tuple[str, ...],
-    *,
-    secret: bool = False,
-    invalid_message: str | None = None,
-) -> str:
-    allowed = set(allowed_values)
-    while True:
-        candidate = prompt_valid_config_value(key, label, current, secret=secret)
-        if candidate in allowed:
-            return candidate
-        print(invalid_message or f"{label} must be one of: {', '.join(allowed_values)}")
-
-
-def print_saved_value_hint(value: str) -> None:
-    print(f"Found saved value: {value}")
-
-
 def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None:
     if choice.source == "saved":
         print(f"Using {key} from .env: {choice.value}")
@@ -239,23 +199,6 @@ def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None
         print(f"Using probed {key}: {choice.value}")
     elif choice.source == "derived":
         print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
-
-
-def prompt_config_value(
-    existing: dict[str, str],
-    key: str,
-    label: str,
-    default: str,
-    *,
-    secret: bool = False,
-) -> str:
-    saved_choice = saved_value_choice(existing, key, label)
-    current = default
-    if saved_choice is not None:
-        current = saved_choice.value
-        if key not in NO_SAVED_VALUE_HINT_KEYS and not secret:
-            print_saved_value_hint(saved_choice.value)
-    return prompt_valid_config_value(key, label, current, secret)
 
 
 def enable_ssh_and_reprobe_for_configure(

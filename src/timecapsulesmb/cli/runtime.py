@@ -19,7 +19,6 @@ from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     is_netbsd4_payload_family,
     render_compatibility_message,
-    require_compatibility,
 )
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -145,14 +144,6 @@ def confirm(
         print("Please answer 'y' or 'n'.")
 
 
-def load_config_from_args(
-    args: argparse.Namespace,
-    *,
-    defaults: dict[str, str] | None = None,
-) -> AppConfig:
-    return load_env_config(env_path=config_path_from_args(args), defaults=defaults)
-
-
 def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | None = None) -> AppConfig:
     return service_runtime.load_env_config(env_path=env_path, defaults=defaults, resolve_paths=resolve_app_paths)
 
@@ -217,10 +208,6 @@ def resolve_validated_managed_target(
         profile=profile,
         include_probe=include_probe,
     )
-
-
-def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:
-    return service_runtime.require_connection_compatibility(connection)
 
 
 def require_supported_device_compatibility(
