@@ -19,11 +19,45 @@ final class DashboardPresentationTests: XCTestCase {
     }
 
     func testInstallActionsUseDownloadBoxIconExceptReinstall() {
+        XCTAssertEqual(DashboardSecondaryAction.refreshStatus.title, "Refresh Status")
+        XCTAssertEqual(DashboardSecondaryAction.refreshStatus.systemImage, "arrow.clockwise")
         XCTAssertEqual(DashboardPrimaryAction.installSMB.systemImage, "square.and.arrow.down.on.square")
         XCTAssertEqual(DashboardSecondaryAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
         XCTAssertEqual(CheckupUserAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
         XCTAssertEqual(InstallUserAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
         XCTAssertEqual(InstallUserAction.reinstall.systemImage, "arrow.clockwise")
+    }
+
+    func testOverviewHeaderShowsActualGenerationInsteadOfCoarseCompatibilityBucket() throws {
+        let netbsd4 = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: try makeProfile(payloadFamily: "netbsd4_samba4", syap: "116", model: "Time Capsule", deviceGeneration: "gen1-4"),
+            passwordState: .available,
+            displayStatus: .unchecked,
+            primaryAction: .runCheckup,
+            hostWarning: nil
+        ))
+
+        XCTAssertEqual(try headerValue("Generation", in: netbsd4), "4th generation")
+
+        let modelFallback = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: try makeProfile(syap: "", model: "AirPort Extreme 6th generation", deviceGeneration: "gen1-4"),
+            passwordState: .available,
+            displayStatus: .unchecked,
+            primaryAction: .runCheckup,
+            hostWarning: nil
+        ))
+
+        XCTAssertEqual(try headerValue("Generation", in: modelFallback), "6th generation")
+
+        let coarseFallback = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: try makeProfile(syap: "", model: "AirPort Extreme", deviceGeneration: "tc_gen4"),
+            passwordState: .available,
+            displayStatus: .unchecked,
+            primaryAction: .runCheckup,
+            hostWarning: nil
+        ))
+
+        XCTAssertEqual(try headerValue("Generation", in: coarseFallback), "4th generation")
     }
 
     func testInstallActionAvailabilityBlocksMutatingActionsWhileDeviceIsBusy() async throws {
@@ -131,8 +165,73 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.primaryAction, .replacePassword)
         XCTAssertTrue(presentation.requiresPasswordReplacement)
-        XCTAssertEqual(connection.status, .warning)
-        XCTAssertEqual(connection.action, .replacePassword)
+        XCTAssertEqual(connection.status, .unknown)
+        XCTAssertEqual(connection.detail, "Connection status has not been refreshed.")
+        XCTAssertEqual(connection.action, .refreshStatus)
+    }
+
+    func testOverviewPresentationUsesReachabilityForConnectionRow() throws {
+        let profile = try makeProfile()
+        let summary = DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .unchecked,
+            primaryAction: .runCheckup,
+            hostWarning: nil
+        )
+        let neverRefreshed = DeviceDashboardOverviewPresentation(summary: summary)
+
+        XCTAssertEqual(try row(.connection, in: neverRefreshed).status, .unknown)
+        XCTAssertEqual(try row(.connection, in: neverRefreshed).detail, "Connection status has not been refreshed.")
+        XCTAssertEqual(try row(.connection, in: neverRefreshed).action, .refreshStatus)
+
+        let missingPassword = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .missing,
+            displayStatus: .passwordNeeded,
+            primaryAction: .replacePassword,
+            hostWarning: nil
+        ))
+        XCTAssertEqual(try row(.connection, in: missingPassword).status, .unknown)
+        XCTAssertEqual(try row(.connection, in: missingPassword).detail, "Connection status has not been refreshed.")
+        XCTAssertEqual(try row(.connection, in: missingPassword).action, .refreshStatus)
+
+        let reachable = DeviceReachabilitySnapshot(
+            refreshedAt: Date(timeIntervalSince1970: 1),
+            payload: try testReachabilityPayload().decode(ReachabilityPayload.self)
+        )
+        let reachablePresentation = DeviceDashboardOverviewPresentation(
+            summary: summary,
+            reachabilitySnapshot: reachable
+        )
+        XCTAssertEqual(try row(.connection, in: reachablePresentation).status, .good)
+        XCTAssertEqual(try row(.connection, in: reachablePresentation).detail, "SSH reachable; SMB port reachable.")
+        XCTAssertEqual(try row(.connection, in: reachablePresentation).action, .refreshStatus)
+
+        let partial = DeviceReachabilitySnapshot(
+            refreshedAt: Date(timeIntervalSince1970: 2),
+            payload: try testReachabilityPayload(status: "partial", summary: "SSH reachable, SMB port closed.")
+                .decode(ReachabilityPayload.self)
+        )
+        let partialRow = try row(.connection, in: DeviceDashboardOverviewPresentation(summary: summary, reachabilitySnapshot: partial))
+        XCTAssertEqual(partialRow.status, .warning)
+        XCTAssertEqual(partialRow.detail, "SSH reachable, SMB port closed.")
+
+        let unreachable = DeviceReachabilitySnapshot(
+            refreshedAt: Date(timeIntervalSince1970: 3),
+            payload: try testReachabilityPayload(status: "unreachable", summary: "Could not reach SSH or SMB.")
+                .decode(ReachabilityPayload.self)
+        )
+        let unreachableRow = try row(.connection, in: DeviceDashboardOverviewPresentation(summary: summary, reachabilitySnapshot: unreachable))
+        XCTAssertEqual(unreachableRow.status, .failed)
+        XCTAssertEqual(unreachableRow.detail, "Could not reach SSH or SMB.")
+
+        let running = DeviceDashboardOverviewPresentation(summary: summary, isReachabilityRunning: true)
+        let runningRow = try row(.connection, in: running)
+        XCTAssertEqual(runningRow.status, .running)
+        XCTAssertEqual(runningRow.detail, "Checking DNS, SSH, and SMB reachability...")
+        XCTAssertFalse(running.isEnabled(.refreshStatus))
+        XCTAssertFalse(running.isPrimaryActionEnabled)
     }
 
     func testOverviewPresentationAggregatesServiceCheckupDomainsForHealthRow() throws {
@@ -251,7 +350,7 @@ final class DashboardPresentationTests: XCTestCase {
         ))
         XCTAssertEqual(DashboardPrimaryAction.openSMB.title, "Open Finder")
         XCTAssertEqual(healthy.primaryAction, .openSMB)
-        XCTAssertEqual(healthy.secondaryActions, [.runCheckup, .replacePassword, .settings])
+        XCTAssertEqual(healthy.secondaryActions, [.runCheckup, .settings])
 
         let checking = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
             profile: profile,
@@ -261,7 +360,7 @@ final class DashboardPresentationTests: XCTestCase {
             hostWarning: nil
         ))
         XCTAssertEqual(checking.primaryAction, .viewCheckup)
-        XCTAssertEqual(checking.secondaryActions, [.openFinder, .replacePassword, .settings])
+        XCTAssertEqual(checking.secondaryActions, [.openFinder, .settings])
         XCTAssertFalse(checking.secondaryActions.contains(.runCheckup))
         XCTAssertEqual(try row(.checkup, in: checking).action, .viewCheckup)
 
@@ -272,7 +371,7 @@ final class DashboardPresentationTests: XCTestCase {
             primaryAction: .viewCheckup,
             hostWarning: nil
         ))
-        XCTAssertEqual(warning.secondaryActions, [.runCheckup, .openFinder, .replacePassword, .settings])
+        XCTAssertEqual(warning.secondaryActions, [.runCheckup, .openFinder, .settings])
     }
 
     func testOverviewDisablesMutatingActionsWhileOperationIsActive() throws {
@@ -286,10 +385,9 @@ final class DashboardPresentationTests: XCTestCase {
         ))
 
         XCTAssertFalse(installing.isPrimaryActionEnabled)
-        XCTAssertEqual(installing.secondaryActions, [.runCheckup, .replacePassword, .settings])
+        XCTAssertEqual(installing.secondaryActions, [.runCheckup, .settings])
         XCTAssertFalse(installing.isEnabled(.runCheckup))
         XCTAssertFalse(installing.isEnabled(.installUpdate))
-        XCTAssertTrue(installing.isEnabled(.replacePassword))
         XCTAssertTrue(installing.isEnabled(.settings))
 
         let checkup = try row(.checkup, in: installing)
@@ -763,14 +861,29 @@ final class DashboardPresentationTests: XCTestCase {
 
     private func makeProfile(
         id: String = "device-one",
-        payloadFamily: String = "netbsd6_samba4"
+        payloadFamily: String = "netbsd6_samba4",
+        syap: String = "119",
+        model: String = "Time Capsule",
+        deviceGeneration: String = "tc_gen4"
     ) throws -> DeviceProfile {
         DeviceProfile.make(
             id: id,
-            configuredDevice: try testConfiguredDevice(payloadFamily: payloadFamily),
+            configuredDevice: try testConfiguredDevice(
+                syap: syap,
+                model: model,
+                payloadFamily: payloadFamily,
+                deviceGeneration: deviceGeneration
+            ),
             discoveredDevice: nil,
             applicationSupportURL: URL(fileURLWithPath: "/tmp/timecapsulesmb-tests", isDirectory: true)
         )
+    }
+
+    private func headerValue(
+        _ label: String,
+        in presentation: DeviceDashboardOverviewPresentation
+    ) throws -> String {
+        try XCTUnwrap(presentation.header.rows.first { $0.label == label }).value
     }
 
     private func row(

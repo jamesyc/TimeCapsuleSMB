@@ -5,9 +5,6 @@ import Foundation
 final class DeviceDashboardSession: ObservableObject, Identifiable {
     let id: DeviceProfile.ID
     @Published var selectedTab: DeviceDashboardTab = .overview
-    @Published var replacementPassword = ""
-    @Published var isReplacingPassword = false
-    @Published private(set) var passwordError: String?
 
     let appStore: AppStore
     var deployStore: DeployWorkflowStore
@@ -74,6 +71,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     func performSecondaryAction(_ action: DashboardSecondaryAction, profile: DeviceProfile) {
         switch action {
+        case .refreshStatus:
+            refreshReachability(profile: profile)
         case .runCheckup:
             runCheckup(profile: profile)
         case .installUpdate:
@@ -195,31 +194,17 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         }
     }
 
-    func saveReplacementPassword(for profile: DeviceProfile) async {
-        let password = replacementPassword
-        guard !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            passwordError = L10n.string("password.error.required")
-            isReplacingPassword = true
-            return
-        }
-        do {
-            try await appStore.savePassword(password, for: profile)
-            replacementPassword = ""
-            passwordError = nil
-            isReplacingPassword = false
-        } catch {
-            passwordError = error.localizedDescription
-            isReplacingPassword = true
-        }
+    func viewCheckupAfterFlashNotice() {
+        flashStore.dismissManualPowerCycleNotice()
+        selectedTab = .checkup
     }
 
     func runCheckup(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
-            passwordError = L10n.string("password.error.required")
-            isReplacingPassword = true
+            promptForPasswordReplacement(error: L10n.string("password.error.required"))
             return
         }
-        passwordError = nil
+        profileEditorStore.clearPasswordAttention()
         selectedTab = .checkup
         if case .started(let operation) = doctorStore.runDoctor(password: password, profile: profile) {
             activeCheckupOperation = operation
@@ -228,35 +213,36 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     func runInstallPlan(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
-            passwordError = L10n.string("password.error.required")
-            isReplacingPassword = true
+            promptForPasswordReplacement(error: L10n.string("password.error.required"))
             return
         }
-        passwordError = nil
+        profileEditorStore.clearPasswordAttention()
         selectedTab = .install
         _ = deployStore.runPlan(password: password, profile: profile)
     }
 
     func runInstall(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
-            passwordError = L10n.string("password.error.required")
-            isReplacingPassword = true
+            promptForPasswordReplacement(error: L10n.string("password.error.required"))
             return
         }
-        passwordError = nil
+        profileEditorStore.clearPasswordAttention()
         selectedTab = .install
         if case .started(let operation) = deployStore.runDeploy(password: password, profile: profile) {
             activeDeployOperation = operation
         }
     }
 
+    func refreshReachability(profile: DeviceProfile) {
+        appStore.reachabilityStore.refresh(profile: profile, password: appStore.password(for: profile))
+    }
+
     func maintenancePassword(for profile: DeviceProfile) -> String? {
         guard let password = appStore.password(for: profile) else {
-            passwordError = L10n.string("password.error.required")
-            isReplacingPassword = true
+            promptForPasswordReplacement(error: L10n.string("password.error.required"))
             return nil
         }
-        passwordError = nil
+        profileEditorStore.clearPasswordAttention()
         selectedTab = .maintenance
         return password
     }
@@ -300,10 +286,12 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func showPasswordReplacement() {
-        replacementPassword = ""
-        passwordError = nil
-        isReplacingPassword = true
-        selectedTab = .overview
+        promptForPasswordReplacement(error: nil)
+    }
+
+    private func promptForPasswordReplacement(error: String?) {
+        profileEditorStore.requestPasswordReplacement(error: error)
+        selectedTab = .settings
     }
 
     func applyProfileSettings(_ settings: DeviceProfileSettings) {

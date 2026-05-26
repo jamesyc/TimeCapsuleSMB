@@ -8,6 +8,7 @@ from timecapsulesmb.cli.version_check import VersionCheckResult
 from timecapsulesmb.identity import InstallIdentity
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
+from timecapsulesmb.services.reachability import ReachabilityResult
 
 
 SCHEMA_VERSION = 1
@@ -113,6 +114,27 @@ def version_check_payload(result: VersionCheckResult) -> dict[str, object]:
         "latest_tag": result.latest_tag,
         "source": result.source,
         "summary": summary,
+    })
+
+
+def reachability_payload(result: ReachabilityResult) -> dict[str, object]:
+    checks = jsonable(result.checks)
+    if not isinstance(checks, list):
+        checks = []
+    counts: dict[str, int] = {}
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        status = str(check.get("status") or "").upper()
+        if status:
+            counts[status] = counts.get(status, 0) + 1
+    return _with_schema({
+        "status": result.status,
+        "ssh_host": result.ssh_host,
+        "smb_host": result.smb_host,
+        "checks": checks,
+        "counts": counts,
+        "summary": result.summary,
     })
 
 

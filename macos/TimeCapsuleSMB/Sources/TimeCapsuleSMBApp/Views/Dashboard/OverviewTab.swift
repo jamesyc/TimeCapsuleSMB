@@ -15,7 +15,9 @@ struct OverviewTab: View {
         let summary = session.summary(for: profile)
         let presentation = DeviceDashboardOverviewPresentation(
             summary: summary,
-            currentCheckupSummary: session.doctorStore.summary
+            currentCheckupSummary: session.doctorStore.summary,
+            reachabilitySnapshot: appStore.reachabilityStore.snapshot(for: profile),
+            isReachabilityRunning: appStore.reachabilityStore.isRunning(profile: profile)
         )
 
         ScrollView {
@@ -38,15 +40,6 @@ struct OverviewTab: View {
                         session.performSecondaryAction(action, profile: profile)
                     }
                 )
-
-                if presentation.requiresPasswordReplacement || session.isReplacingPassword {
-                    PasswordReplacementView(profile: profile, session: session)
-                }
-
-                if let passwordError = session.passwordError {
-                    Text(passwordError)
-                        .foregroundStyle(.red)
-                }
 
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(presentation.healthSections) { section in
@@ -158,34 +151,6 @@ private struct DashboardActionLabel: View {
         } icon: {
             Image(systemName: systemImage)
                 .frame(width: OverviewLayout.actionIconSize, height: OverviewLayout.actionIconSize)
-        }
-    }
-}
-
-private struct PasswordReplacementView: View {
-    let profile: DeviceProfile
-    @ObservedObject var session: DeviceDashboardSession
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.string("dashboard.password.title"))
-                .font(.headline)
-            HStack {
-                SecureField(L10n.string("dashboard.replacement_password"), text: $session.replacementPassword)
-                    .onSubmit {
-                        Task { @MainActor in
-                            await session.saveReplacementPassword(for: profile)
-                        }
-                    }
-                Button {
-                    Task { @MainActor in
-                        await session.saveReplacementPassword(for: profile)
-                    }
-                } label: {
-                    Label(L10n.string("dashboard.action.save_password"), systemImage: "key")
-                }
-                .disabled(session.replacementPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
         }
     }
 }

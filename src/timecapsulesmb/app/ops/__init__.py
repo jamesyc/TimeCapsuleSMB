@@ -13,6 +13,7 @@ from timecapsulesmb.app.ops.maintenance import (
     repair_xattrs_operation,
     uninstall_operation,
 )
+from timecapsulesmb.app.ops.reachability import reachability_operation
 from timecapsulesmb.app.ops.readiness import (
     capabilities_operation,
     discover_operation,
@@ -35,6 +36,7 @@ OPERATIONS: dict[str, Callable[[dict[str, object], EventSink], OperationResult]]
     "flash": flash_operation,
     "fsck": fsck_operation,
     "paths": paths_operation,
+    "reachability": reachability_operation,
     "repair-xattrs": repair_xattrs_operation,
     "set-telemetry": set_telemetry_operation,
     "telemetry-identity": telemetry_identity_operation,

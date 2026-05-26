@@ -18,6 +18,7 @@ final class AppSettingsStoreTests: XCTestCase {
         let temp = try TemporaryDirectory()
         let settingsURL = temp.url.appendingPathComponent("settings.json")
         let saved = AppSettings(
+            language: .simplifiedChinese,
             defaultBonjourTimeoutSeconds: 12.5,
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: false,
@@ -43,6 +44,19 @@ final class AppSettingsStoreTests: XCTestCase {
 
         XCTAssertEqual(reader.state, .loaded)
         XCTAssertEqual(reader.settings, saved)
+    }
+
+    func testLegacySettingsWithoutLanguageUseSystemDefault() async throws {
+        let temp = try TemporaryDirectory()
+        let settingsURL = temp.url.appendingPathComponent("settings.json")
+        try #"{"telemetryEnabled":false}"#.write(to: settingsURL, atomically: true, encoding: .utf8)
+        let store = AppSettingsStore(settingsURL: settingsURL)
+
+        await store.load()
+
+        XCTAssertEqual(store.state, .loaded)
+        XCTAssertEqual(store.settings.language, .system)
+        XCTAssertFalse(store.settings.telemetryEnabled)
     }
 
     func testCorruptSettingsFailsWithoutReplacingDefaults() async throws {
@@ -76,9 +90,41 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertThrowsError(try draft.validatedSettings()) { error in
             XCTAssertEqual(error as? AppSettingsValidationError, .invalidVersionCheckURL)
         }
+
+        draft = AppSettingsDraft(settings: .default)
+        draft.language = .simplifiedChinese
+        XCTAssertEqual(try draft.validatedSettings().language, .simplifiedChinese)
+    }
+
+    func testLocalizationLanguageOverrideUsesSelectedBundleAndEnglishFallback() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        XCTAssertEqual(L10n.string("app_settings.title", language: .english), "Settings")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .simplifiedChinese), "设置")
+        XCTAssertEqual(
+            L10n.string("app_settings.subtitle", language: .simplifiedChinese),
+            "新设备默认值和 App 级别行为。"
+        )
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(L10n.string("app_settings.title"), "设置")
+    }
+
+    func testSimplifiedChineseLocalizationCoversEnglishKeysAndFormatTokens() {
+        let english = L10n.strings(language: .english)
+        let simplifiedChinese = L10n.strings(language: .simplifiedChinese)
+
+        XCTAssertFalse(english.isEmpty)
+        XCTAssertEqual(Set(simplifiedChinese.keys), Set(english.keys))
+        for key in english.keys {
+            XCTAssertEqual(formatTokens(in: simplifiedChinese[key] ?? ""), formatTokens(in: english[key] ?? ""), key)
+        }
     }
 
     func testSavingSettingsAppliesHelperPathAndRunsTelemetrySyncOnlyWhenNeeded() async throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
         let temp = try TemporaryDirectory()
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -97,11 +143,13 @@ final class AppSettingsStoreTests: XCTestCase {
         )
 
         var settings = AppSettings.default
+        settings.language = .simplifiedChinese
         settings.telemetryEnabled = false
         try await appStore.saveAppSettings(settings)
 
         try await waitUntilStoreState { runner.calls.map(\.operation).contains("set-telemetry") }
         XCTAssertEqual(runner.calls.first?.params["enabled"], .bool(false))
+        XCTAssertEqual(L10n.currentLanguage, .simplifiedChinese)
 
         var helperSettings = settings
         helperSettings.helperPathOverride = "/tmp/tcapsule-helper"
@@ -118,5 +166,14 @@ final class AppSettingsStoreTests: XCTestCase {
             "bootstrap_path": .string("/tmp/.bootstrap"),
             "summary": .string(enabled ? "telemetry is enabled." : "telemetry is disabled.")
         ])
+    }
+
+    private func formatTokens(in string: String) -> [String] {
+        let pattern = "%(?:\\d+\\$)?[@df]"
+        let regex = try! NSRegularExpression(pattern: pattern)
+        let range = NSRange(string.startIndex..<string.endIndex, in: string)
+        return regex.matches(in: string, range: range).map { match in
+            String(string[Range(match.range, in: string)!])
+        }
     }
 }

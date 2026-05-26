@@ -56,6 +56,21 @@ final class BackendPayloadTests: XCTestCase {
 
         XCTAssertFalse(validation.ok)
         XCTAssertEqual(validation.checks[0].details, .object(["failures": .array([.string("bad hash")])]))
+
+        let reachability = try jsonValue("""
+        {
+          "schema_version": 1,
+          "status": "partial",
+          "ssh_host": "root@10.0.0.2",
+          "smb_host": "10.0.0.2",
+          "checks": [{"id": "ping", "status": "PASS", "message": "Host responds to ping.", "host": "10.0.0.2"}],
+          "counts": {"PASS": 1},
+          "summary": "SSH reachable, SMB port closed."
+        }
+        """).decode(ReachabilityPayload.self)
+
+        XCTAssertEqual(reachability.status, "partial")
+        XCTAssertEqual(reachability.checks[0].id, "ping")
     }
 
     func testDecodesDiscoveryAndConfigurePayloads() throws {

@@ -31,6 +31,14 @@ enum SMBAddressPolicy {
         ] + profile.network.addresses.map { normalizedAddressHost($0.value) })
     }
 
+    static func reachabilityHostCandidates(for profile: DeviceProfile) -> [String] {
+        unique([
+            preferredHost(for: profile),
+            normalizedAddressHost(profile.hostname),
+            normalizedAddressHost(profile.host)
+        ] + profile.network.addresses.map { normalizedAddressHost($0.value) })
+    }
+
     private static func bonjourSMBServiceHost(for profile: DeviceProfile) -> String? {
         if let fullname = profile.bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines),
            !fullname.isEmpty {

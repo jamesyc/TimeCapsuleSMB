@@ -316,6 +316,7 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("set-telemetry", payload["operations"])
         self.assertIn("version-check", payload["operations"])
         self.assertIn("flash", payload["operations"])
+        self.assertIn("reachability", payload["operations"])
         self.assertIn("helper_version", payload)
         self.assertIn("artifact_manifest_sha256", payload)
 

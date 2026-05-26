@@ -37,6 +37,19 @@ enum OperationParams {
         return params
     }
 
+    static func reachability(profile: DeviceProfile, password: String?) -> [String: JSONValue] {
+        var params: [String: JSONValue] = [
+            "ssh_host": .string(rootSSHTarget(profile.host)),
+            "smb_hosts": .array(SMBAddressPolicy.reachabilityHostCandidates(for: profile).map(JSONValue.string)),
+            "tcp_timeout": .number(2),
+            "ssh_timeout": .number(8)
+        ]
+        if let password {
+            params = withCredentials(params, password: password)
+        }
+        return params
+    }
+
     static func configure(
         host: String = "",
         selectedRecord: JSONValue? = nil,

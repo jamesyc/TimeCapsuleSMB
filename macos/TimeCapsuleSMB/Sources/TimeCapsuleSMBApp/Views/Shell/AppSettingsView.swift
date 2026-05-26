@@ -12,6 +12,19 @@ struct AppSettingsView: View {
                 header
                     .frame(maxWidth: contentWidth, alignment: .leading)
 
+                SettingsFormSection(title: L10n.string("app_settings.section.general"), contentWidth: contentWidth) {
+                    SettingsFormRow(title: L10n.string("app_settings.language")) {
+                        Picker("", selection: $editor.draft.language) {
+                            ForEach(AppLanguage.allCases) { language in
+                                Text(language.title)
+                                    .tag(language)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 220)
+                    }
+                }
+
                 SettingsFormSection(title: L10n.string("app_settings.section.defaults"), contentWidth: contentWidth) {
                     SettingsFormRow(title: L10n.string("app_settings.default_bonjour_timeout")) {
                         TextField("", text: $editor.draft.defaultBonjourTimeoutSeconds)

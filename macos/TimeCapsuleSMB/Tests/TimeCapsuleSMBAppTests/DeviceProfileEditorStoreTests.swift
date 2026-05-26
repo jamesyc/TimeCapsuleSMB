@@ -150,6 +150,77 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls, [])
     }
 
+    func testPasswordOnlySaveUpdatesKeychainAndClearsDraft() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .missing,
+            preferredID: "device-one"
+        )
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+
+        XCTAssertFalse(store.canSave)
+        store.replacementPassword = "   "
+        XCTAssertFalse(store.canSave)
+        XCTAssertEqual(store.state, .clean)
+
+        store.replacementPassword = "new-password"
+        XCTAssertTrue(store.canSave)
+
+        await store.save(profile: profile)
+
+        XCTAssertEqual(store.state, .saved)
+        XCTAssertEqual(store.replacementPassword, "")
+        XCTAssertNil(store.passwordError)
+        XCTAssertEqual(try fixture.passwordStore.password(for: profile.keychainAccount), "new-password")
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .available)
+        XCTAssertEqual(fixture.runner.calls, [])
+    }
+
+    func testPasswordSaveFailureKeepsDraftAndDoesNotMarkAvailable() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .missing,
+            preferredID: "device-one"
+        )
+        fixture.passwordStore.saveFailure = .save
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+        store.replacementPassword = "new-password"
+
+        await store.save(profile: profile)
+
+        XCTAssertEqual(store.state, .failed)
+        XCTAssertEqual(store.replacementPassword, "new-password")
+        XCTAssertEqual(store.passwordError, "In-memory password store save failed.")
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .missing)
+    }
+
+    func testResetClearsPendingProfileAndPasswordChanges() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+
+        store.draft.nbnsEnabled.toggle()
+        store.replacementPassword = "new-password"
+        XCTAssertTrue(store.canSave)
+
+        store.reset(to: profile)
+
+        XCTAssertEqual(store.state, .clean)
+        XCTAssertFalse(store.canSave)
+        XCTAssertEqual(store.replacementPassword, "")
+        XCTAssertNil(store.passwordError)
+        XCTAssertEqual(store.draft, DeviceProfileEditorDraft(profile: profile))
+    }
+
     func testBlankDisplayNameIsAllowedAndFallsBackThroughTitlePolicy() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -221,6 +292,40 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(store.validationErrors, [.passwordRequired])
         XCTAssertEqual(fixture.runner.calls, [])
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.host, "10.0.0.2")
+    }
+
+    func testChangedHostUsesReplacementPasswordWhenSavedPasswordIsMissing() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "result",
+                    operation: "configure",
+                    ok: true,
+                    payload: testConfigurePayload(host: "root@10.0.0.9", syap: "119", model: "TimeCapsule8,119")
+                )
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .missing,
+            preferredID: "device-one"
+        )
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+
+        store.draft.host = "10.0.0.9"
+        store.replacementPassword = "new-password"
+
+        await store.save(profile: profile)
+
+        try await waitUntilStoreState { store.state == .saved }
+        let call = try XCTUnwrap(fixture.runner.calls.first)
+        XCTAssertEqual(call.operation, "configure")
+        XCTAssertEqual(call.params["password"], .string("new-password"))
+        XCTAssertEqual(store.replacementPassword, "")
+        XCTAssertNil(store.passwordError)
+        XCTAssertEqual(try fixture.passwordStore.password(for: profile.keychainAccount), "new-password")
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .available)
     }
 
     func testChangedHostRunsConfigureWithExistingProfileContextAndPreservesProfileData() async throws {

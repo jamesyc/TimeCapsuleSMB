@@ -73,6 +73,8 @@ enum OperationTimelineBuilder {
         switch operation {
         case "discover":
             return L10n.string("timeline.operation.discovery")
+        case "reachability":
+            return L10n.string("timeline.operation.reachability")
         case "configure":
             return L10n.string("timeline.operation.configure")
         case "deploy":
@@ -107,6 +109,18 @@ enum OperationTimelineBuilder {
         switch (operation, stage) {
         case ("discover", "bonjour_discovery"):
             return L10n.string("timeline.stage.finding_time_capsules")
+        case ("reachability", "build_candidates"):
+            return L10n.string("timeline.stage.reachability_candidates")
+        case ("reachability", "check_dns"):
+            return L10n.string("timeline.stage.reachability_dns")
+        case ("reachability", "check_ping"):
+            return L10n.string("timeline.stage.reachability_ping")
+        case ("reachability", "check_ssh_port"):
+            return L10n.string("timeline.stage.reachability_ssh_port")
+        case ("reachability", "check_ssh_auth"):
+            return L10n.string("timeline.stage.reachability_ssh_auth")
+        case ("reachability", "check_smb_port"):
+            return L10n.string("timeline.stage.reachability_smb_port")
         case ("configure", "ssh_probe"), ("configure", "ssh_probe_after_acp"):
             return L10n.string("timeline.stage.checking_ssh")
         case ("configure", "confirm_enable_ssh"):
