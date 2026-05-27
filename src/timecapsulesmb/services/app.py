@@ -25,6 +25,7 @@ class AppOperationError(RuntimeError):
 class OperationResult:
     ok: bool
     payload: object | None = None
+    diagnostic_error: object | None = None
 
 
 def jsonable(value: object) -> object:

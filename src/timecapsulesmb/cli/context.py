@@ -19,8 +19,13 @@ from timecapsulesmb.device.storage import (
     select_payload_home_with_diagnostics_conn,
     wait_for_mast_volumes_conn,
 )
+from timecapsulesmb.services.context import (
+    COMMAND_FIELD_BLACKLIST,
+    COMMAND_VALUE_BLACKLIST,
+    OperationContext,
+    render_operation_debug_lines,
+)
 from timecapsulesmb.telemetry import build_device_os_version
-from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
 from timecapsulesmb.telemetry.operation import (
     OperationTelemetrySession,
     client_from_environment,
@@ -39,31 +44,6 @@ if TYPE_CHECKING:
     from timecapsulesmb.transport.ssh import SshConnection
 
 
-COMMAND_VALUE_BLACKLIST = {
-    "TC_PASSWORD",
-    # Removed naming keys may still exist in old .env files. They are
-    # intentionally ignored and should not appear as command inputs.
-    "TC_SAMBA_USER",
-    "TC_PAYLOAD_DIR_NAME",
-    "TC_MDNS_HOST_LABEL",
-    "TC_MDNS_INSTANCE_NAME",
-    "TC_NETBIOS_NAME",
-    # These are already first-class telemetry fields.
-    "TC_CONFIGURE_ID",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
-}
-COMMAND_FIELD_BLACKLIST = {
-    # These are already first-class telemetry fields.
-    "configure_id",
-    "device_model",
-    "device_syap",
-    "device_os_version",
-    "device_family",
-    "nbns_enabled",
-    "reboot_was_attempted",
-    "device_came_back_after_reboot",
-}
 MAST_ACP_OUTPUT_DEBUG_LIMIT = 8192
 OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS = 0.1
 
@@ -75,23 +55,6 @@ def _mast_acp_output_debug_text(raw_output: str) -> str:
         return raw_output
     omitted = len(raw_output) - MAST_ACP_OUTPUT_DEBUG_LIMIT
     return f"{raw_output[:MAST_ACP_OUTPUT_DEBUG_LIMIT]}...<truncated {omitted} chars>"
-
-
-def _render_connection_debug_lines(connection: SshConnection | None, values: Mapping[str, str] | None) -> list[str]:
-    host = None
-    ssh_opts = None
-    if connection is not None:
-        host = connection.host
-        ssh_opts = connection.ssh_opts
-    elif values is not None:
-        host = values.get("TC_HOST") or None
-        ssh_opts = values.get("TC_SSH_OPTS") or None
-    lines: list[str] = []
-    if host:
-        lines.append(f"host={host}")
-    if ssh_opts:
-        lines.append(f"ssh_opts={ssh_opts}")
-    return lines
 
 
 def render_command_debug_lines(
@@ -106,22 +69,17 @@ def render_command_debug_lines(
     debug_fields: Mapping[str, object],
     config: AppConfig | None = None,
 ) -> list[str]:
-    debug_values = config.values if config is not None else values
-    lines = ["Debug context:", f"command={command_name}"]
-    if stage:
-        lines.append(f"stage={stage}")
-    if config is not None:
-        lines.append(f"env_path={config.path}")
-    lines.extend(_render_connection_debug_lines(connection, debug_values))
-    if debug_values is not None:
-        lines.extend(render_debug_mapping(debug_values, blacklist=COMMAND_VALUE_BLACKLIST))
-    if preflight_error:
-        lines.append(f"preflight_error={preflight_error}")
-    lines.extend(render_debug_mapping(finish_fields, blacklist=COMMAND_FIELD_BLACKLIST))
-    if probe_state is not None:
-        lines.extend(render_debug_mapping(debug_summary(probe_state), blacklist=COMMAND_FIELD_BLACKLIST))
-    lines.extend(render_debug_mapping(debug_fields, blacklist=COMMAND_FIELD_BLACKLIST))
-    return lines
+    return render_operation_debug_lines(
+        operation_name=command_name,
+        stage=stage,
+        connection=connection,
+        values=values,
+        preflight_error=preflight_error,
+        finish_fields=finish_fields,
+        probe_state=probe_state,
+        debug_fields=debug_fields,
+        config=config,
+    )
 
 
 class CommandContext:
@@ -139,21 +97,13 @@ class CommandContext:
     ) -> None:
         self.telemetry = telemetry
         self.command_name = command_name
-        self.values = values
-        self.config = config
+        self.operation_context = OperationContext(command_name, values=values, config=config)
         self.args = args
         self.finished_event = finished_event
         self.finished = False
         self.command_id = str(uuid.uuid4())
         self.result = "failure"
-        self.finish_fields: dict[str, object] = {}
-        self.error_lines: list[str] = []
-        self.preflight_error: str | None = None
-        self.debug_stage: str | None = None
-        self.debug_fields: dict[str, object] = {}
-        self.connection: SshConnection | None = None
         self.interface_probe: RemoteInterfaceProbeResult | None = None
-        self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
         self._optional_airport_identity_thread: threading.Thread | None = None
         self._optional_airport_identity: tuple[str | None, str | None] | None = None
@@ -171,6 +121,54 @@ class CommandContext:
 
     def __enter__(self) -> "CommandContext":
         return self
+
+    @property
+    def values(self) -> Mapping[str, str] | None:
+        return self.operation_context.values
+
+    @property
+    def config(self) -> AppConfig | None:
+        return self.operation_context.config
+
+    @property
+    def finish_fields(self) -> dict[str, object]:
+        return self.operation_context.finish_fields
+
+    @property
+    def error_lines(self) -> list[str]:
+        return self.operation_context.error_lines
+
+    @property
+    def preflight_error(self) -> str | None:
+        return self.operation_context.preflight_error
+
+    @preflight_error.setter
+    def preflight_error(self, value: str | None) -> None:
+        self.operation_context.preflight_error = value
+
+    @property
+    def debug_stage(self) -> str | None:
+        return self.operation_context.debug_stage
+
+    @property
+    def debug_fields(self) -> dict[str, object]:
+        return self.operation_context.debug_fields
+
+    @property
+    def connection(self) -> SshConnection | None:
+        return self.operation_context.connection
+
+    @connection.setter
+    def connection(self, value: SshConnection | None) -> None:
+        self.operation_context.connection = value
+
+    @property
+    def probe_state(self) -> ProbedDeviceState | None:
+        return self.operation_context.probe_state
+
+    @probe_state.setter
+    def probe_state(self, value: ProbedDeviceState | None) -> None:
+        self.operation_context.probe_state = value
 
     def __exit__(self, exc_type: object, exc: object, _tb: object) -> bool:
         if exc_type is KeyboardInterrupt and self.result != "cancelled":
@@ -214,9 +212,7 @@ class CommandContext:
         self.set_error(message)
 
     def update_fields(self, **fields: object) -> None:
-        for key, value in fields.items():
-            if value is not None:
-                self.finish_fields[key] = value
+        self.operation_context.update_fields(**fields)
 
     def _update_device_identity_fields(self, *, model: str | None, syap: str | None) -> None:
         self.update_fields(device_model=model, device_syap=syap)
@@ -271,34 +267,16 @@ class CommandContext:
         )
 
     def set_stage(self, stage: str) -> None:
-        self.debug_stage = stage
+        self.operation_context.set_stage(stage)
 
     def add_debug_fields(self, **fields: object) -> None:
-        for key, value in fields.items():
-            if value is not None:
-                self.debug_fields[key] = debug_summary(value)
+        self.operation_context.add_debug_fields(**fields)
 
     def set_error(self, message: str) -> None:
-        self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
+        self.operation_context.set_error(message)
 
     def build_error(self) -> str | None:
-        if not self.error_lines:
-            return None
-        return "\n".join([
-            *self.error_lines,
-            "",
-            *render_command_debug_lines(
-                command_name=self.command_name,
-                stage=self.debug_stage,
-                connection=self.connection,
-                values=self.values,
-                preflight_error=self.preflight_error,
-                finish_fields=self.finish_fields,
-                probe_state=self.probe_state,
-                debug_fields=self.debug_fields,
-                config=self.config,
-            ),
-        ])
+        return self.operation_context.build_error()
 
     def confirm_or_fail(
         self,
