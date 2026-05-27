@@ -332,7 +332,11 @@ def test_prepared_python_framework_reuses_cache(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(package_app, "extract_python_framework", fake_extract)
     monkeypatch.setattr(package_app, "prune_python_runtime", lambda framework: None)
     monkeypatch.setattr(package_app, "rewrite_python_framework_install_names", lambda framework: None)
+    # This cache test runs on Linux CI; Mach-O validators are covered separately
+    # and shell out to macOS tools such as lipo and otool.
     monkeypatch.setattr(package_app, "assert_macho_has_architectures", lambda path, architectures, label: None)
+    monkeypatch.setattr(package_app, "assert_macho_architectures_for_roots", lambda roots, architectures, label: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies_for_roots", lambda roots: None)
     monkeypatch.setattr(package_app, "ad_hoc_codesign_python_framework", lambda framework: None)
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid_for_roots", lambda roots: None)
 
