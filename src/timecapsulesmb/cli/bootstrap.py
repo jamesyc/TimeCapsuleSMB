@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import confirm, load_optional_env_config
+from timecapsulesmb.cli.runtime import load_optional_env_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import find_command
@@ -19,8 +19,19 @@ REQUIREMENTS = REPO_ROOT / "requirements.txt"
 ANSI_RED = "\033[31m"
 ANSI_RESET = "\033[0m"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-MACOS_SSHPASS_TAP = "hudochenkov/sshpass"
 MACOS_SSHPASS_FORMULA = "sshpass"
+REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
+MACOS_HOST_TOOL_PACKAGES = {
+    "sshpass": MACOS_SSHPASS_FORMULA,
+    "smbclient": "samba",
+}
+LINUX_HOST_TOOL_PACKAGES = {
+    "apt-get": {"sshpass": "sshpass", "smbclient": "smbclient"},
+    "dnf": {"sshpass": "sshpass", "smbclient": "samba-client"},
+    "yum": {"sshpass": "sshpass", "smbclient": "samba-client"},
+    "zypper": {"sshpass": "sshpass", "smbclient": "samba-client"},
+    "pacman": {"sshpass": "sshpass", "smbclient": "smbclient"},
+}
 
 
 class BootstrapError(Exception):
@@ -77,85 +88,110 @@ def install_python_requirements(venv_python: Path) -> None:
     run([str(venv_python), "-m", "pip", "install", "-e", str(REPO_ROOT)])
 
 
-def maybe_install_smbclient() -> None:
-    if find_command("smbclient"):
+def _missing_required_host_tools() -> list[str]:
+    return [tool for tool in REQUIRED_HOST_TOOLS if find_command(tool) is None]
+
+
+def _format_tools(tools: list[str]) -> str:
+    return ", ".join(tools)
+
+
+def _macos_manual_install_command(missing_tools: list[str]) -> str:
+    packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
+    return f"brew install {' '.join(packages)}"
+
+
+def _linux_install_plan(missing_tools: list[str]) -> tuple[list[list[str]], str] | None:
+    for manager, packages_by_tool in LINUX_HOST_TOOL_PACKAGES.items():
+        executable = find_command(manager)
+        if executable is None:
+            continue
+        packages = [packages_by_tool[tool] for tool in missing_tools]
+        if manager == "apt-get":
+            return (
+                [
+                    ["sudo", executable, "update"],
+                    ["sudo", executable, "install", "-y", *packages],
+                ],
+                f"sudo apt-get update && sudo apt-get install -y {' '.join(packages)}",
+            )
+        if manager == "pacman":
+            return (
+                [["sudo", executable, "-S", "--needed", *packages]],
+                f"sudo pacman -S --needed {' '.join(packages)}",
+            )
+        return (
+            [["sudo", executable, "install", "-y", *packages]],
+            f"sudo {manager} install -y {' '.join(packages)}",
+        )
+    return None
+
+
+def _raise_host_tool_install_error(message: str, manual_command: str | None = None) -> None:
+    print(red(message), flush=True)
+    if manual_command:
+        print(red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+        print(manual_command, flush=True)
+    raise BootstrapError(message)
+
+
+def _install_macos_host_tools(missing_tools: list[str]) -> None:
+    brew = find_command("brew")
+    if brew is None:
+        print(red(f"Homebrew is required to install missing host tools: {_format_tools(missing_tools)}"), flush=True)
+        print(red("Install Homebrew, then rerun './tcapsule bootstrap':"), flush=True)
+        print(HOMEBREW_INSTALL_COMMAND, flush=True)
+        raise BootstrapError("Homebrew is required to install missing host tools on macOS.")
+
+    packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
+    print(f"Installing missing host tools via Homebrew: {_format_tools(missing_tools)}", flush=True)
+    run([brew, "install", *packages])
+
+
+def install_required_host_tools() -> None:
+    missing_tools = _missing_required_host_tools()
+    if not missing_tools:
+        print(f"Found required host tools: {_format_tools(list(REQUIRED_HOST_TOOLS))}", flush=True)
         return
 
-    print("smbclient is required for cross-platform SMB verification in 'tcapsule doctor'.", flush=True)
-
-    if current_platform_label() == "macOS":
-        brew = find_command("brew")
-        if not brew:
-            print("Homebrew not found, so bootstrap cannot install smbclient automatically.", flush=True)
-            print("Install Homebrew from https://brew.sh and then run: brew install samba", flush=True)
-            return
-        print("On macOS, smbclient is provided by the Homebrew 'samba' formula.", flush=True)
-        if not confirm("Install smbclient now via 'brew install samba'?", default=True, eof_default=False):
-            print("Skipping smbclient install. Later, run 'brew install samba' before using 'tcapsule doctor'.", flush=True)
-            return
-        print("Installing smbclient via 'brew install samba'", flush=True)
-        try:
-            run([brew, "install", "samba"])
-        except subprocess.CalledProcessError as exc:
-            print("Warning: smbclient install failed. Host bootstrap will continue without it.", flush=True)
-            print("Later, run 'brew install samba' and rerun './tcapsule bootstrap' or use '.venv/bin/tcapsule doctor' once smbclient is available.", flush=True)
-            print(f"smbclient install command failed with exit code {exc.returncode}: {exc.cmd}", flush=True)
-        return
-
-    print("Automatic smbclient installation is not implemented for this platform.", flush=True)
-    if find_command("apt-get"):
-        print("Install it with: sudo apt-get update && sudo apt-get install -y smbclient", flush=True)
-    elif find_command("dnf"):
-        print("Install it with: sudo dnf install -y samba-client", flush=True)
-    elif find_command("yum"):
-        print("Install it with: sudo yum install -y samba-client", flush=True)
-    elif find_command("zypper"):
-        print("Install it with: sudo zypper install smbclient", flush=True)
-    elif find_command("pacman"):
-        print("Install it with: sudo pacman -S samba", flush=True)
-    else:
-        print("Install smbclient with your distro package manager before running 'tcapsule doctor'.", flush=True)
-    print("After installing smbclient, rerun './tcapsule bootstrap' or use '.venv/bin/tcapsule doctor'.", flush=True)
-
-
-def maybe_install_sshpass() -> None:
-    if find_command("sshpass"):
-        print("Found local sshpass.", flush=True)
-        return
-
-    print("sshpass is required for NetBSD4 devices that do not provide remote scp.", flush=True)
+    print(f"Missing required host tools: {_format_tools(missing_tools)}", flush=True)
     platform_label = current_platform_label()
-    if platform_label == "macOS":
-        brew = find_command("brew")
-        if not brew:
-            print(red("Homebrew is missing, please install Homebrew:"), flush=True)
-            print(HOMEBREW_INSTALL_COMMAND, flush=True)
-            raise BootstrapError("Homebrew is required to install sshpass on macOS.")
-        print(f"Installing sshpass via 'brew tap {MACOS_SSHPASS_TAP}' and 'brew install {MACOS_SSHPASS_FORMULA}'", flush=True)
-        run([brew, "tap", MACOS_SSHPASS_TAP])
-        run([brew, "install", MACOS_SSHPASS_FORMULA])
-        return
+    manual_command: str | None = None
+    try:
+        if platform_label == "macOS":
+            manual_command = _macos_manual_install_command(missing_tools)
+            _install_macos_host_tools(missing_tools)
+        elif platform_label == "Linux":
+            plan = _linux_install_plan(missing_tools)
+            if plan is None:
+                _raise_host_tool_install_error(
+                    f"No supported Linux package manager found to install missing host tools: {_format_tools(missing_tools)}",
+                    f"Install {_format_tools(missing_tools)} with your distro package manager.",
+                )
+            commands, manual_command = plan
+            print(f"Installing missing host tools via Linux package manager: {_format_tools(missing_tools)}", flush=True)
+            for command in commands:
+                run(command)
+        else:
+            _raise_host_tool_install_error(
+                f"Automatic host tool installation is not implemented for {platform_label}.",
+                f"Install {_format_tools(missing_tools)} with your OS package manager.",
+            )
+    except subprocess.CalledProcessError as exc:
+        message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
+        print(red(message), flush=True)
+        if manual_command:
+            print(red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+            print(manual_command, flush=True)
+        raise BootstrapError(message) from exc
 
-    if platform_label == "Linux":
-        if apt_get := find_command("apt-get"):
-            run(["sudo", apt_get, "update"])
-            run(["sudo", apt_get, "install", "-y", "sshpass"])
-            return
-        if dnf := find_command("dnf"):
-            run(["sudo", dnf, "install", "-y", "sshpass"])
-            return
-        if yum := find_command("yum"):
-            run(["sudo", yum, "install", "-y", "sshpass"])
-            return
-        if zypper := find_command("zypper"):
-            run(["sudo", zypper, "install", "-y", "sshpass"])
-            return
-        if pacman := find_command("pacman"):
-            run(["sudo", pacman, "-S", "--needed", "sshpass"])
-            return
-        raise BootstrapError("No supported Linux package manager found to install sshpass.")
-
-    raise BootstrapError(f"Automatic sshpass installation is not implemented for {platform_label}.")
+    still_missing = _missing_required_host_tools()
+    if still_missing:
+        _raise_host_tool_install_error(
+            f"Required host tools are still missing after install attempt: {_format_tools(still_missing)}",
+            manual_command,
+        )
+    print(f"Installed required host tools: {_format_tools(missing_tools)}", flush=True)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -199,10 +235,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.update_fields(venv_python=str(venv_python))
             command_context.set_stage("install_python_requirements")
             install_python_requirements(venv_python)
-            command_context.set_stage("install_smbclient")
-            maybe_install_smbclient()
-            command_context.set_stage("install_sshpass")
-            maybe_install_sshpass()
+            command_context.set_stage("install_host_tools")
+            install_required_host_tools()
         except subprocess.CalledProcessError as e:
             message = f"Command failed with exit code {e.returncode}: {e.cmd}"
             print(message, file=sys.stderr)

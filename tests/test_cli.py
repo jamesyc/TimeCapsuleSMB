@@ -5,6 +5,7 @@ import io
 import json
 import plistlib
 import socket
+import subprocess
 import struct
 import sys
 import tempfile
@@ -1262,12 +1263,11 @@ class CliTests(unittest.TestCase):
         with mock.patch("pathlib.Path.exists", return_value=True):
             with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
-                    with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                    with redirect_stdout(output):
-                                        rc = bootstrap.main([])
+                    with mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools"):
+                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                with redirect_stdout(output):
+                                    rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform", text)
@@ -1288,11 +1288,10 @@ class CliTests(unittest.TestCase):
             with mock.patch("pathlib.Path.exists", return_value=True):
                 with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                    with redirect_stdout(output):
-                                        rc = bootstrap.main([])
+                        with mock.patch("timecapsulesmb.cli.bootstrap.install_required_host_tools"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                with redirect_stdout(output):
+                                    rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform: Linux", text)
@@ -1353,103 +1352,170 @@ class CliTests(unittest.TestCase):
         self.assertNotIn([str(venv_python), "-m", "ensurepip", "--upgrade"], commands)
         self.assertEqual(commands[0], [str(venv_python), "-m", "pip", "install", "-U", "pip"])
 
-    def test_bootstrap_installs_smbclient_via_homebrew_on_macos(self) -> None:
-        output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=lambda name: None if name == "smbclient" else "/opt/homebrew/bin/brew"):
-                with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                    with mock.patch(
-                        "timecapsulesmb.cli.bootstrap.run",
-                        side_effect=lambda cmd, cwd=None: None,
-                    ) as run_mock:
-                        with redirect_stdout(output):
-                            bootstrap.maybe_install_smbclient()
-        text = output.getvalue()
-        self.assertIn("brew install samba", text)
-        self.assertEqual(run_mock.call_args_list, [mock.call(["/opt/homebrew/bin/brew", "install", "samba"])])
-
-    def test_bootstrap_prints_linux_smbclient_instructions_when_missing(self) -> None:
-        output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
-            def fake_which(name: str):
-                if name == "smbclient":
-                    return None
-                if name == "apt-get":
-                    return "/usr/bin/apt-get"
-                return None
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-                with redirect_stdout(output):
-                    bootstrap.maybe_install_smbclient()
-        text = output.getvalue()
-        self.assertIn("smbclient is required", text)
-        self.assertIn("sudo apt-get update && sudo apt-get install -y smbclient", text)
-        self.assertIn("After installing smbclient", text)
-
-    def test_bootstrap_installs_sshpass_via_homebrew_on_macos(self) -> None:
+    def test_bootstrap_skips_required_host_tools_when_present(self) -> None:
         output = io.StringIO()
 
         def fake_which(name: str):
-            if name == "sshpass":
-                return None
+            if name in {"sshpass", "smbclient"}:
+                return f"/usr/bin/{name}"
+            return None
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
+            with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                with redirect_stdout(output):
+                    bootstrap.install_required_host_tools()
+
+        self.assertIn("Found required host tools: sshpass, smbclient", output.getvalue())
+        run_mock.assert_not_called()
+
+    def test_bootstrap_installs_missing_host_tools_via_homebrew_on_macos(self) -> None:
+        output = io.StringIO()
+        installed: set[str] = set()
+
+        def fake_which(name: str):
             if name == "brew":
                 return "/opt/homebrew/bin/brew"
+            if name in installed:
+                return f"/opt/homebrew/bin/{name}"
             return None
+
+        def fake_run(cmd, cwd=None):
+            if cmd[:2] == ["/opt/homebrew/bin/brew", "install"]:
+                for package in cmd[2:]:
+                    if package == "sshpass":
+                        installed.add("sshpass")
+                    elif package == "samba":
+                        installed.add("smbclient")
 
         with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
             with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-                with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
                     with redirect_stdout(output):
-                        bootstrap.maybe_install_sshpass()
-        self.assertIn("Installing sshpass", output.getvalue())
+                        bootstrap.install_required_host_tools()
+        text = output.getvalue()
+        self.assertIn("Missing required host tools: sshpass, smbclient", text)
+        self.assertIn("Installing missing host tools via Homebrew", text)
         self.assertEqual(
             run_mock.call_args_list,
             [
-                mock.call(["/opt/homebrew/bin/brew", "tap", "hudochenkov/sshpass"]),
-                mock.call(["/opt/homebrew/bin/brew", "install", "sshpass"]),
+                mock.call(["/opt/homebrew/bin/brew", "install", "sshpass", "samba"]),
             ],
         )
 
-    def test_bootstrap_fails_when_homebrew_missing_for_sshpass_on_macos(self) -> None:
+    def test_bootstrap_fails_when_homebrew_missing_for_required_host_tools_on_macos(self) -> None:
         output = io.StringIO()
 
-        def fake_which(_name: str):
-            return None
-
         with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
+            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", return_value=None):
                 with self.assertRaises(bootstrap.BootstrapError):
                     with redirect_stdout(output):
-                        bootstrap.maybe_install_sshpass()
+                        bootstrap.install_required_host_tools()
         text = output.getvalue()
-        self.assertIn("Homebrew is missing, please install Homebrew", text)
+        self.assertIn("Homebrew is required", text)
         self.assertIn("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh", text)
         self.assertIn("\033[31m", text)
 
-    def test_bootstrap_installs_sshpass_via_apt_on_linux(self) -> None:
+    def test_bootstrap_installs_missing_host_tools_via_apt_on_linux(self) -> None:
+        installed: set[str] = set()
+
         def fake_which(name: str):
-            if name == "sshpass":
-                return None
+            if name in installed:
+                return f"/usr/bin/{name}"
             if name == "apt-get":
                 return "/usr/bin/apt-get"
             return None
 
+        def fake_run(cmd, cwd=None):
+            if cmd[:3] == ["sudo", "/usr/bin/apt-get", "install"]:
+                installed.update(cmd[4:])
+
         with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
             with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
-                with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
-                    bootstrap.maybe_install_sshpass()
+                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
+                    bootstrap.install_required_host_tools()
         self.assertEqual(
             run_mock.call_args_list,
             [
                 mock.call(["sudo", "/usr/bin/apt-get", "update"]),
-                mock.call(["sudo", "/usr/bin/apt-get", "install", "-y", "sshpass"]),
+                mock.call(["sudo", "/usr/bin/apt-get", "install", "-y", "sshpass", "smbclient"]),
             ],
         )
 
-    def test_bootstrap_fails_when_linux_package_manager_missing_for_sshpass(self) -> None:
+    def test_bootstrap_installs_missing_host_tools_via_zypper_on_linux(self) -> None:
+        installed: set[str] = set()
+
+        def fake_which(name: str):
+            if name in installed:
+                return f"/usr/bin/{name}"
+            if name == "zypper":
+                return "/usr/bin/zypper"
+            return None
+
+        def fake_run(cmd, cwd=None):
+            if cmd[:3] == ["sudo", "/usr/bin/zypper", "install"]:
+                for package in cmd[4:]:
+                    if package == "sshpass":
+                        installed.add("sshpass")
+                    elif package == "samba-client":
+                        installed.add("smbclient")
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
+                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
+                    bootstrap.install_required_host_tools()
+        self.assertEqual(
+            run_mock.call_args_list,
+            [mock.call(["sudo", "/usr/bin/zypper", "install", "-y", "sshpass", "samba-client"])],
+        )
+
+    def test_bootstrap_installs_missing_host_tools_via_pacman_on_linux(self) -> None:
+        installed: set[str] = set()
+
+        def fake_which(name: str):
+            if name in installed:
+                return f"/usr/bin/{name}"
+            if name == "pacman":
+                return "/usr/bin/pacman"
+            return None
+
+        def fake_run(cmd, cwd=None):
+            if cmd[:3] == ["sudo", "/usr/bin/pacman", "-S"]:
+                installed.update(cmd[4:])
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=fake_which):
+                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=fake_run) as run_mock:
+                    bootstrap.install_required_host_tools()
+        self.assertEqual(
+            run_mock.call_args_list,
+            [mock.call(["sudo", "/usr/bin/pacman", "-S", "--needed", "sshpass", "smbclient"])],
+        )
+
+    def test_bootstrap_prints_manual_install_when_linux_host_tool_install_fails(self) -> None:
+        output = io.StringIO()
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=lambda name: "/usr/bin/apt-get" if name == "apt-get" else None):
+                with mock.patch(
+                    "timecapsulesmb.cli.bootstrap.run",
+                    side_effect=subprocess.CalledProcessError(100, ["sudo", "/usr/bin/apt-get", "update"]),
+                ):
+                    with self.assertRaises(bootstrap.BootstrapError):
+                        with redirect_stdout(output):
+                            bootstrap.install_required_host_tools()
+        text = output.getvalue()
+        self.assertIn("Failed to install missing host tools automatically", text)
+        self.assertIn("sudo apt-get update && sudo apt-get install -y sshpass smbclient", text)
+        self.assertIn("\033[31m", text)
+
+    def test_bootstrap_fails_when_linux_package_manager_missing_for_required_host_tools(self) -> None:
+        output = io.StringIO()
         with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
             with mock.patch("timecapsulesmb.cli.bootstrap.find_command", return_value=None):
                 with self.assertRaises(bootstrap.BootstrapError):
-                    bootstrap.maybe_install_sshpass()
+                    with redirect_stdout(output):
+                        bootstrap.install_required_host_tools()
+        self.assertIn("No supported Linux package manager found", output.getvalue())
 
     def test_configure_writes_values_from_prompts(self) -> None:
         prompt_values = iter([
