@@ -3,6 +3,7 @@ from __future__ import annotations
 import traceback
 from collections.abc import Callable
 
+from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import EventSink, redact
 from timecapsulesmb.app.ops import OPERATIONS, TELEMETRY_OPERATIONS
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
@@ -41,7 +42,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
 
     operation = api_request.operation
     params = api_request.params
-    handler: Callable[[dict[str, object], EventSink], OperationResult] | None = OPERATIONS.get(operation)
+    handler: Callable[[dict[str, object], AppOperationContext], OperationResult] | None = OPERATIONS.get(operation)
     if handler is None:
         sink.error(
             operation,
@@ -54,27 +55,27 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
     telemetry_session = _api_telemetry_session(operation, params)
     if telemetry_session is not None:
         telemetry_session.start()
+    context = AppOperationContext(operation, sink)
     try:
-        result = handler(params, sink)
+        result = handler(params, context)
     except AppConfirmationRequired as exc:
         sink.error(
             operation,
             str(exc),
             code=exc.code,
             details=exc.confirmation.to_jsonable(),
-            recovery=recovery_for(operation, exc.code, stage=sink.current_stage(operation)),
+            recovery=recovery_for(operation, exc.code, stage=context.current_stage),
         )
         _finish_api_telemetry(
             telemetry_session,
-            sink,
-            operation,
+            context,
             result="confirmation_required",
             details=confirmation_details(exc.confirmation),
             risk=exc.confirmation.risk,
         )
         return 1
     except AppOperationError as exc:
-        recovery = exc.recovery or recovery_for(operation, exc.code, stage=sink.current_stage(operation))
+        recovery = exc.recovery or recovery_for(operation, exc.code, stage=context.current_stage)
         sink.error(
             operation,
             str(exc),
@@ -82,25 +83,40 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             debug=redact(exc.debug) if exc.debug is not None else None,
             recovery=recovery,
         )
-        _finish_api_telemetry(telemetry_session, sink, operation, result="failure", error=str(exc))
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="failure",
+            error=context.diagnostic_error(str(exc)) or str(exc),
+        )
         return 1
     except ConfigError as exc:
         sink.error(
             operation,
             str(exc),
             code="config_error",
-            recovery=recovery_for(operation, "config_error", stage=sink.current_stage(operation)),
+            recovery=recovery_for(operation, "config_error", stage=context.current_stage),
         )
-        _finish_api_telemetry(telemetry_session, sink, operation, result="failure", error=str(exc))
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="failure",
+            error=context.diagnostic_error(str(exc)) or str(exc),
+        )
         return 1
     except TransportError as exc:
         sink.error(
             operation,
             str(exc),
             code="remote_error",
-            recovery=recovery_for(operation, "remote_error", stage=sink.current_stage(operation)),
+            recovery=recovery_for(operation, "remote_error", stage=context.current_stage),
         )
-        _finish_api_telemetry(telemetry_session, sink, operation, result="failure", error=str(exc))
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="failure",
+            error=context.diagnostic_error(str(exc)) or str(exc),
+        )
         return 1
     except (SystemExit, KeyboardInterrupt):
         raise
@@ -111,17 +127,22 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             message,
             code="operation_failed",
             debug={"traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))},
-            recovery=recovery_for(operation, "operation_failed", stage=sink.current_stage(operation)),
+            recovery=recovery_for(operation, "operation_failed", stage=context.current_stage),
         )
-        _finish_api_telemetry(telemetry_session, sink, operation, result="failure", error=message)
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="failure",
+            error=context.diagnostic_error(message) or message,
+        )
         return 1
-    sink.result(operation, ok=result.ok, payload=result.payload)
+    context.emit_result(ok=result.ok, payload=result.payload)
+    payload_error = _payload_error(result.payload) if not result.ok else None
     _finish_api_telemetry(
         telemetry_session,
-        sink,
-        operation,
+        context,
         result="success" if result.ok else "failure",
-        error=(result.diagnostic_error or _payload_error(result.payload)) if not result.ok else None,
+        error=(result.diagnostic_error or context.diagnostic_error(payload_error) or payload_error) if not result.ok else None,
         details=telemetry_details_from_payload(operation, params, result.payload),
     )
     return 0 if result.ok else 1
@@ -149,8 +170,7 @@ def _api_telemetry_session(operation: str, params: dict[str, object]) -> Operati
 
 def _finish_api_telemetry(
     session: OperationTelemetrySession | None,
-    sink: EventSink,
-    operation: str,
+    context: AppOperationContext,
     *,
     result: str,
     error: object | None = None,
@@ -162,8 +182,8 @@ def _finish_api_telemetry(
     session.finish(
         result=result,
         error=error,
-        stage=sink.current_stage(operation),
-        risk=risk or sink.current_risk(operation),
+        stage=context.current_stage,
+        risk=risk or context.current_risk,
         details=details,
     )
 

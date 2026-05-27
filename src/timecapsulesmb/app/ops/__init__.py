@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from timecapsulesmb.app.events import EventSink
+from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.ops.configure import configure_operation
 from timecapsulesmb.app.ops.deploy import deploy_operation
 from timecapsulesmb.app.ops.doctor import doctor_operation
@@ -26,7 +26,7 @@ from timecapsulesmb.app.ops.readiness import (
 from timecapsulesmb.services.app import OperationResult
 
 
-OPERATIONS: dict[str, Callable[[dict[str, object], EventSink], OperationResult]] = {
+OPERATIONS: dict[str, Callable[[dict[str, object], AppOperationContext], OperationResult]] = {
     "activate": activate_operation,
     "capabilities": capabilities_operation,
     "configure": configure_operation,

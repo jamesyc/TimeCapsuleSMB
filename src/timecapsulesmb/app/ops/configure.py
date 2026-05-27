@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import uuid
 
+from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.contracts import configure_payload
-from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.readiness import selected_record_host, selected_record_properties
 from timecapsulesmb.core.config import (
     DEFAULTS,
@@ -73,9 +73,8 @@ def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> 
     )
 
 
-def configure_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
-    operation = "configure"
-    sink.stage(operation, "load_existing_config")
+def configure_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    context.stage("load_existing_config")
     app_paths = resolve_app_paths(config_path=config_path(params))
     env_path = app_paths.config_path
     existing = parse_env_file(env_path)
@@ -83,6 +82,9 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
     ssh_opts = string_param(params, "ssh_opts", existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
     host = configure_ssh_target(string_param(params, "host") or selected_record_host(params) or existing.get("TC_HOST", ""))
     password = require_string_param(params, "password")
+    selected_record = params.get("selected_record")
+    if isinstance(selected_record, dict):
+        context.add_debug_fields(selected_bonjour_record=selected_record)
     if not host:
         raise AppOperationError("missing required parameter: host", code="validation_failed")
 
@@ -117,30 +119,34 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
+    context.values = values
 
-    sink.stage(operation, "ssh_probe")
+    context.stage("ssh_probe")
     connection = SshConnection(host, password, ssh_opts)
+    context.connection = connection
     probed_state = probe_connection_state(connection)
+    context.apply_probe_state(probed_state)
     probe = probed_state.probe_result
 
     if not probe.ssh_port_reachable:
         if not bool_param(params, "enable_ssh", True):
             raise AppOperationError("SSH is not reachable and enable_ssh is false.", code="remote_error")
-        sink.stage(operation, "confirm_enable_ssh")
+        context.stage("confirm_enable_ssh")
         require_enable_ssh_confirmation(params, host=host)
-        sink.stage(operation, "acp_enable_ssh")
+        context.stage("acp_enable_ssh")
         try:
-            enable_ssh(extract_host(host), password, reboot_device=True, log=lambda message: sink.log(operation, message))
+            enable_ssh(extract_host(host), password, reboot_device=True, log=context.log)
         except ACPAuthError as exc:
             raise AppOperationError("The AirPort admin password did not work.", code="auth_failed", debug=str(exc)) from exc
         except ACPError as exc:
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
 
-        sink.stage(operation, "wait_for_ssh_after_acp")
+        context.stage("wait_for_ssh_after_acp")
         if not wait_for_ssh_port(host, timeout_seconds=int_param(params, "ssh_wait_timeout", 180)):
             raise AppOperationError("SSH did not open after enabling via ACP.", code="remote_error")
-        sink.stage(operation, "ssh_probe_after_acp")
+        context.stage("ssh_probe_after_acp")
         probed_state = probe_connection_state(connection)
+        context.apply_probe_state(probed_state)
         probe = probed_state.probe_result
 
     if not probe.ssh_authenticated:
@@ -158,8 +164,9 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
     observed_model = None if compatibility is None else compatibility.exact_model
     if observed_syap is None:
         observed_syap = selected_props.get("syAP") or None
+    context.update_fields(configure_id=configure_id, device_model=observed_model, device_syap=observed_syap)
 
-    sink.stage(operation, "write_env")
+    context.stage("write_env")
     env_path.parent.mkdir(parents=True, exist_ok=True)
     omit_keys = frozenset() if bool_param(params, "persist_password") else frozenset({"TC_PASSWORD"})
     EnvFileConfigStore(omit_keys=omit_keys).save(env_path, values)

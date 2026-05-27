@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 
+from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
-from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.core.config import (
     DEFAULTS,
     MANAGED_PAYLOAD_DIR_NAME,
@@ -70,6 +70,8 @@ from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
     build_dry_run_payload_home,
+    mast_volumes_debug_summary,
+    payload_candidate_checks_debug_summary,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
     wait_for_mast_volumes_conn,
@@ -97,6 +99,13 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
+
+
+def _best_effort_debug_summary(render, value: object) -> object | None:
+    try:
+        return render(value)
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)
@@ -213,26 +222,27 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
 
 
 def load_config_and_target(
-    operation: str,
+    context: AppOperationContext,
     params: dict[str, object],
-    sink: EventSink,
     *,
     profile: str,
     include_probe: bool,
 ) -> tuple[AppConfig, ManagedTargetState]:
-    sink.stage(operation, "load_config")
+    context.stage("load_config")
     config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
-    sink.stage(operation, "resolve_managed_target")
+    context.config = config
+    context.stage("resolve_managed_target")
     target = resolve_validated_managed_target(
         config,
-        command_name=operation,
+        command_name=context.operation,
         profile=profile,
         include_probe=include_probe,
     )
+    context.apply_managed_target(target)
     return config, target
 
 
-def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
+def deploy_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     operation = "deploy"
     nbns_enabled = bool_param(params, "nbns_enabled", True)
     dry_run = bool_param(params, "dry_run")
@@ -248,7 +258,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     )
     ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
 
-    config, target = load_config_and_target(operation, params, sink, profile="deploy", include_probe=True)
+    config, target = load_config_and_target(context, params, profile="deploy", include_probe=True)
     connection = target.connection
     app_paths = resolve_app_paths(config_path=config_path(params))
     internal_share_use_disk_root = bool_param(
@@ -262,12 +272,12 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
     )
 
-    sink.stage(operation, "validate_artifacts")
+    context.stage("validate_artifacts")
     failures = [message for _, ok, message in validate_artifacts(app_paths.distribution_root) if not ok]
     if failures:
         raise AppOperationError("; ".join(failures), code="validation_failed")
 
-    sink.stage(operation, "check_compatibility")
+    context.stage("check_compatibility")
     compatibility = require_supported_payload(target, allow_unsupported=allow_unsupported)
     payload_family = compatibility.payload_family
     is_netbsd4 = is_netbsd4_payload_family(payload_family)
@@ -277,7 +287,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         connection.remote_has_scp = False
     startup_mode = startup_mode_for_deploy(no_reboot=no_reboot, is_netbsd4=is_netbsd4)
     no_wait = effective_no_wait_for_deploy(requested=no_wait, no_reboot=no_reboot)
-    sink.log(operation, f"Using {payload_family_description(payload_family)} payload.")
+    context.log(f"Using {payload_family_description(payload_family)} payload.")
     resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
     if not dry_run:
         confirmation_plan = build_deployment_plan(
@@ -333,11 +343,16 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     if dry_run:
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
     else:
-        sink.stage(operation, "read_mast")
+        context.stage("read_mast")
         mast_discovery = wait_for_mast_volumes_conn(
             connection,
             attempts=MAST_DISCOVERY_ATTEMPTS,
             delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+        )
+        context.add_debug_fields(
+            mast_read_attempts=mast_discovery.attempts,
+            mast_volume_count=len(mast_discovery.volumes),
+            mast_candidates=_best_effort_debug_summary(mast_volumes_debug_summary, mast_discovery.volumes),
         )
         if not mast_discovery.volumes:
             raise AppOperationError(
@@ -347,12 +362,18 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
                 ),
                 code="remote_error",
             )
-        sink.stage(operation, "select_payload_home")
+        context.stage("select_payload_home")
         selection = select_payload_home_with_diagnostics_conn(
             connection,
             mast_discovery.volumes,
             MANAGED_PAYLOAD_DIR_NAME,
             wait_seconds=mount_wait,
+        )
+        context.add_debug_fields(
+            mast_candidate_checks=_best_effort_debug_summary(
+                payload_candidate_checks_debug_summary,
+                getattr(selection, "checks", ()),
+            )
         )
         if selection.payload_home is None:
             raise AppOperationError(
@@ -361,7 +382,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             )
         payload_home = selection.payload_home
 
-    sink.stage(operation, "build_deployment_plan")
+    context.stage("build_deployment_plan")
     plan = build_deployment_plan(
         connection.host,
         payload_home,
@@ -378,9 +399,9 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             netbsd4=is_netbsd4,
         ))
 
-    sink.stage(operation, "pre_upload_actions")
+    context.stage("pre_upload_actions")
     run_remote_actions(connection, plan.pre_upload_actions)
-    sink.stage(operation, "prepare_deployment_files")
+    context.stage("prepare_deployment_files")
     try:
         flash_config_text = render_flash_runtime_config(
             config,
@@ -416,21 +437,20 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
             PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path("manager.sh")),
         }
-        sink.stage(operation, "upload_payload")
+        context.stage("upload_payload")
         upload_deployment_payload(plan, connection=connection, source_resolver=upload_sources)
 
-    sink.stage(operation, "post_upload_actions")
+    context.stage("post_upload_actions")
     run_remote_actions(connection, plan.post_upload_actions)
-    verify_payload_upload(operation, sink, connection, payload_home, wait_seconds=mount_wait)
-    sink.stage(operation, "flush_payload_upload")
-    sink.log(operation, "Flushing deployed payload to disk...")
+    verify_payload_upload(context, connection, payload_home, wait_seconds=mount_wait)
+    context.stage("flush_payload_upload")
+    context.log("Flushing deployed payload to disk...")
     flush_remote_filesystem_writes(connection)
-    verify_payload_upload(operation, sink, connection, payload_home, wait_seconds=mount_wait, post_sync=True)
+    verify_payload_upload(context, connection, payload_home, wait_seconds=mount_wait, post_sync=True)
 
     if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
         activate_deployed_runtime(
-            operation,
-            sink,
+            context,
             connection,
             plan.activation_actions,
             skip_if_ready=False,
@@ -455,8 +475,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
 
     if no_wait:
         request_reboot(
-            operation,
-            sink,
+            context,
             connection,
             strategy="ssh_shutdown_then_reboot",
             raise_on_request_error=True,
@@ -470,8 +489,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         ))
 
     request_reboot_and_wait(
-        operation,
-        sink,
+        context,
         connection,
         strategy="ssh_shutdown_then_reboot",
         reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
@@ -479,8 +497,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         activate_deployed_runtime(
-            operation,
-            sink,
+            context,
             connection,
             plan.activation_actions,
             skip_if_ready=True,
@@ -503,7 +520,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             payload_family=payload_family,
         ))
 
-    verify_runtime(operation, sink, connection, stage="verify_runtime_reboot", timeout_seconds=240)
+    verify_runtime(context, connection, stage="verify_runtime_reboot", timeout_seconds=240)
     return OperationResult(True, deploy_result_payload(
         payload_dir=plan.payload_dir,
         rebooted=True,
@@ -515,8 +532,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
 
 
 def activate_deployed_runtime(
-    operation: str,
-    sink: EventSink,
+    context: AppOperationContext,
     connection: SshConnection,
     activation_actions,
     *,
@@ -531,17 +547,16 @@ def activate_deployed_runtime(
     failure_message: str = "Managed runtime activation failed.",
 ) -> None:
     if skip_if_ready:
-        sink.stage(operation, "probe_runtime")
+        context.stage("probe_runtime")
         preflight = probe_runtime_activation_state_conn(connection, timeout_seconds=probe_timeout_seconds)
-        sink.log(operation, preflight.detail)
+        context.log(preflight.detail)
         if preflight.state == RUNTIME_ACTIVATION_STATE_READY:
-            sink.log(operation, already_active_message)
+            context.log(already_active_message)
             return
         if preflight.state == RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING:
-            sink.log(operation, startup_in_progress_message)
+            context.log(startup_in_progress_message)
             verify_runtime(
-                operation,
-                sink,
+                context,
                 connection,
                 stage=verification_stage,
                 timeout_seconds=verification_timeout_seconds,
@@ -549,12 +564,11 @@ def activate_deployed_runtime(
             )
             return
 
-    sink.stage(operation, activation_stage)
-    sink.log(operation, activation_message)
+    context.stage(activation_stage)
+    context.log(activation_message)
     run_remote_actions(connection, activation_actions)
     verify_runtime(
-        operation,
-        sink,
+        context,
         connection,
         stage=verification_stage,
         timeout_seconds=verification_timeout_seconds,
@@ -563,37 +577,38 @@ def activate_deployed_runtime(
 
 
 def verify_payload_upload(
-    operation: str,
-    sink: EventSink,
+    context: AppOperationContext,
     connection: SshConnection,
     payload_home,
     *,
     wait_seconds: int,
     post_sync: bool = False,
 ) -> None:
-    sink.stage(operation, "verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
+    context.stage("verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
     verification = verify_payload_home_conn(connection, payload_home, wait_seconds=wait_seconds)
-    sink.log(operation, verification.detail)
+    context.log(verification.detail)
+    context.add_debug_fields(
+        **{"payload_post_sync_verification" if post_sync else "payload_upload_verification": verification.detail}
+    )
     if not verification.ok:
         raise AppOperationError(payload_verification_error(payload_home, verification), code="remote_error")
 
 
 def verify_runtime(
-    operation: str,
-    sink: EventSink,
+    context: AppOperationContext,
     connection: SshConnection,
     *,
     stage: str,
     timeout_seconds: int,
     failure_message: str = "Managed runtime did not become ready.",
 ) -> None:
-    sink.stage(operation, stage)
+    context.stage(stage)
     verification = verify_managed_runtime(connection, timeout_seconds=timeout_seconds)
     for line in render_managed_runtime_verification(
         verification,
         heading="Waiting for managed runtime to finish starting...",
     ):
-        sink.log(operation, line)
+        context.log(line)
     if not managed_runtime_ready(verification):
         raise AppOperationError(
             f"{failure_message.rstrip()} {verification.detail.strip()}".strip(),
@@ -602,8 +617,7 @@ def verify_runtime(
 
 
 def request_reboot_and_wait(
-    operation: str,
-    sink: EventSink,
+    context: AppOperationContext,
     connection: SshConnection,
     *,
     strategy: str,
@@ -611,52 +625,48 @@ def request_reboot_and_wait(
     down_timeout_seconds: int = 60,
     up_timeout_seconds: int = 240,
 ) -> None:
-    request_reboot(operation, sink, connection, strategy=strategy)
+    request_reboot(context, connection, strategy=strategy)
 
-    sink.stage(operation, "wait_for_reboot_down")
-    sink.log(operation, "Waiting for the device to go down...")
+    context.stage("wait_for_reboot_down")
+    context.log("Waiting for the device to go down...")
     if not wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=down_timeout_seconds):
         raise AppOperationError(reboot_no_down_message, code="remote_error")
-    sink.stage(operation, "wait_for_reboot_up")
-    sink.log(operation, "Waiting for the device to come back up...")
+    context.stage("wait_for_reboot_up")
+    context.log("Waiting for the device to come back up...")
     if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
         raise AppOperationError(DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE, code="remote_error")
-    sink.log(operation, "Device is back online.")
+    context.log("Device is back online.")
 
 
 def request_reboot(
-    operation: str,
-    sink: EventSink,
+    context: AppOperationContext,
     connection: SshConnection,
     *,
     strategy: str,
     raise_on_request_error: bool = False,
 ) -> None:
-    sink.stage(operation, "reboot")
+    context.stage("reboot")
     if strategy == "acp_then_ssh":
         try:
             acp_reboot(extract_host(connection.host), connection.password, timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
-            sink.log(operation, "ACP reboot requested.")
+            context.log("ACP reboot requested.")
         except ACPError as exc:
-            sink.log(operation, f"ACP reboot request failed; trying SSH reboot request: {exc}", level="warning")
+            context.log(f"ACP reboot request failed; trying SSH reboot request: {exc}", level="warning")
             request_ssh_reboot(
-                operation,
-                sink,
+                context,
                 connection,
                 raise_on_request_error=raise_on_request_error,
             )
     else:
         request_ssh_reboot(
-            operation,
-            sink,
+            context,
             connection,
             raise_on_request_error=raise_on_request_error,
         )
 
 
 def request_ssh_reboot(
-    operation: str,
-    sink: EventSink,
+    context: AppOperationContext,
     connection: SshConnection,
     *,
     raise_on_request_error: bool = False,
@@ -666,11 +676,11 @@ def request_ssh_reboot(
     except SshCommandTimeout as exc:
         if raise_on_request_error:
             raise AppOperationError(f"SSH reboot request timed out: {exc}", code="remote_error") from exc
-        sink.log(operation, f"SSH reboot request timed out; checking whether the device is rebooting: {exc}", level="warning")
+        context.log(f"SSH reboot request timed out; checking whether the device is rebooting: {exc}", level="warning")
         return
     except SshError as exc:
         if raise_on_request_error:
             raise AppOperationError(f"SSH reboot request failed: {exc}", code="remote_error") from exc
-        sink.log(operation, f"SSH reboot request failed; checking whether the device is rebooting anyway: {exc}", level="warning")
+        context.log(f"SSH reboot request failed; checking whether the device is rebooting anyway: {exc}", level="warning")
         return
-    sink.log(operation, "SSH reboot requested.")
+    context.log("SSH reboot requested.")
