@@ -551,6 +551,11 @@
 "sidebar.all_time_capsules" = "所有 Time Capsule";
 "sidebar.activity" = "Activity";
 "sidebar.devices" = "设备";
+"sidebar.menu.copy_hostname" = "复制 Hostname";
+"sidebar.menu.copy_ip_address" = "复制 IP Address";
+"sidebar.menu.copy_smb_address" = "复制 SMB Address";
+"sidebar.menu.open_overview" = "打开 Overview";
+"sidebar.menu.remove_from_this_mac" = "从此 Mac 移除";
 "sidebar.settings" = "设置";
 "status.activation_needed" = "需要 Activation";
 "status.checking" = "正在检查";

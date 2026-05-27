@@ -255,11 +255,19 @@ public struct ContentView: View {
 
             Section(L10n.string("sidebar.devices")) {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
+                    let summary = appStore.dashboardSummary(for: profile)
                     DeviceSidebarRow(
                         profile: profile,
-                        summary: appStore.dashboardSummary(for: profile),
+                        summary: summary,
                         lastSeenText: appStore.discoveryMonitor.lastSeenText(for: profile)
                     )
+                        .contextMenu {
+                            DeviceSidebarContextMenu(
+                                presentation: sidebarContextMenuPresentation(for: profile, summary: summary)
+                            ) { action in
+                                performSidebarContextMenuAction(action, profile: profile)
+                            }
+                        }
                         .tag("device:\(profile.id)")
                 }
             }
@@ -271,6 +279,68 @@ public struct ContentView: View {
         }
         .navigationTitle("TimeCapsuleSMB")
         .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+    }
+
+    private func sidebarContextMenuPresentation(
+        for profile: DeviceProfile,
+        summary: DeviceDashboardSummary
+    ) -> DeviceSidebarContextMenuPresentation {
+        DeviceSidebarContextMenuPresentation(
+            profile: profile,
+            summary: summary,
+            isDeviceBusy: appStore.operationCoordinator.lane(for: profile).isBusy
+        )
+    }
+
+    private func performSidebarContextMenuAction(
+        _ action: DeviceSidebarContextMenuAction,
+        profile: DeviceProfile
+    ) {
+        switch action {
+        case .openOverview:
+            openDashboard(profile, tab: .overview)
+        case .openFinder:
+            dashboardStore.session(for: profile).performSecondaryAction(.openFinder, profile: profile)
+        case .runCheckup:
+            guard !appStore.operationCoordinator.lane(for: profile).isBusy else {
+                return
+            }
+            appStore.select(profile)
+            dashboardStore.session(for: profile).performSecondaryAction(.runCheckup, profile: profile)
+        case .viewCheckup:
+            openDashboard(profile, tab: .checkup)
+        case .refreshStatus:
+            guard !appStore.operationCoordinator.lane(for: profile).isBusy else {
+                return
+            }
+            dashboardStore.session(for: profile).performSecondaryAction(.refreshStatus, profile: profile)
+        case .settings:
+            openDashboard(profile, tab: .settings)
+        case .copySMBAddress, .copyHostname, .copyIPAddress:
+            copySidebarValue(action, profile: profile)
+        case .removeFromThisMac:
+            guard !appStore.operationCoordinator.lane(for: profile).isBusy else {
+                return
+            }
+            profilePendingDeletion = profile
+        }
+    }
+
+    private func openDashboard(_ profile: DeviceProfile, tab: DeviceDashboardTab) {
+        let session = dashboardStore.session(for: profile)
+        session.selectedTab = tab
+        appStore.select(profile)
+    }
+
+    private func copySidebarValue(_ action: DeviceSidebarContextMenuAction, profile: DeviceProfile) {
+        let summary = appStore.dashboardSummary(for: profile)
+        let presentation = sidebarContextMenuPresentation(for: profile, summary: summary)
+        guard let value = presentation.clipboardValue(for: action) else {
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
     }
 
     private var activityDisplayContext: ActivityDisplayContext {

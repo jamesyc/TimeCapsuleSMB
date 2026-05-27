@@ -551,6 +551,11 @@
 "sidebar.all_time_capsules" = "All Time Capsules";
 "sidebar.activity" = "Activity";
 "sidebar.devices" = "Devices";
+"sidebar.menu.copy_hostname" = "Copy Hostname";
+"sidebar.menu.copy_ip_address" = "Copy IP Address";
+"sidebar.menu.copy_smb_address" = "Copy SMB Address";
+"sidebar.menu.open_overview" = "Open Overview";
+"sidebar.menu.remove_from_this_mac" = "Remove From This Mac";
 "sidebar.settings" = "Settings";
 "status.activation_needed" = "Activation Needed";
 "status.checking" = "Checking";

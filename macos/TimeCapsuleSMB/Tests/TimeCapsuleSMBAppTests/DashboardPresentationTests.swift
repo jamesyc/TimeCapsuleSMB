@@ -84,6 +84,128 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.viewDiagnostics, store: store))
     }
 
+    func testSidebarContextMenuIncludesRequestedActionsAndCopyValues() throws {
+        var profile = try makeProfile(host: "root@10.0.0.2")
+        profile.hostname = "airport-time-capsule.local."
+        let summary = DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .healthy,
+            primaryAction: .openSMB,
+            hostWarning: nil
+        )
+
+        let presentation = DeviceSidebarContextMenuPresentation(
+            profile: profile,
+            summary: summary,
+            isDeviceBusy: false
+        )
+
+        XCTAssertEqual(
+            presentation.navigationItems.map(\.action),
+            [.openOverview, .openFinder, .runCheckup, .refreshStatus, .settings]
+        )
+        XCTAssertTrue(presentation.navigationItems.allSatisfy(\.isEnabled))
+        XCTAssertEqual(
+            presentation.clipboardItems.map(\.action),
+            [.copySMBAddress, .copyHostname, .copyIPAddress]
+        )
+        XCTAssertEqual(presentation.clipboardValue(for: .copySMBAddress), "smb://airport-time-capsule.local")
+        XCTAssertEqual(presentation.clipboardValue(for: .copyHostname), "airport-time-capsule.local")
+        XCTAssertEqual(presentation.clipboardValue(for: .copyIPAddress), "10.0.0.2")
+        XCTAssertEqual(presentation.destructiveItems, [
+            DeviceSidebarContextMenuItem(action: .removeFromThisMac, isEnabled: true)
+        ])
+    }
+
+    func testSidebarContextMenuSwitchesCheckupActionAndDisablesBusyActions() throws {
+        let profile = try makeProfile()
+        let summary = DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .checking,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        )
+
+        let presentation = DeviceSidebarContextMenuPresentation(
+            profile: profile,
+            summary: summary,
+            isDeviceBusy: true
+        )
+
+        XCTAssertTrue(presentation.navigationItems.contains(DeviceSidebarContextMenuItem(action: .viewCheckup, isEnabled: true)))
+        XCTAssertFalse(presentation.navigationItems.contains { $0.action == .runCheckup })
+        XCTAssertEqual(
+            presentation.navigationItems.first { $0.action == .refreshStatus }?.isEnabled,
+            false
+        )
+        XCTAssertEqual(presentation.destructiveItems, [
+            DeviceSidebarContextMenuItem(action: .removeFromThisMac, isEnabled: false)
+        ])
+    }
+
+    func testSidebarContextMenuDisablesRunCheckupWhenDeviceLaneIsBusyWithoutCheckingStatus() throws {
+        let profile = try makeProfile()
+        let summary = DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .healthy,
+            primaryAction: .openSMB,
+            hostWarning: nil
+        )
+
+        let presentation = DeviceSidebarContextMenuPresentation(
+            profile: profile,
+            summary: summary,
+            isDeviceBusy: true
+        )
+
+        XCTAssertEqual(
+            presentation.navigationItems.first { $0.action == .runCheckup },
+            DeviceSidebarContextMenuItem(action: .runCheckup, isEnabled: false)
+        )
+        XCTAssertEqual(
+            presentation.navigationItems.first { $0.action == .refreshStatus },
+            DeviceSidebarContextMenuItem(action: .refreshStatus, isEnabled: false)
+        )
+        XCTAssertEqual(
+            presentation.navigationItems.first { $0.action == .openFinder },
+            DeviceSidebarContextMenuItem(action: .openFinder, isEnabled: true)
+        )
+    }
+
+    func testSidebarContextMenuDisablesUnavailableActionsAndCopyValues() throws {
+        let profile = try makeProfile(host: "airport-time-capsule.local")
+        let summary = DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .missing,
+            displayStatus: .passwordNeeded,
+            primaryAction: .replacePassword,
+            hostWarning: nil
+        )
+
+        let presentation = DeviceSidebarContextMenuPresentation(
+            profile: profile,
+            summary: summary,
+            isDeviceBusy: false
+        )
+
+        XCTAssertEqual(
+            presentation.navigationItems.first { $0.action == .runCheckup },
+            DeviceSidebarContextMenuItem(action: .runCheckup, isEnabled: false)
+        )
+        XCTAssertEqual(
+            presentation.clipboardItems.map(\.action),
+            [.copySMBAddress, .copyHostname, .copyIPAddress]
+        )
+        XCTAssertEqual(
+            presentation.clipboardItems.first { $0.action == .copyIPAddress }?.isEnabled,
+            false
+        )
+        XCTAssertNil(presentation.clipboardValue(for: .copyIPAddress))
+    }
+
     func testDoctorDomainPolicyUsesTypedDetailsDomainAndSeverity() throws {
         let payload = try testDoctorPayload(checks: [
             testDoctorCheck(status: "PASS", message: "ssh ok", domain: "Device"),
@@ -861,6 +983,7 @@ final class DashboardPresentationTests: XCTestCase {
 
     private func makeProfile(
         id: String = "device-one",
+        host: String = "10.0.0.2",
         payloadFamily: String = "netbsd6_samba4",
         syap: String = "119",
         model: String = "Time Capsule",
@@ -869,6 +992,7 @@ final class DashboardPresentationTests: XCTestCase {
         DeviceProfile.make(
             id: id,
             configuredDevice: try testConfiguredDevice(
+                host: host,
                 syap: syap,
                 model: model,
                 payloadFamily: payloadFamily,

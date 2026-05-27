@@ -44,3 +44,38 @@ struct DeviceSidebarRow: View {
         }
     }
 }
+
+struct DeviceSidebarContextMenu: View {
+    let presentation: DeviceSidebarContextMenuPresentation
+    let performAction: (DeviceSidebarContextMenuAction) -> Void
+
+    var body: some View {
+        ForEach(presentation.navigationItems) { item in
+            menuButton(item)
+        }
+
+        Divider()
+
+        ForEach(presentation.clipboardItems) { item in
+            menuButton(item)
+        }
+
+        Divider()
+
+        ForEach(presentation.destructiveItems) { item in
+            menuButton(item, role: .destructive)
+        }
+    }
+
+    private func menuButton(
+        _ item: DeviceSidebarContextMenuItem,
+        role: ButtonRole? = nil
+    ) -> some View {
+        Button(role: role) {
+            performAction(item.action)
+        } label: {
+            Label(item.title, systemImage: item.systemImage)
+        }
+        .disabled(!item.isEnabled)
+    }
+}
