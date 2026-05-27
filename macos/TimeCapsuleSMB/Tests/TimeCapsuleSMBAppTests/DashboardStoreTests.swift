@@ -398,7 +398,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
-            ])
+            ], delayNanoseconds: 200_000_000)
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -424,8 +424,14 @@ final class DashboardStoreTests: XCTestCase {
         try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: checked)
 
+        try await waitUntilStoreState {
+            session.deployStore.state == .deploying
+                && fixture.registry.profile(id: profile.id)?.lastCheckup == nil
+                && session.doctorStore.summary == nil
+        }
         try await waitUntilStoreState { session.deployStore.state == .deployed }
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertNil(installed.lastCheckup)
         XCTAssertEqual(installed.lastDeploy?.state, .deployed)
         XCTAssertEqual(installed.lastDeploy?.payloadFamily, "netbsd6_samba4")
         XCTAssertEqual(installed.lastDeploy?.verified, true)
@@ -441,7 +447,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
-            ])
+            ], delayNanoseconds: 200_000_000)
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -457,6 +463,14 @@ final class DashboardStoreTests: XCTestCase {
             verified: true,
             summary: "installed"
         ), for: profile.id)
+        await fixture.registry.updateCheckup(DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 130),
+            state: .failed,
+            passCount: 1,
+            warnCount: 0,
+            failCount: 1,
+            summary: "failed"
+        ), for: profile.id)
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         try fixture.passwordStore.save("pw", for: installed.keychainAccount)
         let dashboard = DashboardStore(appStore: fixture.appStore)
@@ -467,10 +481,58 @@ final class DashboardStoreTests: XCTestCase {
         session.performMaintenanceAction(.runUninstall, profile: installed) {}
 
         try await waitUntilStoreState {
+            session.maintenanceStore.uninstallState == .running
+                && fixture.registry.profile(id: installed.id)?.lastCheckup == nil
+        }
+        try await waitUntilStoreState {
             session.maintenanceStore.uninstallState == .succeeded
                 && fixture.registry.profile(id: installed.id)?.lastDeploy == nil
         }
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastDeploy)
+        XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastCheckup)
+        XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
+    }
+
+    func testActivationInvalidatesCheckupWhenRunStarts() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
+            ], delayNanoseconds: 200_000_000)
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        await fixture.registry.updateCheckup(DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 130),
+            state: .failed,
+            passCount: 1,
+            warnCount: 0,
+            failCount: 1,
+            summary: "failed"
+        ), for: profile.id)
+        let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        try fixture.passwordStore.save("pw", for: checked.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: checked)
+
+        session.performMaintenanceAction(.planActivation, profile: checked) {}
+        try await waitUntilStoreState { session.maintenanceStore.activateState == .planReady }
+        XCTAssertNotNil(fixture.registry.profile(id: checked.id)?.lastCheckup)
+
+        session.performMaintenanceAction(.runActivation, profile: checked) {}
+
+        try await waitUntilStoreState {
+            session.maintenanceStore.activateState == .running
+                && fixture.registry.profile(id: checked.id)?.lastCheckup == nil
+        }
+        try await waitUntilStoreState { session.maintenanceStore.activateState == .succeeded }
         XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
     }

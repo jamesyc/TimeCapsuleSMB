@@ -85,6 +85,8 @@ final class DeviceStatusPolicyTests: XCTestCase {
 
     func testHealthStatusFallsBackThroughCheckupAndDeploySnapshots() throws {
         XCTAssertEqual(status(try makeProfile(), .available), .unchecked)
+        XCTAssertEqual(status(try makeProfile(lastDeploy: deployed()), .available), .healthy)
+        XCTAssertEqual(status(try makeProfile(lastDeploy: deployed(verified: false)), .available), .warning)
         XCTAssertEqual(status(try makeProfile(lastCheckup: passedCheckup()), .available), .readyToInstall)
         XCTAssertEqual(status(try makeProfile(lastCheckup: passedCheckup(), lastDeploy: deployed()), .available), .healthy)
         XCTAssertEqual(status(try makeProfile(lastCheckup: warningCheckup(), lastDeploy: deployed()), .available), .warning)
@@ -188,13 +190,13 @@ final class DeviceStatusPolicyTests: XCTestCase {
         )
     }
 
-    private func deployed() -> DeviceDeploySnapshot {
+    private func deployed(verified: Bool = true) -> DeviceDeploySnapshot {
         DeviceDeploySnapshot(
             deployedAt: Date(timeIntervalSince1970: 11),
             state: .deployed,
             payloadFamily: "netbsd6_samba4",
             rebootRequested: true,
-            verified: true,
+            verified: verified,
             summary: "installed"
         )
     }

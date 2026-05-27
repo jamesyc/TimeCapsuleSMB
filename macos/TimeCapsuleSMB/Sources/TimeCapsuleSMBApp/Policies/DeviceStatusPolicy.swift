@@ -115,6 +115,9 @@ enum DeviceStatusPolicy {
         }
 
         guard let checkup = profile.lastCheckup else {
+            if let deploy = profile.lastDeploy, deploy.state == .deployed {
+                return deploy.verified == true ? .healthy : .warning
+            }
             return .unchecked
         }
 
