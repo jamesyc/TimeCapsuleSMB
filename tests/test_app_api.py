@@ -20,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.app.events import AppEvent, EventSink
+from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.app import contracts, helper, service
@@ -698,7 +699,7 @@ class AppApiTests(unittest.TestCase):
             with self.subTest(code=code):
                 collector = CollectingSink()
 
-                def fail(_params, _sink, exc=exception):
+                def fail(_params, _context, exc=exception):
                     raise exc
 
                 with mock.patch.dict(service.OPERATIONS, {operation: fail}):
@@ -712,7 +713,7 @@ class AppApiTests(unittest.TestCase):
     def test_dispatcher_includes_traceback_for_unexpected_errors(self) -> None:
         collector = CollectingSink()
 
-        def fail(_params, _sink):
+        def fail(_params, _context):
             raise RuntimeError("boom")
 
         with mock.patch.dict(service.OPERATIONS, {"boom": fail}):
@@ -727,8 +728,8 @@ class AppApiTests(unittest.TestCase):
     def test_dispatcher_emits_api_operation_telemetry(self) -> None:
         collector = CollectingSink()
 
-        def run_fsck(params, sink):
-            sink.stage("fsck", "run_fsck")
+        def run_fsck(params, context):
+            context.stage("run_fsck")
             return service.OperationResult(True, {
                 "device": "/dev/dk2",
                 "mountpoint": "/Volumes/Data",
@@ -789,8 +790,8 @@ class AppApiTests(unittest.TestCase):
     def test_dispatcher_emits_confirmation_required_telemetry(self) -> None:
         collector = CollectingSink()
 
-        def run_fsck(params, sink):
-            sink.stage("fsck", "select_fsck_volume")
+        def run_fsck(params, context):
+            context.stage("select_fsck_volume")
             raise service.AppConfirmationRequired(build_confirmation(
                 operation="fsck",
                 params=params,
@@ -834,8 +835,8 @@ class AppApiTests(unittest.TestCase):
     def test_app_api_telemetry_tests_do_not_open_network_connections(self) -> None:
         collector = CollectingSink()
 
-        def run_fsck(_params, sink):
-            sink.stage("fsck", "run_fsck")
+        def run_fsck(_params, context):
+            context.stage("run_fsck")
             return service.OperationResult(True, {"returncode": 0, "summary": "fsck completed."})
 
         with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
@@ -848,6 +849,59 @@ class AppApiTests(unittest.TestCase):
         self._telemetry_factory.assert_called_once()
         self.assertEqual(self._telemetry_client.emit.call_count, 2)
         self._telemetry_urlopen.assert_not_called()
+
+    def test_dispatcher_failure_telemetry_uses_app_operation_context(self) -> None:
+        collector = CollectingSink()
+
+        def run_fsck(_params, context):
+            context.stage("read_mast")
+            context.config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+            context.connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+            context.add_debug_fields(mast_candidates=[{"volume": "Data"}])
+            raise service.AppOperationError("No writable MaSt volumes were found.", code="remote_error")
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("No writable MaSt volumes were found.", telemetry_error)
+        self.assertIn("Debug context:", telemetry_error)
+        self.assertIn("command=fsck", telemetry_error)
+        self.assertIn("stage=read_mast", telemetry_error)
+        self.assertIn("host=root@10.0.0.2", telemetry_error)
+        self.assertIn("TC_HOST=root@10.0.0.2", telemetry_error)
+        self.assertIn("mast_candidates=[{volume:Data}]", telemetry_error)
+        self.assertNotIn("TC_PASSWORD=pw", telemetry_error)
+
+    def test_dispatcher_unsuccessful_result_telemetry_uses_app_operation_context(self) -> None:
+        collector = CollectingSink()
+
+        def run_fsck(_params, context):
+            context.stage("run_fsck")
+            context.config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+            context.connection = SshConnection("root@10.0.0.2", "pw", "")
+            return service.OperationResult(False, {"error": "fsck exited with status 8"})
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertFalse(result["ok"])
+        self.assertNotIn("Debug context:", result["payload"]["error"])
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("fsck exited with status 8", telemetry_error)
+        self.assertIn("Debug context:", telemetry_error)
+        self.assertIn("command=fsck", telemetry_error)
+        self.assertIn("stage=run_fsck", telemetry_error)
+        self.assertNotIn("TC_PASSWORD=pw", telemetry_error)
 
     def test_discover_operation_returns_snapshot_payload(self) -> None:
         collector = CollectingSink()
@@ -2039,13 +2093,14 @@ class AppApiTests(unittest.TestCase):
         from timecapsulesmb.app.ops import deploy as deploy_ops
 
         collector = CollectingSink()
+        context = AppOperationContext("deploy", collector.sink)
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch(
             "timecapsulesmb.app.ops.deploy.remote_request_reboot",
             side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
         ):
             with self.assertRaises(AppOperationError) as raised:
-                deploy_ops.request_ssh_reboot("deploy", collector.sink, connection, raise_on_request_error=True)
+                deploy_ops.request_ssh_reboot(context, connection, raise_on_request_error=True)
 
         self.assertEqual(raised.exception.code, "remote_error")
         self.assertIn("Timed out waiting for ssh command to finish: reboot", str(raised.exception))
