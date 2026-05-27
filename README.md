@@ -68,7 +68,7 @@ Run:
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs the Python dependencies needed for discovery, deployment, and verification, and sets up the local `tcapsule` command into that virtualenv.
 
-On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew. On Linux, `bootstrap` will guide you to install `smbclient` with your distro package manager. NetBSD 4 devices also need `sshpass` installed because their firmware does not provide a usable remote `scp`.
+If `smbclient` or `sshpass` is missing, `bootstrap` will try to install it with Homebrew on macOS or the detected package manager on Linux. On macOS, Homebrew is required for those host tool installs. NetBSD 4 devices need `sshpass` because their firmware does not provide a usable remote `scp`.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 
