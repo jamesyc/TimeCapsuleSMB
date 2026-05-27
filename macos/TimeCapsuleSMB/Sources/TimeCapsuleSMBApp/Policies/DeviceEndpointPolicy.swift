@@ -177,12 +177,16 @@ enum DeviceEndpointPolicy {
     }
 
     private static func inetPton(_ family: Int32, _ value: String) -> Bool {
-        var storage = sockaddr_storage()
-        return withUnsafeMutablePointer(to: &storage) { pointer in
-            pointer.withMemoryRebound(to: UInt8.self, capacity: MemoryLayout<sockaddr_storage>.size) { raw in
-                value.withCString { cString in
-                    inet_pton(family, cString, raw) == 1
-                }
+        value.withCString { cString in
+            switch family {
+            case AF_INET:
+                var address = in_addr()
+                return inet_pton(AF_INET, cString, &address) == 1
+            case AF_INET6:
+                var address = in6_addr()
+                return inet_pton(AF_INET6, cString, &address) == 1
+            default:
+                return false
             }
         }
     }

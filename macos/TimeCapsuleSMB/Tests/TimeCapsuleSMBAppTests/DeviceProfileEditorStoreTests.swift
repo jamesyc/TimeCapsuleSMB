@@ -150,6 +150,28 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls, [])
     }
 
+    func testEquivalentHostEditDoesNotRunBackendConfigure() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+
+        store.draft.host = " 10.0.0.2 "
+        store.draft.displayName = "Media Capsule"
+
+        await store.save(profile: profile)
+
+        let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(store.state, .saved)
+        XCTAssertEqual(saved.host, "root@10.0.0.2")
+        XCTAssertEqual(saved.displayName, "Media Capsule")
+        XCTAssertEqual(fixture.runner.calls, [])
+    }
+
     func testPasswordOnlySaveUpdatesKeychainAndClearsDraft() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(

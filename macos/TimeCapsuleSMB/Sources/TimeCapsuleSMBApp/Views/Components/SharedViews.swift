@@ -65,7 +65,9 @@ struct DashboardDisclosureSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                isExpanded.toggle()
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
