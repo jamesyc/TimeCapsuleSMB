@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
@@ -32,6 +34,15 @@ class BonjourInstanceSelection:
     instance: BonjourServiceInstance | None
     candidates: list[BonjourServiceInstance]
     expected_instance_name: str | None
+
+
+@dataclass(frozen=True)
+class BonjourExpectedSmbResolution:
+    selection: BonjourInstanceSelection
+    instance: BonjourServiceInstance
+    record: BonjourResolvedService | None
+    source: Literal["browse", "targeted_resolve"]
+    error: CheckResult | None
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,16 @@ def select_smb_instance(
         instance=ranked[0] if ranked else None,
         candidates=instances,
         expected_instance_name=expected_instance_name,
+    )
+
+
+def build_expected_smb_instance(instance_name: str) -> BonjourServiceInstance:
+    service_type = f"{SMB_SERVICE}._tcp.local."
+    stripped_name = instance_name.strip()
+    return BonjourServiceInstance(
+        service_type=service_type,
+        name=stripped_name,
+        fullname=f"{stripped_name}.{service_type}",
     )
 
 
@@ -168,6 +189,7 @@ def resolve_smb_instance(
     target_ip: str | None = None,
     family: BonjourIPFamily | None = None,
     interfaces: list[str] | None = None,
+    missing_message: str | None = None,
 ) -> tuple[BonjourResolvedService | None, CheckResult | None]:
     try:
         record = resolve_service_instance(
@@ -182,9 +204,58 @@ def resolve_smb_instance(
     if record is None:
         return None, CheckResult(
             "FAIL",
-            f"discovered _smb._tcp instance {instance.name!r} but could not resolve service target",
+            missing_message or f"discovered _smb._tcp instance {instance.name!r} but could not resolve service target",
         )
     return record, None
+
+
+def resolve_expected_smb_record(
+    instances: list[BonjourServiceInstance],
+    records: list[BonjourResolvedService],
+    *,
+    expected_instance_name: str,
+    target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: list[str] | None = None,
+    resolver: Callable[..., tuple[BonjourResolvedService | None, CheckResult | None]] = resolve_smb_instance,
+) -> BonjourExpectedSmbResolution:
+    selection = select_smb_instance(instances, expected_instance_name=expected_instance_name)
+    if selection.instance is not None:
+        resolved_record = select_resolved_smb_record(records, selection.instance)
+        resolve_error = None
+        if resolved_record is None:
+            resolved_record, resolve_error = resolver(
+                selection.instance,
+                target_ip=target_ip,
+                family=family,
+                interfaces=interfaces,
+            )
+        return BonjourExpectedSmbResolution(
+            selection=selection,
+            instance=selection.instance,
+            record=resolved_record,
+            source="browse",
+            error=resolve_error,
+        )
+
+    expected_instance = build_expected_smb_instance(expected_instance_name)
+    resolved_record, resolve_error = resolver(
+        expected_instance,
+        target_ip=target_ip,
+        family=family,
+        interfaces=interfaces,
+        missing_message=(
+            f"expected _smb._tcp instance {expected_instance_name!r} "
+            "was not discovered and could not be resolved by targeted query"
+        ),
+    )
+    return BonjourExpectedSmbResolution(
+        selection=selection,
+        instance=expected_instance,
+        record=resolved_record,
+        source="targeted_resolve",
+        error=resolve_error,
+    )
 
 
 def resolve_smb_service_target(

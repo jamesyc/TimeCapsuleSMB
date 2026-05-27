@@ -11,11 +11,10 @@ from timecapsulesmb.checks.bonjour import (
     check_smb_instance,
     check_smb_service_target,
     discover_smb_services_detailed,
+    resolve_expected_smb_record,
     resolve_smb_instance,
     resolve_smb_service_target,
-    select_resolved_smb_record,
     select_resolved_smb_record_by_ip,
-    select_smb_instance,
 )
 from timecapsulesmb.checks.doctor_debug import _add_remote_service_socket_debug
 from timecapsulesmb.checks.doctor_state import (
@@ -252,13 +251,14 @@ def _add_bonjour_host_ip_results(
     expected_ip: str | None,
     record_ips: list[str],
     add_result: Callable[[CheckResult], None],
-) -> None:
+) -> CheckResult:
     host_ip_result = check_bonjour_host_ip(
         hostname,
         expected_ip=expected_ip,
         record_ips=record_ips,
     )
     add_result(host_ip_result)
+    return host_ip_result
 
 
 def _record_ips(record: object) -> list[str]:
@@ -400,47 +400,60 @@ def _add_bonjour_results(
                 smb_instances = [instance for instance in smb_snapshot.instances if _bonjour_service_label(instance.service_type) == "_smb"]
                 smb_records = [record for record in smb_snapshot.resolved if _bonjour_service_label(record.service_type) == "_smb"]
                 if bonjour_expected.instance_name is not None:
-                    selection = select_smb_instance(
+                    resolution = resolve_expected_smb_record(
                         smb_instances,
+                        smb_records,
                         expected_instance_name=bonjour_expected.instance_name,
+                        target_ip=target_ip,
+                        family=family,
+                        interfaces=interfaces,
+                        resolver=resolve_smb_instance,
                     )
-                    for result in check_smb_instance(selection):
-                        add_attempt_result(result)
-                    if selection.instance is not None:
-                        bonjour_instance = selection.instance.name
-                        bonjour_service_targets = _bonjour_service_targets_for_instance(smb_snapshot.resolved, selection.instance.name)
-                        if _add_bonjour_service_target_consistency_results(selection.instance.name, bonjour_service_targets, add_attempt_result):
+                    if resolution.source == "browse":
+                        for result in check_smb_instance(resolution.selection):
+                            add_attempt_result(result)
+                    elif resolution.record is not None:
+                        add_attempt_result(CheckResult(
+                            "INFO",
+                            f"Python zeroconf browse did not observe expected _smb._tcp instance {bonjour_expected.instance_name!r}; targeted resolve succeeded",
+                        ))
+                        add_attempt_result(CheckResult(
+                            "PASS",
+                            f"resolved expected _smb._tcp instance {bonjour_expected.instance_name!r} by targeted query",
+                        ))
+                    else:
+                        for result in check_smb_instance(resolution.selection):
+                            add_attempt_result(result)
+
+                    if resolution.error is not None:
+                        bonjour_reason = resolution.error.message
+                        bonjour_debug_needed = True
+                        add_attempt_result(resolution.error)
+                    elif resolution.record is not None:
+                        bonjour_instance = resolution.instance.name
+                        records_for_targets = list(smb_snapshot.resolved)
+                        records_for_targets.append(resolution.record)
+                        bonjour_service_targets = _bonjour_service_targets_for_instance(records_for_targets, resolution.instance.name)
+                        if _add_bonjour_service_target_consistency_results(resolution.instance.name, bonjour_service_targets, add_attempt_result):
                             bonjour_debug_needed = True
-                        resolved_record = select_resolved_smb_record(smb_records, selection.instance)
-                        resolve_error = None
-                        if resolved_record is None:
-                            resolved_record, resolve_error = resolve_smb_instance(
-                                selection.instance,
-                                target_ip=target_ip,
-                                family=family,
-                                interfaces=interfaces,
-                            )
-                        if resolve_error is not None:
-                            bonjour_reason = resolve_error.message
+                        target = resolve_smb_service_target(
+                            resolution.record,
+                            expected_instance_name=bonjour_expected.instance_name,
+                        )
+                        target_result = check_smb_service_target(target)
+                        if target_result.status == "FAIL":
                             bonjour_debug_needed = True
-                            add_attempt_result(resolve_error)
-                        elif resolved_record is not None:
-                            target = resolve_smb_service_target(
-                                resolved_record,
-                                expected_instance_name=bonjour_expected.instance_name,
+                        add_attempt_result(target_result)
+                        if target.hostname:
+                            bonjour_target = target
+                            host_ip_result = _add_bonjour_host_ip_results(
+                                target.hostname,
+                                expected_ip=target_ip,
+                                record_ips=_record_ips(resolution.record),
+                                add_result=add_attempt_result,
                             )
-                            target_result = check_smb_service_target(target)
-                            if target_result.status == "FAIL":
+                            if host_ip_result.status == "FAIL":
                                 bonjour_debug_needed = True
-                            add_attempt_result(target_result)
-                            if target.hostname:
-                                bonjour_target = target
-                                _add_bonjour_host_ip_results(
-                                    target.hostname,
-                                    expected_ip=target_ip,
-                                    record_ips=_record_ips(resolved_record),
-                                    add_result=add_attempt_result,
-                                )
                     else:
                         bonjour_debug_needed = True
                 elif target_ip is not None:
@@ -468,12 +481,14 @@ def _add_bonjour_results(
                         add_attempt_result(target_result)
                         if target.hostname:
                             bonjour_target = target
-                            _add_bonjour_host_ip_results(
+                            host_ip_result = _add_bonjour_host_ip_results(
                                 target.hostname,
                                 expected_ip=target_ip,
                                 record_ips=_record_ips(resolved_record),
                                 add_result=add_attempt_result,
                             )
+                            if host_ip_result.status == "FAIL":
+                                bonjour_debug_needed = True
             if len(attempt_diagnostics) == 1:
                 bonjour_zeroconf_debug = attempt_diagnostics[0]
             elif attempt_diagnostics:

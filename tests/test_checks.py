@@ -18,11 +18,13 @@ if str(SRC_ROOT) not in sys.path:
 import subprocess
 
 from timecapsulesmb.checks.bonjour import (
+    build_expected_smb_instance,
     build_bonjour_expected_identity,
     check_bonjour_host_ip,
     check_smb_instance,
     check_smb_service_target,
     discover_smb_services_detailed,
+    resolve_expected_smb_record,
     resolve_smb_instance,
     resolve_smb_service_target,
     select_resolved_smb_record,
@@ -734,6 +736,190 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields, {})
         self.assertTrue(any(result.status == "PASS" and "discovered _smb._tcp" in result.message for result in results))
 
+    def test_run_doctor_checks_resolves_expected_smb_when_browse_misses_instance(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        airport_instance = BonjourServiceInstance("_airport._tcp.local.", "Home", "Home._airport._tcp.local.")
+        airport_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_airport._tcp.local.",
+            port=5009,
+            ipv4=["10.0.0.2"],
+        )
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service=None,
+            service_types=["_airport._tcp.local.", "_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.0,
+            ip_version="V4Only",
+            instance_count=1,
+            resolved_count=1,
+            pending_count=0,
+            service_added_count=1,
+            service_updated_count=0,
+            resolve_attempt_count=1,
+            resolve_success_count=1,
+            resolve_error_count=0,
+            instances=[airport_instance],
+            resolved=[airport_record],
+        )
+        resolved_smb = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_smb._tcp.local.",
+            port=445,
+            ipv4=["10.0.0.2"],
+            fullname="Home._smb._tcp.local.",
+        )
+        resolve_mock = mock.Mock(return_value=(resolved_smb, None))
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([airport_instance], [airport_record]), None, diagnostics)
+                ),
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": resolve_mock,
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(
+                    side_effect=AssertionError("native dns-sd should not decide Bonjour success")
+                ),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertNotIn("bonjour_native_dns_sd", debug_fields)
+        self.assertNotIn("bonjour_native_dns_sd_error", debug_fields)
+        resolve_mock.assert_called_once()
+        resolved_instance = resolve_mock.call_args.args[0]
+        self.assertEqual(resolved_instance, build_expected_smb_instance("Home"))
+        self.assertEqual(resolve_mock.call_args.kwargs["target_ip"], "10.0.0.2")
+        self.assertEqual(resolve_mock.call_args.kwargs["family"], "ipv4")
+        self.assertEqual(resolve_mock.call_args.kwargs["interfaces"], ["10.0.0.9"])
+        self.assertIn("targeted query", resolve_mock.call_args.kwargs["missing_message"])
+        messages = [result.message for result in run.results]
+        self.assertIn(
+            "Bonjour IPv4: Python zeroconf browse did not observe expected _smb._tcp instance 'Home'; targeted resolve succeeded",
+            messages,
+        )
+        self.assertIn("Bonjour IPv4: resolved expected _smb._tcp instance 'Home' by targeted query", messages)
+        self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
+        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
+
+    def test_run_doctor_checks_fails_when_targeted_smb_resolve_returns_wrong_ip(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        wrong_smb = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_smb._tcp.local.",
+            port=445,
+            ipv4=["10.0.0.99"],
+            fullname="Home._smb._tcp.local.",
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(wrong_smb, None)),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(return_value=None),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertTrue(
+            any(
+                result.status == "FAIL"
+                and result.message == "Bonjour IPv4: Bonjour host home.local resolved to 10.0.0.99, expected 10.0.0.2"
+                for result in run.results
+            )
+        )
+        self.assertIn("bonjour_expected", debug_fields)
+
+    def test_run_doctor_checks_fails_when_browse_and_targeted_smb_resolve_miss(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        resolve_error = CheckResult(
+            "FAIL",
+            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
+                "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(return_value=None),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: no discovered _smb._tcp instance matched expected device instance 'Home'", messages)
+        self.assertIn(
+            "Bonjour IPv4: expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+            messages,
+        )
+
     def test_run_doctor_checks_uses_ip_only_bonjour_fallback_when_runtime_name_probe_fails(self) -> None:
         run = self.run_doctor_with_mocks(
             smb_port=mock.Mock(status="PASS", message="445 ok"),
@@ -1001,6 +1187,61 @@ class CheckTests(unittest.TestCase):
 
         selection = select_smb_instance([other, ours], expected_instance_name="Home")
         self.assertIs(selection.instance, ours)
+
+    def test_build_expected_smb_instance_constructs_fullname(self) -> None:
+        instance = build_expected_smb_instance("Home")
+
+        self.assertEqual(instance.service_type, "_smb._tcp.local.")
+        self.assertEqual(instance.name, "Home")
+        self.assertEqual(instance.fullname, "Home._smb._tcp.local.")
+
+    def test_resolve_expected_smb_record_uses_browsed_record_before_targeted_query(self) -> None:
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        record = BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", fullname="Home._smb._tcp.local.")
+        resolver = mock.Mock()
+
+        result = resolve_expected_smb_record(
+            [instance],
+            [record],
+            expected_instance_name="Home",
+            target_ip="10.0.1.77",
+            family="ipv4",
+            interfaces=["10.0.1.42"],
+            resolver=resolver,
+        )
+
+        self.assertEqual(result.source, "browse")
+        self.assertIs(result.instance, instance)
+        self.assertIs(result.record, record)
+        self.assertIsNone(result.error)
+        resolver.assert_not_called()
+
+    def test_resolve_expected_smb_record_targets_expected_instance_when_browse_misses(self) -> None:
+        other = BonjourServiceInstance("_smb._tcp.local.", "Kitchen", "Kitchen._smb._tcp.local.")
+        record = BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.1.77"])
+        resolver = mock.Mock(return_value=(record, None))
+
+        result = resolve_expected_smb_record(
+            [other],
+            [],
+            expected_instance_name="Home",
+            target_ip="10.0.1.77",
+            family="ipv4",
+            interfaces=["10.0.1.42"],
+            resolver=resolver,
+        )
+
+        self.assertEqual(result.source, "targeted_resolve")
+        self.assertEqual(result.instance, build_expected_smb_instance("Home"))
+        self.assertIs(result.record, record)
+        self.assertIsNone(result.error)
+        resolver.assert_called_once()
+        resolved_instance = resolver.call_args.args[0]
+        self.assertEqual(resolved_instance.fullname, "Home._smb._tcp.local.")
+        self.assertEqual(resolver.call_args.kwargs["target_ip"], "10.0.1.77")
+        self.assertEqual(resolver.call_args.kwargs["family"], "ipv4")
+        self.assertEqual(resolver.call_args.kwargs["interfaces"], ["10.0.1.42"])
+        self.assertIn("targeted query", resolver.call_args.kwargs["missing_message"])
 
     def test_select_smb_instance_fails_when_no_record_matches_expected_instance(self) -> None:
         other = BonjourServiceInstance("_smb._tcp.local.", "Kitchen", "Kitchen._smb._tcp.local.")
