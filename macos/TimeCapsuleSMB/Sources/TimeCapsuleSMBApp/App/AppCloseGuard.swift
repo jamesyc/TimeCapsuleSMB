@@ -81,7 +81,6 @@ public final class AppCloseGuard: NSObject {
     var presenter: AppCloseGuardPresenting = AppCloseGuardAlertPresenter()
 
     private var policy = AppCloseGuardPolicy()
-    private var authorizedWindowCloses: Set<ObjectIdentifier> = []
 
     public func configure(hasBlockingActivity: @escaping () -> Bool) {
         policy = AppCloseGuardPolicy(hasBlockingActivity: hasBlockingActivity)
@@ -95,12 +94,11 @@ public final class AppCloseGuard: NSObject {
             AppCloseGuardPrompt.activeOperation,
             for: .windowClose,
             modalFor: window
-        ) { [weak self, weak window] confirmed in
+        ) { [weak window] confirmed in
             guard confirmed, let window else {
                 return
             }
-            self?.authorizeNextClose(of: window)
-            window.performClose(nil)
+            window.close()
         }
         return false
     }
@@ -127,14 +125,6 @@ public final class AppCloseGuard: NSObject {
         objc_setAssociatedObject(window, &windowCloseGuardDelegateKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         window.delegate = delegate
     }
-
-    func consumeAuthorizedClose(of window: NSWindow) -> Bool {
-        authorizedWindowCloses.remove(ObjectIdentifier(window)) != nil
-    }
-
-    private func authorizeNextClose(of window: NSWindow) {
-        authorizedWindowCloses.insert(ObjectIdentifier(window))
-    }
 }
 
 @MainActor
@@ -160,12 +150,8 @@ private final class GuardedWindowDelegate: NSObject, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        let alreadyConfirmed = AppCloseGuard.shared.consumeAuthorizedClose(of: sender)
         if let downstreamAllows = downstream?.windowShouldClose?(sender), !downstreamAllows {
             return false
-        }
-        if alreadyConfirmed {
-            return true
         }
         return AppCloseGuard.shared.shouldCloseWindow(sender)
     }

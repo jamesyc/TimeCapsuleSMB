@@ -68,8 +68,13 @@ struct MaintenanceTab: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = L10n.string("maintenance.action.choose")
-        if panel.runModal() == .OK, let url = panel.url {
-            store.repairPath = url.path
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else {
+                return
+            }
+            Task { @MainActor in
+                store.repairPath = url.path
+            }
         }
     }
 
@@ -79,8 +84,13 @@ struct MaintenanceTab: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.prompt = L10n.string("maintenance.action.choose")
-        if panel.runModal() == .OK, let url = panel.url {
-            store.firmwareTemplatePath = url.path
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else {
+                return
+            }
+            Task { @MainActor in
+                store.firmwareTemplatePath = url.path
+            }
         }
     }
 }

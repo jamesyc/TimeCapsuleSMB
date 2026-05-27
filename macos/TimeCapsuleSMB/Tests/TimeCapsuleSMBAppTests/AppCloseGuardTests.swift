@@ -35,6 +35,20 @@ final class AppCloseGuardTests: XCTestCase {
         XCTAssertEqual(presenter.prompts, [.activeOperation, .activeOperation])
     }
 
+    func testConfirmedWindowCloseClosesWindowDirectly() {
+        let guardController = AppCloseGuard()
+        let presenter = RecordingCloseGuardPresenter()
+        guardController.configure { true }
+        guardController.presenter = presenter
+        let window = RecordingWindow()
+
+        XCTAssertFalse(guardController.shouldCloseWindow(window))
+
+        presenter.completions.first?(true)
+
+        XCTAssertEqual(window.closeCount, 1)
+    }
+
     func testApplicationDelegateRoutesCommandQuitThroughCloseGuard() {
         let guardController = AppCloseGuard()
         let presenter = RecordingCloseGuardPresenter()
@@ -58,6 +72,14 @@ final class AppCloseGuardTests: XCTestCase {
 
         XCTAssertEqual(delegate.applicationShouldTerminate(.shared), .terminateNow)
         XCTAssertTrue(presenter.requests.isEmpty)
+    }
+}
+
+private final class RecordingWindow: NSWindow {
+    private(set) var closeCount = 0
+
+    override func close() {
+        closeCount += 1
     }
 }
 

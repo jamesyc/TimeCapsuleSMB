@@ -114,7 +114,7 @@ struct DeviceProfileEditorDraft: Equatable {
     }
 
     func hostChanged(from profile: DeviceProfile) -> Bool {
-        trimmedHost != profile.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        DeviceEndpointPolicy.normalizedHostKey(trimmedHost) != DeviceEndpointPolicy.normalizedHostKey(profile.host)
     }
 
     func validatedSettings() throws -> DeviceProfileSettings {
