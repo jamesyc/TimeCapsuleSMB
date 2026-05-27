@@ -121,7 +121,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         sink,
         operation,
         result="success" if result.ok else "failure",
-        error=_payload_error(result.payload) if not result.ok else None,
+        error=(result.diagnostic_error or _payload_error(result.payload)) if not result.ok else None,
         details=telemetry_details_from_payload(operation, params, result.payload),
     )
     return 0 if result.ok else 1

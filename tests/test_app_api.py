@@ -1419,6 +1419,40 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(result["payload"]["fatal"])
         self.assertNotIn("pw", json.dumps(collector.events))
 
+    def test_doctor_failure_telemetry_includes_shared_debug_context(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["bonjour_expected"] = {"instance_name": "Home"}
+            kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "ip_version": "V4Only"}
+            result = CheckResult("FAIL", "no discovered _smb._tcp instance matched expected device instance 'Home'")
+            kwargs["on_result"](result)
+            return [result], True
+
+        with mock.patch("timecapsulesmb.app.ops.doctor.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                with mock.patch("timecapsulesmb.app.ops.doctor.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                    with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                        rc = service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        finished_kwargs = self._telemetry_client.emit.call_args_list[-1].kwargs
+        telemetry_error = finished_kwargs["error"]
+        self.assertIn("Doctor failures:", telemetry_error)
+        self.assertIn("Discovery context:", telemetry_error)
+        self.assertIn("Debug context:", telemetry_error)
+        self.assertIn("command=doctor", telemetry_error)
+        self.assertIn("stage=run_checks", telemetry_error)
+        self.assertIn("host=root@10.0.0.2", telemetry_error)
+        self.assertIn("TC_HOST=root@10.0.0.2", telemetry_error)
+        self.assertIn("bonjour_zeroconf={instance_count:0,ip_version:V4Only}", telemetry_error)
+        self.assertNotIn("TC_PASSWORD=pw", telemetry_error)
+
+        payload_error = collector.events_of_type("result")[0]["payload"]["error"]
+        self.assertIn("Doctor failures:", payload_error)
+        self.assertNotIn("Debug context:", payload_error)
+
     def test_deploy_dry_run_returns_structured_plan_without_remote_actions(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")

@@ -537,7 +537,7 @@ class TelemetryTests(unittest.TestCase):
                 client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
-                        with mock.patch("timecapsulesmb.cli.context.render_command_debug_lines", side_effect=RuntimeError("debug boom")):
+                        with mock.patch("timecapsulesmb.services.context.render_operation_debug_lines", side_effect=RuntimeError("debug boom")):
                             with self.assertRaises(RuntimeError) as raised:
                                 with CommandContext(client, "deploy", "deploy_started", "deploy_finished"):
                                     raise RuntimeError("upload failed")
