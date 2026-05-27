@@ -2,6 +2,28 @@ import XCTest
 @testable import TimeCapsuleSMBApp
 
 final class BundleLayoutTests: XCTestCase {
+    func testResourceBundleLocatorPrefersPackagedResourceDirectory() throws {
+        let temp = try TemporaryDirectory()
+        let app = temp.url.appendingPathComponent("TimeCapsuleSMB.app", isDirectory: true)
+        let packaged = app
+            .appendingPathComponent("Contents/Resources", isDirectory: true)
+            .appendingPathComponent(AppResourceBundleLocator.bundleDirectoryName, isDirectory: true)
+        let appRoot = app.appendingPathComponent(AppResourceBundleLocator.bundleDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: packaged, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: appRoot, withIntermediateDirectories: true)
+
+        let resolved = AppResourceBundleLocator.bundleURL(
+            appBundleURL: app,
+            resourceURL: app.appendingPathComponent("Contents/Resources", isDirectory: true)
+        )
+
+        XCTAssertEqual(resolved?.standardizedFileURL, packaged.standardizedFileURL)
+    }
+
+    func testLaunchResourceValidationLoadsLocalizedStrings() {
+        XCTAssertNil(AppLaunchResourceValidation.validate())
+    }
+
     func testStateInventoriesAreExplicit() {
         XCTAssertEqual(BundleRuntimeMode.allCases, [.explicit, .productionBundle, .developmentCheckout])
         XCTAssertEqual(BundleRuntimeIssueSeverity.allCases, [.warning, .error])

@@ -26,7 +26,7 @@ enum L10n {
     }
 
     static func string(_ key: String, language: AppLanguage) -> String {
-        let fallback = NSLocalizedString(key, bundle: .module, comment: "")
+        let fallback = AppResourceBundle.bundle.localizedString(forKey: key, value: key, table: nil)
         guard let bundle = bundle(for: language) else {
             return fallback
         }
@@ -49,7 +49,7 @@ enum L10n {
             return nil
         }
         for candidate in [identifier, identifier.lowercased()] {
-            if let path = Bundle.module.path(forResource: candidate, ofType: "lproj"),
+            if let path = AppResourceBundle.bundle.path(forResource: candidate, ofType: "lproj"),
                let bundle = Bundle(path: path) {
                 return bundle
             }
