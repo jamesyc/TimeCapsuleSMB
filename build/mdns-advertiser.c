@@ -388,6 +388,7 @@ static struct mdns_runtime_counters g_mdns_counters;
 static struct mdns_counter_log_state g_mdns_counter_log_state;
 static int g_last_ipv4_socket_errno = 0;
 static int g_last_ipv6_socket_errno = 0;
+static int g_debug_logging = 0;
 static const unsigned int g_startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 1000, 3000, 7000};
 
 static long long monotonic_millis(void);
@@ -767,6 +768,9 @@ static void log_mdns_counters_force(const char *reason) {
 }
 
 static void maybe_log_mdns_counters(const char *reason, long long now_ms) {
+    if (!g_debug_logging) {
+        return;
+    }
     if (!mdns_counters_changed_since_log()) {
         return;
     }
@@ -1183,6 +1187,7 @@ static void usage(const char *prog) {
             "  --print-smb-bind-interfaces Print live IPv4/IPv6 address CIDRs for Samba interfaces\n"
             "  --print-mdns-socket-families Print required mDNS UDP socket families for live advertise links\n"
             "  --version          Print advertiser version code and exit\n"
+            "  --debug-logging    Enable verbose mDNS traffic counter diagnostics\n"
             "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
             "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file; without --load-snapshot, capture and exit\n"
             "  --skip-capture-if-snapshot-newer-than-boot <path> Reuse an existing snapshot created after boot\n"
@@ -5957,6 +5962,8 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("%d\n", ADVERTISER_VERSION_CODE);
             return EXIT_OK;
+        } else if (strcmp(argv[i], "--debug-logging") == 0) {
+            g_debug_logging = 1;
         } else if (strcmp(argv[i], "--adisk-shares-file") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_shares_file, argv[++i], sizeof(cfg.adisk_shares_file) - 1);
         } else if (strcmp(argv[i], "--adisk-sys-wama") == 0 && i + 1 < argc) {

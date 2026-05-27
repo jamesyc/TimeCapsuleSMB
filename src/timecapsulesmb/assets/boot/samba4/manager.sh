@@ -1015,7 +1015,7 @@ tc_manager_launch_mdns_advertiser() {
     diskless=$4
 
     tc_manager_materialize_adisk_state || return 1
-    tc_launch_mdns_advertiser "$context" "$kill_prior" "$wait_attempts" "$diskless"
+    tc_launch_mdns_advertiser "$context" "$kill_prior" "$wait_attempts" "$diskless" "${MDNS_DEBUG_LOGGING:-0}"
 }
 
 tc_manager_launch_current_mdns_advertiser() {

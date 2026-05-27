@@ -4465,6 +4465,7 @@ MaSt = (
         self.assertIn("--auto-ip", proc.stdout)
         self.assertNotIn("--save-airport-snapshot", proc.stdout)
         self.assertIn("--load-snapshot", proc.stdout)
+        self.assertNotIn("--debug-logging", proc.stdout)
 
     def test_common_mdns_advertiser_generates_airport_snapshot_when_capture_has_no_trusted_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4594,7 +4595,69 @@ MaSt = (
         self.assertIn("--diskless", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
         self.assertNotIn("--adisk-shares-file", proc.stdout)
+        self.assertNotIn("--debug-logging", proc.stdout)
         self.assertIn("mdns startup: starting mdns advertiser in diskless auto-ip mode", proc.stdout)
+
+    def test_common_mdns_advertiser_passes_debug_logging_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            args_file = tmp_path / "mdns-args.txt"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >{shlex.quote(str(args_file))}\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "mdns-debug-logging.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    MDNS_DEBUG_LOGGING=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    echo snapshot >"$APPLE_MDNS_SNAPSHOT"
+                    tc_ensure_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=Debug
+                        MDNS_HOST_LABEL=debug
+                        MDNS_DEVICE_MODEL=TimeCapsule
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_WAMA=
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    tc_launch_mdns_advertiser "mdns startup" 1 0 0
+                    wait "$mdns_launch_pid" || true
+                    cat {shlex.quote(str(args_file))}
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--debug-logging", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
+        self.assertIn("mdns startup: debug logging enabled at", proc.stdout)
 
     def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
