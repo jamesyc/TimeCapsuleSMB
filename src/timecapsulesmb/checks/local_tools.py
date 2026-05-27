@@ -14,7 +14,7 @@ def check_required_local_tools() -> list[CheckResult]:
             results.append(CheckResult("PASS", f"found local tool {tool}"))
         else:
             status = "WARN" if tool == "ssh" else "FAIL"
-            results.append(CheckResult(status, f"missing local tool {tool}"))
+            results.append(CheckResult(status, f"missing local tool {tool}, please install {tool} on your computer"))
     return results
 
 
