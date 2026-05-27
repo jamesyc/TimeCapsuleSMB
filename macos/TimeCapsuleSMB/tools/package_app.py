@@ -26,6 +26,7 @@ APP_VERSION = CLI_VERSION
 APP_VERSION_CODE = str(CLI_VERSION_CODE)
 APP_ICON_FILE = f"{PRODUCT_NAME}.icns"
 APP_ICON_NAME = PRODUCT_NAME
+DEFAULT_ICON_SOURCE = PACKAGE_ROOT / "Assets" / "AppIcon" / "tcs.jpg"
 DEFAULT_RUNTIME_PYTHON = "/usr/bin/python3" if Path("/usr/bin/python3").is_file() else sys.executable
 ARTIFACT_MANIFEST = REPO_ROOT / "src" / "timecapsulesmb" / "assets" / "artifact-manifest.json"
 BONJOUR_SERVICE_TYPES = [
@@ -550,7 +551,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a self-contained TimeCapsuleSMB.app bundle.")
     parser.add_argument("--output", type=Path, default=PACKAGE_ROOT / "dist", help="Directory that will receive TimeCapsuleSMB.app.")
     parser.add_argument("--configuration", choices=("debug", "release"), default="release", help="Swift build configuration.")
-    parser.add_argument("--icon", type=Path, help="Source image to convert into the app bundle .icns icon.")
+    parser.add_argument(
+        "--icon",
+        type=Path,
+        default=DEFAULT_ICON_SOURCE,
+        help="Source image to convert into the app bundle .icns icon.",
+    )
     parser.add_argument("--python", default=DEFAULT_RUNTIME_PYTHON, help="Python interpreter used to build app-bundled packages; defaults to macOS /usr/bin/python3.")
     parser.add_argument("--require-tools", action="store_true", help="Fail if sshpass or smbclient cannot be copied into the app bundle.")
     parser.add_argument("--skip-smoke", action="store_true", help="Skip bundled helper capabilities and validate-install smoke tests.")
