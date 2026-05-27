@@ -217,6 +217,10 @@ tc_run_mdns_snapshot_command() {
     return 1
 }
 
+tc_mdns_debug_logging_enabled() {
+    [ "${MDNS_DEBUG_LOGGING:-0}" = "1" ]
+}
+
 tc_mdns_auto_ip_available() {
     tc_probe_mdns_socket_families >/dev/null 2>&1
 }
@@ -273,6 +277,9 @@ tc_run_mdns_capture() {
     set -- "$TC_MDNS_BIN" \
         --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
         --save-snapshot "$APPLE_MDNS_SNAPSHOT"
+    if tc_mdns_debug_logging_enabled; then
+        set -- "$@" --debug-logging
+    fi
     set -- "$@" --auto-ip
     if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \
@@ -333,7 +340,11 @@ tc_mdns_snapshot_newer_than_boot() {
         return 1
     fi
 
-    if tc_run_mdns_snapshot_command "snapshot freshness" "$TC_MDNS_BIN" --snapshot-newer-than-boot "$APPLE_MDNS_SNAPSHOT"; then
+    set -- "$TC_MDNS_BIN" --snapshot-newer-than-boot "$APPLE_MDNS_SNAPSHOT"
+    if tc_mdns_debug_logging_enabled; then
+        set -- "$@" --debug-logging
+    fi
+    if tc_run_mdns_snapshot_command "snapshot freshness" "$@"; then
         tc_log "trusted Apple mDNS snapshot is newer than current boot: $APPLE_MDNS_SNAPSHOT"
         return 0
     fi
@@ -352,6 +363,9 @@ tc_generate_mdns() {
         --save-airport-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$AIRPORT_INSTANCE_NAME" \
         --host "$AIRPORT_HOST_LABEL"
+    if tc_mdns_debug_logging_enabled; then
+        set -- "$@" --debug-logging
+    fi
     if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
@@ -379,6 +393,7 @@ tc_launch_mdns_advertiser() {
     kill_prior=$2
     wait_attempts=$3
     diskless=${4:-0}
+    mdns_debug_logging=${5:-${MDNS_DEBUG_LOGGING:-0}}
     tc_ensure_runtime_identity
 
     if ! tc_prepare_mdns_identity "" "$context"; then
@@ -403,6 +418,9 @@ tc_launch_mdns_advertiser() {
         --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}"
     if [ "$diskless" = "1" ]; then
         set -- "$@" --diskless
+    fi
+    if [ "$mdns_debug_logging" = "1" ]; then
+        set -- "$@" --debug-logging
     fi
     if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \

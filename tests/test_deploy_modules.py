@@ -1271,6 +1271,56 @@ int main(void) {{
         self.assertEqual(run.stdout, "2104\n")
         self.assertEqual(run.stderr, "")
 
+    def test_mdns_advertiser_accepts_debug_logging_before_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
+            run = subprocess.run(
+                [str(bin_path), "--debug-logging", "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stderr, "")
+
+    def test_mdns_advertiser_traffic_summary_counters_are_debug_only(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = f'''
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    memset(&g_mdns_counters, 0, sizeof(g_mdns_counters));
+    memset(&g_mdns_counter_log_state, 0, sizeof(g_mdns_counter_log_state));
+    g_debug_logging = 0;
+    g_mdns_counters.ipv4_packets_received = 1;
+    maybe_log_mdns_counters("traffic_summary", 1000);
+    if (g_mdns_counter_log_state.last_log_ms != 0) {{
+        return 1;
+    }}
+
+    g_debug_logging = 1;
+    maybe_log_mdns_counters("traffic_summary", 1000);
+    if (g_mdns_counter_log_state.last_log_ms != 1000) {{
+        return 2;
+    }}
+
+    maybe_log_mdns_counters("traffic_summary", 2000);
+    if (g_mdns_counter_log_state.last_log_ms != 1000) {{
+        return 3;
+    }}
+
+    g_mdns_counters.ipv4_packets_received = 2;
+    maybe_log_mdns_counters("traffic_summary", 32000);
+    return g_mdns_counter_log_state.last_log_ms == 32000 ? 0 : 4;
+}}
+'''
+        run = self._compile_and_run_c_helper(source, "mdns_debug_counter_logging")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_mdns_timestamped_logging_truncates_long_lines_without_heap(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = f'''

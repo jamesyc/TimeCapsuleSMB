@@ -15,6 +15,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import NonInteractivePromptError
+from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.probe import ProbedDeviceState, ProbeResult
 from timecapsulesmb.device.storage import (
     MaStDiscoveryResult,
     MaStVolume,
@@ -41,6 +43,36 @@ class CommandContextHelperTests(unittest.TestCase):
             "12345678-1234-1234-1234-123456789012",
             True,
             "hfs",
+        )
+
+    def make_supported_compatibility(self) -> DeviceCompatibility:
+        return DeviceCompatibility(
+            os_name="NetBSD",
+            os_release="6.0",
+            arch="evbarm",
+            elf_endianness="little",
+            payload_family="netbsd6_samba4",
+            device_generation="netbsd6",
+            supported=True,
+            reason_code="supported_netbsd6",
+            syap_candidates=("119",),
+            model_candidates=("TimeCapsule8,119",),
+        )
+
+    def make_probe_state(self, compatibility: DeviceCompatibility | None = None) -> ProbedDeviceState:
+        return ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_port_reachable=True,
+                ssh_authenticated=True,
+                error=None,
+                os_name="NetBSD",
+                os_release="6.0",
+                arch="evbarm",
+                elf_endianness="little",
+                airport_model="TimeCapsule8,119",
+                airport_syap="119",
+            ),
+            compatibility=compatibility or self.make_supported_compatibility(),
         )
 
     def test_confirm_or_fail_returns_prompt_result(self) -> None:
@@ -73,6 +105,18 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.result, "failure")
         self.assertEqual(context.error_lines, ["no stdin"])
         self.assertIn("no stdin", output.getvalue())
+
+    def test_require_compatibility_uses_probe_state_without_runtime_reexport(self) -> None:
+        context = self.make_context()
+        context.connection = self.make_connection()
+        context.probe_state = self.make_probe_state()
+
+        compatibility = context.require_compatibility()
+
+        self.assertEqual(compatibility.payload_family, "netbsd6_samba4")
+        self.assertEqual(context.finish_fields["device_syap"], "119")
+        self.assertEqual(context.finish_fields["device_model"], "TimeCapsule8,119")
+        self.assertEqual(context.finish_fields["device_os_version"], "NetBSD 6.0 (evbarm)")
 
     def test_mount_mast_volumes_reads_then_mounts_and_records_debug(self) -> None:
         context = self.make_context()
