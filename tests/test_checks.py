@@ -1076,7 +1076,10 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.local_tools.command_exists", side_effect=fake_exists):
             results = check_required_local_tools()
         self.assertEqual([r.status for r in results], ["FAIL", "PASS"])
-        self.assertEqual([r.message for r in results], ["missing local tool smbclient", "found local tool ssh"])
+        self.assertEqual(
+            [r.message for r in results],
+            ["missing local tool smbclient, please install smbclient on your computer", "found local tool ssh"],
+        )
 
     def test_discover_smb_services_detailed_returns_snapshot_and_diagnostics(self) -> None:
         snapshot = BonjourDiscoverySnapshot(
