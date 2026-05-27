@@ -176,6 +176,12 @@ final class DeviceRegistryStore: ObservableObject {
         }
     }
 
+    func clearCheckup(for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.clearCheckup(for: profileID)
+        }
+    }
+
     func updateDeploy(_ snapshot: DeviceDeploySnapshot, for profileID: DeviceProfile.ID) async {
         await applyBackgroundMutation {
             try await repository.updateDeploy(snapshot, for: profileID)
@@ -431,6 +437,21 @@ private actor DeviceRegistryRepository {
         return updatedProfiles
     }
 
+    func clearCheckup(for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            return nil
+        }
+        guard profiles[index].lastCheckup != nil else {
+            return nil
+        }
+        var updatedProfiles = profiles
+        updatedProfiles[index].lastCheckup = nil
+        updatedProfiles[index].updatedAt = now()
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
+    }
+
     func updateDeploy(_ snapshot: DeviceDeploySnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
@@ -447,11 +468,12 @@ private actor DeviceRegistryRepository {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
-        guard profiles[index].lastDeploy != nil else {
+        guard profiles[index].lastDeploy != nil || profiles[index].lastCheckup != nil else {
             return nil
         }
         var updatedProfiles = profiles
         updatedProfiles[index].lastDeploy = nil
+        updatedProfiles[index].lastCheckup = nil
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
         profiles = updatedProfiles

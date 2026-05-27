@@ -183,6 +183,15 @@ final class DoctorStore: ObservableObject {
     func clear() {
         backend.clear()
         lastProcessedEventCount = 0
+        clearResultState()
+    }
+
+    func invalidateResult() {
+        lastProcessedEventCount = backend.events.count
+        clearResultState()
+    }
+
+    private func clearResultState() {
         state = .idle
         payload = nil
         summary = nil

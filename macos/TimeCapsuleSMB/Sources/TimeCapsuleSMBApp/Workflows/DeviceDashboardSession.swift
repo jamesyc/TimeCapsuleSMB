@@ -134,7 +134,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
         case .runActivation:
             if let password = maintenancePassword(for: profile) {
-                maintenanceStore.runActivation(password: password, profile: profile)
+                let start = maintenanceStore.runActivation(password: password, profile: profile)
+                invalidateCheckupIfStarted(start)
             }
         case .planUninstall:
             if let password = maintenancePassword(for: profile) {
@@ -142,9 +143,11 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
         case .runUninstall:
             if let password = maintenancePassword(for: profile) {
-                if case .started(let operation) = maintenanceStore.runUninstall(password: password, profile: profile) {
+                let start = maintenanceStore.runUninstall(password: password, profile: profile)
+                if case .started(let operation) = start {
                     activeUninstallOperation = operation
                 }
+                invalidateCheckupIfStarted(start)
             }
         case .findVolumes:
             if let password = maintenancePassword(for: profile) {
@@ -156,7 +159,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
         case .runFsck:
             if let password = maintenancePassword(for: profile) {
-                maintenanceStore.runFsck(password: password, profile: profile)
+                let start = maintenanceStore.runFsck(password: password, profile: profile)
+                invalidateCheckupIfStarted(start)
             }
         case .scanMetadata:
             selectedTab = .maintenance
@@ -185,11 +189,13 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             flashStore.planFlash(mode: .downloadOnly, profile: profile)
         case .writePatch:
             if let password = maintenancePassword(for: profile) {
-                flashStore.write(mode: .patch, password: password, profile: profile)
+                let start = flashStore.write(mode: .patch, password: password, profile: profile)
+                invalidateCheckupIfStarted(start)
             }
         case .writeRestore:
             if let password = maintenancePassword(for: profile) {
-                flashStore.write(mode: .restore, password: password, profile: profile)
+                let start = flashStore.write(mode: .restore, password: password, profile: profile)
+                invalidateCheckupIfStarted(start)
             }
         }
     }
@@ -230,6 +236,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         selectedTab = .install
         if case .started(let operation) = deployStore.runDeploy(password: password, profile: profile) {
             activeDeployOperation = operation
+            invalidateCheckup(for: operation)
         }
     }
 
@@ -492,6 +499,23 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 verified: result.verified,
                 summary: result.message ?? L10n.string("deploy.result.default_message")
             ), for: profile.id)
+        }
+    }
+
+    private func invalidateCheckupIfStarted(_ start: OperationStartResult) {
+        guard case .started(let operation) = start else {
+            return
+        }
+        invalidateCheckup(for: operation)
+    }
+
+    private func invalidateCheckup(for operation: ActiveOperation) {
+        guard let profileID = operation.profileID else {
+            return
+        }
+        doctorStore.invalidateResult()
+        Task {
+            await appStore.deviceRegistry.clearCheckup(for: profileID)
         }
     }
 
