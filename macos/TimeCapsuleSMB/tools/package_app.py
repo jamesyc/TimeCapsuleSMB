@@ -36,6 +36,27 @@ PYTHON_RUNTIME_URL = f"https://www.python.org/ftp/python/{PYTHON_RUNTIME_VERSION
 PYTHON_FRAMEWORK_NAME = "Python.framework"
 APP_BUNDLED_PYTHON_REQUIREMENTS = ("certifi>=2024.8.30",)
 DEFAULT_ARCHITECTURES = ("arm64", "x86_64")
+CACHE_KEY_VERSION = 1
+PYTHON_RUNTIME_CACHE_VERSION = 2
+PYTHON_SITE_PACKAGES_CACHE_VERSION = 2
+APP_ICON_CACHE_VERSION = 1
+NATIVE_TOOLS_CACHE_VERSION = 1
+CACHE_COMPLETE_MARKER = ".complete"
+CACHE_MANIFEST_FILE = "manifest.json"
+PACKAGE_CACHE_IGNORED_NAMES = {"__pycache__", ".DS_Store"}
+PACKAGE_CACHE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
+APP_ICON_ENTRIES = [
+    ("icon_16x16.png", 16),
+    ("icon_16x16@2x.png", 32),
+    ("icon_32x32.png", 32),
+    ("icon_32x32@2x.png", 64),
+    ("icon_128x128.png", 128),
+    ("icon_128x128@2x.png", 256),
+    ("icon_256x256.png", 256),
+    ("icon_256x256@2x.png", 512),
+    ("icon_512x512.png", 512),
+    ("icon_512x512@2x.png", 1024),
+]
 SWIFT_TRIPLES = {
     "arm64": "arm64-apple-macosx14.0",
     "x86_64": "x86_64-apple-macosx14.0",
@@ -165,28 +186,33 @@ def write_info_plist(contents_dir: Path, *, icon_name: str | None = None) -> Non
     (contents_dir / "PkgInfo").write_text("APPL????", encoding="utf-8")
 
 
-def create_app_icon(source: Path, resources_dir: Path) -> None:
+def app_icon_cache_entry(source: Path) -> Path:
+    key = cache_key({
+        "kind": "app-icon",
+        "version": APP_ICON_CACHE_VERSION,
+        "source": str(source.resolve()),
+        "source_sha256": sha256_file(source),
+        "entries": APP_ICON_ENTRIES,
+    })
+    return package_cache_dir("app-icon") / f"{key}.icns"
+
+
+def create_app_icon(source: Path, resources_dir: Path, *, use_cache: bool = True) -> None:
     if not source.is_file():
         raise RuntimeError(f"App icon source does not exist: {source}")
 
     icon_path = resources_dir / APP_ICON_FILE
-    icon_entries = [
-        ("icon_16x16.png", 16),
-        ("icon_16x16@2x.png", 32),
-        ("icon_32x32.png", 32),
-        ("icon_32x32@2x.png", 64),
-        ("icon_128x128.png", 128),
-        ("icon_128x128@2x.png", 256),
-        ("icon_256x256.png", 256),
-        ("icon_256x256@2x.png", 512),
-        ("icon_512x512.png", 512),
-        ("icon_512x512@2x.png", 1024),
-    ]
+    if use_cache:
+        cached_icon = app_icon_cache_entry(source)
+        if cached_icon.is_file():
+            print("Using cached app icon.", file=sys.stderr)
+            shutil.copy2(cached_icon, icon_path)
+            return
 
     with tempfile.TemporaryDirectory(prefix="timecapsulesmb-iconset-") as tmp:
         iconset = Path(tmp) / f"{APP_ICON_NAME}.iconset"
         iconset.mkdir()
-        for filename, size in icon_entries:
+        for filename, size in APP_ICON_ENTRIES:
             run([
                 "sips",
                 "-s",
@@ -203,6 +229,10 @@ def create_app_icon(source: Path, resources_dir: Path) -> None:
 
     if not icon_path.is_file():
         raise RuntimeError(f"App icon generation did not produce {icon_path}")
+    if use_cache:
+        cached_icon = app_icon_cache_entry(source)
+        cached_icon.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icon_path, cached_icon)
 
 
 def write_helper_wrapper(helper_path: Path) -> None:
@@ -268,6 +298,133 @@ def package_cache_dir(name: str) -> Path:
     return path
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def should_ignore_cache_path(path: Path) -> bool:
+    return (
+        path.name in PACKAGE_CACHE_IGNORED_NAMES
+        or path.suffix in PACKAGE_CACHE_IGNORED_SUFFIXES
+        or any(part in PACKAGE_CACHE_IGNORED_NAMES for part in path.parts)
+    )
+
+
+def sha256_tree(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if should_ignore_cache_path(path):
+            continue
+        if path.is_symlink():
+            digest.update(f"link:{relative}\0{os.readlink(path)}\0".encode("utf-8"))
+        elif path.is_file():
+            digest.update(f"file:{relative}\0".encode("utf-8"))
+            digest.update(sha256_file(path).encode("ascii"))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def cache_key(data: dict[str, object]) -> str:
+    encoded = json.dumps(
+        {"cache_key_version": CACHE_KEY_VERSION, **data},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def cache_is_complete(entry: Path, required_path: Path) -> bool:
+    return (entry / CACHE_COMPLETE_MARKER).is_file() and required_path.exists()
+
+
+def mark_cache_complete(entry: Path) -> None:
+    (entry / CACHE_COMPLETE_MARKER).write_text("ok\n", encoding="utf-8")
+
+
+def replace_path(source: Path, destination: Path) -> None:
+    if destination.exists() or destination.is_symlink():
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(destination))
+
+
+def copy_path(source: Path, destination: Path) -> None:
+    if destination.exists() or destination.is_symlink():
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, destination, symlinks=True)
+    else:
+        shutil.copy2(source, destination)
+
+
+def cache_manifest_path(entry: Path) -> Path:
+    return entry / CACHE_MANIFEST_FILE
+
+
+def input_fingerprint(path: Path) -> dict[str, str]:
+    resolved = path.resolve()
+    return {"path": str(resolved), "sha256": sha256_file(resolved)}
+
+
+def input_fingerprints(paths: list[Path] | set[Path]) -> list[dict[str, str]]:
+    return [input_fingerprint(path) for path in sorted({path.resolve() for path in paths})]
+
+
+def write_cache_manifest(entry: Path, manifest: dict[str, object]) -> None:
+    cache_manifest_path(entry).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def read_cache_manifest(entry: Path) -> dict[str, object] | None:
+    path = cache_manifest_path(entry)
+    if not path.is_file():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return value if isinstance(value, dict) else None
+
+
+def cache_manifest_inputs_current(entry: Path) -> bool:
+    manifest = read_cache_manifest(entry)
+    if manifest is None:
+        return False
+    inputs = manifest.get("inputs")
+    if not isinstance(inputs, list):
+        return False
+    for record in inputs:
+        if not isinstance(record, dict):
+            return False
+        path_value = record.get("path")
+        sha256_value = record.get("sha256")
+        if not isinstance(path_value, str) or not isinstance(sha256_value, str):
+            return False
+        path = Path(path_value)
+        if not path.is_file() or sha256_file(path) != sha256_value:
+            return False
+    return True
+
+
+def cache_manifest_output_current(entry: Path, output_root: Path) -> bool:
+    manifest = read_cache_manifest(entry)
+    if manifest is None:
+        return False
+    expected = manifest.get("output_tree_sha256")
+    return isinstance(expected, str) and output_root.is_dir() and sha256_tree(output_root) == expected
+
+
 def download_file(url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(url, timeout=60) as response:
@@ -285,6 +442,75 @@ def python_runtime_pkg(args: argparse.Namespace) -> Path:
         print(f"Downloading bundled Python runtime: {args.python_runtime_url}", file=sys.stderr)
         download_file(args.python_runtime_url, destination)
     return destination
+
+
+def python_framework_executable(framework: Path) -> Path:
+    return framework_version_dir(framework) / "bin" / "python3"
+
+
+def python_framework_dylib(framework: Path) -> Path:
+    return framework_version_dir(framework) / "Python"
+
+
+def python_runtime_source(args: argparse.Namespace) -> tuple[str, Path, dict[str, object]]:
+    if args.python_runtime_framework:
+        source = args.python_runtime_framework.resolve()
+        return (
+            "framework",
+            source,
+            {
+                "source": str(source),
+                "tree_sha256": sha256_tree(source),
+            },
+        )
+    source = python_runtime_pkg(args)
+    return (
+        "pkg",
+        source,
+        {
+            "source": str(source),
+            "source_sha256": sha256_file(source),
+            "url": args.python_runtime_url,
+        },
+    )
+
+
+def prepared_python_framework(args: argparse.Namespace, architectures: tuple[str, ...]) -> Path:
+    source_kind, source, source_fingerprint = python_runtime_source(args)
+    cache_root = package_cache_dir("python-framework")
+    key = cache_key({
+        "kind": "python-framework",
+        "version": PYTHON_RUNTIME_CACHE_VERSION,
+        "source_kind": source_kind,
+        "source_fingerprint": source_fingerprint,
+        "architectures": architectures,
+    })
+    entry = cache_root / key
+    framework = entry / PYTHON_FRAMEWORK_NAME
+
+    if cache_is_complete(entry, framework / "Versions" / "Current" / "bin" / "python3"):
+        print("Using cached Python.framework.", file=sys.stderr)
+        return framework
+
+    with tempfile.TemporaryDirectory(prefix=f"{key}.tmp-", dir=cache_root) as tmp:
+        staging = Path(tmp) / "entry"
+        staging.mkdir()
+        staged_framework = staging / PYTHON_FRAMEWORK_NAME
+        if source_kind == "framework":
+            shutil.copytree(source, staged_framework, symlinks=True)
+        else:
+            extract_python_framework(source, staged_framework)
+        prune_python_runtime(staged_framework)
+        rewrite_python_framework_install_names(staged_framework)
+        assert_macho_has_architectures(python_framework_executable(staged_framework), architectures, "Bundled Python executable")
+        assert_macho_has_architectures(python_framework_dylib(staged_framework), architectures, "Bundled Python framework")
+        assert_macho_architectures_for_roots([staged_framework], architectures, "Bundled Python runtime architecture")
+        assert_no_external_macho_dependencies_for_roots([staged_framework])
+        ad_hoc_codesign_python_framework(staged_framework)
+        assert_macho_code_signatures_valid_for_roots([staged_framework])
+        mark_cache_complete(staging)
+        replace_path(staging, entry)
+        return framework
 
 
 def extract_python_framework(pkg_path: Path, destination: Path) -> Path:
@@ -311,13 +537,20 @@ def copy_python_runtime(args: argparse.Namespace, resources_dir: Path, architect
     runtime_dir.mkdir(parents=True)
     framework = runtime_dir / PYTHON_FRAMEWORK_NAME
 
-    if args.python_runtime_framework:
-        shutil.copytree(args.python_runtime_framework.resolve(), framework, symlinks=True)
+    if getattr(args, "no_cache", False):
+        if args.python_runtime_framework:
+            shutil.copytree(args.python_runtime_framework.resolve(), framework, symlinks=True)
+        else:
+            extract_python_framework(python_runtime_pkg(args), framework)
+        prune_python_runtime(framework)
+        rewrite_python_framework_install_names(framework)
+        assert_macho_architectures_for_roots([framework], architectures, "Bundled Python runtime architecture")
+        assert_no_external_macho_dependencies_for_roots([framework])
+        ad_hoc_codesign_python_framework(framework)
+        assert_macho_code_signatures_valid_for_roots([framework])
     else:
-        extract_python_framework(python_runtime_pkg(args), framework)
-
-    prune_python_runtime(framework)
-    rewrite_python_framework_install_names(framework)
+        cached_framework = prepared_python_framework(args, architectures)
+        shutil.copytree(cached_framework, framework, symlinks=True)
     python_executable = bundled_python_executable_from_resources(resources_dir)
     if not python_executable.is_file():
         raise RuntimeError(f"Bundled Python executable is missing: {python_executable}")
@@ -426,14 +659,48 @@ def prune_python_runtime(framework: Path) -> None:
         path.unlink()
 
 
-def create_python_packages(python: str, resources_dir: Path) -> None:
-    python_root = resources_dir / "Python"
-    site_packages = python_root / "site-packages"
-    if site_packages.exists():
-        shutil.rmtree(site_packages)
-    python_root.mkdir(exist_ok=True)
-    site_packages.mkdir()
+def python_cache_identity(python: str) -> dict[str, object]:
+    code = (
+        "import json, platform, sys, sysconfig\n"
+        "print(json.dumps({\n"
+        "  'version': sys.version,\n"
+        "  'cache_tag': sys.implementation.cache_tag,\n"
+        "  'platform': sysconfig.get_platform(),\n"
+        "  'machine': platform.machine(),\n"
+        "}, sort_keys=True))\n"
+    )
+    completed = subprocess.run(
+        [python, "-c", code],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    return json.loads(completed.stdout)
 
+
+def python_package_source_fingerprint() -> dict[str, object]:
+    inputs = {
+        "pyproject.toml": sha256_file(REPO_ROOT / "pyproject.toml"),
+        "requirements.txt": sha256_file(REPO_ROOT / "requirements.txt") if (REPO_ROOT / "requirements.txt").is_file() else None,
+        "src/timecapsulesmb": sha256_tree(SRC_ROOT / "timecapsulesmb"),
+    }
+    return inputs
+
+
+def python_site_packages_cache_entry(python: str, architectures: tuple[str, ...]) -> Path:
+    key = cache_key({
+        "kind": "python-site-packages",
+        "version": PYTHON_SITE_PACKAGES_CACHE_VERSION,
+        "python": python_cache_identity(python),
+        "architectures": architectures,
+        "bundled_requirements": APP_BUNDLED_PYTHON_REQUIREMENTS,
+        "source": python_package_source_fingerprint(),
+    })
+    return package_cache_dir("python-site-packages") / key
+
+
+def build_python_packages(python: str, site_packages: Path) -> None:
     major, minor = python_major_minor(python)
     if (major, minor) < (3, 9):
         raise RuntimeError(f"TimeCapsuleSMB.app requires Python 3.9 or newer, got {major}.{minor} from {python}")
@@ -452,6 +719,51 @@ def create_python_packages(python: str, resources_dir: Path) -> None:
             if not build_lib_existed and generated_build_lib.exists():
                 shutil.rmtree(generated_build_lib)
     remove_optional_zeroconf_extensions(site_packages)
+
+
+def create_python_packages(
+    python: str,
+    resources_dir: Path,
+    architectures: tuple[str, ...],
+    *,
+    use_cache: bool = True,
+) -> None:
+    python_root = resources_dir / "Python"
+    site_packages = python_root / "site-packages"
+    if site_packages.exists():
+        shutil.rmtree(site_packages)
+    python_root.mkdir(parents=True, exist_ok=True)
+
+    if use_cache:
+        entry = python_site_packages_cache_entry(python, architectures)
+        cached_site_packages = entry / "site-packages"
+        if cache_is_complete(entry, cached_site_packages):
+            print("Using cached Python site-packages.", file=sys.stderr)
+            shutil.copytree(cached_site_packages, site_packages)
+            return
+
+        cache_root = entry.parent
+        cache_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=f"{entry.name}.tmp-", dir=cache_root) as tmp:
+            staging = Path(tmp) / "entry"
+            staged_site_packages = staging / "site-packages"
+            staged_site_packages.mkdir(parents=True)
+            build_python_packages(python, staged_site_packages)
+            assert_macho_architectures_for_roots([staged_site_packages], architectures, "Bundled Python package architecture")
+            assert_no_external_macho_dependencies_for_roots([staged_site_packages])
+            ad_hoc_codesign_site_packages(staged_site_packages)
+            assert_macho_code_signatures_valid_for_roots([staged_site_packages])
+            mark_cache_complete(staging)
+            replace_path(staging, entry)
+        shutil.copytree(cached_site_packages, site_packages)
+        return
+
+    site_packages.mkdir()
+    build_python_packages(python, site_packages)
+    assert_macho_architectures_for_roots([site_packages], architectures, "Bundled Python package architecture")
+    assert_no_external_macho_dependencies_for_roots([site_packages])
+    ad_hoc_codesign_site_packages(site_packages)
+    assert_macho_code_signatures_valid_for_roots([site_packages])
 
 
 def remove_optional_zeroconf_extensions(site_packages: Path) -> None:
@@ -585,37 +897,61 @@ exit 127
     wrapper.chmod(0o755)
 
 
-def copy_tools(resources_dir: Path, architectures: tuple[str, ...]) -> None:
-    tools_bin = resources_dir / "Tools" / "bin"
-    tools_bin.mkdir(parents=True, exist_ok=True)
+def resolve_tool_sources(architectures: tuple[str, ...]) -> dict[tuple[str, str], Path]:
+    sources: dict[tuple[str, str], Path] = {}
     missing: list[str] = []
 
-    if len(architectures) == 1:
-        architecture = architectures[0]
-        for tool in REQUIRED_HOST_TOOLS:
+    for tool in REQUIRED_HOST_TOOLS:
+        for architecture in architectures:
             source = find_tool_for_architecture(tool, architecture)
             if source is None:
                 missing.append(f"{tool} ({architecture})")
                 continue
-            destination = tools_bin / tool
-            shutil.copy2(source, destination)
-            destination.chmod(0o755)
-    else:
-        for tool in REQUIRED_HOST_TOOLS:
-            copied_architectures: list[str] = []
-            for architecture in architectures:
-                source = find_tool_for_architecture(tool, architecture)
-                if source is None:
-                    missing.append(f"{tool} ({architecture})")
-                    continue
-                copy_arch_tool(source, tools_bin, tool, architecture)
-                copied_architectures.append(architecture)
-            if copied_architectures:
-                write_tool_arch_wrapper(tools_bin, tool, tuple(copied_architectures))
+            sources[(tool, architecture)] = source
 
     if missing:
         joined = ", ".join(missing)
         raise RuntimeError(f"Missing required host tool(s) for bundling: {joined}")
+    return sources
+
+
+def tool_source_records(sources: dict[tuple[str, str], Path]) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for tool, architecture in sorted(sources):
+        fingerprint = input_fingerprint(sources[(tool, architecture)])
+        records.append({
+            "tool": tool,
+            "architecture": architecture,
+            **fingerprint,
+        })
+    return records
+
+
+def copy_tools_from_sources(
+    resources_dir: Path,
+    architectures: tuple[str, ...],
+    sources: dict[tuple[str, str], Path],
+) -> None:
+    tools_bin = resources_dir / "Tools" / "bin"
+    tools_bin.mkdir(parents=True, exist_ok=True)
+
+    if len(architectures) == 1:
+        architecture = architectures[0]
+        for tool in REQUIRED_HOST_TOOLS:
+            source = sources[(tool, architecture)]
+            destination = tools_bin / tool
+            shutil.copy2(source, destination)
+            destination.chmod(0o755)
+        return
+
+    for tool in REQUIRED_HOST_TOOLS:
+        for architecture in architectures:
+            copy_arch_tool(sources[(tool, architecture)], tools_bin, tool, architecture)
+        write_tool_arch_wrapper(tools_bin, tool, architectures)
+
+
+def copy_tools(resources_dir: Path, architectures: tuple[str, ...]) -> None:
+    copy_tools_from_sources(resources_dir, architectures, resolve_tool_sources(architectures))
 
 
 def macho_dependencies(path: Path) -> list[str] | None:
@@ -754,6 +1090,22 @@ def ad_hoc_codesign(path: Path) -> None:
     run_quiet(["codesign", "--force", "--sign", "-", str(path)])
 
 
+def ad_hoc_codesign_macho_roots(roots: list[Path]) -> None:
+    for path in sorted(macho_files_under(roots), key=str):
+        if macho_architectures(path):
+            ad_hoc_codesign(path)
+
+
+def ad_hoc_codesign_python_framework(framework: Path) -> None:
+    ad_hoc_codesign_macho_roots([framework])
+    if framework.is_dir():
+        ad_hoc_codesign(framework)
+
+
+def ad_hoc_codesign_site_packages(site_packages: Path) -> None:
+    ad_hoc_codesign_macho_roots([site_packages])
+
+
 def codesign_order(path: Path, app: Path) -> tuple[int, str]:
     try:
         relative = path.resolve().relative_to(app.resolve())
@@ -788,11 +1140,12 @@ def ad_hoc_codesign_macho_bundle(app: Path) -> None:
         ad_hoc_codesign(framework)
 
 
-def vendor_macho_dependencies(app: Path) -> None:
+def vendor_macho_dependencies(app: Path) -> set[Path]:
     frameworks_dir = app / "Contents" / "Frameworks"
-    frameworks_dir.mkdir()
+    frameworks_dir.mkdir(exist_ok=True)
     source_to_bundle: dict[Path, Path] = {}
     bundle_to_source: dict[Path, Path] = {}
+    vendored_sources: set[Path] = set()
     used_names: set[str] = set()
     queue = macho_vendor_roots(app)
     visited: set[Path] = set()
@@ -827,6 +1180,7 @@ def vendor_macho_dependencies(app: Path) -> None:
                 continue
             if not source.is_file():
                 raise RuntimeError(f"Mach-O dependency does not exist: {dependency} referenced by {current}")
+            vendored_sources.add(source)
             bundled = source_to_bundle.get(source)
             if bundled is None:
                 bundled = frameworks_dir / bundled_dependency_name(source, used_names, preferred_name=preferred_name)
@@ -844,13 +1198,98 @@ def vendor_macho_dependencies(app: Path) -> None:
             ])
 
         set_macho_id_if_supported(current)
+    return vendored_sources
 
 
-def assert_macho_code_signatures_valid(app: Path) -> None:
+def native_tools_cache_entry(
+    architectures: tuple[str, ...],
+    sources: dict[tuple[str, str], Path],
+) -> Path:
+    key = cache_key({
+        "kind": "native-tools",
+        "version": NATIVE_TOOLS_CACHE_VERSION,
+        "architectures": architectures,
+        "tool_sources": tool_source_records(sources),
+    })
+    return package_cache_dir("native-tools") / key
+
+
+def native_tools_cache_is_complete(entry: Path) -> bool:
+    tools_bin = entry / "Contents" / "Resources" / "Tools" / "bin"
+    frameworks = entry / "Contents" / "Frameworks"
+    contents = entry / "Contents"
+    return (
+        cache_is_complete(entry, tools_bin)
+        and frameworks.is_dir()
+        and cache_manifest_inputs_current(entry)
+        and cache_manifest_output_current(entry, contents)
+    )
+
+
+def write_native_tools_manifest(
+    entry: Path,
+    architectures: tuple[str, ...],
+    sources: dict[tuple[str, str], Path],
+    dependency_sources: set[Path],
+) -> None:
+    input_paths = set(sources.values()) | dependency_sources
+    write_cache_manifest(entry, {
+        "schema_version": 1,
+        "kind": "native-tools",
+        "cache_version": NATIVE_TOOLS_CACHE_VERSION,
+        "architectures": list(architectures),
+        "tool_sources": tool_source_records(sources),
+        "inputs": input_fingerprints(input_paths),
+        "output_tree_sha256": sha256_tree(entry / "Contents"),
+    })
+
+
+def prepared_native_tools_layer(architectures: tuple[str, ...]) -> Path:
+    sources = resolve_tool_sources(architectures)
+    entry = native_tools_cache_entry(architectures, sources)
+    if native_tools_cache_is_complete(entry):
+        print("Using cached native tool layer.", file=sys.stderr)
+        return entry
+
+    cache_root = entry.parent
+    cache_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"{entry.name}.tmp-", dir=cache_root) as tmp:
+        staging = Path(tmp) / "entry"
+        resources = staging / "Contents" / "Resources"
+        resources.mkdir(parents=True)
+        copy_tools_from_sources(resources, architectures, sources)
+        dependency_sources = vendor_macho_dependencies(staging)
+        ad_hoc_codesign_macho_bundle(staging)
+        assert_tool_architectures(staging, architectures)
+        assert_runtime_macho_architectures(staging, architectures)
+        assert_no_external_macho_dependencies(staging)
+        assert_macho_code_signatures_valid(staging)
+        write_native_tools_manifest(staging, architectures, sources, dependency_sources)
+        mark_cache_complete(staging)
+        replace_path(staging, entry)
+    return entry
+
+
+def copy_native_tools_layer(app: Path, architectures: tuple[str, ...], *, use_cache: bool = True) -> None:
+    contents = app / "Contents"
+    if use_cache:
+        layer = prepared_native_tools_layer(architectures)
+        copy_path(layer / "Contents" / "Resources" / "Tools", contents / "Resources" / "Tools")
+        copy_path(layer / "Contents" / "Frameworks", contents / "Frameworks")
+        return
+
+    copy_tools(contents / "Resources", architectures)
+    vendor_macho_dependencies(app)
+    ad_hoc_codesign_macho_bundle(app)
+    assert_tool_architectures(app, architectures)
+    assert_runtime_macho_architectures(app, architectures)
+    assert_no_external_macho_dependencies(app)
+    assert_macho_code_signatures_valid(app)
+
+
+def assert_macho_code_signatures_valid_for_paths(paths: list[Path]) -> None:
     failures: list[str] = []
-    for path in macho_validation_roots(app):
-        if not should_codesign_packaged_macho(path, app):
-            continue
+    for path in paths:
         if not macho_architectures(path):
             continue
         completed = subprocess.run(
@@ -869,9 +1308,22 @@ def assert_macho_code_signatures_valid(app: Path) -> None:
         raise RuntimeError(f"App bundle contains invalid Mach-O code signature(s):\n  - {joined}")
 
 
-def assert_no_external_macho_dependencies(app: Path) -> None:
+def assert_macho_code_signatures_valid_for_roots(roots: list[Path]) -> None:
+    assert_macho_code_signatures_valid_for_paths(macho_files_under(roots))
+
+
+def assert_macho_code_signatures_valid(app: Path) -> None:
+    paths = [
+        path
+        for path in macho_validation_roots(app)
+        if should_codesign_packaged_macho(path, app)
+    ]
+    assert_macho_code_signatures_valid_for_paths(paths)
+
+
+def assert_no_external_macho_dependencies_for_paths(paths: list[Path]) -> None:
     external: list[str] = []
-    for path in macho_validation_roots(app):
+    for path in paths:
         dependencies = macho_dependencies(path)
         if dependencies is None:
             continue
@@ -881,6 +1333,14 @@ def assert_no_external_macho_dependencies(app: Path) -> None:
     if external:
         joined = "\n  - ".join(external)
         raise RuntimeError(f"App bundle contains non-system Mach-O dependency reference(s):\n  - {joined}")
+
+
+def assert_no_external_macho_dependencies_for_roots(roots: list[Path]) -> None:
+    assert_no_external_macho_dependencies_for_paths(macho_files_under(roots))
+
+
+def assert_no_external_macho_dependencies(app: Path) -> None:
+    assert_no_external_macho_dependencies_for_paths(macho_validation_roots(app))
 
 
 def assert_python_dependencies_are_bundled(app: Path) -> None:
@@ -981,6 +1441,20 @@ def assert_tool_architectures(app: Path, architectures: tuple[str, ...]) -> None
     if failures:
         joined = "\n  - ".join(failures)
         raise RuntimeError(f"Bundled tool architecture validation failed:\n  - {joined}")
+
+
+def assert_macho_architectures_for_roots(roots: list[Path], architectures: tuple[str, ...], label: str) -> None:
+    failures: list[str] = []
+    for path in macho_files_under(roots):
+        actual = macho_architectures(path)
+        if not actual:
+            continue
+        missing = [architecture for architecture in architectures if architecture not in actual]
+        if missing:
+            failures.append(f"{path}: missing {', '.join(missing)} (found: {', '.join(sorted(actual)) or 'none'})")
+    if failures:
+        joined = "\n  - ".join(failures)
+        raise RuntimeError(f"{label} validation failed:\n  - {joined}")
 
 
 def runtime_architecture_roots(app: Path, architectures: tuple[str, ...]) -> list[tuple[Path, str]]:
@@ -1107,6 +1581,7 @@ def assert_bundle_layout(
     *,
     icon_name: str | None = None,
     architectures: tuple[str, ...] = (),
+    full_validation: bool = False,
 ) -> None:
     executable = app / "Contents" / "MacOS" / PRODUCT_NAME
     helper = app / "Contents" / "Helpers" / "tcapsule"
@@ -1131,7 +1606,8 @@ def assert_bundle_layout(
         assert_macho_has_architectures(python_dylib, architectures, "Bundled Python framework")
         assert_python_extension_architectures(app, architectures)
         assert_tool_architectures(app, architectures)
-        assert_runtime_macho_architectures(app, architectures)
+        if full_validation:
+            assert_runtime_macho_architectures(app, architectures)
     if not (resource_bundle / "en.lproj" / "Localizable.strings").is_file():
         raise RuntimeError(f"App bundle is missing Swift resource bundle localizations: {resource_bundle}")
     if not python_packages.is_dir():
@@ -1153,8 +1629,9 @@ def assert_bundle_layout(
     assert_distribution_artifacts(distribution)
     assert_bundled_ca_certificates(app)
     assert_python_dependencies_are_bundled(app)
-    assert_no_external_macho_dependencies(app)
-    assert_macho_code_signatures_valid(app)
+    if full_validation:
+        assert_no_external_macho_dependencies(app)
+        assert_macho_code_signatures_valid(app)
     validate_app_resources(app)
 
 
@@ -1188,15 +1665,18 @@ def package_app(args: argparse.Namespace) -> Path:
     (macos / PRODUCT_NAME).chmod(0o755)
     copy_resources(resource_build_dir, resources)
     if args.icon:
-        create_app_icon(args.icon.resolve(), resources)
+        create_app_icon(args.icon.resolve(), resources, use_cache=not args.no_cache)
     write_helper_wrapper(helpers / "tcapsule")
     python_executable = copy_python_runtime(args, resources, architectures)
-    create_python_packages(str(python_executable), resources)
+    create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
     copy_distribution(resources)
-    copy_tools(resources, architectures)
-    vendor_macho_dependencies(app)
-    ad_hoc_codesign_macho_bundle(app)
-    assert_bundle_layout(app, icon_name=icon_name, architectures=architectures)
+    copy_native_tools_layer(app, architectures, use_cache=not args.no_cache)
+    assert_bundle_layout(
+        app,
+        icon_name=icon_name,
+        architectures=architectures,
+        full_validation=args.full_validation,
+    )
 
     if not args.skip_smoke:
         smoke_test(app)
@@ -1237,6 +1717,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Universal python.org macOS installer URL used when no local runtime source is provided.",
     )
     parser.add_argument("--skip-smoke", action="store_true", help="Skip bundled helper capabilities and validate-install smoke tests.")
+    parser.add_argument("--no-cache", action="store_true", help="Rebuild package-only cached artifacts instead of reusing them.")
+    parser.add_argument("--full-validation", action="store_true", help="Run the full Mach-O dependency and signature validation pass even for trusted cached layers.")
     return parser.parse_args(argv)
 
 

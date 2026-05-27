@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -275,10 +276,109 @@ def test_prune_python_runtime_removes_unused_gui_frameworks(tmp_path: Path) -> N
     assert not (dynload / "_tkinter.cpython-313-darwin.so").exists()
 
 
+def test_create_app_icon_reuses_cached_icns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    source = tmp_path / "tcs.jpg"
+    source.write_bytes(b"fake jpg")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[0] == "sips":
+            output = Path(cmd[cmd.index("--out") + 1])
+            output.write_text("png", encoding="utf-8")
+        elif cmd[0] == "iconutil":
+            output = Path(cmd[cmd.index("-o") + 1])
+            output.write_text("icns", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "run", fake_run)
+
+    first_resources = tmp_path / "FirstResources"
+    second_resources = tmp_path / "SecondResources"
+    first_resources.mkdir()
+    second_resources.mkdir()
+
+    package_app.create_app_icon(source, first_resources)
+    assert calls
+
+    calls.clear()
+    package_app.create_app_icon(source, second_resources)
+
+    assert calls == []
+    assert (second_resources / "TimeCapsuleSMB.icns").read_text(encoding="utf-8") == "icns"
+
+
+def test_prepared_python_framework_reuses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    calls: list[Path] = []
+    source = tmp_path / "python.pkg"
+    source.write_text("pkg", encoding="utf-8")
+
+    def fake_runtime_source(args: object) -> tuple[str, Path, dict[str, object]]:
+        return ("pkg", source, {"source_sha256": "pkg"})
+
+    def fake_extract(pkg: Path, destination: Path) -> Path:
+        calls.append(destination)
+        current = destination / "Versions" / "Current"
+        (current / "bin").mkdir(parents=True)
+        (current / "Python").write_text("python dylib", encoding="utf-8")
+        (current / "bin" / "python3").write_text("#!/bin/sh\n", encoding="utf-8")
+        return destination
+
+    monkeypatch.setattr(package_app, "python_runtime_source", fake_runtime_source)
+    monkeypatch.setattr(package_app, "extract_python_framework", fake_extract)
+    monkeypatch.setattr(package_app, "prune_python_runtime", lambda framework: None)
+    monkeypatch.setattr(package_app, "rewrite_python_framework_install_names", lambda framework: None)
+    monkeypatch.setattr(package_app, "assert_macho_has_architectures", lambda path, architectures, label: None)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_python_framework", lambda framework: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid_for_roots", lambda roots: None)
+
+    args = SimpleNamespace()
+    first = package_app.prepared_python_framework(args, ("arm64", "x86_64"))
+    second = package_app.prepared_python_framework(args, ("arm64", "x86_64"))
+
+    assert first == second
+    assert len(calls) == 1
+    assert (second / "Versions" / "Current" / "bin" / "python3").is_file()
+
+
+def test_create_python_packages_reuses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    cache_entry = tmp_path / "cache" / "site"
+    calls: list[Path] = []
+
+    def fake_build(python: str, site_packages: Path) -> None:
+        calls.append(site_packages)
+        package = site_packages / "timecapsulesmb"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("# cached package\n", encoding="utf-8")
+
+    monkeypatch.setattr(package_app, "python_site_packages_cache_entry", lambda python, architectures: cache_entry)
+    monkeypatch.setattr(package_app, "build_python_packages", fake_build)
+
+    first_resources = tmp_path / "FirstResources"
+    second_resources = tmp_path / "SecondResources"
+
+    package_app.create_python_packages("python3", first_resources, ("arm64",))
+    package_app.create_python_packages("python3", second_resources, ("arm64",))
+
+    assert len(calls) == 1
+    assert (first_resources / "Python" / "site-packages" / "timecapsulesmb" / "__init__.py").is_file()
+    assert (second_resources / "Python" / "site-packages" / "timecapsulesmb" / "__init__.py").is_file()
+
+
 def test_package_args_do_not_allow_missing_bundled_tools() -> None:
     package_app = load_package_app_module()
 
-    assert not hasattr(package_app.parse_args([]), "require_tools")
+    args = package_app.parse_args([])
+    assert not hasattr(args, "require_tools")
+    assert args.no_cache is False
+    assert args.full_validation is False
+    assert package_app.parse_args(["--no-cache"]).no_cache is True
+    assert package_app.parse_args(["--full-validation"]).full_validation is True
     with pytest.raises(SystemExit):
         package_app.parse_args(["--allow-missing-tools"])
 
@@ -319,6 +419,42 @@ def test_assert_bundle_layout_requires_bundled_ca_certificates(
 
     with pytest.raises(RuntimeError, match="missing bundled CA certificates"):
         package_app.assert_bundle_layout(app)
+
+
+def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    distribution = app / "Contents" / "Resources" / "Distribution"
+    for directory in (helper.parent, python_packages, tools, distribution / "bin"):
+        directory.mkdir(parents=True)
+    create_fake_app_executable_and_resources(app)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    (distribution / "artifact-manifest.json").write_text('{"artifacts":{}}', encoding="utf-8")
+    create_fake_certifi_package(python_packages)
+    calls: list[str] = []
+
+    monkeypatch.setattr(package_app, "artifact_paths", lambda: [])
+    monkeypatch.setattr(package_app, "assert_macho_has_architectures", lambda path, architectures, label: None)
+    monkeypatch.setattr(package_app, "assert_python_extension_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda app: None)
+    monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: calls.append("runtime"))
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: calls.append("external"))
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: calls.append("codesign"))
+
+    package_app.assert_bundle_layout(app, architectures=("arm64",))
+    assert calls == []
+
+    package_app.assert_bundle_layout(app, architectures=("arm64",), full_validation=True)
+    assert calls == ["runtime", "external", "codesign"]
 
 
 def test_copy_tools_creates_arch_dispatch_wrappers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -363,6 +499,136 @@ def test_copy_tools_requires_each_architecture_when_requested(monkeypatch: pytes
 
     with pytest.raises(RuntimeError, match=r"sshpass \(x86_64\).*smbclient \(arm64\).*smbclient \(x86_64\)"):
         package_app.copy_tools(tmp_path / "Resources", ("arm64", "x86_64"))
+
+
+def test_copy_native_tools_layer_reuses_cached_vendored_layer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    sources_dir = tmp_path / "sources"
+    sshpass = sources_dir / "sshpass"
+    smbclient = sources_dir / "smbclient"
+    dependency = sources_dir / "libnative.dylib"
+    for path in (sshpass, smbclient, dependency):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+        path.chmod(0o755)
+    sources = {
+        ("sshpass", "arm64"): sshpass,
+        ("smbclient", "arm64"): smbclient,
+    }
+    vendor_calls: list[Path] = []
+
+    def fake_vendor(app: Path) -> set[Path]:
+        vendor_calls.append(app)
+        frameworks = app / "Contents" / "Frameworks"
+        frameworks.mkdir(parents=True, exist_ok=True)
+        (frameworks / "libnative.dylib").write_text("vendored", encoding="utf-8")
+        return {dependency}
+
+    monkeypatch.setattr(package_app, "resolve_tool_sources", lambda architectures: sources)
+    monkeypatch.setattr(package_app, "vendor_macho_dependencies", fake_vendor)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_macho_bundle", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+
+    first_app = tmp_path / "First.app"
+    second_app = tmp_path / "Second.app"
+    package_app.copy_native_tools_layer(first_app, ("arm64",))
+    package_app.copy_native_tools_layer(second_app, ("arm64",))
+
+    assert len(vendor_calls) == 1
+    assert (second_app / "Contents" / "Resources" / "Tools" / "bin" / "smbclient").is_file()
+    assert (second_app / "Contents" / "Frameworks" / "libnative.dylib").is_file()
+
+
+def test_copy_native_tools_layer_rebuilds_when_vendored_input_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    sources_dir = tmp_path / "sources"
+    sshpass = sources_dir / "sshpass"
+    smbclient = sources_dir / "smbclient"
+    dependency = sources_dir / "libnative.dylib"
+    for path in (sshpass, smbclient, dependency):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("original", encoding="utf-8")
+        path.chmod(0o755)
+    sources = {
+        ("sshpass", "arm64"): sshpass,
+        ("smbclient", "arm64"): smbclient,
+    }
+    vendor_calls: list[Path] = []
+
+    def fake_vendor(app: Path) -> set[Path]:
+        vendor_calls.append(app)
+        frameworks = app / "Contents" / "Frameworks"
+        frameworks.mkdir(parents=True, exist_ok=True)
+        (frameworks / "libnative.dylib").write_text("vendored", encoding="utf-8")
+        return {dependency}
+
+    monkeypatch.setattr(package_app, "resolve_tool_sources", lambda architectures: sources)
+    monkeypatch.setattr(package_app, "vendor_macho_dependencies", fake_vendor)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_macho_bundle", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+
+    package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
+    dependency.write_text("changed", encoding="utf-8")
+    package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
+
+    assert len(vendor_calls) == 2
+
+
+def test_copy_native_tools_layer_rebuilds_when_cached_output_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    sources_dir = tmp_path / "sources"
+    sshpass = sources_dir / "sshpass"
+    smbclient = sources_dir / "smbclient"
+    dependency = sources_dir / "libnative.dylib"
+    for path in (sshpass, smbclient, dependency):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("original", encoding="utf-8")
+        path.chmod(0o755)
+    sources = {
+        ("sshpass", "arm64"): sshpass,
+        ("smbclient", "arm64"): smbclient,
+    }
+    vendor_calls: list[Path] = []
+
+    def fake_vendor(app: Path) -> set[Path]:
+        vendor_calls.append(app)
+        frameworks = app / "Contents" / "Frameworks"
+        frameworks.mkdir(parents=True, exist_ok=True)
+        (frameworks / "libnative.dylib").write_text("vendored", encoding="utf-8")
+        return {dependency}
+
+    monkeypatch.setattr(package_app, "resolve_tool_sources", lambda architectures: sources)
+    monkeypatch.setattr(package_app, "vendor_macho_dependencies", fake_vendor)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_macho_bundle", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: None)
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+
+    package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
+    cache_entry = next((tmp_path / ".build" / "package-app" / "native-tools").iterdir())
+    (cache_entry / "Contents" / "Frameworks" / "libnative.dylib").write_text("corrupt", encoding="utf-8")
+    package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
+
+    assert len(vendor_calls) == 2
 
 
 def test_vendor_macho_dependencies_rewrites_loader_path_to_matching_source_copy(
