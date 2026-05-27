@@ -38,7 +38,10 @@ struct CheckupTab: View {
                     }
 
                     if !presentation.timeline.isEmpty {
-                        CheckupTimelineView(items: presentation.timeline)
+                        OperationTimelineListView(
+                            title: L10n.string("checkup.timeline.title"),
+                            items: presentation.timeline
+                        )
                     }
 
                     if !presentation.summaryRows.isEmpty {
@@ -95,31 +98,6 @@ private struct CheckupHeaderView: View {
             Text(presentation.headline)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct CheckupTimelineView: View {
-    let items: [OperationTimelineItem]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.string("checkup.timeline.title"))
-                .font(.headline)
-            ForEach(items) { item in
-                HStack(alignment: .top, spacing: 8) {
-                    OperationTimelineStateIcon(state: item.state)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.title)
-                            .font(.body.weight(.medium))
-                        if let detail = item.detail {
-                            Text(detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
         }
     }
 }

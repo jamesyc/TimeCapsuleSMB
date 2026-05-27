@@ -154,30 +154,11 @@ private struct InstallTimelineView: View {
     let presentation: InstallTimelinePresentation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.string("install.timeline.title"))
-                .font(.headline)
-            if presentation.items.isEmpty {
-                Text(L10n.string("install.timeline.waiting"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(presentation.items) { item in
-                    HStack(alignment: .top, spacing: 8) {
-                        OperationTimelineStateIcon(state: item.state)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
-                                .font(.body.weight(.medium))
-                            if let detail = item.detail {
-                                Text(detail)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        OperationTimelineListView(
+            title: L10n.string("install.timeline.title"),
+            emptyMessage: L10n.string("install.timeline.waiting"),
+            items: presentation.items
+        )
     }
 }
 

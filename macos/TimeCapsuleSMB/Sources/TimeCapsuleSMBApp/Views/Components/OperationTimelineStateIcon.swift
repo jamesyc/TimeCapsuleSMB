@@ -1,31 +1,37 @@
 import SwiftUI
 
-struct OperationTimelineStateIcon: View {
-    let state: OperationTimelineItem.State
-
-    var body: some View {
-        icon
-            .frame(width: 16, height: 16)
-            .accessibilityLabel(accessibilityLabel)
-    }
-
-    @ViewBuilder
-    private var icon: some View {
+enum OperationTimelineVisualStyle {
+    static func symbol(for state: OperationTimelineItem.State) -> String {
         switch state {
         case .pending:
-            Image(systemName: "circle")
+            return "circle"
         case .running:
-            RotatingTimelineIcon()
+            return "arrow.triangle.2.circlepath"
         case .succeeded:
-            Image(systemName: "checkmark.circle")
+            return "checkmark.circle"
         case .warning:
-            Image(systemName: "exclamationmark.triangle")
+            return "exclamationmark.triangle"
         case .failed:
-            Image(systemName: "xmark.octagon")
+            return "xmark.octagon"
         }
     }
 
-    private var accessibilityLabel: String {
+    static func color(for state: OperationTimelineItem.State) -> Color {
+        switch state {
+        case .pending:
+            return .secondary
+        case .running:
+            return .accentColor
+        case .succeeded:
+            return .green
+        case .warning:
+            return .yellow
+        case .failed:
+            return .red
+        }
+    }
+
+    static func accessibilityLabel(for state: OperationTimelineItem.State) -> String {
         switch state {
         case .pending:
             return "Pending"
@@ -41,12 +47,54 @@ struct OperationTimelineStateIcon: View {
     }
 }
 
+struct OperationTimelineStateIcon: View {
+    let state: OperationTimelineItem.State
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        icon
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(OperationTimelineVisualStyle.color(for: state))
+            .frame(width: 20, height: 20)
+            .scaleEffect(scale)
+            .animation(animation, value: state)
+            .accessibilityLabel(OperationTimelineVisualStyle.accessibilityLabel(for: state))
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        switch state {
+        case .pending:
+            Image(systemName: OperationTimelineVisualStyle.symbol(for: state))
+        case .running:
+            RotatingTimelineIcon()
+        case .succeeded, .warning, .failed:
+            Image(systemName: OperationTimelineVisualStyle.symbol(for: state))
+        }
+    }
+
+    private var scale: CGFloat {
+        switch state {
+        case .running:
+            return 1.05
+        case .succeeded:
+            return 1.08
+        case .pending, .warning, .failed:
+            return 1
+        }
+    }
+
+    private var animation: Animation? {
+        reduceMotion ? nil : .snappy(duration: 0.18)
+    }
+}
+
 private struct RotatingTimelineIcon: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isRotating = false
 
     var body: some View {
-        Image(systemName: "arrow.triangle.2.circlepath")
+        Image(systemName: OperationTimelineVisualStyle.symbol(for: .running))
             .rotationEffect(.degrees(!reduceMotion && isRotating ? 360 : 0))
             .animation(animation, value: isRotating)
             .onAppear {

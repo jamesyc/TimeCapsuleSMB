@@ -4,21 +4,13 @@ struct ActivityCompactView: View {
     @ObservedObject var activityStore: ActivityStore
     @ObservedObject var registry: DeviceRegistryStore
     let context: ActivityDisplayContext
-    @State private var messageAnimationPhase = 0
-
-    private let messageAnimationTimer = Timer.publish(
-        every: ActivityProgressTextAnimator.frameInterval,
-        on: .main,
-        in: .common
-    ).autoconnect()
 
     var body: some View {
         let status = activityStore.compactStatus(for: context)
-        let hasLatestMessage = hasLatestMessage(status)
         HStack(spacing: 10) {
             Image(systemName: icon(for: status))
                 .foregroundStyle(iconColor(for: status))
-            messageView(status, hasLatestMessage: hasLatestMessage)
+            messageView(status)
             Spacer()
             if let latestTimelineTitle = status.latestTimelineTitle {
                 Text(latestTimelineTitle)
@@ -29,22 +21,16 @@ struct ActivityCompactView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(Color.secondary.opacity(0.06))
-        .onChange(of: ActivityProgressTextAnimator.animationIdentity(for: status)) { _, _ in
-            messageAnimationPhase = 0
-        }
-        .onReceive(messageAnimationTimer) { _ in
-            advanceMessageAnimation(for: status)
-        }
     }
 
     @ViewBuilder
-    private func messageView(_ status: ActivityCompactStatus, hasLatestMessage: Bool) -> some View {
-        if hasLatestMessage {
+    private func messageView(_ status: ActivityCompactStatus) -> some View {
+        if let latestMessage = status.latestMessage, !latestMessage.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title(status))
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
-                Text(latestMessage(status))
+                AnimatedProgressText(message: latestMessage, isRunning: status.isRunning)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -59,37 +45,12 @@ struct ActivityCompactView: View {
         }
     }
 
-    private func latestMessage(_ status: ActivityCompactStatus) -> String {
-        ActivityProgressTextAnimator.message(
-            status.latestMessage,
-            isRunning: status.isRunning,
-            phase: messageAnimationPhase
-        ) ?? ""
-    }
-
-    private func advanceMessageAnimation(for status: ActivityCompactStatus) {
-        guard ActivityProgressTextAnimator.animationIdentity(for: status) != nil else {
-            if messageAnimationPhase != 0 {
-                messageAnimationPhase = 0
-            }
-            return
-        }
-        messageAnimationPhase = ActivityProgressTextAnimator.nextPhase(after: messageAnimationPhase)
-    }
-
     private func title(_ status: ActivityCompactStatus) -> String {
         if case .device(let activeDeviceID) = status.scope,
            let profile = registry.profile(id: activeDeviceID) {
             return "\(status.operationTitle) - \(profile.title)"
         }
         return status.operationTitle
-    }
-
-    private func hasLatestMessage(_ status: ActivityCompactStatus) -> Bool {
-        guard let latestMessage = status.latestMessage else {
-            return false
-        }
-        return !latestMessage.isEmpty
     }
 
     private func icon(for status: ActivityCompactStatus) -> String {
@@ -194,14 +155,12 @@ private struct ActivityLaneCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(iconColor)
-                    .frame(width: 18)
+                headerIcon
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title(laneSnapshot.snapshot))
                         .font(.body.weight(.medium))
                     if let latestMessage = laneSnapshot.snapshot.latestMessage, !latestMessage.isEmpty {
-                        Text(latestMessage)
+                        AnimatedProgressText(message: latestMessage, isRunning: laneSnapshot.snapshot.isRunning)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -216,7 +175,7 @@ private struct ActivityLaneCard: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(laneSnapshot.snapshot.timeline) { item in
-                        ActivityTimelineRow(item: item)
+                        OperationTimelineRow(item: item, showsBackground: false)
                     }
                 }
             }
@@ -225,6 +184,18 @@ private struct ActivityLaneCard: View {
         .padding(10)
         .background(Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var headerIcon: some View {
+        if laneSnapshot.snapshot.isRunning && !laneSnapshot.isPendingConfirmation {
+            OperationTimelineStateIcon(state: .running)
+                .frame(width: 18)
+        } else {
+            Image(systemName: icon)
+                .foregroundStyle(iconColor)
+                .frame(width: 18)
+        }
     }
 
     private var icon: String {
@@ -247,58 +218,5 @@ private struct ActivityLaneCard: View {
             return "\(snapshot.operationTitle) - \(profile.title)"
         }
         return snapshot.operationTitle
-    }
-}
-
-private struct ActivityTimelineRow: View {
-    let item: OperationTimelineItem
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: itemIcon)
-                .foregroundStyle(itemColor)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.body.weight(.medium))
-                if let detail = item.detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var itemIcon: String {
-        switch item.state {
-        case .pending:
-            return "circle"
-        case .running:
-            return "arrow.right.circle"
-        case .succeeded:
-            return "checkmark.circle"
-        case .warning:
-            return "exclamationmark.triangle"
-        case .failed:
-            return "xmark.octagon"
-        }
-    }
-
-    private var itemColor: Color {
-        switch item.state {
-        case .pending:
-            return .secondary
-        case .running:
-            return .accentColor
-        case .succeeded:
-            return .green
-        case .warning:
-            return .yellow
-        case .failed:
-            return .red
-        }
     }
 }
