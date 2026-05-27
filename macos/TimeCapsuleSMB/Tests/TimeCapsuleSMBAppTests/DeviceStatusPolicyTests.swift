@@ -87,7 +87,7 @@ final class DeviceStatusPolicyTests: XCTestCase {
         XCTAssertEqual(status(try makeProfile(), .available), .unchecked)
         XCTAssertEqual(status(try makeProfile(lastDeploy: deployed()), .available), .healthy)
         XCTAssertEqual(status(try makeProfile(lastDeploy: deployed(verified: false)), .available), .warning)
-        XCTAssertEqual(status(try makeProfile(lastCheckup: passedCheckup()), .available), .readyToInstall)
+        XCTAssertEqual(status(try makeProfile(lastCheckup: passedCheckup()), .available), .healthy)
         XCTAssertEqual(status(try makeProfile(lastCheckup: passedCheckup(), lastDeploy: deployed()), .available), .healthy)
         XCTAssertEqual(status(try makeProfile(lastCheckup: warningCheckup(), lastDeploy: deployed()), .available), .warning)
         XCTAssertEqual(status(try makeProfile(lastCheckup: failedCheckup(), lastDeploy: deployed()), .available), .failed)
@@ -118,7 +118,7 @@ final class DeviceStatusPolicyTests: XCTestCase {
             for: try makeProfile(lastCheckup: passedCheckup()),
             passwordState: .available,
             activeOperation: nil
-        ), .installSMB)
+        ), .openSMB)
         XCTAssertEqual(DashboardPrimaryActionPolicy.primaryAction(
             for: try makeProfile(lastCheckup: passedCheckup(), lastDeploy: deployed()),
             passwordState: .available,

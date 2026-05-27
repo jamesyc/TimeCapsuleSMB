@@ -573,6 +573,7 @@
 "status.unsupported" = "Unsupported";
 "status.warning" = "Warning";
 "summary.checkup_counts" = "PASS %d, WARN %d, FAIL %d";
+"summary.install_verified_by_checkup" = "Installed and verified by checkup.";
 "timeline.error.needs_attention" = "Needs Attention";
 "timeline.error.needs_confirmation" = "Needs Confirmation";
 "timeline.operation.activate" = "Activate";

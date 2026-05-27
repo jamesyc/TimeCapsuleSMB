@@ -130,9 +130,6 @@ enum DeviceStatusPolicy {
         if checkup.warnCount > 0 || checkup.state == .warning {
             return .warning
         }
-        if profile.lastDeploy == nil {
-            return .readyToInstall
-        }
         return .healthy
     }
 

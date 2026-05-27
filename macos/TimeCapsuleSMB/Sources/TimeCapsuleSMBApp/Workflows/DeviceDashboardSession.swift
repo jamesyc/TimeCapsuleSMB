@@ -465,16 +465,43 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
               let summary = doctorStore.summary else {
             return
         }
+        let observedAt = Date()
         Task {
             await appStore.deviceRegistry.updateCheckup(DeviceCheckupSnapshot(
-                checkedAt: Date(),
+                checkedAt: observedAt,
                 state: state,
                 passCount: summary.passCount,
                 warnCount: summary.warnCount,
                 failCount: summary.failCount,
                 summary: L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
             ), for: profileID)
+            if let snapshot = verifiedDeploySnapshotFromPassedCheckup(profileID: profileID, state: state, observedAt: observedAt) {
+                await appStore.deviceRegistry.updateDeploy(snapshot, for: profileID)
+            }
         }
+    }
+
+    private func verifiedDeploySnapshotFromPassedCheckup(
+        profileID: DeviceProfile.ID,
+        state: DoctorWorkflowState,
+        observedAt: Date
+    ) -> DeviceDeploySnapshot? {
+        guard state == .passed,
+              !doctorStore.skipSSH,
+              let profile = appStore.deviceRegistry.profile(id: profileID) else {
+            return nil
+        }
+        if profile.lastDeploy?.verified == true {
+            return nil
+        }
+        return DeviceDeploySnapshot(
+            deployedAt: profile.lastDeploy?.deployedAt ?? observedAt,
+            state: .deployed,
+            payloadFamily: profile.lastDeploy?.payloadFamily ?? profile.payloadFamily,
+            rebootRequested: profile.lastDeploy?.rebootRequested,
+            verified: true,
+            summary: profile.lastDeploy?.summary ?? L10n.string("summary.install_verified_by_checkup")
+        )
     }
 
     private func updateDeploySnapshot(state: DeployWorkflowState) {

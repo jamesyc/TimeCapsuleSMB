@@ -33,7 +33,7 @@ final class DashboardStoreTests: XCTestCase {
             summary: "healthy"
         ), for: profile.id)
         let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
-        XCTAssertEqual(fixture.appStore.dashboardSummary(for: checked).primaryAction, .installSMB)
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: checked).primaryAction, .openSMB)
 
         await fixture.registry.updateDeploy(DeviceDeploySnapshot(
             deployedAt: Date(timeIntervalSince1970: 110),
@@ -568,9 +568,41 @@ final class DashboardStoreTests: XCTestCase {
         try await waitUntilStoreState {
             session.doctorStore.state == .passed
                 && fixture.registry.profile(id: first.id)?.lastCheckup?.state == .passed
+                && fixture.registry.profile(id: first.id)?.lastDeploy?.state == .deployed
         }
         XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastCheckup?.state, .passed)
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.verified, true)
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.summary, "Installed and verified by checkup.")
         XCTAssertNil(fixture.registry.profile(id: second.id)?.lastCheckup)
+        XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeploy)
+    }
+
+    func testSkippedSSHCheckupDoesNotMarkRuntimeInstalled() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "local checks passed", domain: "General")
+                ]))
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+        session.doctorStore.skipSSH = true
+
+        session.runCheckup(profile: profile)
+
+        try await waitUntilStoreState {
+            session.doctorStore.state == .passed
+                && fixture.registry.profile(id: profile.id)?.lastCheckup?.state == .passed
+        }
+        XCTAssertNil(fixture.registry.profile(id: profile.id)?.lastDeploy)
     }
 
     func testDeploySnapshotUsesStartedProfileWhenSelectionChanges() async throws {
