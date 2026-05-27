@@ -309,24 +309,10 @@ struct MaintenanceTimelineView: View {
     let presentation: MaintenanceTimelinePresentation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.string("maintenance.timeline.title"))
-                .font(.headline)
-            ForEach(presentation.items) { item in
-                HStack(alignment: .top, spacing: 8) {
-                    OperationTimelineStateIcon(state: item.state)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.title)
-                            .font(.body.weight(.medium))
-                        if let detail = item.detail {
-                            Text(detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-        }
+        OperationTimelineListView(
+            title: L10n.string("maintenance.timeline.title"),
+            items: presentation.items
+        )
     }
 }
 

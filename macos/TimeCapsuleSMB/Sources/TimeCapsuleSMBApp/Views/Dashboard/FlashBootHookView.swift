@@ -14,7 +14,7 @@ struct FlashBootHookSection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(presentation.title)
                         .font(.headline)
-                    Text(presentation.message)
+                    AnimatedProgressText(message: presentation.message, isRunning: store.isRunning)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

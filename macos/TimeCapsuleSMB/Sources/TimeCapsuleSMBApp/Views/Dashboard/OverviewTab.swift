@@ -3,7 +3,7 @@ import SwiftUI
 private enum OverviewLayout {
     static let actionIconSize: CGFloat = 16
     static let healthRowMinHeight: CGFloat = 64
-    static let healthStatusIconSize: CGFloat = 18
+    static let healthStatusIconSize: CGFloat = 20
 }
 
 struct OverviewTab: View {
@@ -166,10 +166,7 @@ private struct DashboardHealthSectionView: View {
                 .font(.headline)
             ForEach(section.rows) { row in
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: row.status.systemImage)
-                        .font(.caption.weight(.medium))
-                        .accessibilityLabel(row.status.title)
-                        .frame(width: OverviewLayout.healthStatusIconSize, height: OverviewLayout.healthStatusIconSize)
+                    DashboardHealthStatusIcon(status: row.status)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
                             Text(row.title)
@@ -185,7 +182,7 @@ private struct DashboardHealthSectionView: View {
                                 .disabled(!isActionEnabled(action))
                             }
                         }
-                        Text(row.detail)
+                        AnimatedProgressText(message: row.detail, isRunning: row.status == .running)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -195,6 +192,27 @@ private struct DashboardHealthSectionView: View {
                 .background(Color.secondary.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
+        }
+    }
+}
+
+private struct DashboardHealthStatusIcon: View {
+    let status: DashboardHealthStatus
+
+    var body: some View {
+        icon
+            .accessibilityLabel(status.title)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if status == .running {
+            OperationTimelineStateIcon(state: .running)
+                .frame(width: OverviewLayout.healthStatusIconSize, height: OverviewLayout.healthStatusIconSize)
+        } else {
+            Image(systemName: status.systemImage)
+                .font(.caption.weight(.medium))
+                .frame(width: OverviewLayout.healthStatusIconSize, height: OverviewLayout.healthStatusIconSize)
         }
     }
 }

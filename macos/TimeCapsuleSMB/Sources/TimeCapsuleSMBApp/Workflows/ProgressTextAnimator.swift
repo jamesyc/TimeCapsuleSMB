@@ -1,6 +1,6 @@
 import Foundation
 
-enum ActivityProgressTextAnimator {
+enum ProgressTextAnimator {
     static let frameInterval: TimeInterval = 0.3
     static let frameCount = 3
 
@@ -19,14 +19,6 @@ enum ActivityProgressTextAnimator {
             return false
         }
         return true
-    }
-
-    static func animationIdentity(for snapshot: ActivitySnapshot) -> String? {
-        shouldAnimate(snapshot.latestMessage, isRunning: snapshot.isRunning) ? snapshot.latestMessage : nil
-    }
-
-    static func animationIdentity(for status: ActivityCompactStatus) -> String? {
-        shouldAnimate(status.latestMessage, isRunning: status.isRunning) ? status.latestMessage : nil
     }
 
     static func nextPhase(after phase: Int) -> Int {
