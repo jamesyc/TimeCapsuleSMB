@@ -35,11 +35,15 @@ struct InstallTab: View {
                             .foregroundStyle(.yellow)
                     }
 
-                    if let action = presentation.primaryAction {
-                        InstallActionButton(action: action) {
-                            session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                    if !presentation.actions.isEmpty {
+                        HStack {
+                            ForEach(presentation.actions) { action in
+                                InstallActionButton(action: action) {
+                                    session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                                }
+                                .disabled(isDisabled(action, store: store))
+                            }
                         }
-                        .disabled(isDisabled(action, store: store))
                     }
 
                     if let timeline = presentation.timeline {
@@ -118,10 +122,17 @@ private struct InstallActionButton: View {
     let perform: () -> Void
 
     var body: some View {
-        Button(action: perform) {
-            Label(action.title, systemImage: action.systemImage)
+        if action == .installUpdate {
+            Button(action: perform) {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .buttonStyle(.borderedProminent)
+        } else {
+            Button(action: perform) {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .buttonStyle(.bordered)
         }
-        .buttonStyle(.borderedProminent)
     }
 }
 

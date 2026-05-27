@@ -276,7 +276,7 @@ struct InstallWorkflowPresentation: Equatable {
     let title: String
     let stateTitle: String
     let statusMessage: String
-    let primaryAction: InstallUserAction?
+    let actions: [InstallUserAction]
     let notices: [String]
     let plan: InstallPlanPresentation?
     let timeline: InstallTimelinePresentation?
@@ -313,45 +313,55 @@ struct InstallWorkflowPresentation: Equatable {
         case .idle:
             if persistedCompletion == nil {
                 self.statusMessage = L10n.string("install.state.idle")
-                self.primaryAction = .createPlan
+                self.actions = Self.planAndDeployActions(state: state, plan: plan)
             } else {
                 self.statusMessage = L10n.string("install.state.deployed")
-                self.primaryAction = nil
+                self.actions = []
             }
             self.notices = []
         case .planning:
             self.statusMessage = L10n.string("install.state.planning")
-            self.primaryAction = nil
+            self.actions = Self.planAndDeployActions(state: state, plan: plan)
             self.notices = []
         case .planReady:
             self.statusMessage = L10n.string("install.state.plan_ready")
-            self.primaryAction = plan == nil ? .createPlan : .installUpdate
+            self.actions = Self.planAndDeployActions(state: state, plan: plan)
             self.notices = []
         case .planStale:
             self.statusMessage = L10n.string("install.state.plan_stale")
-            self.primaryAction = .regeneratePlan
+            self.actions = Self.planAndDeployActions(state: state, plan: plan)
             self.notices = [L10n.string("install.warning.plan_stale")]
         case .planFailed:
             self.statusMessage = error?.message ?? L10n.string("install.state.plan_failed")
-            self.primaryAction = .createPlan
+            self.actions = Self.planAndDeployActions(state: state, plan: plan)
             self.notices = []
         case .deploying:
             self.statusMessage = L10n.string("install.state.deploying")
-            self.primaryAction = nil
+            self.actions = Self.planAndDeployActions(state: state, plan: plan)
             self.notices = []
         case .awaitingConfirmation:
             self.statusMessage = L10n.string("install.state.awaiting_confirmation")
-            self.primaryAction = nil
+            self.actions = Self.planAndDeployActions(state: state, plan: plan)
             self.notices = [L10n.string("install.warning.awaiting_confirmation")]
         case .deployed:
             self.statusMessage = L10n.string("install.state.deployed")
-            self.primaryAction = nil
+            self.actions = []
             self.notices = []
         case .deployFailed:
             self.statusMessage = error?.message ?? L10n.string("install.state.deploy_failed")
-            self.primaryAction = .regeneratePlan
+            self.actions = Self.planAndDeployActions(state: state, plan: plan)
             self.notices = []
         }
+    }
+
+    private static func planAndDeployActions(state: DeployWorkflowState, plan: DeployPlanPayload?) -> [InstallUserAction] {
+        let planAction: InstallUserAction
+        if plan != nil || state == .planStale || state == .deployFailed {
+            planAction = .regeneratePlan
+        } else {
+            planAction = .createPlan
+        }
+        return [planAction, .installUpdate]
     }
 
     private static func persistedCompletion(

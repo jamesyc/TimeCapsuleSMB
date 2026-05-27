@@ -172,22 +172,12 @@ private struct MaintenanceDetailView: View {
             }
 
             HStack {
-                if let action = presentation.primaryAction {
-                    Button {
-                        performAction(action)
-                    } label: {
-                        Label(action.title, systemImage: action.systemImage)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isDisabled(action))
-                }
-                ForEach(presentation.secondaryActions) { action in
-                    Button {
-                        performAction(action)
-                    } label: {
-                        Label(action.title, systemImage: action.systemImage)
-                    }
-                    .disabled(isDisabled(action))
+                ForEach(presentation.actions) { action in
+                    MaintenanceActionButton(
+                        action: action,
+                        isEnabled: presentation.isEnabled(action),
+                        perform: performAction
+                    )
                 }
             }
 
@@ -210,25 +200,30 @@ private struct MaintenanceDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
-    private func isDisabled(_ action: MaintenanceUserAction) -> Bool {
-        if store.isRunning {
-            return true
-        }
-        switch action {
-        case .runActivation:
-            return !store.canRunActivation
-        case .runUninstall:
-            return !store.canRunUninstall
-        case .planFsck:
-            return !store.canPlanFsck
-        case .runFsck:
-            return !store.canRunFsck
-        case .repairMetadata:
-            return !store.canRepairXattrs
-        case .scanMetadata:
-            return !store.canScanRepairXattrs
-        case .planActivation, .planUninstall, .findVolumes, .viewDiagnostics:
-            return false
+}
+
+private struct MaintenanceActionButton: View {
+    let action: MaintenanceUserAction
+    let isEnabled: Bool
+    let perform: (MaintenanceUserAction) -> Void
+
+    var body: some View {
+        if action.isCommitAction {
+            Button {
+                perform(action)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!isEnabled)
+        } else {
+            Button {
+                perform(action)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!isEnabled)
         }
     }
 }

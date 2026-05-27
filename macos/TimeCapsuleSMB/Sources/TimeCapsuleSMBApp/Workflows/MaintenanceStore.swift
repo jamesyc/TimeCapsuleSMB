@@ -230,12 +230,24 @@ final class MaintenanceStore: ObservableObject {
         return fsckTargets.first { $0.id == selectedFsckTargetID }
     }
 
+    var canPlanActivation: Bool {
+        !isBusy
+    }
+
     var canRunActivation: Bool {
         !isBusy && activationPlan != nil && activateState == .planReady
     }
 
+    var canPlanUninstall: Bool {
+        !isBusy && currentOptions != nil
+    }
+
     var canRunUninstall: Bool {
         !isBusy && uninstallPlan != nil && uninstallState == .planReady && currentOptions == plannedUninstallOptions
+    }
+
+    var canFindFsckVolumes: Bool {
+        !isBusy && mountWaitValue != nil
     }
 
     var canPlanFsck: Bool {

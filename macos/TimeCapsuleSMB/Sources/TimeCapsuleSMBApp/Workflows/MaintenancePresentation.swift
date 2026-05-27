@@ -59,6 +59,15 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return "wrench.and.screwdriver"
         }
     }
+
+    var isCommitAction: Bool {
+        switch self {
+        case .runActivation, .runUninstall, .runFsck, .repairMetadata:
+            return true
+        case .planActivation, .planUninstall, .findVolumes, .planFsck, .scanMetadata, .viewDiagnostics:
+            return false
+        }
+    }
 }
 
 struct MaintenanceWorkflowCardPresentation: Equatable, Identifiable {
@@ -110,70 +119,51 @@ struct MaintenanceTimelinePresentation: Equatable {
     }
 }
 
-struct MaintenanceActionContext: Equatable {
-    let workflow: MaintenanceWorkflow
-    let state: MaintenanceOperationState
-    let hasSelectedFsckTarget: Bool
-    let canRepairXattrs: Bool
-}
-
 enum MaintenanceActionPolicy {
-    static func primaryAction(for context: MaintenanceActionContext) -> MaintenanceUserAction? {
-        switch context.workflow {
+    static func actions(for workflow: MaintenanceWorkflow) -> [MaintenanceUserAction] {
+        switch workflow {
         case .activate:
-            switch context.state {
-            case .idle, .failed, .succeeded:
-                return .planActivation
-            case .planReady:
-                return .runActivation
-            default:
-                return nil
-            }
+            return [.planActivation, .runActivation]
         case .uninstall:
-            switch context.state {
-            case .idle, .failed, .succeeded, .planStale:
-                return .planUninstall
-            case .planReady:
-                return .runUninstall
-            default:
-                return nil
-            }
+            return [.planUninstall, .runUninstall]
         case .fsck:
-            switch context.state {
-            case .idle, .failed, .succeeded:
-                return .findVolumes
-            case .listReady:
-                return context.hasSelectedFsckTarget ? .planFsck : nil
-            case .planStale:
-                return .planFsck
-            case .planReady:
-                return .runFsck
-            default:
-                return nil
-            }
+            return [.findVolumes, .planFsck, .runFsck]
         case .repairXattrs:
-            switch context.state {
-            case .idle, .failed, .repaired, .scanStale:
-                return .scanMetadata
-            case .scanReady:
-                return context.canRepairXattrs ? .repairMetadata : .scanMetadata
-            default:
-                return nil
-            }
+            return [.scanMetadata, .repairMetadata]
         }
     }
 
-    static func secondaryActions(workflow: MaintenanceWorkflow, state: MaintenanceOperationState) -> [MaintenanceUserAction] {
+    @MainActor
+    static func enabledActions(workflow: MaintenanceWorkflow, store: MaintenanceStore) -> Set<MaintenanceUserAction> {
         switch workflow {
         case .activate:
-            return state == .planReady ? [.planActivation] : []
+            return enabled([
+                (.planActivation, store.canPlanActivation),
+                (.runActivation, store.canRunActivation)
+            ])
         case .uninstall:
-            return state == .planReady ? [.planUninstall] : []
+            return enabled([
+                (.planUninstall, store.canPlanUninstall),
+                (.runUninstall, store.canRunUninstall)
+            ])
         case .fsck:
-            return state == .planReady ? [.planFsck, .findVolumes] : state == .listReady ? [.findVolumes] : []
+            return enabled([
+                (.findVolumes, store.canFindFsckVolumes),
+                (.planFsck, store.canPlanFsck),
+                (.runFsck, store.canRunFsck)
+            ])
         case .repairXattrs:
-            return state == .scanReady ? [.scanMetadata] : []
+            return enabled([
+                (.scanMetadata, store.canScanRepairXattrs),
+                (.repairMetadata, store.canRepairXattrs)
+            ])
         }
+    }
+
+    private static func enabled(_ pairs: [(MaintenanceUserAction, Bool)]) -> Set<MaintenanceUserAction> {
+        Set(pairs.compactMap { action, isEnabled in
+            isEnabled ? action : nil
+        })
     }
 }
 
@@ -219,8 +209,8 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     let risk: String
     let stateTitle: String
     let statusMessage: String
-    let primaryAction: MaintenanceUserAction?
-    let secondaryActions: [MaintenanceUserAction]
+    let actions: [MaintenanceUserAction]
+    let enabledActions: Set<MaintenanceUserAction>
     let plan: MaintenancePlanPresentation?
     let completion: MaintenanceCompletionPresentation?
     let timeline: MaintenanceTimelinePresentation?
@@ -236,16 +226,15 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         self.risk = legacy.risk
         self.stateTitle = state.title
         self.statusMessage = state.maintenanceStatusMessage(for: workflow)
-        self.primaryAction = MaintenanceActionPolicy.primaryAction(for: MaintenanceActionContext(
-            workflow: workflow,
-            state: state,
-            hasSelectedFsckTarget: store.selectedFsckTarget != nil,
-            canRepairXattrs: store.canRepairXattrs
-        ))
-        self.secondaryActions = MaintenanceActionPolicy.secondaryActions(workflow: workflow, state: state)
+        self.actions = MaintenanceActionPolicy.actions(for: workflow)
+        self.enabledActions = MaintenanceActionPolicy.enabledActions(workflow: workflow, store: store)
         self.plan = Self.plan(workflow: workflow, store: store, profile: profile)
         self.completion = Self.completion(workflow: workflow, store: store)
         self.timeline = Self.timeline(workflow: workflow, state: state, store: store)
+    }
+
+    func isEnabled(_ action: MaintenanceUserAction) -> Bool {
+        enabledActions.contains(action)
     }
 
     @MainActor

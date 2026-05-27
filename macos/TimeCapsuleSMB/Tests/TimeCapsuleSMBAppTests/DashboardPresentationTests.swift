@@ -586,16 +586,16 @@ final class DashboardPresentationTests: XCTestCase {
         let result = try testDeployResultPayload().decode(DeployResultPayload.self)
         let error = BackendErrorViewModel(operation: "deploy", code: "operation_failed", message: "failed")
 
-        let cases: [(DeployWorkflowState, DeployPlanPayload?, DeployResultPayload?, BackendErrorViewModel?, InstallUserAction?)] = [
-            (.idle, nil, nil, nil, .createPlan),
-            (.planning, nil, nil, nil, nil),
-            (.planReady, plan, nil, nil, .installUpdate),
-            (.planStale, plan, nil, nil, .regeneratePlan),
-            (.planFailed, nil, nil, error, .createPlan),
-            (.deploying, plan, nil, nil, nil),
-            (.awaitingConfirmation, plan, nil, nil, nil),
-            (.deployed, plan, result, nil, nil),
-            (.deployFailed, plan, nil, error, .regeneratePlan)
+        let cases: [(DeployWorkflowState, DeployPlanPayload?, DeployResultPayload?, BackendErrorViewModel?, [InstallUserAction])] = [
+            (.idle, nil, nil, nil, [.createPlan, .installUpdate]),
+            (.planning, nil, nil, nil, [.createPlan, .installUpdate]),
+            (.planReady, plan, nil, nil, [.regeneratePlan, .installUpdate]),
+            (.planStale, plan, nil, nil, [.regeneratePlan, .installUpdate]),
+            (.planFailed, nil, nil, error, [.createPlan, .installUpdate]),
+            (.deploying, plan, nil, nil, [.regeneratePlan, .installUpdate]),
+            (.awaitingConfirmation, plan, nil, nil, [.regeneratePlan, .installUpdate]),
+            (.deployed, plan, result, nil, []),
+            (.deployFailed, plan, nil, error, [.regeneratePlan, .installUpdate])
         ]
 
         for testCase in cases {
@@ -608,7 +608,7 @@ final class DashboardPresentationTests: XCTestCase {
                 currentStage: nil,
                 profile: profile
             )
-            XCTAssertEqual(presentation.primaryAction, testCase.4, "Unexpected primary action for \(testCase.0)")
+            XCTAssertEqual(presentation.actions, testCase.4, "Unexpected actions for \(testCase.0)")
         }
     }
 
@@ -636,7 +636,7 @@ final class DashboardPresentationTests: XCTestCase {
         let completion = try XCTUnwrap(presentation.completion)
         XCTAssertEqual(presentation.stateTitle, "Deployed")
         XCTAssertEqual(presentation.statusMessage, "Install / Update completed.")
-        XCTAssertNil(presentation.primaryAction)
+        XCTAssertEqual(presentation.actions, [])
         XCTAssertEqual(completion.title, "Install / Update Verified")
         XCTAssertTrue(completion.rows.contains(PresentationRow(label: "Reboot Requested", value: "no")))
         XCTAssertTrue(completion.rows.contains(PresentationRow(label: "Message", value: "Installed from previous app session.")))
@@ -692,7 +692,7 @@ final class DashboardPresentationTests: XCTestCase {
             profile: profile
         )
         XCTAssertEqual(planReady.stateTitle, "Plan Ready")
-        XCTAssertEqual(planReady.primaryAction, .installUpdate)
+        XCTAssertEqual(planReady.actions, [.regeneratePlan, .installUpdate])
         XCTAssertNil(planReady.completion)
 
         let deployFailed = InstallWorkflowPresentation(
@@ -705,7 +705,7 @@ final class DashboardPresentationTests: XCTestCase {
             profile: profile
         )
         XCTAssertEqual(deployFailed.stateTitle, "Deploy Failed")
-        XCTAssertEqual(deployFailed.primaryAction, .regeneratePlan)
+        XCTAssertEqual(deployFailed.actions, [.regeneratePlan, .installUpdate])
         XCTAssertNil(deployFailed.completion)
     }
 
@@ -783,49 +783,15 @@ final class DashboardPresentationTests: XCTestCase {
         }
     }
 
-    func testMaintenanceActionPolicyCoversAllStates() {
-        let expectedActivate: [MaintenanceOperationState: MaintenanceUserAction] = [
-            .idle: .planActivation,
-            .planReady: .runActivation,
-            .succeeded: .planActivation,
-            .failed: .planActivation
-        ]
-        let expectedUninstall: [MaintenanceOperationState: MaintenanceUserAction] = [
-            .idle: .planUninstall,
-            .planReady: .runUninstall,
-            .planStale: .planUninstall,
-            .succeeded: .planUninstall,
-            .failed: .planUninstall
-        ]
-        let expectedFsck: [MaintenanceOperationState: MaintenanceUserAction] = [
-            .idle: .findVolumes,
-            .listReady: .planFsck,
-            .planReady: .runFsck,
-            .planStale: .planFsck,
-            .succeeded: .findVolumes,
-            .failed: .findVolumes
-        ]
-        let expectedRepair: [MaintenanceOperationState: MaintenanceUserAction] = [
-            .idle: .scanMetadata,
-            .scanReady: .repairMetadata,
-            .scanStale: .scanMetadata,
-            .repaired: .scanMetadata,
-            .failed: .scanMetadata
-        ]
-
-        for state in MaintenanceOperationState.allCases {
-            XCTAssertEqual(primaryAction(.activate, state: state), expectedActivate[state], "Unexpected activate action for \(state).")
-            XCTAssertEqual(primaryAction(.uninstall, state: state), expectedUninstall[state], "Unexpected uninstall action for \(state).")
-            XCTAssertEqual(primaryAction(.fsck, state: state), expectedFsck[state], "Unexpected fsck action for \(state).")
-            XCTAssertEqual(primaryAction(.repairXattrs, state: state), expectedRepair[state], "Unexpected repair action for \(state).")
-        }
-
-        XCTAssertNil(primaryAction(.fsck, state: .listReady, hasSelectedFsckTarget: false))
-        XCTAssertEqual(primaryAction(.repairXattrs, state: .scanReady, canRepairXattrs: false), .scanMetadata)
-        XCTAssertEqual(MaintenanceActionPolicy.secondaryActions(workflow: .fsck, state: .planReady), [.planFsck, .findVolumes])
-        XCTAssertEqual(MaintenanceActionPolicy.secondaryActions(workflow: .repairXattrs, state: .scanReady), [.scanMetadata])
+    func testMaintenanceActionPolicyUsesStableWorkflowActionGroups() {
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .activate), [.planActivation, .runActivation])
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .uninstall), [.planUninstall, .runUninstall])
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .fsck), [.findVolumes, .planFsck, .runFsck])
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .repairXattrs), [.scanMetadata, .repairMetadata])
         XCTAssertEqual(MaintenanceUserAction.planActivation.title, "Plan Activate")
         XCTAssertEqual(MaintenanceUserAction.runActivation.title, "Activate")
+        XCTAssertFalse(MaintenanceUserAction.planActivation.isCommitAction)
+        XCTAssertTrue(MaintenanceUserAction.runActivation.isCommitAction)
     }
 
     func testMaintenanceStatusMessagesCoverAllStates() {
@@ -862,6 +828,36 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.detail.workflow, .activate)
     }
 
+    func testMaintenancePresentationShowsRunActionsDisabledBeforePlanning() throws {
+        let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+
+        var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.workflow, .activate)
+        XCTAssertEqual(presentation.detail.actions, [.planActivation, .runActivation])
+        XCTAssertTrue(presentation.detail.isEnabled(.planActivation))
+        XCTAssertFalse(presentation.detail.isEnabled(.runActivation))
+
+        store.selectedWorkflow = .uninstall
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.actions, [.planUninstall, .runUninstall])
+        XCTAssertTrue(presentation.detail.isEnabled(.planUninstall))
+        XCTAssertFalse(presentation.detail.isEnabled(.runUninstall))
+
+        store.selectedWorkflow = .fsck
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.actions, [.findVolumes, .planFsck, .runFsck])
+        XCTAssertTrue(presentation.detail.isEnabled(.findVolumes))
+        XCTAssertFalse(presentation.detail.isEnabled(.planFsck))
+        XCTAssertFalse(presentation.detail.isEnabled(.runFsck))
+
+        store.selectedWorkflow = .repairXattrs
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.actions, [.scanMetadata, .repairMetadata])
+        XCTAssertFalse(presentation.detail.isEnabled(.scanMetadata))
+        XCTAssertFalse(presentation.detail.isEnabled(.repairMetadata))
+    }
+
     func testMaintenancePresentationBuildsWorkflowPlansAndCompletions() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -890,7 +886,9 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
         var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
-        XCTAssertEqual(presentation.detail.primaryAction, .runActivation)
+        XCTAssertEqual(presentation.detail.actions, [.planActivation, .runActivation])
+        XCTAssertTrue(presentation.detail.isEnabled(.planActivation))
+        XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
         XCTAssertEqual(presentation.detail.plan?.title, "Activation Plan")
         XCTAssertEqual(presentation.detail.plan?.rows.first, PresentationRow(label: "Device", value: profile.title))
 
@@ -904,14 +902,19 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .uninstall)
-        XCTAssertEqual(presentation.detail.primaryAction, .runUninstall)
+        XCTAssertEqual(presentation.detail.actions, [.planUninstall, .runUninstall])
+        XCTAssertTrue(presentation.detail.isEnabled(.planUninstall))
+        XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
         XCTAssertEqual(presentation.detail.plan?.warnings, ["Uninstall removes managed SMB files from this Time Capsule."])
 
         store.refreshFsckTargets(password: "pw")
         try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .fsck)
-        XCTAssertEqual(presentation.detail.primaryAction, .planFsck)
+        XCTAssertEqual(presentation.detail.actions, [.findVolumes, .planFsck, .runFsck])
+        XCTAssertTrue(presentation.detail.isEnabled(.findVolumes))
+        XCTAssertTrue(presentation.detail.isEnabled(.planFsck))
+        XCTAssertFalse(presentation.detail.isEnabled(.runFsck))
 
         store.planFsck(password: "pw")
         try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
@@ -924,7 +927,9 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .repairXattrs)
-        XCTAssertEqual(presentation.detail.primaryAction, .repairMetadata)
+        XCTAssertEqual(presentation.detail.actions, [.scanMetadata, .repairMetadata])
+        XCTAssertTrue(presentation.detail.isEnabled(.scanMetadata))
+        XCTAssertTrue(presentation.detail.isEnabled(.repairMetadata))
         XCTAssertEqual(presentation.detail.plan?.title, "Metadata Scan")
         XCTAssertEqual(presentation.detail.plan?.warnings, ["Metadata repair modifies files under the selected local SMB mount."])
     }
@@ -957,20 +962,6 @@ final class DashboardPresentationTests: XCTestCase {
             "post_deploy_checks": .array([]),
             "summary": .string("deployment dry-run plan generated.")
         ])
-    }
-
-    private func primaryAction(
-        _ workflow: MaintenanceWorkflow,
-        state: MaintenanceOperationState,
-        hasSelectedFsckTarget: Bool = true,
-        canRepairXattrs: Bool = true
-    ) -> MaintenanceUserAction? {
-        MaintenanceActionPolicy.primaryAction(for: MaintenanceActionContext(
-            workflow: workflow,
-            state: state,
-            hasSelectedFsckTarget: hasSelectedFsckTarget,
-            canRepairXattrs: canRepairXattrs
-        ))
     }
 
     private func doctorCheckWithoutDomain(status: String, message: String) -> JSONValue {
