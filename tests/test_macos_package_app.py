@@ -130,6 +130,11 @@ def test_assert_bundle_layout_checks_helper_python_tools_and_artifacts(
 
     monkeypatch.setattr(package_app, "artifact_paths", lambda: ["bin/payloads/one", "bin/payloads/two"])
     monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda app: None)
+    # This synthetic bundle-layout test should stay portable across the CI
+    # matrix. Dedicated tests below cover the macOS Mach-O validators directly.
+    monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "validate_app_resources", lambda app: None)
     create_fake_certifi_package(python_packages)
     (distribution / "bin" / "payloads" / "one").write_text("one", encoding="utf-8")
 
