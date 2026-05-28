@@ -415,7 +415,8 @@ tc_launch_mdns_advertiser() {
         --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
-        --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}"
+        --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}" \
+        --afp
     if [ "$diskless" = "1" ]; then
         set -- "$@" --diskless
     fi
