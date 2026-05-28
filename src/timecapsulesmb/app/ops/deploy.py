@@ -15,6 +15,7 @@ from timecapsulesmb.core.config import (
     airport_family_display_name_from_identity,
     parse_bool,
 )
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
@@ -285,6 +286,11 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         else None
     )
     ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
+    context.update_fields(
+        nbns_enabled=nbns_enabled,
+        reboot_was_attempted=False,
+        device_came_back_after_reboot=False,
+    )
 
     config, target = load_config_and_target(context, params, profile="deploy", include_probe=True)
     connection = target.connection
@@ -315,6 +321,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         connection.remote_has_scp = False
     startup_mode = startup_mode_for_deploy(no_reboot=no_reboot, is_netbsd4=is_netbsd4)
     no_wait = effective_no_wait_for_deploy(requested=no_wait, no_reboot=no_reboot)
+    context.update_fields(deploy_startup_mode=startup_mode)
     context.log(f"Using {payload_family_description(payload_family)} payload.")
     resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
     if not dry_run:
@@ -419,6 +426,11 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         resolved_artifacts["nbns-advertiser"].absolute_path,
         startup_mode=startup_mode,
         apple_mount_wait_seconds=mount_wait,
+    )
+    context.add_debug_fields(
+        payload_volume_root=plan.volume_root,
+        payload_device_path=plan.device_path,
+        payload_dir=plan.payload_dir,
     )
     if dry_run:
         return OperationResult(True, deploy_plan_payload(
@@ -677,6 +689,7 @@ def request_reboot_and_wait(
     context.log("Waiting for the device to come back up...")
     if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
         raise AppOperationError(DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE, code="remote_error")
+    context.update_fields(device_came_back_after_reboot=True)
     context.log("Device is back online.")
 
 
@@ -688,11 +701,19 @@ def request_reboot(
     raise_on_request_error: bool = False,
 ) -> None:
     context.stage("reboot")
+    context.update_fields(reboot_was_attempted=True)
+    context.add_debug_fields(reboot_request_strategy=strategy)
     if strategy == "acp_then_ssh":
+        context.add_debug_fields(acp_reboot_attempted=True)
         try:
             acp_reboot(extract_host(connection.host), connection.password, timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
             context.log("ACP reboot requested.")
+            context.add_debug_fields(acp_reboot_succeeded=True)
         except ACPError as exc:
+            context.add_debug_fields(
+                acp_reboot_succeeded=False,
+                acp_reboot_error=system_exit_message(exc),
+            )
             context.log(f"ACP reboot request failed; trying SSH reboot request: {exc}", level="warning")
             request_ssh_reboot(
                 context,
@@ -713,16 +734,27 @@ def request_ssh_reboot(
     *,
     raise_on_request_error: bool = False,
 ) -> None:
+    context.add_debug_fields(ssh_reboot_attempted=True)
     try:
         remote_request_reboot(connection)
     except SshCommandTimeout as exc:
+        context.add_debug_fields(
+            ssh_reboot_succeeded=False,
+            ssh_reboot_timed_out=True,
+            ssh_reboot_error=system_exit_message(exc),
+        )
         if raise_on_request_error:
             raise AppOperationError(f"SSH reboot request timed out: {exc}", code="remote_error") from exc
         context.log(f"SSH reboot request timed out; checking whether the device is rebooting: {exc}", level="warning")
         return
     except SshError as exc:
+        context.add_debug_fields(
+            ssh_reboot_succeeded=False,
+            ssh_reboot_error=system_exit_message(exc),
+        )
         if raise_on_request_error:
             raise AppOperationError(f"SSH reboot request failed: {exc}", code="remote_error") from exc
         context.log(f"SSH reboot request failed; checking whether the device is rebooting anyway: {exc}", level="warning")
         return
+    context.add_debug_fields(ssh_reboot_succeeded=True)
     context.log("SSH reboot requested.")

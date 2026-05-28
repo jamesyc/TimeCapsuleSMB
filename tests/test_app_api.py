@@ -788,6 +788,55 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(finished.kwargs["details"]["waited"])
         self.assertTrue(finished.kwargs["details"]["verified"])
 
+    def test_dispatcher_emits_app_operation_finish_fields_in_telemetry(self) -> None:
+        collector = CollectingSink()
+
+        def run_deploy(_params, context):
+            context.stage("verify_runtime_reboot")
+            context.update_fields(
+                device_family="netbsd6_samba4",
+                device_os_version="NetBSD 6.0 (earmv4)",
+                device_model="TimeCapsule8,119",
+                device_syap="119",
+                nbns_enabled=False,
+                reboot_was_attempted=True,
+                device_came_back_after_reboot=True,
+            )
+            return service.OperationResult(True, contracts.deploy_result_payload(
+                payload_dir="/Volumes/dk2/.samba4",
+                rebooted=True,
+                reboot_requested=True,
+                waited=True,
+                verified=True,
+                payload_family="netbsd6_samba4",
+            ))
+
+        with mock.patch.dict(service.OPERATIONS, {"deploy": run_deploy}):
+            with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}, clear=False):
+                with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                    with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                        with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({"TC_CONFIGURE_ID": "cfg-1"})):
+                            rc = service.run_api_request(
+                                {"operation": "deploy", "params": {"nbns_enabled": False}},
+                                collector.sink,
+                            )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], False)
+        finished = self._telemetry_client.emit.call_args_list[1].kwargs
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["stage"], "verify_runtime_reboot")
+        self.assertEqual(finished["device_family"], "netbsd6_samba4")
+        self.assertEqual(finished["device_os_version"], "NetBSD 6.0 (earmv4)")
+        self.assertEqual(finished["device_model"], "TimeCapsule8,119")
+        self.assertEqual(finished["device_syap"], "119")
+        self.assertEqual(finished["nbns_enabled"], False)
+        self.assertEqual(finished["reboot_was_attempted"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], True)
+        self.assertEqual(finished["details"]["payload_family"], "netbsd6_samba4")
+        self.assertEqual(finished["details"]["rebooted"], True)
+        self.assertEqual(finished["details"]["verified"], True)
+
     def test_dispatcher_emits_confirmation_required_telemetry(self) -> None:
         collector = CollectingSink()
 
@@ -2061,6 +2110,9 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["reboot_requested"], True)
         self.assertEqual(payload["waited"], False)
         self.assertEqual(payload["verified"], False)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["reboot_was_attempted"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], False)
 
     def test_deploy_netbsd4_no_wait_requests_reboot_without_activation(self) -> None:
         collector = CollectingSink()
@@ -2154,6 +2206,30 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("ssh command failed with rc=255", errors[0]["message"])
         self.assertEqual(collector.events_of_type("result"), [])
 
+    def test_deploy_request_reboot_and_wait_records_lifecycle_fields(self) -> None:
+        from timecapsulesmb.app.ops import deploy as deploy_ops
+
+        collector = CollectingSink()
+        context = AppOperationContext("deploy", collector.sink)
+        context.update_fields(reboot_was_attempted=False, device_came_back_after_reboot=False)
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
+            with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn", side_effect=[True, True]) as wait:
+                deploy_ops.request_reboot_and_wait(
+                    context,
+                    connection,
+                    strategy="ssh_shutdown_then_reboot",
+                    reboot_no_down_message="device did not go down",
+                )
+
+        reboot.assert_called_once()
+        self.assertEqual([call.kwargs["expected_up"] for call in wait.call_args_list], [False, True])
+        self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
+        self.assertEqual(context.finish_fields["device_came_back_after_reboot"], True)
+        self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "ssh_shutdown_then_reboot")
+        self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_attempted"], True)
+        self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_succeeded"], True)
+
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
         from timecapsulesmb.app.ops import deploy as deploy_ops
 
@@ -2203,6 +2279,18 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "remote_error")
         self.assertEqual(error["recovery"]["title"], "No HFS volumes found")
         self.assertEqual(error["recovery"]["action_ids"], ["open_finder", "install_smb"])
+        self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], True)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "read_mast")
+        self.assertEqual(finished["device_family"], "netbsd6_samba4")
+        self.assertEqual(finished["device_os_version"], "NetBSD 6.0 (earmv4)")
+        self.assertEqual(finished["device_model"], "TimeCapsule8,119")
+        self.assertEqual(finished["device_syap"], "119")
+        self.assertEqual(finished["nbns_enabled"], True)
+        self.assertEqual(finished["reboot_was_attempted"], False)
+        self.assertEqual(finished["device_came_back_after_reboot"], False)
+        self.assertEqual(finished["deploy_startup_mode"], "reboot_then_verify")
 
     def test_activate_requires_explicit_confirmation(self) -> None:
         collector = CollectingSink()
