@@ -433,7 +433,10 @@ final class DashboardStoreTests: XCTestCase {
                 && fixture.registry.profile(id: profile.id)?.lastCheckup == nil
                 && session.doctorStore.summary == nil
         }
-        try await waitUntilStoreState { session.deployStore.state == .deployed }
+        try await waitUntilStoreState {
+            session.deployStore.state == .deployed
+                && fixture.registry.profile(id: profile.id)?.lastDeploy != nil
+        }
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertNil(installed.lastCheckup)
         XCTAssertEqual(installed.lastDeploy?.state, .deployed)
@@ -576,7 +579,8 @@ final class DashboardStoreTests: XCTestCase {
         }
         XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastCheckup?.state, .passed)
         XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.verified, true)
-        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.summary, "Installed and verified by checkup.")
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.summary, "")
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.localizedSummary, "Installed and verified by checkup.")
         XCTAssertNil(fixture.registry.profile(id: second.id)?.lastCheckup)
         XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeploy)
     }

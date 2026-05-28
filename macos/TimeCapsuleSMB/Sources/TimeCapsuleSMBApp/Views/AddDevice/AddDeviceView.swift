@@ -48,7 +48,7 @@ struct AddDeviceView: View {
 
             HStack {
                 if store.entryMode == .discover {
-                    Text(store.currentStage?.description ?? L10n.string("add_device.discover.placeholder"))
+                    Text(discoveryStatusText)
                         .foregroundStyle(.secondary)
                     Button {
                         store.runDiscover()
@@ -62,6 +62,14 @@ struct AddDeviceView: View {
             }
             .frame(minHeight: 28, alignment: .center)
         }
+    }
+
+    private var discoveryStatusText: String {
+        guard let stage = store.currentStage else {
+            return L10n.string("add_device.discover.placeholder")
+        }
+        return OperationTimelineBuilder.stageDetail(for: stage.operation, stage: stage.stage, fallback: nil)
+            ?? OperationTimelineBuilder.stageTitle(for: stage.operation, stage: stage.stage)
     }
 
     private var deviceResultsSection: some View {

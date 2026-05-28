@@ -66,23 +66,23 @@ enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
     var title: String {
         switch self {
         case .idle:
-            return "Idle"
+            return L10n.string("workflow.state.idle")
         case .planning:
-            return "Planning"
+            return L10n.string("workflow.state.planning")
         case .planReady:
-            return "Plan Ready"
+            return L10n.string("workflow.state.plan_ready")
         case .planStale:
-            return "Plan Stale"
+            return L10n.string("workflow.state.plan_stale")
         case .planFailed:
-            return "Plan Failed"
+            return L10n.string("workflow.state.plan_failed")
         case .deploying:
-            return "Deploying"
+            return L10n.string("workflow.state.deploying")
         case .awaitingConfirmation:
-            return "Awaiting Confirmation"
+            return L10n.string("workflow.state.awaiting_confirmation")
         case .deployed:
-            return "Deployed"
+            return L10n.string("workflow.state.deployed")
         case .deployFailed:
-            return "Deploy Failed"
+            return L10n.string("workflow.state.deploy_failed")
         }
     }
 }
@@ -206,13 +206,13 @@ final class DeployWorkflowStore: ObservableObject {
     @discardableResult
     func runPlan(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = currentOptions else {
-            let message = deployOptionsValidationMessage ?? "Deploy options are invalid."
-            failLocally(state: .planFailed, message: message)
-            return .rejected(message)
+            let localError = deployOptionsValidationError ?? .deployOptionsInvalid
+            failLocally(state: .planFailed, localError: localError)
+            return .rejected(localError.message)
         }
         guard !isBusy else {
-            rejectRun(state: .planFailed, message: "Another operation is already running.")
-            return .rejected("Another operation is already running.")
+            rejectRun(state: .planFailed, localError: .operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         backend.clear()
         let start = run(
@@ -232,7 +232,11 @@ final class DeployWorkflowStore: ObservableObject {
             profile: profile
         )
         guard case .started(let operation) = start else {
-            rejectRun(state: .planFailed, message: start.rejectionMessage ?? "Operation could not start.")
+            if let message = start.rejectionMessage {
+                rejectRun(state: .planFailed, message: message)
+            } else {
+                rejectRun(state: .planFailed, localError: .operationCouldNotStart)
+            }
             return start
         }
         operationObserver.start(operation)
@@ -251,19 +255,15 @@ final class DeployWorkflowStore: ObservableObject {
     func runDeploy(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = plannedOptions, plan != nil, currentOptions == options else {
             state = .planStale
-            error = BackendErrorViewModel(
-                operation: "deploy",
-                code: "plan_stale",
-                message: "Review and regenerate the deploy plan before deploying."
-            )
-            return .rejected("Review and regenerate the deploy plan before deploying.")
+            error = BackendErrorViewModel(operation: "deploy", localError: .deployPlanStale)
+            return .rejected(WorkflowLocalError.deployPlanStale.message)
         }
         guard state == .planReady else {
-            return .rejected("Deploy plan is not ready.")
+            return .rejected(WorkflowLocalError.deployPlanNotReady.message)
         }
         guard !isBusy else {
-            rejectRun(state: .deployFailed, message: "Another operation is already running.")
-            return .rejected("Another operation is already running.")
+            rejectRun(state: .deployFailed, localError: .operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         backend.clear()
         let start = run(
@@ -283,7 +283,11 @@ final class DeployWorkflowStore: ObservableObject {
             profile: profile
         )
         guard case .started(let operation) = start else {
-            rejectRun(state: .deployFailed, message: start.rejectionMessage ?? "Operation could not start.")
+            if let message = start.rejectionMessage {
+                rejectRun(state: .deployFailed, message: message)
+            } else {
+                rejectRun(state: .deployFailed, localError: .operationCouldNotStart)
+            }
             return start
         }
         operationObserver.start(operation)
@@ -347,17 +351,21 @@ final class DeployWorkflowStore: ObservableObject {
         ataStandby.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ataStandbyValue != nil
     }
 
-    private var deployOptionsValidationMessage: String? {
+    private var deployOptionsValidationError: WorkflowLocalError? {
         if mountWaitValue == nil {
-            return "Mount wait must be a non-negative integer."
+            return .mountWaitInvalid
         }
         if ataIdleSecondsValue == nil {
-            return L10n.string("profile_editor.error.ata_idle_seconds_invalid")
+            return .ataIdleSecondsInvalid
         }
         if !hasValidAtaStandby {
-            return L10n.string("profile_editor.error.ata_standby_invalid")
+            return .ataStandbyInvalid
         }
         return nil
+    }
+
+    private var deployOptionsValidationMessage: String? {
+        deployOptionsValidationError?.message
     }
 
     private func reconcilePlanFreshness() {
@@ -366,7 +374,7 @@ final class DeployWorkflowStore: ObservableObject {
         }
         if currentOptions == plannedOptions {
             state = .planReady
-            if error?.code == "plan_stale" {
+            if error?.code == WorkflowLocalError.deployPlanStale.code {
                 error = nil
             }
         } else {
@@ -501,12 +509,26 @@ final class DeployWorkflowStore: ObservableObject {
         operationObserver.finish()
     }
 
+    private func failLocally(state: DeployWorkflowState, localError: WorkflowLocalError) {
+        error = BackendErrorViewModel(operation: "deploy", localError: localError)
+        currentStage = nil
+        self.state = state
+        operationObserver.finish()
+    }
+
     private func rejectRun(state: DeployWorkflowState, message: String) {
         error = BackendErrorViewModel(
             operation: "deploy",
             code: "operation_rejected",
             message: message
         )
+        currentStage = nil
+        self.state = state
+        operationObserver.finish()
+    }
+
+    private func rejectRun(state: DeployWorkflowState, localError: WorkflowLocalError) {
+        error = BackendErrorViewModel(operation: "deploy", localError: localError)
         currentStage = nil
         self.state = state
         operationObserver.finish()
@@ -523,7 +545,7 @@ final class DeployWorkflowStore: ObservableObject {
             )
         } else {
             guard !isBusy else {
-                return .rejected("Another operation is already running.")
+                return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
             }
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)

@@ -99,6 +99,7 @@ final class AppSettingsStoreTests: XCTestCase {
     func testLocalizationLanguageOverrideUsesSelectedBundleAndEnglishFallback() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
 
         XCTAssertEqual(L10n.string("app_settings.title", language: .english), "Settings")
         XCTAssertEqual(L10n.string("app_settings.title", language: .simplifiedChinese), "设置")
@@ -106,9 +107,16 @@ final class AppSettingsStoreTests: XCTestCase {
             L10n.string("app_settings.subtitle", language: .simplifiedChinese),
             "新设备默认值和 App 级别行为。"
         )
+        XCTAssertEqual(L10n.string("sidebar.activity", language: .simplifiedChinese), "活动")
+        XCTAssertEqual(L10n.string("activity.active", language: .simplifiedChinese), "正在进行")
+        XCTAssertEqual(
+            L10n.format("activity.multiple_active", 2),
+            "2 active operations"
+        )
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(L10n.string("app_settings.title"), "设置")
+        XCTAssertEqual(L10n.format("activity.multiple_active", 2), "2 个正在进行的操作")
     }
 
     func testSimplifiedChineseLocalizationCoversEnglishKeysAndFormatTokens() {
@@ -119,6 +127,78 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(Set(simplifiedChinese.keys), Set(english.keys))
         for key in english.keys {
             XCTAssertEqual(formatTokens(in: simplifiedChinese[key] ?? ""), formatTokens(in: english[key] ?? ""), key)
+        }
+    }
+
+    func testStructuredLocalPresentationsRerenderAfterLanguageChange() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+
+        let error = BackendErrorViewModel(operation: "deploy", localError: .deployPlanStale)
+        let issue = BundleRuntimeIssue(code: .helperMissing, severity: .error)
+        let checkup = DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            state: .passed,
+            passCount: 2,
+            warnCount: 1,
+            failCount: 0,
+            summary: "PASS 2, WARN 1, FAIL 0"
+        )
+        let deploy = DeviceDeploySnapshot(
+            deployedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            state: .deployed,
+            payloadFamily: nil,
+            rebootRequested: nil,
+            verified: true,
+            summary: ""
+        )
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(DoctorWorkflowState.running.title, "运行中")
+        XCTAssertEqual(DeployWorkflowState.planStale.title, "计划已过期")
+        XCTAssertEqual(MaintenanceWorkflow.fsck.title, "磁盘修复")
+        XCTAssertEqual(FlashWorkflowState.writeLocked.title, "就绪")
+        XCTAssertEqual(error.message, "部署前请检查并重新生成部署计划。")
+        XCTAssertEqual(issue.message, "缺少捆绑的 TimeCapsuleSMB Helper。")
+        XCTAssertEqual(issue.recovery, "重新安装 TimeCapsuleSMB。")
+        XCTAssertEqual(checkup.localizedSummary, "PASS 2，WARN 1，FAIL 0")
+        XCTAssertEqual(deploy.localizedSummary, "已安装，并已通过检查验证。")
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(DoctorWorkflowState.running.title, "Running")
+        XCTAssertEqual(DeployWorkflowState.planStale.title, "Plan Stale")
+        XCTAssertEqual(MaintenanceWorkflow.fsck.title, "Disk Repair")
+        XCTAssertEqual(FlashWorkflowState.writeLocked.title, "Ready")
+        XCTAssertEqual(error.message, "Review and regenerate the deploy plan before deploying.")
+        XCTAssertEqual(issue.message, "The bundled TimeCapsuleSMB helper is missing.")
+        XCTAssertEqual(issue.recovery, "Reinstall TimeCapsuleSMB.")
+        XCTAssertEqual(checkup.localizedSummary, "PASS 2, WARN 1, FAIL 0")
+        XCTAssertEqual(deploy.localizedSummary, "Installed and verified by checkup.")
+    }
+
+    func testFocusedSimplifiedChineseKeysDoNotFallBackToEnglishUiCopy() {
+        let expectedChinese = [
+            "button.discover": "发现",
+            "checkup.presentation.row.fail": "失败",
+            "dashboard.overview.connection_target": "连接目标",
+            "deploy.presentation.row.pre_upload_actions": "上传前操作",
+            "diagnostics.title": "诊断",
+            "install.advanced_options": "高级选项",
+            "maintenance.workflow.repair_xattrs": "文件元数据修复",
+            "profile_editor.display_name": "显示名称",
+            "timeline.state.pending": "等待中",
+            "toggle.enable_debug_logging": "启用调试日志",
+            "value.never": "从未",
+            "workflow.state.deploying": "正在部署"
+        ]
+
+        for (key, expectedValue) in expectedChinese {
+            XCTAssertEqual(L10n.string(key, language: .simplifiedChinese), expectedValue, key)
+            XCTAssertNotEqual(
+                L10n.string(key, language: .simplifiedChinese),
+                L10n.string(key, language: .english),
+                key
+            )
         }
     }
 

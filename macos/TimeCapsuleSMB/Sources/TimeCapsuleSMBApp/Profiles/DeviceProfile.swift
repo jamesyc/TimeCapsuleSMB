@@ -135,6 +135,10 @@ struct DeviceCheckupSnapshot: Codable, Equatable {
     var warnCount: Int
     var failCount: Int
     var summary: String
+
+    var localizedSummary: String {
+        L10n.format("summary.checkup_counts", passCount, warnCount, failCount)
+    }
 }
 
 struct DeviceDeploySnapshot: Codable, Equatable {
@@ -144,6 +148,17 @@ struct DeviceDeploySnapshot: Codable, Equatable {
     var rebootRequested: Bool?
     var verified: Bool?
     var summary: String
+
+    var localizedSummary: String {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        if verified == true {
+            return L10n.string("summary.install_verified_by_checkup")
+        }
+        return L10n.string("deploy.result.default_message")
+    }
 }
 
 struct DeviceProfile: Codable, Equatable, Identifiable {

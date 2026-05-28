@@ -61,7 +61,7 @@ final class DoctorStoreTests: XCTestCase {
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(store.state, .runFailed)
-        XCTAssertEqual(store.error?.code, "operation_rejected")
+        XCTAssertEqual(store.error?.code, "operation_already_running")
         XCTAssertEqual(runner.calls.count, 1)
         try await waitUntilStoreState { !store.isRunning }
     }

@@ -25,7 +25,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runPlan(password: "pw")
 
         XCTAssertEqual(store.state, .planFailed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "mount_wait_invalid")
         XCTAssertEqual(runner.calls, [])
     }
 
@@ -75,7 +75,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runPlan(password: "pw")
 
         XCTAssertEqual(store.state, .planFailed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "ata_idle_seconds_invalid")
         XCTAssertEqual(store.error?.message, "ATA idle seconds must be a non-negative integer.")
         XCTAssertEqual(runner.calls, [])
 
@@ -84,7 +84,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runPlan(password: "pw")
 
         XCTAssertEqual(store.state, .planFailed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "ata_standby_invalid")
         XCTAssertEqual(store.error?.message, "ATA standby seconds must be blank or a non-negative integer.")
         XCTAssertEqual(runner.calls, [])
     }
@@ -141,7 +141,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(store.state, .planFailed)
-        XCTAssertEqual(store.error?.code, "operation_rejected")
+        XCTAssertEqual(store.error?.code, "operation_already_running")
         XCTAssertEqual(runner.calls.count, 1)
         try await waitUntilStoreState { !store.isRunning }
     }
@@ -168,7 +168,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runDeploy(password: "pw")
 
         XCTAssertEqual(store.state, .planStale)
-        XCTAssertEqual(store.error?.code, "plan_stale")
+        XCTAssertEqual(store.error?.code, "deploy_plan_stale")
         XCTAssertEqual(runner.calls, [])
     }
 

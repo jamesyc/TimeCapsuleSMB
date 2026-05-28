@@ -272,6 +272,7 @@ final class AppStore: ObservableObject {
         appReadinessStore.applyVersionCheck(readinessVersionCheck(for: settings))
         deviceDiscovery.applyAppSettings(settings)
         if previousLanguage != settings.language {
+            activityStore.refresh()
             objectWillChange.send()
         }
     }

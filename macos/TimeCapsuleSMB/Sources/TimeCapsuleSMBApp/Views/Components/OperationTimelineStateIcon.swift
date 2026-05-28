@@ -34,15 +34,15 @@ enum OperationTimelineVisualStyle {
     static func accessibilityLabel(for state: OperationTimelineItem.State) -> String {
         switch state {
         case .pending:
-            return "Pending"
+            return L10n.string("timeline.state.pending")
         case .running:
-            return "Running"
+            return L10n.string("timeline.state.running")
         case .succeeded:
-            return "Succeeded"
+            return L10n.string("timeline.state.succeeded")
         case .warning:
-            return "Warning"
+            return L10n.string("timeline.state.warning")
         case .failed:
-            return "Failed"
+            return L10n.string("timeline.state.failed")
         }
     }
 }

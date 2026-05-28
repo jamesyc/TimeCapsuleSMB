@@ -12,17 +12,17 @@ enum DoctorWorkflowState: String, CaseIterable, Equatable, Codable {
     var title: String {
         switch self {
         case .idle:
-            return "Idle"
+            return L10n.string("workflow.state.idle")
         case .running:
-            return "Running"
+            return L10n.string("workflow.state.running")
         case .passed:
-            return "Passed"
+            return L10n.string("workflow.state.passed")
         case .warning:
-            return "Warning"
+            return L10n.string("workflow.state.warning")
         case .failed:
-            return "Failed"
+            return L10n.string("workflow.state.failed")
         case .runFailed:
-            return "Run Failed"
+            return L10n.string("workflow.state.run_failed")
         }
     }
 }
@@ -150,8 +150,8 @@ final class DoctorStore: ObservableObject {
     @discardableResult
     func runDoctor(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard !isBusy else {
-            rejectRun("Another operation is already running.")
-            return .rejected("Another operation is already running.")
+            rejectRun(.operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         backend.clear()
         let start = run(
@@ -165,7 +165,11 @@ final class DoctorStore: ObservableObject {
             profile: profile
         )
         guard case .started(let operation) = start else {
-            rejectRun(start.rejectionMessage ?? "Operation could not start.")
+            if let message = start.rejectionMessage {
+                rejectRun(message)
+            } else {
+                rejectRun(.operationCouldNotStart)
+            }
             return start
         }
         operationObserver.start(operation)
@@ -272,6 +276,13 @@ final class DoctorStore: ObservableObject {
         operationObserver.finish()
     }
 
+    private func rejectRun(_ localError: WorkflowLocalError) {
+        error = BackendErrorViewModel(operation: "doctor", localError: localError)
+        currentStage = nil
+        state = .runFailed
+        operationObserver.finish()
+    }
+
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
         if let coordinator {
             return coordinator.run(
@@ -283,7 +294,7 @@ final class DoctorStore: ObservableObject {
             )
         } else {
             guard !isBusy else {
-                return .rejected("Another operation is already running.")
+                return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
             }
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)

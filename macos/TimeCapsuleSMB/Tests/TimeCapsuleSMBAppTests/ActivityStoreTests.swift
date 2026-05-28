@@ -37,6 +37,59 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.latestMessage, "deployment completed.")
     }
 
+    func testAppLanguageChangeRefreshesCachedActivityPresentation() async throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .simplifiedChinese)
+
+        let temp = try TemporaryDirectory()
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "stage",
+                    operation: "deploy",
+                    stage: "upload_payload",
+                    description: "Upload managed Samba payload files."
+                ),
+                BackendEvent(
+                    type: "result",
+                    operation: "deploy",
+                    ok: true,
+                    payload: .object(["summary": .string("deployment completed.")])
+                )
+            ])
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+        let settingsStore = AppSettingsStore(settingsURL: temp.url.appendingPathComponent("settings.json"))
+        let appStore = AppStore(
+            appReadinessStore: AppReadinessStore(backend: coordinator.appLane.backend),
+            appSettingsStore: settingsStore,
+            deviceRegistry: DeviceRegistryStore(applicationSupportURL: temp.url),
+            operationCoordinator: coordinator,
+            passwordStore: InMemoryPasswordStore(),
+            activityStore: activity
+        )
+
+        _ = coordinator.run(
+            operation: "deploy",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+
+        try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
+        XCTAssertEqual(activity.snapshot.operationTitle, "安装 / 更新")
+        XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["上传 Payload", "完成"])
+
+        var settings = AppSettings.default
+        settings.language = .english
+        try await appStore.saveAppSettings(settings)
+
+        XCTAssertEqual(activity.snapshot.operationTitle, "Install / Update")
+        XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["Upload Payload", "Done"])
+    }
+
     func testActivitySnapshotTracksBackendOnlyReadinessOperationAsAppScoped() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

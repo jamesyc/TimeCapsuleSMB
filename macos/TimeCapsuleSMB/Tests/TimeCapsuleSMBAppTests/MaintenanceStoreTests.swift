@@ -66,7 +66,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(store.activateState, .failed)
-        XCTAssertEqual(store.error?.code, "operation_rejected")
+        XCTAssertEqual(store.error?.code, "operation_already_running")
         XCTAssertEqual(runner.calls.count, 1)
         try await waitUntilStoreState { !store.isRunning }
     }
@@ -89,7 +89,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
         store.runActivation(password: "pw")
         XCTAssertEqual(store.activateState, .failed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "activation_plan_required")
 
         store.planActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
@@ -266,7 +266,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.noWait = true
         XCTAssertEqual(store.uninstallState, .planStale)
         store.runUninstall(password: "pw")
-        XCTAssertEqual(store.error?.code, "plan_stale")
+        XCTAssertEqual(store.error?.code, "uninstall_plan_stale")
 
         store.planUninstall(password: "pw")
         try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
@@ -296,7 +296,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.planUninstall(password: "")
 
         XCTAssertEqual(store.uninstallState, .failed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "mount_wait_invalid")
         XCTAssertEqual(runner.calls, [])
 
         store.mountWait = "30"
@@ -405,7 +405,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
         store.planFsck(password: "")
         XCTAssertEqual(store.fsckState, .failed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "fsck_target_required")
 
         store.refreshFsckTargets(password: "")
         try await waitUntilStoreState { store.fsckState == .listReady && store.fsckTargets.count == 1 && !store.isRunning }
@@ -455,7 +455,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.selectedFsckTargetID = store.fsckTargets[1].id
         XCTAssertEqual(store.fsckState, .planStale)
         store.runFsck(password: "")
-        XCTAssertEqual(store.error?.code, "plan_stale")
+        XCTAssertEqual(store.error?.code, "fsck_plan_stale")
 
         store.planFsck(password: "")
         try await waitUntilStoreState { store.fsckState == .failed }
@@ -519,7 +519,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.repairPath = "/Volumes/Data"
         store.runRepairXattrs()
         XCTAssertEqual(store.repairState, .scanStale)
-        XCTAssertEqual(store.error?.code, "scan_stale")
+        XCTAssertEqual(store.error?.code, "repair_xattrs_scan_stale")
         XCTAssertEqual(runner.calls.count, 1)
 
         store.scanRepairXattrs()
@@ -561,7 +561,7 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(store.repairState, .scanStale)
         XCTAssertFalse(store.canRepairXattrs)
         store.runRepairXattrs()
-        XCTAssertEqual(store.error?.code, "scan_stale")
+        XCTAssertEqual(store.error?.code, "repair_xattrs_scan_stale")
         XCTAssertEqual(runner.calls.count, 1)
 
         store.scanRepairXattrs()
@@ -582,14 +582,14 @@ final class MaintenanceStoreTests: XCTestCase {
 
         store.scanRepairXattrs()
         XCTAssertEqual(store.repairState, .failed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "repair_xattrs_path_required")
         XCTAssertFalse(store.canScanRepairXattrs)
 
         store.repairPath = "/Volumes/Data"
         store.repairMaxDepth = "-1"
         store.scanRepairXattrs()
         XCTAssertEqual(store.repairState, .failed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.code, "repair_xattrs_depth_invalid")
         XCTAssertEqual(runner.calls, [])
 
         store.repairMaxDepth = ""

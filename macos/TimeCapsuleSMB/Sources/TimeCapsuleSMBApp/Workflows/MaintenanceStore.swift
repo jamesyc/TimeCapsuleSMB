@@ -12,13 +12,13 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
     var title: String {
         switch self {
         case .activate:
-            return "Activate"
+            return L10n.string("maintenance.workflow.activate")
         case .uninstall:
-            return "Uninstall"
+            return L10n.string("maintenance.workflow.uninstall")
         case .fsck:
-            return "fsck"
+            return L10n.string("maintenance.workflow.fsck")
         case .repairXattrs:
-            return "Repair xattrs"
+            return L10n.string("maintenance.workflow.repair_xattrs")
         }
     }
 }
@@ -43,35 +43,35 @@ enum MaintenanceOperationState: String, CaseIterable, Equatable {
     var title: String {
         switch self {
         case .idle:
-            return "Idle"
+            return L10n.string("workflow.state.idle")
         case .loading:
-            return "Loading"
+            return L10n.string("workflow.state.loading")
         case .listReady:
-            return "List Ready"
+            return L10n.string("workflow.state.list_ready")
         case .planning:
-            return "Planning"
+            return L10n.string("workflow.state.planning")
         case .planReady:
-            return "Plan Ready"
+            return L10n.string("workflow.state.plan_ready")
         case .planStale:
-            return "Plan Stale"
+            return L10n.string("workflow.state.plan_stale")
         case .scanning:
-            return "Scanning"
+            return L10n.string("workflow.state.scanning")
         case .scanReady:
-            return "Scan Ready"
+            return L10n.string("workflow.state.scan_ready")
         case .scanStale:
-            return "Scan Stale"
+            return L10n.string("workflow.state.scan_stale")
         case .awaitingConfirmation:
-            return "Awaiting Confirmation"
+            return L10n.string("workflow.state.awaiting_confirmation")
         case .running:
-            return "Running"
+            return L10n.string("workflow.state.running")
         case .repairing:
-            return "Repairing"
+            return L10n.string("workflow.state.repairing")
         case .succeeded:
-            return "Succeeded"
+            return L10n.string("workflow.state.succeeded")
         case .repaired:
-            return "Repaired"
+            return L10n.string("workflow.state.repaired")
         case .failed:
-            return "Failed"
+            return L10n.string("workflow.state.failed")
         }
     }
 }
@@ -297,12 +297,12 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func runActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard !isBusy else {
-            rejectRun(workflow: .activate, message: "Another operation is already running.")
-            return .rejected("Another operation is already running.")
+            rejectRun(workflow: .activate, localError: .operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         guard canRunActivation else {
-            failLocally(workflow: .activate, message: "Plan NetBSD4 activation before running it.")
-            return .rejected("Plan NetBSD4 activation before running it.")
+            failLocally(workflow: .activate, localError: .activationPlanRequired)
+            return .rejected(WorkflowLocalError.activationPlanRequired.message)
         }
         let start = startRun(
             operation: "activate",
@@ -323,8 +323,8 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func planUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = currentOptions else {
-            failLocally(workflow: .uninstall, message: "Mount wait must be a non-negative integer.")
-            return .rejected("Mount wait must be a non-negative integer.")
+            failLocally(workflow: .uninstall, localError: .mountWaitInvalid)
+            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
         }
         let start = startRun(
             operation: "uninstall",
@@ -352,20 +352,16 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func runUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard !isBusy else {
-            rejectRun(workflow: .uninstall, message: "Another operation is already running.")
-            return .rejected("Another operation is already running.")
+            rejectRun(workflow: .uninstall, localError: .operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         guard let options = plannedUninstallOptions, currentOptions == options, uninstallPlan != nil else {
             uninstallState = .planStale
-            error = BackendErrorViewModel(
-                operation: "uninstall",
-                code: "plan_stale",
-                message: "Review and regenerate the uninstall plan before running it."
-            )
-            return .rejected("Review and regenerate the uninstall plan before running it.")
+            error = BackendErrorViewModel(operation: "uninstall", localError: .uninstallPlanStale)
+            return .rejected(WorkflowLocalError.uninstallPlanStale.message)
         }
         guard uninstallState == .planReady else {
-            return .rejected("Uninstall plan is not ready.")
+            return .rejected(WorkflowLocalError.uninstallPlanNotReady.message)
         }
         let start = startRun(
             operation: "uninstall",
@@ -391,8 +387,8 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func refreshFsckTargets(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let mountWaitValue else {
-            failLocally(workflow: .fsck, message: "Mount wait must be a non-negative integer.")
-            return .rejected("Mount wait must be a non-negative integer.")
+            failLocally(workflow: .fsck, localError: .mountWaitInvalid)
+            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
         }
         let start = startRun(
             operation: "fsck",
@@ -416,12 +412,12 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func planFsck(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = currentOptions else {
-            failLocally(workflow: .fsck, message: "Mount wait must be a non-negative integer.")
-            return .rejected("Mount wait must be a non-negative integer.")
+            failLocally(workflow: .fsck, localError: .mountWaitInvalid)
+            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
         }
         guard let target = selectedFsckTarget else {
-            failLocally(workflow: .fsck, message: "Select a mounted HFS volume before planning fsck.")
-            return .rejected("Select a mounted HFS volume before planning fsck.")
+            failLocally(workflow: .fsck, localError: .fsckTargetRequired)
+            return .rejected(WorkflowLocalError.fsckTargetRequired.message)
         }
         let start = startRun(
             operation: "fsck",
@@ -451,24 +447,20 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func runFsck(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard !isBusy else {
-            rejectRun(workflow: .fsck, message: "Another operation is already running.")
-            return .rejected("Another operation is already running.")
+            rejectRun(workflow: .fsck, localError: .operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         guard let options = plannedFsckOptions,
               let target = selectedFsckTarget,
               selectedFsckTargetID == plannedFsckTargetID,
-              currentOptions == options,
-              fsckPlan != nil else {
+            currentOptions == options,
+            fsckPlan != nil else {
             fsckState = .planStale
-            error = BackendErrorViewModel(
-                operation: "fsck",
-                code: "plan_stale",
-                message: "Review and regenerate the fsck plan before running it."
-            )
-            return .rejected("Review and regenerate the fsck plan before running it.")
+            error = BackendErrorViewModel(operation: "fsck", localError: .fsckPlanStale)
+            return .rejected(WorkflowLocalError.fsckPlanStale.message)
         }
         guard fsckState == .planReady else {
-            return .rejected("fsck plan is not ready.")
+            return .rejected(WorkflowLocalError.fsckPlanNotReady.message)
         }
         let start = startRun(
             operation: "fsck",
@@ -495,12 +487,12 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func scanRepairXattrs() -> OperationStartResult {
         guard let options = currentRepairOptions else {
-            failLocally(workflow: .repairXattrs, message: "Max depth must be empty or a non-negative integer.")
-            return .rejected("Max depth must be empty or a non-negative integer.")
+            failLocally(workflow: .repairXattrs, localError: .repairXattrsDepthInvalid)
+            return .rejected(WorkflowLocalError.repairXattrsDepthInvalid.message)
         }
         guard !trimmedRepairPath.isEmpty else {
-            failLocally(workflow: .repairXattrs, message: "Choose a mounted SMB share path before scanning.")
-            return .rejected("Choose a mounted SMB share path before scanning.")
+            failLocally(workflow: .repairXattrs, localError: .repairXattrsPathRequired)
+            return .rejected(WorkflowLocalError.repairXattrsPathRequired.message)
         }
         let path = trimmedRepairPath
         let start = startRun(
@@ -525,26 +517,18 @@ final class MaintenanceStore: ObservableObject {
     @discardableResult
     func runRepairXattrs() -> OperationStartResult {
         guard !isBusy else {
-            rejectRun(workflow: .repairXattrs, message: "Another operation is already running.")
-            return .rejected("Another operation is already running.")
+            rejectRun(workflow: .repairXattrs, localError: .operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         guard canRepairXattrs else {
             repairState = .scanStale
-            error = BackendErrorViewModel(
-                operation: "repair-xattrs",
-                code: "scan_stale",
-                message: "Run a fresh xattr scan before repairing."
-            )
-            return .rejected("Run a fresh xattr scan before repairing.")
+            error = BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale)
+            return .rejected(WorkflowLocalError.repairXattrsScanStale.message)
         }
         guard let options = scannedRepairOptions else {
             repairState = .scanStale
-            error = BackendErrorViewModel(
-                operation: "repair-xattrs",
-                code: "scan_stale",
-                message: "Run a fresh xattr scan before repairing."
-            )
-            return .rejected("Run a fresh xattr scan before repairing.")
+            error = BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale)
+            return .rejected(WorkflowLocalError.repairXattrsScanStale.message)
         }
         let start = startRun(
             operation: "repair-xattrs",
@@ -889,12 +873,28 @@ final class MaintenanceStore: ObservableObject {
         operationObserver.finish()
     }
 
+    private func failLocally(workflow: MaintenanceWorkflow, localError: WorkflowLocalError) {
+        error = BackendErrorViewModel(operation: operationName(for: workflow), localError: localError)
+        selectedWorkflow = workflow
+        currentStage = nil
+        setState(.failed, for: workflow)
+        operationObserver.finish()
+    }
+
     private func rejectRun(workflow: MaintenanceWorkflow, message: String) {
         error = BackendErrorViewModel(
             operation: operationName(for: workflow),
             code: "operation_rejected",
             message: message
         )
+        selectedWorkflow = workflow
+        currentStage = nil
+        setState(.failed, for: workflow)
+        operationObserver.finish()
+    }
+
+    private func rejectRun(workflow: MaintenanceWorkflow, localError: WorkflowLocalError) {
+        error = BackendErrorViewModel(operation: operationName(for: workflow), localError: localError)
         selectedWorkflow = workflow
         currentStage = nil
         setState(.failed, for: workflow)
@@ -971,9 +971,8 @@ final class MaintenanceStore: ObservableObject {
         workflow: MaintenanceWorkflow
     ) -> OperationStartResult {
         guard !isBusy else {
-            let message = "Another operation is already running."
-            rejectRun(workflow: workflow, message: message)
-            return .rejected(message)
+            rejectRun(workflow: workflow, localError: .operationAlreadyRunning)
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         resetRunState()
         let start = run(operation: operation, params: params, profile: profile)
@@ -997,7 +996,7 @@ final class MaintenanceStore: ObservableObject {
             )
         } else {
             guard !isBusy else {
-                return .rejected("Another operation is already running.")
+                return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
             }
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)

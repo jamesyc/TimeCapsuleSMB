@@ -224,7 +224,7 @@ struct InstallCompletionPresentation: Equatable {
         self.init(
             verified: snapshot.verified,
             rebootRequested: snapshot.rebootRequested,
-            message: snapshot.summary,
+            message: snapshot.localizedSummary,
             netbsd4: Self.isNetBSD4(snapshot: snapshot, profile: profile),
             isCheckupRunning: isCheckupRunning
         )

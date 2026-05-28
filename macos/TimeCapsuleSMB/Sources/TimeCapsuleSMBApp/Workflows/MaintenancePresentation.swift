@@ -107,8 +107,12 @@ struct MaintenanceTimelinePresentation: Equatable {
                 OperationTimelineItem(
                     id: "current:\(currentStage.operation):\(currentStage.stage)",
                     operation: currentStage.operation,
-                    title: currentStage.stage,
-                    detail: currentStage.description,
+                    title: OperationTimelineBuilder.stageTitle(for: currentStage.operation, stage: currentStage.stage),
+                    detail: OperationTimelineBuilder.stageDetail(
+                        for: currentStage.operation,
+                        stage: currentStage.stage,
+                        fallback: nil
+                    ),
                     state: .running,
                     risk: currentStage.risk,
                     cancellable: currentStage.cancellable

@@ -32,24 +32,108 @@ public enum BundleRuntimeIssueCode: String, CaseIterable, Equatable, Sendable {
 
 public struct BundleRuntimeIssue: Identifiable, Equatable, Sendable {
     public var id: String {
-        "\(code.rawValue):\(message)"
+        "\(code.rawValue):\(messageOverride ?? ""):\(context ?? "")"
     }
 
     public let code: BundleRuntimeIssueCode
     public let severity: BundleRuntimeIssueSeverity
-    public let message: String
-    public let recovery: String
+    private let messageOverride: String?
+    private let recoveryOverride: String?
+    private let context: String?
+
+    public var message: String {
+        messageOverride ?? Self.defaultMessage(for: code, context: context)
+    }
+
+    public var recovery: String {
+        recoveryOverride ?? Self.defaultRecovery(for: code, context: context)
+    }
 
     public init(
         code: BundleRuntimeIssueCode,
         severity: BundleRuntimeIssueSeverity,
-        message: String,
-        recovery: String
+        message: String? = nil,
+        recovery: String? = nil,
+        context: String? = nil
     ) {
         self.code = code
         self.severity = severity
-        self.message = message
-        self.recovery = recovery
+        self.messageOverride = message
+        self.recoveryOverride = recovery
+        self.context = context
+    }
+
+    private static func defaultMessage(for code: BundleRuntimeIssueCode, context: String?) -> String {
+        switch code {
+        case .helperMissing:
+            return L10n.string("bundle_issue.helper_missing.message")
+        case .helperNotExecutable:
+            return L10n.string("bundle_issue.helper_not_executable.message")
+        case .pythonPackagesMissing:
+            return L10n.string("bundle_issue.python_packages_missing.message")
+        case .distributionRootMissing:
+            return L10n.string("bundle_issue.distribution_root_missing.message")
+        case .artifactManifestMissing:
+            return L10n.string("bundle_issue.artifact_manifest_missing.message")
+        case .artifactManifestInvalid:
+            return L10n.string("bundle_issue.artifact_manifest_invalid.message")
+        case .distributionArtifactsMissing:
+            if let context, let count = Int(context) {
+                return L10n.format("bundle_issue.distribution_artifacts_missing_count.message", count)
+            }
+            return L10n.string("bundle_issue.distribution_artifacts_missing.message")
+        case .toolsDirectoryMissing:
+            return L10n.string("bundle_issue.tools_directory_missing.message")
+        case .applicationSupportUnavailable:
+            return L10n.string("bundle_issue.application_support_unavailable.message")
+        case .stateDirectoryUnavailable:
+            return L10n.string("bundle_issue.state_directory_unavailable.message")
+        case .unsupportedVersion:
+            return L10n.string("bundle_issue.unsupported_version.message")
+        case .versionMetadataUnavailable:
+            return L10n.string("bundle_issue.version_metadata_unavailable.message")
+        case .installValidationFailed:
+            return L10n.string("bundle_issue.install_validation_failed.message")
+        case .helperLaunchFailed:
+            return L10n.string("bundle_issue.helper_launch_failed.message")
+        case .contractDecodeFailed:
+            return L10n.string("bundle_issue.contract_decode_failed.message")
+        case .operationFailed:
+            return L10n.string("bundle_issue.operation_failed.message")
+        }
+    }
+
+    private static func defaultRecovery(for code: BundleRuntimeIssueCode, context: String?) -> String {
+        switch code {
+        case .helperMissing,
+             .helperNotExecutable,
+             .pythonPackagesMissing,
+             .distributionRootMissing,
+             .artifactManifestMissing,
+             .artifactManifestInvalid,
+             .distributionArtifactsMissing:
+            return L10n.string("bundle_issue.recovery.reinstall")
+        case .toolsDirectoryMissing:
+            return L10n.string("bundle_issue.tools_directory_missing.recovery")
+        case .applicationSupportUnavailable:
+            return L10n.string("bundle_issue.application_support_unavailable.recovery")
+        case .stateDirectoryUnavailable:
+            return L10n.string("bundle_issue.state_directory_unavailable.recovery")
+        case .unsupportedVersion:
+            if let context, !context.isEmpty {
+                return L10n.format("app_readiness.recovery.update_required", context)
+            }
+            return L10n.string("bundle_issue.unsupported_version.recovery")
+        case .versionMetadataUnavailable:
+            return L10n.string("app_readiness.recovery.version_metadata_unavailable")
+        case .installValidationFailed:
+            return L10n.string("app_readiness.recovery.install_validation_failed")
+        case .helperLaunchFailed,
+             .operationFailed:
+            return L10n.string("app_readiness.recovery.retry_diagnostics")
+        case .contractDecodeFailed:
+            return L10n.string("app_readiness.recovery.contract_mismatch")
+        }
     }
 }
 
@@ -130,41 +214,31 @@ public struct BundleLayout: Equatable, Sendable {
         if !fileManager.fileExists(atPath: helperURL.path) {
             issues.append(BundleRuntimeIssue(
                 code: .helperMissing,
-                severity: .error,
-                message: "The bundled TimeCapsuleSMB helper is missing.",
-                recovery: "Reinstall TimeCapsuleSMB."
+                severity: .error
             ))
         } else if !fileManager.isExecutableFile(atPath: helperURL.path) {
             issues.append(BundleRuntimeIssue(
                 code: .helperNotExecutable,
-                severity: .error,
-                message: "The bundled TimeCapsuleSMB helper is not executable.",
-                recovery: "Reinstall TimeCapsuleSMB."
+                severity: .error
             ))
         }
         if !isDirectory(pythonPackagesURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
                 code: .pythonPackagesMissing,
-                severity: .error,
-                message: "The bundled Python packages are missing.",
-                recovery: "Reinstall TimeCapsuleSMB."
+                severity: .error
             ))
         }
         if !isDirectory(distributionRootURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
                 code: .distributionRootMissing,
-                severity: .error,
-                message: "The bundled TimeCapsuleSMB distribution is missing.",
-                recovery: "Reinstall TimeCapsuleSMB."
+                severity: .error
             ))
         } else {
             let binURL = distributionRootURL.appendingPathComponent("bin", isDirectory: true)
             if !isDirectory(binURL, fileManager: fileManager) {
                 issues.append(BundleRuntimeIssue(
                     code: .distributionArtifactsMissing,
-                    severity: .error,
-                    message: "The bundled TimeCapsuleSMB payload artifacts are missing.",
-                    recovery: "Reinstall TimeCapsuleSMB."
+                    severity: .error
                 ))
             }
             issues.append(contentsOf: artifactManifestIssues(fileManager: fileManager))
@@ -172,26 +246,20 @@ public struct BundleLayout: Equatable, Sendable {
         if !isDirectory(toolsBinURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
                 code: .toolsDirectoryMissing,
-                severity: .warning,
-                message: "Bundled command-line tools are missing.",
-                recovery: "Some diagnostics may be unavailable until the app bundle is repaired."
+                severity: .warning
             ))
         }
         if !isWritableDirectory(applicationSupportURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
                 code: .applicationSupportUnavailable,
-                severity: .error,
-                message: "TimeCapsuleSMB cannot write its Application Support directory.",
-                recovery: "Repair permissions for the TimeCapsuleSMB Application Support folder or reinstall the app."
+                severity: .error
             ))
         }
         if stateDirectoryURL != applicationSupportURL,
            !isWritableDirectory(stateDirectoryURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
                 code: .stateDirectoryUnavailable,
-                severity: .error,
-                message: "TimeCapsuleSMB cannot write its runtime state directory.",
-                recovery: "Repair permissions for the configured state directory."
+                severity: .error
             ))
         }
         return issues
@@ -201,9 +269,7 @@ public struct BundleLayout: Equatable, Sendable {
         guard fileManager.fileExists(atPath: artifactManifestURL.path) else {
             return [BundleRuntimeIssue(
                 code: .artifactManifestMissing,
-                severity: .error,
-                message: "The bundled artifact manifest is missing.",
-                recovery: "Reinstall TimeCapsuleSMB."
+                severity: .error
             )]
         }
         do {
@@ -212,9 +278,7 @@ public struct BundleLayout: Equatable, Sendable {
             guard !manifest.artifactPaths.contains(where: isUnsafeArtifactPath) else {
                 return [BundleRuntimeIssue(
                     code: .artifactManifestInvalid,
-                    severity: .error,
-                    message: "The bundled artifact manifest contains an unsafe artifact path.",
-                    recovery: "Reinstall TimeCapsuleSMB."
+                    severity: .error
                 )]
             }
             let missing = manifest.artifactPaths.filter {
@@ -224,17 +288,14 @@ public struct BundleLayout: Equatable, Sendable {
                 return [BundleRuntimeIssue(
                     code: .distributionArtifactsMissing,
                     severity: .error,
-                    message: "The bundled TimeCapsuleSMB distribution is missing \(missing.count) payload artifact(s).",
-                    recovery: "Reinstall TimeCapsuleSMB."
+                    context: "\(missing.count)"
                 )]
             }
             return []
         } catch {
             return [BundleRuntimeIssue(
                 code: .artifactManifestInvalid,
-                severity: .error,
-                message: "The bundled artifact manifest could not be read.",
-                recovery: "Reinstall TimeCapsuleSMB."
+                severity: .error
             )]
         }
     }

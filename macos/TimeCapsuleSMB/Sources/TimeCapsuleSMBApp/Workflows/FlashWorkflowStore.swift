@@ -44,52 +44,56 @@ enum FlashWorkflowState: String, CaseIterable, Equatable {
     var title: String {
         switch self {
         case .unavailable:
-            return "Unavailable"
+            return L10n.string("workflow.state.unavailable")
         case .disabledInThisBuild:
-            return "Disabled in This Build"
+            return L10n.string("workflow.state.disabled_in_this_build")
         case .eligibleForReadOnlyAnalysis:
-            return "Read-Only Analysis Available"
+            return L10n.string("workflow.state.read_only_analysis_available")
         case .readingBanks:
-            return "Reading Firmware Banks"
+            return L10n.string("workflow.state.reading_firmware_banks")
         case .savingBackup:
-            return "Saving Backup"
+            return L10n.string("workflow.state.saving_backup")
         case .analyzingBanks:
-            return "Analyzing Firmware"
+            return L10n.string("workflow.state.analyzing_firmware")
         case .planAvailable:
-            return "Plan Available"
+            return L10n.string("workflow.state.plan_available")
         case .appleCheckComplete:
-            return "Apple Check Complete"
+            return L10n.string("workflow.state.apple_check_complete")
         case .appleFirmwareMismatch:
-            return "Apple Firmware Mismatch"
+            return L10n.string("workflow.state.apple_firmware_mismatch")
         case .appleFirmwareReady:
-            return "Apple Firmware Ready"
+            return L10n.string("workflow.state.apple_firmware_ready")
         case .writeLocked:
-            return "Ready"
+            return L10n.string("workflow.state.ready")
         case .awaitingStrongConfirmation:
-            return "Awaiting Confirmation"
+            return L10n.string("workflow.state.awaiting_confirmation")
         case .writing:
-            return "Writing Firmware"
+            return L10n.string("workflow.state.writing_firmware")
         case .readbackValidating:
-            return "Validating Write"
+            return L10n.string("workflow.state.validating_write")
         case .writeValidated:
-            return "Write Validated"
+            return L10n.string("workflow.state.write_validated")
         case .writeValidatedSnapshotStale:
-            return "Snapshot Stale"
+            return L10n.string("workflow.state.snapshot_stale")
         case .manualPowerCycleRequired:
-            return "Manual Power Cycle Required"
+            return L10n.string("workflow.state.manual_power_cycle_required")
         case .restoreRebooting:
-            return "Rebooting After Restore"
+            return L10n.string("workflow.state.rebooting_after_restore")
         case .failed:
-            return "Failed"
+            return L10n.string("workflow.state.failed")
         }
     }
 }
 
 struct FlashEligibility: Equatable {
     let state: FlashWorkflowState
-    let message: String
+    let messageKey: String
     let readOnlyAllowed: Bool
     let writeAllowed: Bool
+
+    var message: String {
+        L10n.string(messageKey)
+    }
 }
 
 enum FlashEligibilityPolicy {
@@ -97,7 +101,7 @@ enum FlashEligibilityPolicy {
         guard profile.traits.supportsFlashBootHook else {
             return FlashEligibility(
                 state: .unavailable,
-                message: "Persistent boot hook tools are only for NetBSD4 Time Capsules.",
+                messageKey: "flash.eligibility.netbsd4_required",
                 readOnlyAllowed: false,
                 writeAllowed: false
             )
@@ -107,21 +111,21 @@ enum FlashEligibilityPolicy {
         case .disabled:
             return FlashEligibility(
                 state: .disabledInThisBuild,
-                message: "Firmware boot hook analysis is disabled in this build.",
+                messageKey: "flash.eligibility.disabled",
                 readOnlyAllowed: false,
                 writeAllowed: false
             )
         case .readOnly:
             return FlashEligibility(
                 state: .eligibleForReadOnlyAnalysis,
-                message: "This NetBSD4 device can be backed up and inspected before any write is available.",
+                messageKey: "flash.eligibility.read_only",
                 readOnlyAllowed: true,
                 writeAllowed: false
             )
         case .writesEnabled:
             return FlashEligibility(
                 state: .writeLocked,
-                message: "Back up and inspect firmware before planning a patch or restore write.",
+                messageKey: "flash.eligibility.write_ready",
                 readOnlyAllowed: true,
                 writeAllowed: true
             )
@@ -148,7 +152,6 @@ private struct FlashFirmwareSelection: Equatable {
 @MainActor
 final class FlashWorkflowStore: ObservableObject {
     @Published private(set) var state: FlashWorkflowState = .writeLocked
-    @Published private(set) var eligibilityMessage = "Back up and inspect firmware before planning a patch or restore write."
     @Published private(set) var backup: FlashBackupPayload?
     @Published private(set) var plan: FlashPlanPayload?
     @Published private(set) var writeResult: FlashWritePayload?
@@ -174,7 +177,7 @@ final class FlashWorkflowStore: ObservableObject {
     private let laneKey: OperationLaneKey?
     private var eligibility = FlashEligibility(
         state: .writeLocked,
-        message: "Back up and inspect firmware before planning a patch or restore write.",
+        messageKey: "flash.eligibility.write_ready",
         readOnlyAllowed: true,
         writeAllowed: true
     )
@@ -256,9 +259,12 @@ final class FlashWorkflowStore: ObservableObject {
         canWrite(mode: .restore)
     }
 
+    var eligibilityMessage: String {
+        eligibility.message
+    }
+
     func refresh(profile: DeviceProfile) {
         eligibility = FlashEligibilityPolicy.eligibility(for: profile, buildPolicy: buildPolicy)
-        eligibilityMessage = eligibility.message
         if backup == nil, plan == nil, writeResult == nil, operationObserver.activeOperation == nil {
             state = eligibility.state
         }
@@ -267,7 +273,7 @@ final class FlashWorkflowStore: ObservableObject {
     @discardableResult
     func backupAndInspect(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard canBackup else {
-            return reject("Flash backup is not available.")
+            return reject(.flashBackupUnavailable)
         }
         let start = startRun(
             action: .backupAndInspect,
@@ -291,13 +297,13 @@ final class FlashWorkflowStore: ObservableObject {
     @discardableResult
     func planFlash(mode: FlashPlanMode, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard canPlan else {
-            return reject("Back up and inspect firmware before planning flash work.")
+            return reject(.flashBackupRequired)
         }
         if mode.writesFirmware, !canPlanWrites {
-            return reject("Firmware writes are disabled in this build.")
+            return reject(.flashWritesDisabled)
         }
         guard let backupDir = backup?.backupDir else {
-            return reject("Back up and inspect firmware before planning flash work.")
+            return reject(.flashBackupRequired)
         }
         let action = FlashUserAction.planAction(for: mode)
         let selection = currentFirmwareSelection
@@ -325,18 +331,18 @@ final class FlashWorkflowStore: ObservableObject {
     @discardableResult
     func write(mode: FlashPlanMode, password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard mode.writesFirmware else {
-            return reject("This flash mode does not write firmware.")
+            return reject(.flashModeReadOnly)
         }
         guard !isBusy else {
-            return reject("Another operation is already running.")
+            return reject(.operationAlreadyRunning)
         }
         guard let plan, plan.mode == mode, plan.writeRequested, let backupDir = backup?.backupDir else {
             state = .writeLocked
-            return reject("Plan the selected flash write before running it.")
+            return reject(.flashPlanRequired)
         }
         let selection = currentFirmwareSelection
         guard plannedFirmwareSelection == selection else {
-            return reject("Plan the selected flash write again after changing Apple firmware options.")
+            return reject(.flashPlanStale)
         }
         let action = mode == .patch ? FlashUserAction.writePatch : .writeRestore
         let start = startRun(
@@ -590,13 +596,19 @@ final class FlashWorkflowStore: ObservableObject {
         return .rejected(message)
     }
 
+    private func reject(_ localError: WorkflowLocalError) -> OperationStartResult {
+        error = BackendErrorViewModel(operation: "flash", localError: localError)
+        state = .failed
+        return .rejected(localError.message)
+    }
+
     private func startRun(
         action: FlashUserAction,
         params: [String: JSONValue],
         profile: DeviceProfile?
     ) -> OperationStartResult {
         guard !isBusy else {
-            return reject("Another operation is already running.")
+            return reject(.operationAlreadyRunning)
         }
         resetRunState()
         let start = run(operation: "flash", params: params, profile: profile)
@@ -632,7 +644,7 @@ final class FlashWorkflowStore: ObservableObject {
             )
         }
         guard !isBusy else {
-            return .rejected("Another operation is already running.")
+            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         let context = profile?.runtimeContext
         let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)

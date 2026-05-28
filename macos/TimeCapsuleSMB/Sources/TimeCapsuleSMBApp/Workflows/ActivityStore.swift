@@ -10,6 +10,7 @@ enum ActivityScope: Equatable {
 struct ActivitySnapshot: Equatable {
     let isRunning: Bool
     let scope: ActivityScope
+    let operation: String?
     let operationTitle: String
     let latestMessage: String?
     let timeline: [OperationTimelineItem]
@@ -65,6 +66,7 @@ final class ActivityStore: ObservableObject {
     @Published private(set) var snapshot = ActivitySnapshot(
         isRunning: false,
         scope: .unknown,
+        operation: nil,
         operationTitle: L10n.string("activity.no_active_operation"),
         latestMessage: nil,
         timeline: []
@@ -141,7 +143,7 @@ final class ActivityStore: ObservableObject {
         if context.showingAddDevice,
            let configureLane = active.first(where: { laneSnapshot in
                laneSnapshot.laneKey != .app
-                   && laneSnapshot.snapshot.operationTitle == OperationTimelineBuilder.operationTitle("configure")
+                   && laneSnapshot.snapshot.operation == "configure"
            }) {
             return .from(configureLane, activeLaneCount: activeCount)
         }
@@ -209,6 +211,7 @@ final class ActivityStore: ObservableObject {
         return ActivitySnapshot(
             isRunning: isRunning,
             scope: scope(for: lane.key, operation: operation),
+            operation: operation,
             operationTitle: presentation.title,
             latestMessage: presentation.message,
             timeline: timeline
@@ -288,6 +291,7 @@ final class ActivityStore: ObservableObject {
         ActivitySnapshot(
             isRunning: false,
             scope: .unknown,
+            operation: nil,
             operationTitle: L10n.string("activity.no_active_operation"),
             latestMessage: nil,
             timeline: []

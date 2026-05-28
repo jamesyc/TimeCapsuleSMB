@@ -473,7 +473,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 passCount: summary.passCount,
                 warnCount: summary.warnCount,
                 failCount: summary.failCount,
-                summary: L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
+                summary: ""
             ), for: profileID)
             if let snapshot = verifiedDeploySnapshotFromPassedCheckup(profileID: profileID, state: state, observedAt: observedAt) {
                 await appStore.deviceRegistry.updateDeploy(snapshot, for: profileID)
@@ -500,7 +500,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             payloadFamily: profile.lastDeploy?.payloadFamily ?? profile.payloadFamily,
             rebootRequested: profile.lastDeploy?.rebootRequested,
             verified: true,
-            summary: profile.lastDeploy?.summary ?? L10n.string("summary.install_verified_by_checkup")
+            summary: profile.lastDeploy?.summary ?? ""
         )
     }
 
@@ -524,7 +524,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 payloadFamily: deployStore.plan?.payloadFamily ?? profile.payloadFamily,
                 rebootRequested: result.rebootRequested,
                 verified: result.verified,
-                summary: result.message ?? L10n.string("deploy.result.default_message")
+                summary: result.message ?? ""
             ), for: profile.id)
         }
     }

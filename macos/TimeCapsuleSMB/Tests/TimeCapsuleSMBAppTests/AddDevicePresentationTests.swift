@@ -25,7 +25,7 @@ final class AddDevicePresentationTests: XCTestCase {
 
         let configuring = AddDeviceProgressPresentation(state: .configuring, currentStage: configureStage)
         XCTAssertEqual(configuring?.title, "Connecting to Time Capsule")
-        XCTAssertEqual(configuring?.detail, "Checking SSH access.")
+        XCTAssertEqual(configuring?.detail, "Checking SSH")
 
         let saving = AddDeviceProgressPresentation(state: .savingProfile, currentStage: nil)
         XCTAssertEqual(saving?.title, "Saving Device")

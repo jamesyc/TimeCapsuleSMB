@@ -16,7 +16,7 @@ struct AppReadinessBannerView: View {
                     .controlSize(.small)
                 Text(title)
                     .font(.caption)
-                if let stage = store.currentStage?.description ?? store.currentStage?.stage {
+                if let stage = currentStageText {
                     Text(stage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -55,6 +55,13 @@ struct AppReadinessBannerView: View {
             return L10n.string("readiness.state.validating_install")
         default:
             return ""
+        }
+    }
+
+    private var currentStageText: String? {
+        store.currentStage.map {
+            OperationTimelineBuilder.stageDetail(for: $0.operation, stage: $0.stage, fallback: nil)
+                ?? OperationTimelineBuilder.stageTitle(for: $0.operation, stage: $0.stage)
         }
     }
 }

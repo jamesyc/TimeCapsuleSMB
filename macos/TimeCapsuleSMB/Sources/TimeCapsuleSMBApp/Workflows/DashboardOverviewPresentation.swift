@@ -79,7 +79,7 @@ struct DeviceDashboardHeaderPresentation: Equatable {
             PresentationRow(label: L10n.string("dashboard.overview.generation"), value: Self.generationValue(for: profile)),
             PresentationRow(label: L10n.string("dashboard.overview.payload"), value: profile.payloadFamily ?? L10n.string("value.unknown")),
             PresentationRow(label: L10n.string("dashboard.overview.password"), value: summary.passwordState.title),
-            PresentationRow(label: L10n.string("dashboard.overview.last_install"), value: profile.lastDeploy?.summary ?? L10n.string("value.never"))
+            PresentationRow(label: L10n.string("dashboard.overview.last_install"), value: profile.lastDeploy?.localizedSummary ?? L10n.string("value.never"))
         ]
     }
 
@@ -101,17 +101,17 @@ struct DeviceDashboardHeaderPresentation: Equatable {
             return nil
         }
         return [
-            "104": "1st generation",
-            "105": "2nd generation",
-            "106": "1st generation",
-            "108": "3rd generation",
-            "109": "2nd generation",
-            "113": "3rd generation",
-            "114": "4th generation",
-            "116": "4th generation",
-            "117": "5th generation",
-            "119": "5th generation",
-            "120": "6th generation"
+            "104": generationLabel(1),
+            "105": generationLabel(2),
+            "106": generationLabel(1),
+            "108": generationLabel(3),
+            "109": generationLabel(2),
+            "113": generationLabel(3),
+            "114": generationLabel(4),
+            "116": generationLabel(4),
+            "117": generationLabel(5),
+            "119": generationLabel(5),
+            "120": generationLabel(6)
         ][syap]
     }
 
@@ -119,36 +119,41 @@ struct DeviceDashboardHeaderPresentation: Equatable {
         guard let model else {
             return nil
         }
-        let pattern = #"([0-9]+(?:st|nd|rd|th) generation)"#
+        let pattern = #"([0-9]+)(?:st|nd|rd|th) generation"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return nil
         }
         let range = NSRange(model.startIndex..<model.endIndex, in: model)
         guard let match = regex.firstMatch(in: model, range: range),
-              let matchRange = Range(match.range(at: 1), in: model) else {
+              let matchRange = Range(match.range(at: 1), in: model),
+              let generation = Int(model[matchRange]) else {
             return nil
         }
-        return String(model[matchRange])
+        return generationLabel(generation)
     }
 
     private static func generationFromCoarseValue(_ value: String?) -> String? {
         let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch normalized {
         case "gen1", "tc_gen1":
-            return "1st generation"
+            return generationLabel(1)
         case "gen2", "tc_gen2":
-            return "2nd generation"
+            return generationLabel(2)
         case "gen3", "tc_gen3":
-            return "3rd generation"
+            return generationLabel(3)
         case "gen4", "tc_gen4":
-            return "4th generation"
+            return generationLabel(4)
         case "gen5", "tc_gen5":
-            return "5th generation"
+            return generationLabel(5)
         case "gen6", "tc_gen6":
-            return "6th generation"
+            return generationLabel(6)
         default:
             return nil
         }
+    }
+
+    private static func generationLabel(_ generation: Int) -> String {
+        L10n.string("dashboard.generation.\(generation)")
     }
 
     private static func formattedDate(_ date: Date) -> String {
@@ -434,7 +439,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             return DashboardHealthRow(
                 id: "runtime-installed",
                 title: DashboardHealthDomain.runtime.title,
-                detail: lastDeploy.summary,
+                detail: lastDeploy.localizedSummary,
                 status: .good,
                 action: .openFinder
             )
@@ -442,7 +447,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         return DashboardHealthRow(
             id: "runtime-installed-unverified",
             title: DashboardHealthDomain.runtime.title,
-            detail: lastDeploy.summary,
+            detail: lastDeploy.localizedSummary,
             status: .warning,
             action: .runCheckup
         )
@@ -482,7 +487,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         return DashboardHealthRow(
             id: "checkup-snapshot",
             title: DashboardHealthDomain.checkup.title,
-            detail: lastCheckup.summary,
+            detail: lastCheckup.localizedSummary,
             status: snapshotStatus(lastCheckup),
             action: snapshotStatus(lastCheckup) == .good ? nil : .viewCheckup
         )

@@ -173,8 +173,7 @@ final class AppReadinessStore: ObservableObject {
             state = .blocked(BundleRuntimeIssue(
                 code: .helperMissing,
                 severity: .error,
-                message: error.localizedDescription,
-                recovery: L10n.string("app_readiness.recovery.helper_missing")
+                message: error.localizedDescription
             ))
             return
         }
@@ -263,7 +262,7 @@ final class AppReadinessStore: ObservableObject {
                     code: .unsupportedVersion,
                     severity: .error,
                     message: payload.message,
-                    recovery: L10n.format("app_readiness.recovery.update_required", payload.downloadURL)
+                    context: payload.downloadURL
                 ))
                 operationObserver.finish()
                 return
@@ -285,8 +284,7 @@ final class AppReadinessStore: ObservableObject {
                 state = .blocked(BundleRuntimeIssue(
                     code: .operationFailed,
                     severity: .error,
-                    message: payload.summary,
-                    recovery: L10n.string("app_readiness.recovery.retry_diagnostics")
+                    message: payload.summary
                 ))
                 operationObserver.finish()
                 return
@@ -308,8 +306,7 @@ final class AppReadinessStore: ObservableObject {
                 state = .blocked(BundleRuntimeIssue(
                     code: .installValidationFailed,
                     severity: .error,
-                    message: payload.summary,
-                    recovery: L10n.string("app_readiness.recovery.install_validation_failed")
+                    message: payload.summary
                 ))
                 operationObserver.finish()
                 return
@@ -369,7 +366,7 @@ final class AppReadinessStore: ObservableObject {
             code: code,
             severity: .error,
             message: event.message ?? event.summary,
-            recovery: BackendErrorViewModel(event: event).recovery?.message ?? L10n.string("app_readiness.recovery.retry_diagnostics")
+            recovery: BackendErrorViewModel(event: event).recovery?.message
         )
     }
 
@@ -377,8 +374,7 @@ final class AppReadinessStore: ObservableObject {
         BundleRuntimeIssue(
             code: .contractDecodeFailed,
             severity: .error,
-            message: L10n.format("app_readiness.error.unexpected_payload", operation, error.localizedDescription),
-            recovery: L10n.string("app_readiness.recovery.contract_mismatch")
+            message: L10n.format("app_readiness.error.unexpected_payload", operation, error.localizedDescription)
         )
     }
 
@@ -386,8 +382,7 @@ final class AppReadinessStore: ObservableObject {
         BundleRuntimeIssue(
             code: .versionMetadataUnavailable,
             severity: .warning,
-            message: message,
-            recovery: L10n.string("app_readiness.recovery.version_metadata_unavailable")
+            message: message
         )
     }
 
