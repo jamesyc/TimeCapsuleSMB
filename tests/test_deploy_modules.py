@@ -3596,7 +3596,8 @@ static int expect_generated_types(void) {
         count_ptr_target("_adisk._tcp.local.") != 1 ||
         count_ptr_target("_device-info._tcp.local.") != 1 ||
         count_ptr_target("_airport._tcp.local.") != 1 ||
-        count_ptr_target("_ipp._tcp.local.") != 0) {
+        count_ptr_target("_ipp._tcp.local.") != 0 ||
+        count_ptr_target("_afpovertcp._tcp.local.") != 0) {
         return 1;
     }
     return 0;
@@ -4656,11 +4657,13 @@ static void configure_base(struct config *cfg) {
     snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
     snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
     snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
+    snprintf(cfg->afp_service_type, sizeof(cfg->afp_service_type), "%s", AFP_SERVICE_TYPE);
     snprintf(cfg->adisk_service_type, sizeof(cfg->adisk_service_type), "%s", "_adisk._tcp.local.");
     snprintf(cfg->device_info_service_type, sizeof(cfg->device_info_service_type), "%s", "_device-info._tcp.local.");
     snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
     snprintf(cfg->airport_syap, sizeof(cfg->airport_syap), "%s", "116");
     cfg->port = 445;
+    cfg->afp_port = AFP_DEFAULT_PORT;
     cfg->adisk_port = 9;
     cfg->airport_port = 5009;
     cfg->ttl = 120;
@@ -4749,6 +4752,103 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
     return matches;
 }
 
+static int count_ptr_target(const unsigned char *packet, size_t packet_len, const char *target) {
+    struct dns_header hdr;
+    size_t cursor = sizeof(hdr);
+    unsigned short total_answers;
+    int matches = 0;
+    unsigned short i;
+
+    if (packet_len < sizeof(hdr)) {
+        return -1;
+    }
+    memcpy(&hdr, packet, sizeof(hdr));
+    total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return -1;
+        }
+        cursor += 4;
+    }
+    for (i = 0; i < total_answers; i++) {
+        char name[MAX_NAME];
+        char ptr_target[MAX_NAME];
+        size_t rdata_cursor;
+        size_t rdata_end;
+        unsigned short rrtype;
+        unsigned short rdlength;
+
+        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
+            return -1;
+        }
+        memcpy(&rrtype, packet + cursor, 2);
+        memcpy(&rdlength, packet + cursor + 8, 2);
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > packet_len) {
+            return -1;
+        }
+        rdata_cursor = cursor;
+        rdata_end = cursor + rdlength;
+        if (rrtype == DNS_TYPE_PTR &&
+            decode_name(packet, packet_len, &rdata_cursor, ptr_target, sizeof(ptr_target)) == 0 &&
+            rdata_cursor == rdata_end &&
+            name_equals(ptr_target, target)) {
+            matches++;
+        }
+        cursor += rdlength;
+    }
+    return matches;
+}
+
+static int packet_has_srv_port(const unsigned char *packet, size_t packet_len, unsigned short want_port) {
+    struct dns_header hdr;
+    size_t cursor = sizeof(hdr);
+    unsigned short total_answers;
+    unsigned short i;
+
+    if (packet_len < sizeof(hdr)) {
+        return 0;
+    }
+    memcpy(&hdr, packet, sizeof(hdr));
+    total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return 0;
+        }
+        cursor += 4;
+    }
+    for (i = 0; i < total_answers; i++) {
+        char name[MAX_NAME];
+        unsigned short rrtype;
+        unsigned short rdlength;
+
+        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
+            return 0;
+        }
+        memcpy(&rrtype, packet + cursor, 2);
+        memcpy(&rdlength, packet + cursor + 8, 2);
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > packet_len) {
+            return 0;
+        }
+        if (rrtype == DNS_TYPE_SRV && rdlength >= 6) {
+            unsigned short port;
+            memcpy(&port, packet + cursor + 4, 2);
+            if (ntohs(port) == want_port) {
+                return 1;
+            }
+        }
+        cursor += rdlength;
+    }
+    return 0;
+}
+
 static int packet_has_browse_additionals(const unsigned char *packet, size_t packet_len) {
     return count_rr_type(packet, packet_len, DNS_TYPE_PTR) == 1 &&
            count_rr_type(packet, packet_len, DNS_TYPE_SRV) == 1 &&
@@ -4763,6 +4863,7 @@ int main(void) {
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
+    char afp_instance_fqdn[MAX_NAME];
     size_t query_len;
 
     configure_base(&cfg);
@@ -4777,14 +4878,52 @@ int main(void) {
     memset(&snapshot, 0, sizeof(snapshot));
     configure_addrs(&mdns_dest, &source);
     add_snapshot_record(&snapshot, "_airport._tcp.local.", "Alton Time Capsule", "Alton-Time-Capsule", 5009, "syAP=116");
-    add_snapshot_record(&snapshot, "_afpovertcp._tcp.local.", "Alton Time Capsule", "Alton-Time-Capsule", 548, NULL);
+    add_snapshot_record(&snapshot, "_afpovertcp._tcp.local.", "Snapshot AFP", "Stale-Host", 1548, NULL);
+    if (build_instance_fqdn(afp_instance_fqdn, sizeof(afp_instance_fqdn), cfg.instance_name, cfg.afp_service_type) != 0) {
+        return 1;
+    }
 
     reset_captures();
-    query_len = make_query(query, "_afpovertcp._tcp.local.", DNS_TYPE_PTR);
+    query_len = make_query(query, cfg.afp_service_type, DNS_TYPE_PTR);
     if (query_len == 0 ||
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
         captured_count != 0) {
         return 1;
+    }
+
+    cfg.advertise_afp = 1;
+    reset_captures();
+    query_len = make_query(query, cfg.afp_service_type, DNS_TYPE_PTR);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
+        captured_count != 1 ||
+        !packet_has_browse_additionals(captured_packets[0], captured_lengths[0]) ||
+        count_ptr_target(captured_packets[0], captured_lengths[0], afp_instance_fqdn) != 1 ||
+        count_ptr_target(captured_packets[0], captured_lengths[0], "Snapshot AFP._afpovertcp._tcp.local.") != 0 ||
+        !packet_has_srv_port(captured_packets[0], captured_lengths[0], AFP_DEFAULT_PORT)) {
+        return 2;
+    }
+
+    reset_captures();
+    query_len = make_query(query, afp_instance_fqdn, DNS_TYPE_ANY);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
+        captured_count != 1 ||
+        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_PTR) != 0 ||
+        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_SRV) != 1 ||
+        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_TXT) != 1 ||
+        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_A) != 1 ||
+        !packet_has_srv_port(captured_packets[0], captured_lengths[0], AFP_DEFAULT_PORT)) {
+        return 3;
+    }
+
+    reset_captures();
+    query_len = make_query(query, DNS_SD_SERVICE_ENUMERATION_NAME, DNS_TYPE_PTR);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
+        captured_count != 1 ||
+        count_ptr_target(captured_packets[0], captured_lengths[0], cfg.afp_service_type) != 1) {
+        return 4;
     }
 
     reset_captures();
@@ -4793,7 +4932,7 @@ int main(void) {
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
         captured_count != 1 ||
         !packet_has_browse_additionals(captured_packets[0], captured_lengths[0])) {
-        return 2;
+        return 5;
     }
 
     reset_captures();
@@ -4802,7 +4941,7 @@ int main(void) {
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
         captured_count != 1 ||
         !packet_has_browse_additionals(captured_packets[0], captured_lengths[0])) {
-        return 3;
+        return 6;
     }
 
     printf("ok\n");

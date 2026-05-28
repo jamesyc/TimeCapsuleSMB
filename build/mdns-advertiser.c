@@ -39,6 +39,8 @@
 #define ADISK_DEFAULT_DISK_ADVF "0x1093"
 #define ADISK_MAX_DISKS 16
 #define ADISK_DISK_UUID_LEN 36
+#define AFP_SERVICE_TYPE "_afpovertcp._tcp.local."
+#define AFP_DEFAULT_PORT 548
 #define AIRPORT_SERVICE_TYPE "_airport._tcp.local."
 #define AIRPORT_DEFAULT_PORT 5009
 #define ADISK_SYS_TXT_PREFIX "sys=waMA="
@@ -243,6 +245,7 @@ struct config {
     char adisk_shares_file[MAX_NAME];
     char adisk_sys_wama[18];
     struct adisk_disk_set adisk_disks;
+    char afp_service_type[MAX_NAME];
     char device_info_service_type[MAX_NAME];
     char device_model[MAX_NAME];
     char airport_service_type[MAX_NAME];
@@ -258,9 +261,11 @@ struct config {
     char airport_bjsd[16];
     uint16_t port;
     uint16_t adisk_port;
+    uint16_t afp_port;
     uint16_t airport_port;
     uint32_t ttl;
     int diskless;
+    int advertise_afp;
     char load_snapshot_path[MAX_NAME];
     char save_snapshot_path[MAX_NAME];
     char skip_capture_if_snapshot_newer_than_boot_path[MAX_NAME];
@@ -397,6 +402,7 @@ static int build_instance_fqdn(char *out, size_t out_len, const char *instance_n
 static int is_airport_enabled(const struct config *cfg);
 static int smb_enabled(const struct config *cfg);
 static int adisk_enabled(const struct config *cfg);
+static int afp_enabled(const struct config *cfg);
 static int cfg_has_airport_identity_macs(const struct config *cfg);
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
 static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl);
@@ -689,12 +695,13 @@ static void drop_mdns_multicast_group6_best_effort(int sockfd, unsigned int ifin
 
 static void log_startup_config(const struct config *cfg) {
     fprintf(stderr,
-            "mdns startup: mode=%s instance=%s host=%s ipv4=%s service=%s adisk=%s device_model=%s airport=%s advertise=%s\n",
+            "mdns startup: mode=%s instance=%s host=%s ipv4=%s service=%s afp=%s adisk=%s device_model=%s airport=%s advertise=%s\n",
             "exclusive",
             cfg->instance_name[0] != '\0' ? cfg->instance_name : "(empty)",
             cfg->host_label[0] != '\0' ? cfg->host_label : "(empty)",
             "auto",
             cfg->service_type[0] != '\0' ? cfg->service_type : "(empty)",
+            afp_enabled(cfg) ? "enabled" : "disabled",
             adisk_enabled(cfg) ? "enabled" : "disabled",
             cfg->device_model[0] != '\0' ? cfg->device_model : "(empty)",
             is_airport_enabled(cfg) ? "enabled" : "disabled",
@@ -982,6 +989,10 @@ static void log_served_records(const struct config *cfg, const struct service_re
         fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
                 cfg->service_type, cfg->instance_name, (unsigned int)cfg->port, cfg->host_fqdn);
     }
+    if (afp_enabled(cfg)) {
+        fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
+                cfg->afp_service_type, cfg->instance_name, (unsigned int)cfg->afp_port, cfg->host_fqdn);
+    }
     if (cfg->device_model[0] != '\0') {
         fprintf(stderr, "serving service: type=%s instance=%s model=%s\n",
                 cfg->device_info_service_type, cfg->instance_name, cfg->device_model);
@@ -1195,6 +1206,7 @@ static void usage(const char *prog) {
             "  --save-airport-snapshot <path> Generate an AirPort-only Apple snapshot file and exit unless loading\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
             "  --diskless        Suppress generated _smb and _adisk records while replaying other snapshot records\n"
+            "  --afp             Also advertise generated _afpovertcp._tcp on port 548\n"
             "  --adisk-shares-file <p> Tab-separated share,disk-key,uuid,adVF rows\n"
             "  --adisk-sys-wama <m> MAC address for _adisk sys TXT\n"
             "  --device-model <m> Also advertise _device-info._tcp with model=<m>\n"
@@ -1550,6 +1562,10 @@ static int adisk_enabled(const struct config *cfg) {
 
 static int smb_enabled(const struct config *cfg) {
     return !cfg->diskless;
+}
+
+static int afp_enabled(const struct config *cfg) {
+    return cfg->advertise_afp;
 }
 
 static int is_airport_enabled(const struct config *cfg) {
@@ -3992,6 +4008,24 @@ static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const stru
     return 0;
 }
 
+static int add_empty_txt_service_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg,
+                                         const char *service_type, uint16_t port,
+                                         uint32_t ttl, int *answers) {
+    char instance_fqdn[MAX_NAME];
+
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, service_type) != 0) {
+        return -1;
+    }
+    if (add_rr_ptr(buf, off, cap, service_type, instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, port, ttl) != 0 ||
+        add_rr_txt_empty(buf, off, cap, instance_fqdn, ttl) != 0) {
+        return -1;
+    }
+
+    *answers += 3;
+    return 0;
+}
+
 static void init_announcement_packet(size_t *off, int *answers) {
     *off = sizeof(struct dns_header);
     *answers = 0;
@@ -4021,18 +4055,15 @@ static int append_generated_base_records(uint8_t *buf, size_t *off, size_t cap, 
                                          const struct link_context *response_link,
                                          int include_a, int include_aaaa,
                                          uint32_t ttl, int *answers) {
-    char instance_fqdn[MAX_NAME];
-
     if (smb_enabled(cfg)) {
-        if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        if (add_empty_txt_service_records(buf, off, cap, cfg, cfg->service_type, cfg->port, ttl, answers) != 0) {
             return -1;
         }
-        if (add_rr_ptr(buf, off, cap, cfg->service_type, instance_fqdn, ttl) != 0 ||
-            add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->port, ttl) != 0 ||
-            add_rr_txt_empty(buf, off, cap, instance_fqdn, ttl) != 0) {
+    }
+    if (afp_enabled(cfg)) {
+        if (add_empty_txt_service_records(buf, off, cap, cfg, cfg->afp_service_type, cfg->afp_port, ttl, answers) != 0) {
             return -1;
         }
-        *answers += 3;
     }
     if (append_host_address_records(buf, off, cap, cfg->host_fqdn, response_link, include_a, include_aaaa, ttl, answers) != 0) {
         return -1;
@@ -4344,6 +4375,31 @@ static int planned_rr_add_link_addresses(struct planned_rr_set *set,
     return 0;
 }
 
+static int plan_empty_txt_service_records(struct planned_rr_set *set,
+                                          int routes,
+                                          const struct config *cfg,
+                                          const char *service_type,
+                                          uint16_t port,
+                                          const char *instance_fqdn,
+                                          const struct link_context *link,
+                                          int include_ptr,
+                                          int include_srv,
+                                          int include_txt,
+                                          int include_a,
+                                          int include_aaaa) {
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, service_type, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, port, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (include_txt && planned_rr_add_txt_empty(set, routes, instance_fqdn, cfg->ttl) != 0) {
+        return -1;
+    }
+    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+}
+
 static int plan_smb_records(struct planned_rr_set *set,
                             int routes,
                             const struct config *cfg,
@@ -4357,17 +4413,25 @@ static int plan_smb_records(struct planned_rr_set *set,
     if (!smb_enabled(cfg)) {
         return 0;
     }
-    if (include_ptr &&
-        planned_rr_add_name(set, routes, cfg->service_type, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
-        return -1;
+    return plan_empty_txt_service_records(set, routes, cfg, cfg->service_type, cfg->port, instance_fqdn, link,
+                                          include_ptr, include_srv, include_txt, include_a, include_aaaa);
+}
+
+static int plan_afp_records(struct planned_rr_set *set,
+                            int routes,
+                            const struct config *cfg,
+                            const char *instance_fqdn,
+                            const struct link_context *link,
+                            int include_ptr,
+                            int include_srv,
+                            int include_txt,
+                            int include_a,
+                            int include_aaaa) {
+    if (!afp_enabled(cfg)) {
+        return 0;
     }
-    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0) {
-        return -1;
-    }
-    if (include_txt && planned_rr_add_txt_empty(set, routes, instance_fqdn, cfg->ttl) != 0) {
-        return -1;
-    }
-    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+    return plan_empty_txt_service_records(set, routes, cfg, cfg->afp_service_type, cfg->afp_port, instance_fqdn, link,
+                                          include_ptr, include_srv, include_txt, include_a, include_aaaa);
 }
 
 static int plan_adisk_records(struct planned_rr_set *set,
@@ -4545,6 +4609,10 @@ static int plan_service_type_enumeration_records(struct planned_rr_set *set,
 
     if (smb_enabled(cfg) &&
         plan_service_type_enumeration_type(set, routes, cfg->service_type, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (afp_enabled(cfg) &&
+        plan_service_type_enumeration_type(set, routes, cfg->afp_service_type, cfg->ttl) != 0) {
         return -1;
     }
     if (adisk_enabled(cfg) &&
@@ -4759,6 +4827,7 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                  const struct service_record_set *snapshot_records,
                                  int use_snapshot_records,
                                  const char *instance_fqdn,
+                                 const char *afp_instance_fqdn,
                                  const char *adisk_instance_fqdn,
                                  const char *device_info_instance_fqdn,
                                  const char *airport_instance_fqdn) {
@@ -4774,6 +4843,10 @@ static int plan_question_answers(struct planned_rr_set *planned,
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
         return plan_smb_records(planned, route, cfg, instance_fqdn, response_link, 1, 1, 1, 1, 1);
     }
+    if (afp_enabled(cfg) && name_equals(qname, cfg->afp_service_type) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        return plan_afp_records(planned, route, cfg, afp_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+    }
     if (adisk_enabled(cfg) && name_equals(qname, cfg->adisk_service_type) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
         return plan_adisk_records(planned, route, cfg, adisk_instance_fqdn, response_link, 1, 1, 1, 1, 1);
@@ -4788,6 +4861,14 @@ static int plan_question_answers(struct planned_rr_set *planned,
     }
     if (smb_enabled(cfg) && name_equals(qname, instance_fqdn)) {
         return plan_smb_records(planned, route, cfg, instance_fqdn, response_link,
+                                0,
+                                qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
+    }
+    if (afp_enabled(cfg) && name_equals(qname, afp_instance_fqdn)) {
+        return plan_afp_records(planned, route, cfg, afp_instance_fqdn, response_link,
                                 0,
                                 qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
                                 qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
@@ -5171,6 +5252,7 @@ static int handle_query_any(int sockfd,
     uint16_t query_id;
     uint16_t flags;
     char instance_fqdn[MAX_NAME];
+    char afp_instance_fqdn[MAX_NAME];
     char adisk_instance_fqdn[MAX_NAME];
     char device_info_instance_fqdn[MAX_NAME];
     char airport_instance_fqdn[MAX_NAME];
@@ -5186,6 +5268,7 @@ static int handle_query_any(int sockfd,
     memset(&planned, 0, sizeof(planned));
     memset(&questions, 0, sizeof(questions));
     instance_fqdn[0] = '\0';
+    afp_instance_fqdn[0] = '\0';
     adisk_instance_fqdn[0] = '\0';
     device_info_instance_fqdn[0] = '\0';
     airport_instance_fqdn[0] = '\0';
@@ -5208,6 +5291,11 @@ static int handle_query_any(int sockfd,
     if (smb_enabled(cfg) &&
         build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
         log_packet_build_failure("query_response", "build_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        return 0;
+    }
+    if (afp_enabled(cfg) &&
+        build_instance_fqdn(afp_instance_fqdn, sizeof(afp_instance_fqdn), cfg->instance_name, cfg->afp_service_type) != 0) {
+        log_packet_build_failure("query_response", "build_afp_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
     }
     if (adisk_enabled(cfg) &&
@@ -5280,6 +5368,7 @@ static int handle_query_any(int sockfd,
                                   snapshot_records,
                                   use_snapshot_records,
                                   instance_fqdn,
+                                  afp_instance_fqdn,
                                   adisk_instance_fqdn,
                                   device_info_instance_fqdn,
                                   airport_instance_fqdn) != 0) {
@@ -5925,10 +6014,12 @@ int main(int argc, char **argv) {
     memset(&active_links, 0, sizeof(active_links));
     strcpy(cfg.service_type, "_smb._tcp.local.");
     strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
+    strcpy(cfg.afp_service_type, AFP_SERVICE_TYPE);
     strcpy(cfg.device_info_service_type, "_device-info._tcp.local.");
     strcpy(cfg.airport_service_type, AIRPORT_SERVICE_TYPE);
     cfg.port = 445;
     cfg.adisk_port = 9;
+    cfg.afp_port = AFP_DEFAULT_PORT;
     cfg.airport_port = AIRPORT_DEFAULT_PORT;
     cfg.ttl = 120;
 
@@ -5951,6 +6042,8 @@ int main(int argc, char **argv) {
             strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
         } else if (strcmp(argv[i], "--diskless") == 0) {
             cfg.diskless = 1;
+        } else if (strcmp(argv[i], "--afp") == 0) {
+            cfg.advertise_afp = 1;
         } else if (strcmp(argv[i], "--auto-ip") == 0) {
             auto_ip = 1;
         } else if (strcmp(argv[i], "--print-auto-ip-cidrs") == 0) {
