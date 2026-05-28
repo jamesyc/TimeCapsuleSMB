@@ -3802,7 +3802,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"payload={volumes}/dk5/.samba4|{volumes}/dk5|/dev/dk5\n", proc.stdout)
         self.assertIn(f"shares\nUSB Backup\t{volumes}/dk5\tdk5\t0\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n", proc.stdout)
-        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x82\n", proc.stdout)
+        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x83\n", proc.stdout)
         self.assertIn("marker=yes\n", proc.stdout)
         self.assertIn("runtime=yes\n", proc.stdout)
         self.assertIn("[USB Backup]\n", proc.stdout)
@@ -4533,6 +4533,11 @@ MaSt = (
         self.assertNotIn("--save-airport-snapshot", proc.stdout)
         self.assertIn("--load-snapshot", proc.stdout)
         self.assertNotIn("--debug-logging", proc.stdout)
+        mdns_arg_lines = [line for line in proc.stdout.splitlines() if line.startswith("mdns-args:")]
+        capture_args = next(line for line in mdns_arg_lines if "--save-all-snapshot" in line)
+        live_args = next(line for line in mdns_arg_lines if "--load-snapshot" in line)
+        self.assertNotIn("--afp", capture_args)
+        self.assertIn("--afp", live_args)
 
     def test_common_mdns_advertiser_generates_airport_snapshot_when_capture_has_no_trusted_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4599,6 +4604,13 @@ MaSt = (
         self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
         self.assertIn("--save-airport-snapshot", proc.stdout)
         self.assertIn("--load-snapshot", proc.stdout)
+        mdns_arg_lines = [line for line in proc.stdout.splitlines() if line.startswith("mdns-args:")]
+        capture_args = next(line for line in mdns_arg_lines if "--save-all-snapshot" in line)
+        airport_snapshot_args = next(line for line in mdns_arg_lines if "--save-airport-snapshot" in line)
+        live_args = next(line for line in mdns_arg_lines if "--load-snapshot" in line)
+        self.assertNotIn("--afp", capture_args)
+        self.assertNotIn("--afp", airport_snapshot_args)
+        self.assertIn("--afp", live_args)
 
     def test_common_mdns_diskless_start_omits_stale_adisk_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4661,6 +4673,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--diskless", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
+        self.assertIn("--afp", proc.stdout)
         self.assertNotIn("--adisk-shares-file", proc.stdout)
         self.assertNotIn("--debug-logging", proc.stdout)
         self.assertIn("mdns startup: starting mdns advertiser in diskless auto-ip mode", proc.stdout)
@@ -4724,6 +4737,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--debug-logging", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
+        self.assertIn("--afp", proc.stdout)
         self.assertIn("mdns startup: debug logging enabled at", proc.stdout)
 
     def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:

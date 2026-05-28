@@ -32,10 +32,9 @@ TC_PAYLOAD_LOG_DIR=
 TC_PAYLOAD_LOG_VOLUME=
 TC_RUNTIME_LOG_MAX_BYTES=32768
 TC_SMBD_DISK_LOGGING_ENABLED=0
-# The managed server is Samba, not Apple's legacy AFP stack. Keep the cloned
-# AirPort identity, but publish SMB Time Machine volume flags so macOS treats
-# these shares as modern network backup destinations.
-TC_ADISK_DISK_ADVF=0x82
+# Publish Time Machine volume flags for both Apple's AFP stack and Samba so
+# older and newer macOS clients can discover the same advertised disk.
+TC_ADISK_DISK_ADVF=0x83
 TC_ADISK_TXT_MAX_BYTES=255
 TC_ADISK_TXT_ADVF_PREFIX_BYTES=6
 TC_ADISK_TXT_ADVN_MID_BYTES=6
