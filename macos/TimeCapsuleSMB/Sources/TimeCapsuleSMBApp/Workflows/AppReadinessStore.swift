@@ -104,7 +104,7 @@ final class AppReadinessStore: ObservableObject {
     private var runtimeMode: BundleRuntimeMode = .developmentCheckout
     private var versionCheck: AppReadinessVersionCheck?
     private var pendingOperation: PendingReadinessOperation?
-    private var lastProcessedEventCount = 0
+    private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
     convenience init(backend: BackendClient) {
@@ -157,7 +157,7 @@ final class AppReadinessStore: ObservableObject {
         issues = []
         currentStage = nil
         pendingOperation = nil
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         state = .resolvingBundle
 
         let helperPath = normalized(helperPathProvider())
@@ -195,21 +195,14 @@ final class AppReadinessStore: ObservableObject {
         issues = []
         currentStage = nil
         pendingOperation = nil
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         state = .idle
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
-        }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
+        operationObserver.process(events) { event, _ in
             handle(event)
         }
-        lastProcessedEventCount = events.count
     }
 
     private func handle(_ event: BackendEvent) {
@@ -226,9 +219,11 @@ final class AppReadinessStore: ObservableObject {
             if event.operation == "version-check" {
                 issues.append(versionMetadataIssue(message: event.message ?? event.summary))
                 pendingOperation = PendingReadinessOperation(operation: "capabilities")
+                operationObserver.finish()
                 runPendingOperation()
                 return
             }
+            operationObserver.finish()
             state = .blocked(issue(from: event))
             return
         }
@@ -256,6 +251,7 @@ final class AppReadinessStore: ObservableObject {
             guard event.ok == true else {
                 issues.append(versionMetadataIssue(message: payload.summary))
                 pendingOperation = PendingReadinessOperation(operation: "capabilities")
+                operationObserver.finish()
                 runPendingOperation()
                 return
             }
@@ -269,11 +265,14 @@ final class AppReadinessStore: ObservableObject {
                     message: payload.message,
                     recovery: L10n.format("app_readiness.recovery.update_required", payload.downloadURL)
                 ))
+                operationObserver.finish()
                 return
             }
             pendingOperation = PendingReadinessOperation(operation: "capabilities")
+            operationObserver.finish()
             runPendingOperation()
         } catch {
+            operationObserver.finish()
             state = .blocked(contractIssue(operation: "version-check", error: error))
         }
     }
@@ -289,11 +288,14 @@ final class AppReadinessStore: ObservableObject {
                     message: payload.summary,
                     recovery: L10n.string("app_readiness.recovery.retry_diagnostics")
                 ))
+                operationObserver.finish()
                 return
             }
             pendingOperation = PendingReadinessOperation(operation: "validate-install")
+            operationObserver.finish()
             runPendingOperation()
         } catch {
+            operationObserver.finish()
             state = .blocked(contractIssue(operation: "capabilities", error: error))
         }
     }
@@ -309,10 +311,13 @@ final class AppReadinessStore: ObservableObject {
                     message: payload.summary,
                     recovery: L10n.string("app_readiness.recovery.install_validation_failed")
                 ))
+                operationObserver.finish()
                 return
             }
+            operationObserver.finish()
             finishReady(validation: payload)
         } catch {
+            operationObserver.finish()
             state = .blocked(contractIssue(operation: "validate-install", error: error))
         }
     }
@@ -341,7 +346,13 @@ final class AppReadinessStore: ObservableObject {
         } else if pending.operation == "validate-install" {
             state = .validatingInstall
         }
-        backend.run(operation: pending.operation, params: pending.params)
+        let activeOperation = ActiveOperation(operation: pending.operation, profileID: nil, context: nil)
+        operationObserver.start(activeOperation)
+        backend.run(
+            operation: pending.operation,
+            params: pending.params,
+            requestID: activeOperation.id.uuidString
+        )
     }
 
     private func issue(from event: BackendEvent) -> BundleRuntimeIssue {

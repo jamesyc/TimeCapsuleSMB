@@ -2,6 +2,88 @@ import Foundation
 import XCTest
 @testable import TimeCapsuleSMBApp
 
+final class InMemoryPasswordStore: PasswordStore {
+    enum Failure: Error {
+        case read
+        case save
+        case delete
+    }
+
+    var readFailure: Failure?
+    var saveFailure: Failure?
+    var deleteFailure: Failure?
+
+    private var passwords: [String: String]
+    private var invalidAccounts: Set<String>
+
+    init(passwords: [String: String] = [:], invalidAccounts: Set<String> = []) {
+        self.passwords = passwords
+        self.invalidAccounts = invalidAccounts
+    }
+
+    func password(for account: String) throws -> String {
+        if readFailure != nil {
+            throw PasswordStoreError.unavailable("In-memory password store read failed.")
+        }
+        guard let password = passwords[account] else {
+            throw PasswordStoreError.missing
+        }
+        return password
+    }
+
+    func save(_ password: String, for account: String) throws {
+        if saveFailure != nil {
+            throw PasswordStoreError.unavailable("In-memory password store save failed.")
+        }
+        passwords[account] = password
+        invalidAccounts.remove(account)
+    }
+
+    func deletePassword(for account: String) throws {
+        if deleteFailure != nil {
+            throw PasswordStoreError.unavailable("In-memory password store delete failed.")
+        }
+        passwords.removeValue(forKey: account)
+        invalidAccounts.remove(account)
+    }
+
+    func markInvalid(account: String) {
+        invalidAccounts.insert(account)
+    }
+
+    func credentialAvailability(for account: String) -> CredentialAvailability {
+        if readFailure != nil {
+            return .unavailable("In-memory password store read failed.")
+        }
+        return passwords[account] == nil ? .missing : .available
+    }
+
+    func state(for account: String) -> DevicePasswordState {
+        if readFailure != nil {
+            return .keychainUnavailable
+        }
+        if invalidAccounts.contains(account) {
+            return .invalid
+        }
+        return passwords[account] == nil ? .missing : .available
+    }
+}
+
+private func writeConfigureArtifactIfNeeded(
+    operation: String,
+    context: DeviceRuntimeContext?,
+    events: [BackendEvent]
+) {
+    guard operation == "configure",
+          let context,
+          events.contains(where: { $0.operation == "configure" && $0.type == "result" && $0.ok == true }) else {
+        return
+    }
+    let text = "TC_HOST=root@10.0.0.2\nTC_SSH_OPTS=\n"
+    try? FileManager.default.createDirectory(at: context.configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? text.write(to: context.configURL, atomically: true, encoding: .utf8)
+}
+
 final class StoreTestRunner: HelperRunning, @unchecked Sendable {
     struct Call: Equatable, Sendable {
         let helperPath: String?
@@ -42,6 +124,7 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        requestID: String,
         context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
@@ -49,22 +132,33 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
             storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
             if storedResponses.isEmpty {
                 return Response(
-                    events: [BackendEvent.error(operation: operation, code: "missing_test_response", message: "No test response queued.")],
+                    events: [BackendEvent.error(
+                        operation: operation,
+                        code: "missing_test_response",
+                        message: "No test response queued.",
+                        requestId: requestID
+                    )],
                     result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
                 )
             }
             return storedResponses.removeFirst()
         }
+        writeConfigureArtifactIfNeeded(operation: operation, context: context, events: response.events)
 
         if response.delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: response.delayNanoseconds)
         }
         if Task.isCancelled {
-            await onEvent(BackendEvent.error(operation: operation, code: "cancelled", message: L10n.string("helper.error.cancelled")))
+            await onEvent(BackendEvent.error(
+                operation: operation,
+                code: "cancelled",
+                message: L10n.string("helper.error.cancelled"),
+                requestId: requestID
+            ))
             return HelperRunResult(exitCode: 130, sawTerminalEvent: true, stderr: "")
         }
         for event in response.events {
-            await onEvent(event)
+            await onEvent(event.withRequestId(requestID))
         }
         return response.result
     }
@@ -100,6 +194,7 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        requestID: String,
         context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
@@ -118,20 +213,31 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
                 return response
             }
             return Response(
-                events: [BackendEvent.error(operation: operation, code: "missing_test_response", message: "No keyed test response queued.")],
+                events: [BackendEvent.error(
+                    operation: operation,
+                    code: "missing_test_response",
+                    message: "No keyed test response queued.",
+                    requestId: requestID
+                )],
                 result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
             )
         }
+        writeConfigureArtifactIfNeeded(operation: operation, context: context, events: response.events)
 
         if response.delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: response.delayNanoseconds)
         }
         if Task.isCancelled {
-            await onEvent(BackendEvent.error(operation: operation, code: "cancelled", message: L10n.string("helper.error.cancelled")))
+            await onEvent(BackendEvent.error(
+                operation: operation,
+                code: "cancelled",
+                message: L10n.string("helper.error.cancelled"),
+                requestId: requestID
+            ))
             return HelperRunResult(exitCode: 130, sawTerminalEvent: true, stderr: "")
         }
         for event in response.events {
-            await onEvent(event)
+            await onEvent(event.withRequestId(requestID))
         }
         return response.result
     }

@@ -347,7 +347,12 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
         XCTAssertEqual(fixture.runner.calls[0].operation, "configure")
         XCTAssertEqual(fixture.runner.calls[0].context?.profileID, profile.id)
-        XCTAssertEqual(fixture.runner.calls[0].params["config"], .string(profile.configPath))
+        guard case .string(let stagedConfigPath)? = fixture.runner.calls[0].params["config"] else {
+            return XCTFail("Expected staged config path.")
+        }
+        XCTAssertNotEqual(stagedConfigPath, profile.configPath)
+        XCTAssertTrue(stagedConfigPath.contains("/.Staging/"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: profile.configPath))
         XCTAssertEqual(fixture.runner.calls[0].params["host"], .string("root@10.0.0.2"))
         XCTAssertEqual(fixture.runner.calls[0].params["persist_password"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["password"], .string("secret"))
@@ -754,7 +759,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         ).decode(DiscoveredDevicePayload.self)
         let device = DiscoveredDevice(payload: payload, index: 0)
 
-        fixture.store.stageDiscoveredDevice(device)
+        fixture.store.stageDiscoveredDevices([device], selected: device)
 
         XCTAssertEqual(fixture.store.state, .passwordEntry)
         XCTAssertEqual(fixture.store.devices, [device])

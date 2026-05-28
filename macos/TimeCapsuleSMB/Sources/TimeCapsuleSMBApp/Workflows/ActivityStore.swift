@@ -301,7 +301,6 @@ final class ActivityStore: ObservableObject {
         return [
             "capabilities",
             "discover",
-            "paths",
             "set-telemetry",
             "telemetry-identity",
             "validate-install",

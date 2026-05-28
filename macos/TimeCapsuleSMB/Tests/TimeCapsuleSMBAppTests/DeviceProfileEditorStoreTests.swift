@@ -402,8 +402,13 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         try await waitUntilStoreState { store.state == .saved }
         let call = try XCTUnwrap(fixture.runner.calls.first)
         XCTAssertEqual(call.operation, "configure")
-        XCTAssertEqual(call.context, profile.runtimeContext)
-        XCTAssertEqual(call.params["config"], .string(profile.configPath))
+        XCTAssertEqual(call.context?.profileID, profile.id)
+        guard case .string(let stagedConfigPath)? = call.params["config"] else {
+            return XCTFail("Expected staged config path.")
+        }
+        XCTAssertNotEqual(stagedConfigPath, profile.configPath)
+        XCTAssertTrue(stagedConfigPath.contains("/.Staging/"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: profile.configPath))
         XCTAssertEqual(call.params["host"], .string("root@10.0.0.9"))
         XCTAssertEqual(call.params["password"], .string("pw"))
         XCTAssertEqual(call.params["persist_password"], .bool(false))

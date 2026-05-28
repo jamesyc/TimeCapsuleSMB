@@ -309,12 +309,14 @@ final class DashboardStoreTests: XCTestCase {
             preferredID: "device-one"
         )
         let dashboard = DashboardStore(appStore: fixture.appStore)
-        _ = dashboard.session(for: profile)
-        XCTAssertTrue(dashboard.hasSession(for: profile.id))
+        var session: DeviceDashboardSession? = dashboard.session(for: profile)
+        weak var weakSession = session
+        XCTAssertNotNil(weakSession)
+        session = nil
 
         try await fixture.registry.delete(profile)
 
-        try await waitUntilStoreState { !dashboard.hasSession(for: profile.id) }
+        try await waitUntilStoreState { weakSession == nil }
     }
 
     func testDeletedProfileSessionStaysUntilStartedOperationFinishes() async throws {
@@ -333,15 +335,17 @@ final class DashboardStoreTests: XCTestCase {
         )
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         let dashboard = DashboardStore(appStore: fixture.appStore)
-        let session = dashboard.session(for: profile)
+        var session: DeviceDashboardSession? = dashboard.session(for: profile)
+        weak var weakSession = session
 
-        session.runCheckup(profile: profile)
+        session?.runCheckup(profile: profile)
         try await waitUntilStoreState { self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         try await fixture.registry.delete(profile)
+        session = nil
 
-        XCTAssertTrue(dashboard.hasSession(for: profile.id))
+        XCTAssertNotNil(weakSession)
         try await waitUntilStoreState { !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
-        try await waitUntilStoreState { !dashboard.hasSession(for: profile.id) }
+        try await waitUntilStoreState { weakSession == nil }
     }
 
     func testOperationRunningOnAnotherDeviceAllowsNewSessionOperation() async throws {

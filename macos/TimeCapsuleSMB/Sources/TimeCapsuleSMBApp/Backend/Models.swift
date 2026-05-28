@@ -135,14 +135,38 @@ public struct BackendEvent: Decodable, Identifiable, Sendable {
         operation: String,
         code: String,
         message: String,
+        requestId: String? = UUID().uuidString,
         debug: JSONValue? = nil
     ) -> BackendEvent {
         BackendEvent(
+            requestId: requestId,
             type: "error",
             operation: operation,
             code: code,
             message: message,
             debug: debug
+        )
+    }
+
+    public func withRequestId(_ requestId: String) -> BackendEvent {
+        BackendEvent(
+            schemaVersion: schemaVersion,
+            requestId: requestId,
+            type: type,
+            operation: operation,
+            code: code,
+            stage: stage,
+            level: level,
+            message: message,
+            status: status,
+            ok: ok,
+            payload: payload,
+            details: details,
+            debug: debug,
+            recovery: recovery,
+            risk: risk,
+            cancellable: cancellable,
+            description: description
         )
     }
 

@@ -291,7 +291,7 @@ final class AppReadinessStoreTests: XCTestCase {
     func testUnrelatedEventsDoNotAdvanceReadiness() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "paths", ok: true, payload: .object(["ok": .bool(true)]))
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
             ])
         ])
         let store = makeStore(runner: runner)

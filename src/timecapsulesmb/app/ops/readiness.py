@@ -8,7 +8,6 @@ from timecapsulesmb.app.contracts import (
     capabilities_payload,
     discover_payload,
     install_validation_payload,
-    paths_payload,
     telemetry_identity_payload,
     version_check_payload,
 )
@@ -28,7 +27,6 @@ from timecapsulesmb.discovery.devices import device_candidate_to_jsonable, devic
 from timecapsulesmb.install_validation import (
     install_checks_to_jsonable,
     install_ok,
-    paths_to_jsonable,
     validate_install,
 )
 from timecapsulesmb.identity import load_install_identity, set_telemetry_enabled
@@ -96,34 +94,10 @@ def capabilities_operation(params: dict[str, object], context: AppOperationConte
     return OperationResult(True, capabilities_payload(
         helper_version=CLI_VERSION,
         helper_version_code=CLI_VERSION_CODE,
-        operations=[
-            "activate",
-            "capabilities",
-            "configure",
-            "deploy",
-            "discover",
-            "doctor",
-            "flash",
-            "fsck",
-            "paths",
-            "reachability",
-            "repair-xattrs",
-            "set-telemetry",
-            "telemetry-identity",
-            "uninstall",
-            "validate-install",
-            "version-check",
-        ],
+        operations=_public_operation_names(),
         distribution_root=str(app_paths.distribution_root),
         artifact_manifest_sha256=manifest_hash,
     ))
-
-
-def paths_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    context.stage("resolve_paths")
-    app_paths = resolve_app_paths(config_path=config_path(params))
-    context.stage("summarize_artifacts")
-    return OperationResult(True, paths_payload(paths_to_jsonable(app_paths)))
 
 
 def validate_install_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -176,3 +150,9 @@ def version_check_operation(params: dict[str, object], context: AppOperationCont
     context.stage("check_version")
     result = check_client_version(url=url, cache_path=app_paths.version_check_cache_path)
     return OperationResult(True, version_check_payload(result))
+
+
+def _public_operation_names() -> list[str]:
+    from timecapsulesmb.app.ops import public_operation_names
+
+    return public_operation_names()

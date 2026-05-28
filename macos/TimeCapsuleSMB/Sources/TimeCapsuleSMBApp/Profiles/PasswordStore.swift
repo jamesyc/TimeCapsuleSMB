@@ -45,11 +45,17 @@ enum PasswordStoreError: Error, Equatable, LocalizedError {
     }
 }
 
+enum CredentialAvailability: Equatable {
+    case available
+    case missing
+    case unavailable(String)
+}
+
 protocol PasswordStore: AnyObject {
     func password(for account: String) throws -> String
     func save(_ password: String, for account: String) throws
     func deletePassword(for account: String) throws
-    func state(for account: String) -> DevicePasswordState
+    func credentialAvailability(for account: String) -> CredentialAvailability
 }
 
 final class KeychainPasswordStore: PasswordStore {
@@ -119,14 +125,16 @@ final class KeychainPasswordStore: PasswordStore {
         throw PasswordStoreError.unavailable(message(for: status))
     }
 
-    func state(for account: String) -> DevicePasswordState {
+    func credentialAvailability(for account: String) -> CredentialAvailability {
         do {
             _ = try password(for: account)
             return .available
         } catch PasswordStoreError.missing {
             return .missing
+        } catch PasswordStoreError.unavailable(let message) {
+            return .unavailable(message)
         } catch {
-            return .keychainUnavailable
+            return .unavailable(error.localizedDescription)
         }
     }
 
@@ -143,65 +151,5 @@ final class KeychainPasswordStore: PasswordStore {
             return message
         }
         return L10n.format("password.error.keychain_status", status)
-    }
-}
-
-final class InMemoryPasswordStore: PasswordStore {
-    enum Failure: Error {
-        case read
-        case save
-        case delete
-    }
-
-    var readFailure: Failure?
-    var saveFailure: Failure?
-    var deleteFailure: Failure?
-
-    private var passwords: [String: String]
-    private var invalidAccounts: Set<String>
-
-    init(passwords: [String: String] = [:], invalidAccounts: Set<String> = []) {
-        self.passwords = passwords
-        self.invalidAccounts = invalidAccounts
-    }
-
-    func password(for account: String) throws -> String {
-        if readFailure != nil {
-            throw PasswordStoreError.unavailable(L10n.string("password.error.memory_read_failed"))
-        }
-        guard let password = passwords[account] else {
-            throw PasswordStoreError.missing
-        }
-        return password
-    }
-
-    func save(_ password: String, for account: String) throws {
-        if saveFailure != nil {
-            throw PasswordStoreError.unavailable(L10n.string("password.error.memory_save_failed"))
-        }
-        passwords[account] = password
-        invalidAccounts.remove(account)
-    }
-
-    func deletePassword(for account: String) throws {
-        if deleteFailure != nil {
-            throw PasswordStoreError.unavailable(L10n.string("password.error.memory_delete_failed"))
-        }
-        passwords.removeValue(forKey: account)
-        invalidAccounts.remove(account)
-    }
-
-    func markInvalid(account: String) {
-        invalidAccounts.insert(account)
-    }
-
-    func state(for account: String) -> DevicePasswordState {
-        if readFailure != nil {
-            return .keychainUnavailable
-        }
-        if invalidAccounts.contains(account) {
-            return .invalid
-        }
-        return passwords[account] == nil ? .missing : .available
     }
 }

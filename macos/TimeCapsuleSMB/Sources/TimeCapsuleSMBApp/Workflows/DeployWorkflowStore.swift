@@ -139,8 +139,7 @@ final class DeployWorkflowStore: ObservableObject {
     private let coordinator: OperationCoordinator?
     private let laneKey: OperationLaneKey?
 
-    private var activeOperation: ActiveOperation?
-    private var lastProcessedEventCount = 0
+    private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
     convenience init() {
@@ -236,8 +235,7 @@ final class DeployWorkflowStore: ObservableObject {
             rejectRun(state: .planFailed, message: start.rejectionMessage ?? "Operation could not start.")
             return start
         }
-        lastProcessedEventCount = 0
-        activeOperation = operation
+        operationObserver.start(operation)
         state = .planning
         plan = nil
         result = nil
@@ -245,6 +243,7 @@ final class DeployWorkflowStore: ObservableObject {
         currentStage = nil
         plannedOptions = options
         passwordInvalidProfileID = nil
+        process(backend.events)
         return start
     }
 
@@ -287,19 +286,19 @@ final class DeployWorkflowStore: ObservableObject {
             rejectRun(state: .deployFailed, message: start.rejectionMessage ?? "Operation could not start.")
             return start
         }
-        lastProcessedEventCount = 0
-        activeOperation = operation
+        operationObserver.start(operation)
         state = .deploying
         result = nil
         error = nil
         currentStage = nil
         passwordInvalidProfileID = nil
+        process(backend.events)
         return start
     }
 
     func clear() {
         backend.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         state = .idle
         plan = nil
         result = nil
@@ -307,7 +306,7 @@ final class DeployWorkflowStore: ObservableObject {
         currentStage = nil
         plannedOptions = nil
         passwordInvalidProfileID = nil
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     func cancel() {
@@ -376,23 +375,13 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
+        operationObserver.process(events) { event, operation in
+            handle(event, activeOperation: operation)
         }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
-            handle(event)
-        }
-        lastProcessedEventCount = events.count
     }
 
-    private func handle(_ event: BackendEvent) {
+    private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
         guard event.operation == "deploy" else {
-            return
-        }
-        guard activeOperation?.operation == event.operation else {
             return
         }
 
@@ -405,7 +394,7 @@ final class DeployWorkflowStore: ObservableObject {
         }
 
         if event.type == "error" {
-            applyError(event)
+            applyError(event, activeOperation: activeOperation)
             return
         }
 
@@ -432,7 +421,7 @@ final class DeployWorkflowStore: ObservableObject {
             plan = try event.decodePayload(DeployPlanPayload.self)
             result = nil
             error = nil
-            activeOperation = nil
+            operationObserver.finish()
             state = .planReady
             reconcilePlanFreshness()
         } catch {
@@ -445,13 +434,13 @@ final class DeployWorkflowStore: ObservableObject {
             result = try event.decodePayload(DeployResultPayload.self)
             error = nil
             state = .deployed
-            activeOperation = nil
+            operationObserver.finish()
         } catch {
             failContract(state: .deployFailed, error: error)
         }
     }
 
-    private func applyError(_ event: BackendEvent) {
+    private func applyError(_ event: BackendEvent, activeOperation: ActiveOperation) {
         if event.code == "confirmation_required" {
             error = nil
             state = .awaitingConfirmation
@@ -462,17 +451,17 @@ final class DeployWorkflowStore: ObservableObject {
             return
         }
         if event.code == "auth_failed" {
-            passwordInvalidProfileID = activeOperation?.profileID
+            passwordInvalidProfileID = activeOperation.profileID
         }
         error = BackendErrorViewModel(event: event)
         state = state == .planning ? .planFailed : .deployFailed
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func applyConfirmationCancelled() {
         error = nil
         currentStage = nil
-        activeOperation = nil
+        operationObserver.finish()
         guard plan != nil else {
             state = .idle
             return
@@ -488,7 +477,7 @@ final class DeployWorkflowStore: ObservableObject {
             message: event.payloadSummaryText ?? event.summary
         )
         state = state == .planning ? .planFailed : .deployFailed
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func failContract(state: DeployWorkflowState, error: Error) {
@@ -498,7 +487,7 @@ final class DeployWorkflowStore: ObservableObject {
             message: error.localizedDescription
         )
         self.state = state
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func failLocally(state: DeployWorkflowState, message: String) {
@@ -509,7 +498,7 @@ final class DeployWorkflowStore: ObservableObject {
         )
         currentStage = nil
         self.state = state
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func rejectRun(state: DeployWorkflowState, message: String) {
@@ -520,7 +509,7 @@ final class DeployWorkflowStore: ObservableObject {
         )
         currentStage = nil
         self.state = state
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
@@ -538,7 +527,12 @@ final class DeployWorkflowStore: ObservableObject {
             }
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-            backend.run(operation: operation, params: params, context: profile?.runtimeContext)
+            backend.run(
+                operation: operation,
+                params: params,
+                context: context,
+                requestID: activeOperation.id.uuidString
+            )
             return .started(activeOperation)
         }
     }

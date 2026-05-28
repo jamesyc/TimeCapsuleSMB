@@ -48,8 +48,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
     private var timeout: Double
     private var isMonitoring = false
     private var pendingRefresh = false
-    private var activeOperation: ActiveOperation?
-    private var lastProcessedEventCount = 0
+    private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
     init(
@@ -168,7 +167,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         }
 
         guard !lane.isBusy else {
-            if activeOperation == nil {
+            if operationObserver.activeOperation == nil {
                 pendingRefresh = true
                 state = .paused
             }
@@ -176,7 +175,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         }
 
         lane.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         error = nil
         currentStage = nil
         switch coordinator.run(
@@ -187,10 +186,11 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
             laneKey: .app
         ) {
         case .started(let operation):
-            activeOperation = operation
+            operationObserver.start(operation)
             state = .discovering
+            process(lane.backend.events)
         case .rejected(let message):
-            activeOperation = nil
+            operationObserver.clear()
             error = BackendErrorViewModel(
                 operation: "discover",
                 code: "operation_rejected",
@@ -209,23 +209,13 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
-        }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
+        operationObserver.process(events) { event, _ in
             handle(event)
         }
-        lastProcessedEventCount = events.count
     }
 
     private func handle(_ event: BackendEvent) {
         guard event.operation == "discover" else {
-            return
-        }
-        guard activeOperation?.operation == event.operation else {
             return
         }
         if let stage = OperationStageState(event: event) {
@@ -234,7 +224,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         }
         if event.type == "error" {
             error = BackendErrorViewModel(event: event)
-            activeOperation = nil
+            operationObserver.finish()
             state = .failed
             return
         }
@@ -247,7 +237,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
                 code: "operation_failed",
                 message: event.payloadSummaryText ?? event.summary
             )
-            activeOperation = nil
+            operationObserver.finish()
             state = .failed
             return
         }
@@ -261,7 +251,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
                 DiscoveredDevice(payload: device, index: index)
             }
             error = nil
-            activeOperation = nil
+            operationObserver.finish()
             state = devices.isEmpty ? .empty : .ready
         } catch {
             self.error = BackendErrorViewModel(
@@ -269,7 +259,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
                 code: "contract_decode_failed",
                 message: error.localizedDescription
             )
-            activeOperation = nil
+            operationObserver.finish()
             state = .failed
         }
     }

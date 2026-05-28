@@ -26,8 +26,7 @@ from timecapsulesmb.services.app import (
     require_string_param,
     string_param,
 )
-from timecapsulesmb.services.config_store import EnvFileConfigStore
-from timecapsulesmb.services.configure import build_configure_env_values
+from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
 from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error, wait_for_tcp_port_state
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -168,8 +167,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
 
     context.stage("write_env")
     env_path.parent.mkdir(parents=True, exist_ok=True)
-    omit_keys = frozenset() if bool_param(params, "persist_password") else frozenset({"TC_PASSWORD"})
-    EnvFileConfigStore(omit_keys=omit_keys).save(env_path, values)
+    write_configure_env_file(
+        env_path,
+        values,
+        persist_password=bool_param(params, "persist_password"),
+    )
     return OperationResult(True, configure_payload(
         config_path=str(env_path),
         host=host,

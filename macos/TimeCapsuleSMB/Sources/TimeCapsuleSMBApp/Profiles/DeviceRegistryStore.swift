@@ -297,6 +297,7 @@ private actor DeviceRegistryRepository {
             }
             let data = try Data(contentsOf: registryURL)
             profiles = try decoder.decode([DeviceProfile].self, from: data)
+                .map(profileWithStorageFields)
                 .sorted { $0.updatedAt > $1.updatedAt }
             return profiles
         } catch let decoding as DecodingError {
@@ -353,21 +354,22 @@ private actor DeviceRegistryRepository {
     }
 
     func saveProfileMergingDuplicates(_ profile: DeviceProfile) throws -> DeviceRegistryMutationResult {
+        let storedProfile = profileWithStorageFields(profile)
         try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(
-            at: URL(fileURLWithPath: profile.configPath).deletingLastPathComponent(),
+            at: storedProfile.configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        var updated = profiles.filter { !DeviceProfile.matches($0, profile) && $0.id != profile.id }
-        updated.append(profile)
+        var updated = profiles.filter { !DeviceProfile.matches($0, storedProfile) && $0.id != storedProfile.id }
+        updated.append(storedProfile)
         updated = sorted(updated)
         try persist(updated)
         profiles = updated
-        return DeviceRegistryMutationResult(profile: profile)
+        return DeviceRegistryMutationResult(profile: storedProfile)
     }
 
     func discardArtifacts(for profile: DeviceProfile) {
-        let configDirectory = URL(fileURLWithPath: profile.configPath).deletingLastPathComponent()
+        let configDirectory = profileWithStorageFields(profile).configURL.deletingLastPathComponent()
         let configDirectoryPath = configDirectory.standardizedFileURL.path
         let devicesDirectoryPath = devicesDirectoryURL.standardizedFileURL.path
         guard configDirectoryPath.hasPrefix(devicesDirectoryPath + "/") else {
@@ -377,18 +379,19 @@ private actor DeviceRegistryRepository {
     }
 
     func updateProfile(_ profile: DeviceProfile) throws -> DeviceRegistryMutationResult {
-        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else {
+        let storedProfile = profileWithStorageFields(profile)
+        guard let index = profiles.firstIndex(where: { $0.id == storedProfile.id }) else {
             throw DeviceRegistryError.profileNotFound(profile.id)
         }
-        if let conflict = duplicateConflict(for: profile, excluding: profile.id) {
+        if let conflict = duplicateConflict(for: storedProfile, excluding: storedProfile.id) {
             throw conflict
         }
 
-        var updated = profile
+        var updated = storedProfile
         updated.updatedAt = now()
         try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(
-            at: URL(fileURLWithPath: updated.configPath).deletingLastPathComponent(),
+            at: updated.configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         var updatedProfiles = profiles
@@ -400,8 +403,9 @@ private actor DeviceRegistryRepository {
     }
 
     func delete(_ profile: DeviceProfile) throws -> [DeviceProfile] {
-        let updatedProfiles = profiles.filter { $0.id != profile.id }
-        let configDirectory = URL(fileURLWithPath: profile.configPath).deletingLastPathComponent()
+        let storedProfile = profileWithStorageFields(profile)
+        let updatedProfiles = profiles.filter { $0.id != storedProfile.id }
+        let configDirectory = storedProfile.configURL.deletingLastPathComponent()
         try persist(updatedProfiles)
         profiles = updatedProfiles
         if fileManager.fileExists(atPath: configDirectory.path) {
@@ -554,11 +558,18 @@ private actor DeviceRegistryRepository {
 
     private func persist(_ profiles: [DeviceProfile]) throws {
         try fileManager.createDirectory(at: applicationSupportURL, withIntermediateDirectories: true)
-        let data = try encoder.encode(profiles)
+        let data = try encoder.encode(profiles.map(profileWithStorageFields))
         try data.write(to: registryURL, options: [.atomic])
     }
 
     private func sorted(_ profiles: [DeviceProfile]) -> [DeviceProfile] {
         profiles.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func profileWithStorageFields(_ profile: DeviceProfile) -> DeviceProfile {
+        var updated = profile
+        updated.configPath = DeviceProfile.configURL(for: profile.id, applicationSupportURL: applicationSupportURL).path
+        updated.keychainAccount = profile.id
+        return updated
     }
 }

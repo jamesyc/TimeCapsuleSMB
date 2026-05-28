@@ -52,9 +52,3 @@ struct KeychainSMBAccountResolver: SMBAccountResolving {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
-
-struct EmptySMBAccountResolver: SMBAccountResolving {
-    func account(for profile: DeviceProfile) -> String? {
-        nil
-    }
-}

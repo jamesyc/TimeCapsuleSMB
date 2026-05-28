@@ -95,8 +95,7 @@ final class DoctorStore: ObservableObject {
     private let coordinator: OperationCoordinator?
     private let laneKey: OperationLaneKey?
 
-    private var activeOperation: ActiveOperation?
-    private var lastProcessedEventCount = 0
+    private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
     convenience init() {
@@ -169,25 +168,25 @@ final class DoctorStore: ObservableObject {
             rejectRun(start.rejectionMessage ?? "Operation could not start.")
             return start
         }
-        lastProcessedEventCount = 0
-        activeOperation = operation
+        operationObserver.start(operation)
         state = .running
         payload = nil
         summary = nil
         error = nil
         currentStage = nil
         passwordInvalidProfileID = nil
+        process(backend.events)
         return start
     }
 
     func clear() {
         backend.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         clearResultState()
     }
 
     func invalidateResult() {
-        lastProcessedEventCount = backend.events.count
+        operationObserver.ignoreExistingEvents(backend.events)
         clearResultState()
     }
 
@@ -198,7 +197,7 @@ final class DoctorStore: ObservableObject {
         error = nil
         currentStage = nil
         passwordInvalidProfileID = nil
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     func cancel() {
@@ -206,23 +205,13 @@ final class DoctorStore: ObservableObject {
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
+        operationObserver.process(events) { event, operation in
+            handle(event, activeOperation: operation)
         }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
-            handle(event)
-        }
-        lastProcessedEventCount = events.count
     }
 
-    private func handle(_ event: BackendEvent) {
+    private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
         guard event.operation == "doctor" else {
-            return
-        }
-        guard activeOperation?.operation == event.operation else {
             return
         }
 
@@ -233,11 +222,11 @@ final class DoctorStore: ObservableObject {
 
         if event.type == "error" {
             if event.code == "auth_failed" {
-                passwordInvalidProfileID = activeOperation?.profileID
+                passwordInvalidProfileID = activeOperation.profileID
             }
             error = BackendErrorViewModel(event: event)
             state = .runFailed
-            activeOperation = nil
+            operationObserver.finish()
             return
         }
 
@@ -260,7 +249,7 @@ final class DoctorStore: ObservableObject {
             } else {
                 state = .passed
             }
-            activeOperation = nil
+            operationObserver.finish()
         } catch {
             self.error = BackendErrorViewModel(
                 operation: "doctor",
@@ -268,7 +257,7 @@ final class DoctorStore: ObservableObject {
                 message: error.localizedDescription
             )
             state = .runFailed
-            activeOperation = nil
+            operationObserver.finish()
         }
     }
 
@@ -280,7 +269,7 @@ final class DoctorStore: ObservableObject {
         )
         currentStage = nil
         state = .runFailed
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
@@ -298,7 +287,12 @@ final class DoctorStore: ObservableObject {
             }
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-            backend.run(operation: operation, params: params, context: context)
+            backend.run(
+                operation: operation,
+                params: params,
+                context: context,
+                requestID: activeOperation.id.uuidString
+            )
             return .started(activeOperation)
         }
     }

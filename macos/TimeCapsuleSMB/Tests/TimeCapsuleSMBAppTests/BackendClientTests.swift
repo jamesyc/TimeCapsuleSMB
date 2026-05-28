@@ -6,15 +6,15 @@ final class BackendClientTests: XCTestCase {
     func testRunPublishesEventsAndResetsState() async throws {
         let runner = RecordingHelperRunner(
             events: [
-                BackendEvent(type: "stage", operation: "paths", stage: "start"),
-                BackendEvent(type: "result", operation: "paths", ok: true, payload: .object(["ok": .bool(true)]))
+                BackendEvent(type: "stage", operation: "capabilities", stage: "start"),
+                BackendEvent(type: "result", operation: "capabilities", ok: true, payload: .object(["ok": .bool(true)]))
             ],
             result: HelperRunResult(exitCode: 0, sawTerminalEvent: true, stderr: ""),
             delayNanoseconds: 50_000_000
         )
         let client = BackendClient(runner: runner, helperPath: "  /tmp/tcapsule  ")
 
-        client.run(operation: "paths", params: ["dry_run": .bool(true)])
+        client.run(operation: "capabilities", params: ["dry_run": .bool(true)], requestID: "request-1")
 
         XCTAssertTrue(client.isRunning)
         try await waitUntil {
@@ -26,11 +26,13 @@ final class BackendClientTests: XCTestCase {
             runner.calls,
             [RecordingHelperRunner.Call(
                 helperPath: "/tmp/tcapsule",
-                operation: "paths",
+                operation: "capabilities",
                 params: ["dry_run": .bool(true)],
+                requestID: "request-1",
                 context: nil
             )]
         )
+        XCTAssertEqual(Set(client.events.compactMap(\.requestId)), Set(["request-1"]))
     }
 
     func testCancelCancelsDetachedRunAndResetsState() async throws {
@@ -321,6 +323,7 @@ private final class CancellationObservingRunner: HelperRunning, @unchecked Senda
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        requestID: String,
         context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
@@ -338,6 +341,7 @@ private final class RecordingHelperRunner: HelperRunning, @unchecked Sendable {
         let helperPath: String?
         let operation: String
         let params: [String: JSONValue]
+        let requestID: String
         let context: DeviceRuntimeContext?
     }
 
@@ -361,22 +365,34 @@ private final class RecordingHelperRunner: HelperRunning, @unchecked Sendable {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        requestID: String,
         context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
         queue.sync {
-            storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
+            storedCalls.append(Call(
+                helperPath: helperPath,
+                operation: operation,
+                params: params,
+                requestID: requestID,
+                context: context
+            ))
         }
 
         if delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: delayNanoseconds)
         }
         if Task.isCancelled {
-            await onEvent(BackendEvent.error(operation: operation, code: "cancelled", message: L10n.string("helper.error.cancelled")))
+            await onEvent(BackendEvent.error(
+                operation: operation,
+                code: "cancelled",
+                message: L10n.string("helper.error.cancelled"),
+                requestId: requestID
+            ))
             return HelperRunResult(exitCode: 130, sawTerminalEvent: true, stderr: "")
         }
         for event in events {
-            await onEvent(event)
+            await onEvent(event.withRequestId(requestID))
         }
         return result
     }

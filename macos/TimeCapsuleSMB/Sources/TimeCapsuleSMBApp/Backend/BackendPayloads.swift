@@ -24,48 +24,6 @@ struct CapabilitiesPayload: Decodable, Equatable {
     }
 }
 
-struct PathsPayload: Decodable, Equatable {
-    let schemaVersion: Int
-    let distributionRoot: String
-    let configPath: String
-    let stateDir: String
-    let packageRoot: String
-    let artifactManifest: String
-    let artifacts: [ArtifactPayload]
-    let counts: [String: Int]
-    let summary: String
-
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion = "schema_version"
-        case distributionRoot = "distribution_root"
-        case configPath = "config_path"
-        case stateDir = "state_dir"
-        case packageRoot = "package_root"
-        case artifactManifest = "artifact_manifest"
-        case artifacts
-        case counts
-        case summary
-    }
-}
-
-struct ArtifactPayload: Decodable, Equatable {
-    let name: String
-    let repoRelativePath: String
-    let absolutePath: String
-    let sha256: String
-    let ok: Bool
-    let message: String
-
-    enum CodingKeys: String, CodingKey {
-        case name
-        case repoRelativePath = "repo_relative_path"
-        case absolutePath = "absolute_path"
-        case sha256
-        case ok
-        case message
-    }
-}
-
 struct InstallValidationPayload: Decodable, Equatable {
     let schemaVersion: Int
     let ok: Bool
@@ -78,22 +36,6 @@ struct InstallValidationPayload: Decodable, Equatable {
         case ok
         case checks
         case counts
-        case summary
-    }
-}
-
-struct TelemetryIdentityPayload: Decodable, Equatable {
-    let schemaVersion: Int
-    let installId: String?
-    let telemetryEnabled: Bool
-    let bootstrapPath: String
-    let summary: String
-
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion = "schema_version"
-        case installId = "install_id"
-        case telemetryEnabled = "telemetry_enabled"
-        case bootstrapPath = "bootstrap_path"
         case summary
     }
 }

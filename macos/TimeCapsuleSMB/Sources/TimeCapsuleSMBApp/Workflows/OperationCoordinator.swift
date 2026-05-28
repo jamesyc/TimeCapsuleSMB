@@ -129,7 +129,12 @@ final class OperationLane: ObservableObject {
         )
         rejectedOperationMessage = nil
         self.activeOperation = activeOperation
-        backend.run(operation: operation, params: updatedParams, context: context)
+        backend.run(
+            operation: operation,
+            params: updatedParams,
+            context: context,
+            requestID: activeOperation.id.uuidString
+        )
         onStateChanged?()
         return .started(activeOperation)
     }

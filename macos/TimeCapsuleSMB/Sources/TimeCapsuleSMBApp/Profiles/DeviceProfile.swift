@@ -228,6 +228,10 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         DeviceRuntimeContext(profileID: id, configURL: URL(fileURLWithPath: configPath))
     }
 
+    var configURL: URL {
+        URL(fileURLWithPath: configPath)
+    }
+
     static func configURL(for id: ID, applicationSupportURL: URL) -> URL {
         applicationSupportURL
             .appendingPathComponent("Devices", isDirectory: true)
@@ -278,6 +282,72 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
             settings: existing?.settings ?? .default,
             passwordState: existing?.passwordState ?? .unknown
         )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName
+        case network
+        case syap
+        case model
+        case osName
+        case osRelease
+        case arch
+        case elfEndianness
+        case payloadFamily
+        case deviceGeneration
+        case configPath
+        case keychainAccount
+        case createdAt
+        case updatedAt
+        case lastCheckup
+        case lastDeploy
+        case settings
+        case passwordState
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ID.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        network = try container.decode(DeviceNetworkIdentity.self, forKey: .network)
+        syap = try container.decodeIfPresent(String.self, forKey: .syap)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        osName = try container.decodeIfPresent(String.self, forKey: .osName)
+        osRelease = try container.decodeIfPresent(String.self, forKey: .osRelease)
+        arch = try container.decodeIfPresent(String.self, forKey: .arch)
+        elfEndianness = try container.decodeIfPresent(String.self, forKey: .elfEndianness)
+        payloadFamily = try container.decodeIfPresent(String.self, forKey: .payloadFamily)
+        deviceGeneration = try container.decodeIfPresent(String.self, forKey: .deviceGeneration)
+        configPath = try container.decodeIfPresent(String.self, forKey: .configPath) ?? ""
+        keychainAccount = try container.decodeIfPresent(String.self, forKey: .keychainAccount) ?? id
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        lastCheckup = try container.decodeIfPresent(DeviceCheckupSnapshot.self, forKey: .lastCheckup)
+        lastDeploy = try container.decodeIfPresent(DeviceDeploySnapshot.self, forKey: .lastDeploy)
+        settings = try container.decodeIfPresent(DeviceProfileSettings.self, forKey: .settings) ?? .default
+        passwordState = try container.decodeIfPresent(DevicePasswordState.self, forKey: .passwordState) ?? .unknown
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(network, forKey: .network)
+        try container.encodeIfPresent(syap, forKey: .syap)
+        try container.encodeIfPresent(model, forKey: .model)
+        try container.encodeIfPresent(osName, forKey: .osName)
+        try container.encodeIfPresent(osRelease, forKey: .osRelease)
+        try container.encodeIfPresent(arch, forKey: .arch)
+        try container.encodeIfPresent(elfEndianness, forKey: .elfEndianness)
+        try container.encodeIfPresent(payloadFamily, forKey: .payloadFamily)
+        try container.encodeIfPresent(deviceGeneration, forKey: .deviceGeneration)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(lastCheckup, forKey: .lastCheckup)
+        try container.encodeIfPresent(lastDeploy, forKey: .lastDeploy)
+        try container.encode(settings, forKey: .settings)
+        try container.encode(passwordState, forKey: .passwordState)
     }
 
     init(

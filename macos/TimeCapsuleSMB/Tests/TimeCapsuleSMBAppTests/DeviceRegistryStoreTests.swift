@@ -32,6 +32,40 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: registryURL), "{ not json")
     }
 
+    func testLegacyStoredPathAndKeychainAccountAreDerivedAfterLoad() async throws {
+        let temp = try TemporaryDirectory()
+        let registryURL = temp.url.appendingPathComponent("devices.json")
+        try """
+        [
+          {
+            "id": "device-one",
+            "displayName": "Office",
+            "network": {
+              "configuredSSHTarget": "10.0.0.2",
+              "addresses": []
+            },
+            "configPath": "/legacy/path/.env",
+            "keychainAccount": "legacy-account",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-02T00:00:00Z",
+            "settings": {},
+            "passwordState": "available"
+          }
+        ]
+        """.write(to: registryURL, atomically: true, encoding: .utf8)
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+
+        await store.load()
+
+        let profile = try XCTUnwrap(store.profiles.first)
+        XCTAssertEqual(profile.configPath, temp.url.appendingPathComponent("Devices/device-one/.env").path)
+        XCTAssertEqual(profile.keychainAccount, "device-one")
+        _ = try await store.updateProfile(profile)
+        let persistedJSON = try String(contentsOf: registryURL)
+        XCTAssertFalse(persistedJSON.contains("\"configPath\""))
+        XCTAssertFalse(persistedJSON.contains("\"keychainAccount\""))
+    }
+
     func testCreateUpdateAndDeleteProfile() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
@@ -47,6 +81,9 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(store.profiles.count, 1)
         XCTAssertEqual(profile.configPath, temp.url.appendingPathComponent("Devices/device-one/.env").path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: URL(fileURLWithPath: profile.configPath).deletingLastPathComponent().path))
+        let persistedJSON = try String(contentsOf: store.registryURL)
+        XCTAssertFalse(persistedJSON.contains("\"configPath\""))
+        XCTAssertFalse(persistedJSON.contains("\"keychainAccount\""))
 
         profile.displayName = "Renamed Capsule"
         profile.settings.debugLogging = true

@@ -49,7 +49,12 @@ final class BackendClient: ObservableObject {
         isRunning && (currentCancellable ?? true)
     }
 
-    func run(operation: String, params: [String: JSONValue] = [:], context: DeviceRuntimeContext? = nil) {
+    func run(
+        operation: String,
+        params: [String: JSONValue] = [:],
+        context: DeviceRuntimeContext? = nil,
+        requestID: String = UUID().uuidString
+    ) {
         guard !isRunning else { return }
         var runParams = params
         if let context, runParams["config"] == nil {
@@ -62,7 +67,7 @@ final class BackendClient: ObservableObject {
         currentRisk = nil
         currentCancellable = nil
         activeOperationName = operation
-        activeCall = BackendCall(operation: operation, params: runParams, context: context)
+        activeCall = BackendCall(operation: operation, params: runParams, context: context, requestID: requestID)
         let helperPath = self.helperPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let runner = self.runner
         let updateTarget = BackendClientUpdateTarget(
@@ -73,11 +78,12 @@ final class BackendClient: ObservableObject {
                 self?.finishRun(exitCode: exitCode)
             }
         )
-        runTask = Task.detached(priority: .userInitiated) { [runner, updateTarget, helperPath, operation, runParams, context] in
+        runTask = Task.detached(priority: .userInitiated) { [runner, updateTarget, helperPath, operation, runParams, context, requestID] in
             let result = await runner.run(
                 helperPath: helperPath.isEmpty ? nil : helperPath,
                 operation: operation,
                 params: runParams,
+                requestID: requestID,
                 context: context
             ) { event in
                 await updateTarget.appendEvent(event)
@@ -94,7 +100,12 @@ final class BackendClient: ObservableObject {
     func confirmPending() {
         guard let confirmation = pendingConfirmation, !isRunning else { return }
         pendingConfirmation = nil
-        run(operation: confirmation.operation, params: confirmation.params, context: confirmation.context)
+        run(
+            operation: confirmation.operation,
+            params: confirmation.params,
+            context: confirmation.context,
+            requestID: confirmation.requestID
+        )
     }
 
     func cancelPendingConfirmation() {
@@ -103,7 +114,8 @@ final class BackendClient: ObservableObject {
         events.append(BackendEvent.error(
             operation: confirmation.operation,
             code: "confirmation_cancelled",
-            message: L10n.string("helper.error.cancelled")
+            message: L10n.string("helper.error.cancelled"),
+            requestId: confirmation.requestID
         ))
     }
 
@@ -116,6 +128,7 @@ final class BackendClient: ObservableObject {
         if let activeCall, let confirmation = PendingConfirmation(
             confirmationEvent: event,
             originalParams: activeCall.params,
+            requestID: activeCall.requestID,
             context: activeCall.context
         ) {
             pendingConfirmation = confirmation
@@ -136,6 +149,7 @@ private struct BackendCall: Sendable {
     let operation: String
     let params: [String: JSONValue]
     let context: DeviceRuntimeContext?
+    let requestID: String
 }
 
 private final class BackendClientUpdateTarget: Sendable {

@@ -37,10 +37,6 @@ final class DashboardStore: ObservableObject {
         return session
     }
 
-    func hasSession(for profileID: DeviceProfile.ID) -> Bool {
-        sessions[profileID] != nil
-    }
-
     private func pruneSessions(profiles: [DeviceProfile]) {
         let existingIDs = Set(profiles.map(\.id))
         let activeProfileIDs = Set(appStore.operationCoordinator.activeOperations.values.compactMap(\.profileID))

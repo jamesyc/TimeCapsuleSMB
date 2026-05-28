@@ -63,16 +63,6 @@ def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
     })
 
 
-def paths_payload(raw: Mapping[str, object]) -> dict[str, object]:
-    artifacts = raw.get("artifacts")
-    artifact_count = len(artifacts) if isinstance(artifacts, list) else 0
-    return _with_schema({
-        **raw,
-        "counts": {"artifacts": artifact_count},
-        "summary": f"resolved app paths with {artifact_count} artifact path(s).",
-    })
-
-
 def install_validation_payload(*, ok: bool, checks: list[object]) -> dict[str, object]:
     checks_payload = jsonable(checks)
     checks_list = checks_payload if isinstance(checks_payload, list) else []

@@ -20,30 +20,6 @@ final class BackendPayloadTests: XCTestCase {
         XCTAssertEqual(capabilities.helperVersion, "1.2.3")
         XCTAssertEqual(capabilities.operations, ["discover", "configure"])
 
-        let paths = try jsonValue("""
-        {
-          "schema_version": 1,
-          "distribution_root": "/repo",
-          "config_path": "/app/.env",
-          "state_dir": "/app",
-          "package_root": "/repo/src/timecapsulesmb",
-          "artifact_manifest": "/repo/src/timecapsulesmb/assets/artifact-manifest.json",
-          "artifacts": [{
-            "name": "smbd",
-            "repo_relative_path": "bin/samba4/smbd",
-            "absolute_path": "/repo/bin/samba4/smbd",
-            "sha256": "hash",
-            "ok": true,
-            "message": "ok"
-          }],
-          "counts": {"artifacts": 1},
-          "summary": "resolved app paths with 1 artifact path(s)."
-        }
-        """).decode(PathsPayload.self)
-
-        XCTAssertEqual(paths.artifacts[0].repoRelativePath, "bin/samba4/smbd")
-        XCTAssertEqual(paths.counts["artifacts"], 1)
-
         let validation = try jsonValue("""
         {
           "schema_version": 1,
@@ -269,23 +245,23 @@ final class BackendPayloadTests: XCTestCase {
         XCTAssertEqual(error.recovery?.actions, ["Wake the disk.", "Retry deploy."])
         XCTAssertEqual(error.recovery?.suggestedOperation, "deploy")
 
-        XCTAssertThrowsError(try BackendEvent(type: "result", operation: "paths", ok: true).decodePayload(PathsPayload.self)) { thrown in
-            XCTAssertEqual(thrown as? BackendContractError, .missingPayload(operation: "paths"))
+        XCTAssertThrowsError(try BackendEvent(type: "result", operation: "capabilities", ok: true).decodePayload(CapabilitiesPayload.self)) { thrown in
+            XCTAssertEqual(thrown as? BackendContractError, .missingPayload(operation: "capabilities"))
         }
 
         XCTAssertThrowsError(
             try BackendEvent(
                 type: "result",
-                operation: "paths",
+                operation: "capabilities",
                 ok: true,
                 payload: .object(["schema_version": .string("wrong")])
-            ).decodePayload(PathsPayload.self)
+            ).decodePayload(CapabilitiesPayload.self)
         ) { thrown in
             guard case BackendContractError.payloadDecodeFailed(let operation, let payloadType, _)? = thrown as? BackendContractError else {
                 return XCTFail("Expected payloadDecodeFailed, got \(thrown)")
             }
-            XCTAssertEqual(operation, "paths")
-            XCTAssertEqual(payloadType, "PathsPayload")
+            XCTAssertEqual(operation, "capabilities")
+            XCTAssertEqual(payloadType, "CapabilitiesPayload")
         }
     }
 

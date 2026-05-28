@@ -14,8 +14,7 @@ final class DeviceReachabilityStore: ObservableObject {
 
     private let coordinator: OperationCoordinator
     private let now: () -> Date
-    private var activeOperations: [DeviceProfile.ID: ActiveOperation] = [:]
-    private var lastProcessedEventCounts: [DeviceProfile.ID: Int] = [:]
+    private var operationObservers: [DeviceProfile.ID: BackendOperationObserver] = [:]
     private var observedProfiles: Set<DeviceProfile.ID> = []
     private var cancellablesByProfile: [DeviceProfile.ID: Set<AnyCancellable>] = [:]
 
@@ -29,7 +28,7 @@ final class DeviceReachabilityStore: ObservableObject {
         let lane = coordinator.lane(for: laneKey)
         observeLane(for: profile.id, lane: lane)
         guard !lane.isBusy else {
-            activeOperations[profile.id] = nil
+            operationObservers[profile.id]?.clear()
             errors[profile.id] = BackendErrorViewModel(
                 operation: "reachability",
                 code: "operation_rejected",
@@ -40,7 +39,7 @@ final class DeviceReachabilityStore: ObservableObject {
         lane.clear()
         errors[profile.id] = nil
         currentStages[profile.id] = nil
-        lastProcessedEventCounts[profile.id] = 0
+        observer(for: profile.id).clear()
         switch coordinator.run(
             operation: "reachability",
             params: OperationParams.reachability(profile: profile, password: password),
@@ -49,9 +48,10 @@ final class DeviceReachabilityStore: ObservableObject {
             laneKey: laneKey
         ) {
         case .started(let operation):
-            activeOperations[profile.id] = operation
+            observer(for: profile.id).start(operation)
+            process(lane.backend.events, profileID: profile.id)
         case .rejected(let message):
-            activeOperations[profile.id] = nil
+            operationObservers[profile.id]?.clear()
             errors[profile.id] = BackendErrorViewModel(
                 operation: "reachability",
                 code: "operation_rejected",
@@ -73,8 +73,17 @@ final class DeviceReachabilityStore: ObservableObject {
     }
 
     func isRunning(profile: DeviceProfile) -> Bool {
-        activeOperations[profile.id] != nil
+        operationObservers[profile.id]?.activeOperation != nil
             || coordinator.activeOperation(for: profile)?.operation == "reachability"
+    }
+
+    private func observer(for profileID: DeviceProfile.ID) -> BackendOperationObserver {
+        if let observer = operationObservers[profileID] {
+            return observer
+        }
+        let observer = BackendOperationObserver()
+        operationObservers[profileID] = observer
+        return observer
     }
 
     private func observeLane(for profileID: DeviceProfile.ID, lane: OperationLane) {
@@ -101,21 +110,15 @@ final class DeviceReachabilityStore: ObservableObject {
     }
 
     private func process(_ events: [BackendEvent], profileID: DeviceProfile.ID) {
-        let previousCount = lastProcessedEventCounts[profileID] ?? 0
-        if events.count < previousCount {
-            lastProcessedEventCounts[profileID] = 0
-        }
-        let start = lastProcessedEventCounts[profileID] ?? 0
-        guard events.count > start else {
-            return
-        }
-        for event in events.dropFirst(start) where event.operation == "reachability" {
+        observer(for: profileID).process(events) { event, _ in
             handle(event, profileID: profileID)
         }
-        lastProcessedEventCounts[profileID] = events.count
     }
 
     private func handle(_ event: BackendEvent, profileID: DeviceProfile.ID) {
+        guard event.operation == "reachability" else {
+            return
+        }
         if let stage = OperationStageState(event: event) {
             currentStages[profileID] = stage
             return
@@ -125,7 +128,7 @@ final class DeviceReachabilityStore: ObservableObject {
             applyResult(event, profileID: profileID)
         case "error":
             errors[profileID] = BackendErrorViewModel(event: event)
-            activeOperations[profileID] = nil
+            operationObservers[profileID]?.finish()
         default:
             break
         }
@@ -143,12 +146,12 @@ final class DeviceReachabilityStore: ObservableObject {
                 message: error.localizedDescription
             )
         }
-        activeOperations[profileID] = nil
+        operationObservers[profileID]?.finish()
     }
 
     private func finishIfLaneStopped(profileID: DeviceProfile.ID) {
         if coordinator.activeOperation(for: .device(profileID))?.operation != "reachability" {
-            activeOperations[profileID] = nil
+            operationObservers[profileID]?.finish()
         }
     }
 }

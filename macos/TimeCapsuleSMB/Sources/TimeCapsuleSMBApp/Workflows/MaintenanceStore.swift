@@ -166,8 +166,7 @@ final class MaintenanceStore: ObservableObject {
     private var plannedFsckTargetID: FsckTargetViewModel.ID?
     private var scannedRepairPath: String?
     private var scannedRepairOptions: RepairXattrsOptions?
-    private var activeOperation: ActiveOperation?
-    private var lastProcessedEventCount = 0
+    private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
     convenience init() {
@@ -291,6 +290,7 @@ final class MaintenanceStore: ObservableObject {
         activateState = .planning
         activationPlan = nil
         activationResult = nil
+        process(backend.events)
         return start
     }
 
@@ -316,6 +316,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .activate
         activateState = .running
         activationResult = nil
+        process(backend.events)
         return start
     }
 
@@ -344,6 +345,7 @@ final class MaintenanceStore: ObservableObject {
         uninstallPlan = nil
         uninstallResult = nil
         plannedUninstallOptions = options
+        process(backend.events)
         return start
     }
 
@@ -382,6 +384,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .uninstall
         uninstallState = .running
         uninstallResult = nil
+        process(backend.events)
         return start
     }
 
@@ -406,6 +409,7 @@ final class MaintenanceStore: ObservableObject {
         selectedFsckTargetID = nil
         fsckPlan = nil
         fsckResult = nil
+        process(backend.events)
         return start
     }
 
@@ -440,6 +444,7 @@ final class MaintenanceStore: ObservableObject {
         fsckResult = nil
         plannedFsckOptions = options
         plannedFsckTargetID = target.id
+        process(backend.events)
         return start
     }
 
@@ -483,6 +488,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .fsck
         fsckState = .running
         fsckResult = nil
+        process(backend.events)
         return start
     }
 
@@ -512,6 +518,7 @@ final class MaintenanceStore: ObservableObject {
         repairResult = nil
         scannedRepairPath = path
         scannedRepairOptions = options
+        process(backend.events)
         return start
     }
 
@@ -551,12 +558,13 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .repairXattrs
         repairState = .repairing
         repairResult = nil
+        process(backend.events)
         return start
     }
 
     func clear() {
         backend.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         activateState = .idle
         uninstallState = .idle
         fsckState = .idle
@@ -579,7 +587,7 @@ final class MaintenanceStore: ObservableObject {
         plannedFsckTargetID = nil
         scannedRepairPath = nil
         scannedRepairOptions = nil
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     func cancel() {
@@ -622,31 +630,21 @@ final class MaintenanceStore: ObservableObject {
 
     private func resetRunState() {
         backend.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         error = nil
         currentStage = nil
         passwordInvalidProfileID = nil
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
+        operationObserver.process(events) { event, operation in
+            handle(event, activeOperation: operation)
         }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
-            handle(event)
-        }
-        lastProcessedEventCount = events.count
     }
 
-    private func handle(_ event: BackendEvent) {
+    private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
         guard ["activate", "uninstall", "fsck", "repair-xattrs"].contains(event.operation) else {
-            return
-        }
-        guard activeOperation?.operation == event.operation else {
             return
         }
 
@@ -665,7 +663,7 @@ final class MaintenanceStore: ObservableObject {
         }
 
         if event.type == "error" {
-            applyError(event)
+            applyError(event, activeOperation: activeOperation)
             return
         }
 
@@ -697,7 +695,7 @@ final class MaintenanceStore: ObservableObject {
             do {
                 activationPlan = try event.decodePayload(ActivationPlanPayload.self)
                 activateState = .planReady
-                activeOperation = nil
+                operationObserver.finish()
             } catch {
                 failContract(workflow: .activate, error: error)
             }
@@ -707,7 +705,7 @@ final class MaintenanceStore: ObservableObject {
             activationResult = try event.decodePayload(ActivationResultPayload.self)
             activateState = .succeeded
             error = nil
-            activeOperation = nil
+            operationObserver.finish()
         } catch {
             failContract(workflow: .activate, error: error)
         }
@@ -718,7 +716,7 @@ final class MaintenanceStore: ObservableObject {
             do {
                 uninstallPlan = try event.decodePayload(UninstallPlanPayload.self)
                 uninstallState = .planReady
-                activeOperation = nil
+                operationObserver.finish()
             } catch {
                 failContract(workflow: .uninstall, error: error)
             }
@@ -728,7 +726,7 @@ final class MaintenanceStore: ObservableObject {
             uninstallResult = try event.decodePayload(MaintenanceResultPayload.self)
             uninstallState = .succeeded
             error = nil
-            activeOperation = nil
+            operationObserver.finish()
         } catch {
             failContract(workflow: .uninstall, error: error)
         }
@@ -743,7 +741,7 @@ final class MaintenanceStore: ObservableObject {
                 selectedFsckTargetID = fsckTargets.count == 1 ? fsckTargets[0].id : nil
                 fsckState = .listReady
                 error = nil
-                activeOperation = nil
+                operationObserver.finish()
             } catch {
                 failContract(workflow: .fsck, error: error)
             }
@@ -752,7 +750,7 @@ final class MaintenanceStore: ObservableObject {
                 fsckPlan = try event.decodePayload(FsckPlanPayload.self)
                 fsckState = .planReady
                 error = nil
-                activeOperation = nil
+                operationObserver.finish()
             } catch {
                 failContract(workflow: .fsck, error: error)
             }
@@ -761,7 +759,7 @@ final class MaintenanceStore: ObservableObject {
                 fsckResult = try event.decodePayload(FsckResultPayload.self)
                 fsckState = .succeeded
                 error = nil
-                activeOperation = nil
+                operationObserver.finish()
             } catch {
                 failContract(workflow: .fsck, error: error)
             }
@@ -774,11 +772,11 @@ final class MaintenanceStore: ObservableObject {
             if repairState == .scanning {
                 repairScan = payload
                 repairState = .scanReady
-                activeOperation = nil
+                operationObserver.finish()
             } else {
                 repairResult = payload
                 repairState = .repaired
-                activeOperation = nil
+                operationObserver.finish()
             }
             error = nil
         } catch {
@@ -786,7 +784,7 @@ final class MaintenanceStore: ObservableObject {
         }
     }
 
-    private func applyError(_ event: BackendEvent) {
+    private func applyError(_ event: BackendEvent, activeOperation: ActiveOperation) {
         if event.code == "confirmation_required" {
             error = nil
             switch event.operation {
@@ -808,7 +806,7 @@ final class MaintenanceStore: ObservableObject {
             return
         }
         if event.code == "auth_failed" {
-            passwordInvalidProfileID = activeOperation?.profileID
+            passwordInvalidProfileID = activeOperation.profileID
         }
         error = BackendErrorViewModel(event: event)
         failState(for: event.operation)
@@ -817,7 +815,7 @@ final class MaintenanceStore: ObservableObject {
     private func applyConfirmationCancelled(operation: String) {
         error = nil
         currentStage = nil
-        activeOperation = nil
+        operationObserver.finish()
         switch operation {
         case "activate":
             activateState = activationPlan == nil ? .idle : .planReady
@@ -876,7 +874,7 @@ final class MaintenanceStore: ObservableObject {
             message: error.localizedDescription
         )
         setState(.failed, for: workflow)
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func failLocally(workflow: MaintenanceWorkflow, message: String) {
@@ -888,7 +886,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = workflow
         currentStage = nil
         setState(.failed, for: workflow)
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func rejectRun(workflow: MaintenanceWorkflow, message: String) {
@@ -900,7 +898,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = workflow
         currentStage = nil
         setState(.failed, for: workflow)
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func failState(for operation: String) {
@@ -916,7 +914,7 @@ final class MaintenanceStore: ObservableObject {
         default:
             break
         }
-        activeOperation = nil
+        operationObserver.finish()
     }
 
     private func setState(_ state: MaintenanceOperationState, for workflow: MaintenanceWorkflow) {
@@ -981,7 +979,7 @@ final class MaintenanceStore: ObservableObject {
         let start = run(operation: operation, params: params, profile: profile)
         switch start {
         case .started(let operation):
-            activeOperation = operation
+            operationObserver.start(operation)
         case .rejected(let message):
             rejectRun(workflow: workflow, message: message)
         }
@@ -1003,7 +1001,12 @@ final class MaintenanceStore: ObservableObject {
             }
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-            backend.run(operation: operation, params: params, context: context)
+            backend.run(
+                operation: operation,
+                params: params,
+                context: context,
+                requestID: activeOperation.id.uuidString
+            )
             return .started(activeOperation)
         }
     }

@@ -3,11 +3,6 @@ import Foundation
 
 @MainActor
 final class AppStore: ObservableObject {
-    private enum PasswordRollback {
-        case delete
-        case restore(String)
-    }
-
     @Published var selectedDeviceID: DeviceProfile.ID?
     @Published var showingAddDevice = false
     @Published var showingActivity = false
@@ -19,6 +14,7 @@ final class AppStore: ObservableObject {
     let deviceRegistry: DeviceRegistryStore
     let operationCoordinator: OperationCoordinator
     let passwordStore: PasswordStore
+    let profilePersistence: DeviceProfilePersistenceService
     let activityStore: ActivityStore
     let discoveryMonitor: DeviceDiscoveryMonitorStore
     let reachabilityStore: DeviceReachabilityStore
@@ -43,6 +39,7 @@ final class AppStore: ObservableObject {
         deviceRegistry: DeviceRegistryStore,
         operationCoordinator: OperationCoordinator,
         passwordStore: PasswordStore,
+        profilePersistence: DeviceProfilePersistenceService? = nil,
         activityStore: ActivityStore? = nil,
         appUpdateStore: AppUpdateStore? = nil,
         discoveryMonitor: DeviceDiscoveryMonitorStore? = nil,
@@ -53,6 +50,10 @@ final class AppStore: ObservableObject {
         self.deviceRegistry = deviceRegistry
         self.operationCoordinator = operationCoordinator
         self.passwordStore = passwordStore
+        self.profilePersistence = profilePersistence ?? DeviceProfilePersistenceService(
+            registry: deviceRegistry,
+            passwordStore: passwordStore
+        )
         self.activityStore = activityStore ?? ActivityStore(coordinator: operationCoordinator)
         self.appUpdateStore = appUpdateStore ?? AppUpdateStore(coordinator: operationCoordinator)
         self.discoveryMonitor = discoveryMonitor ?? DeviceDiscoveryMonitorStore(
@@ -196,18 +197,7 @@ final class AppStore: ObservableObject {
     }
 
     func password(for profile: DeviceProfile) -> String? {
-        if profile.passwordState == .invalid {
-            return nil
-        }
-        do {
-            return try passwordStore.password(for: profile.keychainAccount)
-        } catch PasswordStoreError.missing {
-            Task { await deviceRegistry.updatePasswordState(.missing, for: profile.id) }
-            return nil
-        } catch {
-            Task { await deviceRegistry.updatePasswordState(.keychainUnavailable, for: profile.id) }
-            return nil
-        }
+        profilePersistence.credential(for: profile).password
     }
 
     @discardableResult
@@ -216,32 +206,15 @@ final class AppStore: ObservableObject {
         fields: DeviceProfileEditableFields,
         replacementPassword: String? = nil
     ) async throws -> DeviceProfile {
-        var updated = profile
-        updated.displayName = fields.displayName
-        updated.settings = fields.settings
-
-        let rollback: PasswordRollback?
-        if let replacementPassword {
-            rollback = try passwordRollback(for: profile.keychainAccount)
-            try passwordStore.save(replacementPassword, for: profile.keychainAccount)
-            updated.passwordState = .available
-        } else {
-            rollback = nil
-        }
-
-        do {
-            return try await deviceRegistry.updateProfile(updated)
-        } catch {
-            if let rollback {
-                rollbackPassword(rollback, account: profile.keychainAccount)
-            }
-            throw error
-        }
+        try await profilePersistence.saveProfileEdits(
+            profile: profile,
+            fields: fields,
+            replacementPassword: replacementPassword
+        )
     }
 
     func forget(_ profile: DeviceProfile) async throws {
-        try passwordStore.deletePassword(for: profile.keychainAccount)
-        try await deviceRegistry.delete(profile)
+        try await profilePersistence.forget(profile)
         if selectedDeviceID == profile.id {
             selectedDeviceID = deviceRegistry.profiles.first?.id
             showingAddDevice = false
@@ -251,9 +224,7 @@ final class AppStore: ObservableObject {
     }
 
     func refreshPasswordStates() async {
-        for profile in deviceRegistry.profiles {
-            await deviceRegistry.updatePasswordState(effectivePasswordState(for: profile), for: profile.id)
-        }
+        await profilePersistence.refreshCredentialStates()
     }
 
     func diagnosticsExportContext(includeBackendEvents: Bool = true) -> DiagnosticsExportContext {
@@ -280,10 +251,16 @@ final class AppStore: ObservableObject {
     }
 
     private func effectivePasswordState(for profile: DeviceProfile) -> DevicePasswordState {
-        if profile.passwordState == .invalid {
+        switch profilePersistence.credential(for: profile) {
+        case .available:
+            return .available
+        case .missing:
+            return .missing
+        case .invalid:
             return .invalid
+        case .unavailable:
+            return .keychainUnavailable
         }
-        return passwordStore.state(for: profile.keychainAccount)
     }
 
     private func applyAppSettings(_ settings: AppSettings) {
@@ -301,25 +278,6 @@ final class AppStore: ObservableObject {
 
     private func readinessVersionCheck(for settings: AppSettings) -> AppReadinessVersionCheck {
         AppReadinessVersionCheck(url: settings.versionCheckURL)
-    }
-
-    private func passwordRollback(for account: String) throws -> PasswordRollback {
-        do {
-            return .restore(try passwordStore.password(for: account))
-        } catch PasswordStoreError.missing {
-            return .delete
-        } catch {
-            throw error
-        }
-    }
-
-    private func rollbackPassword(_ rollback: PasswordRollback, account: String) {
-        switch rollback {
-        case .delete:
-            try? passwordStore.deletePassword(for: account)
-        case .restore(let password):
-            try? passwordStore.save(password, for: account)
-        }
     }
 
     private func syncTelemetryPreference(_ enabled: Bool) {

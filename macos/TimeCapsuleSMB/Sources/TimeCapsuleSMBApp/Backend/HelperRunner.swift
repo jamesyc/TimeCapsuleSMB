@@ -12,6 +12,7 @@ public protocol HelperRunning: Sendable {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        requestID: String,
         context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult
@@ -39,6 +40,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        requestID: String,
         context: DeviceRuntimeContext? = nil,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
@@ -52,7 +54,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         do {
             resolution = try locator.resolve(helperPath: helperPath)
         } catch {
-            await eventSink(BackendEvent.error(operation: operation, code: "helper_not_found", message: error.localizedDescription))
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_not_found", message: error.localizedDescription, requestId: requestID))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
         }
 
@@ -71,7 +73,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         do {
             try process.run()
         } catch {
-            await eventSink(BackendEvent.error(operation: operation, code: "helper_launch_failed", message: error.localizedDescription))
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_launch_failed", message: error.localizedDescription, requestId: requestID))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
         }
 
@@ -90,11 +92,15 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             if let context, requestParams["config"] == nil {
                 requestParams["config"] = .string(context.configURL.path)
             }
-            let request = ["operation": JSONValue.string(operation), "params": JSONValue.object(requestParams)]
+            let request = [
+                "operation": JSONValue.string(operation),
+                "request_id": JSONValue.string(requestID),
+                "params": JSONValue.object(requestParams)
+            ]
             requestData = try JSONEncoder().encode(JSONValue.object(request))
         } catch {
             await Self.terminate(process)
-            await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription))
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription, requestId: requestID))
             await stdoutTask.value
             let stderr = await stderrTask.value
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
@@ -126,12 +132,13 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
                     operation: operation,
                     code: "cancelled",
                     message: L10n.string("helper.error.cancelled"),
+                    requestId: requestID,
                     debug: stderr.isEmpty ? nil : .object(["stderr": .string(stderr)])
                 ))
                 let sawTerminalEvent = await terminalTracker.sawTerminalEvent
                 return HelperRunResult(exitCode: 130, sawTerminalEvent: sawTerminalEvent, stderr: stderr)
             }
-            await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription))
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription, requestId: requestID))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
         }
 
@@ -152,6 +159,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
                 operation: operation,
                 code: "cancelled",
                 message: L10n.string("helper.error.cancelled"),
+                requestId: requestID,
                 debug: stderrText.isEmpty ? nil : .object(["stderr": .string(stderrText)])
             ))
         } else if !sawTerminalEvent {
@@ -159,6 +167,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
                 operation: operation,
                 code: "missing_terminal_event",
                 message: L10n.string("helper.error.missing_terminal_event"),
+                requestId: requestID,
                 debug: stderrText.isEmpty ? nil : .object(["stderr": .string(stderrText)])
             ))
         }

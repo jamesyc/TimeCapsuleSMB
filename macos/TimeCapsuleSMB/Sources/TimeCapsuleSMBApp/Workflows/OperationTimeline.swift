@@ -89,7 +89,7 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.operation.repair_xattrs")
         case "uninstall":
             return L10n.string("timeline.operation.uninstall")
-        case "capabilities", "validate-install", "paths":
+        case "capabilities", "validate-install":
             return L10n.string("timeline.operation.readiness")
         case "set-telemetry", "telemetry-identity":
             return L10n.string("timeline.operation.telemetry")

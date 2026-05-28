@@ -85,7 +85,7 @@ final class BackendEventTests: XCTestCase {
 
     func testJSONValueRoundTripsNestedObjects() throws {
         let value = JSONValue.object([
-            "operation": .string("paths"),
+            "operation": .string("capabilities"),
             "params": .object([
                 "dry_run": .bool(true),
                 "mount_wait": .number(30),

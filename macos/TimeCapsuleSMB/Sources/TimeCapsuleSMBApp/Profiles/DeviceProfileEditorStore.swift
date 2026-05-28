@@ -167,13 +167,13 @@ final class DeviceProfileEditorStore: ObservableObject {
     private let appStore: AppStore
     private let coordinator: OperationCoordinator
     private let lane: OperationLane
-    private let profileSaver: ConfiguredDeviceProfileSaving
+    private let profilePersistence: DeviceProfilePersistenceService
     private var baselineDraft: DeviceProfileEditorDraft
-    private var activeOperation: ActiveOperation?
+    private let operationObserver = BackendOperationObserver()
     private var pendingProfile: DeviceProfile?
     private var pendingDraft: DeviceProfileEditorDraft?
     private var pendingPassword: String?
-    private var lastProcessedEventCount = 0
+    private var pendingConfigureDraft: ConfigureProfileDraft?
     private var isApplyingDraft = false
     private var isApplyingPasswordDraft = false
     private var cancellables: Set<AnyCancellable> = []
@@ -181,7 +181,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     init(
         profile: DeviceProfile,
         appStore: AppStore,
-        profileSaver: ConfiguredDeviceProfileSaving? = nil
+        profilePersistence: DeviceProfilePersistenceService? = nil
     ) {
         let initialDraft = DeviceProfileEditorDraft(profile: profile)
         self.draft = initialDraft
@@ -189,10 +189,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         self.appStore = appStore
         self.coordinator = appStore.operationCoordinator
         self.lane = appStore.operationCoordinator.lane(for: profile)
-        self.profileSaver = profileSaver ?? ConfiguredDeviceProfileSaver(
-            registry: appStore.deviceRegistry,
-            passwordStore: appStore.passwordStore
-        )
+        self.profilePersistence = profilePersistence ?? appStore.profilePersistence
         observeBackend()
     }
 
@@ -364,6 +361,19 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func startReconfigure(profile: DeviceProfile, password: String, settings: DeviceProfileSettings) {
+        let configureDraft: ConfigureProfileDraft
+        do {
+            configureDraft = try profilePersistence.prepareConfigureTarget(
+                targetHost: draft.trimmedHost,
+                discoveredDevice: nil,
+                existingProfile: profile,
+                preferredID: profile.id,
+                settings: settings
+            )
+        } catch {
+            failSave(error)
+            return
+        }
         let params = OperationParams.configure(
             host: draft.trimmedHost,
             password: password,
@@ -377,7 +387,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         let start = coordinator.run(
             operation: "configure",
             params: params,
-            context: profile.runtimeContext,
+            context: configureDraft.context,
             activeDeviceID: profile.id,
             laneKey: .device(profile.id)
         )
@@ -390,33 +400,27 @@ final class DeviceProfileEditorStore: ObservableObject {
             state = .failed
             return
         }
-        lastProcessedEventCount = 0
-        activeOperation = operation
+        operationObserver.start(operation)
         pendingProfile = profile
         pendingDraft = draft
         pendingPassword = password
+        pendingConfigureDraft = configureDraft
         validationErrors = []
         error = nil
         currentStage = nil
         savedProfile = nil
         state = .reconfiguring
+        process(lane.backend.events)
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
+        operationObserver.process(events) { event, operation in
+            handle(event, activeOperation: operation)
         }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
-            handle(event)
-        }
-        lastProcessedEventCount = events.count
     }
 
-    private func handle(_ event: BackendEvent) {
-        guard activeOperation?.operation == event.operation, event.operation == "configure" else {
+    private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
+        guard event.operation == "configure" else {
             return
         }
         if let stage = OperationStageState(event: event) {
@@ -434,10 +438,10 @@ final class DeviceProfileEditorStore: ObservableObject {
             failFromResult(event)
             return
         }
-        applyConfigureResult(event)
+        applyConfigureResult(event, activeOperation: activeOperation)
     }
 
-    private func applyConfigureResult(_ event: BackendEvent) {
+    private func applyConfigureResult(_ event: BackendEvent, activeOperation: ActiveOperation) {
         let configured: ConfiguredDeviceState
         do {
             configured = ConfiguredDeviceState(payload: try event.decodePayload(ConfigurePayload.self))
@@ -445,22 +449,21 @@ final class DeviceProfileEditorStore: ObservableObject {
             failContract(error)
             return
         }
-        guard let profile = pendingProfile,
+        guard pendingProfile != nil,
               let draft = pendingDraft,
-              let password = pendingPassword else {
-            failContract(DeviceRegistryError.profileNotFound(activeOperation?.profileID ?? "unknown"))
+              let password = pendingPassword,
+              let configureDraft = pendingConfigureDraft else {
+            failContract(DeviceRegistryError.profileNotFound(activeOperation.profileID ?? "unknown"))
             return
         }
 
         state = .saving
         Task { @MainActor in
             do {
-                let saved = try await profileSaver.saveConfiguredDevice(
+                let saved = try await profilePersistence.commitConfiguredProfile(
                     configuredDevice: configured,
-                    discoveredDevice: nil,
+                    draft: configureDraft,
                     password: password,
-                    preferredID: profile.id,
-                    existingProfileID: profile.id,
                     overrides: ConfiguredDeviceProfileOverrides(
                         displayName: draft.displayName,
                         settings: try draft.validatedSettings()
@@ -487,7 +490,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         error = BackendErrorViewModel(event: event)
         switch event.code {
         case "auth_failed":
-            if let profileID = activeOperation?.profileID {
+            if let profileID = operationObserver.activeOperation?.profileID {
                 Task { await appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID) }
             }
             state = .authFailed
@@ -530,10 +533,12 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func clearPendingOperation() {
-        activeOperation = nil
+        operationObserver.finish()
+        profilePersistence.discardConfigureDraft(pendingConfigureDraft)
         pendingProfile = nil
         pendingDraft = nil
         pendingPassword = nil
+        pendingConfigureDraft = nil
     }
 
     private func applyDraft(_ draft: DeviceProfileEditorDraft) {

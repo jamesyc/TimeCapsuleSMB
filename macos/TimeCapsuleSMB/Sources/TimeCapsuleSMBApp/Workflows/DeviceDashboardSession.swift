@@ -325,7 +325,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 guard let profileID else { return }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                    await self.appStore.profilePersistence.markCredentialInvalid(profileID: profileID)
                 }
             }
             .store(in: &cancellables)
@@ -341,7 +341,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 guard let profileID else { return }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                    await self.appStore.profilePersistence.markCredentialInvalid(profileID: profileID)
                 }
             }
             .store(in: &cancellables)
@@ -350,7 +350,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 guard let profileID else { return }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                    await self.appStore.profilePersistence.markCredentialInvalid(profileID: profileID)
                 }
             }
             .store(in: &cancellables)
@@ -359,7 +359,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 guard let profileID else { return }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                    await self.appStore.profilePersistence.markCredentialInvalid(profileID: profileID)
                 }
             }
             .store(in: &cancellables)

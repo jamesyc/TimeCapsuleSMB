@@ -4,8 +4,8 @@ import XCTest
 final class PendingConfirmationTests: XCTestCase {
     func testLocalizedStringsLoadFromResourceBundle() {
         XCTAssertEqual(L10n.string("screen.readiness"), "Readiness")
-        XCTAssertEqual(L10n.string("button.uninstall_plan"), "Uninstall Plan")
-        XCTAssertEqual(L10n.string("button.capabilities"), "Capabilities")
+        XCTAssertEqual(L10n.string("toolbar.cancel"), "Cancel")
+        XCTAssertEqual(L10n.string("toolbar.diagnostics"), "Diagnostics")
         XCTAssertEqual(L10n.string("helper.error.cancelled"), "Operation cancelled.")
         XCTAssertEqual(L10n.string("confirm.backend.message"), "Continue with this operation?")
         XCTAssertEqual(L10n.format("event.summary.result", "deploy", "finished"), "deploy: finished")

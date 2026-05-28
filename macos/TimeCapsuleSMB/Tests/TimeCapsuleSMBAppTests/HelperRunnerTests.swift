@@ -8,15 +8,19 @@ final class HelperRunnerTests: XCTestCase {
         let helper = try makeHelper(
             in: temp.url,
             body: """
-            cat >/dev/null
-            echo '{"schema_version":1,"request_id":"req","type":"stage","operation":"paths","stage":"start"}'
-            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"paths","ok":true,"payload":{"ok":true}}'
+            input=$(cat)
+            case "$input" in
+              *'"request_id":"request-1"'*) ;;
+              *) exit 2 ;;
+            esac
+            echo '{"schema_version":1,"request_id":"req","type":"stage","operation":"capabilities","stage":"start"}'
+            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"capabilities","ok":true,"payload":{"ok":true}}'
             """
         )
         let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
         let recorder = EventRecorder()
 
-        let result = await runner.run(helperPath: helper.path, operation: "paths", params: [:]) {
+        let result = await runner.run(helperPath: helper.path, operation: "capabilities", params: [:], requestID: "request-1") {
             await recorder.append($0)
         }
 
@@ -32,13 +36,13 @@ final class HelperRunnerTests: XCTestCase {
             in: temp.url,
             body: """
             cat >/dev/null
-            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"paths","ok":true,"payload":{"ok":true}}'
+            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"capabilities","ok":true,"payload":{"ok":true}}'
             """
         )
         let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
         let recorder = EventRecorder()
 
-        let result = await runner.run(helperPath: helper.path, operation: "paths", params: [:]) { event in
+        let result = await runner.run(helperPath: helper.path, operation: "capabilities", params: [:], requestID: "request-1") { event in
             try? await Task.sleep(nanoseconds: 50_000_000)
             await recorder.append(event)
         }
@@ -61,7 +65,7 @@ final class HelperRunnerTests: XCTestCase {
         let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
         let recorder = EventRecorder()
 
-        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
             await recorder.append($0)
         }
 
@@ -90,7 +94,7 @@ final class HelperRunnerTests: XCTestCase {
         let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
         let recorder = EventRecorder()
 
-        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
             await recorder.append($0)
         }
 
@@ -116,7 +120,7 @@ final class HelperRunnerTests: XCTestCase {
         )
         let recorder = EventRecorder()
 
-        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
             await recorder.append($0)
         }
 
@@ -131,7 +135,7 @@ final class HelperRunnerTests: XCTestCase {
         let runner = HelperRunner(locator: locator)
         let recorder = EventRecorder()
 
-        let result = await runner.run(helperPath: "/missing/tcapsule", operation: "paths", params: [:]) {
+        let result = await runner.run(helperPath: "/missing/tcapsule", operation: "capabilities", params: [:], requestID: "request-1") {
             await recorder.append($0)
         }
 
@@ -156,7 +160,7 @@ final class HelperRunnerTests: XCTestCase {
         let recorder = EventRecorder()
 
         let task = Task {
-            await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
                 await recorder.append($0)
             }
         }
@@ -184,7 +188,7 @@ final class HelperRunnerTests: XCTestCase {
         let largePayload = String(repeating: "x", count: 8 * 1024 * 1024)
 
         let task = Task {
-            await runner.run(helperPath: helper.path, operation: "doctor", params: ["payload": .string(largePayload)]) {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: ["payload": .string(largePayload)], requestID: "request-1") {
                 await recorder.append($0)
             }
         }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.ops.configure import configure_operation
@@ -17,7 +18,6 @@ from timecapsulesmb.app.ops.reachability import reachability_operation
 from timecapsulesmb.app.ops.readiness import (
     capabilities_operation,
     discover_operation,
-    paths_operation,
     set_telemetry_operation,
     telemetry_identity_operation,
     validate_install_operation,
@@ -26,33 +26,39 @@ from timecapsulesmb.app.ops.readiness import (
 from timecapsulesmb.services.app import OperationResult
 
 
-OPERATIONS: dict[str, Callable[[dict[str, object], AppOperationContext], OperationResult]] = {
-    "activate": activate_operation,
-    "capabilities": capabilities_operation,
-    "configure": configure_operation,
-    "deploy": deploy_operation,
-    "discover": discover_operation,
-    "doctor": doctor_operation,
-    "flash": flash_operation,
-    "fsck": fsck_operation,
-    "paths": paths_operation,
-    "reachability": reachability_operation,
-    "repair-xattrs": repair_xattrs_operation,
-    "set-telemetry": set_telemetry_operation,
-    "telemetry-identity": telemetry_identity_operation,
-    "uninstall": uninstall_operation,
-    "validate-install": validate_install_operation,
-    "version-check": version_check_operation,
-}
+OperationHandler = Callable[[dict[str, object], AppOperationContext], OperationResult]
 
 
-TELEMETRY_OPERATIONS = frozenset({
-    "activate",
-    "configure",
-    "deploy",
-    "doctor",
-    "flash",
-    "fsck",
-    "repair-xattrs",
-    "uninstall",
-})
+@dataclass(frozen=True)
+class OperationSpec:
+    name: str
+    handler: OperationHandler
+    telemetry: bool = False
+    public: bool = True
+
+
+OPERATION_SPECS: tuple[OperationSpec, ...] = (
+    OperationSpec("activate", activate_operation, telemetry=True),
+    OperationSpec("capabilities", capabilities_operation),
+    OperationSpec("configure", configure_operation, telemetry=True),
+    OperationSpec("deploy", deploy_operation, telemetry=True),
+    OperationSpec("discover", discover_operation),
+    OperationSpec("doctor", doctor_operation, telemetry=True),
+    OperationSpec("flash", flash_operation, telemetry=True),
+    OperationSpec("fsck", fsck_operation, telemetry=True),
+    OperationSpec("reachability", reachability_operation),
+    OperationSpec("repair-xattrs", repair_xattrs_operation, telemetry=True),
+    OperationSpec("set-telemetry", set_telemetry_operation),
+    OperationSpec("telemetry-identity", telemetry_identity_operation),
+    OperationSpec("uninstall", uninstall_operation, telemetry=True),
+    OperationSpec("validate-install", validate_install_operation),
+    OperationSpec("version-check", version_check_operation),
+)
+
+
+OPERATIONS: dict[str, OperationHandler] = {spec.name: spec.handler for spec in OPERATION_SPECS}
+TELEMETRY_OPERATIONS = frozenset(spec.name for spec in OPERATION_SPECS if spec.telemetry)
+
+
+def public_operation_names() -> list[str]:
+    return [spec.name for spec in OPERATION_SPECS if spec.public]

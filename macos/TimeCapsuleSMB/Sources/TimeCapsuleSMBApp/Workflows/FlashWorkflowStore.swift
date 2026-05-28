@@ -178,11 +178,10 @@ final class FlashWorkflowStore: ObservableObject {
         readOnlyAllowed: true,
         writeAllowed: true
     )
-    private var activeOperation: ActiveOperation?
+    private let operationObserver = BackendOperationObserver()
     private var activeAction: FlashUserAction?
     private var pendingFirmwareSelection: FlashFirmwareSelection?
     private var plannedFirmwareSelection: FlashFirmwareSelection?
-    private var lastProcessedEventCount = 0
     private var cancellables: Set<AnyCancellable> = []
 
     convenience init(buildPolicy: FlashBuildPolicy = .writesEnabled) {
@@ -260,7 +259,7 @@ final class FlashWorkflowStore: ObservableObject {
     func refresh(profile: DeviceProfile) {
         eligibility = FlashEligibilityPolicy.eligibility(for: profile, buildPolicy: buildPolicy)
         eligibilityMessage = eligibility.message
-        if backup == nil, plan == nil, writeResult == nil, activeOperation == nil {
+        if backup == nil, plan == nil, writeResult == nil, operationObserver.activeOperation == nil {
             state = eligibility.state
         }
     }
@@ -285,6 +284,7 @@ final class FlashWorkflowStore: ObservableObject {
         backupSnapshotStale = false
         pendingFirmwareSelection = nil
         plannedFirmwareSelection = nil
+        process(backend.events)
         return start
     }
 
@@ -318,6 +318,7 @@ final class FlashWorkflowStore: ObservableObject {
         state = .analyzingBanks
         plan = nil
         writeResult = nil
+        process(backend.events)
         return start
     }
 
@@ -354,12 +355,13 @@ final class FlashWorkflowStore: ObservableObject {
         }
         state = .writing
         writeResult = nil
+        process(backend.events)
         return start
     }
 
     func clear() {
         backend.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         state = eligibility.state
         backup = nil
         plan = nil
@@ -369,7 +371,7 @@ final class FlashWorkflowStore: ObservableObject {
         currentStage = nil
         error = nil
         passwordInvalidProfileID = nil
-        activeOperation = nil
+        operationObserver.finish()
         activeAction = nil
         pendingFirmwareSelection = nil
         plannedFirmwareSelection = nil
@@ -391,23 +393,13 @@ final class FlashWorkflowStore: ObservableObject {
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
+        operationObserver.process(events) { event, operation in
+            handle(event, activeOperation: operation)
         }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
-            handle(event)
-        }
-        lastProcessedEventCount = events.count
     }
 
-    private func handle(_ event: BackendEvent) {
+    private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
         guard event.operation == "flash" else {
-            return
-        }
-        guard activeOperation?.operation == event.operation else {
             return
         }
 
@@ -418,7 +410,7 @@ final class FlashWorkflowStore: ObservableObject {
         }
 
         if event.type == "error" {
-            applyError(event)
+            applyError(event, activeOperation: activeOperation)
             return
         }
 
@@ -466,7 +458,7 @@ final class FlashWorkflowStore: ObservableObject {
             }
             error = nil
             currentStage = nil
-            activeOperation = nil
+            operationObserver.finish()
             activeAction = nil
             pendingFirmwareSelection = nil
         } catch {
@@ -476,7 +468,7 @@ final class FlashWorkflowStore: ObservableObject {
                 message: error.localizedDescription
             )
             state = .failed
-            activeOperation = nil
+            operationObserver.finish()
             activeAction = nil
             pendingFirmwareSelection = nil
         }
@@ -505,7 +497,7 @@ final class FlashWorkflowStore: ObservableObject {
         }
     }
 
-    private func applyError(_ event: BackendEvent) {
+    private func applyError(_ event: BackendEvent, activeOperation: ActiveOperation) {
         if event.code == "confirmation_required" {
             error = nil
             state = .awaitingStrongConfirmation
@@ -514,14 +506,14 @@ final class FlashWorkflowStore: ObservableObject {
         if event.code == "confirmation_cancelled" {
             error = nil
             currentStage = nil
-            activeOperation = nil
+            operationObserver.finish()
             activeAction = nil
             pendingFirmwareSelection = nil
             state = plan == nil ? (backup == nil ? eligibility.state : .writeLocked) : .planAvailable
             return
         }
         if event.code == "auth_failed" {
-            passwordInvalidProfileID = activeOperation?.profileID
+            passwordInvalidProfileID = activeOperation.profileID
         }
         if activeAction == .writePatch || activeAction == .writeRestore,
            currentStageMayHaveModifiedFirmware() {
@@ -529,7 +521,7 @@ final class FlashWorkflowStore: ObservableObject {
         }
         error = BackendErrorViewModel(event: event)
         state = .failed
-        activeOperation = nil
+        operationObserver.finish()
         activeAction = nil
         pendingFirmwareSelection = nil
     }
@@ -569,7 +561,7 @@ final class FlashWorkflowStore: ObservableObject {
             message: event.payloadSummaryText ?? event.summary
         )
         state = .failed
-        activeOperation = nil
+        operationObserver.finish()
         activeAction = nil
     }
 
@@ -610,7 +602,7 @@ final class FlashWorkflowStore: ObservableObject {
         let start = run(operation: "flash", params: params, profile: profile)
         switch start {
         case .started(let operation):
-            activeOperation = operation
+            operationObserver.start(operation)
             activeAction = action
         case .rejected(let message):
             return reject(message)
@@ -620,12 +612,12 @@ final class FlashWorkflowStore: ObservableObject {
 
     private func resetRunState() {
         backend.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         error = nil
         manualPowerCycleNotice = nil
         currentStage = nil
         passwordInvalidProfileID = nil
-        activeOperation = nil
+        operationObserver.finish()
         activeAction = nil
     }
 
@@ -642,8 +634,14 @@ final class FlashWorkflowStore: ObservableObject {
         guard !isBusy else {
             return .rejected("Another operation is already running.")
         }
-        let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: profile?.runtimeContext)
-        backend.run(operation: operation, params: params, context: profile?.runtimeContext)
+        let context = profile?.runtimeContext
+        let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
+        backend.run(
+            operation: operation,
+            params: params,
+            context: context,
+            requestID: activeOperation.id.uuidString
+        )
         return .started(activeOperation)
     }
 }

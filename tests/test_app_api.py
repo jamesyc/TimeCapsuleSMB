@@ -217,7 +217,7 @@ class AppApiTests(unittest.TestCase):
     def test_result_event_preserves_falsey_payloads(self) -> None:
         collector = CollectingSink()
 
-        collector.sink.result("paths", ok=True, payload=[])
+        collector.sink.result("capabilities", ok=True, payload=[])
 
         result = collector.events_of_type("result")[0]
         self.assertEqual(result["payload"], [])
@@ -230,7 +230,7 @@ class AppApiTests(unittest.TestCase):
     def test_stage_events_include_policy_metadata(self) -> None:
         collector = CollectingSink()
 
-        collector.sink.stage("paths", "resolve_paths")
+        collector.sink.stage("capabilities", "resolve_paths")
         collector.sink.stage("deploy", "upload_payload")
         collector.sink.stage("uninstall", "uninstall_payload")
         collector.sink.stage("deploy", "reboot")
@@ -297,7 +297,7 @@ class AppApiTests(unittest.TestCase):
     def test_request_id_propagates_to_every_event(self) -> None:
         collector = CollectingSink()
 
-        rc = service.run_api_request({"request_id": "req-123", "operation": "paths", "params": {}}, collector.sink)
+        rc = service.run_api_request({"request_id": "req-123", "operation": "capabilities", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 0)
         self.assertTrue(collector.events)
@@ -318,6 +318,7 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("version-check", payload["operations"])
         self.assertIn("flash", payload["operations"])
         self.assertIn("reachability", payload["operations"])
+        self.assertNotIn("paths", payload["operations"])
         self.assertIn("helper_version", payload)
         self.assertIn("artifact_manifest_sha256", payload)
 
@@ -652,11 +653,11 @@ class AppApiTests(unittest.TestCase):
     def test_missing_params_defaults_to_empty_object(self) -> None:
         collector = CollectingSink()
 
-        rc = service.run_api_request({"operation": "paths"}, collector.sink)
+        rc = service.run_api_request({"operation": "capabilities"}, collector.sink)
 
         self.assertEqual(rc, 0)
         result = self.assert_single_terminal_event(collector, "result")
-        self.assertEqual(result["operation"], "paths")
+        self.assertEqual(result["operation"], "capabilities")
 
     def test_missing_operation_emits_invalid_request_error(self) -> None:
         collector = CollectingSink()
@@ -683,7 +684,7 @@ class AppApiTests(unittest.TestCase):
     def test_non_object_params_emits_invalid_request_error(self) -> None:
         collector = CollectingSink()
 
-        rc = service.run_api_request({"operation": "paths", "params": []}, collector.sink)
+        rc = service.run_api_request({"operation": "capabilities", "params": []}, collector.sink)
 
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
@@ -827,7 +828,7 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         self._telemetry_factory.reset_mock()
 
-        rc = service.run_api_request({"operation": "paths", "params": {}}, collector.sink)
+        rc = service.run_api_request({"operation": "capabilities", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 0)
         self._telemetry_factory.assert_not_called()
@@ -2582,7 +2583,7 @@ class AppApiTests(unittest.TestCase):
 
     def test_helper_reads_request_and_writes_ndjson(self) -> None:
         output = io.StringIO()
-        fake_stdin = io.StringIO('{"operation":"paths","params":{}}')
+        fake_stdin = io.StringIO('{"operation":"capabilities","params":{}}')
         with mock.patch.object(sys, "stdin", fake_stdin):
             with mock.patch("timecapsulesmb.app.helper.run_api_request") as run_mock:
                 run_mock.side_effect = lambda request, sink: (sink.result(request["operation"], ok=True, payload={"ok": True}) or 0)
@@ -2592,14 +2593,14 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         line = json.loads(output.getvalue())
         self.assertEqual(line["type"], "result")
-        self.assertEqual(line["operation"], "paths")
+        self.assertEqual(line["operation"], "capabilities")
         self.assertEqual(line["schema_version"], 1)
         self.assertTrue(line["request_id"])
 
     def test_helper_rejects_invalid_json_without_leaking_pretty_error_details(self) -> None:
         output = io.StringIO()
         error_output = io.StringIO()
-        with mock.patch.object(sys, "stdin", io.StringIO('{"operation":"paths","password":"secret"')):
+        with mock.patch.object(sys, "stdin", io.StringIO('{"operation":"capabilities","password":"secret"')):
             with redirect_stdout(output):
                 with mock.patch.object(sys, "stderr", error_output):
                     rc = helper.main(["--pretty-error"])
@@ -2629,7 +2630,7 @@ class AppApiTests(unittest.TestCase):
 
     def test_helper_rejects_top_level_non_object_json(self) -> None:
         output = io.StringIO()
-        with mock.patch.object(sys, "stdin", io.StringIO('["paths"]')):
+        with mock.patch.object(sys, "stdin", io.StringIO('["capabilities"]')):
             with redirect_stdout(output):
                 rc = helper.main([])
 

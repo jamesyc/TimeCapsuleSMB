@@ -36,8 +36,7 @@ final class AppUpdateStore: ObservableObject {
 
     let lane: OperationLane
 
-    private var activeOperation: ActiveOperation?
-    private var lastProcessedEventCount = 0
+    private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
     init(coordinator: OperationCoordinator) {
@@ -66,7 +65,7 @@ final class AppUpdateStore: ObservableObject {
             return
         }
         lane.clear()
-        lastProcessedEventCount = 0
+        operationObserver.clear()
         state = .checking
         payload = nil
         error = nil
@@ -75,10 +74,11 @@ final class AppUpdateStore: ObservableObject {
         let params = OperationParams.versionCheck(url: settings.versionCheckURL)
         switch lane.run(operation: "version-check", params: params, context: nil, activeDeviceID: nil) {
         case .started(let operation):
-            activeOperation = operation
+            operationObserver.start(operation)
+            process(lane.backend.events)
         case .rejected(let message):
             state = .failed
-            activeOperation = nil
+            operationObserver.clear()
             error = BackendErrorViewModel(
                 operation: "version-check",
                 code: "operation_rejected",
@@ -88,23 +88,13 @@ final class AppUpdateStore: ObservableObject {
     }
 
     private func process(_ events: [BackendEvent]) {
-        if events.count < lastProcessedEventCount {
-            lastProcessedEventCount = 0
-        }
-        guard events.count > lastProcessedEventCount else {
-            return
-        }
-        for event in events.dropFirst(lastProcessedEventCount) {
+        operationObserver.process(events) { event, _ in
             handle(event)
         }
-        lastProcessedEventCount = events.count
     }
 
     private func handle(_ event: BackendEvent) {
         guard event.operation == "version-check" else {
-            return
-        }
-        guard activeOperation?.operation == event.operation else {
             return
         }
         if let stage = OperationStageState(event: event) {
@@ -114,7 +104,7 @@ final class AppUpdateStore: ObservableObject {
         if event.type == "error" {
             error = BackendErrorViewModel(event: event)
             state = .failed
-            activeOperation = nil
+            operationObserver.finish()
             return
         }
         guard event.type == "result" else {
@@ -131,7 +121,7 @@ final class AppUpdateStore: ObservableObject {
                 state = .current
             }
             error = nil
-            activeOperation = nil
+            operationObserver.finish()
         } catch {
             self.error = BackendErrorViewModel(
                 operation: "version-check",
@@ -139,7 +129,7 @@ final class AppUpdateStore: ObservableObject {
                 message: error.localizedDescription
             )
             state = .failed
-            activeOperation = nil
+            operationObserver.finish()
         }
     }
 }

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from typing import Mapping
 
 from timecapsulesmb.configure_defaults import valid_existing_config_value
-from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_values
+from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_values, write_env_file
 
 
 def _optional_unsigned_config_value(value: object, key: str) -> str:
@@ -77,3 +79,10 @@ def build_configure_env_values(
         "TC_CONFIGURE_ID": configure_id,
     })
     return values
+
+
+def write_configure_env_file(path: Path, values: Mapping[str, str], *, persist_password: bool) -> None:
+    output = dict(values)
+    if not persist_password:
+        output.pop("TC_PASSWORD", None)
+    write_env_file(path, output)

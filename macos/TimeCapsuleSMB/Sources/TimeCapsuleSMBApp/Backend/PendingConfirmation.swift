@@ -7,11 +7,13 @@ struct PendingConfirmation: Identifiable {
     let actionTitle: String
     let operation: String
     let params: [String: JSONValue]
+    let requestID: String
     let context: DeviceRuntimeContext?
 
     init?(
         confirmationEvent event: BackendEvent,
         originalParams: [String: JSONValue],
+        requestID: String = UUID().uuidString,
         context: DeviceRuntimeContext? = nil
     ) {
         guard
@@ -35,6 +37,7 @@ struct PendingConfirmation: Identifiable {
             ?? Self.detailString(details, "action_title")
             ?? L10n.string("action.confirm")
         self.operation = event.operation
+        self.requestID = event.requestId ?? requestID
         var confirmedParams = originalParams
         confirmedParams["confirmation_id"] = .string(confirmationId)
         self.params = confirmedParams
