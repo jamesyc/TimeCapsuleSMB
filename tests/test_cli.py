@@ -4,6 +4,7 @@ import errno
 import argparse
 import io
 import json
+import os
 import plistlib
 import socket
 import subprocess
@@ -253,7 +254,12 @@ class FakeCommandContext:
         noninteractive_message: str,
         eof_default: bool | None = None,
         interrupt_default: bool | None = None,
+        allow_prompt: bool = True,
     ) -> bool | None:
+        if not allow_prompt:
+            print(noninteractive_message)
+            self.fail_with_error(noninteractive_message)
+            return None
         try:
             return cli_runtime.confirm(
                 prompt_text,
@@ -1584,7 +1590,6 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
-        self.assertEqual(fake_values["TC_DEBUG_LOGGING"], "false")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
@@ -1665,17 +1670,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "true")
 
-    def test_configure_hidden_debug_logging_arg_writes_true(self) -> None:
-        result = self.run_configure_cli(
-            ["--debug-logging"],
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "true")
-
     def test_configure_hidden_ata_args_write_drive_settings(self) -> None:
         result = self.run_configure_cli(
             ["--ata-idle-seconds", "0", "--ata-standby", "0"],
@@ -1688,28 +1682,79 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_ATA_IDLE_SECONDS"], "0")
         self.assertEqual(result.values["TC_ATA_STANDBY"], "0")
 
-    def test_configure_bonjour_timeout_reaches_discovery(self) -> None:
-        result = self.run_configure_cli(
-            ["--bonjour-timeout", "1.25"],
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        result.mocks.discover_resolved_records.assert_called_once()
-        self.assertEqual(result.mocks.discover_resolved_records.call_args.kwargs["timeout"], 1.25)
+    def test_configure_no_input_uses_explicit_host_and_password_env_without_prompts(self) -> None:
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": "pw"}):
+            result = self.run_configure_cli(
+                [
+                    "--no-input",
+                    "--host",
+                    "root@10.0.0.2",
+                    "--password-env",
+                    "TCAPSULE_TEST_PASSWORD",
+                ],
+                probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+                extra_patches={
+                    "timecapsulesmb.cli.configure.prompt": mock.Mock(side_effect=AssertionError("configure --no-input should not prompt")),
+                    "builtins.input": mock.Mock(side_effect=AssertionError("configure --no-input should not call input")),
+                    "timecapsulesmb.cli.configure.getpass.getpass": mock.Mock(side_effect=AssertionError("configure --no-input should not call getpass")),
+                },
+            )
 
-    def test_configure_preserves_existing_debug_logging_when_arg_is_omitted(self) -> None:
-        result = self.run_configure_cli(
-            existing_values={"TC_DEBUG_LOGGING": "true"},
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "true")
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self.assertEqual(result.values["TC_PASSWORD"], "pw")
+        result.mocks.discover_snapshot_merged_detailed.assert_not_called()
+
+    def test_configure_no_input_requires_password_before_probe_or_write(self) -> None:
+        result = self.run_configure_cli(
+            ["--no-input", "--host", "root@10.0.0.2"],
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            extra_patches={
+                "timecapsulesmb.cli.configure.prompt": mock.Mock(side_effect=AssertionError("configure --no-input should not prompt")),
+                "timecapsulesmb.cli.configure.getpass.getpass": mock.Mock(side_effect=AssertionError("configure --no-input should not call getpass")),
+            },
+        )
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn("configure --no-input requires a device password", result.text)
+        result.mocks.probe_connection_state.assert_not_called()
+        result.mocks.write_env_file.assert_not_called()
+
+    def test_configure_no_input_requires_explicit_ssh_enable_when_ssh_is_closed(self) -> None:
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": "pw"}):
+            result = self.run_configure_cli(
+                ["--no-input", "--host", "root@10.0.0.2", "--password-env", "TCAPSULE_TEST_PASSWORD"],
+                probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                extra_patches={
+                    "timecapsulesmb.cli.configure.prompt": mock.Mock(side_effect=AssertionError("configure --no-input should not prompt")),
+                },
+            )
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn("use --enable-ssh --yes to enable SSH via ACP", result.text)
+        self._configure_acp_probe_mock.assert_not_called()
+        result.mocks.write_env_file.assert_not_called()
+
+    def test_configure_no_input_json_outputs_machine_readable_summary(self) -> None:
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": "pw"}):
+            result = self.run_configure_cli(
+                [
+                    "--no-input",
+                    "--json",
+                    "--host",
+                    "root@10.0.0.2",
+                    "--password-env",
+                    "TCAPSULE_TEST_PASSWORD",
+                ],
+                probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            )
+
+        payload = json.loads(result.text)
+        self.assertEqual(result.rc, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["host"], "root@10.0.0.2")
+        self.assertEqual(payload["device_syap"], "119")
+        self.assertNotIn("TC_PASSWORD", payload)
 
     def test_configure_preserves_existing_ata_settings(self) -> None:
         result = self.run_configure_cli(
@@ -1769,7 +1814,6 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "false")
-        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "false")
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         prompt_values = iter([
@@ -4360,6 +4404,20 @@ class CliTests(unittest.TestCase):
         result.mocks.wait_for_mast_volumes_conn.assert_not_called()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
 
+    def test_deploy_no_input_requires_yes_before_remote_mutation(self) -> None:
+        result = self.run_deploy_cli(
+            ["--no-input"],
+            patch_actions=True,
+            patch_upload=True,
+        )
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn("Running `deploy` with reboot in non-interactive mode requires `--yes`", result.text)
+        result.mocks.validate_artifacts.assert_not_called()
+        result.mocks.wait_for_mast_volumes_conn.assert_not_called()
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+
     def test_deploy_dry_run_json_outputs_modern_multivolume_plan(self) -> None:
         values = self.make_valid_env()
         result = self.run_deploy_cli(["--dry-run", "--json"], values=values)
@@ -5010,6 +5068,14 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(target.connection.host, "root@capsule.local")
 
+    def test_resolve_env_connection_no_input_fails_instead_of_prompting_for_password(self) -> None:
+        config = self.make_app_config({"TC_HOST": "root@10.0.0.2"})
+        with mock.patch("getpass.getpass", side_effect=AssertionError("non-interactive callers must not prompt")):
+            with self.assertRaises(ConfigError) as ctx:
+                cli_runtime.resolve_env_connection(config, allow_password_prompt=False)
+
+        self.assertIn("TC_PASSWORD is required when --no-input is used.", str(ctx.exception))
+
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
         command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility())
@@ -5048,6 +5114,24 @@ class CliTests(unittest.TestCase):
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
         self.assertEqual(command_context.finish.call_args.kwargs["error"], message)
+
+    def test_activate_no_input_requires_yes_without_reading_stdin(self) -> None:
+        output = io.StringIO()
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility())
+        values = self.make_valid_env()
+        with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("builtins.input", side_effect=AssertionError("activate --no-input must not prompt")) as input_mock:
+                    with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
+                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
+                            with redirect_stdout(output):
+                                rc = activate.main(["--no-input"])
+
+        self.assertEqual(rc, 1)
+        input_mock.assert_not_called()
+        actions_mock.assert_not_called()
+        self.assertIn("Running `activate` in non-interactive mode requires `--yes`", output.getvalue())
+        self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
 
     def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
         output = io.StringIO()
@@ -7764,6 +7848,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "no mounted HFS volumes found")
         run_ssh_mock.assert_not_called()
         self.assertNotIn("MaSt", str(ctx.exception))
+
+    def test_fsck_no_input_requires_yes_before_mounting_volumes(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            mast_mocks = self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
+            with redirect_stdout(output):
+                rc = fsck.main(["--no-input"])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Running `fsck` in non-interactive mode requires `--yes`", output.getvalue())
+        mast_mocks.mounted_mast_volumes_conn.assert_not_called()
+        run_ssh_mock.assert_not_called()
 
     def test_fsck_prompts_for_volume_when_multiple_hfs_volumes_are_mounted(self) -> None:
         output = io.StringIO()

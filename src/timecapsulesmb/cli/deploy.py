@@ -10,7 +10,9 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import activate_deployed_runtime_flow, request_deploy_reboot_and_wait, verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
+    add_no_input_argument,
     load_env_config,
+    no_input_enabled,
     print_json,
     require_supported_device_compatibility,
 )
@@ -196,6 +198,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     add_config_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot; activate the deployed runtime in place")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
+    add_no_input_argument(parser)
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
@@ -224,6 +227,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
+        if no_input_enabled(args) and not args.yes and not args.no_reboot and not args.dry_run:
+            command_context.set_stage("noninteractive_confirmation")
+            message = (
+                "Running `deploy` with reboot in non-interactive mode requires `--yes` "
+                "to approve the reboot or `--no-reboot` to avoid it."
+            )
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
         command_context.set_stage("resolve_managed_target")
         if not args.json:
             print("Resolving deployment target...", flush=True)
@@ -453,6 +465,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 prompt,
                 default=True,
                 noninteractive_message="Running `deploy` with reboot requires confirmation when stdin is not interactive. Use `deploy --yes` to skip the prompt or `deploy --no-reboot`.",
+                allow_prompt=not no_input_enabled(args),
             )
             if proceed is None:
                 return 1

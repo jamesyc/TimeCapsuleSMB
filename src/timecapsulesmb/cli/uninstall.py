@@ -5,7 +5,15 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot, request_reboot_and_wait
-from timecapsulesmb.cli.runtime import add_config_argument, add_mount_wait_argument, add_no_wait_argument, load_env_config, print_json
+from timecapsulesmb.cli.runtime import (
+    add_config_argument,
+    add_mount_wait_argument,
+    add_no_input_argument,
+    add_no_wait_argument,
+    load_env_config,
+    no_input_enabled,
+    print_json,
+)
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
@@ -23,6 +31,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     add_mount_wait_argument(parser)
     add_no_wait_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
+    add_no_input_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Remove files but do not reboot the device")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run uninstall plan as JSON")
@@ -45,6 +54,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.set_stage("validate_config")
         command_context.require_valid_config(profile="uninstall")
+        if no_input_enabled(args) and not args.yes and not args.no_reboot and not args.dry_run:
+            command_context.set_stage("noninteractive_confirmation")
+            message = (
+                "Running `uninstall` with reboot in non-interactive mode requires `--yes` "
+                "to approve the reboot or `--no-reboot` to avoid it."
+            )
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
         if connection.password:
@@ -94,6 +112,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 f"This will reboot the {device_name} now. Continue?",
                 default=True,
                 noninteractive_message="Running `uninstall` with reboot requires confirmation when stdin is not interactive. Use `uninstall --yes` to skip the prompt or `uninstall --no-reboot`.",
+                allow_prompt=not no_input_enabled(args),
             )
             if proceed is None:
                 return 1

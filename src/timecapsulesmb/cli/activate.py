@@ -7,7 +7,9 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import activate_deployed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
+    add_no_input_argument,
     load_env_config,
+    no_input_enabled,
     print_json,
     require_netbsd4_device_compatibility,
 )
@@ -36,6 +38,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Manually activate an already-deployed NetBSD4 AirPort storage device payload.")
     add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before restarting the deployed Samba services")
+    add_no_input_argument(parser)
     parser.add_argument("--dry-run", action="store_true", help="Print activation actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run activation plan as JSON")
     args = parser.parse_args(argv)
@@ -48,6 +51,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "activate", "activate_started", "activate_finished", config=config, args=args) as command_context:
         command_context.update_fields(dry_run=args.dry_run, yes=args.yes, runtime_already_ready=False)
+        if no_input_enabled(args) and not args.yes and not args.dry_run:
+            command_context.set_stage("noninteractive_confirmation")
+            message = "Running `activate` in non-interactive mode requires `--yes` to approve activation."
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
         command_context.set_stage("resolve_managed_target")
         target = command_context.resolve_validated_managed_target(profile="activate", include_probe=True)
         connection = target.connection
@@ -80,6 +89,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "Continue with NetBSD4 activation?",
                 default=False,
                 noninteractive_message="Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment.",
+                allow_prompt=not no_input_enabled(args),
             )
             if proceed is None:
                 return 1

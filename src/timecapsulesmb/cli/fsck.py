@@ -7,7 +7,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, load_env_config, no_input_enabled
 from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.processes import (
@@ -105,6 +105,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run fsck_hfs on a mounted HFS volume and reboot by default.")
     add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before running fsck")
+    add_no_input_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Run fsck only; do not reboot afterward")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for SSH to go down and come back after reboot")
     parser.add_argument("--volume", help="HFS volume device to repair, for example dk2 or /dev/dk2")
@@ -122,6 +123,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.set_stage("validate_config")
         command_context.require_valid_config(profile="fsck")
+        if no_input_enabled(args) and not args.yes:
+            command_context.set_stage("noninteractive_confirmation")
+            message = "Running `fsck` in non-interactive mode requires `--yes` to approve disk repair."
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
         if connection.password:
@@ -137,7 +144,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             target = select_fsck_target(
                 tuple(_target_from_volume(volume) for volume in mounted_volumes),
                 args.volume,
-                prompt=not args.yes,
+                prompt=not args.yes and not no_input_enabled(args),
             )
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
@@ -152,6 +159,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?",
                 default=True,
                 noninteractive_message="Running `fsck` requires confirmation when stdin is not interactive. Use `fsck --yes` in a non-interactive environment.",
+                allow_prompt=not no_input_enabled(args),
             )
             if proceed is None:
                 return 1

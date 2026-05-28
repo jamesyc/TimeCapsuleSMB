@@ -6,7 +6,16 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
-from timecapsulesmb.cli.runtime import LogCallback, add_config_argument, add_no_wait_argument, confirm, emit_progress, load_env_config
+from timecapsulesmb.cli.runtime import (
+    LogCallback,
+    add_config_argument,
+    add_no_input_argument,
+    add_no_wait_argument,
+    confirm,
+    emit_progress,
+    load_env_config,
+    no_input_enabled,
+)
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.net import extract_host
@@ -89,6 +98,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     mode_group.add_argument("--disable", action="store_true", help="Disable SSH over SSH if it is currently reachable")
     mode_group.add_argument("--status", action="store_true", help="Report whether SSH is reachable without changing device state")
     parser.add_argument("--yes", action="store_true", help="Skip the legacy prompt when SSH is already enabled")
+    add_no_input_argument(parser)
     add_no_wait_argument(parser)
     args = parser.parse_args(argv)
 
@@ -177,6 +187,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if action is SetSshAction.PROMPT_DISABLE:
             command_context.set_stage("prompt_disable_ssh")
+            if not args.yes and no_input_enabled(args):
+                message = (
+                    "Running `set-ssh` in non-interactive legacy mode requires `--yes` "
+                    "to disable SSH, or an explicit `--enable`, `--disable`, or `--status` mode."
+                )
+                print(message)
+                command_context.fail_with_error(message)
+                return 1
             if not args.yes:
                 confirmed = confirm(
                     "SSH already enabled. Disable?",

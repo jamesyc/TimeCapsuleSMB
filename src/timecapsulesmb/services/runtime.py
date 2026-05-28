@@ -58,10 +58,13 @@ def resolve_ssh_credentials(
     config: AppConfig,
     *,
     allow_empty_password: bool = False,
+    allow_password_prompt: bool = True,
 ) -> tuple[str, str]:
     host = config.require("TC_HOST")
     password = config.get("TC_PASSWORD")
     if not password and not allow_empty_password:
+        if not allow_password_prompt:
+            raise ConfigError("TC_PASSWORD is required when --no-input is used.")
         import getpass
         password = getpass.getpass("Device root password: ")
     return host, password
@@ -72,10 +75,15 @@ def resolve_env_connection(
     *,
     required_keys: tuple[str, ...] = (),
     allow_empty_password: bool = False,
+    allow_password_prompt: bool = True,
 ) -> SshConnection:
     for key in required_keys:
         config.require(key)
-    host, password = resolve_ssh_credentials(config, allow_empty_password=allow_empty_password)
+    host, password = resolve_ssh_credentials(
+        config,
+        allow_empty_password=allow_empty_password,
+        allow_password_prompt=allow_password_prompt,
+    )
     return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
 
 
@@ -118,6 +126,7 @@ def resolve_validated_managed_target(
     command_name: str,
     profile: str,
     include_probe: bool = False,
+    allow_password_prompt: bool = True,
 ) -> ManagedTargetState:
     require_valid_app_config(config, profile=profile, command_name=command_name)
     resolution_error = ssh_target_link_local_resolution_error(
@@ -127,7 +136,7 @@ def resolve_validated_managed_target(
     )
     if resolution_error is not None:
         raise ConfigError(resolution_error)
-    connection = resolve_env_connection(config)
+    connection = resolve_env_connection(config, allow_password_prompt=allow_password_prompt)
     if profile == "flash":
         return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
     probe_state = probe_connection_state(connection) if include_probe else None

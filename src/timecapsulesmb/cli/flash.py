@@ -19,9 +19,11 @@ from timecapsulesmb.cli.flows import observe_reboot_cycle, request_ssh_reboot
 from timecapsulesmb.cli.runtime import (
     LogCallback,
     add_config_argument,
+    add_no_input_argument,
     add_no_wait_argument,
     emit_progress,
     load_env_config,
+    no_input_enabled,
     prefixed_logger,
     print_json,
     require_netbsd4_device_compatibility,
@@ -549,6 +551,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mode_group.add_argument("--check-apple", action="store_true", help="Check whether the active bank matches Apple stock firmware")
     mode_group.add_argument("--download-only", action="store_true", help="Download and validate Apple firmware without writing")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before --patch or --restore writes")
+    add_no_input_argument(parser)
     parser.add_argument("--reboot", action="store_true", help="Reboot after a validated --restore write")
     add_no_wait_argument(parser)
     parser.add_argument("--poweroff", action="store_true", help=argparse.SUPPRESS)
@@ -852,7 +855,8 @@ def _prepare_write(
             noninteractive_message=(
                 f"Running `flash --{operation}` requires confirmation when stdin is not interactive. "
                 f"Use `flash --{operation} --yes` to skip the prompt."
-            )
+            ),
+            allow_prompt=not no_input_enabled(args),
         )
         if proceed is None:
             return False, 1
@@ -1055,6 +1059,12 @@ def _run_flash(
 
 def main(argv: Optional[list[str]] = None) -> int:
     args, operation = _parse_args(argv)
+    if no_input_enabled(args) and operation in WRITE_OPERATIONS and not args.yes:
+        print(
+            f"Running `flash --{operation}` in non-interactive mode requires `--yes` "
+            "to approve the firmware write."
+        )
+        return 1
     _require_operation_dependencies(operation)
 
     log = prefixed_logger("flash", enabled=not args.json)

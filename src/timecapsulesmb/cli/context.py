@@ -286,7 +286,12 @@ class CommandContext:
         noninteractive_message: str,
         eof_default: bool | None = None,
         interrupt_default: bool | None = None,
+        allow_prompt: bool = True,
     ) -> bool | None:
+        if not allow_prompt:
+            print(noninteractive_message)
+            self.fail_with_error(noninteractive_message)
+            return None
         try:
             return runtime.confirm(
                 prompt_text,
@@ -404,6 +409,7 @@ class CommandContext:
             self.config,
             required_keys=required_keys,
             allow_empty_password=allow_empty_password,
+            allow_password_prompt=not runtime.no_input_enabled(self.args),
         )
         return self.connection
 
@@ -448,6 +454,7 @@ class CommandContext:
             command_name=self.command_name,
             profile=profile,
             include_probe=include_probe,
+            allow_password_prompt=not runtime.no_input_enabled(self.args),
         )
         return self._apply_managed_target_state(target)
 

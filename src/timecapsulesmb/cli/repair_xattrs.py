@@ -10,7 +10,13 @@ from typing import Callable, Optional
 from timecapsulesmb.app.contracts import repair_xattrs_payload
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt, load_optional_env_config
+from timecapsulesmb.cli.runtime import (
+    add_config_argument,
+    add_no_input_argument,
+    confirm as confirm_prompt,
+    load_optional_env_config,
+    no_input_enabled,
+)
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.identity import ensure_install_id
@@ -227,6 +233,11 @@ def run_repair_structured(
         return RepairRunResult(1, root, findings, candidates, summary, report=report)
 
     command_context.set_stage("confirm_repair")
+    if no_input_enabled(args) and not args.yes:
+        message = "Running `repair-xattrs` in non-interactive mode requires `--yes` to apply repairs."
+        emit(message)
+        command_context.fail_with_error(message)
+        return RepairRunResult(1, root, findings, candidates, summary, report=message)
     if not args.yes and not confirm(f"Repair {len(candidates)} paths with known-safe fixes?"):
         emit("No changes made.")
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
@@ -312,6 +323,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--path", type=Path, default=None, help="Mounted SMB share path or subdirectory to scan. Defaults to the mounted SMB share matching .env.")
     parser.add_argument("--dry-run", action="store_true", help="Only scan and report files; do not prompt or repair")
     parser.add_argument("--yes", action="store_true", help="Repair without prompting")
+    add_no_input_argument(parser)
     parser.add_argument("--recursive", dest="recursive", action="store_true", default=True, help="Scan recursively (default)")
     parser.add_argument("--no-recursive", dest="recursive", action="store_false", help="Only scan the top-level directory")
     parser.add_argument("--max-depth", type=int, default=None, help="Maximum directory depth to scan when recursive")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -53,6 +55,58 @@ def add_config_argument(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Path to the TimeCapsuleSMB config file. Overrides TCAPSULE_CONFIG and the repo-local .env.",
     )
+
+
+def add_no_input_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-input",
+        action="store_true",
+        help="Do not prompt; fail if required input or confirmation is missing",
+    )
+
+
+def no_input_enabled(args: argparse.Namespace | object) -> bool:
+    return bool(getattr(args, "no_input", False))
+
+
+def add_password_source_arguments(parser: argparse.ArgumentParser) -> None:
+    password_group = parser.add_mutually_exclusive_group()
+    password_group.add_argument(
+        "--password-env",
+        metavar="NAME",
+        help="Read the device password from environment variable NAME",
+    )
+    password_group.add_argument(
+        "--password-file",
+        type=Path,
+        metavar="PATH",
+        help="Read the device password from PATH",
+    )
+    password_group.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read the device password from stdin",
+    )
+
+
+def read_password_source_args(args: argparse.Namespace) -> str | None:
+    env_name = getattr(args, "password_env", None)
+    if env_name:
+        if env_name not in os.environ:
+            raise ConfigError(f"Password environment variable is not set: {env_name}")
+        return os.environ[env_name]
+
+    password_file = getattr(args, "password_file", None)
+    if password_file is not None:
+        try:
+            return Path(password_file).read_text(encoding="utf-8").rstrip("\r\n")
+        except OSError as exc:
+            raise ConfigError(f"Failed to read password file {password_file}: {exc}") from exc
+
+    if getattr(args, "password_stdin", False):
+        return sys.stdin.read().rstrip("\r\n")
+
+    return None
 
 
 def non_negative_int_arg(value: str) -> int:
@@ -160,8 +214,13 @@ def resolve_ssh_credentials(
     config: AppConfig,
     *,
     allow_empty_password: bool = False,
+    allow_password_prompt: bool = True,
 ) -> tuple[str, str]:
-    return service_runtime.resolve_ssh_credentials(config, allow_empty_password=allow_empty_password)
+    return service_runtime.resolve_ssh_credentials(
+        config,
+        allow_empty_password=allow_empty_password,
+        allow_password_prompt=allow_password_prompt,
+    )
 
 
 def resolve_env_connection(
@@ -169,11 +228,13 @@ def resolve_env_connection(
     *,
     required_keys: tuple[str, ...] = (),
     allow_empty_password: bool = False,
+    allow_password_prompt: bool = True,
 ) -> SshConnection:
     return service_runtime.resolve_env_connection(
         config,
         required_keys=required_keys,
         allow_empty_password=allow_empty_password,
+        allow_password_prompt=allow_password_prompt,
     )
 
 
@@ -201,12 +262,14 @@ def resolve_validated_managed_target(
     command_name: str,
     profile: str,
     include_probe: bool = False,
+    allow_password_prompt: bool = True,
 ) -> ManagedTargetState:
     return service_runtime.resolve_validated_managed_target(
         config,
         command_name=command_name,
         profile=profile,
         include_probe=include_probe,
+        allow_password_prompt=allow_password_prompt,
     )
 
 
