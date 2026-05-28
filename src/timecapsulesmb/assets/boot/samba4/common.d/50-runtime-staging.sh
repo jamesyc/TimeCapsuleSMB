@@ -255,7 +255,7 @@ EOF
     acl_xattr:ignore system acls = yes
     streams_xattr:max xattrs per stream = 2
     fruit:resource = file
-    fruit:metadata = stream
+    fruit:metadata = netatalk
     fruit:encoding = native
     fruit:time machine = yes
     fruit:posix_rename = yes
