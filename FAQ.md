@@ -192,6 +192,20 @@ When filing an issue, please include:
 4. Any error messages you're seeing
 5. Steps to reproduce the problem
 
+#### How do I get logs from my Mac?
+
+Run:
+```
+log stream --style compact --level debug --predicate '
+  process IN {"backupd","backupd-helper","diskimagesiod","diskarbitrationd","NetAuthSysAgent"} OR
+  process == "kernel" OR
+  subsystem CONTAINS[c] "TimeMachine" OR
+  subsystem CONTAINS[c] "smb"
+  ' >> /tmp/tm-debug/tm-live.log 2>&1
+```
+
+The logs are then located at `/tmp/tm-debug/tm-live.log`
+
 ## Advanced Topics
 
 #### Can I rebuild the binaries myself?
