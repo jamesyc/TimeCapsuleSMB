@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.ops.configure import configure_operation
 from timecapsulesmb.app.ops.deploy import deploy_operation
+from timecapsulesmb.app.ops.discovery import discover_operation
 from timecapsulesmb.app.ops.doctor import doctor_operation
 from timecapsulesmb.app.ops.flash import flash_operation
 from timecapsulesmb.app.ops.maintenance import (
@@ -17,7 +18,6 @@ from timecapsulesmb.app.ops.maintenance import (
 from timecapsulesmb.app.ops.reachability import reachability_operation
 from timecapsulesmb.app.ops.readiness import (
     capabilities_operation,
-    discover_operation,
     set_telemetry_operation,
     telemetry_identity_operation,
     validate_install_operation,

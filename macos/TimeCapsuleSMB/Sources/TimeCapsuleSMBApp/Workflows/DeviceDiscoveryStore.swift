@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-enum DeviceDiscoveryMonitorState: String, CaseIterable, Equatable {
+enum DeviceDiscoveryState: String, CaseIterable, Equatable {
     case idle
     case waitingForReadiness
     case discovering
@@ -34,14 +34,14 @@ enum DeviceDiscoveryMonitorState: String, CaseIterable, Equatable {
 }
 
 @MainActor
-final class DeviceDiscoveryMonitorStore: ObservableObject {
-    @Published private(set) var state: DeviceDiscoveryMonitorState = .idle
+final class DeviceDiscoveryStore: ObservableObject {
+    @Published private(set) var state: DeviceDiscoveryState = .idle
     @Published private(set) var devices: [DiscoveredDevice] = []
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var currentStage: OperationStageState?
 
     let coordinator: OperationCoordinator
-    let readinessStore: AppReadinessStore
+    let readinessStore: AppReadinessStore?
     let registry: DeviceRegistryStore
     private let lane: OperationLane
 
@@ -53,7 +53,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
 
     init(
         coordinator: OperationCoordinator,
-        readinessStore: AppReadinessStore,
+        readinessStore: AppReadinessStore? = nil,
         registry: DeviceRegistryStore,
         timeout: Double = AppSettings.default.defaultBonjourTimeoutSeconds
     ) {
@@ -63,7 +63,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         self.timeout = timeout
         self.lane = coordinator.appLane
 
-        readinessStore.$state
+        readinessStore?.$state
             .sink { [weak self] _ in
                 Task { @MainActor in
                     self?.handleReadinessChange()
@@ -116,6 +116,11 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         runDiscoverWhenPossible()
     }
 
+    func refresh(timeout: Double) {
+        self.timeout = timeout
+        refresh()
+    }
+
     func applyAppSettings(_ settings: AppSettings) {
         timeout = settings.defaultBonjourTimeoutSeconds
     }
@@ -138,6 +143,12 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         guard isMonitoring else {
             return
         }
+        guard let readinessStore else {
+            if devices.isEmpty && state != .discovering {
+                runDiscoverWhenPossible()
+            }
+            return
+        }
         switch readinessStore.state.kind {
         case .ready, .degraded:
             if devices.isEmpty && state != .discovering {
@@ -153,17 +164,19 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
     }
 
     private func runDiscoverWhenPossible() {
-        switch readinessStore.state.kind {
-        case .ready, .degraded:
-            break
-        case .blocked:
-            state = .readinessBlocked
-            pendingRefresh = false
-            return
-        default:
-            state = .waitingForReadiness
-            pendingRefresh = false
-            return
+        if let readinessStore {
+            switch readinessStore.state.kind {
+            case .ready, .degraded:
+                break
+            case .blocked:
+                state = .readinessBlocked
+                pendingRefresh = false
+                return
+            default:
+                state = .waitingForReadiness
+                pendingRefresh = false
+                return
+            }
         }
 
         guard !lane.isBusy else {

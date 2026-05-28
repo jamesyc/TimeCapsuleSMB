@@ -750,48 +750,67 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
-    func testStagingDiscoveredDeviceFromOverviewPromptsForPasswordWithoutRunningDiscovery() async throws {
-        let fixture = try await makeStore(responses: [])
-        let payload = try testDiscoveredDevice(
+    func testSelectingSharedDiscoveryDeviceFromOverviewPromptsForPasswordWithoutRediscovering() async throws {
+        let discovered = testDiscoveredDevice(
             name: "Office Capsule",
             host: "10.0.0.2",
             model: "TimeCapsule6,116"
-        ).decode(DiscoveredDevicePayload.self)
-        let device = DiscoveredDevice(payload: payload, index: 0)
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [], devices: [discovered]))
+            ])
+        ])
+        fixture.store.discovery.refresh(timeout: 0.1)
+        try await waitUntilStoreState { fixture.store.discovery.state == .ready }
+        let device = try XCTUnwrap(fixture.store.discovery.devices.first)
 
-        fixture.store.stageDiscoveredDevices([device], selected: device)
+        fixture.store.select(device)
 
         XCTAssertEqual(fixture.store.state, .passwordEntry)
         XCTAssertEqual(fixture.store.devices, [device])
         XCTAssertEqual(fixture.store.selectedDeviceID, device.id)
         XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.2")
-        XCTAssertEqual(fixture.runner.calls, [])
+        XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
-    func testStagingDiscoveredDevicesFromOverviewKeepsListOrderAndPreselectsClickedDevice() async throws {
-        let fixture = try await makeStore(responses: [])
-        let first = DiscoveredDevice(payload: try testDiscoveredDevice(
+    func testSharedDiscoverySelectionKeepsListOrderAndPreselectsClickedDevice() async throws {
+        let firstPayload = testDiscoveredDevice(
             id: "bonjour:first",
             name: "First Capsule",
             host: "10.0.0.2",
             hostname: "first.local.",
             fullname: "First Capsule._airport._tcp.local."
-        ).decode(DiscoveredDevicePayload.self), index: 0)
-        let second = DiscoveredDevice(payload: try testDiscoveredDevice(
+        )
+        let secondPayload = testDiscoveredDevice(
             id: "bonjour:second",
             name: "Second Capsule",
             host: "10.0.0.3",
             hostname: "second.local.",
             fullname: "Second Capsule._airport._tcp.local."
-        ).decode(DiscoveredDevicePayload.self), index: 1)
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "result",
+                    operation: "discover",
+                    ok: true,
+                    payload: testDiscoverPayload(records: [], devices: [firstPayload, secondPayload])
+                )
+            ])
+        ])
+        fixture.store.discovery.refresh(timeout: 0.1)
+        try await waitUntilStoreState { fixture.store.discovery.state == .ready }
+        let first = fixture.store.discovery.devices[0]
+        let second = fixture.store.discovery.devices[1]
 
-        fixture.store.stageDiscoveredDevices([first, second], selected: second)
+        fixture.store.select(second)
 
         XCTAssertEqual(fixture.store.state, .passwordEntry)
         XCTAssertEqual(fixture.store.devices, [first, second])
         XCTAssertEqual(fixture.store.selectedDeviceID, second.id)
         XCTAssertEqual(fixture.store.hostFieldText, "10.0.0.3")
-        XCTAssertEqual(fixture.runner.calls, [])
+        XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
     private func makeStore(responses: [StoreTestRunner.Response]) async throws -> (

@@ -66,11 +66,11 @@ struct DeviceListOverviewView: View {
                 Text(L10n.string("overview.discovery.title"))
                     .font(.headline)
                 Spacer()
-                Text(appStore.discoveryMonitor.state.title)
+                Text(appStore.deviceDiscovery.state.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button {
-                    appStore.discoveryMonitor.refresh()
+                    appStore.deviceDiscovery.refresh()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -85,7 +85,7 @@ struct DeviceListOverviewView: View {
 
     @ViewBuilder
     private var discoveryContent: some View {
-        switch appStore.discoveryMonitor.state {
+        switch appStore.deviceDiscovery.state {
         case .idle, .waitingForReadiness:
             Text(L10n.string("overview.discovery.waiting"))
                 .foregroundStyle(.secondary)
@@ -99,18 +99,18 @@ struct DeviceListOverviewView: View {
                 .foregroundStyle(.secondary)
         case .failed:
             VStack(alignment: .leading, spacing: 6) {
-                Text(appStore.discoveryMonitor.error?.message ?? L10n.string("overview.discovery.failed"))
+                Text(appStore.deviceDiscovery.error?.message ?? L10n.string("overview.discovery.failed"))
                     .foregroundStyle(.red)
                 Button(L10n.string("overview.discovery.refresh")) {
-                    appStore.discoveryMonitor.refresh()
+                    appStore.deviceDiscovery.refresh()
                 }
             }
         case .empty:
             Text(L10n.string("overview.discovery.empty"))
                 .foregroundStyle(.secondary)
         case .ready:
-            let unsaved = appStore.discoveryMonitor.unsavedDevices
-            let saved = appStore.discoveryMonitor.savedDevices
+            let unsaved = appStore.deviceDiscovery.unsavedDevices
+            let saved = appStore.deviceDiscovery.savedDevices
             if unsaved.isEmpty && saved.isEmpty {
                 Text(L10n.string("overview.discovery.empty"))
                     .foregroundStyle(.secondary)

@@ -407,6 +407,59 @@ func testStringArray(_ value: JSONValue, for key: String) -> [String] {
     }
 }
 
+extension DiscoveredDevice {
+    init(record: BonjourResolvedServicePayload, index: Int) {
+        let stableParts = [
+            record.fullname,
+            record.serviceType,
+            record.name,
+            record.hostname,
+            record.ipv4.joined(separator: ","),
+            record.ipv6.joined(separator: ",")
+        ]
+        let stableID = stableParts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "|")
+
+        let resolvedName = record.name.isEmpty ? (record.hostname.isEmpty ? "AirPort Device" : record.hostname) : record.name
+        let addresses = Self.testNetworkAddresses(ipv4: record.ipv4, ipv6: record.ipv6)
+        let identity = DeviceNetworkIdentity(
+            configuredSSHTarget: "",
+            hostname: record.hostname,
+            bonjourName: resolvedName,
+            bonjourFullname: record.fullname,
+            addresses: addresses
+        )
+
+        let connectionTarget = identity.preferredSetupTarget
+        self.init(
+            id: stableID.isEmpty ? "discovered-\(index)" : stableID,
+            name: resolvedName,
+            connectionTarget: connectionTarget,
+            sshHost: DeviceEndpointPolicy.rootSSHTarget(connectionTarget),
+            hostname: record.hostname,
+            networkAddresses: identity.addresses,
+            syap: Self.testNonEmpty(record.properties["syAP"] ?? record.properties["syap"]),
+            model: Self.testNonEmpty(record.properties["model"] ?? record.properties["am"]),
+            rawRecord: record.jsonValue
+        )
+    }
+
+    private static func testNetworkAddresses(ipv4: [String], ipv6: [String]) -> [DeviceNetworkAddress] {
+        var addresses = ipv4.compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+        addresses += ipv6.compactMap { DeviceNetworkAddress(value: $0, source: .bonjour) }
+        return DeviceEndpointPolicy.uniqueAddresses(addresses)
+    }
+
+    private static func testNonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+}
+
 func testConfigurePayload(
     host: String = "10.0.0.2",
     configPath: String = "/tmp/profile/.env",

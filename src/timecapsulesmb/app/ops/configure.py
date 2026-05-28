@@ -5,7 +5,7 @@ import uuid
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.contracts import configure_payload
-from timecapsulesmb.app.ops.readiness import selected_record_host, selected_record_properties
+from timecapsulesmb.app.ops.discovery import selected_record_host, selected_record_properties
 from timecapsulesmb.core.config import (
     DEFAULTS,
     parse_bool,

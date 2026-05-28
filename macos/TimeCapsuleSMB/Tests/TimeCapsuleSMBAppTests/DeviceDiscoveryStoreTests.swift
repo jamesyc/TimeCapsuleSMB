@@ -2,10 +2,10 @@ import XCTest
 @testable import TimeCapsuleSMBApp
 
 @MainActor
-final class DeviceDiscoveryMonitorStoreTests: XCTestCase {
+final class DeviceDiscoveryStoreTests: XCTestCase {
     func testStateInventoryIsExplicit() {
         XCTAssertEqual(
-            DeviceDiscoveryMonitorState.allCases,
+            DeviceDiscoveryState.allCases,
             [.idle, .waitingForReadiness, .discovering, .empty, .ready, .paused, .readinessBlocked, .failed]
         )
     }
@@ -148,7 +148,7 @@ final class DeviceDiscoveryMonitorStoreTests: XCTestCase {
         )
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let monitor = DeviceDiscoveryMonitorStore(coordinator: coordinator, readinessStore: readiness, registry: registry)
+        let monitor = DeviceDiscoveryStore(coordinator: coordinator, readinessStore: readiness, registry: registry)
 
         monitor.startMonitoring()
         readiness.start()
@@ -163,7 +163,7 @@ final class DeviceDiscoveryMonitorStoreTests: XCTestCase {
         let coordinator: OperationCoordinator
         let readiness: AppReadinessStore
         let registry: DeviceRegistryStore
-        let monitor: DeviceDiscoveryMonitorStore
+        let monitor: DeviceDiscoveryStore
     }
 
     private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> Fixture {
@@ -178,7 +178,7 @@ final class DeviceDiscoveryMonitorStoreTests: XCTestCase {
         )
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let monitor = DeviceDiscoveryMonitorStore(coordinator: coordinator, readinessStore: readiness, registry: registry)
+        let monitor = DeviceDiscoveryStore(coordinator: coordinator, readinessStore: readiness, registry: registry)
         return Fixture(
             runner: runner,
             coordinator: coordinator,

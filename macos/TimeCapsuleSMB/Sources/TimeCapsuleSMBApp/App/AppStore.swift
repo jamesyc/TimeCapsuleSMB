@@ -16,7 +16,7 @@ final class AppStore: ObservableObject {
     let passwordStore: PasswordStore
     let profilePersistence: DeviceProfilePersistenceService
     let activityStore: ActivityStore
-    let discoveryMonitor: DeviceDiscoveryMonitorStore
+    let deviceDiscovery: DeviceDiscoveryStore
     let reachabilityStore: DeviceReachabilityStore
 
     private var cancellables: Set<AnyCancellable> = []
@@ -42,7 +42,7 @@ final class AppStore: ObservableObject {
         profilePersistence: DeviceProfilePersistenceService? = nil,
         activityStore: ActivityStore? = nil,
         appUpdateStore: AppUpdateStore? = nil,
-        discoveryMonitor: DeviceDiscoveryMonitorStore? = nil,
+        deviceDiscovery: DeviceDiscoveryStore? = nil,
         reachabilityStore: DeviceReachabilityStore? = nil
     ) {
         self.appReadinessStore = appReadinessStore
@@ -56,7 +56,7 @@ final class AppStore: ObservableObject {
         )
         self.activityStore = activityStore ?? ActivityStore(coordinator: operationCoordinator)
         self.appUpdateStore = appUpdateStore ?? AppUpdateStore(coordinator: operationCoordinator)
-        self.discoveryMonitor = discoveryMonitor ?? DeviceDiscoveryMonitorStore(
+        self.deviceDiscovery = deviceDiscovery ?? DeviceDiscoveryStore(
             coordinator: operationCoordinator,
             readinessStore: appReadinessStore,
             registry: deviceRegistry
@@ -93,7 +93,7 @@ final class AppStore: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
-        self.discoveryMonitor.objectWillChange
+        self.deviceDiscovery.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
@@ -126,7 +126,7 @@ final class AppStore: ObservableObject {
         await deviceRegistry.load()
         await refreshPasswordStates()
         appReadinessStore.start()
-        discoveryMonitor.startMonitoring()
+        deviceDiscovery.startMonitoring()
         if appSettingsStore.settings.checkForUpdatesOnLaunch {
             appUpdateStore.checkNow(settings: appSettingsStore.settings)
         }
@@ -270,7 +270,7 @@ final class AppStore: ObservableObject {
             backend.helperPath = settings.helperPathOverride
         }
         appReadinessStore.applyVersionCheck(readinessVersionCheck(for: settings))
-        discoveryMonitor.applyAppSettings(settings)
+        deviceDiscovery.applyAppSettings(settings)
         if previousLanguage != settings.language {
             objectWillChange.send()
         }

@@ -72,7 +72,6 @@ final class AddDeviceFlowStore: ObservableObject {
     @Published var password = ""
     @Published var debugLogging = false
     @Published private(set) var state: AddDeviceFlowState = .idle
-    @Published private(set) var devices: [DiscoveredDevice] = []
     @Published var selectedDeviceID: DiscoveredDevice.ID?
     @Published private(set) var savedProfile: DeviceProfile?
     @Published private(set) var error: BackendErrorViewModel?
@@ -82,65 +81,59 @@ final class AddDeviceFlowStore: ObservableObject {
     let registry: DeviceRegistryStore
     let passwordStore: PasswordStore
     let profilePersistence: DeviceProfilePersistenceService
-    private let appLane: OperationLane
+    let discovery: DeviceDiscoveryStore
+    let setupWorkflow: DeviceSetupWorkflow
 
-    private var pendingConfigureDraft: ConfigureProfileDraft?
     private var defaultDeviceSettings: DeviceProfileSettings = AppSettings.default.defaultDeviceSettings
     private var appliedDefaultDeviceSettings: DeviceProfileSettings = AppSettings.default.defaultDeviceSettings
     private var appliedDefaultBonjourTimeout = AppSettings.default.defaultBonjourTimeoutSeconds
-    private var activeLaneKey: OperationLaneKey?
-    private var operationObservers: [OperationLaneKey: BackendOperationObserver] = [:]
     private var cancellables: Set<AnyCancellable> = []
-    private var observedLaneKeys: Set<OperationLaneKey> = []
 
     init(
         coordinator: OperationCoordinator,
         registry: DeviceRegistryStore,
         passwordStore: PasswordStore,
-        profilePersistence: DeviceProfilePersistenceService? = nil
+        profilePersistence: DeviceProfilePersistenceService? = nil,
+        discovery: DeviceDiscoveryStore? = nil,
+        setupWorkflow: DeviceSetupWorkflow? = nil
     ) {
         self.coordinator = coordinator
         self.registry = registry
         self.passwordStore = passwordStore
-        self.profilePersistence = profilePersistence ?? DeviceProfilePersistenceService(registry: registry, passwordStore: passwordStore)
-        self.appLane = coordinator.appLane
-        observe(lane: appLane)
+        let resolvedPersistence = profilePersistence ?? DeviceProfilePersistenceService(
+            registry: registry,
+            passwordStore: passwordStore
+        )
+        self.profilePersistence = resolvedPersistence
+        self.discovery = discovery ?? DeviceDiscoveryStore(
+            coordinator: coordinator,
+            registry: registry
+        )
+        self.setupWorkflow = setupWorkflow ?? DeviceSetupWorkflow(
+            coordinator: coordinator,
+            profilePersistence: resolvedPersistence
+        )
+        observeDiscovery()
+        observeSetupWorkflow()
     }
 
-    private func observe(lane: OperationLane) {
-        guard observedLaneKeys.insert(lane.key).inserted else {
-            return
-        }
-        lane.backend.$events
-            .sink { [weak self] events in
-                Task { @MainActor in
-                    self?.process(events, laneKey: lane.key)
-                }
-            }
-            .store(in: &cancellables)
+    var devices: [DiscoveredDevice] {
+        entryMode == .discover ? discovery.devices : []
     }
 
     var isRunning: Bool {
-        switch activeLaneKey {
-        case .some(let key):
-            return coordinator.lane(for: key).isBusy
-        case .none:
-            return false
-        }
+        discovery.state == .discovering || setupWorkflow.isRunning
     }
 
     var canCancel: Bool {
-        guard let activeLaneKey else {
-            return false
-        }
-        return coordinator.lane(for: activeLaneKey).backend.canCancel
+        setupWorkflow.canCancel || discovery.state == .discovering
     }
 
     var selectedDevice: DiscoveredDevice? {
         guard let selectedDeviceID else {
             return nil
         }
-        return devices.first { $0.id == selectedDeviceID }
+        return discovery.devices.first { $0.id == selectedDeviceID }
     }
 
     var hostFieldText: String {
@@ -161,16 +154,9 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     var canConfigure: Bool {
-        let hasTarget: Bool
-        switch entryMode {
-        case .discover:
-            hasTarget = selectedDevice != nil
-        case .manual:
-            hasTarget = !manualHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return !isRunning
+        !isRunning
             && !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && hasTarget
+            && currentTarget()?.isEmpty == false
     }
 
     func setEntryMode(_ mode: AddDeviceEntryMode) {
@@ -185,7 +171,7 @@ final class AddDeviceFlowStore: ObservableObject {
             savedProfile = nil
             error = nil
             currentStage = nil
-            state = devices.isEmpty ? .idle : .discoveryReady
+            syncDiscoveryState()
         case .manual:
             startManualEntry()
         }
@@ -194,7 +180,6 @@ final class AddDeviceFlowStore: ObservableObject {
     func startManualEntry() {
         entryMode = .manual
         state = .manualEntry
-        devices = []
         selectedDeviceID = nil
         savedProfile = nil
         error = nil
@@ -206,28 +191,18 @@ final class AddDeviceFlowStore: ObservableObject {
             failLocally(L10n.string("add_device.error.invalid_bonjour_timeout"))
             return
         }
-        guard !appLane.isBusy else {
+        guard coordinator.appLane.isBusy == false else {
             rejectRun(L10n.string("operation.error.already_running"))
             return
         }
-        resetRunState(clearDevices: true)
         entryMode = .discover
+        selectedDeviceID = nil
         manualHost = ""
-        switch coordinator.run(
-            operation: "discover",
-            params: OperationParams.discover(timeout: timeout),
-            context: nil,
-            activeDeviceID: nil,
-            laneKey: .app
-        ) {
-        case .started(let operation):
-            activeLaneKey = .app
-            observer(for: .app).start(operation)
-            state = .discovering
-            process(appLane.backend.events, laneKey: .app)
-        case .rejected(let message):
-            rejectRun(message)
-        }
+        savedProfile = nil
+        error = nil
+        currentStage = nil
+        state = .discovering
+        discovery.refresh(timeout: timeout)
     }
 
     func runConfigure() {
@@ -237,70 +212,26 @@ final class AddDeviceFlowStore: ObservableObject {
             failLocally(L10n.string("add_device.error.password_required"))
             return
         }
-        let selectedDevice = entryMode == .discover ? selectedDevice : nil
-        let trimmedHost = manualHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard selectedDevice != nil || (entryMode == .manual && !trimmedHost.isEmpty) else {
+        guard let target = currentTarget(), !target.isEmpty else {
             failLocally(L10n.string("add_device.error.choose_target"))
             return
         }
 
-        let targetHost = selectedDevice?.connectionTarget ?? trimmedHost
-        let existing = selectedDevice.map { registry.matchingProfile(for: $0) }
-            ?? registry.matchingProfile(host: targetHost, bonjourFullname: nil)
+        let existing = target.matchingProfile(in: registry)
         let profileID = existing?.id ?? UUID().uuidString.lowercased()
         let configureSettings = existing?.settings ?? defaultDeviceSettings
-
-        let laneKey = OperationLaneKey.device(profileID)
-        let lane = coordinator.lane(for: laneKey)
-        observe(lane: lane)
-
-        guard !lane.isBusy else {
-            clearPendingConfigureDraft()
-            rejectRun(L10n.string("operation.error.already_running"))
-            return
-        }
-        let configureDraft: ConfigureProfileDraft
-        do {
-            configureDraft = try profilePersistence.prepareConfigureTarget(
-                targetHost: targetHost,
-                discoveredDevice: selectedDevice,
-                existingProfile: existing,
-                preferredID: profileID,
-                settings: configureSettings
-            )
-        } catch {
-            failProfileSave(error)
-            return
-        }
-        resetRunState(clearDevices: false)
-        pendingConfigureDraft = configureDraft
-        observer(for: laneKey).clear()
-        switch coordinator.run(
-            operation: "configure",
-            params: OperationParams.configure(
-                host: targetHost,
-                selectedRecord: selectedDevice?.rawRecord,
-                password: password,
-                debugLogging: configureSettings.debugLogging,
-                internalShareUseDiskRoot: configureSettings.internalShareUseDiskRoot,
-                anyProtocol: configureSettings.anyProtocol,
-                ataIdleSeconds: configureSettings.ataIdleSeconds,
-                ataStandby: configureSettings.ataStandby,
-                includeAtaStandby: true
-            ),
-            context: configureDraft.context,
-            activeDeviceID: profileID,
-            laneKey: laneKey
-        ) {
-        case .started(let operation):
-            activeLaneKey = laneKey
-            observer(for: laneKey).start(operation)
-            state = .configuring
-            process(lane.backend.events, laneKey: laneKey)
-        case .rejected(let message):
-            clearPendingConfigureDraft()
-            rejectRun(message)
-        }
+        error = nil
+        currentStage = nil
+        savedProfile = nil
+        setupWorkflow.start(
+            target: target,
+            password: password,
+            existingProfile: existing,
+            preferredID: profileID,
+            settings: configureSettings,
+            newProfileSettings: defaultDeviceSettings
+        )
+        applySetupState(setupWorkflow.state)
     }
 
     func select(_ device: DiscoveredDevice) {
@@ -316,37 +247,8 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .passwordEntry
     }
 
-    func stageDiscoveredDevices(_ discoveredDevices: [DiscoveredDevice], selected device: DiscoveredDevice) {
-        if !appLane.isBusy {
-            appLane.clear()
-        }
-        entryMode = .discover
-        var stagedDevices = discoveredDevices
-        if !stagedDevices.contains(where: { $0.id == device.id }) {
-            stagedDevices.append(device)
-        }
-        devices = stagedDevices
-        password = ""
-        savedProfile = nil
-        error = nil
-        currentStage = nil
-        clearPendingConfigureDraft()
-        activeLaneKey = nil
-        observer(for: .app).clear()
-        select(device)
-    }
-
     func reset() {
-        if !appLane.isBusy {
-            appLane.clear()
-        }
-        if let activeLaneKey, activeLaneKey != .app {
-            let lane = coordinator.lane(for: activeLaneKey)
-            if !lane.isBusy {
-                lane.clear()
-            }
-        }
-        devices = []
+        setupWorkflow.reset()
         selectedDeviceID = nil
         entryMode = .discover
         manualHost = ""
@@ -354,17 +256,15 @@ final class AddDeviceFlowStore: ObservableObject {
         savedProfile = nil
         error = nil
         currentStage = nil
-        clearPendingConfigureDraft()
-        activeLaneKey = nil
-        operationObservers = [:]
-        state = .idle
+        syncDiscoveryState()
     }
 
     func cancel() {
-        guard let activeLaneKey else {
-            return
+        if setupWorkflow.canCancel {
+            setupWorkflow.cancel()
+        } else if discovery.state == .discovering {
+            coordinator.cancel(laneKey: .app)
         }
-        coordinator.cancel(laneKey: activeLaneKey)
     }
 
     func applyAppSettings(_ settings: AppSettings) {
@@ -380,186 +280,171 @@ final class AddDeviceFlowStore: ObservableObject {
         appliedDefaultDeviceSettings = settings.defaultDeviceSettings
     }
 
-    private func resetRunState(clearDevices: Bool) {
-        let laneKey = activeLaneKey ?? (state == .discovering ? .app : nil)
-        if let laneKey {
-            let lane = coordinator.lane(for: laneKey)
-            if !lane.isBusy {
-                lane.clear()
+    private func currentTarget() -> AddDeviceTarget? {
+        switch entryMode {
+        case .discover:
+            guard let selectedDevice else {
+                return nil
             }
-            observer(for: laneKey).clear()
-        } else if !appLane.isBusy {
-            appLane.clear()
-            observer(for: .app).clear()
+            return .discovered(selectedDevice)
+        case .manual:
+            let target = ManualDeviceTarget(host: manualHost)
+            return target.host.isEmpty ? nil : .manual(target)
         }
-        error = nil
-        currentStage = nil
-        savedProfile = nil
-        activeLaneKey = nil
-        clearPendingConfigureDraft()
-        if clearDevices {
-            devices = []
+    }
+
+    private func observeDiscovery() {
+        discovery.$state
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.syncDiscoveryState()
+                }
+            }
+            .store(in: &cancellables)
+        discovery.$devices
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.syncDiscoveryState()
+                }
+            }
+            .store(in: &cancellables)
+        discovery.$currentStage
+            .sink { [weak self] stage in
+                Task { @MainActor in
+                    guard let self, self.entryMode == .discover, self.state == .discovering else {
+                        return
+                    }
+                    self.currentStage = stage
+                }
+            }
+            .store(in: &cancellables)
+        discovery.$error
+            .sink { [weak self] discoveryError in
+                Task { @MainActor in
+                    guard let self, self.entryMode == .discover, self.discovery.state == .failed else {
+                        return
+                    }
+                    self.error = discoveryError
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func observeSetupWorkflow() {
+        setupWorkflow.$state
+            .sink { [weak self] workflowState in
+                Task { @MainActor in
+                    self?.applySetupState(workflowState)
+                }
+            }
+            .store(in: &cancellables)
+        setupWorkflow.$currentStage
+            .sink { [weak self] stage in
+                Task { @MainActor in
+                    guard let self, self.isSetupState else {
+                        return
+                    }
+                    self.currentStage = stage
+                }
+            }
+            .store(in: &cancellables)
+        setupWorkflow.$error
+            .sink { [weak self] error in
+                Task { @MainActor in
+                    guard let self, self.isSetupState else {
+                        return
+                    }
+                    self.error = error
+                }
+            }
+            .store(in: &cancellables)
+        setupWorkflow.$savedProfile
+            .sink { [weak self] profile in
+                Task { @MainActor in
+                    self?.savedProfile = profile
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private var isSetupState: Bool {
+        switch state {
+        case .configuring, .awaitingConfirmation, .savingProfile, .saved, .authFailed, .unsupported, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func syncDiscoveryState() {
+        guard entryMode == .discover, !isSetupState else {
+            return
+        }
+        switch discovery.state {
+        case .idle, .waitingForReadiness, .paused, .readinessBlocked:
+            state = discovery.devices.isEmpty ? .idle : .discoveryReady
+        case .discovering:
+            state = .discovering
+            currentStage = discovery.currentStage
+            error = nil
+        case .empty:
             selectedDeviceID = nil
-            if entryMode == .discover {
-                manualHost = ""
-            }
-        }
-    }
-
-    private func process(_ events: [BackendEvent], laneKey: OperationLaneKey) {
-        observer(for: laneKey).process(events) { event, _ in
-            handle(event)
-        }
-    }
-
-    private func handle(_ event: BackendEvent) {
-        guard event.operation == "discover" || event.operation == "configure" else {
-            return
-        }
-        if let stage = OperationStageState(event: event) {
-            currentStage = stage
-            if event.operation == "configure", state == .awaitingConfirmation {
-                state = .configuring
-            }
-            return
-        }
-        if event.type == "error" {
-            applyError(event)
-            return
-        }
-        guard event.type == "result" else {
-            return
-        }
-        if event.ok == false {
-            failFromResult(event)
-            return
-        }
-        switch event.operation {
-        case "discover":
-            applyDiscoverResult(event)
-        case "configure":
-            applyConfigureResult(event)
-        default:
-            break
-        }
-    }
-
-    private func applyDiscoverResult(_ event: BackendEvent) {
-        do {
-            let payload = try event.decodePayload(DiscoverPayload.self)
-            devices = payload.devices.enumerated().map { index, device in
-                DiscoveredDevice(payload: device, index: index)
-            }
-            selectedDeviceID = devices.count == 1 ? devices[0].id : nil
-            manualHost = devices.count == 1 ? devices[0].connectionTarget : ""
-            state = devices.isEmpty ? .discoveryEmpty : .discoveryReady
+            manualHost = ""
+            state = .discoveryEmpty
+            currentStage = nil
             error = nil
-            finishActiveOperation()
-        } catch {
-            failContract(error)
-        }
-    }
-
-    private func applyConfigureResult(_ event: BackendEvent) {
-        let configured: ConfiguredDeviceState
-        do {
-            configured = ConfiguredDeviceState(payload: try event.decodePayload(ConfigurePayload.self))
-        } catch {
-            failContract(error)
-            return
-        }
-
-        state = .savingProfile
-        guard let configureDraft = pendingConfigureDraft else {
-            failContract(DeviceRegistryError.profileNotFound("pending"))
-            return
-        }
-        let password = password
-        let overrides = ConfiguredDeviceProfileOverrides(
-            displayName: nil,
-            settings: configureDraft.existingProfileID == nil ? defaultDeviceSettings : nil
-        )
-        Task { @MainActor in
-            do {
-                savedProfile = try await profilePersistence.commitConfiguredProfile(
-                    configuredDevice: configured,
-                    draft: configureDraft,
-                    password: password,
-                    overrides: overrides
-                )
-                error = nil
-                state = .saved
-                finishActiveOperation()
-                clearPendingConfigureDraft()
-            } catch {
-                failProfileSave(error)
+        case .ready:
+            if let selectedDeviceID,
+               !discovery.devices.contains(where: { $0.id == selectedDeviceID }) {
+                self.selectedDeviceID = nil
             }
-        }
-    }
-
-    private func applyError(_ event: BackendEvent) {
-        if event.code == "confirmation_required" {
+            if selectedDeviceID == nil, discovery.devices.count == 1 {
+                selectedDeviceID = discovery.devices[0].id
+                manualHost = discovery.devices[0].connectionTarget
+            }
+            state = discovery.devices.isEmpty ? .discoveryEmpty : .discoveryReady
+            currentStage = nil
             error = nil
-            state = .awaitingConfirmation
-            return
-        }
-        if event.code == "confirmation_cancelled" {
-            applyConfirmationCancelled()
-            return
-        }
-        error = BackendErrorViewModel(event: event)
-        switch event.code {
-        case "auth_failed":
-            state = .authFailed
-        case "unsupported_device":
-            state = .unsupported
-        default:
+        case .failed:
+            error = discovery.error
+            currentStage = nil
             state = .failed
         }
-        finishActiveOperation()
-        clearPendingConfigureDraft()
     }
 
-    private func applyConfirmationCancelled() {
-        error = nil
-        currentStage = nil
-        savedProfile = nil
-        finishActiveOperation()
-        clearPendingConfigureDraft()
-        state = .passwordEntry
-    }
-
-    private func failFromResult(_ event: BackendEvent) {
-        error = BackendErrorViewModel(
-            operation: event.operation,
-            code: "operation_failed",
-            message: event.payloadSummaryText ?? event.summary
-        )
-        state = .failed
-        finishActiveOperation()
-        clearPendingConfigureDraft()
-    }
-
-    private func failContract(_ error: Error) {
-        self.error = BackendErrorViewModel(
-            operation: "add-device",
-            code: "contract_decode_failed",
-            message: error.localizedDescription
-        )
-        state = .failed
-        finishActiveOperation()
-        clearPendingConfigureDraft()
-    }
-
-    private func failProfileSave(_ error: Error) {
-        self.error = BackendErrorViewModel(
-            operation: "add-device",
-            code: "profile_save_failed",
-            message: error.localizedDescription
-        )
-        state = .failed
-        finishActiveOperation()
-        clearPendingConfigureDraft()
+    private func applySetupState(_ workflowState: DeviceSetupWorkflowState) {
+        switch workflowState {
+        case .idle:
+            if state == .awaitingConfirmation {
+                state = .passwordEntry
+            }
+        case .configuring:
+            error = nil
+            currentStage = setupWorkflow.currentStage
+            state = .configuring
+        case .awaitingConfirmation:
+            error = nil
+            state = .awaitingConfirmation
+        case .savingProfile:
+            state = .savingProfile
+        case .saved:
+            savedProfile = setupWorkflow.savedProfile
+            error = nil
+            currentStage = nil
+            state = .saved
+        case .authFailed:
+            error = setupWorkflow.error
+            currentStage = nil
+            state = .authFailed
+        case .unsupported:
+            error = setupWorkflow.error
+            currentStage = nil
+            state = .unsupported
+        case .failed:
+            error = setupWorkflow.error
+            currentStage = nil
+            state = .failed
+        }
     }
 
     private func failLocally(_ message: String) {
@@ -570,8 +455,6 @@ final class AddDeviceFlowStore: ObservableObject {
         )
         currentStage = nil
         state = .failed
-        finishActiveOperation()
-        clearPendingConfigureDraft()
     }
 
     private func rejectRun(_ message: String) {
@@ -582,29 +465,6 @@ final class AddDeviceFlowStore: ObservableObject {
         )
         currentStage = nil
         state = .failed
-        finishActiveOperation()
-        clearPendingConfigureDraft()
-    }
-
-    private func observer(for laneKey: OperationLaneKey) -> BackendOperationObserver {
-        if let observer = operationObservers[laneKey] {
-            return observer
-        }
-        let observer = BackendOperationObserver()
-        operationObservers[laneKey] = observer
-        return observer
-    }
-
-    private func finishActiveOperation() {
-        if let activeLaneKey {
-            operationObservers[activeLaneKey]?.finish()
-        }
-        activeLaneKey = nil
-    }
-
-    private func clearPendingConfigureDraft() {
-        profilePersistence.discardConfigureDraft(pendingConfigureDraft)
-        pendingConfigureDraft = nil
     }
 
     private static func timeoutText(_ value: Double) -> String {

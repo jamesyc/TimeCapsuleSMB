@@ -18,7 +18,9 @@ public struct ContentView: View {
         _addDeviceStore = StateObject(wrappedValue: AddDeviceFlowStore(
             coordinator: appStore.operationCoordinator,
             registry: appStore.deviceRegistry,
-            passwordStore: appStore.passwordStore
+            passwordStore: appStore.passwordStore,
+            profilePersistence: appStore.profilePersistence,
+            discovery: appStore.deviceDiscovery
         ))
         _dashboardStore = StateObject(wrappedValue: DashboardStore(appStore: appStore))
     }
@@ -259,7 +261,7 @@ public struct ContentView: View {
                     DeviceSidebarRow(
                         profile: profile,
                         summary: summary,
-                        lastSeenText: appStore.discoveryMonitor.lastSeenText(for: profile)
+                        lastSeenText: appStore.deviceDiscovery.lastSeenText(for: profile)
                     )
                         .contextMenu {
                             DeviceSidebarContextMenu(
@@ -378,7 +380,7 @@ public struct ContentView: View {
             DeviceListOverviewView(
                 appStore: appStore,
                 addDiscoveredDevice: { device in
-                    addDeviceStore.stageDiscoveredDevices(appStore.discoveryMonitor.devices, selected: device)
+                    addDeviceStore.select(device)
                     appStore.showAddDevice()
                 }
             )

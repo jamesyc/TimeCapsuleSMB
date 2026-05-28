@@ -447,14 +447,3 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     }
 
 }
-
-extension DiscoveredDevice {
-    var fullname: String? {
-        guard case .object(let object) = rawRecord,
-              case .string(let value)? = object["fullname"] else {
-            return nil
-        }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-}
