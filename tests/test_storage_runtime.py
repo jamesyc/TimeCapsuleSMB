@@ -3735,7 +3735,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"payload={volumes}/dk5/.samba4|{volumes}/dk5|/dev/dk5\n", proc.stdout)
         self.assertIn(f"shares\nUSB Backup\t{volumes}/dk5\tdk5\t0\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n", proc.stdout)
-        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x82\n", proc.stdout)
+        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x83\n", proc.stdout)
         self.assertIn("marker=yes\n", proc.stdout)
         self.assertIn("runtime=yes\n", proc.stdout)
         self.assertIn("[USB Backup]\n", proc.stdout)
