@@ -33,7 +33,7 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.scope, .device("device-one"))
 
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
-        XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["Uploading", "Done"])
+        XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["Upload Payload", "Done"])
         XCTAssertEqual(activity.snapshot.latestMessage, "deployment completed.")
     }
 

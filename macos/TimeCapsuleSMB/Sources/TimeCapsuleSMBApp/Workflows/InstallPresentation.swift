@@ -188,8 +188,12 @@ struct InstallTimelinePresentation: Equatable {
                 OperationTimelineItem(
                     id: "current:\(currentStage.operation):\(currentStage.stage)",
                     operation: currentStage.operation,
-                    title: currentStage.stage,
-                    detail: currentStage.description,
+                    title: OperationTimelineBuilder.stageTitle(for: currentStage.operation, stage: currentStage.stage),
+                    detail: OperationTimelineBuilder.stageDetail(
+                        for: currentStage.operation,
+                        stage: currentStage.stage,
+                        fallback: currentStage.description
+                    ),
                     state: .running,
                     risk: currentStage.risk,
                     cancellable: currentStage.cancellable
@@ -268,7 +272,15 @@ struct InstallProgressPresentation: Equatable, BlockingProgressPresenting {
              .deployFailed:
             return nil
         }
-        self.detail = currentStage?.description ?? currentStage?.stage
+        if let currentStage {
+            self.detail = OperationTimelineBuilder.stageDetail(
+                for: currentStage.operation,
+                stage: currentStage.stage,
+                fallback: currentStage.description ?? currentStage.stage
+            )
+        } else {
+            self.detail = nil
+        }
     }
 }
 

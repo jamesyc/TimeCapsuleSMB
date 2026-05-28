@@ -1960,6 +1960,61 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], False)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["verified"], True)
 
+    def test_deploy_emits_grouped_upload_stages_before_each_upload_group(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+        }
+        payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+
+        def fake_upload(plan, *, connection, source_resolver, on_uploading=None):
+            for transfer in plan.uploads:
+                if on_uploading is not None:
+                    on_uploading(transfer)
+
+        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
+                            with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
+                                with mock.patch("timecapsulesmb.app.ops.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                    with mock.patch("timecapsulesmb.app.ops.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
+                                        with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload", side_effect=fake_upload):
+                                            with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
+                                                with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=managed_runtime_probe()):
+                                                        rc = service.run_api_request(
+                                                            {
+                                                                "operation": "deploy",
+                                                                "params": {
+                                                                    "dry_run": False,
+                                                                    "no_reboot": True,
+                                                                    "confirm_deploy": True,
+                                                                },
+                                                            },
+                                                            collector.sink,
+                                                        )
+
+        self.assertEqual(rc, 0)
+        stages = [event["stage"] for event in collector.events_of_type("stage")]
+        upload_stages = [stage for stage in stages if str(stage).startswith("upload_")]
+        self.assertEqual(
+            upload_stages,
+            [
+                "upload_smbd",
+                "upload_mdns_advertiser",
+                "upload_nbns_advertiser",
+                "upload_boot_files",
+                "upload_runtime_config",
+                "upload_samba_accounts",
+            ],
+        )
+
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")

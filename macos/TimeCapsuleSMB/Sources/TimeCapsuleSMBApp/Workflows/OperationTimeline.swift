@@ -18,7 +18,43 @@ struct OperationTimelineItem: Equatable, Identifiable {
     let cancellable: Bool?
 }
 
+private struct OperationStageLocalization {
+    let titleKey: String
+    let detailKey: String
+}
+
 enum OperationTimelineBuilder {
+    private static let deployStageLocalizations: [String: OperationStageLocalization] = [
+        "load_config": .init(titleKey: "timeline.deploy.title.load_config", detailKey: "timeline.deploy.detail.load_config"),
+        "resolve_managed_target": .init(titleKey: "timeline.deploy.title.resolve_managed_target", detailKey: "timeline.deploy.detail.resolve_managed_target"),
+        "validate_artifacts": .init(titleKey: "timeline.deploy.title.validate_artifacts", detailKey: "timeline.deploy.detail.validate_artifacts"),
+        "check_compatibility": .init(titleKey: "timeline.deploy.title.check_compatibility", detailKey: "timeline.deploy.detail.check_compatibility"),
+        "read_mast": .init(titleKey: "timeline.deploy.title.read_mast", detailKey: "timeline.deploy.detail.read_mast"),
+        "select_payload_home": .init(titleKey: "timeline.deploy.title.select_payload_home", detailKey: "timeline.deploy.detail.select_payload_home"),
+        "build_deployment_plan": .init(titleKey: "timeline.deploy.title.build_deployment_plan", detailKey: "timeline.deploy.detail.build_deployment_plan"),
+        "pre_upload_actions": .init(titleKey: "timeline.deploy.title.pre_upload_actions", detailKey: "timeline.deploy.detail.pre_upload_actions"),
+        "prepare_deployment_files": .init(titleKey: "timeline.deploy.title.prepare_deployment_files", detailKey: "timeline.deploy.detail.prepare_deployment_files"),
+        "upload_payload": .init(titleKey: "timeline.deploy.title.upload_payload", detailKey: "timeline.deploy.detail.upload_payload"),
+        "upload_smbd": .init(titleKey: "timeline.deploy.title.upload_smbd", detailKey: "timeline.deploy.detail.upload_smbd"),
+        "upload_mdns_advertiser": .init(titleKey: "timeline.deploy.title.upload_mdns_advertiser", detailKey: "timeline.deploy.detail.upload_mdns_advertiser"),
+        "upload_nbns_advertiser": .init(titleKey: "timeline.deploy.title.upload_nbns_advertiser", detailKey: "timeline.deploy.detail.upload_nbns_advertiser"),
+        "upload_boot_files": .init(titleKey: "timeline.deploy.title.upload_boot_files", detailKey: "timeline.deploy.detail.upload_boot_files"),
+        "upload_runtime_config": .init(titleKey: "timeline.deploy.title.upload_runtime_config", detailKey: "timeline.deploy.detail.upload_runtime_config"),
+        "upload_samba_accounts": .init(titleKey: "timeline.deploy.title.upload_samba_accounts", detailKey: "timeline.deploy.detail.upload_samba_accounts"),
+        "post_upload_actions": .init(titleKey: "timeline.deploy.title.post_upload_actions", detailKey: "timeline.deploy.detail.post_upload_actions"),
+        "verify_payload_upload": .init(titleKey: "timeline.deploy.title.verify_payload_upload", detailKey: "timeline.deploy.detail.verify_payload_upload"),
+        "flush_payload_upload": .init(titleKey: "timeline.deploy.title.flush_payload_upload", detailKey: "timeline.deploy.detail.flush_payload_upload"),
+        "verify_payload_upload_after_sync": .init(titleKey: "timeline.deploy.title.verify_payload_upload_after_sync", detailKey: "timeline.deploy.detail.verify_payload_upload_after_sync"),
+        "reboot": .init(titleKey: "timeline.deploy.title.reboot", detailKey: "timeline.deploy.detail.reboot"),
+        "wait_for_reboot_down": .init(titleKey: "timeline.deploy.title.wait_for_reboot_down", detailKey: "timeline.deploy.detail.wait_for_reboot_down"),
+        "wait_for_reboot_up": .init(titleKey: "timeline.deploy.title.wait_for_reboot_up", detailKey: "timeline.deploy.detail.wait_for_reboot_up"),
+        "probe_runtime": .init(titleKey: "timeline.deploy.title.probe_runtime", detailKey: "timeline.deploy.detail.probe_runtime"),
+        "activate_runtime": .init(titleKey: "timeline.deploy.title.activate_runtime", detailKey: "timeline.deploy.detail.activate_runtime"),
+        "post_reboot_activation": .init(titleKey: "timeline.deploy.title.post_reboot_activation", detailKey: "timeline.deploy.detail.post_reboot_activation"),
+        "verify_runtime_activation": .init(titleKey: "timeline.deploy.title.verify_runtime_activation", detailKey: "timeline.deploy.detail.verify_runtime_activation"),
+        "verify_runtime_reboot": .init(titleKey: "timeline.deploy.title.verify_runtime_reboot", detailKey: "timeline.deploy.detail.verify_runtime_reboot")
+    ]
+
     static func timeline(from events: [BackendEvent]) -> [OperationTimelineItem] {
         events.enumerated().compactMap { index, event in
             switch event.type {
@@ -26,8 +62,8 @@ enum OperationTimelineBuilder {
                 return OperationTimelineItem(
                     id: "\(index):\(event.operation):\(event.stage ?? "stage")",
                     operation: event.operation,
-                    title: title(for: event.operation, stage: event.stage),
-                    detail: event.description,
+                    title: stageTitle(for: event.operation, stage: event.stage),
+                    detail: stageDetail(for: event.operation, stage: event.stage, fallback: event.description),
                     state: stageState(forEventAt: index, in: events),
                     risk: event.risk,
                     cancellable: event.cancellable
@@ -102,9 +138,12 @@ enum OperationTimelineBuilder {
         }
     }
 
-    private static func title(for operation: String, stage: String?) -> String {
+    static func stageTitle(for operation: String, stage: String?) -> String {
         guard let stage else {
             return operationTitle(operation)
+        }
+        if operation == "deploy", let title = deployStageTitle(stage) {
+            return title
         }
         switch (operation, stage) {
         case ("discover", "bonjour_discovery"):
@@ -131,26 +170,6 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.waiting_for_device")
         case ("configure", "write_env"):
             return L10n.string("timeline.stage.saving_device")
-        case ("deploy", "build_deployment_plan"):
-            return L10n.string("timeline.stage.planning_install")
-        case ("deploy", "validate_artifacts"):
-            return L10n.string("timeline.stage.checking_bundled_files")
-        case ("deploy", "read_mast"), ("deploy", "select_payload_home"):
-            return L10n.string("timeline.stage.finding_disk")
-        case ("deploy", "pre_upload_actions"):
-            return L10n.string("timeline.stage.deleting_old_deployed_files")
-        case ("deploy", "upload_payload"):
-            return L10n.string("timeline.stage.uploading")
-        case ("deploy", "flush_payload_upload"):
-            return L10n.string("timeline.stage.syncing_to_disk")
-        case ("deploy", "reboot"), ("deploy", "wait_for_reboot_down"), ("deploy", "wait_for_reboot_up"):
-            return L10n.string("timeline.stage.rebooting")
-        case ("deploy", "probe_runtime"):
-            return L10n.string("timeline.stage.checking_runtime")
-        case ("deploy", "activate_runtime"), ("deploy", "post_reboot_activation"), ("deploy", "netbsd4_activation"):
-            return L10n.string("timeline.stage.starting_smb")
-        case ("deploy", "verify_runtime_activation"), ("deploy", "verify_runtime_reboot"):
-            return L10n.string("timeline.stage.verifying_smb")
         case ("doctor", "run_checks"):
             return L10n.string("timeline.stage.running_checkup")
         case ("activate", "build_activation_plan"):
@@ -177,5 +196,23 @@ enum OperationTimelineBuilder {
                 .map { $0.prefix(1).uppercased() + $0.dropFirst() }
                 .joined(separator: " ")
         }
+    }
+
+    static func stageDetail(for operation: String, stage: String?, fallback: String?) -> String? {
+        guard let stage else {
+            return fallback
+        }
+        if operation == "deploy", let detail = deployStageDetail(stage) {
+            return detail
+        }
+        return fallback
+    }
+
+    private static func deployStageTitle(_ stage: String) -> String? {
+        deployStageLocalizations[stage].map { L10n.string($0.titleKey) }
+    }
+
+    private static func deployStageDetail(_ stage: String) -> String? {
+        deployStageLocalizations[stage].map { L10n.string($0.detailKey) }
     }
 }

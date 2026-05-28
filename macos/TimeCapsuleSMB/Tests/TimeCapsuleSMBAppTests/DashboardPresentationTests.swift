@@ -744,7 +744,7 @@ final class DashboardPresentationTests: XCTestCase {
         ], currentStage: nil)
 
         XCTAssertEqual(presentation.items.count, 1)
-        XCTAssertEqual(presentation.items.first?.title, "Uploading")
+        XCTAssertEqual(presentation.items.first?.title, "Upload Payload")
     }
 
     func testInstallProgressPresentationAppearsOnlyWhileDeploying() {
@@ -759,7 +759,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(deploying?.title, "Installing / Updating SMB")
         XCTAssertEqual(deploying?.message, "Uploading and applying the managed SMB runtime. This can take a few minutes...")
-        XCTAssertEqual(deploying?.detail, "Uploading files.")
+        XCTAssertEqual(deploying?.detail, "Uploading managed SMB payload files.")
         for state in DeployWorkflowState.allCases where state != .deploying {
             XCTAssertNil(InstallProgressPresentation(state: state, currentStage: stage), "\(state) should not show a blocking progress modal.")
         }

@@ -6165,11 +6165,13 @@ int main(void) {{
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
                 with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+                    uploading = []
                     uploaded = []
                     upload_deployment_payload(
                         plan,
                         connection=connection,
                         source_resolver=source_resolver,
+                        on_uploading=uploading.append,
                         on_uploaded=uploaded.append,
                     )
         self.assertEqual(scp_mock.call_count, 12)
@@ -6217,6 +6219,7 @@ int main(void) {{
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
         self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
         self.assertEqual(ssh_mock.call_count, 14)
+        self.assertEqual(uploading, plan.uploads)
         self.assertEqual(uploaded, plan.uploads)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:

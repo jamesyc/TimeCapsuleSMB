@@ -38,6 +38,7 @@ from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     DeploymentStartupMode,
+    FileTransfer,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
@@ -99,6 +100,17 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
+DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
+    PACKAGED_RC_LOCAL_SOURCE,
+    PACKAGED_COMMON_SH_SOURCE,
+    PACKAGED_DFREE_SH_SOURCE,
+    PACKAGED_BOOT_SOURCE,
+    PACKAGED_MANAGER_SOURCE,
+})
+DEPLOY_UPLOAD_ACCOUNT_SOURCES = frozenset({
+    GENERATED_SMBPASSWD_SOURCE,
+    GENERATED_USERNAME_MAP_SOURCE,
+})
 
 
 def _best_effort_debug_summary(render, value: object) -> object | None:
@@ -106,6 +118,22 @@ def _best_effort_debug_summary(render, value: object) -> object | None:
         return render(value)
     except Exception:
         return None
+
+
+def deploy_upload_stage(transfer: FileTransfer) -> str:
+    if transfer.source_id == BINARY_SMBD_SOURCE:
+        return "upload_smbd"
+    if transfer.source_id == BINARY_MDNS_SOURCE:
+        return "upload_mdns_advertiser"
+    if transfer.source_id == BINARY_NBNS_SOURCE:
+        return "upload_nbns_advertiser"
+    if transfer.source_id in DEPLOY_UPLOAD_BOOT_SOURCES:
+        return "upload_boot_files"
+    if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
+        return "upload_runtime_config"
+    if transfer.source_id in DEPLOY_UPLOAD_ACCOUNT_SOURCES:
+        return "upload_samba_accounts"
+    return "upload_payload"
 
 
 @dataclass(frozen=True)
@@ -437,8 +465,22 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
             PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path("manager.sh")),
         }
-        context.stage("upload_payload")
-        upload_deployment_payload(plan, connection=connection, source_resolver=upload_sources)
+        current_upload_stage: str | None = None
+
+        def stage_upload(transfer: FileTransfer) -> None:
+            nonlocal current_upload_stage
+            stage = deploy_upload_stage(transfer)
+            if stage == current_upload_stage:
+                return
+            current_upload_stage = stage
+            context.stage(stage)
+
+        upload_deployment_payload(
+            plan,
+            connection=connection,
+            source_resolver=upload_sources,
+            on_uploading=stage_upload,
+        )
 
     context.stage("post_upload_actions")
     run_remote_actions(connection, plan.post_upload_actions)
