@@ -4759,6 +4759,9 @@ static int count_ptr_target(const unsigned char *packet, size_t packet_len, cons
     int matches = 0;
     unsigned short i;
 
+    if (packet_len < sizeof(hdr)) {
+        return -1;
+    }
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
     for (i = 0; i < ntohs(hdr.qdcount); i++) {
@@ -4806,6 +4809,9 @@ static int packet_has_srv_port(const unsigned char *packet, size_t packet_len, u
     unsigned short total_answers;
     unsigned short i;
 
+    if (packet_len < sizeof(hdr)) {
+        return 0;
+    }
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
     for (i = 0; i < ntohs(hdr.qdcount); i++) {
