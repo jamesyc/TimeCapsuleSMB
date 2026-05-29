@@ -930,9 +930,12 @@ final class DashboardStoreTests: XCTestCase {
 
         session.runCheckup(profile: profile)
 
-        try await waitUntilStoreState { session.doctorStore.state == .runFailed }
-        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .invalid)
-        XCTAssertEqual(fixture.appStore.dashboardSummary(for: fixture.registry.profile(id: profile.id)!).primaryAction, .replacePassword)
+        try await waitUntilStoreState {
+            fixture.registry.profile(id: profile.id)?.passwordState == .invalid
+        }
+        let updated = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(session.doctorStore.state, .runFailed)
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: updated).primaryAction, .replacePassword)
     }
 
     func testRecoveryActionsRouteToMaintenanceAndPasswordWorkflows() async throws {

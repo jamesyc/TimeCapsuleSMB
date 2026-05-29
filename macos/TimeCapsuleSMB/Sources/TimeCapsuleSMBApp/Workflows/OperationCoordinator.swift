@@ -45,6 +45,10 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
     case doctor
     case reachability
     case maintenance
+    case activate
+    case uninstall
+    case fsck
+    case repairXattrs = "repair_xattrs"
     case flash
 
     static func lane(for operation: String) -> DeviceWorkflowLane? {
@@ -57,8 +61,14 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
             return .doctor
         case "reachability":
             return .reachability
-        case "activate", "uninstall", "fsck", "repair-xattrs":
-            return .maintenance
+        case "activate":
+            return .activate
+        case "uninstall":
+            return .uninstall
+        case "fsck":
+            return .fsck
+        case "repair-xattrs":
+            return .repairXattrs
         case "flash":
             return .flash
         default:
@@ -69,6 +79,7 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
 
 enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertible {
     case app
+    case appWorkflow(DeviceWorkflowLane)
     case device(DeviceProfile.ID)
     case deviceWorkflow(DeviceProfile.ID, DeviceWorkflowLane)
     case candidateHost(String)
@@ -78,6 +89,8 @@ enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertibl
         switch self {
         case .app:
             return "app"
+        case .appWorkflow(let workflow):
+            return "app:\(workflow.rawValue)"
         case .device(let profileID):
             return "device:\(profileID)"
         case .deviceWorkflow(let profileID, let workflow):
@@ -97,7 +110,7 @@ enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertibl
         switch self {
         case .device(let profileID), .deviceWorkflow(let profileID, _):
             return profileID
-        case .app, .candidateHost, .localPath:
+        case .app, .appWorkflow, .candidateHost, .localPath:
             return nil
         }
     }
@@ -522,6 +535,8 @@ final class OperationCoordinator: ObservableObject {
         switch key {
         case .app:
             return "0:app"
+        case .appWorkflow(let workflow):
+            return "0:app:\(workflow.rawValue)"
         case .device(let profileID):
             return "1:\(profileID)"
         case .deviceWorkflow(let profileID, let workflow):

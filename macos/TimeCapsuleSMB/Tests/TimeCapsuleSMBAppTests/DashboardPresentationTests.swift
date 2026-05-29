@@ -1055,6 +1055,49 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.detail.plan?.warnings, ["Metadata repair modifies files under the selected local SMB mount."])
     }
 
+    func testMaintenancePresentationKeepsTimelineAfterWorkflowCompletes() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "stage", operation: "activate", stage: "probe_runtime"),
+                BackendEvent(type: "stage", operation: "activate", stage: "run_activation"),
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
+            ])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+
+        store.planActivation(password: "pw")
+        try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
+        store.runActivation(password: "pw")
+        try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
+
+        var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.timeline?.items.map(\.title), [
+            "Check Existing Runtime",
+            "Starting SMB",
+            "Done"
+        ])
+        XCTAssertEqual(presentation.detail.timeline?.items.map(\.state), [.succeeded, .succeeded, .succeeded])
+
+        store.planUninstall(password: "pw")
+        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+        store.selectedWorkflow = .activate
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+
+        XCTAssertEqual(presentation.detail.workflow, .activate)
+        XCTAssertEqual(presentation.detail.timeline?.items.map(\.title), [
+            "Check Existing Runtime",
+            "Starting SMB",
+            "Done"
+        ])
+    }
+
     func testMaintenanceTimelineFiltersByWorkflowOperation() {
         let presentation = MaintenanceTimelinePresentation(events: [
             BackendEvent(type: "stage", operation: "doctor", stage: "run_checks"),

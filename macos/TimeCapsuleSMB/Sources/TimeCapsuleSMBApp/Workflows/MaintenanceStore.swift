@@ -21,6 +21,19 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
             return L10n.string("maintenance.workflow.repair_xattrs")
         }
     }
+
+    var deviceWorkflowLane: DeviceWorkflowLane {
+        switch self {
+        case .activate:
+            return .activate
+        case .uninstall:
+            return .uninstall
+        case .fsck:
+            return .fsck
+        case .repairXattrs:
+            return .repairXattrs
+        }
+    }
 }
 
 enum MaintenanceOperationState: String, CaseIterable, Equatable {
@@ -156,10 +169,13 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
+    @Published private(set) var currentStagesByWorkflow: [MaintenanceWorkflow: OperationStageState] = [:]
+    @Published private(set) var errorsByWorkflow: [MaintenanceWorkflow: BackendErrorViewModel] = [:]
 
     let backend: BackendClient
+    private let backendsByWorkflow: [MaintenanceWorkflow: BackendClient]
     private let coordinator: OperationCoordinator?
-    private let laneKey: OperationLaneKey?
+    private let laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
 
     private var plannedUninstallOptions: MaintenanceOptions?
     private var plannedFsckOptions: MaintenanceOptions?
@@ -174,10 +190,12 @@ final class MaintenanceStore: ObservableObject {
     }
 
     init(backend: BackendClient) {
+        let backendsByWorkflow = Self.standaloneBackends(primary: backend)
         self.backend = backend
+        self.backendsByWorkflow = backendsByWorkflow
         self.coordinator = nil
-        self.laneKey = nil
-        observeBackend(backend)
+        self.laneKeysByWorkflow = [:]
+        observeBackends(backendsByWorkflow)
     }
 
     convenience init(coordinator: OperationCoordinator) {
@@ -185,37 +203,105 @@ final class MaintenanceStore: ObservableObject {
     }
 
     init(coordinator: OperationCoordinator, laneKey: OperationLaneKey) {
-        let lane = coordinator.lane(for: laneKey)
-        self.backend = lane.backend
+        let laneKeysByWorkflow = Self.laneKeysByWorkflow(from: laneKey)
+        let backendsByWorkflow = Self.coordinatedBackends(
+            coordinator: coordinator,
+            laneKeysByWorkflow: laneKeysByWorkflow
+        )
+        self.backend = backendsByWorkflow[.activate] ?? coordinator.lane(for: laneKey).backend
+        self.backendsByWorkflow = backendsByWorkflow
         self.coordinator = coordinator
-        self.laneKey = laneKey
-        observeBackend(lane.backend)
+        self.laneKeysByWorkflow = laneKeysByWorkflow
+        observeBackends(backendsByWorkflow)
     }
 
-    private func observeBackend(_ backend: BackendClient) {
-        backend.$events
-            .sink { [weak self] events in
-                Task { @MainActor in
-                    self?.process(events)
+    private static func standaloneBackends(primary backend: BackendClient) -> [MaintenanceWorkflow: BackendClient] {
+        Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
+            workflow == .activate ? (workflow, backend) : (workflow, backend.makeSibling())
+        })
+    }
+
+    private static func coordinatedBackends(
+        coordinator: OperationCoordinator,
+        laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
+    ) -> [MaintenanceWorkflow: BackendClient] {
+        Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
+            let laneKey = laneKeysByWorkflow[workflow] ?? .app
+            return (workflow, coordinator.lane(for: laneKey).backend)
+        })
+    }
+
+    private static func laneKeysByWorkflow(from laneKey: OperationLaneKey) -> [MaintenanceWorkflow: OperationLaneKey] {
+        switch laneKey {
+        case .app:
+            return Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
+                (workflow, .appWorkflow(workflow.deviceWorkflowLane))
+            })
+        case .device(let profileID), .deviceWorkflow(let profileID, .maintenance):
+            return Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
+                (workflow, .deviceWorkflow(profileID, workflow.deviceWorkflowLane))
+            })
+        default:
+            return Dictionary(uniqueKeysWithValues: MaintenanceWorkflow.allCases.map { workflow in
+                (workflow, laneKey)
+            })
+        }
+    }
+
+    private func observeBackends(_ backendsByWorkflow: [MaintenanceWorkflow: BackendClient]) {
+        for backend in uniqueBackends(backendsByWorkflow.values) {
+            backend.$events
+                .sink { [weak self] events in
+                    Task { @MainActor in
+                        self?.process(events)
+                    }
                 }
-            }
-            .store(in: &cancellables)
+                .store(in: &cancellables)
+        }
     }
 
     var events: [BackendEvent] {
-        backend.events
+        uniqueBackends(backendsByWorkflow.values).flatMap(\.events)
     }
 
     var isRunning: Bool {
-        backend.isRunning
+        uniqueBackends(backendsByWorkflow.values).contains { $0.isRunning }
     }
 
     var isBusy: Bool {
-        backend.isRunning || backend.pendingConfirmation != nil
+        let maintenanceBusy = uniqueBackends(backendsByWorkflow.values).contains {
+            $0.isRunning || $0.pendingConfirmation != nil
+        }
+        let deviceBusy = deviceProfileID.map { coordinator?.isDeviceBusy($0) ?? false } == true
+        return maintenanceBusy || deviceBusy
     }
 
     var canCancel: Bool {
-        backend.canCancel
+        activeBackend?.canCancel ?? false
+    }
+
+    func timelineEvents(for workflow: MaintenanceWorkflow) -> [BackendEvent] {
+        backend(for: workflow).events
+    }
+
+    func currentStage(for workflow: MaintenanceWorkflow) -> OperationStageState? {
+        currentStagesByWorkflow[workflow]
+    }
+
+    func error(for workflow: MaintenanceWorkflow) -> BackendErrorViewModel? {
+        errorsByWorkflow[workflow]
+    }
+
+    func pendingConfirmation(for workflow: MaintenanceWorkflow) -> PendingConfirmation? {
+        backend(for: workflow).pendingConfirmation
+    }
+
+    func confirmPending(for workflow: MaintenanceWorkflow) {
+        backend(for: workflow).confirmPending()
+    }
+
+    func cancelPendingConfirmation(for workflow: MaintenanceWorkflow) {
+        backend(for: workflow).cancelPendingConfirmation()
     }
 
     var mountWaitValue: Int? {
@@ -290,7 +376,7 @@ final class MaintenanceStore: ObservableObject {
         activateState = .planning
         activationPlan = nil
         activationResult = nil
-        process(backend.events)
+        process(backend(for: .activate).events)
         return start
     }
 
@@ -316,7 +402,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .activate
         activateState = .running
         activationResult = nil
-        process(backend.events)
+        process(backend(for: .activate).events)
         return start
     }
 
@@ -345,7 +431,7 @@ final class MaintenanceStore: ObservableObject {
         uninstallPlan = nil
         uninstallResult = nil
         plannedUninstallOptions = options
-        process(backend.events)
+        process(backend(for: .uninstall).events)
         return start
     }
 
@@ -357,7 +443,7 @@ final class MaintenanceStore: ObservableObject {
         }
         guard let options = plannedUninstallOptions, currentOptions == options, uninstallPlan != nil else {
             uninstallState = .planStale
-            error = BackendErrorViewModel(operation: "uninstall", localError: .uninstallPlanStale)
+            setError(BackendErrorViewModel(operation: "uninstall", localError: .uninstallPlanStale), for: .uninstall)
             return .rejected(WorkflowLocalError.uninstallPlanStale.message)
         }
         guard uninstallState == .planReady else {
@@ -380,7 +466,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .uninstall
         uninstallState = .running
         uninstallResult = nil
-        process(backend.events)
+        process(backend(for: .uninstall).events)
         return start
     }
 
@@ -405,7 +491,7 @@ final class MaintenanceStore: ObservableObject {
         selectedFsckTargetID = nil
         fsckPlan = nil
         fsckResult = nil
-        process(backend.events)
+        process(backend(for: .fsck).events)
         return start
     }
 
@@ -440,7 +526,7 @@ final class MaintenanceStore: ObservableObject {
         fsckResult = nil
         plannedFsckOptions = options
         plannedFsckTargetID = target.id
-        process(backend.events)
+        process(backend(for: .fsck).events)
         return start
     }
 
@@ -456,7 +542,7 @@ final class MaintenanceStore: ObservableObject {
             currentOptions == options,
             fsckPlan != nil else {
             fsckState = .planStale
-            error = BackendErrorViewModel(operation: "fsck", localError: .fsckPlanStale)
+            setError(BackendErrorViewModel(operation: "fsck", localError: .fsckPlanStale), for: .fsck)
             return .rejected(WorkflowLocalError.fsckPlanStale.message)
         }
         guard fsckState == .planReady else {
@@ -480,7 +566,7 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .fsck
         fsckState = .running
         fsckResult = nil
-        process(backend.events)
+        process(backend(for: .fsck).events)
         return start
     }
 
@@ -510,7 +596,7 @@ final class MaintenanceStore: ObservableObject {
         repairResult = nil
         scannedRepairPath = path
         scannedRepairOptions = options
-        process(backend.events)
+        process(backend(for: .repairXattrs).events)
         return start
     }
 
@@ -522,12 +608,12 @@ final class MaintenanceStore: ObservableObject {
         }
         guard canRepairXattrs else {
             repairState = .scanStale
-            error = BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale)
+            setError(BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale), for: .repairXattrs)
             return .rejected(WorkflowLocalError.repairXattrsScanStale.message)
         }
         guard let options = scannedRepairOptions else {
             repairState = .scanStale
-            error = BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale)
+            setError(BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale), for: .repairXattrs)
             return .rejected(WorkflowLocalError.repairXattrsScanStale.message)
         }
         let start = startRun(
@@ -542,12 +628,14 @@ final class MaintenanceStore: ObservableObject {
         selectedWorkflow = .repairXattrs
         repairState = .repairing
         repairResult = nil
-        process(backend.events)
+        process(backend(for: .repairXattrs).events)
         return start
     }
 
     func clear() {
-        backend.clear()
+        for backend in uniqueBackends(backendsByWorkflow.values) {
+            backend.clear()
+        }
         operationObserver.clear()
         activateState = .idle
         uninstallState = .idle
@@ -566,6 +654,8 @@ final class MaintenanceStore: ObservableObject {
         currentStage = nil
         error = nil
         passwordInvalidProfileID = nil
+        currentStagesByWorkflow = [:]
+        errorsByWorkflow = [:]
         plannedUninstallOptions = nil
         plannedFsckOptions = nil
         plannedFsckTargetID = nil
@@ -575,7 +665,56 @@ final class MaintenanceStore: ObservableObject {
     }
 
     func cancel() {
-        backend.cancel()
+        activeBackend?.cancel()
+    }
+
+    private var activeBackend: BackendClient? {
+        uniqueBackends(backendsByWorkflow.values)
+            .first { $0.isRunning || $0.pendingConfirmation != nil }
+    }
+
+    private var deviceProfileID: DeviceProfile.ID? {
+        laneKeysByWorkflow.values.lazy.compactMap(\.deviceProfileID).first
+    }
+
+    private func backend(for workflow: MaintenanceWorkflow) -> BackendClient {
+        backendsByWorkflow[workflow] ?? backend
+    }
+
+    private func laneKey(for workflow: MaintenanceWorkflow) -> OperationLaneKey? {
+        laneKeysByWorkflow[workflow]
+    }
+
+    private func workflow(for operation: String) -> MaintenanceWorkflow? {
+        MaintenanceWorkflow.allCases.first { $0.operationName == operation }
+    }
+
+    private func setError(_ error: BackendErrorViewModel, for workflow: MaintenanceWorkflow) {
+        errorsByWorkflow[workflow] = error
+        self.error = error
+    }
+
+    private func clearError(for workflow: MaintenanceWorkflow) {
+        errorsByWorkflow[workflow] = nil
+        if error?.operation == workflow.operationName {
+            error = errorsByWorkflow[selectedWorkflow] ?? errorsByWorkflow.values.first
+        }
+    }
+
+    private func clearCurrentStage(for workflow: MaintenanceWorkflow) {
+        currentStagesByWorkflow[workflow] = nil
+        if currentStage?.operation == workflow.operationName {
+            currentStage = currentStagesByWorkflow[selectedWorkflow] ?? currentStagesByWorkflow.values.first
+        }
+    }
+
+    private func uniqueBackends<S: Sequence>(_ backends: S) -> [BackendClient] where S.Element == BackendClient {
+        var seen: Set<ObjectIdentifier> = []
+        var unique: [BackendClient] = []
+        for backend in backends where seen.insert(ObjectIdentifier(backend)).inserted {
+            unique.append(backend)
+        }
+        return unique
     }
 
     private var currentOptions: MaintenanceOptions? {
@@ -612,11 +751,11 @@ final class MaintenanceStore: ObservableObject {
         )
     }
 
-    private func resetRunState() {
-        backend.clear()
+    private func resetRunState(workflow: MaintenanceWorkflow) {
+        backend(for: workflow).clear()
         operationObserver.clear()
-        error = nil
-        currentStage = nil
+        clearError(for: workflow)
+        clearCurrentStage(for: workflow)
         passwordInvalidProfileID = nil
         operationObserver.finish()
     }
@@ -628,12 +767,13 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
-        guard ["activate", "uninstall", "fsck", "repair-xattrs"].contains(event.operation) else {
+        guard let workflow = workflow(for: event.operation) else {
             return
         }
 
         if let stage = OperationStageState(event: event) {
             currentStage = stage
+            currentStagesByWorkflow[workflow] = stage
             if event.operation == "activate", activateState == .awaitingConfirmation {
                 activateState = .running
             } else if event.operation == "uninstall", uninstallState == .awaitingConfirmation {
@@ -688,7 +828,7 @@ final class MaintenanceStore: ObservableObject {
         do {
             activationResult = try event.decodePayload(ActivationResultPayload.self)
             activateState = .succeeded
-            error = nil
+            clearError(for: .activate)
             operationObserver.finish()
         } catch {
             failContract(workflow: .activate, error: error)
@@ -709,7 +849,7 @@ final class MaintenanceStore: ObservableObject {
         do {
             uninstallResult = try event.decodePayload(MaintenanceResultPayload.self)
             uninstallState = .succeeded
-            error = nil
+            clearError(for: .uninstall)
             operationObserver.finish()
         } catch {
             failContract(workflow: .uninstall, error: error)
@@ -724,7 +864,7 @@ final class MaintenanceStore: ObservableObject {
                 fsckTargets = payload.targets.map(FsckTargetViewModel.init)
                 selectedFsckTargetID = fsckTargets.count == 1 ? fsckTargets[0].id : nil
                 fsckState = .listReady
-                error = nil
+                clearError(for: .fsck)
                 operationObserver.finish()
             } catch {
                 failContract(workflow: .fsck, error: error)
@@ -733,7 +873,7 @@ final class MaintenanceStore: ObservableObject {
             do {
                 fsckPlan = try event.decodePayload(FsckPlanPayload.self)
                 fsckState = .planReady
-                error = nil
+                clearError(for: .fsck)
                 operationObserver.finish()
             } catch {
                 failContract(workflow: .fsck, error: error)
@@ -742,7 +882,7 @@ final class MaintenanceStore: ObservableObject {
             do {
                 fsckResult = try event.decodePayload(FsckResultPayload.self)
                 fsckState = .succeeded
-                error = nil
+                clearError(for: .fsck)
                 operationObserver.finish()
             } catch {
                 failContract(workflow: .fsck, error: error)
@@ -762,15 +902,18 @@ final class MaintenanceStore: ObservableObject {
                 repairState = .repaired
                 operationObserver.finish()
             }
-            error = nil
+            clearError(for: .repairXattrs)
         } catch {
             failContract(workflow: .repairXattrs, error: error)
         }
     }
 
     private func applyError(_ event: BackendEvent, activeOperation: ActiveOperation) {
+        guard let workflow = workflow(for: event.operation) else {
+            return
+        }
         if event.code == "confirmation_required" {
-            error = nil
+            clearError(for: workflow)
             switch event.operation {
             case "activate":
                 activateState = .awaitingConfirmation
@@ -792,13 +935,15 @@ final class MaintenanceStore: ObservableObject {
         if event.code == "auth_failed" {
             passwordInvalidProfileID = activeOperation.profileID
         }
-        error = BackendErrorViewModel(event: event)
+        setError(BackendErrorViewModel(event: event), for: workflow)
         failState(for: event.operation)
     }
 
     private func applyConfirmationCancelled(operation: String) {
-        error = nil
-        currentStage = nil
+        if let workflow = workflow(for: operation) {
+            clearError(for: workflow)
+            clearCurrentStage(for: workflow)
+        }
         operationObserver.finish()
         switch operation {
         case "activate":
@@ -843,60 +988,74 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private func applyFalseResult(_ event: BackendEvent) {
-        error = BackendErrorViewModel(
-            operation: event.operation,
-            code: "operation_failed",
-            message: event.payloadSummaryText ?? event.summary
-        )
+        if let workflow = workflow(for: event.operation) {
+            setError(
+                BackendErrorViewModel(
+                    operation: event.operation,
+                    code: "operation_failed",
+                    message: event.payloadSummaryText ?? event.summary
+                ),
+                for: workflow
+            )
+        }
         failState(for: event.operation)
     }
 
     private func failContract(workflow: MaintenanceWorkflow, error: Error) {
-        self.error = BackendErrorViewModel(
-            operation: operationName(for: workflow),
-            code: "contract_decode_failed",
-            message: error.localizedDescription
+        setError(
+            BackendErrorViewModel(
+                operation: operationName(for: workflow),
+                code: "contract_decode_failed",
+                message: error.localizedDescription
+            ),
+            for: workflow
         )
         setState(.failed, for: workflow)
         operationObserver.finish()
     }
 
     private func failLocally(workflow: MaintenanceWorkflow, message: String) {
-        error = BackendErrorViewModel(
-            operation: operationName(for: workflow),
-            code: "validation_failed",
-            message: message
+        setError(
+            BackendErrorViewModel(
+                operation: operationName(for: workflow),
+                code: "validation_failed",
+                message: message
+            ),
+            for: workflow
         )
         selectedWorkflow = workflow
-        currentStage = nil
+        clearCurrentStage(for: workflow)
         setState(.failed, for: workflow)
         operationObserver.finish()
     }
 
     private func failLocally(workflow: MaintenanceWorkflow, localError: WorkflowLocalError) {
-        error = BackendErrorViewModel(operation: operationName(for: workflow), localError: localError)
+        setError(BackendErrorViewModel(operation: operationName(for: workflow), localError: localError), for: workflow)
         selectedWorkflow = workflow
-        currentStage = nil
+        clearCurrentStage(for: workflow)
         setState(.failed, for: workflow)
         operationObserver.finish()
     }
 
     private func rejectRun(workflow: MaintenanceWorkflow, message: String) {
-        error = BackendErrorViewModel(
-            operation: operationName(for: workflow),
-            code: "operation_rejected",
-            message: message
+        setError(
+            BackendErrorViewModel(
+                operation: operationName(for: workflow),
+                code: "operation_rejected",
+                message: message
+            ),
+            for: workflow
         )
         selectedWorkflow = workflow
-        currentStage = nil
+        clearCurrentStage(for: workflow)
         setState(.failed, for: workflow)
         operationObserver.finish()
     }
 
     private func rejectRun(workflow: MaintenanceWorkflow, localError: WorkflowLocalError) {
-        error = BackendErrorViewModel(operation: operationName(for: workflow), localError: localError)
+        setError(BackendErrorViewModel(operation: operationName(for: workflow), localError: localError), for: workflow)
         selectedWorkflow = workflow
-        currentStage = nil
+        clearCurrentStage(for: workflow)
         setState(.failed, for: workflow)
         operationObserver.finish()
     }
@@ -974,8 +1133,8 @@ final class MaintenanceStore: ObservableObject {
             rejectRun(workflow: workflow, localError: .operationAlreadyRunning)
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
-        resetRunState()
-        let start = run(operation: operation, params: params, profile: profile)
+        resetRunState(workflow: workflow)
+        let start = run(operation: operation, params: params, profile: profile, workflow: workflow)
         switch start {
         case .started(let operation):
             operationObserver.start(operation)
@@ -985,14 +1144,19 @@ final class MaintenanceStore: ObservableObject {
         return start
     }
 
-    private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
+    private func run(
+        operation: String,
+        params: [String: JSONValue],
+        profile: DeviceProfile?,
+        workflow: MaintenanceWorkflow
+    ) -> OperationStartResult {
         if let coordinator {
             return coordinator.run(
                 operation: operation,
                 params: params,
                 context: profile?.runtimeContext,
                 activeDeviceID: profile?.id,
-                laneKey: laneKey
+                laneKey: laneKey(for: workflow)
             )
         } else {
             guard !isBusy else {
@@ -1000,7 +1164,7 @@ final class MaintenanceStore: ObservableObject {
             }
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-            backend.run(
+            backend(for: workflow).run(
                 operation: operation,
                 params: params,
                 context: context,

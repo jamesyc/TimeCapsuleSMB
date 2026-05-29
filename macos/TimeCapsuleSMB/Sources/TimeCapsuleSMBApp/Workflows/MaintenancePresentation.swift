@@ -354,10 +354,10 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         store: MaintenanceStore
     ) -> MaintenanceTimelinePresentation? {
         switch state {
-        case .loading, .planning, .scanning, .awaitingConfirmation, .running, .repairing:
+        case .loading, .planning, .scanning, .awaitingConfirmation, .running, .repairing, .succeeded, .repaired, .failed:
             return MaintenanceTimelinePresentation(
-                events: store.events,
-                currentStage: store.currentStage,
+                events: store.timelineEvents(for: workflow),
+                currentStage: store.currentStage(for: workflow),
                 workflow: workflow
             )
         default:

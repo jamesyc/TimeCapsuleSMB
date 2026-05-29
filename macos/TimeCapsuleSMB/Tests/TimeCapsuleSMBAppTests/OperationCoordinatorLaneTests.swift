@@ -126,6 +126,28 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertTrue(coordinator.lane(for: .device("device-one")).backend.events.isEmpty)
     }
 
+    func testDefaultMaintenanceOperationsRouteToWorkflowSpecificLanes() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("activate", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+                ])
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activateLane = OperationLaneKey.deviceWorkflow("device-one", .activate)
+
+        XCTAssertStarted(coordinator.run(
+            operation: "activate",
+            context: context("device-one"),
+            activeDeviceID: "device-one"
+        ))
+
+        try await waitUntilStoreState { !coordinator.lane(for: activateLane).backend.events.isEmpty }
+        XCTAssertEqual(coordinator.lane(for: activateLane).backend.events.last?.operation, "activate")
+        XCTAssertTrue(coordinator.lane(for: .deviceWorkflow("device-one", .maintenance)).backend.events.isEmpty)
+    }
+
     func testPendingWorkflowConfirmationBlocksOtherWorkflowForSameDevice() async throws {
         let runner = OperationKeyedStoreTestRunner(responses: [
             .init("deploy", profileID: "device-one"): [

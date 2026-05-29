@@ -271,7 +271,7 @@ final class ActivityStore: ObservableObject {
 
     private func scope(for laneKey: OperationLaneKey, operation: String?) -> ActivityScope {
         switch laneKey {
-        case .app:
+        case .app, .appWorkflow:
             return .app
         case .device(let profileID), .deviceWorkflow(let profileID, _):
             return .device(profileID)

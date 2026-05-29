@@ -44,7 +44,7 @@ struct MaintenanceTab: View {
                     )
                 }
 
-                if let error = store.error {
+                if let error = store.error(for: presentation.detail.workflow) {
                     ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { action in
                         handleRecovery(action: action, error: error)
                     }
