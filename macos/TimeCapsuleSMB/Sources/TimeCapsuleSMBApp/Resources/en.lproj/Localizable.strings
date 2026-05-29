@@ -673,7 +673,8 @@
 "timeline.deploy.detail.post_upload_actions" = "Installing flash hooks and applying file modes.";
 "timeline.deploy.detail.pre_upload_actions" = "Stopping managed services and removing stale deployment files.";
 "timeline.deploy.detail.prepare_deployment_files" = "Generating runtime config and Samba account files.";
-"timeline.deploy.detail.probe_runtime" = "Checking whether SMB is already running.";
+"timeline.activate.detail.probe_runtime" = "Checking whether TimeCapsuleSMB is already running before activating it.";
+"timeline.deploy.detail.probe_runtime" = "Checking whether the device will start TimeCapsuleSMB automatically.";
 "timeline.deploy.detail.read_mast" = "Looking for mounted HFS payload volumes.";
 "timeline.deploy.detail.reboot" = "Sending the SSH reboot request.";
 "timeline.deploy.detail.resolve_managed_target" = "Resolving the deployment target and probing SSH.";
@@ -701,7 +702,8 @@
 "timeline.deploy.title.post_upload_actions" = "Apply File Permissions";
 "timeline.deploy.title.pre_upload_actions" = "Stop Existing Runtime";
 "timeline.deploy.title.prepare_deployment_files" = "Build Runtime Config";
-"timeline.deploy.title.probe_runtime" = "Check SMB Status";
+"timeline.activate.title.probe_runtime" = "Check Existing Runtime";
+"timeline.deploy.title.probe_runtime" = "Check Boot Startup";
 "timeline.deploy.title.read_mast" = "Find Payload Volume";
 "timeline.deploy.title.reboot" = "Request Reboot";
 "timeline.deploy.title.resolve_managed_target" = "Connect to Device";

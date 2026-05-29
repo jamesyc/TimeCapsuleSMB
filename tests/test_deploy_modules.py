@@ -97,18 +97,14 @@ from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
-    RUNTIME_ACTIVATION_STATE_NOT_READY,
-    RUNTIME_ACTIVATION_STATE_READY,
-    RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
     SMBD_STATUS_HELPERS,
-    RuntimeStartupScriptsProbeResult,
+    RcLocalAutostartProbeResult,
     derive_runtime_naming_identity,
     extract_airport_identity_from_acp_output,
     extract_airport_identity_from_text,
     probe_remote_runtime_naming_identity_conn,
     probe_device_conn,
-    probe_runtime_activation_state_conn,
-    probe_runtime_startup_scripts_conn,
+    probe_netbsd4_rc_local_autostart_conn,
     probe_managed_runtime_conn,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
@@ -116,6 +112,7 @@ from timecapsulesmb.device.probe import (
     wait_for_ssh_state_conn,
 )
 from timecapsulesmb.device.storage import MaStVolume, PayloadHome, mounted_mast_volumes_conn
+from timecapsulesmb.services.activation import decide_manual_activation, decide_netbsd4_post_reboot_activation
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
@@ -6424,36 +6421,6 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
         self.assertIn("manager=0", result.stdout)
         self.assertIn("self=1", result.stdout)
 
-    def test_probe_status_helpers_detect_runtime_startup_scripts(self) -> None:
-        script = (
-            SMBD_STATUS_HELPERS
-            + r'''
-rc_local="101 1 S 0:00.00 sh /bin/sh /mnt/Flash/rc.local"
-boot="102 1 S 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
-start_samba="103 1 S 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
-zombie_boot="104 1 Z 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
-self_match=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/boot.sh
-11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/rc.local'
-EOF
-)
-runtime_startup_script_present "$rc_local"; echo "rc-local=$?"
-runtime_startup_script_present "$boot"; echo "boot=$?"
-runtime_startup_script_present "$start_samba"; echo "start-samba=$?"
-runtime_startup_script_present "$zombie_boot"; echo "zombie=$?"
-runtime_startup_script_present "$self_match"; echo "self=$?"
-'''
-        )
-
-        result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("rc-local=0", result.stdout)
-        self.assertIn("boot=0", result.stdout)
-        self.assertIn("start-samba=1", result.stdout)
-        self.assertIn("zombie=1", result.stdout)
-        self.assertIn("self=1", result.stdout)
-
     def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -6860,83 +6827,55 @@ fi
         self.assertEqual(result.detail, "managed mDNS takeover probe timed out")
         self.assertEqual(result.lines, ("FAIL:managed mDNS takeover probe timed out",))
 
-    def test_probe_runtime_startup_scripts_checks_rc_local_and_start_samba(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0, stdout="PASS:managed runtime startup script is running\n"),
-        ) as run_ssh_mock:
-            result = probe_runtime_startup_scripts_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=7)
+    def test_probe_netbsd4_rc_local_autostart_detects_login_marker(self) -> None:
+        connection = SshConnection("host", "pw", "-o foo")
+        login = b"#!/bin/sh\nif [ -x /mnt/Flash/rc.local ]; then /mnt/Flash/rc.local; fi\n"
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_capture_bytes", return_value=login) as run_mock:
+            result = probe_netbsd4_rc_local_autostart_conn(connection, timeout_seconds=7)
 
-        self.assertTrue(result.running)
-        self.assertEqual(result.detail, "managed runtime startup script is running")
-        remote_command = run_ssh_mock.call_args.args[1]
-        self.assertIn("runtime_startup_script_present", remote_command)
-        self.assertIn("capture_ps_out", remote_command)
-        self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], 7)
+        self.assertTrue(result.enabled)
+        self.assertEqual(result.login_size, len(login))
+        self.assertEqual(result.detail, "/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local")
+        run_mock.assert_called_once()
+        self.assertEqual(run_mock.call_args.args[:2], (connection, "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null"))
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 7)
 
-    def test_probe_runtime_activation_state_detects_startup_before_running_rc_local(self) -> None:
-        startup_running = RuntimeStartupScriptsProbeResult(
-            running=True,
-            detail="managed runtime startup script is running",
-            lines=("PASS:managed runtime startup script is running",),
-        )
-        with mock.patch("timecapsulesmb.device.probe.probe_runtime_startup_scripts_conn", return_value=startup_running):
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_conn") as runtime_mock:
-                result = probe_runtime_activation_state_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+    def test_probe_netbsd4_rc_local_autostart_reports_missing_marker(self) -> None:
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_capture_bytes", return_value=b"#!/bin/sh\nexit 0\n"):
+            result = probe_netbsd4_rc_local_autostart_conn(SshConnection("host", "pw", "-o foo"))
 
-        self.assertEqual(result.state, RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING)
-        self.assertIs(result.startup_scripts, startup_running)
-        runtime_mock.assert_not_called()
+        self.assertFalse(result.enabled)
+        self.assertEqual(result.detail, "/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local")
 
-    def test_probe_runtime_activation_state_reports_ready_runtime(self) -> None:
-        startup_absent = RuntimeStartupScriptsProbeResult(
-            running=False,
-            detail="managed runtime startup script is not running",
-            lines=("FAIL:managed runtime startup script is not running",),
-        )
+    def test_decide_manual_activation_skips_ready_runtime(self) -> None:
         runtime_ready = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
             smbd=ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",)),
             mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
-        with mock.patch("timecapsulesmb.device.probe.probe_runtime_startup_scripts_conn", return_value=startup_absent):
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_conn", return_value=runtime_ready):
-                result = probe_runtime_activation_state_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+        with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime_ready) as runtime_mock:
+            decision = decide_manual_activation(SshConnection("host", "pw", "-o foo"), runtime_probe_timeout_seconds=9)
 
-        self.assertEqual(result.state, RUNTIME_ACTIVATION_STATE_READY)
-        self.assertIs(result.runtime, runtime_ready)
-        self.assertIs(result.startup_scripts, startup_absent)
+        self.assertFalse(decision.run_actions)
+        self.assertFalse(decision.verify_runtime)
+        self.assertEqual(decision.reason, "runtime_already_ready")
+        self.assertIs(decision.runtime, runtime_ready)
+        runtime_mock.assert_called_once_with(SshConnection("host", "pw", "-o foo"), timeout_seconds=9)
 
-    def test_probe_runtime_activation_state_checks_startup_again_after_runtime_probe(self) -> None:
-        startup_absent = RuntimeStartupScriptsProbeResult(
-            running=False,
-            detail="managed runtime startup script is not running",
-            lines=("FAIL:managed runtime startup script is not running",),
+    def test_decide_netbsd4_post_reboot_activation_uses_live_login_autostart(self) -> None:
+        autostart = RcLocalAutostartProbeResult(
+            enabled=True,
+            detail="/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local",
+            login_size=128,
         )
-        startup_running = RuntimeStartupScriptsProbeResult(
-            running=True,
-            detail="managed runtime startup script is running",
-            lines=("PASS:managed runtime startup script is running",),
-        )
-        runtime_not_ready = ManagedRuntimeProbeResult(
-            ready=False,
-            detail="runtime verification timed out after 20s",
-            smbd=ManagedSmbdProbeResult(False, "managed smbd not ready", ("FAIL:managed smbd not ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",)),
-        )
-        with mock.patch(
-            "timecapsulesmb.device.probe.probe_runtime_startup_scripts_conn",
-            side_effect=[startup_absent, startup_running],
-        ) as startup_mock:
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_conn", return_value=runtime_not_ready) as runtime_mock:
-                result = probe_runtime_activation_state_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+        with mock.patch("timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn", return_value=autostart):
+            decision = decide_netbsd4_post_reboot_activation(SshConnection("host", "pw", "-o foo"))
 
-        self.assertEqual(result.state, RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING)
-        self.assertIs(result.runtime, runtime_not_ready)
-        self.assertIs(result.startup_scripts, startup_running)
-        self.assertEqual(startup_mock.call_count, 2)
-        runtime_mock.assert_called_once_with(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+        self.assertFalse(decision.run_actions)
+        self.assertTrue(decision.verify_runtime)
+        self.assertEqual(decision.reason, "firmware_autostart_enabled")
+        self.assertIs(decision.autostart, autostart)
 
     def test_probe_managed_runtime_polls_both_probes_and_rechecks_mdns_after_settle(self) -> None:
         smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
@@ -7043,10 +6982,12 @@ fi
         )
 
         text = format_deployment_plan(plan)
-        self.assertIn("Remote actions (runtime activation):", text)
+        self.assertIn("Remote actions (runtime activation if firmware autostart is missing):", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("mode: reboot_then_activate", text)
-        self.assertIn("follow-up: run /mnt/Flash/rc.local after SSH returns", text)
+        self.assertIn("probe /etc/rc.d/LOGIN for /mnt/Flash/rc.local", text)
+        self.assertIn("if present: wait for managed runtime", text)
+        self.assertIn("if missing: run /mnt/Flash/rc.local, then wait for managed runtime", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("smbd is bound to required TCP 445 sockets", text)
         self.assertIn("managed mDNS takeover becomes ready", text)

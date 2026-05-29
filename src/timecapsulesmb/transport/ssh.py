@@ -281,7 +281,13 @@ def _run_sshpass_ssh(
     return proc
 
 
-def run_ssh_capture_bytes(connection: SshConnection, remote_cmd: str, *, timeout: int = 120) -> bytes:
+def run_ssh_capture_bytes(
+    connection: SshConnection,
+    remote_cmd: str,
+    *,
+    timeout: int = 120,
+    missing_tool_message: str | None = None,
+) -> bytes:
     """Run a remote command over SSH and return raw stdout bytes.
 
     This intentionally uses a pipe instead of the pexpect PTY path because
@@ -291,7 +297,7 @@ def run_ssh_capture_bytes(connection: SshConnection, remote_cmd: str, *, timeout
         connection,
         remote_cmd,
         timeout=timeout,
-        missing_tool_message=(
+        missing_tool_message=missing_tool_message or (
             "Reading raw firmware banks requires local sshpass. "
             "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule flash`."
         ),

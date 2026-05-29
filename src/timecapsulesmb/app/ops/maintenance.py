@@ -35,7 +35,7 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.probe import probe_managed_runtime_conn, wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import wait_for_ssh_state_conn
 from timecapsulesmb.device.storage import (
     UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER,
     mast_volumes_debug_summary,
@@ -55,6 +55,7 @@ from timecapsulesmb.services.app import (
 )
 from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
+from timecapsulesmb.services.activation import decide_manual_activation
 from timecapsulesmb.services.maintenance import (
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     FSCK_REBOOT_NO_DOWN_MESSAGE,
@@ -133,7 +134,13 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
         )
     connection = target.connection
     context.stage("probe_runtime")
-    if probe_managed_runtime_conn(connection, timeout_seconds=20).ready:
+    decision = decide_manual_activation(connection)
+    context.add_debug_fields(
+        activation_decision=decision.reason,
+        manual_activation_required=decision.run_actions,
+    )
+    context.log(decision.detail)
+    if not decision.run_actions:
         return OperationResult(True, activation_result_payload(already_active=True))
 
     context.stage("run_activation")

@@ -7,7 +7,6 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import LogCallback, emit_progress
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.deploy.verify import (
     managed_runtime_ready,
@@ -15,9 +14,6 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
 )
 from timecapsulesmb.device.probe import (
-    RUNTIME_ACTIVATION_STATE_READY,
-    RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
-    probe_runtime_activation_state_conn,
     read_remote_network_diagnostics_conn,
     read_runtime_log_tails_conn,
     runtime_startup_failure_debug_fields,
@@ -336,52 +332,3 @@ def verify_managed_runtime_flow(
         command_context.fail_with_error(failure_message)
         return False
     return True
-
-
-def activate_deployed_runtime_flow(
-    connection: SshConnection,
-    command_context: CommandContext,
-    activation_actions: list[RemoteAction],
-    *,
-    run_actions: Callable[[SshConnection, list[RemoteAction]], None],
-    skip_if_ready: bool,
-    already_active_message: str,
-    startup_in_progress_message: str,
-    activation_message: str,
-    activation_stage: str,
-    verification_stage: str,
-    probe_timeout_seconds: int = 20,
-    verification_timeout_seconds: int = 180,
-    verification_heading: str = "Waiting for managed runtime to finish starting...",
-    failure_message: str = "Managed runtime activation failed.",
-) -> bool:
-    if skip_if_ready:
-        command_context.set_stage("probe_runtime")
-        preflight = probe_runtime_activation_state_conn(connection, timeout_seconds=probe_timeout_seconds)
-        if preflight.state == RUNTIME_ACTIVATION_STATE_READY:
-            print(already_active_message)
-            command_context.update_fields(runtime_already_ready=True)
-            return True
-        if preflight.state == RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING:
-            print(startup_in_progress_message)
-            command_context.update_fields(runtime_startup_already_running=True)
-            return verify_managed_runtime_flow(
-                connection,
-                command_context,
-                stage=verification_stage,
-                timeout_seconds=verification_timeout_seconds,
-                heading=verification_heading,
-                failure_message=failure_message,
-            )
-
-    command_context.set_stage(activation_stage)
-    print(activation_message)
-    run_actions(connection, activation_actions)
-    return verify_managed_runtime_flow(
-        connection,
-        command_context,
-        stage=verification_stage,
-        timeout_seconds=verification_timeout_seconds,
-        heading=verification_heading,
-        failure_message=failure_message,
-    )

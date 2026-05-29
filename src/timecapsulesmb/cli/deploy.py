@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import activate_deployed_runtime_flow, request_deploy_reboot_and_wait, verify_managed_runtime_flow
+from timecapsulesmb.cli.flows import request_deploy_reboot_and_wait, verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -69,6 +69,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_green
+from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 
 
 REBOOT_NO_DOWN_MESSAGE = (
@@ -434,19 +435,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Updated /mnt/Flash boot files.", flush=True)
 
         if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-            if not activate_deployed_runtime_flow(
+            command_context.set_stage("activate_runtime")
+            print("Starting deployed runtime without reboot.")
+            run_remote_actions(connection, plan.activation_actions)
+            if not verify_managed_runtime_flow(
                 connection,
                 command_context,
-                plan.activation_actions,
-                run_actions=run_remote_actions,
-                skip_if_ready=False,
-                already_active_message="Managed runtime already active; skipping rc.local.",
-                startup_in_progress_message="Managed runtime startup is already in progress; waiting for it to finish.",
-                activation_message="Starting deployed runtime without reboot.",
-                activation_stage="activate_runtime",
-                verification_stage="verify_runtime_activation",
-                verification_timeout_seconds=180,
-                verification_heading="Waiting for managed runtime to finish starting...",
+                stage="verify_runtime_activation",
+                timeout_seconds=180,
+                heading="Waiting for managed runtime to finish starting...",
                 failure_message="Managed runtime activation failed.",
             ):
                 return 1
@@ -483,19 +480,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
 
         if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-            if not activate_deployed_runtime_flow(
+            command_context.set_stage("probe_runtime")
+            decision = decide_netbsd4_post_reboot_activation(connection)
+            command_context.add_debug_fields(
+                activation_decision=decision.reason,
+                manual_activation_required=decision.run_actions,
+            )
+            print(decision.detail)
+            if decision.run_actions:
+                command_context.set_stage("post_reboot_activation")
+                print("Activating deployed runtime after reboot.")
+                run_remote_actions(connection, plan.activation_actions)
+            else:
+                print("NetBSD4 firmware autostart is enabled; waiting for managed runtime.")
+            if not verify_managed_runtime_flow(
                 connection,
                 command_context,
-                plan.activation_actions,
-                run_actions=run_remote_actions,
-                skip_if_ready=True,
-                already_active_message="Managed runtime already active after reboot; skipping rc.local.",
-                startup_in_progress_message="Managed runtime startup is already in progress after reboot; waiting for it to finish.",
-                activation_message="Activating deployed runtime after reboot.",
-                activation_stage="post_reboot_activation",
-                verification_stage="verify_runtime_activation",
-                verification_timeout_seconds=180,
-                verification_heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
+                stage="verify_runtime_activation",
+                timeout_seconds=180,
+                heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
                 failure_message="NetBSD4 activation failed.",
             ):
                 return 1

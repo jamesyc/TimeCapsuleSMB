@@ -71,11 +71,7 @@ from timecapsulesmb.device.probe import (
     ManagedSmbdProbeResult,
     ProbeResult,
     ProbedDeviceState,
-    RUNTIME_ACTIVATION_STATE_NOT_READY,
-    RUNTIME_ACTIVATION_STATE_READY,
-    RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
     RemoteInterfaceProbeResult,
-    RuntimeActivationProbeResult,
 )
 from timecapsulesmb.device.storage import (
     MAST_PROBE_COMMAND,
@@ -324,21 +320,6 @@ class CliTests(unittest.TestCase):
             smbd=smbd,
             mdns=mdns,
             lines=smbd.lines + mdns.lines,
-        )
-
-    def runtime_activation_probe(self, state: str) -> RuntimeActivationProbeResult:
-        if state == RUNTIME_ACTIVATION_STATE_READY:
-            runtime = self.managed_runtime_probe(True)
-            return RuntimeActivationProbeResult(state=state, detail=runtime.detail, runtime=runtime)
-        if state == RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING:
-            return RuntimeActivationProbeResult(
-                state=state,
-                detail="managed runtime startup script is running",
-            )
-        return RuntimeActivationProbeResult(
-            state=RUNTIME_ACTIVATION_STATE_NOT_READY,
-            detail="managed runtime startup script is not running; managed runtime is not ready",
-            runtime=self.managed_runtime_probe(False),
         )
 
     def setUp(self) -> None:
@@ -847,7 +828,7 @@ class CliTests(unittest.TestCase):
         select_payload_home_side_effect=None,
         payload_verification: PayloadVerificationResult | None = None,
         payload_verification_side_effect=None,
-        activation_probe=None,
+        login_autostart_enabled: bool = False,
         verify_runtime=None,
         reboot_side_effect=None,
         wait_side_effect=None,
@@ -926,10 +907,18 @@ class CliTests(unittest.TestCase):
                     return_value=verify_runtime or self.managed_runtime_probe(True),
                 )
             )
-            mocks.probe_runtime_activation_state_conn = stack.enter_context(
+            mocks.probe_netbsd4_rc_local_autostart_conn = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.flows.probe_runtime_activation_state_conn",
-                    return_value=activation_probe or self.runtime_activation_probe(RUNTIME_ACTIVATION_STATE_NOT_READY),
+                    "timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn",
+                    return_value=SimpleNamespace(
+                        enabled=login_autostart_enabled,
+                        detail=(
+                            "/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local"
+                            if login_autostart_enabled
+                            else "/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local"
+                        ),
+                        login_size=128,
+                    ),
                 )
             )
             mocks.remote_request_reboot = stack.enter_context(
@@ -4828,6 +4817,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["startup_mode"], DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE)
         self.assertEqual(payload["reboot_request"]["strategy"], "ssh_shutdown_then_reboot")
         self.assertEqual(
+            payload["runtime_startup"]["post_reboot_probe"],
+            {
+                "kind": "netbsd4_rc_local_autostart",
+                "path": "/etc/rc.d/LOGIN",
+                "marker": "/mnt/Flash/rc.local",
+                "if_present": ["skip_activation_actions", "verify_managed_runtime"],
+                "if_missing": ["run_activation_actions", "verify_managed_runtime"],
+            },
+        )
+        self.assertEqual(
             [action["kind"] for action in payload["activation_actions"]],
             ["run_script"],
         )
@@ -4907,7 +4906,7 @@ class CliTests(unittest.TestCase):
         upload_connection = result.mocks.upload_deployment_payload.call_args.kwargs["connection"]
         self.assertIsNone(upload_connection.remote_has_scp)
 
-    def test_deploy_netbsd4_yes_waits_when_flash_boot_already_started_runtime(self) -> None:
+    def test_deploy_netbsd4_yes_waits_when_firmware_autostarts_runtime(self) -> None:
         result = self.run_deploy_cli(
             ["--yes"],
             values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
@@ -4915,7 +4914,7 @@ class CliTests(unittest.TestCase):
             compatibility=self.make_supported_netbsd4_compatibility(),
             patch_actions=True,
             patch_upload=True,
-            activation_probe=self.runtime_activation_probe(RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING),
+            login_autostart_enabled=True,
             verify_runtime=self.managed_runtime_probe(True),
             wait_side_effect=[True, True],
         )
@@ -4924,7 +4923,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.verify_managed_runtime.assert_called_once()
-        self.assertIn("startup is already in progress after reboot", result.text)
+        self.assertIn("/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local", result.text)
+        self.assertIn("NetBSD4 firmware autostart is enabled", result.text)
         self.assertNotIn("Activating deployed runtime after reboot.", result.text)
         self.assertIn("NetBSD4 activation complete.", result.text)
 
@@ -4993,7 +4993,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/pkill '^wcifsfs$' >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("skip rc.local if NetBSD4 payload is already healthy", text)
+        self.assertIn("skip rc.local if the NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("managed smbd parent process is running", text)
         self.assertIn("smbd is bound to required TCP 445 sockets", text)
@@ -5151,10 +5151,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch(
-                    "timecapsulesmb.cli.flows.probe_runtime_activation_state_conn",
-                    return_value=self.runtime_activation_probe(RUNTIME_ACTIVATION_STATE_NOT_READY),
-                ):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock:
                             with redirect_stdout(output):
@@ -7283,10 +7280,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch(
-                    "timecapsulesmb.cli.flows.probe_runtime_activation_state_conn",
-                    return_value=self.runtime_activation_probe(RUNTIME_ACTIVATION_STATE_READY),
-                ):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime") as verify_mock:
                             with redirect_stdout(output):
@@ -7296,33 +7290,12 @@ class CliTests(unittest.TestCase):
         verify_mock.assert_not_called()
         self.assertIn("already active; skipping rc.local", output.getvalue())
 
-    def test_activate_skips_rc_local_when_startup_script_is_running(self) -> None:
-        output = io.StringIO()
-        values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch(
-                    "timecapsulesmb.cli.flows.probe_runtime_activation_state_conn",
-                    return_value=self.runtime_activation_probe(RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING),
-                ):
-                    with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock:
-                            with redirect_stdout(output):
-                                rc = activate.main(["--yes"])
-        self.assertEqual(rc, 0)
-        actions_mock.assert_not_called()
-        verify_mock.assert_called_once()
-        self.assertIn("startup is already in progress", output.getvalue())
-
     def test_activate_returns_nonzero_when_verification_fails(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch(
-                    "timecapsulesmb.cli.flows.probe_runtime_activation_state_conn",
-                    return_value=self.runtime_activation_probe(RUNTIME_ACTIVATION_STATE_NOT_READY),
-                ):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
                         with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)):
                             with redirect_stdout(output):
@@ -7341,6 +7314,14 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertIn("actions", payload)
         self.assertTrue(all("kind" in action for action in payload["actions"]))
+        self.assertEqual(
+            payload["pre_activation_probe"],
+            {
+                "kind": "managed_runtime_ready",
+                "if_ready": ["skip_activation_actions"],
+                "if_not_ready": ["run_activation_actions", "verify_managed_runtime"],
+            },
+        )
 
     def test_activate_json_requires_dry_run(self) -> None:
         stderr = io.StringIO()

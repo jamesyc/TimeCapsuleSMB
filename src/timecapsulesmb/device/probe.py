@@ -6,7 +6,7 @@ import time
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
@@ -14,7 +14,7 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import TransportError
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes, ssh_opts_use_proxy
 from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_MODEL,
     AIRPORT_IDENTITIES_BY_SYAP,
@@ -34,13 +34,11 @@ FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
 REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
 
-RuntimeActivationProbeState = Literal["ready", "startup_running", "not_ready"]
-RUNTIME_ACTIVATION_STATE_READY: RuntimeActivationProbeState = "ready"
-RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING: RuntimeActivationProbeState = "startup_running"
-RUNTIME_ACTIVATION_STATE_NOT_READY: RuntimeActivationProbeState = "not_ready"
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
 REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
+NETBSD4_LOGIN_RC_LOCAL_MARKER = b"/mnt/Flash/rc.local"
+NETBSD4_LOGIN_PATH = "/etc/rc.d/LOGIN"
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
     "remote_manager_log_tail": "/mnt/Memory/samba4/var/manager.log",
@@ -521,18 +519,10 @@ class ManagedRuntimeProbeResult:
 
 
 @dataclass(frozen=True)
-class RuntimeStartupScriptsProbeResult:
-    running: bool
+class RcLocalAutostartProbeResult:
+    enabled: bool
     detail: str
-    lines: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class RuntimeActivationProbeResult:
-    state: RuntimeActivationProbeState
-    detail: str
-    runtime: ManagedRuntimeProbeResult | None = None
-    startup_scripts: RuntimeStartupScriptsProbeResult | None = None
+    login_size: int
 
 
 @dataclass(frozen=True)
@@ -1163,85 +1153,27 @@ tc_probe_cap nbns "$RUNTIME_NBNS_BIN" --print-nbns-socket-families
     )
 
 
-def probe_runtime_startup_scripts_conn(connection: SshConnection, *, timeout_seconds: int = 5) -> RuntimeStartupScriptsProbeResult:
-    script = rf'''
-{SMBD_STATUS_HELPERS}
-ps_out="$(capture_ps_out)"
-if runtime_startup_script_present "$ps_out"; then
-    echo "PASS:managed runtime startup script is running"
-    exit 0
-fi
-echo "FAIL:managed runtime startup script is not running"
-exit 1
-'''
-    try:
-        proc = run_ssh(
-            connection,
-            f"/bin/sh -c {shlex.quote(script)}",
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except SshCommandTimeout:
-        lines = ("FAIL:managed runtime startup script probe timed out",)
-        return RuntimeStartupScriptsProbeResult(
-            running=False,
-            detail=_probe_detail(lines, "managed runtime startup script not running"),
-            lines=lines,
-        )
-    lines = _probe_lines(proc.stdout)
-    if proc.returncode == 0:
-        return RuntimeStartupScriptsProbeResult(
-            running=True,
-            detail=_probe_detail(lines, "managed runtime startup script running"),
-            lines=lines,
-        )
-    return RuntimeStartupScriptsProbeResult(
-        running=False,
-        detail=_probe_detail(lines, "managed runtime startup script not running"),
-        lines=lines,
-    )
-
-
-def probe_runtime_activation_state_conn(
+def probe_netbsd4_rc_local_autostart_conn(
     connection: SshConnection,
     *,
-    timeout_seconds: int = 20,
-) -> RuntimeActivationProbeResult:
-    first_startup = probe_runtime_startup_scripts_conn(connection, timeout_seconds=5)
-    if first_startup.running:
-        return RuntimeActivationProbeResult(
-            state=RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
-            detail=first_startup.detail,
-            startup_scripts=first_startup,
-        )
-
-    # rc.local is idempotent, and the startup path normally keeps boot.sh
-    # visible longer than this preflight window. If a short
-    # race slips between these checks, running rc.local again is acceptable.
-    runtime = probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
-    if runtime.ready:
-        return RuntimeActivationProbeResult(
-            state=RUNTIME_ACTIVATION_STATE_READY,
-            detail=runtime.detail,
-            runtime=runtime,
-            startup_scripts=first_startup,
-        )
-
-    second_startup = probe_runtime_startup_scripts_conn(connection, timeout_seconds=5)
-    if second_startup.running:
-        return RuntimeActivationProbeResult(
-            state=RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
-            detail=second_startup.detail,
-            runtime=runtime,
-            startup_scripts=second_startup,
-        )
-
-    return RuntimeActivationProbeResult(
-        state=RUNTIME_ACTIVATION_STATE_NOT_READY,
-        detail=f"{runtime.detail}; {second_startup.detail}",
-        runtime=runtime,
-        startup_scripts=second_startup,
+    timeout_seconds: int = 30,
+) -> RcLocalAutostartProbeResult:
+    login = run_ssh_capture_bytes(
+        connection,
+        f"/bin/dd if={NETBSD4_LOGIN_PATH} bs=4096 2>/dev/null",
+        timeout=timeout_seconds,
+        missing_tool_message=(
+            "Reading NetBSD4 boot autostart state requires local sshpass. "
+            "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."
+        ),
     )
+    enabled = NETBSD4_LOGIN_RC_LOCAL_MARKER in login
+    detail = (
+        f"{NETBSD4_LOGIN_PATH} invokes /mnt/Flash/rc.local"
+        if enabled
+        else f"{NETBSD4_LOGIN_PATH} does not invoke /mnt/Flash/rc.local"
+    )
+    return RcLocalAutostartProbeResult(enabled=enabled, detail=detail, login_size=len(login))
 
 
 def probe_managed_runtime_conn(

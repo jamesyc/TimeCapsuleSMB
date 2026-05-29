@@ -62,12 +62,7 @@ from timecapsulesmb.device.compat import (
     render_compatibility_message,
     require_compatibility,
 )
-from timecapsulesmb.device.probe import (
-    RUNTIME_ACTIVATION_STATE_READY,
-    RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
-    probe_runtime_activation_state_conn,
-    wait_for_ssh_state_conn,
-)
+from timecapsulesmb.device.probe import wait_for_ssh_state_conn
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
@@ -96,6 +91,7 @@ from timecapsulesmb.services.deploy import (
     payload_verification_error,
     render_flash_runtime_config,
 )
+from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.runtime import ManagedTargetState, load_env_config, resolve_validated_managed_target
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
@@ -505,13 +501,10 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     verify_payload_upload(context, connection, payload_home, wait_seconds=mount_wait, post_sync=True)
 
     if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        activate_deployed_runtime(
+        run_activation_actions_and_verify(
             context,
             connection,
             plan.activation_actions,
-            skip_if_ready=False,
-            already_active_message="Managed runtime already active; skipping rc.local.",
-            startup_in_progress_message="Managed runtime startup is already in progress; waiting for it to finish.",
             activation_message="Starting deployed runtime without reboot.",
             activation_stage="activate_runtime",
             verification_stage="verify_runtime_activation",
@@ -552,19 +545,33 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     )
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-        activate_deployed_runtime(
-            context,
-            connection,
-            plan.activation_actions,
-            skip_if_ready=True,
-            already_active_message="Managed runtime already active after reboot; skipping rc.local.",
-            startup_in_progress_message="Managed runtime startup is already in progress after reboot; waiting for it to finish.",
-            activation_message="Activating deployed runtime after reboot.",
-            activation_stage="post_reboot_activation",
-            verification_stage="verify_runtime_activation",
-            verification_timeout_seconds=180,
-            failure_message="NetBSD4 activation failed.",
+        context.stage("probe_runtime")
+        decision = decide_netbsd4_post_reboot_activation(connection)
+        context.add_debug_fields(
+            activation_decision=decision.reason,
+            manual_activation_required=decision.run_actions,
         )
+        context.log(decision.detail)
+        if decision.run_actions:
+            run_activation_actions_and_verify(
+                context,
+                connection,
+                plan.activation_actions,
+                activation_message="Activating deployed runtime after reboot.",
+                activation_stage="post_reboot_activation",
+                verification_stage="verify_runtime_activation",
+                verification_timeout_seconds=180,
+                failure_message="NetBSD4 activation failed.",
+            )
+        else:
+            context.log("NetBSD4 firmware autostart is enabled; waiting for managed runtime.")
+            verify_runtime(
+                context,
+                connection,
+                stage="verify_runtime_activation",
+                timeout_seconds=180,
+                failure_message="NetBSD4 activation failed.",
+            )
         return OperationResult(True, deploy_result_payload(
             payload_dir=plan.payload_dir,
             netbsd4=True,
@@ -587,39 +594,17 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     ))
 
 
-def activate_deployed_runtime(
+def run_activation_actions_and_verify(
     context: AppOperationContext,
     connection: SshConnection,
     activation_actions,
     *,
-    skip_if_ready: bool,
-    already_active_message: str,
-    startup_in_progress_message: str,
     activation_message: str,
     activation_stage: str,
     verification_stage: str,
-    probe_timeout_seconds: int = 20,
     verification_timeout_seconds: int = 180,
     failure_message: str = "Managed runtime activation failed.",
 ) -> None:
-    if skip_if_ready:
-        context.stage("probe_runtime")
-        preflight = probe_runtime_activation_state_conn(connection, timeout_seconds=probe_timeout_seconds)
-        context.log(preflight.detail)
-        if preflight.state == RUNTIME_ACTIVATION_STATE_READY:
-            context.log(already_active_message)
-            return
-        if preflight.state == RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING:
-            context.log(startup_in_progress_message)
-            verify_runtime(
-                context,
-                connection,
-                stage=verification_stage,
-                timeout_seconds=verification_timeout_seconds,
-                failure_message=failure_message,
-            )
-            return
-
     context.stage(activation_stage)
     context.log(activation_message)
     run_remote_actions(connection, activation_actions)

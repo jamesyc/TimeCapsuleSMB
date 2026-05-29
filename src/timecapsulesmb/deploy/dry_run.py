@@ -12,10 +12,12 @@ from timecapsulesmb.deploy.planner import (
     DeploymentPlan,
     UninstallPlan,
 )
+from timecapsulesmb.device.probe import NETBSD4_LOGIN_PATH, NETBSD4_LOGIN_RC_LOCAL_MARKER
 
 
 DEPLOY_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
 UNINSTALL_REBOOT_STRATEGY = "acp_then_ssh"
+NETBSD4_AUTOSTART_MARKER = NETBSD4_LOGIN_RC_LOCAL_MARKER.decode("ascii")
 
 
 def _append_reboot_request(lines: list[str], reboot_required: bool, *, strategy: str, wait_after_reboot: bool = True) -> None:
@@ -45,12 +47,45 @@ def _startup_description(plan: DeploymentPlan) -> str:
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         if not plan.wait_after_reboot:
             return "request reboot and return without post-reboot activation or verification"
-        return "reboot, wait for SSH, run /mnt/Flash/rc.local unless startup is already in progress, then verify managed runtime"
+        return (
+            f"reboot, wait for SSH, probe {NETBSD4_LOGIN_PATH} for {NETBSD4_AUTOSTART_MARKER}; "
+            "if present wait for managed runtime, otherwise run /mnt/Flash/rc.local and verify managed runtime"
+        )
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
         if not plan.wait_after_reboot:
             return "request reboot and return without post-reboot verification"
         return "reboot, wait for SSH, then verify managed runtime"
     return plan.startup_mode
+
+
+def _post_reboot_activation_probe_json() -> dict[str, object]:
+    return {
+        "kind": "netbsd4_rc_local_autostart",
+        "path": NETBSD4_LOGIN_PATH,
+        "marker": NETBSD4_AUTOSTART_MARKER,
+        "if_present": ["skip_activation_actions", "verify_managed_runtime"],
+        "if_missing": ["run_activation_actions", "verify_managed_runtime"],
+    }
+
+
+def _runtime_startup_json(plan: DeploymentPlan) -> dict[str, object]:
+    data: dict[str, object] = {
+        "mode": plan.startup_mode,
+        "description": _startup_description(plan),
+        "reboot_required": plan.reboot_required,
+        "wait_after_reboot": plan.wait_after_reboot,
+    }
+    if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE and plan.wait_after_reboot:
+        data["post_reboot_probe"] = _post_reboot_activation_probe_json()
+    return data
+
+
+def _activation_plan_probe_json() -> dict[str, object]:
+    return {
+        "kind": "managed_runtime_ready",
+        "if_ready": ["skip_activation_actions"],
+        "if_not_ready": ["run_activation_actions", "verify_managed_runtime"],
+    }
 
 
 def format_deployment_plan(plan: DeploymentPlan) -> str:
@@ -79,7 +114,10 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         lines.append(f"  {command}")
     lines.append("")
     if plan.activation_actions:
-        lines.append("Remote actions (runtime activation):")
+        if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+            lines.append("Remote actions (runtime activation if firmware autostart is missing):")
+        else:
+            lines.append("Remote actions (runtime activation):")
         for command in render_remote_actions(plan.activation_actions):
             lines.append(f"  {command}")
         lines.append("")
@@ -93,7 +131,9 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     _append_reboot_request(lines, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-            lines.append("  follow-up: run /mnt/Flash/rc.local after SSH returns")
+            lines.append(f"  follow-up: probe {NETBSD4_LOGIN_PATH} for {NETBSD4_AUTOSTART_MARKER}")
+            lines.append("  if present: wait for managed runtime")
+            lines.append("  if missing: run /mnt/Flash/rc.local, then wait for managed runtime")
         else:
             lines.append("  follow-up: run /mnt/Flash/rc.local without rebooting")
     lines.append("")
@@ -114,6 +154,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
+    data["runtime_startup"] = _runtime_startup_json(plan)
     _add_reboot_request_json(data, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
     return data
 
@@ -121,6 +162,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
 def activation_plan_to_jsonable(plan: ActivationPlan) -> dict[str, object]:
     data = asdict(plan)
     data["actions"] = remote_actions_to_jsonable(plan.actions)
+    data["pre_activation_probe"] = _activation_plan_probe_json()
     return data
 
 
@@ -133,7 +175,7 @@ def format_activation_plan(plan: ActivationPlan, *, device_name: str = "AirPort 
         lines.append(f"  {command}")
     lines.append("")
     lines.append("Pre-activation shortcut:")
-    lines.append("  skip rc.local if NetBSD4 payload is already healthy or startup is already in progress")
+    lines.append("  probe managed runtime readiness; skip rc.local if the NetBSD4 payload is already healthy")
     lines.append("")
     lines.append("Post-activation checks:")
     for check in plan.post_activation_checks:

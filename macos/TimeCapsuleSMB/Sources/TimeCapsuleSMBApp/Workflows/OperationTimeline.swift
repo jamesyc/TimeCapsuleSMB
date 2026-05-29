@@ -24,6 +24,10 @@ private struct OperationStageLocalization {
 }
 
 enum OperationTimelineBuilder {
+    private static let activateStageLocalizations: [String: OperationStageLocalization] = [
+        "probe_runtime": .init(titleKey: "timeline.activate.title.probe_runtime", detailKey: "timeline.activate.detail.probe_runtime")
+    ]
+
     private static let deployStageLocalizations: [String: OperationStageLocalization] = [
         "load_config": .init(titleKey: "timeline.deploy.title.load_config", detailKey: "timeline.deploy.detail.load_config"),
         "resolve_managed_target": .init(titleKey: "timeline.deploy.title.resolve_managed_target", detailKey: "timeline.deploy.detail.resolve_managed_target"),
@@ -53,6 +57,11 @@ enum OperationTimelineBuilder {
         "post_reboot_activation": .init(titleKey: "timeline.deploy.title.post_reboot_activation", detailKey: "timeline.deploy.detail.post_reboot_activation"),
         "verify_runtime_activation": .init(titleKey: "timeline.deploy.title.verify_runtime_activation", detailKey: "timeline.deploy.detail.verify_runtime_activation"),
         "verify_runtime_reboot": .init(titleKey: "timeline.deploy.title.verify_runtime_reboot", detailKey: "timeline.deploy.detail.verify_runtime_reboot")
+    ]
+
+    private static let stageLocalizations: [String: [String: OperationStageLocalization]] = [
+        "activate": activateStageLocalizations,
+        "deploy": deployStageLocalizations
     ]
 
     static func timeline(from events: [BackendEvent]) -> [OperationTimelineItem] {
@@ -151,7 +160,7 @@ enum OperationTimelineBuilder {
         guard let stage else {
             return operationTitle(operation)
         }
-        if operation == "deploy", let title = deployStageTitle(stage) {
+        if let title = localizedStageTitle(for: operation, stage: stage) {
             return title
         }
         switch (operation, stage) {
@@ -211,17 +220,17 @@ enum OperationTimelineBuilder {
         guard let stage else {
             return fallback
         }
-        if operation == "deploy", let detail = deployStageDetail(stage) {
+        if let detail = localizedStageDetail(for: operation, stage: stage) {
             return detail
         }
         return fallback
     }
 
-    private static func deployStageTitle(_ stage: String) -> String? {
-        deployStageLocalizations[stage].map { L10n.string($0.titleKey) }
+    private static func localizedStageTitle(for operation: String, stage: String) -> String? {
+        stageLocalizations[operation]?[stage].map { L10n.string($0.titleKey) }
     }
 
-    private static func deployStageDetail(_ stage: String) -> String? {
-        deployStageLocalizations[stage].map { L10n.string($0.detailKey) }
+    private static func localizedStageDetail(for operation: String, stage: String) -> String? {
+        stageLocalizations[operation]?[stage].map { L10n.string($0.detailKey) }
     }
 }

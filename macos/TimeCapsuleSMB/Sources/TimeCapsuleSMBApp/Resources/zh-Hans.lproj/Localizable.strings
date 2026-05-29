@@ -673,7 +673,8 @@
 "timeline.deploy.detail.post_upload_actions" = "正在安装 flash hooks 并应用文件权限。";
 "timeline.deploy.detail.pre_upload_actions" = "正在停止托管服务并移除旧部署文件。";
 "timeline.deploy.detail.prepare_deployment_files" = "正在生成运行时配置和 Samba 账号文件。";
-"timeline.deploy.detail.probe_runtime" = "正在检查 SMB 是否已经运行。";
+"timeline.activate.detail.probe_runtime" = "正在检查 TimeCapsuleSMB 是否已在运行，然后再激活。";
+"timeline.deploy.detail.probe_runtime" = "正在检查设备是否会自动启动 TimeCapsuleSMB。";
 "timeline.deploy.detail.read_mast" = "正在查找已挂载的 HFS payload 卷。";
 "timeline.deploy.detail.reboot" = "正在发送 SSH 重启请求。";
 "timeline.deploy.detail.resolve_managed_target" = "正在解析部署目标并探测 SSH。";
@@ -701,7 +702,8 @@
 "timeline.deploy.title.post_upload_actions" = "应用文件权限";
 "timeline.deploy.title.pre_upload_actions" = "停止现有运行时";
 "timeline.deploy.title.prepare_deployment_files" = "生成运行时配置";
-"timeline.deploy.title.probe_runtime" = "检查 SMB 状态";
+"timeline.activate.title.probe_runtime" = "检查现有运行状态";
+"timeline.deploy.title.probe_runtime" = "检查启动配置";
 "timeline.deploy.title.read_mast" = "查找 Payload 卷";
 "timeline.deploy.title.reboot" = "请求重启";
 "timeline.deploy.title.resolve_managed_target" = "连接设备";

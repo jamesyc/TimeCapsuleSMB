@@ -2192,7 +2192,7 @@ class AppApiTests(unittest.TestCase):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
                                                     with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
-                                                        with mock.patch("timecapsulesmb.app.ops.deploy.activate_deployed_runtime") as activate:
+                                                        with mock.patch("timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn") as autostart_probe:
                                                             rc = service.run_api_request(
                                                                 {
                                                                     "operation": "deploy",
@@ -2208,7 +2208,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(connection.remote_has_scp)
         reboot.assert_called_once()
-        activate.assert_not_called()
+        autostart_probe.assert_not_called()
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertEqual(payload["reboot_requested"], True)
         self.assertEqual(payload["waited"], False)
@@ -2352,7 +2352,7 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_validated_managed_target") as resolve_target:
-                with mock.patch("timecapsulesmb.app.ops.maintenance.probe_managed_runtime_conn") as runtime_probe:
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn") as runtime_probe:
                     with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
                         rc = service.run_api_request({"operation": "activate", "params": {}}, collector.sink)
 
@@ -2369,7 +2369,7 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_validated_managed_target", return_value=target):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.probe_managed_runtime_conn", return_value=SimpleNamespace(ready=True)):
+                with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(True)):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
                         rc = service.run_api_request(
                             {"operation": "activate", "params": {"yes": True}},

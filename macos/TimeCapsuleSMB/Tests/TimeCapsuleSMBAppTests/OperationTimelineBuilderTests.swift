@@ -94,7 +94,23 @@ final class OperationTimelineBuilderTests: XCTestCase {
             BackendEvent(type: "stage", operation: "deploy", stage: "verify_runtime_activation")
         ])
 
-        XCTAssertEqual(timeline.map(\.title), ["Check SMB Status", "Start SMB After Reboot", "Verify SMB Startup"])
+        XCTAssertEqual(timeline.map(\.title), ["Check Boot Startup", "Start SMB After Reboot", "Verify SMB Startup"])
+        XCTAssertEqual(
+            timeline.first?.detail,
+            "Checking whether the device will start TimeCapsuleSMB automatically."
+        )
+    }
+
+    func testActivateRuntimeProbeStageIsUserFacing() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "activate", stage: "probe_runtime")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Check Existing Runtime"])
+        XCTAssertEqual(
+            timeline.first?.detail,
+            "Checking whether TimeCapsuleSMB is already running before activating it."
+        )
     }
 
     func testDeployCleanupStageWarnsAboutOldFileDeletion() {
