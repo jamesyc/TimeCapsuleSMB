@@ -81,6 +81,9 @@ from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward
 
 
+AUTHENTICATED_SMB_LISTING_RETRY_DELAYS = (10, 15)
+
+
 def _add_probe_line_results(
     add_result: Callable[[CheckResult], None],
     lines: Iterable[str],
@@ -681,6 +684,7 @@ def _add_tunneled_authenticated_smb_results(
                 "127.0.0.1",
                 expected_share_name=share_name,
                 port=local_port,
+                retry_delays=AUTHENTICATED_SMB_LISTING_RETRY_DELAYS,
             )
             if debug_fields is not None and listing_result.details.get("attempts"):
                 debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
@@ -747,6 +751,7 @@ def _add_authenticated_smb_results(
         smb_servers,
         expected_share_name=share_name,
         port=445,
+        retry_delays=AUTHENTICATED_SMB_LISTING_RETRY_DELAYS,
     )
     if debug_fields is not None and listing_result.details.get("attempts"):
         debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]

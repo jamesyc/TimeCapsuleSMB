@@ -1975,6 +1975,7 @@ class CheckTests(unittest.TestCase):
             "127.0.0.1",
             expected_share_name="Data",
             port=1445,
+            retry_delays=(10, 15),
         )
         smb_file_ops_mock.assert_called_once_with(
             "admin",
@@ -2359,6 +2360,7 @@ class CheckTests(unittest.TestCase):
             ["timecapsulesamba4.local", "10.0.0.2"],
             expected_share_name="Data",
             port=445,
+            retry_delays=(10, 15),
         )
         file_ops_mock.assert_called_once_with(
             "admin",
@@ -2502,6 +2504,112 @@ class CheckTests(unittest.TestCase):
         self.assertIn("attempt 2 10.0.1.1", result.message)
         self.assertIn("NT_STATUS_IO_TIMEOUT", result.message)
         self.assertNotIn("secret-password", result.message)
+
+    def test_try_authenticated_smb_listing_retries_transient_failure_after_configured_delay(self) -> None:
+        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_IO_TIMEOUT\n")
+        good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
+                with mock.patch(
+                    "timecapsulesmb.checks.smb.run_local_capture",
+                    side_effect=[failed_proc, good_proc],
+                ) as run_mock:
+                    result = try_authenticated_smb_listing(
+                        "admin",
+                        "pw",
+                        ["home.local"],
+                        expected_share_name="Data",
+                        retry_delays=(10, 15),
+                    )
+
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(run_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(10)
+        attempts = result.details["attempts"]
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]["failure"], "NT_STATUS_IO_TIMEOUT")
+        self.assertEqual(attempts[0]["next_retry_delay_sec"], 10)
+        self.assertEqual(attempts[1]["outcome"], "pass")
+
+    def test_try_authenticated_smb_listing_retries_targets_by_round(self) -> None:
+        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_CONNECTION_REFUSED\n")
+        good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
+                with mock.patch(
+                    "timecapsulesmb.checks.smb.run_local_capture",
+                    side_effect=[failed_proc, failed_proc, good_proc],
+                ):
+                    result = try_authenticated_smb_listing(
+                        "admin",
+                        "pw",
+                        ["home.local", "10.0.1.1"],
+                        expected_share_name="Data",
+                        retry_delays=(10, 15),
+                    )
+
+        self.assertEqual(result.status, "PASS")
+        sleep_mock.assert_called_once_with(10)
+        self.assertEqual(
+            [attempt["server"] for attempt in result.details["attempts"]],
+            ["home.local", "10.0.1.1", "home.local"],
+        )
+
+    def test_try_authenticated_smb_listing_exhausts_configured_transient_retries(self) -> None:
+        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_IO_TIMEOUT\n")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
+                with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=failed_proc):
+                    result = try_authenticated_smb_listing(
+                        "admin",
+                        "pw",
+                        ["home.local"],
+                        expected_share_name="Data",
+                        retry_delays=(10, 15),
+                    )
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("authenticated SMB listing failed after 3 attempt(s)", result.message)
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [10, 15])
+        attempts = result.details["attempts"]
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(attempts[0]["next_retry_delay_sec"], 10)
+        self.assertEqual(attempts[1]["next_retry_delay_sec"], 15)
+        self.assertNotIn("next_retry_delay_sec", attempts[2])
+
+    def test_try_authenticated_smb_listing_does_not_retry_auth_failure(self) -> None:
+        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_LOGON_FAILURE\n")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
+                with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=failed_proc) as run_mock:
+                    result = try_authenticated_smb_listing(
+                        "admin",
+                        "pw",
+                        ["home.local"],
+                        expected_share_name="Data",
+                        retry_delays=(10, 15),
+                    )
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(run_mock.call_count, 1)
+        sleep_mock.assert_not_called()
+
+    def test_try_authenticated_smb_listing_does_not_retry_missing_expected_share(self) -> None:
+        missing_proc = subprocess.CompletedProcess(["smbclient"], 0, "Public\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
+                with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=missing_proc) as run_mock:
+                    result = try_authenticated_smb_listing(
+                        "admin",
+                        "pw",
+                        ["home.local"],
+                        expected_share_name="Data",
+                        retry_delays=(10, 15),
+                    )
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(run_mock.call_count, 1)
+        sleep_mock.assert_not_called()
 
     def test_run_doctor_checks_adds_smb_listing_attempts_to_debug_fields(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -3105,6 +3213,7 @@ class CheckTests(unittest.TestCase):
             ],
         )
         self.assertEqual(listing_mock.call_args.kwargs["port"], 445)
+        self.assertEqual(listing_mock.call_args.kwargs["retry_delays"], (10, 15))
         file_ops_mock.assert_called_once_with(
             "admin",
             "pw",
