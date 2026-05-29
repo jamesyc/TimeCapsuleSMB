@@ -39,9 +39,38 @@ enum OperationStartResult: Equatable {
     }
 }
 
+enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
+    case configure
+    case deploy
+    case doctor
+    case reachability
+    case maintenance
+    case flash
+
+    static func lane(for operation: String) -> DeviceWorkflowLane? {
+        switch operation {
+        case "configure":
+            return .configure
+        case "deploy":
+            return .deploy
+        case "doctor":
+            return .doctor
+        case "reachability":
+            return .reachability
+        case "activate", "uninstall", "fsck", "repair-xattrs":
+            return .maintenance
+        case "flash":
+            return .flash
+        default:
+            return nil
+        }
+    }
+}
+
 enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertible {
     case app
     case device(DeviceProfile.ID)
+    case deviceWorkflow(DeviceProfile.ID, DeviceWorkflowLane)
     case candidateHost(String)
     case localPath(String)
 
@@ -51,6 +80,8 @@ enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertibl
             return "app"
         case .device(let profileID):
             return "device:\(profileID)"
+        case .deviceWorkflow(let profileID, let workflow):
+            return "device:\(profileID):\(workflow.rawValue)"
         case .candidateHost(let host):
             return "candidate:\(host)"
         case .localPath(let path):
@@ -62,6 +93,18 @@ enum OperationLaneKey: Hashable, Equatable, Identifiable, CustomStringConvertibl
         id
     }
 
+    var deviceProfileID: DeviceProfile.ID? {
+        switch self {
+        case .device(let profileID), .deviceWorkflow(let profileID, _):
+            return profileID
+        case .app, .candidateHost, .localPath:
+            return nil
+        }
+    }
+}
+
+private enum OperationResourceKey: Hashable, Equatable {
+    case device(DeviceProfile.ID)
 }
 
 @MainActor
@@ -137,6 +180,11 @@ final class OperationLane: ObservableObject {
         )
         onStateChanged?()
         return .started(activeOperation)
+    }
+
+    func reject(_ message: String) {
+        rejectedOperationMessage = message
+        onStateChanged?()
     }
 
     func confirmPending() {
@@ -246,7 +294,17 @@ final class OperationCoordinator: ObservableObject {
     }
 
     func activeOperation(for profile: DeviceProfile) -> ActiveOperation? {
-        activeOperation(for: .device(profile.id))
+        activeDeviceLane(for: profile.id)?.activeOperation
+    }
+
+    func isDeviceBusy(_ profileID: DeviceProfile.ID) -> Bool {
+        allLanes.contains { lane in
+            resourceKey(for: lane) == .device(profileID) && lane.isBusy
+        }
+    }
+
+    func isDeviceBusy(_ profile: DeviceProfile) -> Bool {
+        isDeviceBusy(profile.id)
     }
 
     @discardableResult
@@ -262,7 +320,7 @@ final class OperationCoordinator: ObservableObject {
             context: profile?.runtimeContext,
             activeDeviceID: profile?.id,
             password: password,
-            laneKey: profile.map { .device($0.id) } ?? .app
+            laneKey: profile.map { defaultLaneKey(operation: operation, activeDeviceID: $0.id) } ?? .app
         )
     }
 
@@ -290,8 +348,15 @@ final class OperationCoordinator: ObservableObject {
         password: String? = nil,
         laneKey: OperationLaneKey? = nil
     ) -> OperationStartResult {
-        let resolvedLaneKey = laneKey ?? activeDeviceID.map { .device($0) } ?? .app
+        let resolvedLaneKey = laneKey ?? defaultLaneKey(operation: operation, activeDeviceID: activeDeviceID)
         let lane = lane(for: resolvedLaneKey)
+        if let resourceKey = resourceKey(for: resolvedLaneKey, activeDeviceID: activeDeviceID),
+           conflictingLane(for: resourceKey, excluding: resolvedLaneKey) != nil {
+            let message = L10n.string("operation.error.already_running")
+            lane.reject(message)
+            refreshLaneState()
+            return .rejected(message)
+        }
         let result = lane.run(
             operation: operation,
             params: params,
@@ -402,6 +467,42 @@ final class OperationCoordinator: ObservableObject {
         return allLanes.first { $0.activeOperation != nil }
     }
 
+    private func activeDeviceLane(for profileID: DeviceProfile.ID) -> OperationLane? {
+        allLanes.first { lane in
+            resourceKey(for: lane) == .device(profileID) && lane.activeOperation != nil
+        }
+    }
+
+    private func conflictingLane(for resourceKey: OperationResourceKey, excluding laneKey: OperationLaneKey) -> OperationLane? {
+        allLanes.first { lane in
+            lane.key != laneKey && self.resourceKey(for: lane) == resourceKey && lane.isBusy
+        }
+    }
+
+    private func defaultLaneKey(operation: String, activeDeviceID: DeviceProfile.ID?) -> OperationLaneKey {
+        guard let activeDeviceID else {
+            return .app
+        }
+        if let workflow = DeviceWorkflowLane.lane(for: operation) {
+            return .deviceWorkflow(activeDeviceID, workflow)
+        }
+        return .device(activeDeviceID)
+    }
+
+    private func resourceKey(for lane: OperationLane) -> OperationResourceKey? {
+        resourceKey(for: lane.key, activeDeviceID: lane.activeOperation?.profileID)
+    }
+
+    private func resourceKey(
+        for laneKey: OperationLaneKey,
+        activeDeviceID: DeviceProfile.ID?
+    ) -> OperationResourceKey? {
+        if let profileID = laneKey.deviceProfileID ?? activeDeviceID {
+            return .device(profileID)
+        }
+        return nil
+    }
+
     private func primaryRejection(from messages: [OperationLaneKey: String]) -> String? {
         if let primaryKey = primaryLane()?.key, let message = messages[primaryKey] {
             return message
@@ -423,6 +524,8 @@ final class OperationCoordinator: ObservableObject {
             return "0:app"
         case .device(let profileID):
             return "1:\(profileID)"
+        case .deviceWorkflow(let profileID, let workflow):
+            return "1:\(profileID):\(workflow.rawValue)"
         case .candidateHost(let host):
             return "2:\(host)"
         case .localPath(let path):

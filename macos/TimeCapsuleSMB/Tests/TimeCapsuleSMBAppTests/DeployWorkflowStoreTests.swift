@@ -526,7 +526,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
             "reboot_requested": .bool(true),
             "waited": .bool(true),
             "verified": .bool(true),
-            "summary": .string("deployment completed.")
+            "summary": .string("Deployment completed.")
         ])
     }
 }

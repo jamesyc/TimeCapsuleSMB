@@ -35,13 +35,24 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         self.appStore = appStore
         self.urlOpener = urlOpener
         self.smbAccountResolver = smbAccountResolver
-        let laneKey = OperationLaneKey.device(profile.id)
-        let lane = appStore.operationCoordinator.lane(for: laneKey)
-        self.lane = lane
-        self.deployStore = DeployWorkflowStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
-        self.doctorStore = DoctorStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
-        self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
-        self.flashStore = FlashWorkflowStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
+        let configureLaneKey = OperationLaneKey.deviceWorkflow(profile.id, .configure)
+        self.lane = appStore.operationCoordinator.lane(for: configureLaneKey)
+        self.deployStore = DeployWorkflowStore(
+            coordinator: appStore.operationCoordinator,
+            laneKey: .deviceWorkflow(profile.id, .deploy)
+        )
+        self.doctorStore = DoctorStore(
+            coordinator: appStore.operationCoordinator,
+            laneKey: .deviceWorkflow(profile.id, .doctor)
+        )
+        self.maintenanceStore = MaintenanceStore(
+            coordinator: appStore.operationCoordinator,
+            laneKey: .deviceWorkflow(profile.id, .maintenance)
+        )
+        self.flashStore = FlashWorkflowStore(
+            coordinator: appStore.operationCoordinator,
+            laneKey: .deviceWorkflow(profile.id, .flash)
+        )
         self.profileEditorStore = DeviceProfileEditorStore(profile: profile, appStore: appStore)
         applyProfileSettings(profile.settings)
         forwardChildChanges()
@@ -224,7 +235,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         }
         profileEditorStore.clearPasswordAttention()
         selectedTab = .install
-        _ = deployStore.runPlan(password: password, profile: profile)
+        deployStore.runPlan(password: password, profile: profile)
     }
 
     func runInstall(profile: DeviceProfile) {
@@ -236,6 +247,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         selectedTab = .install
         if case .started(let operation) = deployStore.runDeploy(password: password, profile: profile) {
             activeDeployOperation = operation
+            persistStartedDeployState(operation: operation, profile: profile)
             invalidateCheckup(for: operation)
         }
     }
@@ -332,7 +344,14 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.$state
             .sink { [weak self] state in
                 Task { @MainActor in
-                    self?.updateDeploySnapshot(state: state)
+                    self?.updateDeployState(state: state)
+                }
+            }
+            .store(in: &cancellables)
+        deployStore.$currentStage
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateCurrentDeployStage()
                 }
             }
             .store(in: &cancellables)
@@ -466,66 +485,305 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             return
         }
         let observedAt = Date()
+        let runtimeState = runtimeStateFromCheckup(profileID: profileID, state: state, summary: summary)
         Task {
-            await appStore.deviceRegistry.updateCheckup(DeviceCheckupSnapshot(
-                checkedAt: observedAt,
-                state: state,
-                passCount: summary.passCount,
-                warnCount: summary.warnCount,
-                failCount: summary.failCount,
-                summary: ""
-            ), for: profileID)
-            if let snapshot = verifiedDeploySnapshotFromPassedCheckup(profileID: profileID, state: state, observedAt: observedAt) {
-                await appStore.deviceRegistry.updateDeploy(snapshot, for: profileID)
-            }
+            await appStore.deviceRegistry.updateCheckup(
+                DeviceCheckupSnapshot(
+                    checkedAt: observedAt,
+                    state: state,
+                    passCount: summary.passCount,
+                    warnCount: summary.warnCount,
+                    failCount: summary.failCount,
+                    summary: ""
+                ),
+                runtimeState: runtimeState,
+                for: profileID
+            )
         }
     }
 
-    private func verifiedDeploySnapshotFromPassedCheckup(
+    private func runtimeStateFromCheckup(
         profileID: DeviceProfile.ID,
         state: DoctorWorkflowState,
-        observedAt: Date
-    ) -> DeviceDeploySnapshot? {
-        guard state == .passed,
-              !doctorStore.skipSSH,
+        summary: DoctorSummary
+    ) -> DeviceRuntimeStateSnapshot? {
+        guard !doctorStore.skipSSH,
               let profile = appStore.deviceRegistry.profile(id: profileID) else {
             return nil
         }
-        if profile.lastDeploy?.verified == true {
+        if profile.runtimeState?.state == .installing {
             return nil
         }
-        return DeviceDeploySnapshot(
-            deployedAt: profile.lastDeploy?.deployedAt ?? observedAt,
-            state: .deployed,
-            payloadFamily: profile.lastDeploy?.payloadFamily ?? profile.payloadFamily,
-            rebootRequested: profile.lastDeploy?.rebootRequested,
-            verified: true,
-            summary: profile.lastDeploy?.summary ?? ""
-        )
+        let countSummary = L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
+        switch state {
+        case .passed:
+            return DeviceRuntimeStateSnapshot(
+                state: .installedVerified,
+                source: .doctor,
+                stage: nil,
+                payloadFamily: profile.runtimeState?.payloadFamily ?? profile.payloadFamily,
+                verified: true,
+                summary: "",
+                errorCode: nil,
+                errorMessage: nil,
+                recovery: nil
+            )
+        case .warning:
+            let currentRuntimeState = profile.runtimeState?.state
+            let runtimeAlreadyInstalled = currentRuntimeState?.isInstalled == true
+            let nextState: DeviceRuntimeState = profile.traits.needsActivationAfterReboot && runtimeAlreadyInstalled
+                ? .activationNeeded
+                : .installedUnverified
+            return DeviceRuntimeStateSnapshot(
+                state: nextState,
+                source: .doctor,
+                stage: nil,
+                payloadFamily: profile.runtimeState?.payloadFamily ?? profile.payloadFamily,
+                verified: false,
+                summary: countSummary,
+                errorCode: nil,
+                errorMessage: nil,
+                recovery: nil
+            )
+        case .failed:
+            return DeviceRuntimeStateSnapshot(
+                state: .unhealthy,
+                source: .doctor,
+                stage: nil,
+                payloadFamily: profile.runtimeState?.payloadFamily ?? profile.payloadFamily,
+                verified: false,
+                summary: countSummary,
+                errorCode: "doctor_failed",
+                errorMessage: nil,
+                recovery: nil
+            )
+        case .idle, .running, .runFailed:
+            return nil
+        }
     }
 
-    private func updateDeploySnapshot(state: DeployWorkflowState) {
+    private func persistStartedDeployState(operation: ActiveOperation, profile: DeviceProfile) {
+        let startedAt = Date()
+        let payloadFamily = deployStore.plan?.payloadFamily ?? profile.payloadFamily
+        let stage = deployStore.currentStage?.stage
+        Task {
+            await appStore.deviceRegistry.updateInstallOperationState(
+                deployState: DeviceDeployStateSnapshot(
+                    operationID: operation.id.uuidString,
+                    startedAt: startedAt,
+                    updatedAt: startedAt,
+                    finishedAt: nil,
+                    status: .deploying,
+                    stage: stage,
+                    payloadFamily: payloadFamily,
+                    rebootRequested: nil,
+                    verified: nil,
+                    summary: "",
+                    errorCode: nil,
+                    errorMessage: nil,
+                    recovery: nil
+                ),
+                runtimeState: DeviceRuntimeStateSnapshot(
+                    state: .installing,
+                    source: .deploy,
+                    stage: stage,
+                    payloadFamily: payloadFamily,
+                    verified: nil,
+                    summary: "",
+                    errorCode: nil,
+                    errorMessage: nil,
+                    recovery: nil
+                ),
+                for: profile.id
+            )
+        }
+    }
+
+    private func updateCurrentDeployStage() {
+        guard [.deploying, .awaitingConfirmation].contains(deployStore.state),
+              let operation = activeDeployOperation,
+              let profileID = operation.profileID else {
+            return
+        }
+        let observedAt = Date()
+        Task {
+            guard let profile = appStore.deviceRegistry.profile(id: profileID),
+                  let current = profile.lastDeployState,
+                  current.operationID == operation.id.uuidString,
+                  current.status.isInProgress else {
+                return
+            }
+            let stage = deployStore.currentStage?.stage ?? current.stage
+            let runtimeState = profile.runtimeState
+            await appStore.deviceRegistry.updateInstallOperationState(
+                deployState: DeviceDeployStateSnapshot(
+                    operationID: current.operationID,
+                    startedAt: current.startedAt,
+                    updatedAt: observedAt,
+                    finishedAt: nil,
+                    status: current.status,
+                    stage: stage,
+                    payloadFamily: current.payloadFamily,
+                    rebootRequested: current.rebootRequested,
+                    verified: current.verified,
+                    summary: current.summary,
+                    errorCode: current.errorCode,
+                    errorMessage: current.errorMessage,
+                    recovery: current.recovery
+                ),
+                runtimeState: DeviceRuntimeStateSnapshot(
+                    state: .installing,
+                    source: .deploy,
+                    stage: stage,
+                    payloadFamily: runtimeState?.payloadFamily ?? current.payloadFamily,
+                    verified: runtimeState?.verified,
+                    summary: runtimeState?.summary ?? "",
+                    errorCode: runtimeState?.errorCode,
+                    errorMessage: runtimeState?.errorMessage,
+                    recovery: runtimeState?.recovery
+                ),
+                for: profileID
+            )
+        }
+    }
+
+    private func updateDeployState(state: DeployWorkflowState) {
+        guard let operation = activeDeployOperation,
+              let profileID = operation.profileID else {
+            return
+        }
+        if state == .awaitingConfirmation {
+            persistAwaitingConfirmationDeployState(profileID: profileID)
+            return
+        }
         guard [.deployed, .deployFailed].contains(state) else {
             return
         }
         defer {
             activeDeployOperation = nil
         }
+        if state == .deployFailed {
+            Task {
+                let failedAt = Date()
+                let profile = appStore.deviceRegistry.profile(id: profileID)
+                let stage = deployStore.currentStage?.stage
+                let payloadFamily = profile?.lastDeployState?.payloadFamily ?? deployStore.plan?.payloadFamily ?? profile?.payloadFamily
+                let errorCode = deployStore.error?.code
+                let errorMessage = deployStore.error?.message ?? L10n.string("install.state.deploy_failed")
+                let recovery = deployStore.error?.recovery.map(DeviceRecoverySnapshot.init)
+                await appStore.deviceRegistry.updateInstallOperationState(
+                    deployState: DeviceDeployStateSnapshot(
+                        operationID: profile?.lastDeployState?.operationID ?? operation.id.uuidString,
+                        startedAt: profile?.lastDeployState?.startedAt ?? failedAt,
+                        updatedAt: failedAt,
+                        finishedAt: failedAt,
+                        status: .failed,
+                        stage: stage,
+                        payloadFamily: payloadFamily,
+                        rebootRequested: nil,
+                        verified: nil,
+                        summary: "",
+                        errorCode: errorCode,
+                        errorMessage: errorMessage,
+                        recovery: recovery
+                    ),
+                    runtimeState: DeviceRuntimeStateSnapshot(
+                        state: .installFailed,
+                        source: .deploy,
+                        stage: stage,
+                        payloadFamily: payloadFamily,
+                        verified: false,
+                        summary: "",
+                        errorCode: errorCode,
+                        errorMessage: errorMessage,
+                        recovery: recovery
+                    ),
+                    for: profileID
+                )
+            }
+            return
+        }
         guard state == .deployed,
-              let profileID = activeDeployOperation?.profileID,
               let profile = appStore.deviceRegistry.profile(id: profileID),
               let result = deployStore.result else {
             return
         }
         Task {
-            await appStore.deviceRegistry.updateDeploy(DeviceDeploySnapshot(
-                deployedAt: Date(),
-                state: state,
-                payloadFamily: deployStore.plan?.payloadFamily ?? profile.payloadFamily,
-                rebootRequested: result.rebootRequested,
-                verified: result.verified,
-                summary: result.message ?? ""
-            ), for: profile.id)
+            let finishedAt = Date()
+            let stage = deployStore.currentStage?.stage ?? profile.lastDeployState?.stage
+            let payloadFamily = deployStore.plan?.payloadFamily ?? profile.payloadFamily
+            let runtimeState: DeviceRuntimeState = result.verified == true ? .installedVerified : .installedUnverified
+            await appStore.deviceRegistry.updateInstallOperationState(
+                deployState: DeviceDeployStateSnapshot(
+                    operationID: profile.lastDeployState?.operationID ?? operation.id.uuidString,
+                    startedAt: profile.lastDeployState?.startedAt ?? finishedAt,
+                    updatedAt: finishedAt,
+                    finishedAt: finishedAt,
+                    status: .succeeded,
+                    stage: stage,
+                    payloadFamily: payloadFamily,
+                    rebootRequested: result.rebootRequested,
+                    verified: result.verified,
+                    summary: result.message ?? "",
+                    errorCode: nil,
+                    errorMessage: nil,
+                    recovery: nil
+                ),
+                runtimeState: DeviceRuntimeStateSnapshot(
+                    state: runtimeState,
+                    source: .deploy,
+                    stage: stage,
+                    payloadFamily: payloadFamily,
+                    verified: result.verified,
+                    summary: result.message ?? "",
+                    errorCode: nil,
+                    errorMessage: nil,
+                    recovery: nil
+                ),
+                for: profile.id
+            )
+        }
+    }
+
+    private func persistAwaitingConfirmationDeployState(profileID: DeviceProfile.ID) {
+        Task {
+            guard let profile = appStore.deviceRegistry.profile(id: profileID),
+                  let current = profile.lastDeployState,
+                  current.status.isInProgress else {
+                return
+            }
+            let observedAt = Date()
+            let stage = deployStore.currentStage?.stage ?? current.stage
+            let runtimeState = profile.runtimeState
+            await appStore.deviceRegistry.updateInstallOperationState(
+                deployState: DeviceDeployStateSnapshot(
+                    operationID: current.operationID,
+                    startedAt: current.startedAt,
+                    updatedAt: observedAt,
+                    finishedAt: nil,
+                    status: .awaitingConfirmation,
+                    stage: stage,
+                    payloadFamily: current.payloadFamily,
+                    rebootRequested: current.rebootRequested,
+                    verified: current.verified,
+                    summary: current.summary,
+                    errorCode: current.errorCode,
+                    errorMessage: current.errorMessage,
+                    recovery: current.recovery
+                ),
+                runtimeState: DeviceRuntimeStateSnapshot(
+                    state: .installing,
+                    source: .deploy,
+                    stage: stage,
+                    payloadFamily: runtimeState?.payloadFamily ?? current.payloadFamily,
+                    verified: runtimeState?.verified,
+                    summary: runtimeState?.summary ?? "",
+                    errorCode: runtimeState?.errorCode,
+                    errorMessage: runtimeState?.errorMessage,
+                    recovery: runtimeState?.recovery
+                ),
+                for: profileID
+            )
         }
     }
 
@@ -558,7 +816,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             return
         }
         Task {
-            await appStore.deviceRegistry.clearDeploy(for: profileID)
+            await appStore.deviceRegistry.clearInstallState(for: profileID)
         }
     }
 }

@@ -60,6 +60,193 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1)
     }
 
+    func testSameDeviceWorkflowLanesShareResourceLockWithoutSharingEvents() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd")
+                ], delayNanoseconds: 200_000_000)
+            ],
+            .init("reachability", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+                ])
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let deployLane = OperationLaneKey.deviceWorkflow("device-one", .deploy)
+        let reachabilityLane = OperationLaneKey.deviceWorkflow("device-one", .reachability)
+        let deviceContext = context("device-one")
+
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            context: deviceContext,
+            activeDeviceID: "device-one",
+            laneKey: deployLane
+        ))
+        try await waitUntilStoreState { coordinator.lane(for: deployLane).backend.isRunning && runner.calls.count == 1 }
+
+        let second = coordinator.run(
+            operation: "reachability",
+            context: deviceContext,
+            activeDeviceID: "device-one",
+            laneKey: reachabilityLane
+        )
+
+        XCTAssertEqual(second.rejectionMessage, "Another operation is already running.")
+        XCTAssertEqual(coordinator.rejectedOperationMessages[reachabilityLane], "Another operation is already running.")
+        XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
+        XCTAssertEqual(runner.calls.map(\.operation), ["deploy"])
+        XCTAssertTrue(coordinator.lane(for: reachabilityLane).backend.events.isEmpty)
+
+        try await waitUntilStoreState { !coordinator.lane(for: deployLane).backend.events.isEmpty }
+        XCTAssertEqual(coordinator.lane(for: deployLane).backend.events.first?.operation, "deploy")
+    }
+
+    func testDefaultDeviceOperationRoutesToWorkflowLane() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ])
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let doctorLane = OperationLaneKey.deviceWorkflow("device-one", .doctor)
+
+        XCTAssertStarted(coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one"
+        ))
+
+        try await waitUntilStoreState { !coordinator.lane(for: doctorLane).backend.events.isEmpty }
+        XCTAssertEqual(runner.calls.map(\.operation), ["doctor"])
+        XCTAssertEqual(coordinator.lane(for: doctorLane).backend.events.last?.operation, "doctor")
+        XCTAssertTrue(coordinator.lane(for: .device("device-one")).backend.events.isEmpty)
+    }
+
+    func testPendingWorkflowConfirmationBlocksOtherWorkflowForSameDevice() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    confirmationRequiredEvent(operation: "deploy", id: "deploy-confirm")
+                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+            ],
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ])
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let deployLane = OperationLaneKey.deviceWorkflow("device-one", .deploy)
+        let doctorLane = OperationLaneKey.deviceWorkflow("device-one", .doctor)
+
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            params: ["dry_run": .bool(false)],
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: deployLane
+        ))
+        try await waitUntilStoreState {
+            coordinator.lane(for: deployLane).backend.pendingConfirmation != nil
+                && !coordinator.lane(for: deployLane).backend.isRunning
+        }
+
+        let rejected = coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: doctorLane
+        )
+
+        XCTAssertEqual(rejected.rejectionMessage, "Another operation is already running.")
+        XCTAssertEqual(coordinator.rejectedOperationMessages[doctorLane], "Another operation is already running.")
+        XCTAssertEqual(runner.calls.map(\.operation), ["deploy"])
+        XCTAssertTrue(coordinator.lane(for: doctorLane).backend.events.isEmpty)
+        XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
+    }
+
+    func testCompletedWorkflowLaneEventsSurviveLaterSameDeviceWorkflowRun() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+                ])
+            ],
+            .init("reachability", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+                ])
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let deployLane = OperationLaneKey.deviceWorkflow("device-one", .deploy)
+        let reachabilityLane = OperationLaneKey.deviceWorkflow("device-one", .reachability)
+        let deviceContext = context("device-one")
+
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            context: deviceContext,
+            activeDeviceID: "device-one",
+            laneKey: deployLane
+        ))
+        try await waitUntilStoreState { !coordinator.lane(for: deployLane).backend.isRunning && !coordinator.lane(for: deployLane).backend.events.isEmpty }
+
+        XCTAssertStarted(coordinator.run(
+            operation: "reachability",
+            context: deviceContext,
+            activeDeviceID: "device-one",
+            laneKey: reachabilityLane
+        ))
+        try await waitUntilStoreState { !coordinator.lane(for: reachabilityLane).backend.events.isEmpty }
+
+        XCTAssertEqual(coordinator.lane(for: deployLane).backend.events.last?.operation, "deploy")
+        XCTAssertEqual(coordinator.lane(for: reachabilityLane).backend.events.last?.operation, "reachability")
+    }
+
+    func testSameWorkflowRunsInParallelForDifferentDevices() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+                ], delayNanoseconds: 200_000_000)
+            ],
+            .init("deploy", profileID: "device-two"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+                ], delayNanoseconds: 200_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let firstLane = OperationLaneKey.deviceWorkflow("device-one", .deploy)
+        let secondLane = OperationLaneKey.deviceWorkflow("device-two", .deploy)
+
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: firstLane
+        ))
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            context: context("device-two"),
+            activeDeviceID: "device-two",
+            laneKey: secondLane
+        ))
+
+        try await waitUntilStoreState {
+            runner.calls.count == 2
+                && coordinator.lane(for: firstLane).backend.isRunning
+                && coordinator.lane(for: secondLane).backend.isRunning
+        }
+        XCTAssertEqual(Set(coordinator.activeOperations.keys), [firstLane, secondLane])
+        XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
+        XCTAssertTrue(coordinator.isDeviceBusy("device-two"))
+    }
+
     func testDifferentDeviceLanesRunSameOperationInParallel() async throws {
         let runner = OperationKeyedStoreTestRunner(responses: [
             .init("doctor", profileID: "device-one"): [

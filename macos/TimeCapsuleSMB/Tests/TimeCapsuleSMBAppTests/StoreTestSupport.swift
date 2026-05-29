@@ -619,8 +619,63 @@ func testDeployResultPayload(
         "waited": .bool(true),
         "verified": .bool(verified),
         "message": .string("Install completed."),
-        "summary": .string("deployment completed.")
+        "summary": .string("Deployment completed.")
     ])
+}
+
+func testDeployState(
+    status: DeviceDeployStateStatus = .succeeded,
+    startedAt: Date = Date(timeIntervalSince1970: 120),
+    updatedAt: Date = Date(timeIntervalSince1970: 120),
+    finishedAt: Date? = Date(timeIntervalSince1970: 120),
+    stage: String? = nil,
+    payloadFamily: String? = "netbsd6_samba4",
+    rebootRequested: Bool? = true,
+    verified: Bool? = true,
+    summary: String = "installed",
+    errorCode: String? = nil,
+    errorMessage: String? = nil,
+    recovery: DeviceRecoverySnapshot? = nil
+) -> DeviceDeployStateSnapshot {
+    DeviceDeployStateSnapshot(
+        operationID: nil,
+        startedAt: startedAt,
+        updatedAt: updatedAt,
+        finishedAt: finishedAt,
+        status: status,
+        stage: stage,
+        payloadFamily: payloadFamily,
+        rebootRequested: rebootRequested,
+        verified: verified,
+        summary: summary,
+        errorCode: errorCode,
+        errorMessage: errorMessage,
+        recovery: recovery
+    )
+}
+
+func testRuntimeState(
+    state: DeviceRuntimeState = .installedVerified,
+    source: DeviceRuntimeEvidenceSource = .deploy,
+    stage: String? = nil,
+    payloadFamily: String? = "netbsd6_samba4",
+    verified: Bool? = true,
+    summary: String = "installed",
+    errorCode: String? = nil,
+    errorMessage: String? = nil,
+    recovery: DeviceRecoverySnapshot? = nil
+) -> DeviceRuntimeStateSnapshot {
+    DeviceRuntimeStateSnapshot(
+        state: state,
+        source: source,
+        stage: stage,
+        payloadFamily: payloadFamily,
+        verified: verified,
+        summary: summary,
+        errorCode: errorCode,
+        errorMessage: errorMessage,
+        recovery: recovery
+    )
 }
 
 func testActivationPlanPayload() -> JSONValue {

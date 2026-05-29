@@ -188,7 +188,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         self.baselineDraft = initialDraft
         self.appStore = appStore
         self.coordinator = appStore.operationCoordinator
-        self.lane = appStore.operationCoordinator.lane(for: profile)
+        self.lane = appStore.operationCoordinator.lane(for: .deviceWorkflow(profile.id, .configure))
         self.profilePersistence = profilePersistence ?? appStore.profilePersistence
         observeBackend()
     }
@@ -389,7 +389,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             params: params,
             context: configureDraft.context,
             activeDeviceID: profile.id,
-            laneKey: .device(profile.id)
+            laneKey: .deviceWorkflow(profile.id, .configure)
         )
         guard case .started(let operation) = start else {
             error = BackendErrorViewModel(

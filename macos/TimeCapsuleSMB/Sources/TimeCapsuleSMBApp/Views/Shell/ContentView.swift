@@ -197,7 +197,7 @@ public struct ContentView: View {
         guard let profile = appStore.selectedProfile else {
             return true
         }
-        return appStore.operationCoordinator.lane(for: profile).isBusy
+        return appStore.operationCoordinator.isDeviceBusy(profile)
     }
 
     private func configureCloseGuard() {
@@ -290,7 +290,7 @@ public struct ContentView: View {
         DeviceSidebarContextMenuPresentation(
             profile: profile,
             summary: summary,
-            isDeviceBusy: appStore.operationCoordinator.lane(for: profile).isBusy
+            isDeviceBusy: appStore.operationCoordinator.isDeviceBusy(profile)
         )
     }
 
@@ -304,7 +304,7 @@ public struct ContentView: View {
         case .openFinder:
             dashboardStore.session(for: profile).performSecondaryAction(.openFinder, profile: profile)
         case .runCheckup:
-            guard !appStore.operationCoordinator.lane(for: profile).isBusy else {
+            guard !appStore.operationCoordinator.isDeviceBusy(profile) else {
                 return
             }
             appStore.select(profile)
@@ -312,7 +312,7 @@ public struct ContentView: View {
         case .viewCheckup:
             openDashboard(profile, tab: .checkup)
         case .refreshStatus:
-            guard !appStore.operationCoordinator.lane(for: profile).isBusy else {
+            guard !appStore.operationCoordinator.isDeviceBusy(profile) else {
                 return
             }
             dashboardStore.session(for: profile).performSecondaryAction(.refreshStatus, profile: profile)
@@ -321,7 +321,7 @@ public struct ContentView: View {
         case .copySMBAddress, .copyHostname, .copyIPAddress:
             copySidebarValue(action, profile: profile)
         case .removeFromThisMac:
-            guard !appStore.operationCoordinator.lane(for: profile).isBusy else {
+            guard !appStore.operationCoordinator.isDeviceBusy(profile) else {
                 return
             }
             profilePendingDeletion = profile

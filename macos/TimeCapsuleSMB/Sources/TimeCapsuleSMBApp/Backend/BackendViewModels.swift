@@ -7,6 +7,20 @@ struct OperationStageState: Equatable {
     let cancellable: Bool?
     let description: String?
 
+    init(
+        operation: String,
+        stage: String,
+        risk: String? = nil,
+        cancellable: Bool? = nil,
+        description: String? = nil
+    ) {
+        self.operation = operation
+        self.stage = stage
+        self.risk = risk
+        self.cancellable = cancellable
+        self.description = description
+    }
+
     init?(event: BackendEvent) {
         guard event.type == "stage", let stage = event.stage else {
             return nil
@@ -133,6 +147,14 @@ struct BackendErrorViewModel: Equatable {
         self.rawMessage = nil
         self.localError = localError
         self.recovery = recovery
+    }
+
+    init(operation: String, deployState: DeviceDeployStateSnapshot) {
+        self.operation = operation
+        self.code = deployState.errorCode ?? "operation_failed"
+        self.rawMessage = deployState.localizedSummary
+        self.localError = nil
+        self.recovery = deployState.recovery.map(BackendRecoveryPayload.init)
     }
 }
 

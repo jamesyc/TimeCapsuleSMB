@@ -144,9 +144,10 @@ final class AppSettingsStoreTests: XCTestCase {
             failCount: 0,
             summary: "PASS 2, WARN 1, FAIL 0"
         )
-        let deploy = DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            state: .deployed,
+        let deploy = testDeployState(
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            finishedAt: Date(timeIntervalSince1970: 1_700_000_000),
             payloadFamily: nil,
             rebootRequested: nil,
             verified: true,
@@ -162,7 +163,8 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(issue.message, "缺少捆绑的 TimeCapsuleSMB Helper。")
         XCTAssertEqual(issue.recovery, "重新安装 TimeCapsuleSMB。")
         XCTAssertEqual(checkup.localizedSummary, "PASS 2，WARN 1，FAIL 0")
-        XCTAssertEqual(deploy.localizedSummary, "已安装，并已通过检查验证。")
+        XCTAssertEqual(deploy.localizedSummary, "安装已完成。")
+        XCTAssertEqual(L10n.string("install.timeline.title"), "状态")
 
         L10n.apply(language: .english)
         XCTAssertEqual(DoctorWorkflowState.running.title, "Running")
@@ -173,7 +175,8 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(issue.message, "The bundled TimeCapsuleSMB helper is missing.")
         XCTAssertEqual(issue.recovery, "Reinstall TimeCapsuleSMB.")
         XCTAssertEqual(checkup.localizedSummary, "PASS 2, WARN 1, FAIL 0")
-        XCTAssertEqual(deploy.localizedSummary, "Installed and verified by checkup.")
+        XCTAssertEqual(deploy.localizedSummary, "Install completed.")
+        XCTAssertEqual(L10n.string("install.timeline.title"), "Status")
     }
 
     func testFocusedSimplifiedChineseKeysDoNotFallBackToEnglishUiCopy() {

@@ -223,7 +223,6 @@
 "deploy.presentation.row.expected_changes" = "Expected Changes";
 "deploy.presentation.row.host" = "Host";
 "deploy.presentation.row.payload" = "Payload";
-"deploy.presentation.row.payload_directory" = "Payload Directory";
 "deploy.presentation.row.post_install_checks" = "Post-install Checks";
 "deploy.presentation.row.post_upload_actions" = "Post-upload Actions";
 "deploy.presentation.row.pre_upload_actions" = "Pre-upload Actions";
@@ -240,6 +239,7 @@
 "deploy.result.message" = "Message";
 "deploy.result.reboot_requested" = "Reboot Requested";
 "deploy.result.verified" = "Verified";
+"deploy.failure.reboot_guidance" = "Troubleshooting tip: try rebooting your device and waiting 5 minutes for it to load. Then try deploy again.";
 "install.action.create_plan" = "Create Install Plan";
 "install.action.install_update" = "Install / Update";
 "install.action.reinstall" = "Reinstall";
@@ -253,12 +253,10 @@
 "install.plan.downtime.no_wait" = "The app will request reboot and return immediately.";
 "install.plan.downtime.none" = "No reboot expected.";
 "install.plan.downtime.reboot" = "Several minutes while the Time Capsule reboots.";
-"install.plan.row.disk" = "Disk";
 "install.plan.row.expected_downtime" = "Expected Downtime";
 "install.plan.row.remote_actions" = "Remote Actions";
 "install.plan.row.uploads" = "Uploads";
 "install.plan.section.device_actions" = "Device Actions";
-"install.plan.section.files" = "Files";
 "install.plan.section.target" = "Target";
 "install.plan.title.activate_now" = "Install / Update SMB and Start Runtime";
 "install.plan.title.netbsd4" = "Install / Update SMB and Start Runtime";
@@ -270,6 +268,7 @@
 "install.progress.deploying.title" = "Installing / Updating SMB";
 "install.state.awaiting_confirmation" = "Review the confirmation dialog before continuing.";
 "install.state.deploy_failed" = "Install / Update failed.";
+"install.state.deploy_interrupted" = "Deploy was interrupted before it completed.";
 "install.state.deployed" = "Install / Update completed.";
 "install.state.deploying" = "Installing files and applying device changes.";
 "install.state.idle" = "Create a plan before installing or updating SMB.";
@@ -277,10 +276,12 @@
 "install.state.plan_ready" = "Review the plan, then run Install / Update.";
 "install.state.plan_stale" = "Advanced options changed after this plan was created.";
 "install.state.planning" = "Creating an install plan.";
-"install.timeline.title" = "Progress";
+"install.timeline.title" = "Status";
 "install.timeline.waiting" = "Waiting for backend progress.";
 "install.warning.awaiting_confirmation" = "The backend is waiting for explicit confirmation.";
 "install.warning.plan_stale" = "Regenerate the plan before installing.";
+"runtime.state.unknown" = "Not installed.";
+"runtime.state.unhealthy" = "Checkup found runtime problems.";
 "diagnostics.backend_events" = "Backend Events";
 "diagnostics.copied" = "Copied diagnostics.";
 "diagnostics.copy" = "Copy Diagnostics";
@@ -657,6 +658,7 @@
 "timeline.operation.version_check" = "Update Check";
 "timeline.result.done" = "Done";
 "timeline.result.failed" = "Failed";
+"timeline.deploy.result.completed" = "Deployment completed.";
 "timeline.state.failed" = "Failed";
 "timeline.state.pending" = "Pending";
 "timeline.state.running" = "Running";

@@ -996,6 +996,36 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         case docsAnchor = "docs_anchor"
     }
 
+    init(
+        title: String,
+        message: String?,
+        actions: [String],
+        actionIDs: [String],
+        retryable: Bool,
+        suggestedOperation: String?,
+        docsAnchor: String?
+    ) {
+        self.title = title
+        self.message = message
+        self.actions = actions
+        self.actionIDs = actionIDs
+        self.retryable = retryable
+        self.suggestedOperation = suggestedOperation
+        self.docsAnchor = docsAnchor
+    }
+
+    init(_ snapshot: DeviceRecoverySnapshot) {
+        self.init(
+            title: snapshot.title,
+            message: snapshot.message,
+            actions: snapshot.actions,
+            actionIDs: snapshot.actionIDs,
+            retryable: snapshot.retryable,
+            suggestedOperation: snapshot.suggestedOperation,
+            docsAnchor: snapshot.docsAnchor
+        )
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.title = try container.decode(String.self, forKey: .title)

@@ -17,15 +17,18 @@ struct ErrorBlock: View {
 
 struct ErrorRecoveryView: View {
     let error: BackendErrorViewModel
+    let guidance: String?
     let onAction: (RecoveryAction) -> Void
     let diagnosticsText: (() -> String)?
 
     init(
         error: BackendErrorViewModel,
+        guidance: String? = nil,
         diagnosticsText: (() -> String)? = nil,
         onAction: @escaping (RecoveryAction) -> Void
     ) {
         self.error = error
+        self.guidance = guidance
         self.diagnosticsText = diagnosticsText
         self.onAction = onAction
     }
@@ -33,6 +36,11 @@ struct ErrorRecoveryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ErrorBlock(error: error)
+            if let guidance {
+                Text(guidance)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             let actions = RecoveryActionMapper.actions(for: error)
             if !actions.isEmpty {
                 HStack {

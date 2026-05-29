@@ -75,7 +75,7 @@ final class SMBAccountResolverTests: XCTestCase {
             createdAt: Date(timeIntervalSince1970: 1),
             updatedAt: Date(timeIntervalSince1970: 2),
             lastCheckup: nil,
-            lastDeploy: nil,
+            lastDeployState: nil,
             settings: .default,
             passwordState: .available
         )

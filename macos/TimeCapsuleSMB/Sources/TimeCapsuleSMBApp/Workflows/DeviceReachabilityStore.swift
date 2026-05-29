@@ -24,7 +24,7 @@ final class DeviceReachabilityStore: ObservableObject {
     }
 
     func refresh(profile: DeviceProfile, password: String?) {
-        let laneKey = OperationLaneKey.device(profile.id)
+        let laneKey = OperationLaneKey.deviceWorkflow(profile.id, .reachability)
         let lane = coordinator.lane(for: laneKey)
         observeLane(for: profile.id, lane: lane)
         guard !lane.isBusy else {
@@ -74,7 +74,7 @@ final class DeviceReachabilityStore: ObservableObject {
 
     func isRunning(profile: DeviceProfile) -> Bool {
         operationObservers[profile.id]?.activeOperation != nil
-            || coordinator.activeOperation(for: profile)?.operation == "reachability"
+            || coordinator.activeOperation(for: .deviceWorkflow(profile.id, .reachability))?.operation == "reachability"
     }
 
     private func observer(for profileID: DeviceProfile.ID) -> BackendOperationObserver {
@@ -150,7 +150,7 @@ final class DeviceReachabilityStore: ObservableObject {
     }
 
     private func finishIfLaneStopped(profileID: DeviceProfile.ID) {
-        if coordinator.activeOperation(for: .device(profileID))?.operation != "reachability" {
+        if coordinator.activeOperation(for: .deviceWorkflow(profileID, .reachability))?.operation != "reachability" {
             operationObservers[profileID]?.finish()
         }
     }

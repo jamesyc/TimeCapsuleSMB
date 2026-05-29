@@ -114,23 +114,23 @@ enum DeviceStatusPolicy {
             return .unsupported
         }
 
-        guard let checkup = profile.lastCheckup else {
-            if let deploy = profile.lastDeploy, deploy.state == .deployed {
-                return deploy.verified == true ? .healthy : .warning
+        if let runtimeState = profile.runtimeState {
+            switch runtimeState.state {
+            case .unknown:
+                return .unchecked
+            case .installing:
+                return .installing
+            case .installedVerified:
+                return .healthy
+            case .installedUnverified:
+                return .warning
+            case .installFailed, .installInterrupted, .unhealthy:
+                return .failed
+            case .activationNeeded:
+                return .activationNeeded
             }
-            return .unchecked
         }
-
-        if checkup.failCount > 0 || checkup.state == .failed || checkup.state == .runFailed {
-            return .failed
-        }
-        if profile.traits.needsActivationAfterReboot, profile.lastDeploy != nil, checkup.warnCount > 0 {
-            return .activationNeeded
-        }
-        if checkup.warnCount > 0 || checkup.state == .warning {
-            return .warning
-        }
-        return .healthy
+        return .unchecked
     }
 
 }

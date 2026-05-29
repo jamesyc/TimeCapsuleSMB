@@ -19,7 +19,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             actionIDs: ["open_finder", "install_smb"]
         ).decode(BackendRecoveryPayload.self)
         let error = BackendErrorViewModel(
-            operation: "deploy",
+            operation: "doctor",
             code: "remote_error",
             message: "Disk did not mount.",
             recovery: recovery
@@ -30,6 +30,28 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Run Disk Repair", kind: .diskRepair)))
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Open Finder", kind: .openFinder)))
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Install SMB", kind: .installSMB)))
+    }
+
+    func testDeployRecoveryDoesNotShowFinderOrInstallSMBActions() throws {
+        let recovery = try recoveryValue(
+            title: "No HFS volumes found",
+            actions: ["Retry deploy."],
+            suggestedOperation: "deploy",
+            actionIDs: ["open_finder", "install_smb"]
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "remote_error",
+            message: "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.",
+            recovery: recovery
+        )
+
+        let actions = RecoveryActionMapper.actions(for: error)
+
+        XCTAssertFalse(actions.contains { $0.kind == .openFinder })
+        XCTAssertFalse(actions.contains { $0.kind == .installSMB })
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics)))
     }
 
     func testHumanRecoveryTextDoesNotCreateActionButtons() throws {

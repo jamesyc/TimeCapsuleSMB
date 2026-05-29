@@ -28,12 +28,8 @@ struct InstallPlanPresentation: Equatable {
                 InstallPlanRow(label: L10n.string("deploy.presentation.row.host"), value: plan.host),
                 InstallPlanRow(label: L10n.string("deploy.presentation.row.payload"), value: plan.payloadFamily ?? profile.payloadFamily ?? L10n.string("value.unknown"))
             ]),
-            InstallPlanSection(title: L10n.string("install.plan.section.files"), rows: [
-                InstallPlanRow(label: L10n.string("install.plan.row.disk"), value: plan.volumeRoot ?? L10n.string("value.unknown")),
-                InstallPlanRow(label: L10n.string("deploy.presentation.row.payload_directory"), value: plan.payloadDir),
-                InstallPlanRow(label: L10n.string("install.plan.row.uploads"), value: "\(plan.uploads.count)")
-            ]),
             InstallPlanSection(title: L10n.string("install.plan.section.device_actions"), rows: [
+                InstallPlanRow(label: L10n.string("install.plan.row.uploads"), value: "\(plan.uploads.count)"),
                 InstallPlanRow(label: L10n.string("deploy.presentation.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
                 InstallPlanRow(label: L10n.string("install.plan.row.expected_downtime"), value: Self.expectedDowntime(plan: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)),
                 InstallPlanRow(label: L10n.string("install.plan.row.remote_actions"), value: "\(plan.preUploadActions.count + plan.postUploadActions.count + plan.activationActions.count)"),
@@ -163,14 +159,18 @@ enum InstallCompletionActionPolicy {
 
 enum InstallActionAvailabilityPolicy {
     @MainActor
-    static func isEnabled(_ action: InstallUserAction, store: DeployWorkflowStore) -> Bool {
+    static func isEnabled(
+        _ action: InstallUserAction,
+        store: DeployWorkflowStore,
+        isDeviceBusy: Bool = false
+    ) -> Bool {
         switch action {
         case .createPlan, .regeneratePlan, .reinstall:
-            return !store.isBusy && store.hasValidOptions
+            return !isDeviceBusy && !store.isBusy && store.hasValidOptions
         case .installUpdate:
-            return store.canDeploy
+            return !isDeviceBusy && store.canDeploy
         case .runCheckup:
-            return !store.isBusy
+            return !isDeviceBusy && !store.isBusy
         case .openFinder, .viewCheckup, .viewDiagnostics:
             return true
         }
@@ -180,7 +180,25 @@ enum InstallActionAvailabilityPolicy {
 struct InstallTimelinePresentation: Equatable {
     let items: [OperationTimelineItem]
 
-    init(events: [BackendEvent], currentStage: OperationStageState?) {
+    init(restoredDeploySuccess snapshot: DeviceDeployStateSnapshot) {
+        self.items = [
+            OperationTimelineItem(
+                id: "restored:deploy:result",
+                operation: "deploy",
+                title: L10n.string("timeline.result.done"),
+                detail: Self.restoredDeploySuccessDetail(snapshot),
+                state: .succeeded,
+                risk: nil,
+                cancellable: nil
+            )
+        ]
+    }
+
+    init(
+        events: [BackendEvent],
+        currentStage: OperationStageState?,
+        fallbackState: OperationTimelineItem.State = .running
+    ) {
         var items = OperationTimelineBuilder.timeline(from: events)
             .filter { $0.operation == "deploy" }
         if items.isEmpty, let currentStage {
@@ -194,13 +212,32 @@ struct InstallTimelinePresentation: Equatable {
                         stage: currentStage.stage,
                         fallback: currentStage.description
                     ),
-                    state: .running,
+                    state: fallbackState,
                     risk: currentStage.risk,
                     cancellable: currentStage.cancellable
                 )
             ]
         }
         self.items = items
+    }
+
+    private static func restoredDeploySuccessDetail(_ snapshot: DeviceDeployStateSnapshot) -> String {
+        let trimmed = snapshot.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? L10n.string("timeline.deploy.result.completed") : trimmed
+    }
+}
+
+enum DeployFailureGuidancePolicy {
+    static func guidance(for error: BackendErrorViewModel?) -> String? {
+        guard let error, error.operation == "deploy" else {
+            return nil
+        }
+        switch error.code {
+        case "auth_failed", "validation_failed", "confirmation_required", "confirmation_cancelled":
+            return nil
+        default:
+            return L10n.string("deploy.failure.reboot_guidance")
+        }
     }
 }
 
@@ -220,7 +257,7 @@ struct InstallCompletionPresentation: Equatable {
         )
     }
 
-    init(snapshot: DeviceDeploySnapshot, profile: DeviceProfile, isCheckupRunning: Bool = false) {
+    init(snapshot: DeviceDeployStateSnapshot, profile: DeviceProfile, isCheckupRunning: Bool = false) {
         self.init(
             verified: snapshot.verified,
             rebootRequested: snapshot.rebootRequested,
@@ -247,7 +284,7 @@ struct InstallCompletionPresentation: Equatable {
         self.actions = InstallCompletionActionPolicy.actions(isCheckupRunning: isCheckupRunning)
     }
 
-    private static func isNetBSD4(snapshot: DeviceDeploySnapshot, profile: DeviceProfile) -> Bool {
+    private static func isNetBSD4(snapshot: DeviceDeployStateSnapshot, profile: DeviceProfile) -> Bool {
         snapshot.payloadFamily?.localizedCaseInsensitiveContains("netbsd4") == true || profile.traits.isNetBSD4
     }
 }
@@ -293,6 +330,8 @@ struct InstallWorkflowPresentation: Equatable {
     let plan: InstallPlanPresentation?
     let timeline: InstallTimelinePresentation?
     let completion: InstallCompletionPresentation?
+    let error: BackendErrorViewModel?
+    let failureGuidance: String?
 
     init(
         state: DeployWorkflowState,
@@ -306,26 +345,35 @@ struct InstallWorkflowPresentation: Equatable {
         hostWarning: HostCompatibilityWarning? = nil,
         isCheckupRunning: Bool = false
     ) {
+        let restoredFailure = Self.restoredDeployFailure(state: state, result: result, error: error, profile: profile)
+        let restoredSuccess = Self.restoredDeploySuccess(state: state, result: result, error: error, profile: profile)
+        let effectiveState = restoredFailure == nil ? state : DeployWorkflowState.deployFailed
+        let effectiveError = error ?? restoredFailure.map { BackendErrorViewModel(operation: "deploy", deployState: $0) }
         self.title = L10n.string("dashboard.tab.install")
         self.plan = plan.map {
             InstallPlanPresentation(plan: $0, profile: profile, options: plannedOptions, hostWarning: hostWarning)
         }
-        self.timeline = Self.timeline(for: state, events: events, currentStage: currentStage)
-        let persistedCompletion = Self.persistedCompletion(
-            state: state,
-            result: result,
-            profile: profile,
-            isCheckupRunning: isCheckupRunning
+        self.timeline = Self.timeline(
+            for: effectiveState,
+            events: events,
+            currentStage: currentStage,
+            restoredFailure: restoredFailure,
+            restoredSuccess: restoredSuccess
         )
+        let persistedCompletion = restoredSuccess.map {
+            InstallCompletionPresentation(snapshot: $0, profile: profile, isCheckupRunning: isCheckupRunning)
+        }
         self.completion = result.map { InstallCompletionPresentation(result: $0, isCheckupRunning: isCheckupRunning) }
             ?? persistedCompletion
-        self.stateTitle = persistedCompletion == nil ? state.title : DeployWorkflowState.deployed.title
+        self.stateTitle = persistedCompletion == nil ? effectiveState.title : DeployWorkflowState.deployed.title
+        self.error = effectiveError
+        self.failureGuidance = DeployFailureGuidancePolicy.guidance(for: effectiveError)
 
-        switch state {
+        switch effectiveState {
         case .idle:
             if persistedCompletion == nil {
                 self.statusMessage = L10n.string("install.state.idle")
-                self.actions = Self.planAndDeployActions(state: state, plan: plan)
+                self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             } else {
                 self.statusMessage = L10n.string("install.state.deployed")
                 self.actions = []
@@ -333,37 +381,65 @@ struct InstallWorkflowPresentation: Equatable {
             self.notices = []
         case .planning:
             self.statusMessage = L10n.string("install.state.planning")
-            self.actions = Self.planAndDeployActions(state: state, plan: plan)
+            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             self.notices = []
         case .planReady:
             self.statusMessage = L10n.string("install.state.plan_ready")
-            self.actions = Self.planAndDeployActions(state: state, plan: plan)
+            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             self.notices = []
         case .planStale:
             self.statusMessage = L10n.string("install.state.plan_stale")
-            self.actions = Self.planAndDeployActions(state: state, plan: plan)
+            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             self.notices = [L10n.string("install.warning.plan_stale")]
         case .planFailed:
-            self.statusMessage = error?.message ?? L10n.string("install.state.plan_failed")
-            self.actions = Self.planAndDeployActions(state: state, plan: plan)
+            self.statusMessage = effectiveError?.message ?? L10n.string("install.state.plan_failed")
+            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             self.notices = []
         case .deploying:
             self.statusMessage = L10n.string("install.state.deploying")
-            self.actions = Self.planAndDeployActions(state: state, plan: plan)
+            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             self.notices = []
         case .awaitingConfirmation:
             self.statusMessage = L10n.string("install.state.awaiting_confirmation")
-            self.actions = Self.planAndDeployActions(state: state, plan: plan)
+            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             self.notices = [L10n.string("install.warning.awaiting_confirmation")]
         case .deployed:
             self.statusMessage = L10n.string("install.state.deployed")
             self.actions = []
             self.notices = []
         case .deployFailed:
-            self.statusMessage = error?.message ?? L10n.string("install.state.deploy_failed")
-            self.actions = Self.planAndDeployActions(state: state, plan: plan)
+            self.statusMessage = effectiveError?.message ?? L10n.string("install.state.deploy_failed")
+            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
             self.notices = []
         }
+    }
+
+    private static func restoredDeployFailure(
+        state: DeployWorkflowState,
+        result: DeployResultPayload?,
+        error: BackendErrorViewModel?,
+        profile: DeviceProfile
+    ) -> DeviceDeployStateSnapshot? {
+        guard state == .idle, result == nil, error == nil,
+              let deployState = profile.lastDeployState,
+              deployState.status.isFailure else {
+            return nil
+        }
+        return deployState
+    }
+
+    private static func restoredDeploySuccess(
+        state: DeployWorkflowState,
+        result: DeployResultPayload?,
+        error: BackendErrorViewModel?,
+        profile: DeviceProfile
+    ) -> DeviceDeployStateSnapshot? {
+        guard state == .idle, result == nil, error == nil,
+              let deployState = profile.lastDeployState,
+              deployState.status == .succeeded else {
+            return nil
+        }
+        return deployState
     }
 
     private static func planAndDeployActions(state: DeployWorkflowState, plan: DeployPlanPayload?) -> [InstallUserAction] {
@@ -376,30 +452,37 @@ struct InstallWorkflowPresentation: Equatable {
         return [planAction, .installUpdate]
     }
 
-    private static func persistedCompletion(
-        state: DeployWorkflowState,
-        result: DeployResultPayload?,
-        profile: DeviceProfile,
-        isCheckupRunning: Bool
-    ) -> InstallCompletionPresentation? {
-        guard state == .idle,
-              result == nil,
-              let snapshot = profile.lastDeploy,
-              snapshot.state == .deployed else {
-            return nil
-        }
-        return InstallCompletionPresentation(snapshot: snapshot, profile: profile, isCheckupRunning: isCheckupRunning)
-    }
-
     private static func timeline(
         for state: DeployWorkflowState,
         events: [BackendEvent],
-        currentStage: OperationStageState?
+        currentStage: OperationStageState?,
+        restoredFailure: DeviceDeployStateSnapshot?,
+        restoredSuccess: DeviceDeployStateSnapshot?
     ) -> InstallTimelinePresentation? {
+        let hasDeployEvents = events.contains { $0.operation == "deploy" }
         switch state {
-        case .planning, .deploying, .awaitingConfirmation:
-            return InstallTimelinePresentation(events: events, currentStage: currentStage)
-        case .idle, .planReady, .planStale, .planFailed, .deployed, .deployFailed:
+        case .idle:
+            guard let restoredSuccess, currentStage == nil, !hasDeployEvents else {
+                return nil
+            }
+            return InstallTimelinePresentation(restoredDeploySuccess: restoredSuccess)
+        case .planning, .deploying, .awaitingConfirmation, .deployFailed, .deployed:
+            if let restoredFailure, currentStage == nil, !hasDeployEvents {
+                return InstallTimelinePresentation(
+                    events: [],
+                    currentStage: restoredFailure.stage.map {
+                        OperationStageState(operation: "deploy", stage: $0, risk: nil, cancellable: nil, description: nil)
+                    },
+                    fallbackState: .failed
+                )
+            }
+            let presentation = InstallTimelinePresentation(
+                events: events,
+                currentStage: currentStage,
+                fallbackState: state == .deployed ? .succeeded : .running
+            )
+            return state == .deployed && presentation.items.isEmpty ? nil : presentation
+        case .planReady, .planStale, .planFailed:
             return nil
         }
     }

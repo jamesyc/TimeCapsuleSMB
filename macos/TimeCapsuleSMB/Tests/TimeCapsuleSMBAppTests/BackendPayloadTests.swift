@@ -172,7 +172,7 @@ final class BackendPayloadTests: XCTestCase {
           "reboot_requested": true,
           "waited": true,
           "verified": true,
-          "summary": "deployment completed."
+          "summary": "Deployment completed."
         }
         """).decode(DeployResultPayload.self)
 

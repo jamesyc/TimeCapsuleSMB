@@ -16,7 +16,7 @@ final class ActivityStoreTests: XCTestCase {
                     type: "result",
                     operation: "deploy",
                     ok: true,
-                    payload: .object(["summary": .string("deployment completed.")])
+                    payload: .object(["summary": .string("Deployment completed.")])
                 )
             ], delayNanoseconds: 80_000_000)
         ])
@@ -34,7 +34,7 @@ final class ActivityStoreTests: XCTestCase {
 
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
         XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["Upload Payload", "Done"])
-        XCTAssertEqual(activity.snapshot.latestMessage, "deployment completed.")
+        XCTAssertEqual(activity.snapshot.latestMessage, "Deployment completed.")
     }
 
     func testAppLanguageChangeRefreshesCachedActivityPresentation() async throws {
@@ -55,7 +55,7 @@ final class ActivityStoreTests: XCTestCase {
                     type: "result",
                     operation: "deploy",
                     ok: true,
-                    payload: .object(["summary": .string("deployment completed.")])
+                    payload: .object(["summary": .string("Deployment completed.")])
                 )
             ])
         ])

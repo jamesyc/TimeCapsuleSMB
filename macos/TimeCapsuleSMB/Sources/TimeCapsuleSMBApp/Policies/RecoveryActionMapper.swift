@@ -35,11 +35,16 @@ enum RecoveryActionMapper {
             guard let kind = RecoveryActionKind(rawValue: actionID), kind != .generic else {
                 continue
             }
-            actions.append(action(for: kind))
+            if allows(kind, for: error) {
+                actions.append(action(for: kind))
+            }
         }
 
-        if let suggested = error.recovery?.suggestedOperation {
-            actions.append(action(forSuggestedOperation: suggested))
+        if let suggested = error.recovery?.suggestedOperation, suggested != error.operation {
+            let suggestedAction = action(forSuggestedOperation: suggested)
+            if allows(suggestedAction.kind, for: error) {
+                actions.append(suggestedAction)
+            }
         }
 
         if error.recovery?.retryable == true || error.code == "operation_failed" {
@@ -47,6 +52,18 @@ enum RecoveryActionMapper {
         }
         actions.append(action(for: .copyDiagnostics))
         return deduplicated(actions)
+    }
+
+    private static func allows(_ kind: RecoveryActionKind, for error: BackendErrorViewModel) -> Bool {
+        if error.operation == "deploy" {
+            switch kind {
+            case .openFinder, .installSMB:
+                return false
+            default:
+                break
+            }
+        }
+        return true
     }
 
     private static func action(forSuggestedOperation operation: String) -> RecoveryAction {

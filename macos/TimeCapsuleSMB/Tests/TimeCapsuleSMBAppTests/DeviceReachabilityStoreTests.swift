@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 final class DeviceReachabilityStoreTests: XCTestCase {
-    func testRefreshRunsReachabilityOnDeviceLaneAndStoresSnapshot() async throws {
+    func testRefreshRunsReachabilityOnWorkflowLaneAndStoresSnapshot() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "stage", operation: "reachability", stage: "check_ssh_port"),
@@ -24,6 +24,7 @@ final class DeviceReachabilityStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot(for: profile)?.payload.status, "reachable")
         XCTAssertEqual(store.snapshot(for: profile)?.refreshedAt, Date(timeIntervalSince1970: 123))
         XCTAssertNil(store.error(for: profile))
+        XCTAssertEqual(coordinator.lane(for: .deviceWorkflow(profile.id, .reachability)).backend.events.last?.operation, "reachability")
     }
 
     func testRefreshCanRunWithoutPassword() async throws {
@@ -85,6 +86,34 @@ final class DeviceReachabilityStoreTests: XCTestCase {
         XCTAssertEqual(coordinator.activeOperation(for: profile)?.operation, "doctor")
         XCTAssertEqual(store.error(for: profile)?.code, "operation_rejected")
         XCTAssertEqual(runner.calls.map(\.operation), ["doctor"])
+    }
+
+    func testRefreshIsRejectedWhileDeployWorkflowOwnsSameDeviceResource() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd")
+            ], delayNanoseconds: 500_000_000)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = DeviceReachabilityStore(coordinator: coordinator)
+        let profile = try makeProfile()
+        let deployLane = OperationLaneKey.deviceWorkflow(profile.id, .deploy)
+
+        coordinator.run(
+            operation: "deploy",
+            params: [:],
+            context: profile.runtimeContext,
+            activeDeviceID: profile.id,
+            laneKey: deployLane
+        )
+        try await waitUntilStoreState { coordinator.lane(for: deployLane).backend.isRunning }
+
+        store.refresh(profile: profile, password: "pw")
+
+        XCTAssertEqual(store.error(for: profile)?.code, "operation_rejected")
+        XCTAssertEqual(runner.calls.map(\.operation), ["deploy"])
+        XCTAssertTrue(coordinator.lane(for: deployLane).backend.isRunning)
+        XCTAssertTrue(coordinator.lane(for: .deviceWorkflow(profile.id, .reachability)).backend.events.isEmpty)
     }
 
     private func makeProfile(host: String = "10.0.0.2") throws -> DeviceProfile {

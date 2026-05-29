@@ -273,7 +273,7 @@ final class ActivityStore: ObservableObject {
         switch laneKey {
         case .app:
             return .app
-        case .device(let profileID):
+        case .device(let profileID), .deviceWorkflow(let profileID, _):
             return .device(profileID)
         case .candidateHost, .localPath:
             return isAppOperation(operation) ? .app : .unknown
@@ -357,7 +357,7 @@ final class ActivityStore: ObservableObject {
         if case .device(let profileID) = laneSnapshot.snapshot.scope {
             return profileID == selectedDeviceID
         }
-        if case .device(let profileID) = laneSnapshot.laneKey {
+        if let profileID = laneSnapshot.laneKey.deviceProfileID {
             return profileID == selectedDeviceID
         }
         return false

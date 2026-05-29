@@ -541,7 +541,7 @@ final class DeployWorkflowStore: ObservableObject {
                 params: params,
                 context: profile?.runtimeContext,
                 activeDeviceID: profile?.id,
-                laneKey: laneKey ?? profile.map { .device($0.id) } ?? .app
+                laneKey: laneKey
             )
         } else {
             guard !isBusy else {

@@ -640,7 +640,7 @@ final class FlashWorkflowStore: ObservableObject {
                 params: params,
                 context: profile?.runtimeContext,
                 activeDeviceID: profile?.id,
-                laneKey: laneKey ?? profile.map { .device($0.id) } ?? .app
+                laneKey: laneKey
             )
         }
         guard !isBusy else {

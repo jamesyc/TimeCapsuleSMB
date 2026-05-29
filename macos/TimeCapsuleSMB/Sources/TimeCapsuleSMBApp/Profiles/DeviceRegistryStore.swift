@@ -176,21 +176,51 @@ final class DeviceRegistryStore: ObservableObject {
         }
     }
 
+    func updateCheckup(
+        _ snapshot: DeviceCheckupSnapshot,
+        runtimeState: DeviceRuntimeStateSnapshot?,
+        for profileID: DeviceProfile.ID
+    ) async {
+        await applyBackgroundMutation {
+            try await repository.updateCheckup(snapshot, runtimeState: runtimeState, for: profileID)
+        }
+    }
+
     func clearCheckup(for profileID: DeviceProfile.ID) async {
         await applyBackgroundMutation {
             try await repository.clearCheckup(for: profileID)
         }
     }
 
-    func updateDeploy(_ snapshot: DeviceDeploySnapshot, for profileID: DeviceProfile.ID) async {
+    func updateDeployState(_ snapshot: DeviceDeployStateSnapshot, for profileID: DeviceProfile.ID) async {
         await applyBackgroundMutation {
-            try await repository.updateDeploy(snapshot, for: profileID)
+            try await repository.updateDeployState(snapshot, for: profileID)
         }
     }
 
-    func clearDeploy(for profileID: DeviceProfile.ID) async {
+    func updateInstallOperationState(
+        deployState: DeviceDeployStateSnapshot,
+        runtimeState: DeviceRuntimeStateSnapshot,
+        for profileID: DeviceProfile.ID
+    ) async {
         await applyBackgroundMutation {
-            try await repository.clearDeploy(for: profileID)
+            try await repository.updateInstallOperationState(
+                deployState: deployState,
+                runtimeState: runtimeState,
+                for: profileID
+            )
+        }
+    }
+
+    func updateRuntimeState(_ snapshot: DeviceRuntimeStateSnapshot, for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.updateRuntimeState(snapshot, for: profileID)
+        }
+    }
+
+    func clearInstallState(for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.clearInstallState(for: profileID)
         }
     }
 
@@ -296,9 +326,15 @@ private actor DeviceRegistryRepository {
                 return profiles
             }
             let data = try Data(contentsOf: registryURL)
-            profiles = try decoder.decode([DeviceProfile].self, from: data)
+            let loadedProfiles = try decoder.decode([DeviceProfile].self, from: data)
                 .map(profileWithStorageFields)
                 .sorted { $0.updatedAt > $1.updatedAt }
+            profiles = loadedProfiles
+                .map(profileWithInterruptedRuntimeState)
+                .sorted { $0.updatedAt > $1.updatedAt }
+            if profiles != loadedProfiles {
+                try persist(profiles)
+            }
             return profiles
         } catch let decoding as DecodingError {
             profiles = []
@@ -430,11 +466,22 @@ private actor DeviceRegistryRepository {
     }
 
     func updateCheckup(_ snapshot: DeviceCheckupSnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
+        try updateCheckup(snapshot, runtimeState: nil, for: profileID)
+    }
+
+    func updateCheckup(
+        _ snapshot: DeviceCheckupSnapshot,
+        runtimeState: DeviceRuntimeStateSnapshot?,
+        for profileID: DeviceProfile.ID
+    ) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
         var updatedProfiles = profiles
         updatedProfiles[index].lastCheckup = snapshot
+        if let runtimeState {
+            updatedProfiles[index].runtimeState = runtimeState
+        }
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
         profiles = updatedProfiles
@@ -456,27 +503,57 @@ private actor DeviceRegistryRepository {
         return updatedProfiles
     }
 
-    func updateDeploy(_ snapshot: DeviceDeploySnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
+    func updateDeployState(_ snapshot: DeviceDeployStateSnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
         var updatedProfiles = profiles
-        updatedProfiles[index].lastDeploy = snapshot
+        updatedProfiles[index].lastDeployState = snapshot
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
         profiles = updatedProfiles
         return updatedProfiles
     }
 
-    func clearDeploy(for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
+    func updateInstallOperationState(
+        deployState: DeviceDeployStateSnapshot,
+        runtimeState: DeviceRuntimeStateSnapshot,
+        for profileID: DeviceProfile.ID
+    ) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
-        guard profiles[index].lastDeploy != nil || profiles[index].lastCheckup != nil else {
+        var updatedProfiles = profiles
+        updatedProfiles[index].lastDeployState = deployState
+        updatedProfiles[index].runtimeState = runtimeState
+        updatedProfiles[index].updatedAt = now()
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
+    }
+
+    func updateRuntimeState(_ snapshot: DeviceRuntimeStateSnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
         var updatedProfiles = profiles
-        updatedProfiles[index].lastDeploy = nil
+        updatedProfiles[index].runtimeState = snapshot
+        updatedProfiles[index].updatedAt = now()
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
+    }
+
+    func clearInstallState(for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            return nil
+        }
+        guard profiles[index].lastDeployState != nil || profiles[index].runtimeState != nil || profiles[index].lastCheckup != nil else {
+            return nil
+        }
+        var updatedProfiles = profiles
+        updatedProfiles[index].lastDeployState = nil
+        updatedProfiles[index].runtimeState = nil
         updatedProfiles[index].lastCheckup = nil
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
@@ -570,6 +647,58 @@ private actor DeviceRegistryRepository {
         var updated = profile
         updated.configPath = DeviceProfile.configURL(for: profile.id, applicationSupportURL: applicationSupportURL).path
         updated.keychainAccount = profile.id
+        return updated
+    }
+
+    private func profileWithInterruptedRuntimeState(_ profile: DeviceProfile) -> DeviceProfile {
+        guard profile.lastDeployState?.status.isInProgress == true || profile.runtimeState?.state == .installing else {
+            return profile
+        }
+        let interruptedAt = now()
+        var updated = profile
+        if let deployState = profile.lastDeployState, deployState.status.isInProgress {
+            updated.lastDeployState = DeviceDeployStateSnapshot(
+                operationID: deployState.operationID,
+                startedAt: deployState.startedAt,
+                updatedAt: interruptedAt,
+                finishedAt: interruptedAt,
+                status: .interrupted,
+                stage: deployState.stage,
+                payloadFamily: deployState.payloadFamily,
+                rebootRequested: deployState.rebootRequested,
+                verified: deployState.verified,
+                summary: "",
+                errorCode: "operation_interrupted",
+                errorMessage: nil,
+                recovery: deployState.recovery
+            )
+        }
+        if let runtimeState = profile.runtimeState, runtimeState.state == .installing {
+            updated.runtimeState = DeviceRuntimeStateSnapshot(
+                state: .installInterrupted,
+                source: .appRecovery,
+                stage: runtimeState.stage,
+                payloadFamily: runtimeState.payloadFamily,
+                verified: runtimeState.verified,
+                summary: "",
+                errorCode: "operation_interrupted",
+                errorMessage: nil,
+                recovery: runtimeState.recovery
+            )
+        } else if let deployState = profile.lastDeployState, deployState.status.isInProgress {
+            updated.runtimeState = DeviceRuntimeStateSnapshot(
+                state: .installInterrupted,
+                source: .appRecovery,
+                stage: deployState.stage,
+                payloadFamily: deployState.payloadFamily,
+                verified: deployState.verified,
+                summary: "",
+                errorCode: "operation_interrupted",
+                errorMessage: nil,
+                recovery: deployState.recovery
+            )
+        }
+        updated.updatedAt = interruptedAt
         return updated
     }
 }

@@ -6,7 +6,7 @@ enum DashboardActionPolicy {
         if let contextualAction = contextualSecondaryAction(for: summary.primaryAction) {
             actions.append(contextualAction)
         }
-        if summary.profile.lastDeploy != nil && summary.primaryAction != .openSMB {
+        if summary.profile.runtimeState?.state.isInstalled == true && summary.primaryAction != .openSMB {
             actions.append(.openFinder)
         }
         actions.append(.settings)

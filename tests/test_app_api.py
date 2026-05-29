@@ -2278,7 +2278,7 @@ class AppApiTests(unittest.TestCase):
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "remote_error")
         self.assertEqual(error["recovery"]["title"], "No HFS volumes found")
-        self.assertEqual(error["recovery"]["action_ids"], ["open_finder", "install_smb"])
+        self.assertEqual(error["recovery"]["action_ids"], [])
         self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], True)
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")

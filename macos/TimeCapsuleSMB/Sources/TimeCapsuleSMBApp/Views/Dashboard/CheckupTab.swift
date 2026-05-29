@@ -17,6 +17,7 @@ struct CheckupTab: View {
             hostWarning: HostCompatibilityPolicy.warning(enabled: appSettings.timeMachineWarningsEnabled)
         )
         let progress = CheckupProgressPresentation(state: store.state, currentStage: store.currentStage)
+        let isDeviceBusy = session.appStore.operationCoordinator.isDeviceBusy(profile)
 
         ZStack {
             ScrollView {
@@ -34,7 +35,7 @@ struct CheckupTab: View {
                             Label(action.title, systemImage: action.systemImage)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(store.isRunning)
+                        .disabled(isDeviceBusy)
                     }
 
                     if !presentation.timeline.isEmpty {

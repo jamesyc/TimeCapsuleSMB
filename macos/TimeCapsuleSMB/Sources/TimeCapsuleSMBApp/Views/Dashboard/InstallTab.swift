@@ -23,6 +23,7 @@ struct InstallTab: View {
             isCheckupRunning: summary.displayStatus == .checking
         )
         let progress = InstallProgressPresentation(state: store.state, currentStage: store.currentStage)
+        let isDeviceBusy = session.appStore.operationCoordinator.isDeviceBusy(profile)
 
         ZStack {
             ScrollView {
@@ -41,13 +42,23 @@ struct InstallTab: View {
                                 InstallActionButton(action: action) {
                                     session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
                                 }
-                                .disabled(isDisabled(action, store: store))
+                                .disabled(isDisabled(action, store: store, isDeviceBusy: isDeviceBusy))
                             }
                         }
                     }
 
                     if let timeline = presentation.timeline {
                         InstallTimelineView(presentation: timeline)
+                    }
+
+                    if let error = presentation.error {
+                        ErrorRecoveryView(
+                            error: error,
+                            guidance: presentation.failureGuidance,
+                            diagnosticsText: diagnosticsText
+                        ) { action in
+                            handleRecovery(action: action, error: error)
+                        }
                     }
 
                     if let plan = presentation.plan {
@@ -57,19 +68,13 @@ struct InstallTab: View {
                     if let completion = presentation.completion {
                         InstallCompletionView(
                             presentation: completion,
-                            isDisabled: { isDisabled($0, store: store) }
+                            isDisabled: { isDisabled($0, store: store, isDeviceBusy: isDeviceBusy) }
                         ) { action in
                             session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
                         }
                     }
 
-                    InstallExecutionOptionsView(store: store)
-
-                    if let error = store.error {
-                        ErrorRecoveryView(error: error, diagnosticsText: diagnosticsText) { action in
-                            handleRecovery(action: action, error: error)
-                        }
-                    }
+                    InstallExecutionOptionsView(store: store, isDeviceBusy: isDeviceBusy)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -89,8 +94,8 @@ struct InstallTab: View {
         _ = session.handleRecoveryAction(action, error: error, profile: profile)
     }
 
-    private func isDisabled(_ action: InstallUserAction, store: DeployWorkflowStore) -> Bool {
-        !InstallActionAvailabilityPolicy.isEnabled(action, store: store)
+    private func isDisabled(_ action: InstallUserAction, store: DeployWorkflowStore, isDeviceBusy: Bool) -> Bool {
+        !InstallActionAvailabilityPolicy.isEnabled(action, store: store, isDeviceBusy: isDeviceBusy)
     }
 }
 
@@ -204,6 +209,7 @@ private struct InstallCompletionView: View {
 
 private struct InstallExecutionOptionsView: View {
     @ObservedObject var store: DeployWorkflowStore
+    let isDeviceBusy: Bool
 
     var body: some View {
         DashboardDisclosureSection(title: L10n.string("install.advanced_options")) {
@@ -229,7 +235,7 @@ private struct InstallExecutionOptionsView: View {
                 }
             }
         }
-        .disabled(store.isBusy)
+        .disabled(store.isBusy || isDeviceBusy)
     }
 
     private var allowsNoReboot: Bool {

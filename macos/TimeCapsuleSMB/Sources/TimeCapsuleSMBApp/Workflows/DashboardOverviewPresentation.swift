@@ -79,8 +79,12 @@ struct DeviceDashboardHeaderPresentation: Equatable {
             PresentationRow(label: L10n.string("dashboard.overview.generation"), value: Self.generationValue(for: profile)),
             PresentationRow(label: L10n.string("dashboard.overview.payload"), value: profile.payloadFamily ?? L10n.string("value.unknown")),
             PresentationRow(label: L10n.string("dashboard.overview.password"), value: summary.passwordState.title),
-            PresentationRow(label: L10n.string("dashboard.overview.last_install"), value: profile.lastDeploy?.localizedSummary ?? L10n.string("value.never"))
+            PresentationRow(label: L10n.string("dashboard.overview.last_install"), value: Self.lastInstallValue(for: profile))
         ]
+    }
+
+    private static func lastInstallValue(for profile: DeviceProfile) -> String {
+        profile.lastDeployState?.localizedSummary ?? L10n.string("value.never")
     }
 
     private static func generationValue(for profile: DeviceProfile) -> String {
@@ -426,30 +430,69 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 action: dashboardStatus(signal.severity) == .good ? nil : .viewCheckup
             )
         }
-        guard let lastDeploy = summary.profile.lastDeploy else {
-            return DashboardHealthRow(
-                id: "runtime-not-installed",
-                title: DashboardHealthDomain.runtime.title,
-                detail: L10n.string("dashboard.health.runtime.not_installed"),
-                status: .warning,
-                action: .installUpdate
-            )
+        guard let runtimeState = summary.profile.runtimeState else {
+            return runtimeNotInstalledRow()
         }
-        if lastDeploy.verified == true {
+        switch runtimeState.state {
+        case .unknown:
+            return runtimeNotInstalledRow()
+        case .installing:
+            return DashboardHealthRow(
+                id: "runtime-installing-stored",
+                title: DashboardHealthDomain.runtime.title,
+                detail: runtimeState.localizedSummary,
+                status: .running
+            )
+        case .installedVerified:
             return DashboardHealthRow(
                 id: "runtime-installed",
                 title: DashboardHealthDomain.runtime.title,
-                detail: lastDeploy.localizedSummary,
+                detail: runtimeState.localizedSummary,
                 status: .good,
                 action: .openFinder
             )
+        case .installedUnverified:
+            return DashboardHealthRow(
+                id: "runtime-installed-unverified",
+                title: DashboardHealthDomain.runtime.title,
+                detail: runtimeState.localizedSummary,
+                status: .warning,
+                action: .runCheckup
+            )
+        case .installFailed, .installInterrupted:
+            return DashboardHealthRow(
+                id: "runtime-install-failed",
+                title: DashboardHealthDomain.runtime.title,
+                detail: runtimeState.localizedSummary,
+                status: .failed,
+                action: .installUpdate
+            )
+        case .activationNeeded:
+            return DashboardHealthRow(
+                id: "runtime-activation-needed",
+                title: DashboardHealthDomain.runtime.title,
+                detail: runtimeState.localizedSummary,
+                status: .warning,
+                action: .startSMB
+            )
+        case .unhealthy:
+            return DashboardHealthRow(
+                id: "runtime-unhealthy",
+                title: DashboardHealthDomain.runtime.title,
+                detail: runtimeState.localizedSummary,
+                status: .failed,
+                action: .viewCheckup
+            )
         }
-        return DashboardHealthRow(
-            id: "runtime-installed-unverified",
+    }
+
+    private static func runtimeNotInstalledRow() -> DashboardHealthRow {
+        DashboardHealthRow(
+            id: "runtime-not-installed",
             title: DashboardHealthDomain.runtime.title,
-            detail: lastDeploy.localizedSummary,
+            detail: L10n.string("dashboard.health.runtime.not_installed"),
             status: .warning,
-            action: .runCheckup
+            action: .installUpdate
         )
     }
 

@@ -134,7 +134,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             createdAt: Date(timeIntervalSince1970: 0),
             updatedAt: Date(timeIntervalSince1970: 0),
             lastCheckup: nil,
-            lastDeploy: nil,
+            lastDeployState: nil,
             settings: .default,
             passwordState: .available
         )

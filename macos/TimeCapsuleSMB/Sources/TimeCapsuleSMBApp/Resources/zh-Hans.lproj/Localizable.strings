@@ -223,7 +223,6 @@
 "deploy.presentation.row.expected_changes" = "预期变化";
 "deploy.presentation.row.host" = "主机";
 "deploy.presentation.row.payload" = "Payload";
-"deploy.presentation.row.payload_directory" = "Payload 目录";
 "deploy.presentation.row.post_install_checks" = "安装后检查";
 "deploy.presentation.row.post_upload_actions" = "上传后操作";
 "deploy.presentation.row.pre_upload_actions" = "上传前操作";
@@ -240,6 +239,7 @@
 "deploy.result.message" = "消息";
 "deploy.result.reboot_requested" = "已请求重启";
 "deploy.result.verified" = "已验证";
+"deploy.failure.reboot_guidance" = "故障排查提示：请尝试重启设备并等待 5 分钟让它完成加载，然后再次尝试部署。";
 "install.action.create_plan" = "创建安装计划";
 "install.action.install_update" = "安装 / 更新";
 "install.action.reinstall" = "重新安装";
@@ -253,12 +253,10 @@
 "install.plan.downtime.no_wait" = "App 会请求重启并立即返回。";
 "install.plan.downtime.none" = "预计无需重启。";
 "install.plan.downtime.reboot" = "Time Capsule 重启时需要几分钟。";
-"install.plan.row.disk" = "磁盘";
 "install.plan.row.expected_downtime" = "预计停机时间";
 "install.plan.row.remote_actions" = "远程操作";
 "install.plan.row.uploads" = "上传";
 "install.plan.section.device_actions" = "设备操作";
-"install.plan.section.files" = "文件";
 "install.plan.section.target" = "目标";
 "install.plan.title.activate_now" = "安装 / 更新 SMB 并启动 Runtime";
 "install.plan.title.netbsd4" = "安装 / 更新 SMB 并启动 Runtime";
@@ -270,6 +268,7 @@
 "install.progress.deploying.title" = "正在安装 / 更新 SMB";
 "install.state.awaiting_confirmation" = "继续前请查看确认对话框。";
 "install.state.deploy_failed" = "安装 / 更新失败。";
+"install.state.deploy_interrupted" = "部署在完成前被中断。";
 "install.state.deployed" = "安装 / 更新已完成。";
 "install.state.deploying" = "正在安装文件并应用设备更改。";
 "install.state.idle" = "安装或更新 SMB 前请先创建计划。";
@@ -277,10 +276,12 @@
 "install.state.plan_ready" = "查看计划，然后运行安装 / 更新。";
 "install.state.plan_stale" = "高级选项在此计划创建后发生了变化。";
 "install.state.planning" = "正在创建安装计划。";
-"install.timeline.title" = "进度";
+"install.timeline.title" = "状态";
 "install.timeline.waiting" = "正在等待 Backend progress。";
 "install.warning.awaiting_confirmation" = "后端正在等待明确确认。";
 "install.warning.plan_stale" = "安装前请重新生成计划。";
+"runtime.state.unknown" = "未安装。";
+"runtime.state.unhealthy" = "检查发现运行时问题。";
 "diagnostics.backend_events" = "Backend Events";
 "diagnostics.copied" = "诊断信息已复制。";
 "diagnostics.copy" = "复制诊断信息";
@@ -657,6 +658,7 @@
 "timeline.operation.version_check" = "更新检查";
 "timeline.result.done" = "完成";
 "timeline.result.failed" = "失败";
+"timeline.deploy.result.completed" = "部署已完成。";
 "timeline.state.failed" = "失败";
 "timeline.state.pending" = "等待中";
 "timeline.state.running" = "运行中";

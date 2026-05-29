@@ -18,7 +18,7 @@ final class ProgressTextAnimatorTests: XCTestCase {
     }
 
     func testInactiveMessagesRemainStable() {
-        let message = "deployment completed."
+        let message = "Deployment completed."
 
         XCTAssertEqual(ProgressTextAnimator.message(message, isRunning: false, phase: 0), message)
         XCTAssertEqual(ProgressTextAnimator.message(message, isRunning: false, phase: 2), message)

@@ -358,14 +358,12 @@ final class DashboardPresentationTests: XCTestCase {
 
     func testOverviewPresentationAggregatesServiceCheckupDomainsForHealthRow() throws {
         var profile = try makeProfile()
-        profile.lastDeploy = DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 100),
-            state: .deployed,
-            payloadFamily: "netbsd6_samba4",
-            rebootRequested: true,
-            verified: true,
-            summary: "installed"
+        profile.lastDeployState = testDeployState(
+            startedAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100),
+            finishedAt: Date(timeIntervalSince1970: 100)
         )
+        profile.runtimeState = testRuntimeState()
         let checkup = DoctorSummary(payload: try testDoctorPayload(checks: [
             testDoctorCheck(status: "PASS", message: "runtime ok", domain: "Runtime"),
             testDoctorCheck(status: "WARN", message: "bonjour warning", domain: "Bonjour"),
@@ -410,14 +408,8 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(try row(.runtime, in: ready).action, .installUpdate)
 
         var healthyProfile = readyProfile
-        healthyProfile.lastDeploy = DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 120),
-            state: .deployed,
-            payloadFamily: "netbsd6_samba4",
-            rebootRequested: true,
-            verified: true,
-            summary: "installed"
-        )
+        healthyProfile.lastDeployState = testDeployState()
+        healthyProfile.runtimeState = testRuntimeState()
         let healthy = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
             profile: healthyProfile,
             passwordState: .available,
@@ -429,7 +421,8 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(try row(.runtime, in: healthy).action, .openFinder)
 
         var netbsd4Profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        netbsd4Profile.lastDeploy = healthyProfile.lastDeploy
+        netbsd4Profile.lastDeployState = healthyProfile.lastDeployState
+        netbsd4Profile.runtimeState = testRuntimeState(state: .activationNeeded, source: .doctor, payloadFamily: "netbsd4_samba4", verified: false)
         let activation = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
             profile: netbsd4Profile,
             passwordState: .available,
@@ -454,14 +447,8 @@ final class DashboardPresentationTests: XCTestCase {
 
     func testOverviewActionsUseFinderLabelAndSuppressRunCheckupWhileChecking() throws {
         var profile = try makeProfile()
-        profile.lastDeploy = DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 120),
-            state: .deployed,
-            payloadFamily: "netbsd6_samba4",
-            rebootRequested: true,
-            verified: true,
-            summary: "installed"
-        )
+        profile.lastDeployState = testDeployState()
+        profile.runtimeState = testRuntimeState()
 
         let healthy = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
             profile: profile,
@@ -525,12 +512,14 @@ final class DashboardPresentationTests: XCTestCase {
         let presentation = InstallPlanPresentation(plan: plan, profile: profile, hostWarning: warning)
 
         XCTAssertEqual(presentation.title, "Install / Update SMB, Reboot, and Start Runtime")
-        XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(InstallPlanRow(label: "Remote Actions", value: "1"))
-        })
-        XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(InstallPlanRow(label: "Expected Downtime", value: "Several minutes while the Time Capsule reboots."))
-        })
+        XCTAssertFalse(presentation.sections.contains { $0.title == "Files" })
+        let target = try XCTUnwrap(presentation.sections.first { $0.title == "Target" })
+        XCTAssertTrue(target.rows.contains(InstallPlanRow(label: "Payload", value: "netbsd4_samba4")))
+        XCTAssertFalse(target.rows.contains { $0.label == "Disk" || $0.label == "Payload Directory" })
+        let actions = try XCTUnwrap(presentation.sections.first { $0.title == "Device Actions" })
+        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Uploads", value: "1")))
+        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Remote Actions", value: "1")))
+        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Expected Downtime", value: "Several minutes while the Time Capsule reboots.")))
         XCTAssertEqual(presentation.warnings.count, 2)
     }
 
@@ -580,6 +569,87 @@ final class DashboardPresentationTests: XCTestCase {
         ])
     }
 
+    func testInstallWorkflowPresentationRestoresPersistedDeployFailure() throws {
+        var profile = try makeProfile()
+        profile.lastDeployState = testDeployState(
+            status: .failed,
+            startedAt: Date(timeIntervalSince1970: 300),
+            updatedAt: Date(timeIntervalSince1970: 300),
+            finishedAt: Date(timeIntervalSince1970: 300),
+            stage: "read_mast",
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: nil,
+            verified: nil,
+            summary: "",
+            errorCode: "remote_error",
+            errorMessage: "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.",
+            recovery: DeviceRecoverySnapshot(
+                title: "No HFS volumes found",
+                message: "The device did not report a deployable HFS disk through MaSt.",
+                actions: [],
+                actionIDs: [],
+                retryable: true,
+                suggestedOperation: "deploy",
+                docsAnchor: nil
+            )
+        )
+
+        let presentation = InstallWorkflowPresentation(
+            state: .idle,
+            plan: nil,
+            result: nil,
+            error: nil,
+            events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ],
+            currentStage: nil,
+            profile: profile
+        )
+
+        XCTAssertEqual(presentation.stateTitle, "Deploy Failed")
+        XCTAssertEqual(presentation.statusMessage, "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.")
+        XCTAssertEqual(presentation.error?.recovery?.title, "No HFS volumes found")
+        XCTAssertEqual(presentation.failureGuidance, "Troubleshooting tip: try rebooting your device and waiting 5 minutes for it to load. Then try deploy again.")
+        XCTAssertEqual(presentation.timeline?.items.first?.title, "Find Payload Volume")
+        XCTAssertEqual(presentation.timeline?.items.first?.state, .failed)
+        XCTAssertNil(presentation.completion)
+    }
+
+    func testInstallWorkflowPresentationRestoresInterruptedDeployState() throws {
+        var profile = try makeProfile()
+        profile.lastDeployState = testDeployState(
+            status: .interrupted,
+            startedAt: Date(timeIntervalSince1970: 300),
+            updatedAt: Date(timeIntervalSince1970: 310),
+            finishedAt: Date(timeIntervalSince1970: 310),
+            stage: "read_mast",
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: nil,
+            verified: nil,
+            summary: "",
+            errorCode: "operation_interrupted"
+        )
+
+        let presentation = InstallWorkflowPresentation(
+            state: .idle,
+            plan: nil,
+            result: nil,
+            error: nil,
+            events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ],
+            currentStage: nil,
+            profile: profile
+        )
+
+        XCTAssertEqual(presentation.stateTitle, "Deploy Failed")
+        XCTAssertEqual(presentation.statusMessage, "Deploy was interrupted before it completed.")
+        XCTAssertEqual(presentation.error?.code, "operation_interrupted")
+        XCTAssertEqual(presentation.timeline?.items.first?.title, "Find Payload Volume")
+        XCTAssertEqual(presentation.timeline?.items.first?.state, .failed)
+        XCTAssertNil(presentation.completion)
+    }
+
     func testInstallWorkflowPresentationCoversAllDeployStates() throws {
         let profile = try makeProfile()
         let plan = try testDeployPlanPayload().decode(DeployPlanPayload.self)
@@ -614,13 +684,15 @@ final class DashboardPresentationTests: XCTestCase {
 
     func testInstallWorkflowPresentationRestoresPostInstallViewFromSavedDeploySnapshot() throws {
         var profile = try makeProfile()
-        profile.lastDeploy = DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 200),
-            state: .deployed,
+        profile.lastDeployState = testDeployState(
+            startedAt: Date(timeIntervalSince1970: 200),
+            updatedAt: Date(timeIntervalSince1970: 200),
+            finishedAt: Date(timeIntervalSince1970: 200),
+            stage: "verify_runtime_reboot",
             payloadFamily: "netbsd6_samba4",
             rebootRequested: false,
             verified: true,
-            summary: "Installed from previous app session."
+            summary: ""
         )
 
         let presentation = InstallWorkflowPresentation(
@@ -628,7 +700,9 @@ final class DashboardPresentationTests: XCTestCase {
             plan: nil,
             result: nil,
             error: nil,
-            events: [],
+            events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ],
             currentStage: nil,
             profile: profile
         )
@@ -639,15 +713,48 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.actions, [])
         XCTAssertEqual(completion.title, "Install / Update Verified")
         XCTAssertTrue(completion.rows.contains(PresentationRow(label: "Reboot Requested", value: "no")))
-        XCTAssertTrue(completion.rows.contains(PresentationRow(label: "Message", value: "Installed from previous app session.")))
+        XCTAssertTrue(completion.rows.contains(PresentationRow(label: "Message", value: "Install completed.")))
         XCTAssertEqual(completion.actions, [.reinstall, .openFinder, .runCheckup, .viewDiagnostics])
+        let timeline = try XCTUnwrap(presentation.timeline)
+        XCTAssertEqual(timeline.items.map(\.title), ["Done"])
+        XCTAssertEqual(timeline.items.first?.detail, "Deployment completed.")
+        XCTAssertEqual(timeline.items.first?.state, .succeeded)
+    }
+
+    func testInstallWorkflowPresentationKeepsTimelineAfterSuccessfulDeploy() throws {
+        let profile = try makeProfile()
+        let result = try testDeployResultPayload(payloadFamily: "netbsd6_samba4")
+            .decode(DeployResultPayload.self)
+        let presentation = InstallWorkflowPresentation(
+            state: .deployed,
+            plan: nil,
+            result: result,
+            error: nil,
+            events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
+                BackendEvent(type: "stage", operation: "deploy", stage: "verify_payload_upload"),
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
+            ],
+            currentStage: nil,
+            profile: profile
+        )
+
+        let timeline = try XCTUnwrap(presentation.timeline)
+        XCTAssertEqual(timeline.items.map(\.title), [
+            "Upload smbd",
+            "Verify Upload",
+            "Done"
+        ])
+        XCTAssertEqual(timeline.items.map(\.state), [.succeeded, .succeeded, .succeeded])
+        XCTAssertNotNil(presentation.completion)
     }
 
     func testInstallWorkflowPresentationShowsViewCheckupWhenCheckupIsRunning() throws {
         var profile = try makeProfile()
-        profile.lastDeploy = DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 200),
-            state: .deployed,
+        profile.lastDeployState = testDeployState(
+            startedAt: Date(timeIntervalSince1970: 200),
+            updatedAt: Date(timeIntervalSince1970: 200),
+            finishedAt: Date(timeIntervalSince1970: 200),
             payloadFamily: "netbsd6_samba4",
             rebootRequested: false,
             verified: true,
@@ -671,9 +778,10 @@ final class DashboardPresentationTests: XCTestCase {
 
     func testInstallWorkflowPresentationPrefersCurrentWorkflowOverSavedDeploySnapshot() throws {
         var profile = try makeProfile()
-        profile.lastDeploy = DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 200),
-            state: .deployed,
+        profile.lastDeployState = testDeployState(
+            startedAt: Date(timeIntervalSince1970: 200),
+            updatedAt: Date(timeIntervalSince1970: 200),
+            finishedAt: Date(timeIntervalSince1970: 200),
             payloadFamily: "netbsd6_samba4",
             rebootRequested: true,
             verified: true,
@@ -706,6 +814,7 @@ final class DashboardPresentationTests: XCTestCase {
         )
         XCTAssertEqual(deployFailed.stateTitle, "Deploy Failed")
         XCTAssertEqual(deployFailed.actions, [.regeneratePlan, .installUpdate])
+        XCTAssertNotNil(deployFailed.timeline)
         XCTAssertNil(deployFailed.completion)
     }
 
@@ -745,6 +854,18 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.items.count, 1)
         XCTAssertEqual(presentation.items.first?.title, "Upload Payload")
+    }
+
+    func testInstallTimelinePresentationStopsRunningStageAfterDeployError() {
+        let presentation = InstallTimelinePresentation(events: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
+            BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: "No deployable HFS disk was found.")
+        ], currentStage: nil)
+
+        XCTAssertEqual(presentation.items.first?.title, "Find Payload Volume")
+        XCTAssertEqual(presentation.items.first?.state, .failed)
+        XCTAssertEqual(presentation.items.last?.state, .failed)
+        XCTAssertFalse(presentation.items.contains { $0.state == .running })
     }
 
     func testInstallProgressPresentationAppearsOnlyWhileDeploying() {

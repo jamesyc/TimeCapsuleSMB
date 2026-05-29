@@ -375,14 +375,12 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             failCount: 0,
             summary: "healthy"
         ), for: profile.id)
-        await fixture.registry.updateDeploy(DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 110),
-            state: .deployed,
-            payloadFamily: "netbsd6_samba4",
-            rebootRequested: true,
-            verified: true,
-            summary: "installed"
+        await fixture.registry.updateDeployState(testDeployState(
+            startedAt: Date(timeIntervalSince1970: 110),
+            updatedAt: Date(timeIntervalSince1970: 110),
+            finishedAt: Date(timeIntervalSince1970: 110)
         ), for: profile.id)
+        await fixture.registry.updateRuntimeState(testRuntimeState(summary: "Install completed."), for: profile.id)
         profile = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
@@ -424,7 +422,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(saved.displayName, "Updated Capsule")
         XCTAssertEqual(saved.host, "root@10.0.0.9")
         XCTAssertEqual(saved.lastCheckup?.state, .passed)
-        XCTAssertEqual(saved.lastDeploy?.state, .deployed)
+        XCTAssertEqual(saved.lastDeployState?.status, .succeeded)
+        XCTAssertEqual(saved.runtimeState?.state, .installedVerified)
         XCTAssertEqual(saved.settings, DeviceProfileSettings(
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,

@@ -193,7 +193,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Wake the disk by opening it in Finder.", "Check the disk is installed and formatted HFS.", "Retry deploy."),
         retryable=True,
         suggested_operation="deploy",
-        action_ids=("open_finder", "install_smb"),
     ),
     ("deploy", "remote_error", "select_payload_home"): RecoveryInfo(
         "No writable payload volume",
@@ -201,7 +200,6 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Wake or remount the disk.", "Check available free space.", "Retry deploy."),
         retryable=True,
         suggested_operation="deploy",
-        action_ids=("open_finder", "install_smb"),
     ),
     ("deploy", "remote_error", "verify_payload_upload"): RecoveryInfo(
         "Payload verification failed",
@@ -246,7 +244,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Retry install/update.", "Run doctor for detailed runtime checks."),
         retryable=True,
         suggested_operation="deploy",
-        action_ids=("install_smb", "run_checkup"),
+        action_ids=("run_checkup",),
     ),
     ("deploy", "remote_error", "post_reboot_activation"): RecoveryInfo(
         "Post-reboot activation failed",
@@ -254,7 +252,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Retry install/update.", "Run doctor for detailed runtime checks."),
         retryable=True,
         suggested_operation="deploy",
-        action_ids=("install_smb", "run_checkup"),
+        action_ids=("run_checkup",),
     ),
     ("deploy", "remote_error", "verify_runtime_activation"): RecoveryInfo(
         "Activated runtime not ready",
@@ -262,7 +260,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Retry install/update.", "Run doctor for detailed runtime checks."),
         retryable=True,
         suggested_operation="deploy",
-        action_ids=("install_smb", "run_checkup"),
+        action_ids=("run_checkup",),
     ),
     ("uninstall", "remote_error", "verify_post_uninstall"): RecoveryInfo(
         "Post-uninstall verification failed",

@@ -55,7 +55,7 @@ enum AddDeviceTarget: Equatable {
 
     func setupLaneKey(existingProfileID: DeviceProfile.ID?) -> OperationLaneKey {
         if let existingProfileID {
-            return .device(existingProfileID)
+            return .deviceWorkflow(existingProfileID, .configure)
         }
         let normalized = DeviceEndpointPolicy.normalizedHostKey(targetHost)
         return .candidateHost(normalized.isEmpty ? targetHost : normalized)

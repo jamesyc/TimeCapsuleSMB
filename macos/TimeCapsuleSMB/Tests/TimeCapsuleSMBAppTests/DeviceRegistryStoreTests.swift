@@ -310,6 +310,96 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(store.profiles.count, 2)
     }
 
+    func testLoadMarksInProgressDeployStateInterrupted() async throws {
+        let temp = try TemporaryDirectory()
+        let start = Date(timeIntervalSince1970: 200)
+        let interruptedAt = Date(timeIntervalSince1970: 300)
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url, now: { start })
+        await store.load()
+        let profile = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        await store.updateDeployState(testDeployState(
+            status: .deploying,
+            startedAt: start,
+            updatedAt: start,
+            finishedAt: nil,
+            stage: "read_mast",
+            verified: nil,
+            summary: ""
+        ), for: profile.id)
+
+        let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url, now: { interruptedAt })
+        await reloaded.load()
+
+        let deployState = try XCTUnwrap(reloaded.profile(id: profile.id)?.lastDeployState)
+        XCTAssertEqual(deployState.status, .interrupted)
+        XCTAssertEqual(deployState.startedAt, start)
+        XCTAssertEqual(deployState.updatedAt, interruptedAt)
+        XCTAssertEqual(deployState.finishedAt, interruptedAt)
+        XCTAssertEqual(deployState.stage, "read_mast")
+        XCTAssertEqual(deployState.errorCode, "operation_interrupted")
+        XCTAssertEqual(deployState.localizedSummary, "Deploy was interrupted before it completed.")
+        let runtimeState = try XCTUnwrap(reloaded.profile(id: profile.id)?.runtimeState)
+        XCTAssertEqual(runtimeState.state, .installInterrupted)
+        XCTAssertEqual(runtimeState.stage, "read_mast")
+        XCTAssertEqual(runtimeState.errorCode, "operation_interrupted")
+        XCTAssertEqual(runtimeState.localizedSummary, "Deploy was interrupted before it completed.")
+    }
+
+    func testInterruptedRuntimeStateOverridesSuccessfulCheckupAfterReload() async throws {
+        let temp = try TemporaryDirectory()
+        let start = Date(timeIntervalSince1970: 200)
+        let interruptedAt = Date(timeIntervalSince1970: 300)
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url, now: { start })
+        await store.load()
+        let profile = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        await store.updateCheckup(DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 100),
+            state: .passed,
+            passCount: 3,
+            warnCount: 0,
+            failCount: 0,
+            summary: "healthy"
+        ), for: profile.id)
+        await store.updateDeployState(testDeployState(
+            status: .deploying,
+            startedAt: start,
+            updatedAt: start,
+            finishedAt: nil,
+            stage: "read_mast",
+            verified: nil,
+            summary: ""
+        ), for: profile.id)
+        await store.updateRuntimeState(testRuntimeState(
+            state: .installing,
+            stage: "read_mast",
+            verified: nil,
+            summary: ""
+        ), for: profile.id)
+
+        let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url, now: { interruptedAt })
+        await reloaded.load()
+
+        let reloadedProfile = try XCTUnwrap(reloaded.profile(id: profile.id))
+        XCTAssertEqual(reloadedProfile.lastCheckup?.state, .passed)
+        XCTAssertEqual(reloadedProfile.lastDeployState?.status, .interrupted)
+        XCTAssertEqual(reloadedProfile.runtimeState?.state, .installInterrupted)
+        XCTAssertEqual(DeviceStatusPolicy.status(
+            for: reloadedProfile,
+            passwordState: .available,
+            activeOperation: nil
+        ), .failed)
+    }
+
     private func discovered(record: JSONValue) throws -> DiscoveredDevice {
         let resolved = try record.decode(BonjourResolvedServicePayload.self)
         return DiscoveredDevice(record: resolved, index: 0)

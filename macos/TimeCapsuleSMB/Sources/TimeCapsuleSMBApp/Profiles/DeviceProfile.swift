@@ -141,23 +141,236 @@ struct DeviceCheckupSnapshot: Codable, Equatable {
     }
 }
 
-struct DeviceDeploySnapshot: Codable, Equatable {
-    var deployedAt: Date
-    var state: DeployWorkflowState
+struct DeviceRecoverySnapshot: Codable, Equatable {
+    var title: String
+    var message: String?
+    var actions: [String]
+    var actionIDs: [String]
+    var retryable: Bool
+    var suggestedOperation: String?
+    var docsAnchor: String?
+
+    init(
+        title: String,
+        message: String?,
+        actions: [String],
+        actionIDs: [String],
+        retryable: Bool,
+        suggestedOperation: String?,
+        docsAnchor: String?
+    ) {
+        self.title = title
+        self.message = message
+        self.actions = actions
+        self.actionIDs = actionIDs
+        self.retryable = retryable
+        self.suggestedOperation = suggestedOperation
+        self.docsAnchor = docsAnchor
+    }
+
+    init(_ recovery: BackendRecoveryPayload) {
+        self.init(
+            title: recovery.title,
+            message: recovery.message,
+            actions: recovery.actions,
+            actionIDs: recovery.actionIDs,
+            retryable: recovery.retryable,
+            suggestedOperation: recovery.suggestedOperation,
+            docsAnchor: recovery.docsAnchor
+        )
+    }
+}
+
+enum DeviceDeployStateStatus: String, Codable, Equatable, CaseIterable {
+    case deploying
+    case awaitingConfirmation
+    case succeeded
+    case failed
+    case interrupted
+
+    var isInProgress: Bool {
+        switch self {
+        case .deploying, .awaitingConfirmation:
+            return true
+        case .succeeded, .failed, .interrupted:
+            return false
+        }
+    }
+
+    var isFailure: Bool {
+        switch self {
+        case .failed, .interrupted:
+            return true
+        case .deploying, .awaitingConfirmation, .succeeded:
+            return false
+        }
+    }
+}
+
+struct DeviceDeployStateSnapshot: Codable, Equatable {
+    var operationID: String?
+    var startedAt: Date
+    var updatedAt: Date
+    var finishedAt: Date?
+    var status: DeviceDeployStateStatus
+    var stage: String?
     var payloadFamily: String?
     var rebootRequested: Bool?
     var verified: Bool?
     var summary: String
+    var errorCode: String?
+    var errorMessage: String?
+    var recovery: DeviceRecoverySnapshot?
 
     var localizedSummary: String {
-        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            return trimmed
+        switch status {
+        case .succeeded:
+            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+            return L10n.string("deploy.result.default_message")
+        case .failed:
+            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? L10n.string("install.state.deploy_failed") : trimmed
+        case .interrupted:
+            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? L10n.string("install.state.deploy_interrupted") : trimmed
+        case .deploying:
+            return L10n.string("install.state.deploying")
+        case .awaitingConfirmation:
+            return L10n.string("install.state.awaiting_confirmation")
         }
-        if verified == true {
-            return L10n.string("summary.install_verified_by_checkup")
+    }
+
+    init(
+        operationID: String?,
+        startedAt: Date,
+        updatedAt: Date,
+        finishedAt: Date?,
+        status: DeviceDeployStateStatus,
+        stage: String?,
+        payloadFamily: String?,
+        rebootRequested: Bool?,
+        verified: Bool?,
+        summary: String,
+        errorCode: String?,
+        errorMessage: String?,
+        recovery: DeviceRecoverySnapshot?
+    ) {
+        self.operationID = operationID
+        self.startedAt = startedAt
+        self.updatedAt = updatedAt
+        self.finishedAt = finishedAt
+        self.status = status
+        self.stage = stage
+        self.payloadFamily = payloadFamily
+        self.rebootRequested = rebootRequested
+        self.verified = verified
+        self.summary = summary
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
+        self.recovery = recovery
+    }
+}
+
+enum DeviceRuntimeState: String, Codable, Equatable, CaseIterable {
+    case unknown
+    case installing
+    case installedUnverified
+    case installedVerified
+    case installFailed
+    case installInterrupted
+    case activationNeeded
+    case unhealthy
+
+    var isInstalled: Bool {
+        switch self {
+        case .installedUnverified, .installedVerified, .activationNeeded:
+            return true
+        case .unknown, .installing, .installFailed, .installInterrupted, .unhealthy:
+            return false
         }
-        return L10n.string("deploy.result.default_message")
+    }
+
+    var isFailure: Bool {
+        switch self {
+        case .installFailed, .installInterrupted, .unhealthy:
+            return true
+        case .unknown, .installing, .installedUnverified, .installedVerified, .activationNeeded:
+            return false
+        }
+    }
+}
+
+enum DeviceRuntimeEvidenceSource: String, Codable, Equatable, CaseIterable {
+    case deploy
+    case doctor
+    case appRecovery
+}
+
+struct DeviceRuntimeStateSnapshot: Codable, Equatable {
+    var state: DeviceRuntimeState
+    var source: DeviceRuntimeEvidenceSource
+    var stage: String?
+    var payloadFamily: String?
+    var verified: Bool?
+    var summary: String
+    var errorCode: String?
+    var errorMessage: String?
+    var recovery: DeviceRecoverySnapshot?
+
+    var localizedSummary: String {
+        switch state {
+        case .unknown:
+            return L10n.string("runtime.state.unknown")
+        case .installing:
+            return L10n.string("install.state.deploying")
+        case .installedVerified:
+            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+            return source == .doctor
+                ? L10n.string("summary.install_verified_by_checkup")
+                : L10n.string("deploy.result.default_message")
+        case .installedUnverified:
+            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? L10n.string("deploy.result.default_message") : trimmed
+        case .installFailed:
+            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? L10n.string("install.state.deploy_failed") : trimmed
+        case .installInterrupted:
+            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? L10n.string("install.state.deploy_interrupted") : trimmed
+        case .activationNeeded:
+            return L10n.string("dashboard.health.runtime.activation_needed")
+        case .unhealthy:
+            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? L10n.string("runtime.state.unhealthy") : trimmed
+        }
+    }
+
+    init(
+        state: DeviceRuntimeState,
+        source: DeviceRuntimeEvidenceSource,
+        stage: String?,
+        payloadFamily: String?,
+        verified: Bool?,
+        summary: String,
+        errorCode: String?,
+        errorMessage: String?,
+        recovery: DeviceRecoverySnapshot?
+    ) {
+        self.state = state
+        self.source = source
+        self.stage = stage
+        self.payloadFamily = payloadFamily
+        self.verified = verified
+        self.summary = summary
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
+        self.recovery = recovery
     }
 }
 
@@ -180,7 +393,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
     var createdAt: Date
     var updatedAt: Date
     var lastCheckup: DeviceCheckupSnapshot?
-    var lastDeploy: DeviceDeploySnapshot?
+    var lastDeployState: DeviceDeployStateSnapshot?
+    var runtimeState: DeviceRuntimeStateSnapshot?
     var settings: DeviceProfileSettings
     var passwordState: DevicePasswordState
 
@@ -293,7 +507,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
             createdAt: existing?.createdAt ?? date,
             updatedAt: date,
             lastCheckup: existing?.lastCheckup,
-            lastDeploy: existing?.lastDeploy,
+            lastDeployState: existing?.lastDeployState,
+            runtimeState: existing?.runtimeState,
             settings: existing?.settings ?? .default,
             passwordState: existing?.passwordState ?? .unknown
         )
@@ -316,7 +531,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         case createdAt
         case updatedAt
         case lastCheckup
-        case lastDeploy
+        case lastDeployState
+        case runtimeState
         case settings
         case passwordState
     }
@@ -339,7 +555,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         lastCheckup = try container.decodeIfPresent(DeviceCheckupSnapshot.self, forKey: .lastCheckup)
-        lastDeploy = try container.decodeIfPresent(DeviceDeploySnapshot.self, forKey: .lastDeploy)
+        lastDeployState = try container.decodeIfPresent(DeviceDeployStateSnapshot.self, forKey: .lastDeployState)
+        runtimeState = try container.decodeIfPresent(DeviceRuntimeStateSnapshot.self, forKey: .runtimeState)
         settings = try container.decodeIfPresent(DeviceProfileSettings.self, forKey: .settings) ?? .default
         passwordState = try container.decodeIfPresent(DevicePasswordState.self, forKey: .passwordState) ?? .unknown
     }
@@ -360,7 +577,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(lastCheckup, forKey: .lastCheckup)
-        try container.encodeIfPresent(lastDeploy, forKey: .lastDeploy)
+        try container.encodeIfPresent(lastDeployState, forKey: .lastDeployState)
+        try container.encodeIfPresent(runtimeState, forKey: .runtimeState)
         try container.encode(settings, forKey: .settings)
         try container.encode(passwordState, forKey: .passwordState)
     }
@@ -382,7 +600,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         createdAt: Date,
         updatedAt: Date,
         lastCheckup: DeviceCheckupSnapshot?,
-        lastDeploy: DeviceDeploySnapshot?,
+        lastDeployState: DeviceDeployStateSnapshot? = nil,
+        runtimeState: DeviceRuntimeStateSnapshot? = nil,
         settings: DeviceProfileSettings,
         passwordState: DevicePasswordState
     ) {
@@ -402,7 +621,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.lastCheckup = lastCheckup
-        self.lastDeploy = lastDeploy
+        self.lastDeployState = lastDeployState
+        self.runtimeState = runtimeState
         self.settings = settings
         self.passwordState = passwordState
     }
@@ -428,7 +648,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
         createdAt: Date,
         updatedAt: Date,
         lastCheckup: DeviceCheckupSnapshot?,
-        lastDeploy: DeviceDeploySnapshot?,
+        lastDeployState: DeviceDeployStateSnapshot? = nil,
+        runtimeState: DeviceRuntimeStateSnapshot? = nil,
         settings: DeviceProfileSettings,
         passwordState: DevicePasswordState
     ) {
@@ -455,7 +676,8 @@ struct DeviceProfile: Codable, Equatable, Identifiable {
             createdAt: createdAt,
             updatedAt: updatedAt,
             lastCheckup: lastCheckup,
-            lastDeploy: lastDeploy,
+            lastDeployState: lastDeployState,
+            runtimeState: runtimeState,
             settings: settings,
             passwordState: passwordState
         )

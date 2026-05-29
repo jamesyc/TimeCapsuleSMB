@@ -76,28 +76,52 @@ final class DeviceStatusPolicyTests: XCTestCase {
     }
 
     func testActiveOperationOverridesStoredHealth() throws {
-        let profile = try makeProfile(lastCheckup: passedCheckup(), lastDeploy: deployed())
+        let profile = try makeProfile(runtimeState: testRuntimeState())
 
         XCTAssertEqual(status(profile, .available, operation: "doctor"), .checking)
         XCTAssertEqual(status(profile, .available, operation: "deploy"), .installing)
         XCTAssertEqual(status(profile, .available, operation: "fsck"), .maintaining)
     }
 
-    func testHealthStatusFallsBackThroughCheckupAndDeploySnapshots() throws {
+    func testHealthStatusComesFromRuntimeState() throws {
         XCTAssertEqual(status(try makeProfile(), .available), .unchecked)
-        XCTAssertEqual(status(try makeProfile(lastDeploy: deployed()), .available), .healthy)
-        XCTAssertEqual(status(try makeProfile(lastDeploy: deployed(verified: false)), .available), .warning)
-        XCTAssertEqual(status(try makeProfile(lastCheckup: passedCheckup()), .available), .healthy)
-        XCTAssertEqual(status(try makeProfile(lastCheckup: passedCheckup(), lastDeploy: deployed()), .available), .healthy)
-        XCTAssertEqual(status(try makeProfile(lastCheckup: warningCheckup(), lastDeploy: deployed()), .available), .warning)
-        XCTAssertEqual(status(try makeProfile(lastCheckup: failedCheckup(), lastDeploy: deployed()), .available), .failed)
+        XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installedVerified)), .available), .healthy)
+        XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installedUnverified, verified: false)), .available), .warning)
+        XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installing, verified: nil)), .available), .installing)
+        XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installFailed, verified: false)), .available), .failed)
+        XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installInterrupted, verified: nil)), .available), .failed)
+        XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .unhealthy, source: .doctor, verified: false)), .available), .failed)
     }
 
-    func testNetBSD4WarningAfterDeployMapsToActivationNeeded() throws {
+    func testCheckupAndDeployUISnapshotsDoNotDriveSidebarStatus() throws {
+        let profile = try makeProfile(
+            lastCheckup: passedCheckup(),
+            lastDeployState: deployed()
+        )
+
+        XCTAssertEqual(status(profile, .available), .unchecked)
+    }
+
+    func testFailedRuntimeStateOverridesPreviousHealthyCheckupStatus() throws {
+        let profile = try makeProfile(
+            lastCheckup: passedCheckup(),
+            lastDeployState: deployed(),
+            runtimeState: testRuntimeState(
+                state: .installFailed,
+                verified: false,
+                errorMessage: "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart."
+            )
+        )
+
+        XCTAssertEqual(status(profile, .available), .failed)
+    }
+
+    func testNetBSD4ActivationNeededRuntimeStateMapsToActivationNeeded() throws {
         let profile = try makeProfile(
             payloadFamily: "netbsd4_samba4",
             lastCheckup: warningCheckup(),
-            lastDeploy: deployed()
+            lastDeployState: deployed(),
+            runtimeState: testRuntimeState(state: .activationNeeded, source: .doctor, payloadFamily: "netbsd4_samba4", verified: false)
         )
 
         XCTAssertEqual(status(profile, .available), .activationNeeded)
@@ -115,12 +139,16 @@ final class DeviceStatusPolicyTests: XCTestCase {
             activeOperation: nil
         ), .runCheckup)
         XCTAssertEqual(DashboardPrimaryActionPolicy.primaryAction(
-            for: try makeProfile(lastCheckup: passedCheckup()),
+            for: try makeProfile(runtimeState: testRuntimeState()),
             passwordState: .available,
             activeOperation: nil
         ), .openSMB)
         XCTAssertEqual(DashboardPrimaryActionPolicy.primaryAction(
-            for: try makeProfile(lastCheckup: passedCheckup(), lastDeploy: deployed()),
+            for: try makeProfile(
+                lastCheckup: passedCheckup(),
+                lastDeployState: deployed(),
+                runtimeState: testRuntimeState()
+            ),
             passwordState: .available,
             activeOperation: nil
         ), .openSMB)
@@ -143,7 +171,8 @@ final class DeviceStatusPolicyTests: XCTestCase {
     private func makeProfile(
         payloadFamily: String = "netbsd6_samba4",
         lastCheckup: DeviceCheckupSnapshot? = nil,
-        lastDeploy: DeviceDeploySnapshot? = nil
+        lastDeployState: DeviceDeployStateSnapshot? = nil,
+        runtimeState: DeviceRuntimeStateSnapshot? = nil
     ) throws -> DeviceProfile {
         var profile = DeviceProfile.make(
             id: "device-one",
@@ -153,7 +182,8 @@ final class DeviceStatusPolicyTests: XCTestCase {
             date: Date(timeIntervalSince1970: 1)
         )
         profile.lastCheckup = lastCheckup
-        profile.lastDeploy = lastDeploy
+        profile.lastDeployState = lastDeployState
+        profile.runtimeState = runtimeState
         return profile
     }
 
@@ -190,14 +220,12 @@ final class DeviceStatusPolicyTests: XCTestCase {
         )
     }
 
-    private func deployed(verified: Bool = true) -> DeviceDeploySnapshot {
-        DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 11),
-            state: .deployed,
-            payloadFamily: "netbsd6_samba4",
-            rebootRequested: true,
-            verified: verified,
-            summary: "installed"
+    private func deployed(verified: Bool = true) -> DeviceDeployStateSnapshot {
+        testDeployState(
+            startedAt: Date(timeIntervalSince1970: 11),
+            updatedAt: Date(timeIntervalSince1970: 11),
+            finishedAt: Date(timeIntervalSince1970: 11),
+            verified: verified
         )
     }
 }

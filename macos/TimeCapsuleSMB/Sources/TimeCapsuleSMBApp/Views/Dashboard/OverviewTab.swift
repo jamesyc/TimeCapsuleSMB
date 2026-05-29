@@ -3,7 +3,9 @@ import SwiftUI
 private enum OverviewLayout {
     static let actionIconSize: CGFloat = 16
     static let healthRowMinHeight: CGFloat = 64
-    static let healthStatusIconSize: CGFloat = 20
+    static let healthStatusIconSize: CGFloat = 30
+    static let healthStatusSymbolSize: CGFloat = 18
+    static let healthActionSlotMinWidth: CGFloat = 144
 }
 
 struct OverviewTab: View {
@@ -172,15 +174,11 @@ private struct DashboardHealthSectionView: View {
                             Text(row.title)
                                 .font(.body.weight(.medium))
                             Spacer()
-                            if let action = row.action {
-                                Button {
-                                    performAction(action)
-                                } label: {
-                                    DashboardActionLabel(title: action.title, systemImage: action.systemImage)
-                                }
-                                .controlSize(.small)
-                                .disabled(!isActionEnabled(action))
-                            }
+                            DashboardHealthActionSlot(
+                                action: row.action,
+                                isActionEnabled: isActionEnabled,
+                                performAction: performAction
+                            )
                         }
                         AnimatedProgressText(message: row.detail, isRunning: row.status == .running)
                             .font(.caption)
@@ -196,11 +194,53 @@ private struct DashboardHealthSectionView: View {
     }
 }
 
+private struct DashboardHealthActionSlot: View {
+    let action: DashboardSecondaryAction?
+    let isActionEnabled: (DashboardSecondaryAction) -> Bool
+    let performAction: (DashboardSecondaryAction) -> Void
+
+    var body: some View {
+        Group {
+            if let action {
+                Button {
+                    performAction(action)
+                } label: {
+                    DashboardActionLabel(title: action.title, systemImage: action.systemImage)
+                }
+                .controlSize(.small)
+                .disabled(!isActionEnabled(action))
+            } else {
+                // Reserve real button metrics so rows without actions align with rows that have action buttons.
+                Button {} label: {
+                    DashboardActionLabel(
+                        title: DashboardSecondaryAction.runCheckup.title,
+                        systemImage: DashboardSecondaryAction.runCheckup.systemImage
+                    )
+                }
+                    .controlSize(.small)
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(
+            minWidth: OverviewLayout.healthActionSlotMinWidth,
+            alignment: .trailing
+        )
+    }
+}
+
 private struct DashboardHealthStatusIcon: View {
     let status: DashboardHealthStatus
 
     var body: some View {
-        icon
+        ZStack {
+            Circle()
+                .fill(statusColor.opacity(status == .unknown ? 0.10 : 0.14))
+            icon
+                .foregroundStyle(statusColor)
+        }
+            .frame(width: OverviewLayout.healthStatusIconSize, height: OverviewLayout.healthStatusIconSize)
             .accessibilityLabel(status.title)
     }
 
@@ -208,11 +248,24 @@ private struct DashboardHealthStatusIcon: View {
     private var icon: some View {
         if status == .running {
             OperationTimelineStateIcon(state: .running)
-                .frame(width: OverviewLayout.healthStatusIconSize, height: OverviewLayout.healthStatusIconSize)
         } else {
             Image(systemName: status.systemImage)
-                .font(.caption.weight(.medium))
-                .frame(width: OverviewLayout.healthStatusIconSize, height: OverviewLayout.healthStatusIconSize)
+                .font(.system(size: OverviewLayout.healthStatusSymbolSize, weight: .semibold))
+        }
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .unknown:
+            return .secondary
+        case .good:
+            return .green
+        case .warning:
+            return .orange
+        case .failed:
+            return .red
+        case .running:
+            return .accentColor
         }
     }
 }

@@ -200,7 +200,7 @@ final class DeviceProfileTests: XCTestCase {
             createdAt: Date(timeIntervalSince1970: 10),
             updatedAt: Date(timeIntervalSince1970: 20),
             lastCheckup: nil,
-            lastDeploy: nil,
+            lastDeployState: nil,
             settings: .default,
             passwordState: .unknown
         )

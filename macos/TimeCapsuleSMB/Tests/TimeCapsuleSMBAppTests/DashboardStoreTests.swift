@@ -10,7 +10,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(fixture.appStore.selectedProfile)
     }
 
-    func testPrimaryActionDerivesFromPasswordCheckupAndDeployState() async throws {
+    func testPrimaryActionDerivesFromPasswordAndRuntimeState() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -24,36 +24,15 @@ final class DashboardStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: profile).primaryAction, .runCheckup)
 
-        await fixture.registry.updateCheckup(DeviceCheckupSnapshot(
-            checkedAt: Date(timeIntervalSince1970: 100),
-            state: .passed,
-            passCount: 2,
-            warnCount: 0,
-            failCount: 0,
-            summary: "healthy"
-        ), for: profile.id)
+        await fixture.registry.updateRuntimeState(testRuntimeState(source: .doctor, summary: ""), for: profile.id)
         let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: checked).primaryAction, .openSMB)
 
-        await fixture.registry.updateDeploy(DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 110),
-            state: .deployed,
-            payloadFamily: "netbsd6_samba4",
-            rebootRequested: true,
-            verified: true,
-            summary: "installed"
-        ), for: profile.id)
+        await fixture.registry.updateRuntimeState(testRuntimeState(summary: "Install completed."), for: profile.id)
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: installed).primaryAction, .openSMB)
 
-        await fixture.registry.updateCheckup(DeviceCheckupSnapshot(
-            checkedAt: Date(timeIntervalSince1970: 120),
-            state: .warning,
-            passCount: 1,
-            warnCount: 1,
-            failCount: 0,
-            summary: "warning"
-        ), for: profile.id)
+        await fixture.registry.updateRuntimeState(testRuntimeState(state: .installedUnverified, source: .doctor, verified: false, summary: "warning"), for: profile.id)
         let warning = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: warning).primaryAction, .viewCheckup)
     }
@@ -153,6 +132,107 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["reachability"])
         XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(fixture.appStore.reachabilityStore.snapshot(for: profile)?.payload.status, "reachable")
+    }
+
+    func testRefreshStatusDoesNotClearSuccessfulDeployTimeline() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "reachability", ok: true, payload: testReachabilityPayload())
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+
+        session.runInstallPlan(profile: profile)
+        try await waitUntilStoreState { session.deployStore.state == .planReady }
+        session.runInstall(profile: profile)
+        try await waitUntilStoreState { session.deployStore.state == .deployed }
+
+        let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        let beforeRefresh = InstallWorkflowPresentation(
+            state: session.deployStore.state,
+            plan: session.deployStore.plan,
+            result: session.deployStore.result,
+            error: session.deployStore.error,
+            events: session.deployStore.events,
+            currentStage: session.deployStore.currentStage,
+            profile: installed
+        )
+        XCTAssertEqual(beforeRefresh.timeline?.items.map(\.title), ["Upload smbd", "Done"])
+
+        session.performSecondaryAction(.refreshStatus, profile: installed)
+        try await waitUntilStoreState { fixture.appStore.reachabilityStore.snapshot(for: installed) != nil }
+
+        let afterRefresh = InstallWorkflowPresentation(
+            state: session.deployStore.state,
+            plan: session.deployStore.plan,
+            result: session.deployStore.result,
+            error: session.deployStore.error,
+            events: session.deployStore.events,
+            currentStage: session.deployStore.currentStage,
+            profile: installed
+        )
+        XCTAssertEqual(afterRefresh.timeline?.items.map(\.title), ["Upload smbd", "Done"])
+        XCTAssertEqual(afterRefresh.timeline?.items.last?.detail, "Deployment completed.")
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "deploy", "reachability"])
+    }
+
+    func testCheckupDoesNotClearSuccessfulDeployTimeline() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+
+        session.runInstallPlan(profile: profile)
+        try await waitUntilStoreState { session.deployStore.state == .planReady }
+        session.runInstall(profile: profile)
+        try await waitUntilStoreState { session.deployStore.state == .deployed }
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState { session.doctorStore.state == .passed }
+
+        let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        let presentation = InstallWorkflowPresentation(
+            state: session.deployStore.state,
+            plan: session.deployStore.plan,
+            result: session.deployStore.result,
+            error: session.deployStore.error,
+            events: session.deployStore.events,
+            currentStage: session.deployStore.currentStage,
+            profile: installed
+        )
+        XCTAssertEqual(presentation.timeline?.items.map(\.title), ["Upload smbd", "Done"])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "deploy", "doctor"])
     }
 
     func testProfileEditorPasswordSaveUpdatesPasswordStateAndClearsDraft() async throws {
@@ -389,7 +469,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(Set(fixture.runner.calls.map { $0.context?.profileID }), ["device-one", "device-two"])
     }
 
-    func testDashboardOperationsUpdateLastCheckupAndDeploySnapshots() async throws {
+    func testDashboardOperationsUpdateCheckupDeployAndRuntimeSnapshots() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
@@ -417,10 +497,16 @@ final class DashboardStoreTests: XCTestCase {
 
         session.runCheckup(profile: profile)
 
-        try await waitUntilStoreState { session.doctorStore.state == .warning }
+        try await waitUntilStoreState {
+            session.doctorStore.state == .warning
+                && fixture.registry.profile(id: profile.id)?.lastCheckup?.state == .warning
+                && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installedUnverified
+        }
         let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(checked.lastCheckup?.state, .warning)
         XCTAssertEqual(checked.lastCheckup?.warnCount, 1)
+        XCTAssertEqual(checked.runtimeState?.source, .doctor)
+        XCTAssertEqual(checked.runtimeState?.verified, false)
         XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(fixture.runner.calls[0].context?.profileID, profile.id)
 
@@ -435,16 +521,167 @@ final class DashboardStoreTests: XCTestCase {
         }
         try await waitUntilStoreState {
             session.deployStore.state == .deployed
-                && fixture.registry.profile(id: profile.id)?.lastDeploy != nil
+                && fixture.registry.profile(id: profile.id)?.lastDeployState?.status == .succeeded
+                && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installedVerified
         }
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertNil(installed.lastCheckup)
-        XCTAssertEqual(installed.lastDeploy?.state, .deployed)
-        XCTAssertEqual(installed.lastDeploy?.payloadFamily, "netbsd6_samba4")
-        XCTAssertEqual(installed.lastDeploy?.verified, true)
+        XCTAssertEqual(installed.lastDeployState?.status, .succeeded)
+        XCTAssertEqual(installed.lastDeployState?.payloadFamily, "netbsd6_samba4")
+        XCTAssertEqual(installed.lastDeployState?.verified, true)
+        XCTAssertEqual(installed.runtimeState?.state, .installedVerified)
+        XCTAssertEqual(installed.runtimeState?.payloadFamily, "netbsd6_samba4")
+        XCTAssertEqual(installed.runtimeState?.verified, true)
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[2].params["dry_run"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[2].context?.profileID, profile.id)
+    }
+
+    func testFailedInstallPersistsUnifiedDeployState() async throws {
+        let recovery: JSONValue = .object([
+            "title": .string("No HFS volumes found"),
+            "message": .string("The device did not report a deployable HFS disk through MaSt."),
+            "actions": .array([]),
+            "action_ids": .array([]),
+            "retryable": .bool(true),
+            "suggested_operation": .string("deploy")
+        ])
+        let failure = "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart."
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
+                BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: failure, recovery: recovery)
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        await fixture.registry.updateDeployState(testDeployState(), for: profile.id)
+        let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        try fixture.passwordStore.save("pw", for: installed.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: installed)
+
+        session.runInstallPlan(profile: installed)
+        try await waitUntilStoreState { session.deployStore.state == .planReady }
+        session.runInstall(profile: installed)
+
+        try await waitUntilStoreState {
+            session.deployStore.state == .deployFailed
+                && fixture.registry.profile(id: profile.id)?.lastDeployState?.status == .failed
+                && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installFailed
+        }
+        let failed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(failed.lastDeployState?.status, .failed)
+        XCTAssertEqual(failed.lastDeployState?.stage, "read_mast")
+        XCTAssertEqual(failed.lastDeployState?.errorMessage, failure)
+        XCTAssertEqual(failed.lastDeployState?.recovery?.title, "No HFS volumes found")
+        XCTAssertEqual(failed.runtimeState?.state, .installFailed)
+        XCTAssertEqual(failed.runtimeState?.stage, "read_mast")
+        XCTAssertEqual(failed.runtimeState?.errorMessage, failure)
+        XCTAssertEqual(failed.runtimeState?.recovery?.title, "No HFS volumes found")
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
+    }
+
+    func testSuccessfulCheckupAfterFailedInstallUpdatesDeviceRuntimeStateWithoutClearingDeployHistory() async throws {
+        let failure = "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart."
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
+                BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: failure)
+            ], delayNanoseconds: 100_000_000),
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+
+        session.runInstallPlan(profile: profile)
+        try await waitUntilStoreState { session.deployStore.state == .planReady }
+        session.runInstall(profile: profile)
+        try await waitUntilStoreState {
+            session.deployStore.state == .deployFailed
+                && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installFailed
+        }
+        let failed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
+
+        session.runCheckup(profile: failed)
+
+        try await waitUntilStoreState {
+            session.doctorStore.state == .passed
+                && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installedVerified
+        }
+        let recovered = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(recovered.lastDeployState?.status, .failed)
+        XCTAssertEqual(recovered.lastDeployState?.errorMessage, failure)
+        XCTAssertEqual(recovered.runtimeState?.source, .doctor)
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: recovered).displayStatus, .healthy)
+    }
+
+    func testInstallPlanDoesNotChangePersistedInstallState() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let failedState = testDeployState(
+            status: .failed,
+            startedAt: Date(timeIntervalSince1970: 120),
+            updatedAt: Date(timeIntervalSince1970: 120),
+            finishedAt: Date(timeIntervalSince1970: 120),
+            stage: "read_mast",
+            verified: nil,
+            summary: "",
+            errorCode: "remote_error",
+            errorMessage: "No deployable HFS disk was found."
+        )
+        let failedRuntimeState = testRuntimeState(
+            state: .installFailed,
+            stage: "read_mast",
+            verified: false,
+            summary: "",
+            errorCode: "remote_error",
+            errorMessage: "No deployable HFS disk was found."
+        )
+        await fixture.registry.updateDeployState(failedState, for: profile.id)
+        await fixture.registry.updateRuntimeState(failedRuntimeState, for: profile.id)
+        let failed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        try fixture.passwordStore.save("pw", for: failed.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: failed)
+
+        session.runInstallPlan(profile: failed)
+
+        try await waitUntilStoreState { session.deployStore.state == .planReady }
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.lastDeployState, failedState)
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.runtimeState, failedRuntimeState)
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
     }
 
     func testSuccessfulUninstallClearsInstalledSnapshot() async throws {
@@ -462,14 +699,8 @@ final class DashboardStoreTests: XCTestCase {
             passwordState: .available,
             preferredID: "device-one"
         )
-        await fixture.registry.updateDeploy(DeviceDeploySnapshot(
-            deployedAt: Date(timeIntervalSince1970: 120),
-            state: .deployed,
-            payloadFamily: "netbsd6_samba4",
-            rebootRequested: true,
-            verified: true,
-            summary: "installed"
-        ), for: profile.id)
+        await fixture.registry.updateDeployState(testDeployState(), for: profile.id)
+        await fixture.registry.updateRuntimeState(testRuntimeState(), for: profile.id)
         await fixture.registry.updateCheckup(DeviceCheckupSnapshot(
             checkedAt: Date(timeIntervalSince1970: 130),
             state: .failed,
@@ -493,9 +724,11 @@ final class DashboardStoreTests: XCTestCase {
         }
         try await waitUntilStoreState {
             session.maintenanceStore.uninstallState == .succeeded
-                && fixture.registry.profile(id: installed.id)?.lastDeploy == nil
+                && fixture.registry.profile(id: installed.id)?.lastDeployState == nil
+                && fixture.registry.profile(id: installed.id)?.runtimeState == nil
         }
-        XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastDeploy)
+        XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastDeployState)
+        XCTAssertNil(fixture.registry.profile(id: installed.id)?.runtimeState)
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastCheckup)
         XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
@@ -575,14 +808,17 @@ final class DashboardStoreTests: XCTestCase {
         try await waitUntilStoreState {
             session.doctorStore.state == .passed
                 && fixture.registry.profile(id: first.id)?.lastCheckup?.state == .passed
-                && fixture.registry.profile(id: first.id)?.lastDeploy?.state == .deployed
+                && fixture.registry.profile(id: first.id)?.runtimeState?.state == .installedVerified
         }
         XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastCheckup?.state, .passed)
-        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.verified, true)
-        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.summary, "")
-        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.localizedSummary, "Installed and verified by checkup.")
+        XCTAssertNil(fixture.registry.profile(id: first.id)?.lastDeployState)
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.runtimeState?.source, .doctor)
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.runtimeState?.verified, true)
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.runtimeState?.summary, "")
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.runtimeState?.localizedSummary, "Installed and verified by checkup.")
         XCTAssertNil(fixture.registry.profile(id: second.id)?.lastCheckup)
-        XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeploy)
+        XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeployState)
+        XCTAssertNil(fixture.registry.profile(id: second.id)?.runtimeState)
     }
 
     func testSkippedSSHCheckupDoesNotMarkRuntimeInstalled() async throws {
@@ -610,7 +846,8 @@ final class DashboardStoreTests: XCTestCase {
             session.doctorStore.state == .passed
                 && fixture.registry.profile(id: profile.id)?.lastCheckup?.state == .passed
         }
-        XCTAssertNil(fixture.registry.profile(id: profile.id)?.lastDeploy)
+        XCTAssertNil(fixture.registry.profile(id: profile.id)?.lastDeployState)
+        XCTAssertNil(fixture.registry.profile(id: profile.id)?.runtimeState)
     }
 
     func testDeploySnapshotUsesStartedProfileWhenSelectionChanges() async throws {
@@ -645,9 +882,14 @@ final class DashboardStoreTests: XCTestCase {
         fixture.appStore.select(second)
 
         try await waitUntilStoreState { session.deployStore.state == .deployed }
-        try await waitUntilStoreState { fixture.registry.profile(id: first.id)?.lastDeploy?.state == .deployed }
-        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.state, .deployed)
-        XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeploy)
+        try await waitUntilStoreState {
+            fixture.registry.profile(id: first.id)?.lastDeployState?.status == .succeeded
+                && fixture.registry.profile(id: first.id)?.runtimeState?.state == .installedVerified
+        }
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeployState?.status, .succeeded)
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.runtimeState?.state, .installedVerified)
+        XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeployState)
+        XCTAssertNil(fixture.registry.profile(id: second.id)?.runtimeState)
     }
 
     func testPasswordLookupFailureMarksProfileMissing() async throws {
@@ -906,7 +1148,7 @@ final class DashboardStoreTests: XCTestCase {
     }
 
     private func deviceLaneIsRunning(_ profile: DeviceProfile, appStore: AppStore) -> Bool {
-        appStore.operationCoordinator.lane(for: profile).backend.isRunning
+        appStore.operationCoordinator.isDeviceBusy(profile)
     }
 
     private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> (

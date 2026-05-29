@@ -22,7 +22,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
                 type: "result",
                 operation: "deploy",
                 ok: true,
-                payload: .object(["summary": .string("deployment completed.")])
+                payload: .object(["summary": .string("Deployment completed.")])
             )
         ]
 
@@ -34,7 +34,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline[0].state, .succeeded)
         XCTAssertEqual(timeline[1].state, .warning)
         XCTAssertEqual(timeline[2].state, .succeeded)
-        XCTAssertEqual(timeline[2].detail, "deployment completed.")
+        XCTAssertEqual(timeline[2].detail, "Deployment completed.")
     }
 
     func testStageBecomesSucceededWhenLaterStageForSameOperationAppears() {
@@ -66,7 +66,17 @@ final class OperationTimelineBuilderTests: XCTestCase {
         ])
 
         XCTAssertEqual(timeline.map(\.title), ["Upload Payload", "Failed"])
-        XCTAssertEqual(timeline.map(\.state), [.running, .failed])
+        XCTAssertEqual(timeline.map(\.state), [.failed, .failed])
+    }
+
+    func testErrorMarksCurrentStageFailed() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
+            BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: "No deployable HFS disk was found.")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Find Payload Volume", "Needs Attention"])
+        XCTAssertEqual(timeline.map(\.state), [.failed, .failed])
     }
 
     func testOperationTitlesAreUserFacing() {

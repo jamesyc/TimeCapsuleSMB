@@ -99,8 +99,17 @@ enum OperationTimelineBuilder {
     private static func stageState(forEventAt index: Int, in events: [BackendEvent]) -> OperationTimelineItem.State {
         let event = events[index]
         let laterEvents = events.dropFirst(index + 1).filter { $0.operation == event.operation }
-        if laterEvents.contains(where: { $0.type == "stage" || ($0.type == "result" && $0.ok == true) }) {
-            return .succeeded
+        for laterEvent in laterEvents {
+            switch laterEvent.type {
+            case "stage":
+                return .succeeded
+            case "result":
+                return laterEvent.ok == true ? .succeeded : .failed
+            case "error" where laterEvent.code != "confirmation_required":
+                return .failed
+            default:
+                continue
+            }
         }
         return .running
     }
