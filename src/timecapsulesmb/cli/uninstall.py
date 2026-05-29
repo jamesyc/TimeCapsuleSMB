@@ -80,7 +80,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
         command_context.update_fields(volume_roots=volume_roots, payload_dirs=payload_dirs)
         command_context.set_stage("build_uninstall_plan")
-        plan = build_uninstall_plan(connection.host, volume_roots, payload_dirs, reboot_after_uninstall=not args.no_reboot)
+        plan = build_uninstall_plan(
+            connection.host,
+            volume_roots,
+            payload_dirs,
+            reboot_after_uninstall=not args.no_reboot,
+            wait_after_reboot=not args.no_wait,
+        )
 
         if args.dry_run:
             if args.json:

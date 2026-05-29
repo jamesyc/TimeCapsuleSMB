@@ -7073,16 +7073,45 @@ fi
             ],
         )
         self.assertEqual([check.id for check in plan.post_deploy_checks], [
+            "managed_runtime_smbd_binary_present",
             "managed_runtime_smb_conf_present",
+            "active_smb_conf_passdb_ram",
+            "active_smb_conf_username_map_ram",
+            "active_smb_conf_xattr_tdb_persistent",
+            "managed_share_volumes_mounted",
+            "managed_runtime_manager_process",
             "managed_smbd_parent_process",
             "managed_smbd_bound_445",
             "managed_mdns_takeover_ready",
+            "managed_mdns_settle_healthy",
         ])
         text = format_deployment_plan(plan)
         self.assertIn("mode: activate_now", text)
         self.assertIn("Reboot:\n  no", text)
         self.assertIn("follow-up: run /mnt/Flash/rc.local without rebooting", text)
         self.assertIn("managed runtime smb.conf is present", text)
+
+    def test_reboot_then_activate_no_wait_plan_skips_post_reboot_activation_and_checks(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan(
+            "root@10.0.0.2",
+            paths,
+            Path("bin/smbd"),
+            Path("bin/mdns"),
+            Path("bin/nbns"),
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            wait_after_reboot=False,
+        )
+
+        self.assertTrue(plan.reboot_required)
+        self.assertFalse(plan.wait_after_reboot)
+        self.assertEqual(plan.activation_actions, [])
+        self.assertEqual(plan.post_deploy_checks, [])
+        text = format_deployment_plan(plan)
+        self.assertNotIn("Remote actions (runtime activation):", text)
+        self.assertIn("action: request reboot and return without post-reboot activation or verification", text)
+        self.assertIn("follow-up: return immediately after reboot request", text)
+        self.assertIn("Post-deploy checks:\n  none", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])

@@ -18,21 +18,24 @@ DEPLOY_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
 UNINSTALL_REBOOT_STRATEGY = "acp_then_ssh"
 
 
-def _append_reboot_request(lines: list[str], reboot_required: bool, *, strategy: str) -> None:
+def _append_reboot_request(lines: list[str], reboot_required: bool, *, strategy: str, wait_after_reboot: bool = True) -> None:
     if not reboot_required:
         return
     lines.append("  request: attempt device reboot")
     lines.append(f"  strategy: {strategy}")
-    lines.append("  follow-up: wait for SSH down, then SSH up")
+    if wait_after_reboot:
+        lines.append("  follow-up: wait for SSH down, then SSH up")
+    else:
+        lines.append("  follow-up: return immediately after reboot request")
 
 
-def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, strategy: str) -> None:
+def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, strategy: str, wait_after_reboot: bool = True) -> None:
     if not reboot_required:
         return
     data["reboot_request"] = {
         "mode": "device_reboot",
         "strategy": strategy,
-        "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
+        "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"] if wait_after_reboot else ["return_after_reboot_request"],
     }
 
 
@@ -40,8 +43,12 @@ def _startup_description(plan: DeploymentPlan) -> str:
     if plan.startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
         return "stop old managers and wcifsfs, run /mnt/Flash/rc.local now, then verify managed runtime"
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        if not plan.wait_after_reboot:
+            return "request reboot and return without post-reboot activation or verification"
         return "reboot, wait for SSH, run /mnt/Flash/rc.local unless startup is already in progress, then verify managed runtime"
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
+        if not plan.wait_after_reboot:
+            return "request reboot and return without post-reboot verification"
         return "reboot, wait for SSH, then verify managed runtime"
     return plan.startup_mode
 
@@ -83,7 +90,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
-    _append_reboot_request(lines, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY)
+    _append_reboot_request(lines, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
             lines.append("  follow-up: run /mnt/Flash/rc.local after SSH returns")
@@ -107,7 +114,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
-    _add_reboot_request_json(data, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY)
+    _add_reboot_request_json(data, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
     return data
 
 
@@ -162,7 +169,7 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
-    _append_reboot_request(lines, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY)
+    _append_reboot_request(lines, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
     lines.append("")
     lines.append("Post-uninstall checks:")
     if plan.post_uninstall_checks:
@@ -176,5 +183,5 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
 def uninstall_plan_to_jsonable(plan: UninstallPlan) -> dict[str, object]:
     data = asdict(plan)
     data["remote_actions"] = remote_actions_to_jsonable(plan.remote_actions)
-    _add_reboot_request_json(data, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY)
+    _add_reboot_request_json(data, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)
     return data

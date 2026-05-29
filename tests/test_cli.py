@@ -4452,11 +4452,17 @@ class CliTests(unittest.TestCase):
             [
                 "ssh_goes_down_after_reboot",
                 "ssh_returns_after_reboot",
+                "managed_runtime_smbd_binary_present",
                 "managed_runtime_smb_conf_present",
+                "active_smb_conf_passdb_ram",
+                "active_smb_conf_username_map_ram",
+                "active_smb_conf_xattr_tdb_persistent",
+                "managed_share_volumes_mounted",
+                "managed_runtime_manager_process",
                 "managed_smbd_parent_process",
                 "managed_smbd_bound_445",
                 "managed_mdns_takeover_ready",
-                "authenticated_smb_listing",
+                "managed_mdns_settle_healthy",
             ],
         )
 
@@ -4834,10 +4840,17 @@ class CliTests(unittest.TestCase):
             [
                 "ssh_goes_down_after_reboot",
                 "ssh_returns_after_reboot",
+                "managed_runtime_smbd_binary_present",
                 "managed_runtime_smb_conf_present",
+                "active_smb_conf_passdb_ram",
+                "active_smb_conf_username_map_ram",
+                "active_smb_conf_xattr_tdb_persistent",
+                "managed_share_volumes_mounted",
+                "managed_runtime_manager_process",
                 "managed_smbd_parent_process",
                 "managed_smbd_bound_445",
                 "managed_mdns_takeover_ready",
+                "managed_mdns_settle_healthy",
             ],
         )
 
@@ -7387,6 +7400,26 @@ class CliTests(unittest.TestCase):
         self.assertIn("Post-uninstall checks:\n  none", text)
         self.assertNotIn("SSH returns after reboot", text)
 
+    def test_uninstall_dry_run_no_wait_matches_no_wait_execution_path(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            with redirect_stdout(output):
+                rc = uninstall.main(["--dry-run", "--no-wait"])
+
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Reboot:\n  yes", text)
+        self.assertIn("follow-up: return immediately after reboot request", text)
+        self.assertIn("Post-uninstall checks:\n  none", text)
+        self.assertNotIn("wait for SSH down, then SSH up", text)
+
     def test_uninstall_validates_only_host_and_ignores_legacy_payload_dir(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -7452,6 +7485,26 @@ class CliTests(unittest.TestCase):
                 "managed_files_absent",
             ],
         )
+
+    def test_uninstall_no_wait_json_outputs_request_only_plan(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            with redirect_stdout(output):
+                rc = uninstall.main(["--dry-run", "--json", "--no-wait"])
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["reboot_required"])
+        self.assertFalse(payload["wait_after_reboot"])
+        self.assertEqual(payload["reboot_request"]["follow_up"], ["return_after_reboot_request"])
+        self.assertEqual(payload["post_uninstall_checks"], [])
 
     def test_uninstall_yes_reboots_and_verifies(self) -> None:
         output = io.StringIO()

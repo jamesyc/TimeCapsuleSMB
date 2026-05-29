@@ -81,6 +81,7 @@ class DeploymentPlan:
     startup_mode: DeploymentStartupMode
     activation_actions: list[RemoteAction]
     reboot_required: bool
+    wait_after_reboot: bool
     post_deploy_checks: list[PlannedCheck]
     apple_mount_wait_seconds: int
 
@@ -100,25 +101,29 @@ class UninstallPlan:
     verify_absent_targets: list[str]
     remote_actions: list[RemoteAction]
     reboot_required: bool
+    wait_after_reboot: bool
     post_uninstall_checks: list[PlannedCheck]
 
 
 RUNTIME_ACTIVATION_CHECKS = [
+    PlannedCheck("managed_runtime_smbd_binary_present", "managed runtime smbd binary is present"),
     PlannedCheck("managed_runtime_smb_conf_present", "managed runtime smb.conf is present"),
+    PlannedCheck("active_smb_conf_passdb_ram", "active smb.conf passdb backend uses RAM smbpasswd"),
+    PlannedCheck("active_smb_conf_username_map_ram", "active smb.conf username map uses RAM username.map"),
+    PlannedCheck("active_smb_conf_xattr_tdb_persistent", "active smb.conf xattr_tdb:file is persistent disk storage"),
+    PlannedCheck("managed_share_volumes_mounted", "all managed share volumes are mounted"),
+    PlannedCheck("managed_runtime_manager_process", "manager is running for managed runtime"),
     PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
     PlannedCheck("managed_smbd_bound_445", "smbd is bound to required TCP 445 sockets"),
     PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
+    PlannedCheck("managed_mdns_settle_healthy", "mdns-advertiser remains healthy after settle delay"),
 ]
 NETBSD4_ACTIVATION_CHECKS = RUNTIME_ACTIVATION_CHECKS
 
 NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),
     PlannedCheck("ssh_returns_after_reboot", "SSH returns after reboot"),
-    PlannedCheck("managed_runtime_smb_conf_present", "managed runtime smb.conf is present"),
-    PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
-    PlannedCheck("managed_smbd_bound_445", "smbd is bound to required TCP 445 sockets"),
-    PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
-    PlannedCheck("authenticated_smb_listing", "authenticated SMB listing"),
+    *RUNTIME_ACTIVATION_CHECKS,
 ]
 
 REBOOT_THEN_ACTIVATION_CHECKS = [
@@ -161,15 +166,17 @@ def _deploy_reboot_required(startup_mode: DeploymentStartupMode) -> bool:
     return startup_mode in {DEPLOY_STARTUP_REBOOT_THEN_VERIFY, DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE}
 
 
-def _deploy_activation_actions(startup_mode: DeploymentStartupMode) -> list[RemoteAction]:
+def _deploy_activation_actions(startup_mode: DeploymentStartupMode, *, wait_after_reboot: bool) -> list[RemoteAction]:
     if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
         return build_runtime_activation_actions()
-    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE and wait_after_reboot:
         return build_runtime_start_actions()
     return []
 
 
-def _deploy_post_checks(startup_mode: DeploymentStartupMode) -> list[PlannedCheck]:
+def _deploy_post_checks(startup_mode: DeploymentStartupMode, *, wait_after_reboot: bool) -> list[PlannedCheck]:
+    if startup_mode in {DEPLOY_STARTUP_REBOOT_THEN_VERIFY, DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE} and not wait_after_reboot:
+        return []
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
         return NETBSD6_REBOOT_DEPLOY_CHECKS
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
@@ -188,6 +195,7 @@ def build_deployment_plan(
     *,
     startup_mode: DeploymentStartupMode = DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    wait_after_reboot: bool = True,
 ) -> DeploymentPlan:
     payload_dir = payload_home.payload_dir
     ensure_payload_volume = ensure_volume_mounted_action(
@@ -212,6 +220,7 @@ def build_deployment_plan(
     private_dir = f"{payload_dir}/private"
     cache_dir = f"{payload_dir}/cache"
     reboot_required = _deploy_reboot_required(startup_mode)
+    wait_after_reboot = wait_after_reboot if reboot_required else False
     remote_directories = [
         payload_dir,
         private_dir,
@@ -296,9 +305,10 @@ def build_deployment_plan(
         ],
         post_upload_actions=[ensure_payload_volume, install_permissions_action(permissions)],
         startup_mode=startup_mode,
-        activation_actions=_deploy_activation_actions(startup_mode),
+        activation_actions=_deploy_activation_actions(startup_mode, wait_after_reboot=wait_after_reboot),
         reboot_required=reboot_required,
-        post_deploy_checks=_deploy_post_checks(startup_mode),
+        wait_after_reboot=wait_after_reboot,
+        post_deploy_checks=_deploy_post_checks(startup_mode, wait_after_reboot=wait_after_reboot),
         apple_mount_wait_seconds=apple_mount_wait_seconds,
     )
 
@@ -320,9 +330,11 @@ def build_uninstall_plan(
     payload_dirs: list[str],
     *,
     reboot_after_uninstall: bool = True,
+    wait_after_reboot: bool = True,
 ) -> UninstallPlan:
     volume_roots = _dedupe_ordered(volume_roots)
     payload_dirs = _dedupe_ordered(payload_dirs)
+    wait_after_reboot = wait_after_reboot if reboot_after_uninstall else False
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
         "common.sh": "/mnt/Flash/common.sh",
@@ -376,5 +388,6 @@ def build_uninstall_plan(
             RemovePathAction("/root/tc-netbsd4be"),
         ],
         reboot_required=reboot_after_uninstall,
-        post_uninstall_checks=UNINSTALL_REBOOT_CHECKS if reboot_after_uninstall else [],
+        wait_after_reboot=wait_after_reboot,
+        post_uninstall_checks=UNINSTALL_REBOOT_CHECKS if wait_after_reboot else [],
     )

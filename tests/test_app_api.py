@@ -1593,6 +1593,61 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["payload_family"], "netbsd6_samba4")
         self.assertEqual(result["payload"]["schema_version"], 1)
 
+    def test_deploy_dry_run_no_wait_returns_request_only_plan(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+        }
+
+        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
+                            with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions", side_effect=AssertionError("dry run should not run remote actions")):
+                                rc = service.run_api_request(
+                                    {"operation": "deploy", "params": {"dry_run": True, "no_wait": True}},
+                                    collector.sink,
+                                )
+
+        self.assertEqual(rc, 0)
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertTrue(payload["reboot_required"])
+        self.assertFalse(payload["wait_after_reboot"])
+        self.assertEqual(payload["reboot_request"]["follow_up"], ["return_after_reboot_request"])
+        self.assertEqual(payload["post_deploy_checks"], [])
+
+    def test_deploy_netbsd4_dry_run_no_wait_does_not_plan_activation(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
+            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
+            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+        }
+
+        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
+                            rc = service.run_api_request(
+                                {"operation": "deploy", "params": {"dry_run": True, "no_wait": True}},
+                                collector.sink,
+                            )
+
+        self.assertEqual(rc, 0)
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["startup_mode"], "reboot_then_activate")
+        self.assertFalse(payload["wait_after_reboot"])
+        self.assertEqual(payload["activation_actions"], [])
+        self.assertEqual(payload["post_deploy_checks"], [])
+
     def test_deploy_requires_reboot_confirmation_before_remote_actions(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -2408,6 +2463,27 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("remote_actions", result["payload"])
         self.assertEqual(result["payload"]["requires_reboot"], True)
         self.assertEqual(result["payload"]["schema_version"], 1)
+        uninstall.assert_not_called()
+
+    def test_uninstall_dry_run_no_wait_returns_request_only_plan(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+
+        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
+                    rc = service.run_api_request(
+                        {"operation": "uninstall", "params": {"dry_run": True, "no_wait": True}},
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 0)
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertTrue(payload["reboot_required"])
+        self.assertFalse(payload["wait_after_reboot"])
+        self.assertEqual(payload["reboot_request"]["follow_up"], ["return_after_reboot_request"])
+        self.assertEqual(payload["post_uninstall_checks"], [])
         uninstall.assert_not_called()
 
     def test_uninstall_no_wait_uses_mount_wait_and_skips_post_reboot_verification(self) -> None:

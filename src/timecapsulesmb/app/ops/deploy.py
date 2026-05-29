@@ -333,6 +333,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             resolved_artifacts["nbns-advertiser"].absolute_path,
             startup_mode=startup_mode,
             apple_mount_wait_seconds=mount_wait,
+            wait_after_reboot=not no_wait,
         )
         device_name = airport_family_display_name_from_identity(
             model=target.probe_state.probe_result.airport_model if target.probe_state else None,
@@ -426,6 +427,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         resolved_artifacts["nbns-advertiser"].absolute_path,
         startup_mode=startup_mode,
         apple_mount_wait_seconds=mount_wait,
+        wait_after_reboot=not no_wait,
     )
     context.add_debug_fields(
         payload_volume_root=plan.volume_root,

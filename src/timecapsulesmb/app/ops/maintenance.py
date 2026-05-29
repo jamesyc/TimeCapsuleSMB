@@ -211,7 +211,13 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
         volume_roots = [volume.volume_root for volume in mounted_volumes]
         payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
     context.stage("build_uninstall_plan")
-    plan = build_uninstall_plan(connection.host, volume_roots, payload_dirs, reboot_after_uninstall=not no_reboot)
+    plan = build_uninstall_plan(
+        connection.host,
+        volume_roots,
+        payload_dirs,
+        reboot_after_uninstall=not no_reboot,
+        wait_after_reboot=not no_wait,
+    )
     if dry_run:
         return OperationResult(True, uninstall_plan_payload(uninstall_plan_to_jsonable(plan)))
     context.stage("uninstall_payload")
