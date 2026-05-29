@@ -19,6 +19,7 @@ final class AppSettingsStoreTests: XCTestCase {
         let settingsURL = temp.url.appendingPathComponent("settings.json")
         let saved = AppSettings(
             language: .simplifiedChinese,
+            appearance: .dark,
             defaultBonjourTimeoutSeconds: 12.5,
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: false,
@@ -56,6 +57,7 @@ final class AppSettingsStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .loaded)
         XCTAssertEqual(store.settings.language, .system)
+        XCTAssertEqual(store.settings.appearance, .system)
         XCTAssertFalse(store.settings.telemetryEnabled)
     }
 
@@ -94,6 +96,10 @@ final class AppSettingsStoreTests: XCTestCase {
         draft = AppSettingsDraft(settings: .default)
         draft.language = .simplifiedChinese
         XCTAssertEqual(try draft.validatedSettings().language, .simplifiedChinese)
+
+        draft = AppSettingsDraft(settings: .default)
+        draft.appearance = .dark
+        XCTAssertEqual(try draft.validatedSettings().appearance, .dark)
     }
 
     func testLocalizationLanguageOverrideUsesSelectedBundleAndEnglishFallback() {
@@ -182,6 +188,7 @@ final class AppSettingsStoreTests: XCTestCase {
     func testFocusedSimplifiedChineseKeysDoNotFallBackToEnglishUiCopy() {
         let expectedChinese = [
             "button.discover": "发现",
+            "app_appearance.dark": "深色",
             "checkup.presentation.row.fail": "失败",
             "backend.summary.doctor_checks_passed": "诊断检查通过。",
             "backend.summary.fsck_plan_generated": "已生成 fsck dry-run 计划。",

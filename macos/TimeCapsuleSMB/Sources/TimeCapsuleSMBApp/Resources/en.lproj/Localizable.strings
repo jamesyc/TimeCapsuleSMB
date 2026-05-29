@@ -61,6 +61,7 @@
 "app_readiness.recovery.update_required" = "Download the latest version from %@.";
 "app_readiness.recovery.version_metadata_unavailable" = "Check your network connection or try again later.";
 "app_settings.blank_uses_device_default" = "Blank";
+"app_settings.appearance" = "Appearance";
 "app_settings.check_now" = "Check Now";
 "app_settings.check_updates_on_launch" = "Check for updates on launch";
 "app_settings.default_bonjour_timeout" = "Discovery timeout seconds";
@@ -87,6 +88,9 @@
 "app_settings.time_machine_warnings" = "Show macOS Time Machine compatibility warnings";
 "app_settings.title" = "Settings";
 "app_settings.version_url" = "Version metadata URL";
+"app_appearance.dark" = "Dark";
+"app_appearance.light" = "Light";
+"app_appearance.system" = "System";
 "app_language.english" = "English";
 "app_language.simplified_chinese" = "简体中文";
 "app_language.system" = "System Default";

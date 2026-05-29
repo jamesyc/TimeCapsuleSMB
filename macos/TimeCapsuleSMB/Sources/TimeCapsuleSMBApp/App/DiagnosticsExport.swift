@@ -38,6 +38,7 @@ struct DiagnosticsExportBuilder {
         }
 
         appendSection("Settings", to: &lines) { lines in
+            append("Appearance", value: context.appSettings.appearance.rawValue, to: &lines)
             append("Telemetry Enabled", value: context.appSettings.telemetryEnabled, to: &lines)
             append("Raw Events Default", value: context.appSettings.showRawBackendEventsByDefault, to: &lines)
             append("Check Updates On Launch", value: context.appSettings.checkForUpdatesOnLaunch, to: &lines)

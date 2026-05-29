@@ -55,8 +55,41 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
     }
 }
 
+enum AppAppearance: String, CaseIterable, Codable, Identifiable, Equatable {
+    case system
+    case light
+    case dark
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .system:
+            return L10n.string("app_appearance.system")
+        case .light:
+            return L10n.string("app_appearance.light")
+        case .dark:
+            return L10n.string("app_appearance.dark")
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = AppAppearance(rawValue: rawValue) ?? .system
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
 struct AppSettings: Codable, Equatable {
     var language: AppLanguage
+    var appearance: AppAppearance
     var defaultBonjourTimeoutSeconds: Double
     var defaultDeviceSettings: DeviceProfileSettings
     var telemetryEnabled: Bool
@@ -68,6 +101,7 @@ struct AppSettings: Codable, Equatable {
 
     static let `default` = AppSettings(
         language: .system,
+        appearance: .system,
         defaultBonjourTimeoutSeconds: 6,
         defaultDeviceSettings: .default,
         telemetryEnabled: true,
@@ -80,6 +114,7 @@ struct AppSettings: Codable, Equatable {
 
     init(
         language: AppLanguage = .system,
+        appearance: AppAppearance = .system,
         defaultBonjourTimeoutSeconds: Double,
         defaultDeviceSettings: DeviceProfileSettings,
         telemetryEnabled: Bool,
@@ -90,6 +125,7 @@ struct AppSettings: Codable, Equatable {
         timeMachineWarningsEnabled: Bool
     ) {
         self.language = language
+        self.appearance = appearance
         self.defaultBonjourTimeoutSeconds = defaultBonjourTimeoutSeconds
         self.defaultDeviceSettings = defaultDeviceSettings
         self.telemetryEnabled = telemetryEnabled
@@ -102,6 +138,7 @@ struct AppSettings: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case language
+        case appearance
         case defaultBonjourTimeoutSeconds
         case defaultDeviceSettings
         case telemetryEnabled
@@ -116,6 +153,7 @@ struct AppSettings: Codable, Equatable {
         let defaults = Self.default
         let container = try decoder.container(keyedBy: CodingKeys.self)
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? defaults.language
+        appearance = try container.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? defaults.appearance
         defaultBonjourTimeoutSeconds = Self.decodeNonNegativeDouble(
             from: container,
             forKey: .defaultBonjourTimeoutSeconds,
@@ -301,6 +339,7 @@ private actor AppSettingsRepository {
 
 struct AppSettingsDraft: Equatable {
     var language: AppLanguage
+    var appearance: AppAppearance
     var defaultBonjourTimeoutSeconds: String
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
@@ -318,6 +357,7 @@ struct AppSettingsDraft: Equatable {
 
     init(settings: AppSettings) {
         language = settings.language
+        appearance = settings.appearance
         defaultBonjourTimeoutSeconds = Self.formatDouble(settings.defaultBonjourTimeoutSeconds)
         nbnsEnabled = settings.defaultDeviceSettings.nbnsEnabled
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
@@ -361,6 +401,7 @@ struct AppSettingsDraft: Equatable {
 
         return AppSettings(
             language: language,
+            appearance: appearance,
             defaultBonjourTimeoutSeconds: bonjourTimeout,
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: nbnsEnabled,

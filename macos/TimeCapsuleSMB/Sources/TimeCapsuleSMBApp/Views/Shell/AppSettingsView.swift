@@ -21,7 +21,17 @@ struct AppSettingsView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 220)
+                        .frame(width: 220, alignment: .leading)
+                    }
+                    SettingsFormRow(title: L10n.string("app_settings.appearance")) {
+                        Picker("", selection: $editor.draft.appearance) {
+                            ForEach(AppAppearance.allCases) { appearance in
+                                Text(appearance.title)
+                                    .tag(appearance)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 220, alignment: .leading)
                     }
                 }
 

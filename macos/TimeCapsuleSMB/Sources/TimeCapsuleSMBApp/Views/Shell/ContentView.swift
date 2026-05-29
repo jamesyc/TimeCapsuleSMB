@@ -9,6 +9,7 @@ public struct ContentView: View {
     @State private var diagnosticsShowBackendEvents = true
     @State private var profilePendingDeletion: DeviceProfile?
     @State private var deleteErrorMessage: String?
+    @State private var systemColorScheme = SystemAppearance.currentColorScheme
 
     @MainActor
     public init() {
@@ -82,9 +83,11 @@ public struct ContentView: View {
             }
         }
         .frame(minWidth: 1080, minHeight: 720)
+        .preferredColorScheme(appStore.appSettingsStore.settings.appearance.preferredColorScheme(systemColorScheme: systemColorScheme))
         .background(WindowCloseGuardInstaller())
         .onAppear {
             configureCloseGuard()
+            systemColorScheme = SystemAppearance.currentColorScheme
         }
         .task {
             await appStore.start()
@@ -96,8 +99,12 @@ public struct ContentView: View {
             appStore.select(profile)
         }
         .onChange(of: appStore.appSettingsStore.settings) { _, settings in
+            systemColorScheme = SystemAppearance.currentColorScheme
             addDeviceStore.applyAppSettings(settings)
             appSettingsEditorStore.sync(settings: settings)
+        }
+        .onReceive(DistributedNotificationCenter.default().publisher(for: SystemAppearance.didChangeNotification)) { _ in
+            systemColorScheme = SystemAppearance.currentColorScheme
         }
         .onChange(of: diagnosticsPresented) { _, isPresented in
             guard isPresented else { return }
@@ -385,5 +392,26 @@ public struct ContentView: View {
                 }
             )
         }
+    }
+}
+
+private extension AppAppearance {
+    func preferredColorScheme(systemColorScheme: ColorScheme) -> ColorScheme? {
+        switch self {
+        case .system:
+            return systemColorScheme
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
+}
+
+private enum SystemAppearance {
+    static let didChangeNotification = Notification.Name("AppleInterfaceThemeChangedNotification")
+
+    static var currentColorScheme: ColorScheme {
+        UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" ? .dark : .light
     }
 }

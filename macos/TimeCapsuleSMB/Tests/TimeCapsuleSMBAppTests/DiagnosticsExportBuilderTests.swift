@@ -8,6 +8,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("TimeCapsuleSMB Diagnostics"))
         XCTAssertTrue(text.contains("Generated: 2026-05-26T12:00:00Z"))
         XCTAssertTrue(text.contains("- Version: 2.1.4"))
+        XCTAssertTrue(text.contains("- Appearance: system"))
         XCTAssertTrue(text.contains("- State: Ready"))
         XCTAssertTrue(text.contains("- Helper Version: 2.1.4 (20125)"))
         XCTAssertTrue(text.contains("- Validation Counts: checks=1, fail=0, pass=1"))

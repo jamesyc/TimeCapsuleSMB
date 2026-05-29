@@ -61,6 +61,7 @@
 "app_readiness.recovery.update_required" = "从 %@ 下载最新版本。";
 "app_readiness.recovery.version_metadata_unavailable" = "请检查网络连接，或稍后重试。";
 "app_settings.blank_uses_device_default" = "留空";
+"app_settings.appearance" = "外观";
 "app_settings.check_now" = "立即检查";
 "app_settings.check_updates_on_launch" = "启动时检查更新";
 "app_settings.default_bonjour_timeout" = "Discovery timeout 秒数";
@@ -87,6 +88,9 @@
 "app_settings.time_machine_warnings" = "显示 macOS Time Machine 兼容性警告";
 "app_settings.title" = "设置";
 "app_settings.version_url" = "Version metadata URL";
+"app_appearance.dark" = "深色";
+"app_appearance.light" = "浅色";
+"app_appearance.system" = "跟随系统";
 "app_language.english" = "English";
 "app_language.simplified_chinese" = "简体中文";
 "app_language.system" = "系统默认";
