@@ -263,6 +263,13 @@ final class FlashWorkflowStore: ObservableObject {
         eligibility.message
     }
 
+    var manualPowerCycleRequiredAfterWrite: Bool {
+        guard let writeResult else {
+            return false
+        }
+        return Self.requiresManualPowerCycleAfterWrite(writeResult)
+    }
+
     func refresh(profile: DeviceProfile) {
         eligibility = FlashEligibilityPolicy.eligibility(for: profile, buildPolicy: buildPolicy)
         if backup == nil, plan == nil, writeResult == nil, operationObserver.activeOperation == nil {
@@ -455,7 +462,9 @@ final class FlashWorkflowStore: ObservableObject {
                 writeResult = result
                 if Self.writeMayHaveModifiedFirmware(result) {
                     markSnapshotStaleAfterWrite()
-                    manualPowerCycleNotice = FlashManualPowerCycleNotice(mode: result.mode)
+                    if Self.requiresManualPowerCycleAfterWrite(result) {
+                        manualPowerCycleNotice = FlashManualPowerCycleNotice(mode: result.mode)
+                    }
                 } else {
                     state = .writeValidated
                 }
@@ -490,6 +499,20 @@ final class FlashWorkflowStore: ObservableObject {
     private static func writeMayHaveModifiedFirmware(_ result: FlashWritePayload) -> Bool {
         result.writeMayHaveModifiedDevice
             || (result.writeValidated && (result.mode == .patch || result.mode == .restore))
+    }
+
+    private static func requiresManualPowerCycleAfterWrite(_ result: FlashWritePayload) -> Bool {
+        guard writeMayHaveModifiedFirmware(result) else {
+            return false
+        }
+        switch result.mode {
+        case .patch:
+            return true
+        case .restore:
+            return !result.rebootRequested
+        case .checkApple, .downloadOnly:
+            return false
+        }
     }
 
     private static func stateAfterPlan(_ plan: FlashPlanPayload) -> FlashWorkflowState {
@@ -558,6 +581,9 @@ final class FlashWorkflowStore: ObservableObject {
         return currentStage?.stage == "write_primary_bank"
             || currentStage?.stage == "write_active_bank"
             || currentStage?.stage == "post_write_validation"
+            || currentStage?.stage == "reboot"
+            || currentStage?.stage == "wait_for_reboot_down"
+            || currentStage?.stage == "wait_for_reboot_up"
     }
 
     private func applyFalseResult(_ event: BackendEvent) {
@@ -585,6 +611,8 @@ final class FlashWorkflowStore: ObservableObject {
             return .readbackValidating
         case "write_primary_bank", "write_active_bank":
             return .writing
+        case "reboot", "wait_for_reboot_down", "wait_for_reboot_up":
+            return .restoreRebooting
         default:
             return state
         }

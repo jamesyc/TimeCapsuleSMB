@@ -909,6 +909,10 @@ struct FlashWritePayload: Decodable, Equatable {
     let writeOutcome: JSONValue?
     let writeResult: JSONValue?
     let writeMayHaveModifiedDevice: Bool
+    let postWriteAction: String
+    let rebootRequested: Bool
+    let rebooted: Bool
+    let waitedAfterReboot: Bool
     let summary: String
 
     enum CodingKeys: String, CodingKey {
@@ -919,6 +923,10 @@ struct FlashWritePayload: Decodable, Equatable {
         case writeValidated = "write_validated"
         case writeOutcome = "write_outcome"
         case writeResult = "write_result"
+        case postWriteAction = "post_write_action"
+        case rebootRequested = "reboot_requested"
+        case rebooted
+        case waitedAfterReboot = "waited_after_reboot"
         case summary
     }
 
@@ -932,17 +940,40 @@ struct FlashWritePayload: Decodable, Equatable {
         self.writeOutcome = try container.decodeIfPresent(JSONValue.self, forKey: .writeOutcome)
         self.writeResult = try container.decodeIfPresent(JSONValue.self, forKey: .writeResult)
         self.writeMayHaveModifiedDevice = Self.decodeWriteMayHaveModifiedDevice(from: writeOutcome)
+        self.postWriteAction = try container.decodeIfPresent(String.self, forKey: .postWriteAction)
+            ?? Self.stringValue(from: writeOutcome, key: "post_write_action")
+            ?? ""
+        self.rebootRequested = try container.decodeIfPresent(Bool.self, forKey: .rebootRequested)
+            ?? Self.boolValue(from: writeOutcome, key: "reboot_requested")
+            ?? false
+        self.rebooted = try container.decodeIfPresent(Bool.self, forKey: .rebooted)
+            ?? Self.boolValue(from: writeOutcome, key: "rebooted")
+            ?? false
+        self.waitedAfterReboot = try container.decodeIfPresent(Bool.self, forKey: .waitedAfterReboot)
+            ?? Self.boolValue(from: writeOutcome, key: "waited_after_reboot")
+            ?? false
         self.summary = try container.decode(String.self, forKey: .summary)
     }
 
     private static func decodeWriteMayHaveModifiedDevice(from value: JSONValue?) -> Bool {
+        boolValue(from: value, key: "write_may_have_modified_device") ?? false
+    }
+
+    private static func stringValue(from value: JSONValue?, key: String) -> String? {
+        guard let value, case .object(let values) = value, case .string(let string)? = values[key] else {
+            return nil
+        }
+        return string
+    }
+
+    private static func boolValue(from value: JSONValue?, key: String) -> Bool? {
         guard let value, case .object(let values) = value else {
-            return false
+            return nil
         }
-        guard case .bool(let mayHaveModified)? = values["write_may_have_modified_device"] else {
-            return false
+        guard case .bool(let boolValue)? = values[key] else {
+            return nil
         }
-        return mayHaveModified
+        return boolValue
     }
 }
 

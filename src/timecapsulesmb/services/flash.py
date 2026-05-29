@@ -587,6 +587,27 @@ def record_write_outcome(
     save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
 
 
+def record_post_write_action(
+    *,
+    bundle: FlashAnalysisBundle,
+    post_write_action: str,
+    reboot_requested: bool,
+    rebooted: bool,
+    waited_after_reboot: bool,
+) -> None:
+    outcome = bundle.manifest.get("write_outcome")
+    if not isinstance(outcome, dict):
+        outcome = {}
+        bundle.manifest["write_outcome"] = outcome
+    outcome.update({
+        "post_write_action": post_write_action,
+        "reboot_requested": reboot_requested,
+        "rebooted": rebooted,
+        "waited_after_reboot": waited_after_reboot,
+    })
+    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
+
+
 def validate_live_target_matches_backup(
     *,
     connection: SshConnection,

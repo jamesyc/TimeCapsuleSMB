@@ -227,6 +227,32 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(confirmation.actionTitle, "Deploy and Start SMB")
     }
 
+    func testPendingConfirmationUsesRestoreWriteRebootCopy() throws {
+        let event = BackendEvent(
+            type: "error",
+            operation: "flash",
+            code: "confirmation_required",
+            message: "Backend fallback.",
+            details: .object([
+                "title": .string("Backend title"),
+                "message": .string("Backend message."),
+                "action_title": .string("Backend action"),
+                "confirmation_id": .string("abc123"),
+                "presentation_id": .string("flash.restore_write"),
+                "presentation_values": .object(["host": .string("10.0.0.2")])
+            ])
+        )
+
+        let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+
+        XCTAssertEqual(confirmation.title, "Restore Apple Firmware?")
+        XCTAssertEqual(
+            confirmation.message,
+            "Restore Apple stock firmware to the active firmware bank on 10.0.0.2 and reboot after validation?"
+        )
+        XCTAssertEqual(confirmation.actionTitle, "Write Firmware")
+    }
+
     func testPendingConfirmationUsesLocalizedNoWaitDeployCopy() throws {
         let event = BackendEvent(
             type: "error",

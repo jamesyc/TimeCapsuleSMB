@@ -173,7 +173,7 @@ struct FlashPresentation: Equatable {
         if store.backupSnapshotStale {
             warnings.append(L10n.string("flash.warning.snapshot_stale"))
         }
-        if store.state == .manualPowerCycleRequired || store.state == .writeValidatedSnapshotStale {
+        if store.manualPowerCycleRequiredAfterWrite {
             warnings.append(L10n.string("flash.warning.manual_power_cycle"))
         }
         return warnings

@@ -259,14 +259,21 @@ enum OperationParams {
         force: Bool = false,
         firmwareVersion: String = "",
         firmwareTemplate: String = "",
+        rebootAfterWrite: Bool? = nil,
+        waitAfterReboot: Bool = true,
         password: String
     ) -> [String: JSONValue] {
+        let shouldReboot = rebootAfterWrite ?? (mode == .restore)
         var params: [String: JSONValue] = [
             "action": .string("write"),
             "backup_dir": .string(backupDir),
             "mode": .string(mode.rawValue),
-            "force": .bool(force)
+            "force": .bool(force),
+            "reboot_after_write": .bool(shouldReboot)
         ]
+        if shouldReboot {
+            params["wait_after_reboot"] = .bool(waitAfterReboot)
+        }
         let trimmedVersion = firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedVersion.isEmpty {
             params["firmware_version"] = .string(trimmedVersion)

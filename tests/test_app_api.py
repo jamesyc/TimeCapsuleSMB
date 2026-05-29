@@ -507,64 +507,147 @@ class AppApiTests(unittest.TestCase):
                 })
 
     def test_flash_write_requires_confirmation_then_validates_and_writes(self) -> None:
-        manifest = {
-            "backup_dir": "/tmp/flash-backup",
-            "write_outcome": {
-                "status": "validated",
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            manifest = {
+                "backup_dir": str(backup_dir),
+                "write_outcome": {
+                    "status": "validated",
+                    "mode": "patch",
+                    "write_validated": True,
+                },
+            }
+            target_bank = SimpleNamespace(name="primary", sha256="bank-sha")
+            plan = SimpleNamespace(already_satisfied=False, target_bank=target_bank)
+            bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
+            target = SimpleNamespace(acp_host="10.0.0.2", connection=object())
+
+            def run(params: dict[str, object]) -> CollectingSink:
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
+                    with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
+                        with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
+                            with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup") as validate_mock:
+                                with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
+                                    with mock.patch("timecapsulesmb.app.ops.flash.request_reboot") as reboot_mock:
+                                        rc = service.run_api_request(
+                                            {"operation": "flash", "params": params},
+                                            collector.sink,
+                                        )
+                                        collector.rc = rc  # type: ignore[attr-defined]
+                                        collector.validate_mock = validate_mock  # type: ignore[attr-defined]
+                                        collector.write_mock = write_mock  # type: ignore[attr-defined]
+                                        collector.reboot_mock = reboot_mock  # type: ignore[attr-defined]
+                return collector
+
+            first = run({"action": "write", "backup_dir": str(backup_dir), "mode": "patch"})
+
+            self.assertEqual(first.rc, 1)  # type: ignore[attr-defined]
+            details = self.assert_confirmation(first, "flash.patch_write", {"host": "10.0.0.2", "mode": "patch"})
+            first.validate_mock.assert_not_called()  # type: ignore[attr-defined]
+            first.write_mock.assert_not_called()  # type: ignore[attr-defined]
+
+            second = run({
+                "action": "write",
+                "backup_dir": str(backup_dir),
                 "mode": "patch",
-                "write_validated": True,
-            },
-        }
-        target_bank = SimpleNamespace(name="primary", sha256="bank-sha")
-        plan = SimpleNamespace(already_satisfied=False, target_bank=target_bank)
-        bundle = SimpleNamespace(manifest=manifest, backup_dir=Path("/tmp/flash-backup"))
-        target = SimpleNamespace(acp_host="10.0.0.2", connection=object())
-
-        def run(params: dict[str, object]) -> CollectingSink:
-            collector = CollectingSink()
-            with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
-                with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
-                    with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
-                        with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup") as validate_mock:
-                            with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
-                                rc = service.run_api_request({"operation": "flash", "params": params}, collector.sink)
-                                collector.rc = rc  # type: ignore[attr-defined]
-                                collector.validate_mock = validate_mock  # type: ignore[attr-defined]
-                                collector.write_mock = write_mock  # type: ignore[attr-defined]
-            return collector
-
-        first = run({"action": "write", "backup_dir": "/tmp/flash-backup", "mode": "patch"})
-
-        self.assertEqual(first.rc, 1)  # type: ignore[attr-defined]
-        details = self.assert_confirmation(first, "flash.patch_write", {"host": "10.0.0.2", "mode": "patch"})
-        first.validate_mock.assert_not_called()  # type: ignore[attr-defined]
-        first.write_mock.assert_not_called()  # type: ignore[attr-defined]
-
-        second = run({
-            "action": "write",
-            "backup_dir": "/tmp/flash-backup",
-            "mode": "patch",
-            "confirmation_id": details["confirmation_id"],
-        })
+                "confirmation_id": details["confirmation_id"],
+            })
 
         self.assertEqual(second.rc, 0)  # type: ignore[attr-defined]
         second.validate_mock.assert_called_once()  # type: ignore[attr-defined]
         second.write_mock.assert_called_once()  # type: ignore[attr-defined]
+        second.reboot_mock.assert_not_called()  # type: ignore[attr-defined]
         payload = self.assert_single_terminal_event(second, "result")["payload"]
         self.assertEqual(payload["write_status"], "validated")
         self.assertTrue(payload["write_validated"])
+        self.assertEqual(payload["post_write_action"], "manual_power_cycle")
+        self.assertFalse(payload["reboot_requested"])
 
-    def test_flash_write_payload_restore_summary_mentions_manual_power_cycle(self) -> None:
+    def test_flash_write_payload_restore_summary_mentions_manual_reboot_without_reboot_request(self) -> None:
         payload = contracts.flash_write_payload({
             "backup_dir": "/tmp/flash-backup",
             "write_outcome": {
                 "status": "validated",
                 "mode": "restore",
                 "write_validated": True,
+                "post_write_action": "manual_reboot",
             },
         })
 
-        self.assertEqual(payload["summary"], "flash restore write validated; manual power cycle required.")
+        self.assertEqual(payload["summary"], "flash restore write validated; manual reboot required.")
+
+    def test_flash_restore_write_defaults_to_reboot_and_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            manifest = {
+                "backup_dir": str(backup_dir),
+                "write_outcome": {
+                    "status": "validated",
+                    "mode": "restore",
+                    "write_validated": True,
+                    "write_may_have_modified_device": True,
+                },
+            }
+            target_bank = SimpleNamespace(name="primary", sha256="bank-sha")
+            plan = SimpleNamespace(already_satisfied=False, target_bank=target_bank)
+            bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
+            connection = object()
+            target = SimpleNamespace(acp_host="10.0.0.2", connection=connection)
+            collector = CollectingSink()
+
+            with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
+                with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
+                    with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
+                        with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"):
+                            with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan"):
+                                with mock.patch("timecapsulesmb.app.ops.flash.request_reboot_and_wait") as reboot_wait:
+                                    rc = service.run_api_request(
+                                        {
+                                            "operation": "flash",
+                                            "params": {
+                                                "action": "write",
+                                                "backup_dir": str(backup_dir),
+                                                "mode": "restore",
+                                                "confirm_flash": True,
+                                            },
+                                        },
+                                        collector.sink,
+                                    )
+
+        self.assertEqual(rc, 0)
+        reboot_wait.assert_called_once()
+        self.assertIs(reboot_wait.call_args.args[1], connection)
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertEqual(payload["post_write_action"], "ssh_reboot")
+        self.assertTrue(payload["reboot_requested"])
+        self.assertTrue(payload["rebooted"])
+        self.assertTrue(payload["waited_after_reboot"])
+        self.assertEqual(payload["summary"], "Flash restore write validated; device rebooted.")
+
+    def test_flash_patch_write_rejects_reboot_request(self) -> None:
+        collector = CollectingSink()
+
+        with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup") as plan_flash:
+            rc = service.run_api_request(
+                {
+                    "operation": "flash",
+                    "params": {
+                        "action": "write",
+                        "backup_dir": "/tmp/flash-backup",
+                        "mode": "patch",
+                        "reboot_after_write": True,
+                        "confirm_flash": True,
+                    },
+                },
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 1)
+        plan_flash.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertIn("flash patch cannot request reboot", error["message"])
 
     def test_set_telemetry_operation_updates_bootstrap_preference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

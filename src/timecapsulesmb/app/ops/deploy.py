@@ -663,6 +663,7 @@ def request_reboot_and_wait(
     *,
     strategy: str,
     reboot_no_down_message: str,
+    reboot_up_timeout_message: str = DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
     down_timeout_seconds: int = 60,
     up_timeout_seconds: int = 240,
 ) -> None:
@@ -675,7 +676,7 @@ def request_reboot_and_wait(
     context.stage("wait_for_reboot_up")
     context.log("Waiting for the device to come back up...")
     if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
-        raise AppOperationError(DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE, code="remote_error")
+        raise AppOperationError(reboot_up_timeout_message, code="remote_error")
     context.update_fields(device_came_back_after_reboot=True)
     context.log("Device is back online.")
 

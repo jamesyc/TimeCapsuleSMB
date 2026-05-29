@@ -404,16 +404,31 @@ def flash_write_payload(raw: Mapping[str, object]) -> dict[str, object]:
     status = "unknown"
     mode = "unknown"
     write_validated = False
+    post_write_action = ""
+    reboot_requested = False
+    rebooted = False
+    waited_after_reboot = False
     if isinstance(outcome, dict):
         status = str(outcome.get("status") or status)
         mode = str(outcome.get("mode") or mode)
         write_validated = bool(outcome.get("write_validated"))
+        post_write_action = str(outcome.get("post_write_action") or "")
+        reboot_requested = bool(outcome.get("reboot_requested"))
+        rebooted = bool(outcome.get("rebooted"))
+        waited_after_reboot = bool(outcome.get("waited_after_reboot"))
     if status == "not_needed":
         summary = "flash write was not needed."
     elif write_validated and mode == "patch":
         summary = "flash patch write validated; manual power cycle required."
+    elif write_validated and mode == "restore":
+        if post_write_action == "ssh_reboot" and rebooted:
+            summary = "Flash restore write validated; device rebooted."
+        elif post_write_action == "ssh_reboot" and reboot_requested:
+            summary = "flash restore write validated; reboot requested."
+        else:
+            summary = "flash restore write validated; manual reboot required."
     elif write_validated:
-        summary = f"flash {mode} write validated; manual power cycle required."
+        summary = f"flash {mode} write validated."
     else:
         summary = "flash write completed."
     return _with_schema({
@@ -421,6 +436,10 @@ def flash_write_payload(raw: Mapping[str, object]) -> dict[str, object]:
         "mode": mode,
         "write_status": status,
         "write_validated": write_validated,
+        "post_write_action": post_write_action,
+        "reboot_requested": reboot_requested,
+        "rebooted": rebooted,
+        "waited_after_reboot": waited_after_reboot,
         "summary": summary,
     })
 

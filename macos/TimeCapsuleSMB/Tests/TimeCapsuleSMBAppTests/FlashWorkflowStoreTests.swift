@@ -81,6 +81,24 @@ final class FlashWorkflowStoreTests: XCTestCase {
         }
     }
 
+    func testFlashWriteParamsDefaultRestoreToRebootAndPatchToManualPowerCycle() {
+        let restore = OperationParams.flashWrite(
+            backupDir: "/tmp/flash-backup",
+            mode: .restore,
+            password: "pw"
+        )
+        let patch = OperationParams.flashWrite(
+            backupDir: "/tmp/flash-backup",
+            mode: .patch,
+            password: "pw"
+        )
+
+        XCTAssertEqual(restore["reboot_after_write"], .bool(true))
+        XCTAssertEqual(restore["wait_after_reboot"], .bool(true))
+        XCTAssertEqual(patch["reboot_after_write"], .bool(false))
+        XCTAssertNil(patch["wait_after_reboot"])
+    }
+
     func testBackupAndPlanFlowTracksStructuredPayloads() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -315,8 +333,28 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertNil(store.manualPowerCycleNotice)
     }
 
-    func testValidatedRestoreWriteShowsManualPowerCycleNotice() async throws {
+    func testValidatedRestoreWriteWithDefaultRebootDoesNotShowManualPowerCycleNotice() async throws {
         let store = try await storeAfterValidatedWrite(mode: .restore)
+
+        XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
+        XCTAssertNil(store.manualPowerCycleNotice)
+        XCTAssertFalse(FlashPresentation(store: store).warnings.contains(
+            "Unplug the Time Capsule, wait 10 seconds, then plug it back in."
+        ))
+    }
+
+    func testValidatedRestoreWriteWithoutRebootShowsManualPowerCycleNotice() async throws {
+        let store = try await storeAfterValidatedWrite(
+            mode: .restore,
+            writePayload: flashWritePayload(
+                mode: .restore,
+                postWriteAction: "manual_reboot",
+                rebootRequested: false,
+                rebooted: false,
+                waitedAfterReboot: false,
+                summary: "flash restore write validated; manual reboot required."
+            )
+        )
 
         XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
         XCTAssertEqual(store.manualPowerCycleNotice?.mode, .restore)
@@ -377,7 +415,10 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(presentation.message, "flash patch write validated; manual power cycle required.")
     }
 
-    private func storeAfterValidatedWrite(mode: FlashPlanMode) async throws -> FlashWorkflowStore {
+    private func storeAfterValidatedWrite(
+        mode: FlashPlanMode,
+        writePayload: JSONValue? = nil
+    ) async throws -> FlashWorkflowStore {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
@@ -386,7 +427,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "flash", ok: true, payload: flashPlanPayload(mode: mode, writeRequested: true))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashWritePayload(mode: mode))
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: writePayload ?? flashWritePayload(mode: mode))
             ])
         ])
         let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
@@ -398,7 +439,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         store.planFlash(mode: mode, profile: profile)
         try await waitUntilStoreState { store.plan != nil }
         store.write(mode: mode, password: "pw", profile: profile)
-        try await waitUntilStoreState { store.manualPowerCycleNotice != nil }
+        try await waitUntilStoreState { store.writeResult != nil }
         return store
     }
 
@@ -501,20 +542,45 @@ final class FlashWorkflowStoreTests: XCTestCase {
         }
     }
 
-    private func flashWritePayload(mode: FlashPlanMode) -> JSONValue {
-        .object([
+    private func flashWritePayload(
+        mode: FlashPlanMode,
+        postWriteAction: String? = nil,
+        rebootRequested: Bool? = nil,
+        rebooted: Bool? = nil,
+        waitedAfterReboot: Bool? = nil,
+        summary: String? = nil
+    ) -> JSONValue {
+        let resolvedPostWriteAction = postWriteAction ?? (mode == .restore ? "ssh_reboot" : "manual_power_cycle")
+        let resolvedRebootRequested = rebootRequested ?? (mode == .restore)
+        let resolvedRebooted = rebooted ?? (mode == .restore)
+        let resolvedWaitedAfterReboot = waitedAfterReboot ?? (mode == .restore)
+        let resolvedSummary = summary ?? {
+            if mode == .restore {
+                return "Flash restore write validated; device rebooted."
+            }
+            return "flash \(mode.rawValue) write validated; manual power cycle required."
+        }()
+        return .object([
             "schema_version": .number(1),
             "backup_dir": .string("/tmp/flash-backup"),
             "mode": .string(mode.rawValue),
             "write_status": .string("validated"),
             "write_validated": .bool(true),
+            "post_write_action": .string(resolvedPostWriteAction),
+            "reboot_requested": .bool(resolvedRebootRequested),
+            "rebooted": .bool(resolvedRebooted),
+            "waited_after_reboot": .bool(resolvedWaitedAfterReboot),
             "write_outcome": .object([
                 "status": .string("validated"),
                 "mode": .string(mode.rawValue),
                 "write_validated": .bool(true),
-                "write_may_have_modified_device": .bool(true)
+                "write_may_have_modified_device": .bool(true),
+                "post_write_action": .string(resolvedPostWriteAction),
+                "reboot_requested": .bool(resolvedRebootRequested),
+                "rebooted": .bool(resolvedRebooted),
+                "waited_after_reboot": .bool(resolvedWaitedAfterReboot)
             ]),
-            "summary": .string("flash \(mode.rawValue) write validated; manual power cycle required.")
+            "summary": .string(resolvedSummary)
         ])
     }
 
