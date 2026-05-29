@@ -9,6 +9,7 @@ from timecapsulesmb.app.ops import OPERATIONS, TELEMETRY_OPERATIONS
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
 from timecapsulesmb.app.requests import parse_api_request
 from timecapsulesmb.app.recovery import recovery_for
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
@@ -118,8 +119,47 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             error=context.diagnostic_error(str(exc)) or str(exc),
         )
         return 1
-    except (SystemExit, KeyboardInterrupt):
-        raise
+    except KeyboardInterrupt:
+        message = "Operation cancelled."
+        sink.error(
+            operation,
+            message,
+            code="cancelled",
+            recovery=recovery_for(operation, "cancelled", stage=context.current_stage),
+        )
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="cancelled",
+            error=context.diagnostic_error("Cancelled by user") or "Cancelled by user",
+        )
+        return 130
+    except SystemExit as exc:
+        message = system_exit_message(exc)
+        result = "success" if message in {"0", "None", ""} else "failure"
+        if result == "success":
+            context.emit_result(ok=True, payload={"summary": "operation exited."})
+            _finish_api_telemetry(
+                telemetry_session,
+                context,
+                result="success",
+                details={"summary": "operation exited."},
+            )
+            return 0
+        error = message or "operation exited before completion"
+        sink.error(
+            operation,
+            error,
+            code="operation_failed",
+            recovery=recovery_for(operation, "operation_failed", stage=context.current_stage),
+        )
+        _finish_api_telemetry(
+            telemetry_session,
+            context,
+            result="failure",
+            error=context.diagnostic_error(error) or error,
+        )
+        return 1
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         sink.error(

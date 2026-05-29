@@ -83,7 +83,7 @@
 "app_settings.section.updates" = "更新";
 "app_settings.show_raw_events" = "在 Diagnostics 中显示 raw Backend events";
 "app_settings.subtitle" = "新设备默认值和 App 级别行为。";
-"app_settings.telemetry_enabled" = "分享匿名 CLI telemetry";
+"app_settings.telemetry_enabled" = "分享匿名 telemetry";
 "app_settings.time_machine_warnings" = "显示 macOS Time Machine 兼容性警告";
 "app_settings.title" = "设置";
 "app_settings.version_url" = "Version metadata URL";

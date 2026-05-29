@@ -118,25 +118,31 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         } onCancel: {
             try? input.fileHandleForWriting.close()
             Task {
-                await Self.terminate(process)
+                await Self.cancelForTelemetry(process)
             }
         }
 
         if case .failure(let error) = writeResult {
             try? input.fileHandleForWriting.close()
-            await Self.terminate(process)
+            if Task.isCancelled || error is CancellationError {
+                await Self.cancelForTelemetry(process)
+            } else {
+                await Self.terminate(process)
+            }
             await stdoutTask.value
             let stderr = await stderrTask.value
             if Task.isCancelled || error is CancellationError {
-                await eventSink(BackendEvent.error(
-                    operation: operation,
-                    code: "cancelled",
-                    message: L10n.string("helper.error.cancelled"),
-                    requestId: requestID,
-                    debug: stderr.isEmpty ? nil : .object(["stderr": .string(stderr)])
-                ))
                 let sawTerminalEvent = await terminalTracker.sawTerminalEvent
-                return HelperRunResult(exitCode: 130, sawTerminalEvent: sawTerminalEvent, stderr: stderr)
+                if !sawTerminalEvent {
+                    await eventSink(BackendEvent.error(
+                        operation: operation,
+                        code: "cancelled",
+                        message: L10n.string("helper.error.cancelled"),
+                        requestId: requestID,
+                        debug: stderr.isEmpty ? nil : .object(["stderr": .string(stderr)])
+                    ))
+                }
+                return HelperRunResult(exitCode: 130, sawTerminalEvent: await terminalTracker.sawTerminalEvent, stderr: stderr)
             }
             await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription, requestId: requestID))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
@@ -146,7 +152,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             await Self.waitForExit(process)
         } onCancel: {
             Task {
-                await Self.terminate(process)
+                await Self.cancelForTelemetry(process)
             }
         }
         let cancelled = Task.isCancelled
@@ -154,7 +160,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         await stdoutTask.value
         let stderrText = await stderrTask.value
         let sawTerminalEvent = await terminalTracker.sawTerminalEvent
-        if cancelled {
+        if cancelled && !sawTerminalEvent {
             await eventSink(BackendEvent.error(
                 operation: operation,
                 code: "cancelled",
@@ -245,6 +251,20 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
         }
+    }
+
+    private static func cancelForTelemetry(_ process: Process) async {
+        guard process.isRunning else {
+            return
+        }
+        kill(process.processIdentifier, SIGINT)
+        for _ in 0..<20 {
+            if !process.isRunning {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        await terminate(process)
     }
 }
 

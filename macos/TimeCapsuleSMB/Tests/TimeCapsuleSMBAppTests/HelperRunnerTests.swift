@@ -175,6 +175,49 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(events.last?.message, L10n.string("helper.error.cancelled"))
     }
 
+    func testRunnerLetsHelperEmitTerminalEventBeforeCancelledFallback() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            exec python3 -c '
+            import json, signal, time
+            def handler(signum, frame):
+                print(json.dumps({"schema_version": 1, "request_id": "req", "type": "error", "operation": "doctor", "code": "cancelled", "message": "cancelled by helper"}), flush=True)
+                raise SystemExit(130)
+            signal.signal(signal.SIGINT, handler)
+            print(json.dumps({"schema_version": 1, "request_id": "req", "type": "stage", "operation": "doctor", "stage": "ready"}), flush=True)
+            while True:
+                time.sleep(1)
+            '
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let task = Task {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
+                await recorder.append($0)
+            }
+        }
+        for _ in 0..<200 {
+            if await recorder.events.contains(where: { $0.type == "stage" && $0.stage == "ready" }) {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let sawReady = await recorder.events.contains(where: { $0.type == "stage" && $0.stage == "ready" })
+        XCTAssertTrue(sawReady)
+        task.cancel()
+        let result = await task.value
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 130)
+        XCTAssertEqual(events.compactMap(\.code), ["cancelled"])
+        XCTAssertEqual(events.last?.message, "cancelled by helper")
+    }
+
     func testRunnerCancelsBlockedRequestWrite() async throws {
         let temp = try TemporaryDirectory()
         let helper = try makeHelper(

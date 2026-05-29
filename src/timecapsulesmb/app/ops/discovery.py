@@ -54,5 +54,17 @@ def snapshot_payload(snapshot: BonjourDiscoverySnapshot) -> dict[str, object]:
 def discover_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     timeout = float_param(params, "timeout", DEFAULT_BROWSE_TIMEOUT_SEC)
     context.stage("bonjour_discovery")
-    snapshot, _diagnostics = discover_snapshot_merged_detailed(timeout=timeout)
-    return OperationResult(True, discover_payload(snapshot_payload(snapshot)))
+    snapshot, diagnostics = discover_snapshot_merged_detailed(timeout=timeout)
+    payload = discover_payload(snapshot_payload(snapshot))
+    counts = payload.get("counts")
+    devices = payload.get("devices")
+    context.update_fields(
+        discovery_timeout_sec=timeout,
+        discovery_instance_count=len(snapshot.instances),
+        discovery_resolved_count=len(snapshot.resolved),
+        discovery_device_count=len(devices) if isinstance(devices, list) else None,
+    )
+    if isinstance(counts, dict):
+        context.update_fields(discovery_counts=counts)
+    context.add_debug_fields(discovery_diagnostics=diagnostics)
+    return OperationResult(True, payload)

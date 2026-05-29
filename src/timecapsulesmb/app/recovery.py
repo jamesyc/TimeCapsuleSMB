@@ -74,6 +74,12 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Review the plan.", "Confirm the operation in the app before retrying."),
         retryable=True,
     ),
+    "cancelled": RecoveryInfo(
+        "Operation cancelled",
+        "The helper was interrupted before the operation completed.",
+        ("Retry the operation when ready.",),
+        retryable=True,
+    ),
     "remote_error": RecoveryInfo(
         "Remote operation failed",
         "The helper could not complete the requested remote device operation.",

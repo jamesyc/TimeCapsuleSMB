@@ -145,7 +145,7 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.operation.uninstall")
         case "capabilities", "validate-install":
             return L10n.string("timeline.operation.readiness")
-        case "set-telemetry", "telemetry-identity":
+        case "set-telemetry":
             return L10n.string("timeline.operation.telemetry")
         case "version-check":
             return L10n.string("timeline.operation.version_check")

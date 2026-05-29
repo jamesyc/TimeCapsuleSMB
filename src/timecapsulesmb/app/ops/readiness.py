@@ -7,7 +7,7 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import (
     capabilities_payload,
     install_validation_payload,
-    telemetry_identity_payload,
+    telemetry_preference_payload,
     version_check_payload,
 )
 from timecapsulesmb.cli.version_check import VERSION_CHECK_URL, check_client_version
@@ -18,7 +18,7 @@ from timecapsulesmb.install_validation import (
     install_ok,
     validate_install,
 )
-from timecapsulesmb.identity import load_install_identity, set_telemetry_enabled
+from timecapsulesmb.identity import set_telemetry_enabled
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -60,17 +60,6 @@ def validate_install_operation(params: dict[str, object], context: AppOperationC
     return OperationResult(ok, install_validation_payload(ok=ok, checks=install_checks_to_jsonable(checks)))
 
 
-def telemetry_identity_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    context.stage("resolve_paths")
-    app_paths = resolve_app_paths(config_path=config_path(params))
-    context.stage("read_bootstrap")
-    identity = load_install_identity(app_paths.bootstrap_path)
-    return OperationResult(
-        True,
-        telemetry_identity_payload(identity=identity, bootstrap_path=str(app_paths.bootstrap_path)),
-    )
-
-
 def set_telemetry_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     if "enabled" not in params:
         raise AppOperationError("missing required parameter: enabled", code="validation_failed")
@@ -81,7 +70,11 @@ def set_telemetry_operation(params: dict[str, object], context: AppOperationCont
     identity = set_telemetry_enabled(enabled, app_paths.bootstrap_path)
     return OperationResult(
         True,
-        telemetry_identity_payload(identity=identity, bootstrap_path=str(app_paths.bootstrap_path)),
+        telemetry_preference_payload(
+            install_id=identity.install_id,
+            telemetry_enabled=identity.telemetry_enabled,
+            bootstrap_path=str(app_paths.bootstrap_path),
+        ),
     )
 
 

@@ -306,7 +306,6 @@ final class ActivityStore: ObservableObject {
             "capabilities",
             "discover",
             "set-telemetry",
-            "telemetry-identity",
             "validate-install",
             "version-check"
         ].contains(operation)

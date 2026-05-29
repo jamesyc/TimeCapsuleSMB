@@ -83,7 +83,7 @@
 "app_settings.section.updates" = "Updates";
 "app_settings.show_raw_events" = "Show raw backend events in Diagnostics";
 "app_settings.subtitle" = "Defaults for new devices and app-level behavior.";
-"app_settings.telemetry_enabled" = "Share anonymous CLI telemetry";
+"app_settings.telemetry_enabled" = "Share anonymous telemetry";
 "app_settings.time_machine_warnings" = "Show macOS Time Machine compatibility warnings";
 "app_settings.title" = "Settings";
 "app_settings.version_url" = "Version metadata URL";

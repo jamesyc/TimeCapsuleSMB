@@ -5,7 +5,6 @@ from typing import Mapping
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.version_check import VersionCheckResult
-from timecapsulesmb.identity import InstallIdentity
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
 from timecapsulesmb.services.reachability import ReachabilityResult
@@ -80,12 +79,12 @@ def install_validation_payload(*, ok: bool, checks: list[object]) -> dict[str, o
     })
 
 
-def telemetry_identity_payload(*, identity: InstallIdentity, bootstrap_path: str) -> dict[str, object]:
+def telemetry_preference_payload(*, install_id: str, telemetry_enabled: bool, bootstrap_path: str) -> dict[str, object]:
     return _with_schema({
-        "install_id": identity.install_id,
-        "telemetry_enabled": identity.telemetry_enabled,
+        "install_id": install_id,
+        "telemetry_enabled": telemetry_enabled,
         "bootstrap_path": bootstrap_path,
-        "summary": "telemetry is enabled." if identity.telemetry_enabled else "telemetry is disabled.",
+        "summary": "telemetry is enabled." if telemetry_enabled else "telemetry is disabled.",
     })
 
 

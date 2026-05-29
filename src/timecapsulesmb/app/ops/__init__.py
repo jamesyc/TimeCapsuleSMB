@@ -19,7 +19,6 @@ from timecapsulesmb.app.ops.reachability import reachability_operation
 from timecapsulesmb.app.ops.readiness import (
     capabilities_operation,
     set_telemetry_operation,
-    telemetry_identity_operation,
     validate_install_operation,
     version_check_operation,
 )
@@ -42,14 +41,13 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("capabilities", capabilities_operation),
     OperationSpec("configure", configure_operation, telemetry=True),
     OperationSpec("deploy", deploy_operation, telemetry=True),
-    OperationSpec("discover", discover_operation),
+    OperationSpec("discover", discover_operation, telemetry=True),
     OperationSpec("doctor", doctor_operation, telemetry=True),
     OperationSpec("flash", flash_operation, telemetry=True),
     OperationSpec("fsck", fsck_operation, telemetry=True),
     OperationSpec("reachability", reachability_operation),
     OperationSpec("repair-xattrs", repair_xattrs_operation, telemetry=True),
     OperationSpec("set-telemetry", set_telemetry_operation),
-    OperationSpec("telemetry-identity", telemetry_identity_operation),
     OperationSpec("uninstall", uninstall_operation, telemetry=True),
     OperationSpec("validate-install", validate_install_operation),
     OperationSpec("version-check", version_check_operation),

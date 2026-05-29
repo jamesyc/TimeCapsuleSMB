@@ -47,8 +47,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("reachability", "check_smb_port"): StagePolicy(REMOTE_READ, True, "Check selected device SMB port reachability."),
     ("set-telemetry", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve local app state paths."),
     ("set-telemetry", "write_bootstrap"): StagePolicy(LOCAL_WRITE, False, "Update local telemetry preference."),
-    ("telemetry-identity", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve local app state paths."),
-    ("telemetry-identity", "read_bootstrap"): StagePolicy(LOCAL_READ, True, "Read local telemetry preference."),
     ("validate-install", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve app installation paths."),
     ("validate-install", "validate_install"): StagePolicy(LOCAL_READ, True, "Validate local helper and artifact prerequisites."),
     ("version-check", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve version check cache path."),

@@ -318,6 +318,7 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("version-check", payload["operations"])
         self.assertIn("flash", payload["operations"])
         self.assertIn("reachability", payload["operations"])
+        self.assertNotIn("telemetry-identity", payload["operations"])
         self.assertNotIn("paths", payload["operations"])
         self.assertIn("helper_version", payload)
         self.assertIn("artifact_manifest_sha256", payload)
@@ -669,20 +670,14 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(payload["bootstrap_path"], str(bootstrap_path))
             self.assertIn("TELEMETRY=false", bootstrap_path.read_text())
 
-    def test_telemetry_identity_operation_reads_current_bootstrap_preference(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            bootstrap_path = Path(tmp) / ".bootstrap"
-            bootstrap_path.write_text("INSTALL_ID=install-one\nTELEMETRY=false\n")
-            app_paths = SimpleNamespace(bootstrap_path=bootstrap_path)
-            collector = CollectingSink()
+    def test_telemetry_identity_operation_is_not_exposed(self) -> None:
+        collector = CollectingSink()
 
-            with mock.patch("timecapsulesmb.app.ops.readiness.resolve_app_paths", return_value=app_paths):
-                rc = service.run_api_request({"operation": "telemetry-identity", "params": {}}, collector.sink)
+        rc = service.run_api_request({"operation": "telemetry-identity", "params": {}}, collector.sink)
 
-            self.assertEqual(rc, 0)
-            payload = self.assert_single_terminal_event(collector, "result")["payload"]
-            self.assertEqual(payload["install_id"], "install-one")
-            self.assertFalse(payload["telemetry_enabled"])
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unknown_operation")
 
     def test_version_check_operation_returns_structured_update_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -871,6 +866,67 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(finished.kwargs["details"]["waited"])
         self.assertTrue(finished.kwargs["details"]["verified"])
 
+    def test_dispatcher_defaults_api_telemetry_client_when_environment_is_unset(self) -> None:
+        collector = CollectingSink()
+
+        def run_fsck(_params, context):
+            context.stage("run_fsck")
+            return service.OperationResult(True, {"returncode": 0, "summary": "fsck completed."})
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": ""}, clear=False):
+                with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                    with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                        with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                            rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        started = self._telemetry_client.emit.call_args_list[0]
+        self.assertEqual(started.kwargs["entrypoint"], "api")
+        self.assertEqual(started.kwargs["client"], "api")
+
+    def test_dispatcher_emits_cancelled_telemetry_on_keyboard_interrupt(self) -> None:
+        collector = CollectingSink()
+
+        def run_fsck(_params, context):
+            context.stage("run_fsck")
+            raise KeyboardInterrupt
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 130)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "cancelled")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "cancelled")
+        self.assertEqual(finished["stage"], "run_fsck")
+        self.assertIn("Cancelled by user", finished["error"])
+
+    def test_dispatcher_emits_failure_telemetry_on_system_exit(self) -> None:
+        collector = CollectingSink()
+
+        def run_fsck(_params, context):
+            context.stage("run_fsck")
+            raise SystemExit("fsck stopped early")
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "operation_failed")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "run_fsck")
+        self.assertIn("fsck stopped early", finished["error"])
+
     def test_dispatcher_emits_app_operation_finish_fields_in_telemetry(self) -> None:
         collector = CollectingSink()
 
@@ -919,6 +975,64 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["details"]["payload_family"], "netbsd6_samba4")
         self.assertEqual(finished["details"]["rebooted"], True)
         self.assertEqual(finished["details"]["verified"], True)
+
+    def test_dispatcher_emits_flash_operation_details_in_telemetry(self) -> None:
+        collector = CollectingSink()
+
+        def run_flash(_params, context):
+            context.stage("post_write_validation")
+            context.update_fields(
+                flash_action="write",
+                flash_mode="restore",
+                target_bank="primary",
+                reboot_after_write=True,
+                wait_after_reboot=True,
+            )
+            return service.OperationResult(True, contracts.flash_write_payload({
+                "backup_dir": "/tmp/flash-backup",
+                "write_outcome": {
+                    "status": "written",
+                    "mode": "restore",
+                    "target_bank": "primary",
+                    "write_validated": True,
+                    "write_may_have_modified_device": True,
+                    "post_write_action": "ssh_reboot",
+                    "reboot_requested": True,
+                    "rebooted": True,
+                    "waited_after_reboot": True,
+                },
+            }))
+
+        with mock.patch.dict(service.OPERATIONS, {"flash": run_flash}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request(
+                            {
+                                "operation": "flash",
+                                "params": {
+                                    "action": "write",
+                                    "mode": "restore",
+                                    "backup_dir": "/tmp/flash-backup",
+                                    "reboot_after_write": True,
+                                    "wait_after_reboot": True,
+                                },
+                            },
+                            collector.sink,
+                        )
+
+        self.assertEqual(rc, 0)
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["stage"], "post_write_validation")
+        self.assertEqual(finished["details"]["flash_action"], "write")
+        self.assertEqual(finished["details"]["flash_mode"], "restore")
+        self.assertTrue(finished["details"]["backup_dir_provided"])
+        self.assertEqual(finished["details"]["write_status"], "written")
+        self.assertTrue(finished["details"]["write_validated"])
+        self.assertEqual(finished["details"]["target_bank"], "primary")
+        self.assertTrue(finished["details"]["reboot_requested"])
+        self.assertTrue(finished["details"]["waited_after_reboot"])
 
     def test_dispatcher_emits_confirmation_required_telemetry(self) -> None:
         collector = CollectingSink()
@@ -1057,7 +1171,10 @@ class AppApiTests(unittest.TestCase):
             "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
             return_value=(snapshot, SimpleNamespace()),
         ):
-            rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
 
         self.assertEqual(rc, 0)
         result = collector.events_of_type("result")[0]
@@ -1070,6 +1187,20 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["schema_version"], 1)
         self.assertEqual(result["payload"]["counts"], {"instances": 1, "resolved": 1, "devices": 1})
         self.assertEqual(result["payload"]["summary"], "discovered 1 Time Capsule device(s).")
+        self.assertEqual(self._telemetry_client.emit.call_count, 2)
+        started = self._telemetry_client.emit.call_args_list[0].kwargs
+        finished = self._telemetry_client.emit.call_args_list[1].kwargs
+        self.assertEqual(started["operation"], "discover")
+        self.assertEqual(started["entrypoint"], "api")
+        self.assertEqual(started["options"], {"timeout": 0.1})
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["stage"], "bonjour_discovery")
+        self.assertEqual(finished["discovery_instance_count"], 1)
+        self.assertEqual(finished["discovery_resolved_count"], 1)
+        self.assertEqual(finished["discovery_device_count"], 1)
+        self.assertEqual(finished["details"]["instance_count"], 1)
+        self.assertEqual(finished["details"]["resolved_count"], 1)
+        self.assertEqual(finished["details"]["device_count"], 1)
 
     def test_discover_operation_exposes_deduped_devices_separately_from_raw_services(self) -> None:
         collector = CollectingSink()
@@ -1100,7 +1231,10 @@ class AppApiTests(unittest.TestCase):
             "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
             return_value=(snapshot, SimpleNamespace()),
         ):
-            rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
 
         self.assertEqual(rc, 0)
         payload = collector.events_of_type("result")[0]["payload"]
@@ -1114,10 +1248,13 @@ class AppApiTests(unittest.TestCase):
             with self.subTest(timeout=timeout):
                 collector = CollectingSink()
                 with mock.patch("timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed") as discover:
-                    rc = service.run_api_request(
-                        {"operation": "discover", "params": {"timeout": timeout}},
-                        collector.sink,
-                    )
+                    with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                        with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                            with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                                rc = service.run_api_request(
+                                    {"operation": "discover", "params": {"timeout": timeout}},
+                                    collector.sink,
+                                )
 
                 self.assertEqual(rc, 1)
                 error = self.assert_single_terminal_event(collector, "error")
@@ -1133,10 +1270,13 @@ class AppApiTests(unittest.TestCase):
             "timecapsulesmb.app.ops.discovery.discover_snapshot_merged_detailed",
             return_value=(snapshot, SimpleNamespace()),
         ) as discover:
-            rc = service.run_api_request(
-                {"operation": "discover", "params": {"timeout": "0.25"}},
-                collector.sink,
-            )
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        rc = service.run_api_request(
+                            {"operation": "discover", "params": {"timeout": "0.25"}},
+                            collector.sink,
+                        )
 
         self.assertEqual(rc, 0)
         discover.assert_called_once_with(timeout=0.25)
