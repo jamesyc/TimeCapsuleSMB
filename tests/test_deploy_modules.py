@@ -6982,7 +6982,7 @@ fi
         )
 
         text = format_deployment_plan(plan)
-        self.assertIn("Remote actions (runtime activation if firmware autostart is missing):", text)
+        self.assertIn("Remote actions (post-reboot runtime start if firmware autostart is missing):", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("mode: reboot_then_activate", text)
         self.assertIn("probe /etc/rc.d/LOGIN for /mnt/Flash/rc.local", text)

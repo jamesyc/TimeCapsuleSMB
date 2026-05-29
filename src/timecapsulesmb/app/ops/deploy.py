@@ -62,7 +62,12 @@ from timecapsulesmb.device.compat import (
     render_compatibility_message,
     require_compatibility,
 )
-from timecapsulesmb.device.probe import wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import (
+    read_remote_network_diagnostics_conn,
+    read_runtime_log_tails_conn,
+    runtime_startup_failure_debug_fields,
+    wait_for_ssh_state_conn,
+)
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
@@ -651,6 +656,23 @@ def verify_runtime(
     ):
         context.log(line)
     if not managed_runtime_ready(verification):
+        runtime_log_fields: dict[str, object] = {}
+        try:
+            runtime_log_fields = read_runtime_log_tails_conn(connection)
+            context.add_debug_fields(**runtime_log_fields)
+        except Exception as exc:
+            context.add_debug_fields(remote_runtime_log_tail_error=system_exit_message(exc))
+        startup_failure_fields = runtime_startup_failure_debug_fields(
+            runtime_log_fields,
+            verification_detail=verification.detail.strip(),
+        )
+        if startup_failure_fields:
+            context.add_debug_fields(**startup_failure_fields)
+            if startup_failure_fields.get("runtime_startup_failure") == "network_auto_ip_unavailable":
+                try:
+                    context.add_debug_fields(**read_remote_network_diagnostics_conn(connection))
+                except Exception as exc:
+                    context.add_debug_fields(remote_network_diagnostics_error=system_exit_message(exc))
         raise AppOperationError(
             f"{failure_message.rstrip()} {verification.detail.strip()}".strip(),
             code="remote_error",

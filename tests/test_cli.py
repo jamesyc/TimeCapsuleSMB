@@ -4822,8 +4822,8 @@ class CliTests(unittest.TestCase):
                 "kind": "netbsd4_rc_local_autostart",
                 "path": "/etc/rc.d/LOGIN",
                 "marker": "/mnt/Flash/rc.local",
-                "if_present": ["skip_activation_actions", "verify_managed_runtime"],
-                "if_missing": ["run_activation_actions", "verify_managed_runtime"],
+                "if_present": ["skip_post_reboot_start_actions", "verify_managed_runtime"],
+                "if_missing": ["run_post_reboot_start_actions", "verify_managed_runtime"],
             },
         )
         self.assertEqual(

@@ -63,8 +63,8 @@ def _post_reboot_activation_probe_json() -> dict[str, object]:
         "kind": "netbsd4_rc_local_autostart",
         "path": NETBSD4_LOGIN_PATH,
         "marker": NETBSD4_AUTOSTART_MARKER,
-        "if_present": ["skip_activation_actions", "verify_managed_runtime"],
-        "if_missing": ["run_activation_actions", "verify_managed_runtime"],
+        "if_present": ["skip_post_reboot_start_actions", "verify_managed_runtime"],
+        "if_missing": ["run_post_reboot_start_actions", "verify_managed_runtime"],
     }
 
 
@@ -115,7 +115,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("")
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-            lines.append("Remote actions (runtime activation if firmware autostart is missing):")
+            lines.append("Remote actions (post-reboot runtime start if firmware autostart is missing):")
         else:
             lines.append("Remote actions (runtime activation):")
         for command in render_remote_actions(plan.activation_actions):

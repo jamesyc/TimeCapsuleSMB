@@ -2508,6 +2508,61 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_attempted"], True)
         self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_succeeded"], True)
 
+    def test_deploy_verify_runtime_failure_adds_runtime_logs_to_error_context(self) -> None:
+        from timecapsulesmb.app.ops import deploy as deploy_ops
+
+        collector = CollectingSink()
+        context = AppOperationContext("deploy", collector.sink)
+        connection = SshConnection("root@169.254.44.9", "pw", "-o foo")
+        smbd = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns = ManagedMdnsTakeoverProbeResult(
+            False,
+            "managed mDNS takeover probe timed out",
+            ("FAIL:managed mDNS takeover probe timed out",),
+        )
+        verification = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="runtime verification timed out after 180s; managed smbd ready; managed mDNS takeover probe timed out",
+            smbd=smbd,
+            mdns=mdns,
+            lines=smbd.lines + mdns.lines + ("FAIL:runtime verification timed out after 180s",),
+        )
+        with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=verification):
+            with mock.patch(
+                "timecapsulesmb.app.ops.deploy.read_runtime_log_tails_conn",
+                return_value={
+                    "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
+                    "remote_mdns_log_tail": "mdns: before interface probe",
+                },
+            ):
+                with mock.patch(
+                    "timecapsulesmb.app.ops.deploy.read_remote_network_diagnostics_conn",
+                    return_value={
+                        "remote_network_config": {"ssh_target_host": "169.254.44.9"},
+                        "remote_network_target_ip_matches": [],
+                    },
+                ):
+                    with self.assertRaises(AppOperationError) as raised:
+                        deploy_ops.verify_runtime(
+                            context,
+                            connection,
+                            stage="verify_runtime_activation",
+                            timeout_seconds=180,
+                            failure_message="NetBSD4 activation failed.",
+                        )
+
+        self.assertEqual(raised.exception.code, "remote_error")
+        self.assertEqual(
+            context.diagnostics.debug_fields["remote_manager_log_tail"],
+            "manager: mDNS startup deferred; no usable address has appeared yet",
+        )
+        self.assertEqual(context.diagnostics.debug_fields["remote_mdns_log_tail"], "mdns: before interface probe")
+        self.assertEqual(context.diagnostics.debug_fields["runtime_startup_failure"], "network_auto_ip_unavailable")
+        error = context.diagnostic_error(str(raised.exception))
+        self.assertIn("remote_manager_log_tail=manager: mDNS startup deferred; no usable address has appeared yet", error)
+        self.assertIn("remote_mdns_log_tail=mdns: before interface probe", error)
+        self.assertIn("remote_network_target_ip_matches=[]", error)
+
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
         from timecapsulesmb.app.ops import deploy as deploy_ops
 
