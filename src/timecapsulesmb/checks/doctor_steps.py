@@ -58,11 +58,13 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
+    FLASH_RUNTIME_CONFIG,
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
+    flash_runtime_config_present_conn,
     nbns_flash_config_enabled_conn,
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
@@ -836,6 +838,27 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         remote_checks_enabled=ssh_ok,
         active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
     )
+
+
+def _doctor_check_deployed_config(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
+    if not remote.remote_checks_enabled:
+        return StepDecision()
+
+    try:
+        config_present = flash_runtime_config_present_conn(target.connection)
+    except Exception as e:
+        sink.add(CheckResult("FAIL", f"deployed payload config probe failed; reboot the device and rerun doctor: {e}"))
+        return StepDecision(stop=True)
+
+    if sink.debug_fields is not None:
+        sink.debug_fields["deployed_config_present"] = config_present
+
+    if not config_present:
+        sink.add(CheckResult("FAIL", "deployed payload config not found; please run deploy to install on your device"))
+        return StepDecision(stop=True)
+
+    sink.add(CheckResult("PASS", f"deployed payload config {FLASH_RUNTIME_CONFIG} exists"))
+    return StepDecision()
 
 
 def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:

@@ -17,6 +17,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_active_smb_conf,
     _doctor_check_authenticated_smb,
     _doctor_check_bonjour,
+    _doctor_check_deployed_config,
     _doctor_check_deployed_version,
     _doctor_check_device_compatibility,
     _doctor_check_direct_smb_port,
@@ -73,6 +74,8 @@ def run_doctor_checks(
     target = _build_doctor_target(inputs)
     remote = _doctor_check_ssh_login(target, options, sink)
 
+    if _doctor_check_deployed_config(target, remote, sink).stop:
+        return sink.results, sink.fatal()
     if _doctor_check_deployed_version(target, remote, sink).stop:
         return sink.results, sink.fatal()
     if _doctor_check_runtime_ram_root(target, remote, sink).stop:

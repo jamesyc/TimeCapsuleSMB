@@ -1325,6 +1325,17 @@ def nbns_flash_config_enabled_conn(connection: SshConnection) -> bool:
     return proc.stdout.strip() == "enabled"
 
 
+def flash_runtime_config_present_conn(connection: SshConnection) -> bool:
+    script = f"[ -f {shlex.quote(FLASH_RUNTIME_CONFIG)} ]"
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    return proc.returncode == 0
+
+
 def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProbeResult:
     script = (
         f"config={shlex.quote(FLASH_RUNTIME_CONFIG)}; "

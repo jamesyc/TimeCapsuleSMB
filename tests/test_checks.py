@@ -50,6 +50,7 @@ from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
+    FLASH_RUNTIME_CONFIG,
     RemoteInterfaceProbeResult,
     RemoteNetworkCapabilitiesProbeResult,
     RUNTIME_RAM_ROOT,
@@ -179,6 +180,7 @@ class CheckTests(unittest.TestCase):
         debug_fields=None,
         on_result=None,
         runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
+        deployed_config_present: bool = True,
         deployed_version: DeployedVersionProbeResult | None = None,
         runtime_ram_root_present: bool = True,
         extra_patches: dict[str, object] | None = None,
@@ -250,6 +252,12 @@ class CheckTests(unittest.TestCase):
                 mock.patch(
                     "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn",
                     return_value=runtime_naming_identity or self.runtime_identity_from_values(resolved_values),
+                )
+            )
+            mocks.flash_runtime_config_present_conn = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.checks.doctor_steps.flash_runtime_config_present_conn",
+                    return_value=deployed_config_present,
                 )
             )
             mocks.read_deployed_version_conn = stack.enter_context(
@@ -366,6 +374,7 @@ class CheckTests(unittest.TestCase):
                 return_value=DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok"),
             )
         )
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.flash_runtime_config_present_conn", return_value=True))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.runtime_ram_root_present_conn", return_value=True))
         self._exit_stack.enter_context(
             mock.patch(
@@ -441,6 +450,39 @@ class CheckTests(unittest.TestCase):
             )
         )
 
+    def test_run_doctor_checks_passes_when_deployed_config_exists(self) -> None:
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+        )
+
+        self.assertTrue(
+            any(
+                result.status == "PASS" and result.message == f"deployed payload config {FLASH_RUNTIME_CONFIG} exists"
+                for result in run.results
+            )
+        )
+
+    def test_run_doctor_checks_stops_when_deployed_config_is_missing(self) -> None:
+        debug_fields: dict[str, object] = {}
+        managed_smbd = mock.Mock()
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            deployed_config_present=False,
+            debug_fields=debug_fields,
+            extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": managed_smbd},
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(
+            run.results[-1].message,
+            "deployed payload config not found; please run deploy to install on your device",
+        )
+        self.assertEqual(debug_fields["deployed_config_present"], False)
+        run.mocks.read_deployed_version_conn.assert_not_called()
+        managed_smbd.assert_not_called()
+
     def test_run_doctor_checks_passes_when_runtime_ram_root_exists(self) -> None:
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -483,6 +525,8 @@ class CheckTests(unittest.TestCase):
             run.results[-1].message,
             f"deployed payload has no version metadata; current version is {RELEASE_TAG}; please run deploy to update your device",
         )
+        run.mocks.flash_runtime_config_present_conn.assert_called_once()
+        run.mocks.read_deployed_version_conn.assert_called_once()
         managed_smbd.assert_not_called()
 
     def test_run_doctor_checks_tells_user_to_reboot_when_deployed_version_probe_fails(self) -> None:
@@ -1351,6 +1395,8 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
         )
         run.mocks.check_smb_port.assert_called_once()
+        run.mocks.flash_runtime_config_present_conn.assert_not_called()
+        run.mocks.read_deployed_version_conn.assert_not_called()
         self.assertFalse(run.fatal)
         self.assertEqual(run.results[0].status, "PASS")
         self.assertIn("configuration file exists", run.results[0].message)
