@@ -248,7 +248,7 @@ final class DeviceDiscoveryStore: ObservableObject {
             error = BackendErrorViewModel(
                 operation: "discover",
                 code: "operation_failed",
-                message: event.payloadSummaryText ?? event.summary
+                message: event.localizedPayloadSummaryText ?? event.localizedSummary
             )
             operationObserver.finish()
             state = .failed

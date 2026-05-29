@@ -138,15 +138,15 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         message = system_exit_message(exc)
         result = "success" if message in {"0", "None", ""} else "failure"
         if result == "success":
-            context.emit_result(ok=True, payload={"summary": "operation exited."})
+            context.emit_result(ok=True, payload={"summary": "Operation exited."})
             _finish_api_telemetry(
                 telemetry_session,
                 context,
                 result="success",
-                details={"summary": "operation exited."},
+                details={"summary": "Operation exited."},
             )
             return 0
-        error = message or "operation exited before completion"
+        error = message or "Operation exited before completion"
         sink.error(
             operation,
             error,

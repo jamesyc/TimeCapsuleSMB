@@ -73,14 +73,9 @@ private struct DashboardHeaderView: View {
                 StatusBadge(status: presentation.status)
             }
 
-            HStack(spacing: 12) {
-                Label(presentation.lastChecked, systemImage: "clock")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(L10n.string("dashboard.header.last_checked"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Label(presentation.lastChecked, systemImage: "clock")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             SummaryGrid(rows: presentation.rows.map { ($0.label, $0.value) })
         }

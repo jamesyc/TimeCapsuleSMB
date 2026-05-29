@@ -35,7 +35,7 @@ def capabilities_payload(
         "distribution_root": distribution_root,
         "artifact_manifest_sha256": artifact_manifest_sha256,
         "confirmation_schema_version": 1,
-        "summary": "helper capabilities resolved.",
+        "summary": "Helper capabilities resolved.",
     })
 
 
@@ -58,7 +58,7 @@ def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
             "resolved": len(resolved),
             "devices": len(devices),
         },
-        "summary": f"discovered {len(devices)} Time Capsule device(s).",
+        "summary": f"Discovered {len(devices)} device(s).",
     })
 
 
@@ -75,7 +75,7 @@ def install_validation_payload(*, ok: bool, checks: list[object]) -> dict[str, o
             "pass": pass_count,
             "fail": fail_count,
         },
-        "summary": "install validation passed." if ok else "install validation failed.",
+        "summary": "Install validation passed." if ok else "Install validation failed.",
     })
 
 
@@ -84,14 +84,14 @@ def telemetry_preference_payload(*, install_id: str, telemetry_enabled: bool, bo
         "install_id": install_id,
         "telemetry_enabled": telemetry_enabled,
         "bootstrap_path": bootstrap_path,
-        "summary": "telemetry is enabled." if telemetry_enabled else "telemetry is disabled.",
+        "summary": "Telemetry is enabled." if telemetry_enabled else "Telemetry is disabled.",
     })
 
 
 def version_check_payload(result: VersionCheckResult) -> dict[str, object]:
-    summary = "update required." if result.should_block else "TimeCapsuleSMB is up to date."
+    summary = "Update required." if result.should_block else "TimeCapsuleSMB is up to date."
     if result.source == "unavailable":
-        summary = "version metadata is unavailable."
+        summary = "Version metadata is unavailable."
     return _with_schema({
         "should_block": result.should_block,
         "checked_url": result.checked_url,
@@ -146,7 +146,7 @@ def configure_payload(
         "device_model": device_model,
         "compatibility": jsonable(compatibility),
         "device": _device_payload(host=host, syap=device_syap, model=device_model),
-        "summary": "configuration saved and SSH authentication verified.",
+        "summary": "Configuration saved and SSH authentication verified.",
     })
 
 
@@ -157,7 +157,7 @@ def deploy_plan_payload(raw: Mapping[str, object], *, payload_family: str | None
         "requires_reboot": requires_reboot,
         "payload_family": payload_family,
         "netbsd4": netbsd4,
-        "summary": "deployment dry-run plan generated.",
+        "summary": "Deployment dry-run plan generated.",
     })
 
 
@@ -225,7 +225,7 @@ def uninstall_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
         **raw,
         "requires_reboot": requires_reboot,
         "counts": {"payload_dirs": payload_dir_count},
-        "summary": "uninstall dry-run plan generated.",
+        "summary": "Uninstall dry-run plan generated.",
     })
 
 
@@ -240,7 +240,7 @@ def uninstall_result_payload(
         "rebooted": rebooted,
         "verified": verified,
         "requires_reboot": bool(rebooted or reboot_requested),
-        "summary": "uninstall completed." if verified else "uninstall completed without post-reboot verification.",
+        "summary": "Uninstall completed." if verified else "Uninstall completed without post-reboot verification.",
     }
     if reboot_requested is not None:
         payload["reboot_requested"] = reboot_requested
@@ -255,14 +255,14 @@ def fsck_volume_list_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema({
         **raw,
         "counts": {"targets": target_count},
-        "summary": f"found {target_count} mounted HFS volume(s).",
+        "summary": f"Found {target_count} mounted HFS volume(s).",
     })
 
 
 def fsck_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema({
         **raw,
-        "summary": "fsck dry-run plan generated.",
+        "summary": "Dry-run plan generated for fsck.",
     })
 
 
@@ -278,7 +278,7 @@ def fsck_result_payload(
     payload: dict[str, object] = {
         "device": device,
         "mountpoint": mountpoint,
-        "summary": "fsck completed.",
+        "summary": "Disk repair completed with fsck.",
     }
     if returncode is not None:
         payload["returncode"] = returncode
@@ -297,7 +297,7 @@ def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
     legacy_summary = raw.get("summary")
     stats = raw.get("stats", legacy_summary if not isinstance(legacy_summary, str) else None)
     summary = legacy_summary if isinstance(legacy_summary, str) and legacy_summary.strip() else (
-        f"repair-xattrs found {finding_count} issue(s), {repairable_count} repairable."
+        f"Found {finding_count} metadata issue(s), {repairable_count} repairable."
     )
     payload = {
         **raw,
@@ -319,7 +319,7 @@ def flash_backup_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema({
         **raw,
         "counts": {"banks": bank_count},
-        "summary": f"flash backup saved to {raw.get('backup_dir')}.",
+        "summary": f"Flash backup saved to {raw.get('backup_dir')}.",
     })
 
 
@@ -381,11 +381,11 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     if apple_summary is not None:
         summary = apple_summary
     elif already_satisfied:
-        summary = "flash plan is already satisfied; no write is needed."
+        summary = "Flash plan is already satisfied; no write is needed."
     elif write_requested:
-        summary = f"flash {mode} write plan generated."
+        summary = f"Flash {mode} write plan generated."
     else:
-        summary = f"flash {mode} plan generated."
+        summary = f"Flash {mode} plan generated."
     return _with_schema({
         **raw,
         "mode": mode,
@@ -416,20 +416,20 @@ def flash_write_payload(raw: Mapping[str, object]) -> dict[str, object]:
         rebooted = bool(outcome.get("rebooted"))
         waited_after_reboot = bool(outcome.get("waited_after_reboot"))
     if status == "not_needed":
-        summary = "flash write was not needed."
+        summary = "Flash write was not needed."
     elif write_validated and mode == "patch":
-        summary = "flash patch write validated; manual power cycle required."
+        summary = "Flash patch write validated; manual power cycle required."
     elif write_validated and mode == "restore":
         if post_write_action == "ssh_reboot" and rebooted:
             summary = "Flash restore write validated; device rebooted."
         elif post_write_action == "ssh_reboot" and reboot_requested:
-            summary = "flash restore write validated; reboot requested."
+            summary = "Flash restore write validated; reboot requested."
         else:
-            summary = "flash restore write validated; manual reboot required."
+            summary = "Flash restore write validated; manual reboot required."
     elif write_validated:
-        summary = f"flash {mode} write validated."
+        summary = f"Flash {mode} write validated."
     else:
-        summary = "flash write completed."
+        summary = "Flash write completed."
     return _with_schema({
         **raw,
         "mode": mode,
@@ -455,7 +455,7 @@ def doctor_payload(
         "fatal": fatal,
         "results": result_payload,
         "counts": counts,
-        "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
+        "summary": "Doctor found one or more fatal problems." if fatal else "Doctor checks passed.",
     }
     if error:
         payload["error"] = error

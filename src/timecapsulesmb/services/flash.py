@@ -40,7 +40,7 @@ FLASH_WRITE_TIMEOUT_SECONDS = 300
 WRITE_OPERATIONS = {"patch", "restore"}
 READ_OPERATIONS = {"read_only", "patch", "restore", "check_apple", "download_only"}
 POWERCYCLE_REQUIRED_MESSAGE = (
-    "POWER-CYCLE REQUIRED: unplug the Time Capsule, wait 10 seconds, then plug it back in."
+    "POWER-CYCLE REQUIRED: unplug the device, wait 10 seconds, then plug it back in."
 )
 STALE_BACKUP_AFTER_WRITE_MESSAGE = (
     "This flash backup was used for a firmware write. Back up and inspect again before planning another flash action."

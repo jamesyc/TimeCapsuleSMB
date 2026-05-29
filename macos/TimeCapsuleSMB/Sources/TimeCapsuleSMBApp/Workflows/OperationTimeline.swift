@@ -82,7 +82,7 @@ enum OperationTimelineBuilder {
                     id: "\(index):\(event.operation):result",
                     operation: event.operation,
                     title: event.ok == true ? L10n.string("timeline.result.done") : L10n.string("timeline.result.failed"),
-                    detail: event.payloadSummaryText ?? event.summary,
+                    detail: event.localizedPayloadSummaryText ?? event.localizedSummary,
                     state: event.ok == true ? .succeeded : .failed,
                     risk: nil,
                     cancellable: nil
@@ -165,7 +165,7 @@ enum OperationTimelineBuilder {
         }
         switch (operation, stage) {
         case ("discover", "bonjour_discovery"):
-            return L10n.string("timeline.stage.finding_time_capsules")
+            return L10n.string("timeline.stage.finding_devices")
         case ("reachability", "build_candidates"):
             return L10n.string("timeline.stage.reachability_candidates")
         case ("reachability", "check_dns"):

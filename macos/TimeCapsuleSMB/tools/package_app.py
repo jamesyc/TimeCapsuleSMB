@@ -177,7 +177,7 @@ def write_info_plist(contents_dir: Path, *, icon_name: str | None = None) -> Non
         "LSMinimumSystemVersion": "14.0",
         "NSBonjourServices": BONJOUR_SERVICE_TYPES,
         "NSHighResolutionCapable": True,
-        "NSLocalNetworkUsageDescription": "TimeCapsuleSMB discovers and connects to Time Capsule devices on your local network.",
+        "NSLocalNetworkUsageDescription": "TimeCapsuleSMB discovers and connects to Apple AirPort devices on your local network.",
     }
     if icon_name:
         info["CFBundleIconFile"] = icon_name

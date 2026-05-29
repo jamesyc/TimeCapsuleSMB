@@ -223,7 +223,9 @@ struct InstallTimelinePresentation: Equatable {
 
     private static func restoredDeploySuccessDetail(_ snapshot: DeviceDeployStateSnapshot) -> String {
         let trimmed = snapshot.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? L10n.string("timeline.deploy.result.completed") : trimmed
+        return trimmed.isEmpty
+            ? L10n.string("timeline.deploy.result.completed")
+            : BackendSummaryLocalization.localized(trimmed, operation: "deploy")
     }
 }
 
@@ -251,7 +253,7 @@ struct InstallCompletionPresentation: Equatable {
         self.init(
             verified: result.verified,
             rebootRequested: result.rebootRequested,
-            message: result.message ?? result.summary,
+            message: result.localizedMessage,
             netbsd4: result.netbsd4,
             isCheckupRunning: isCheckupRunning
         )

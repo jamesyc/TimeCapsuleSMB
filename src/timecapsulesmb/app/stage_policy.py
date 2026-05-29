@@ -59,7 +59,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("configure", "ssh_probe_after_acp"): StagePolicy(REMOTE_READ, True, "Probe SSH again after ACP enablement."),
     ("configure", "write_env"): StagePolicy(LOCAL_WRITE, False, "Write the app .env configuration."),
     ("deploy", "load_config"): StagePolicy(LOCAL_READ, True, "Read deployment configuration."),
-    ("deploy", "resolve_managed_target"): StagePolicy(REMOTE_READ, True, "Resolve and probe the managed Time Capsule target."),
+    ("deploy", "resolve_managed_target"): StagePolicy(REMOTE_READ, True, "Resolve and probe the device target."),
     ("deploy", "validate_artifacts"): StagePolicy(LOCAL_READ, True, "Validate bundled payload artifacts."),
     ("deploy", "check_compatibility"): StagePolicy(REMOTE_READ, True, "Check detected device compatibility."),
     ("deploy", "read_mast"): StagePolicy(REMOTE_READ, True, "Read mounted HFS volume metadata from MaSt."),

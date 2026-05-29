@@ -69,9 +69,10 @@ struct DeviceDashboardHeaderPresentation: Equatable {
         self.connectionTarget = profile.displayTarget
         self.addressSummary = profile.addressSummary
         self.status = summary.displayStatus
-        self.lastChecked = profile.lastCheckup
+        let lastCheckedValue = profile.lastCheckup
             .map { Self.formattedDate($0.checkedAt) }
             ?? L10n.string("value.never")
+        self.lastChecked = L10n.format("dashboard.header.last_checked_value", lastCheckedValue)
         self.rows = [
             PresentationRow(label: L10n.string("dashboard.overview.connection_target"), value: profile.connectionTarget),
             PresentationRow(label: L10n.string("dashboard.overview.addresses"), value: profile.addressSummary.isEmpty ? L10n.string("value.unknown") : profile.addressSummary),
@@ -161,7 +162,11 @@ struct DeviceDashboardHeaderPresentation: Equatable {
     }
 
     private static func formattedDate(_ date: Date) -> String {
-        DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
+        let formatter = DateFormatter()
+        formatter.locale = L10n.currentLanguage.locale
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 
@@ -394,7 +399,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         return DashboardHealthRow(
             id: "connection-reachability-\(snapshot.payload.status.lowercased())",
             title: DashboardHealthDomain.connection.title,
-            detail: snapshot.payload.summary,
+            detail: snapshot.payload.localizedSummary,
             status: status,
             action: .refreshStatus
         )
@@ -500,6 +505,15 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         summary: DeviceDashboardSummary,
         currentCheckupSummary: DoctorSummary?
     ) -> DashboardHealthRow {
+        if summary.displayStatus == .checking {
+            return DashboardHealthRow(
+                id: "checkup-running",
+                title: DashboardHealthDomain.checkup.title,
+                detail: L10n.string("checkup.presentation.headline.running"),
+                status: .running,
+                action: .viewCheckup
+            )
+        }
         if let signal = serviceCheckupSignal(summary: currentCheckupSummary) {
             let status = dashboardStatus(signal.severity)
             return DashboardHealthRow(

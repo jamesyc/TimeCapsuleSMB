@@ -216,7 +216,7 @@ final class AppReadinessStore: ObservableObject {
 
         if event.type == "error" {
             if event.operation == "version-check" {
-                issues.append(versionMetadataIssue(message: event.message ?? event.summary))
+                issues.append(versionMetadataIssue(message: event.message ?? event.localizedSummary))
                 pendingOperation = PendingReadinessOperation(operation: "capabilities")
                 operationObserver.finish()
                 runPendingOperation()
@@ -248,14 +248,14 @@ final class AppReadinessStore: ObservableObject {
             let payload = try event.decodePayload(VersionCheckPayload.self)
             versionCheckPayload = payload
             guard event.ok == true else {
-                issues.append(versionMetadataIssue(message: payload.summary))
+                issues.append(versionMetadataIssue(message: payload.localizedSummary))
                 pendingOperation = PendingReadinessOperation(operation: "capabilities")
                 operationObserver.finish()
                 runPendingOperation()
                 return
             }
             if payload.source == "unavailable" {
-                issues.append(versionMetadataIssue(message: payload.summary))
+                issues.append(versionMetadataIssue(message: payload.localizedSummary))
             }
             guard !payload.shouldBlock else {
                 state = .blocked(BundleRuntimeIssue(
@@ -284,7 +284,7 @@ final class AppReadinessStore: ObservableObject {
                 state = .blocked(BundleRuntimeIssue(
                     code: .operationFailed,
                     severity: .error,
-                    message: payload.summary
+                    message: payload.localizedSummary
                 ))
                 operationObserver.finish()
                 return
@@ -306,7 +306,7 @@ final class AppReadinessStore: ObservableObject {
                 state = .blocked(BundleRuntimeIssue(
                     code: .installValidationFailed,
                     severity: .error,
-                    message: payload.summary
+                    message: payload.localizedSummary
                 ))
                 operationObserver.finish()
                 return
@@ -324,7 +324,7 @@ final class AppReadinessStore: ObservableObject {
             runtimeMode: runtimeMode,
             helperVersion: capabilities?.helperVersion ?? "",
             distributionRoot: capabilities?.distributionRoot ?? "",
-            validationSummary: validation.summary,
+            validationSummary: validation.localizedSummary,
             validationCounts: validation.counts
         )
         let warnings = issues.filter { $0.severity == .warning }
@@ -365,7 +365,7 @@ final class AppReadinessStore: ObservableObject {
         return BundleRuntimeIssue(
             code: code,
             severity: .error,
-            message: event.message ?? event.summary,
+            message: event.message ?? event.localizedSummary,
             recovery: BackendErrorViewModel(event: event).recovery?.message
         )
     }

@@ -310,7 +310,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                 title: L10n.string("maintenance.completion.activate"),
                 rows: [
                     PresentationRow(label: L10n.string("maintenance.result.already_active"), value: result.alreadyActive ? L10n.string("value.yes") : L10n.string("value.no")),
-                    PresentationRow(label: L10n.string("deploy.result.message"), value: result.message ?? result.summary)
+                    PresentationRow(label: L10n.string("deploy.result.message"), value: result.localizedMessage)
                 ]
             )
         case .uninstall:
@@ -343,7 +343,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         [
             PresentationRow(label: L10n.string("deploy.result.reboot_requested"), value: result.rebootRequested == true ? L10n.string("value.yes") : L10n.string("value.no")),
             PresentationRow(label: L10n.string("deploy.result.verified"), value: result.verified == true ? L10n.string("value.yes") : L10n.string("value.no")),
-            PresentationRow(label: L10n.string("deploy.result.message"), value: result.message ?? result.summary)
+            PresentationRow(label: L10n.string("deploy.result.message"), value: result.localizedUninstallSummary)
         ]
     }
 

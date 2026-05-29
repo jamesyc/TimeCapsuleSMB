@@ -248,7 +248,7 @@ public struct ContentView: View {
 
     private var sidebar: some View {
         List(selection: sidebarSelection) {
-            Label(L10n.string("sidebar.all_time_capsules"), systemImage: "externaldrive.connected.to.line.below")
+            Label(L10n.string("sidebar.all_airport_devices"), systemImage: "externaldrive.connected.to.line.below")
                 .tag("all")
             Label(L10n.string("sidebar.activity"), systemImage: appStore.activityStore.hasActiveActivity ? "hourglass" : "clock")
                 .tag("activity")
@@ -275,7 +275,7 @@ public struct ContentView: View {
             }
 
             Section {
-                Label(L10n.string("sidebar.add_time_capsule"), systemImage: "plus.circle")
+                Label(L10n.string("sidebar.add_airport_device"), systemImage: "plus.circle")
                     .tag("add")
             }
         }

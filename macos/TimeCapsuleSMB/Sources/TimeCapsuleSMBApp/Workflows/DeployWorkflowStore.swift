@@ -482,7 +482,7 @@ final class DeployWorkflowStore: ObservableObject {
         error = BackendErrorViewModel(
             operation: "deploy",
             code: "operation_failed",
-            message: event.payloadSummaryText ?? event.summary
+            message: event.localizedPayloadSummaryText ?? event.localizedSummary
         )
         state = state == .planning ? .planFailed : .deployFailed
         operationObserver.finish()

@@ -34,7 +34,8 @@ final class AppUpdateStoreTests: XCTestCase {
         store.checkNow(settings: .default)
 
         try await waitUntilStoreState { store.state == .unavailable }
-        XCTAssertEqual(store.payload?.summary, "version metadata is unavailable.")
+        XCTAssertEqual(store.payload?.summary, "Version metadata is unavailable.")
+        XCTAssertEqual(store.payload?.localizedSummary, "Version metadata is unavailable.")
     }
 
     func testCheckNowBlocksConcurrentUpdateChecks() async throws {
@@ -63,7 +64,7 @@ final class AppUpdateStoreTests: XCTestCase {
             "min_supported_version": .number(20000),
             "latest_tag": .string("v2.1.4"),
             "source": .string(source),
-            "summary": .string(source == "unavailable" ? "version metadata is unavailable." : "TimeCapsuleSMB is up to date.")
+            "summary": .string(source == "unavailable" ? "Version metadata is unavailable." : "TimeCapsuleSMB is up to date.")
         ])
     }
 }

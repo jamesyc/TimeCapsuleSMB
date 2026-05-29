@@ -76,14 +76,14 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
                 distributionRoot: "/Applications/TimeCapsuleSMB.app/Contents/Resources/Distribution",
                 artifactManifestSHA256: "abc",
                 confirmationSchemaVersion: 1,
-                summary: "helper capabilities resolved."
+                summary: "Helper capabilities resolved."
             ),
             validation: InstallValidationPayload(
                 schemaVersion: 1,
                 ok: true,
                 checks: [InstallCheckPayload(id: "python_modules", ok: true, message: "required Python modules import", details: nil)],
                 counts: ["checks": 1, "pass": 1, "fail": 0],
-                summary: "install validation passed."
+                summary: "Install validation passed."
             ),
             runtimeIssues: [],
             updateState: .current,
@@ -92,7 +92,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             selectedProfile: profile(),
             activeOperations: [.device("profile-one"): ActiveOperation(operation: "deploy", profileID: "profile-one", context: nil)],
             pendingConfirmation: nil,
-            events: [BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["summary": .string("doctor passed.")]))]
+            events: [BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["summary": .string("Doctor checks passed.")]))]
         )
     }
 
@@ -108,7 +108,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             minSupportedVersion: 20000,
             latestTag: "v2.1.4",
             source: source,
-            summary: source == "unavailable" ? "version metadata is unavailable." : "TimeCapsuleSMB is up to date."
+            summary: source == "unavailable" ? "Version metadata is unavailable." : "TimeCapsuleSMB is up to date."
         )
     }
 

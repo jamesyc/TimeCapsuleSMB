@@ -54,10 +54,10 @@ def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> 
             operation="configure",
             params=params,
             title="Enable SSH and reboot?",
-            message=f"SSH is closed on {device_name}. Enable SSH using AirPort ACP and reboot this Time Capsule?",
+            message=f"SSH is closed on {device_name}. Enable SSH using AirPort ACP and reboot this AirPort device?",
             action_title="Enable SSH and reboot",
             risk="reboot",
-            summary="Enable SSH through AirPort ACP and reboot the Time Capsule",
+            summary="Enable SSH through AirPort ACP and reboot the AirPort device",
             context={
                 "host": host,
                 "device_name": device_name,

@@ -199,7 +199,7 @@ final class DoctorStoreTests: XCTestCase {
                 "INFO": .number(Double(info))
             ]),
             "error": fatal ? .string("doctor failed") : .null,
-            "summary": .string(fatal ? "doctor found one or more fatal problems." : "doctor checks passed.")
+            "summary": .string(fatal ? "Doctor found one or more fatal problems." : "Doctor checks passed.")
         ])
     }
 

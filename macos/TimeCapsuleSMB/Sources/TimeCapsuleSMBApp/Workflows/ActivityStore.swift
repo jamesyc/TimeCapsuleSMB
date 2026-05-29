@@ -230,7 +230,7 @@ final class ActivityStore: ObservableObject {
 
         let title = operation.map(OperationTimelineBuilder.operationTitle)
             ?? (timeline.isEmpty ? L10n.string("activity.no_active_operation") : L10n.string("activity.last_operation"))
-        let message = timeline.last?.detail ?? events.last?.summary
+        let message = timeline.last?.detail ?? events.last?.localizedSummary
         return (title, message)
     }
 

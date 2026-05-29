@@ -142,7 +142,7 @@ struct AppSettingsView: View {
 
     private var updateStatusText: String {
         if let payload = appStore.appUpdateStore.payload {
-            return payload.summary
+            return payload.localizedSummary
         }
         if let error = appStore.appUpdateStore.error {
             return error.message

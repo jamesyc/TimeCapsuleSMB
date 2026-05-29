@@ -371,7 +371,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             context.log(line)
     context.update_fields(returncode=proc.returncode)
     if proc.returncode != 0:
-        context.set_error(f"fsck exited with status {proc.returncode}")
+        context.set_error(f"Disk repair exited with fsck status {proc.returncode}")
     if no_reboot:
         return OperationResult(proc.returncode == 0, fsck_result_payload(
             device=target.device,

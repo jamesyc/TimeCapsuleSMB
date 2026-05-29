@@ -255,7 +255,7 @@ class AppApiTests(unittest.TestCase):
             "requires_reboot": True,
             "payload_family": "netbsd6_samba4",
             "netbsd4": False,
-            "summary": "deployment dry-run plan generated.",
+            "summary": "Deployment dry-run plan generated.",
             "schema_version": 1,
         })
 
@@ -269,7 +269,7 @@ class AppApiTests(unittest.TestCase):
             error="Doctor failures:\nFAIL bad",
         )
         self.assertEqual(doctor["counts"], {"PASS": 1, "WARN": 1, "FAIL": 1, "INFO": 0})
-        self.assertEqual(doctor["summary"], "doctor found one or more fatal problems.")
+        self.assertEqual(doctor["summary"], "Doctor found one or more fatal problems.")
         self.assertEqual(doctor["schema_version"], 1)
 
         repair = contracts.repair_xattrs_payload({
@@ -279,8 +279,8 @@ class AppApiTests(unittest.TestCase):
             "repairable_count": 1,
             "stats": {"scanned": 3},
         })
-        self.assertEqual(repair["summary"], "repair-xattrs found 2 issue(s), 1 repairable.")
-        self.assertEqual(repair["summary_text"], "repair-xattrs found 2 issue(s), 1 repairable.")
+        self.assertEqual(repair["summary"], "Found 2 metadata issue(s), 1 repairable.")
+        self.assertEqual(repair["summary_text"], "Found 2 metadata issue(s), 1 repairable.")
         self.assertEqual(repair["stats"], {"scanned": 3})
 
     def test_repair_xattrs_payload_preserves_legacy_summary_stats_as_stats(self) -> None:
@@ -290,8 +290,8 @@ class AppApiTests(unittest.TestCase):
             "summary": {"scanned": 3},
         })
 
-        self.assertEqual(repair["summary"], "repair-xattrs found 2 issue(s), 1 repairable.")
-        self.assertEqual(repair["summary_text"], "repair-xattrs found 2 issue(s), 1 repairable.")
+        self.assertEqual(repair["summary"], "Found 2 metadata issue(s), 1 repairable.")
+        self.assertEqual(repair["summary_text"], "Found 2 metadata issue(s), 1 repairable.")
         self.assertEqual(repair["stats"], {"scanned": 3})
 
     def test_request_id_propagates_to_every_event(self) -> None:
@@ -576,7 +576,7 @@ class AppApiTests(unittest.TestCase):
             },
         })
 
-        self.assertEqual(payload["summary"], "flash restore write validated; manual reboot required.")
+        self.assertEqual(payload["summary"], "Flash restore write validated; manual reboot required.")
 
     def test_flash_restore_write_defaults_to_reboot_and_wait(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -648,7 +648,7 @@ class AppApiTests(unittest.TestCase):
         plan_flash.assert_not_called()
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "validation_failed")
-        self.assertIn("flash patch cannot request reboot", error["message"])
+        self.assertIn("Flash patch cannot request reboot", error["message"])
 
     def test_set_telemetry_operation_updates_bootstrap_preference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -871,7 +871,7 @@ class AppApiTests(unittest.TestCase):
 
         def run_fsck(_params, context):
             context.stage("run_fsck")
-            return service.OperationResult(True, {"returncode": 0, "summary": "fsck completed."})
+            return service.OperationResult(True, {"returncode": 0, "summary": "Disk repair completed with fsck."})
 
         with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
             with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": ""}, clear=False):
@@ -911,7 +911,7 @@ class AppApiTests(unittest.TestCase):
 
         def run_fsck(_params, context):
             context.stage("run_fsck")
-            raise SystemExit("fsck stopped early")
+            raise SystemExit("Disk repair stopped early during fsck")
 
         with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
@@ -925,7 +925,7 @@ class AppApiTests(unittest.TestCase):
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "run_fsck")
-        self.assertIn("fsck stopped early", finished["error"])
+        self.assertIn("Disk repair stopped early during fsck", finished["error"])
 
     def test_dispatcher_emits_app_operation_finish_fields_in_telemetry(self) -> None:
         collector = CollectingSink()
@@ -1084,7 +1084,7 @@ class AppApiTests(unittest.TestCase):
 
         def run_fsck(_params, context):
             context.stage("run_fsck")
-            return service.OperationResult(True, {"returncode": 0, "summary": "fsck completed."})
+            return service.OperationResult(True, {"returncode": 0, "summary": "Disk repair completed with fsck."})
 
         with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
@@ -1131,7 +1131,7 @@ class AppApiTests(unittest.TestCase):
             context.stage("run_fsck")
             context.config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
             context.connection = SshConnection("root@10.0.0.2", "pw", "")
-            return service.OperationResult(False, {"error": "fsck exited with status 8"})
+            return service.OperationResult(False, {"error": "Disk repair exited with fsck status 8"})
 
         with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
             with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
@@ -1144,7 +1144,7 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertNotIn("Debug context:", result["payload"]["error"])
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
-        self.assertIn("fsck exited with status 8", telemetry_error)
+        self.assertIn("Disk repair exited with fsck status 8", telemetry_error)
         self.assertIn("Debug context:", telemetry_error)
         self.assertIn("command=fsck", telemetry_error)
         self.assertIn("stage=run_fsck", telemetry_error)
@@ -1186,7 +1186,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["devices"][0]["selected_record"]["fullname"], "TC._airport._tcp.local.")
         self.assertEqual(result["payload"]["schema_version"], 1)
         self.assertEqual(result["payload"]["counts"], {"instances": 1, "resolved": 1, "devices": 1})
-        self.assertEqual(result["payload"]["summary"], "discovered 1 Time Capsule device(s).")
+        self.assertEqual(result["payload"]["summary"], "Discovered 1 device(s).")
         self.assertEqual(self._telemetry_client.emit.call_count, 2)
         started = self._telemetry_client.emit.call_args_list[0].kwargs
         finished = self._telemetry_client.emit.call_args_list[1].kwargs
@@ -2868,8 +2868,8 @@ class AppApiTests(unittest.TestCase):
         runner.assert_called_once()
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertEqual(payload["finding_count"], 1)
-        self.assertEqual(payload["summary"], "repair-xattrs found 1 issue(s), 1 repairable.")
-        self.assertEqual(payload["summary_text"], "repair-xattrs found 1 issue(s), 1 repairable.")
+        self.assertEqual(payload["summary"], "Found 1 metadata issue(s), 1 repairable.")
+        self.assertEqual(payload["summary_text"], "Found 1 metadata issue(s), 1 repairable.")
         self.assertEqual(payload["stats"]["scanned"], 1)
         self.assertNotIsInstance(payload["summary"], dict)
 

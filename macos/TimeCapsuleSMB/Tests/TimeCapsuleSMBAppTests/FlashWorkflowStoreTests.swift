@@ -324,7 +324,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(store.manualPowerCycleNotice?.mode, .patch)
         XCTAssertEqual(
             store.manualPowerCycleNotice?.message,
-            "Flash write validation completed. Unplug the Time Capsule, wait 10 seconds, then plug it back in. Wait for it to finish booting, then run Checkup. One firmware bank was left untouched."
+            "Flash write validation completed. Unplug the device, wait 10 seconds, then plug it back in. Wait for it to finish booting, then run Checkup. One firmware bank was left untouched."
         )
         XCTAssertEqual(store.manualPowerCycleNotice?.viewCheckupActionTitle, "View Checkup")
 
@@ -339,7 +339,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .writeValidatedSnapshotStale)
         XCTAssertNil(store.manualPowerCycleNotice)
         XCTAssertFalse(FlashPresentation(store: store).warnings.contains(
-            "Unplug the Time Capsule, wait 10 seconds, then plug it back in."
+            "Unplug the device, wait 10 seconds, then plug it back in."
         ))
     }
 
@@ -352,7 +352,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
                 rebootRequested: false,
                 rebooted: false,
                 waitedAfterReboot: false,
-                summary: "flash restore write validated; manual reboot required."
+                summary: "Flash restore write validated; manual reboot required."
             )
         )
 
@@ -412,7 +412,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
 
         let presentation = FlashPresentation(store: store)
 
-        XCTAssertEqual(presentation.message, "flash patch write validated; manual power cycle required.")
+        XCTAssertEqual(presentation.message, "Flash patch write validated; manual power cycle required.")
     }
 
     private func storeAfterValidatedWrite(
@@ -472,7 +472,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
                 ])
             ]),
             "counts": .object(["banks": .number(1)]),
-            "summary": .string("flash backup saved.")
+            "summary": .string("Flash backup saved to /tmp/flash-backup.")
         ])
     }
 
@@ -538,7 +538,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         case .downloadOnly:
             return "Apple restore firmware validated (version 7.8.1, product 116)."
         case .patch, .restore:
-            return "flash plan generated."
+            return "Flash \(mode.rawValue) plan generated."
         }
     }
 
@@ -558,7 +558,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
             if mode == .restore {
                 return "Flash restore write validated; device rebooted."
             }
-            return "flash \(mode.rawValue) write validated; manual power cycle required."
+            return "Flash \(mode.rawValue) write validated; manual power cycle required."
         }()
         return .object([
             "schema_version": .number(1),

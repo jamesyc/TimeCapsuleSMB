@@ -128,7 +128,7 @@ struct BackendErrorViewModel: Equatable {
     init(event: BackendEvent) {
         self.operation = event.operation
         self.code = event.code ?? "operation_failed"
-        self.rawMessage = event.message ?? event.summary
+        self.rawMessage = event.message ?? event.localizedSummary
         self.localError = nil
         self.recovery = try? event.recovery?.decode(BackendRecoveryPayload.self)
     }
@@ -169,5 +169,19 @@ extension BackendEvent {
             }
         }
         return nil
+    }
+
+    var localizedPayloadSummaryText: String? {
+        guard let payloadSummaryText else {
+            return nil
+        }
+        return BackendSummaryLocalization.localized(payloadSummaryText, operation: operation, payload: payload)
+    }
+
+    var localizedSummary: String {
+        if type == "result", let localizedPayloadSummaryText {
+            return localizedPayloadSummaryText
+        }
+        return summary
     }
 }

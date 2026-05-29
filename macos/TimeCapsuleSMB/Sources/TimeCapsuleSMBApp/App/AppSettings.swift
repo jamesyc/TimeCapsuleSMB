@@ -39,7 +39,7 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
         case .english:
             return Locale(identifier: "en")
         case .simplifiedChinese:
-            return Locale(identifier: "zh-Hans")
+            return Locale(identifier: "zh-Hans-CN")
         }
     }
 

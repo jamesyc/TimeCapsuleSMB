@@ -157,7 +157,7 @@ struct AppDiagnosticsView: View {
                 if let validation = store.validation {
                     GridRow {
                         Text(L10n.string("diagnostics.validation")).foregroundStyle(.secondary)
-                        Text(validation.summary)
+                        Text(validation.localizedSummary)
                     }
                 }
             }
@@ -228,7 +228,7 @@ struct EventList: View {
     var body: some View {
         List(events) { event in
             VStack(alignment: .leading, spacing: 4) {
-                Text(event.summary)
+                Text(event.localizedSummary)
                     .font(.body)
                 if let payload = event.payload, event.type == "result" {
                     Text(payload.displayText)

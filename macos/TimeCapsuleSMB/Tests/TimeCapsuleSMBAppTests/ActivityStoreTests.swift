@@ -404,7 +404,7 @@ final class ActivityStoreTests: XCTestCase {
         }
         let status = activity.compactStatus(for: addDeviceContext)
         XCTAssertEqual(status.scope, .device("device-two"))
-        XCTAssertEqual(status.operationTitle, "Add Time Capsule")
+        XCTAssertEqual(status.operationTitle, "Add Device")
     }
 
     func testCompactStatusKeepsSelectedDeviceHistoryAfterStartupDiscoveryCompletes() async throws {
@@ -442,6 +442,7 @@ final class ActivityStoreTests: XCTestCase {
         ))
         XCTAssertEqual(status.scope, .device("device-one"))
         XCTAssertEqual(status.operationTitle, "Checkup")
+        XCTAssertEqual(status.latestMessage, "Doctor checks passed.")
         XCTAssertEqual(status.latestTimelineTitle, "Done")
     }
 
@@ -488,7 +489,7 @@ final class ActivityStoreTests: XCTestCase {
                     type: "result",
                     operation: "validate-install",
                     ok: true,
-                    payload: .object(["summary": .string("install validation passed.")])
+                    payload: .object(["summary": .string("Install validation passed.")])
                 )
             ], delayNanoseconds: 80_000_000)
         ])

@@ -390,7 +390,7 @@ func testDiscoverPayload(records: [JSONValue], devices: [JSONValue]? = nil) -> J
             "resolved": .number(Double(records.count)),
             "devices": .number(Double(deviceValues.count))
         ]),
-        "summary": .string("discovered \(deviceValues.count) Time Capsule device(s).")
+        "summary": .string("Discovered \(deviceValues.count) device(s).")
     ])
 }
 
@@ -492,7 +492,7 @@ func testConfigurePayload(
             "syap": .string(syap),
             "model": .string(model)
         ]),
-        "summary": .string("configuration saved and SSH authentication verified.")
+        "summary": .string("Configuration saved and SSH authentication verified.")
     ])
 }
 
@@ -530,7 +530,7 @@ func testDoctorPayload(fatal: Bool = false, checks: [JSONValue]) -> JSONValue {
             "INFO": .number(Double(info))
         ]),
         "error": fatal ? .string("doctor failed") : .null,
-        "summary": .string(fatal ? "doctor found one or more fatal problems." : "doctor checks passed.")
+        "summary": .string(fatal ? "Doctor found one or more fatal problems." : "Doctor checks passed.")
     ])
 }
 
@@ -599,7 +599,7 @@ func testDeployPlanPayload(
         "post_upload_actions": .array([]),
         "activation_actions": .array([]),
         "post_deploy_checks": .array([]),
-        "summary": .string("deployment dry-run plan generated.")
+        "summary": .string("Deployment dry-run plan generated.")
     ])
 }
 
@@ -711,14 +711,14 @@ func testUninstallPlanPayload() -> JSONValue {
             .object(["id": .string("managed_files_absent"), "description": .string("managed files absent")])
         ]),
         "counts": .object(["payload_dirs": .number(1)]),
-        "summary": .string("uninstall dry-run plan generated.")
+        "summary": .string("Uninstall dry-run plan generated.")
     ])
 }
 
 func testUninstallResultPayload(waited: Bool, verified: Bool) -> JSONValue {
     .object([
         "schema_version": .number(1),
-        "summary": .string(verified ? "uninstall completed." : "uninstall completed without post-reboot verification."),
+        "summary": .string(verified ? "Uninstall completed." : "Uninstall completed without post-reboot verification."),
         "requires_reboot": .bool(true),
         "rebooted": .bool(false),
         "reboot_requested": .bool(true),
@@ -732,7 +732,7 @@ func testFsckListPayload(targets: [JSONValue]) -> JSONValue {
         "schema_version": .number(1),
         "targets": .array(targets),
         "counts": .object(["targets": .number(Double(targets.count))]),
-        "summary": .string("found \(targets.count) mounted HFS volume(s).")
+        "summary": .string("Found \(targets.count) mounted HFS volume(s).")
     ])
 }
 
@@ -764,7 +764,7 @@ func testFsckPlanPayload(
         "mountpoint": .string(mountpoint),
         "reboot_required": .bool(true),
         "wait_after_reboot": .bool(false),
-        "summary": .string("fsck dry-run plan generated.")
+        "summary": .string("Dry-run plan generated for fsck.")
     ])
 }
 
@@ -777,7 +777,7 @@ func testFsckResultPayload(returncode: Int) -> JSONValue {
         "reboot_requested": .bool(false),
         "waited": .bool(false),
         "verified": .bool(false),
-        "summary": .string("fsck completed.")
+        "summary": .string("Disk repair completed with fsck.")
     ])
 }
 
@@ -794,7 +794,7 @@ func testRepairXattrsPayload(findings: Int, repairable: Int) -> JSONValue {
         ]),
         "stats": .object([:]),
         "report": .string("report"),
-        "summary": .string("repair-xattrs found \(findings) issue(s), \(repairable) repairable."),
-        "summary_text": .string("repair-xattrs found \(findings) issue(s), \(repairable) repairable.")
+        "summary": .string("Found \(findings) metadata issue(s), \(repairable) repairable."),
+        "summary_text": .string("Found \(findings) metadata issue(s), \(repairable) repairable.")
     ])
 }

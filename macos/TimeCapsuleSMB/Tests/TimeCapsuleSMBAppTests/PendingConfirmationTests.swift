@@ -8,7 +8,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(L10n.string("toolbar.diagnostics"), "Diagnostics")
         XCTAssertEqual(L10n.string("helper.error.cancelled"), "Operation cancelled.")
         XCTAssertEqual(L10n.string("confirm.backend.message"), "Continue with this operation?")
-        XCTAssertEqual(L10n.format("event.summary.result", "deploy", "finished"), "deploy: finished")
+        XCTAssertEqual(L10n.format("event.summary.result", "deploy", "Finished"), "deploy: Finished")
     }
 
     func testUninstallPlanParamsCarryNoRebootSelection() {
@@ -199,7 +199,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(confirmation.title, "Enable SSH And Reboot?")
         XCTAssertEqual(
             confirmation.message,
-            "SSH is closed on Office Capsule. Enable SSH using AirPort ACP and reboot this Time Capsule?"
+            "SSH is closed on Office Capsule. Enable SSH using AirPort ACP and reboot this AirPort device?"
         )
         XCTAssertEqual(confirmation.actionTitle, "Enable SSH and Reboot")
     }

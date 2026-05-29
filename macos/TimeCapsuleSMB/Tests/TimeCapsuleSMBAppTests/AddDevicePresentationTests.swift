@@ -19,12 +19,12 @@ final class AddDevicePresentationTests: XCTestCase {
         ))
 
         let discovering = AddDeviceProgressPresentation(state: .discovering, currentStage: discoveryStage)
-        XCTAssertEqual(discovering?.title, "Discovering Time Capsules")
+        XCTAssertEqual(discovering?.title, "Discovering Apple AirPort devices")
         XCTAssertEqual(discovering?.message, "Browsing for nearby AirPort Bonjour services...")
         XCTAssertNil(discovering?.detail)
 
         let configuring = AddDeviceProgressPresentation(state: .configuring, currentStage: configureStage)
-        XCTAssertEqual(configuring?.title, "Connecting to Time Capsule")
+        XCTAssertEqual(configuring?.title, "Connecting to Apple AirPort device")
         XCTAssertEqual(configuring?.detail, "Checking SSH")
 
         let saving = AddDeviceProgressPresentation(state: .savingProfile, currentStage: nil)

@@ -20,7 +20,7 @@ struct DeviceListOverviewView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(appStore.deviceRegistry.profiles.isEmpty
                 ? L10n.string("overview.empty.title")
-                : L10n.string("sidebar.all_time_capsules"))
+                : L10n.string("overview.saved_devices.title"))
             .font(.title2.weight(.semibold))
 
             if appStore.deviceRegistry.profiles.isEmpty {
@@ -30,7 +30,7 @@ struct DeviceListOverviewView: View {
                     Button {
                         appStore.showAddDevice()
                     } label: {
-                        Label(L10n.string("sidebar.add_time_capsule"), systemImage: "plus.circle")
+                        Label(L10n.string("sidebar.add_airport_device"), systemImage: "plus.circle")
                     }
                 }
             } else {

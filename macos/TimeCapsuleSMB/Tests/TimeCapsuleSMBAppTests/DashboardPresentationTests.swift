@@ -60,6 +60,44 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(try headerValue("Generation", in: coarseFallback), "4th generation")
     }
 
+    func testOverviewHeaderLocalizesLastCheckedDateForSimplifiedChinese() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .simplifiedChinese)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let checkedAt = try XCTUnwrap(calendar.date(from: DateComponents(
+            timeZone: .current,
+            year: 2026,
+            month: 5,
+            day: 29,
+            hour: 0,
+            minute: 12
+        )))
+        var profile = try makeProfile()
+        profile.lastCheckup = DeviceCheckupSnapshot(
+            checkedAt: checkedAt,
+            state: .passed,
+            passCount: 1,
+            warnCount: 0,
+            failCount: 0,
+            summary: ""
+        )
+
+        let presentation = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .healthy,
+            primaryAction: .openSMB,
+            hostWarning: nil
+        ))
+
+        XCTAssertEqual(presentation.header.lastChecked, "上次检查：2026年5月29日 00:12")
+        XCTAssertFalse(presentation.header.lastChecked.contains("May"))
+        XCTAssertFalse(presentation.header.lastChecked.contains("AM"))
+    }
+
     func testInstallActionAvailabilityBlocksMutatingActionsWhileDeviceIsBusy() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -235,7 +273,7 @@ final class DashboardPresentationTests: XCTestCase {
             testDoctorCheck(status: "PASS", message: "ssh ok", domain: "Device")
         ]).decode(DoctorPayload.self))
         let headlines: [DoctorWorkflowState: String] = [
-            .idle: "Run a checkup to inspect this Time Capsule.",
+            .idle: "Run a checkup to inspect this Apple AirPort Time Capsule or AirPort Extreme.",
             .running: "Checkup is running.",
             .passed: "Checkup passed.",
             .warning: "Checkup found warnings.",
@@ -471,7 +509,10 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(checking.primaryAction, .viewCheckup)
         XCTAssertEqual(checking.secondaryActions, [.openFinder, .settings])
         XCTAssertFalse(checking.secondaryActions.contains(.runCheckup))
-        XCTAssertEqual(try row(.checkup, in: checking).action, .viewCheckup)
+        let checkingRow = try row(.checkup, in: checking)
+        XCTAssertEqual(checkingRow.status, .running)
+        XCTAssertEqual(checkingRow.detail, "Checkup is running.")
+        XCTAssertEqual(checkingRow.action, .viewCheckup)
 
         let warning = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
             profile: profile,
@@ -519,7 +560,7 @@ final class DashboardPresentationTests: XCTestCase {
         let actions = try XCTUnwrap(presentation.sections.first { $0.title == "Device Actions" })
         XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Uploads", value: "1")))
         XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Remote Actions", value: "1")))
-        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Expected Downtime", value: "Several minutes while the Time Capsule reboots.")))
+        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Expected Downtime", value: "Several minutes while the device reboots.")))
         XCTAssertEqual(presentation.warnings.count, 2)
     }
 
@@ -1026,7 +1067,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.detail.actions, [.planUninstall, .runUninstall])
         XCTAssertTrue(presentation.detail.isEnabled(.planUninstall))
         XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
-        XCTAssertEqual(presentation.detail.plan?.warnings, ["Uninstall removes managed SMB files from this Time Capsule."])
+        XCTAssertEqual(presentation.detail.plan?.warnings, ["Uninstall removes installed files from this device."])
 
         store.refreshFsckTargets(password: "pw")
         try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
@@ -1041,7 +1082,7 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.plan?.title, "Disk Repair Plan")
-        XCTAssertEqual(presentation.detail.plan?.warnings, ["Disk repair can modify the selected Time Capsule volume."])
+        XCTAssertEqual(presentation.detail.plan?.warnings, ["Disk repair can modify the selected volume."])
 
         store.repairPath = "/Volumes/Data"
         store.scanRepairXattrs()
@@ -1124,7 +1165,7 @@ final class DashboardPresentationTests: XCTestCase {
             "post_upload_actions": .array([]),
             "activation_actions": .array([.object(["description": .string("start smbd")])]),
             "post_deploy_checks": .array([]),
-            "summary": .string("deployment dry-run plan generated.")
+            "summary": .string("Deployment dry-run plan generated.")
         ])
     }
 

@@ -51,7 +51,7 @@ FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after firmw
 def flash_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     action = string_param(params, "action", "backup").strip() or "backup"
     if action not in FLASH_ACTIONS:
-        raise AppOperationError(f"unsupported flash action: {action}", code="validation_failed")
+        raise AppOperationError(f"Unsupported flash action: {action}", code="validation_failed")
     context.update_fields(flash_action=action)
     if action == "backup":
         return _backup_operation(params, context)
@@ -79,14 +79,14 @@ def _firmware_version_param(params: dict[str, object]) -> str | None:
 def _plan_operation_param(params: dict[str, object]) -> str:
     plan_operation = string_param(params, "mode", "patch").strip() or "patch"
     if plan_operation not in PLAN_OPERATIONS:
-        raise AppOperationError(f"unsupported flash plan mode: {plan_operation}", code="validation_failed")
+        raise AppOperationError(f"Unsupported flash plan mode: {plan_operation}", code="validation_failed")
     return plan_operation
 
 
 def _write_operation_param(params: dict[str, object]) -> str:
     plan_operation = _plan_operation_param(params)
     if plan_operation not in WRITE_OPERATIONS:
-        raise AppOperationError(f"flash mode {plan_operation} does not write firmware", code="validation_failed")
+        raise AppOperationError(f"Flash mode {plan_operation} does not write firmware", code="validation_failed")
     return plan_operation
 
 
@@ -95,7 +95,7 @@ def _write_reboot_policy(params: dict[str, object], plan_operation: str) -> tupl
     reboot_after_write = explicit_reboot if explicit_reboot is not None else plan_operation == "restore"
     if plan_operation == "patch" and reboot_after_write:
         raise AppOperationError(
-            "flash patch cannot request reboot; power cycle manually after the validated write",
+            "Flash patch cannot request reboot; power cycle manually after the validated write",
             code="validation_failed",
         )
     wait_after_reboot = bool_param(params, "wait_after_reboot", True) if reboot_after_write else False
@@ -282,7 +282,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
     except FlashAnalysisError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     if plan is None:
-        raise AppOperationError("flash write has no plan", code="validation_failed")
+        raise AppOperationError("Flash write has no plan", code="validation_failed")
     if plan.already_satisfied:
         record_write_outcome(
             bundle=bundle,

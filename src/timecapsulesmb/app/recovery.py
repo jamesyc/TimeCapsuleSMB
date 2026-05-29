@@ -56,7 +56,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
     ),
     "auth_failed": RecoveryInfo(
         "Authentication failed",
-        "The Time Capsule rejected the supplied password or SSH credentials.",
+        "The device rejected the supplied password or SSH credentials.",
         ("Re-enter the AirPort admin password.", "Verify that SSH is enabled on the device."),
         retryable=True,
         suggested_operation="configure",
@@ -101,15 +101,15 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
     ("configure", "auth_failed"): RecoveryInfo(
         "AirPort password rejected",
         "ACP or SSH authentication failed while configuring the device.",
-        ("Re-enter the AirPort admin password.", "Confirm the selected device is the intended Time Capsule."),
+        ("Re-enter the AirPort admin password.", "Confirm the selected device is the intended Apple device."),
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
     ("configure", "unsupported_device"): RecoveryInfo(
-        "Unsupported Time Capsule",
+        "Unsupported device",
         "The SSH probe succeeded, but the detected hardware or OS cannot use a bundled payload.",
-        ("Review the detected model and OS.", "Use a supported Gen 4 or Gen 5 Time Capsule."),
+        ("Review the detected model and OS.", "Use a supported Apple AirPort Time Capsule or AirPort Extreme."),
         retryable=False,
     ),
     ("deploy", "confirmation_required"): RecoveryInfo(
@@ -147,9 +147,9 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         action_ids=("uninstall",),
     ),
     ("fsck", "confirmation_required"): RecoveryInfo(
-        "fsck confirmation required",
-        "fsck stops file sharing, unmounts the selected HFS disk, and may reboot the device.",
-        ("Review the selected volume.", "Confirm fsck before retrying."),
+        "Disk repair confirmation required",
+        "Disk repair runs fsck, stops file sharing, unmounts the selected HFS disk, and may reboot the device.",
+        ("Review the selected volume.", "Confirm disk repair before retrying."),
         retryable=True,
         action_ids=("disk_repair",),
     ),
@@ -224,7 +224,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
     ("deploy", "remote_error", "wait_for_reboot_down"): RecoveryInfo(
         "Reboot did not start",
         "The reboot request was sent, but SSH did not go down.",
-        ("Power-cycle the Time Capsule.", "Retry deploy after it is reachable."),
+        ("Power-cycle the device.", "Retry deploy after it is reachable."),
         retryable=True,
         suggested_operation="doctor",
     ),

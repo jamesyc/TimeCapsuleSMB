@@ -354,7 +354,7 @@ final class AppReadinessStoreTests: XCTestCase {
             "distribution_root": .string("/bundle/Distribution"),
             "artifact_manifest_sha256": .string("abc"),
             "confirmation_schema_version": .number(1),
-            "summary": .string("helper capabilities resolved.")
+            "summary": .string("Helper capabilities resolved.")
         ])
     }
 
@@ -374,7 +374,7 @@ final class AppReadinessStoreTests: XCTestCase {
                 "pass": .number(ok ? 1 : 0),
                 "fail": .number(ok ? 0 : 1)
             ]),
-            "summary": .string(ok ? "install validation passed." : "install validation failed.")
+            "summary": .string(ok ? "Install validation passed." : "Install validation failed.")
         ])
     }
 
@@ -390,7 +390,7 @@ final class AppReadinessStoreTests: XCTestCase {
             "min_supported_version": .number(20125),
             "latest_tag": .string("v2.1.4"),
             "source": .string(source),
-            "summary": .string(shouldBlock ? "update required." : "TimeCapsuleSMB is up to date.")
+            "summary": .string(source == "unavailable" ? "Version metadata is unavailable." : (shouldBlock ? "Update required." : "TimeCapsuleSMB is up to date."))
         ])
     }
 }

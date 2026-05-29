@@ -511,7 +511,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
             "post_deploy_checks": .array([
                 .object(["id": .string("ssh_returns_after_reboot"), "description": .string("SSH returns after reboot")])
             ]),
-            "summary": .string("deployment dry-run plan generated.")
+            "summary": .string("Deployment dry-run plan generated.")
         ])
     }
 

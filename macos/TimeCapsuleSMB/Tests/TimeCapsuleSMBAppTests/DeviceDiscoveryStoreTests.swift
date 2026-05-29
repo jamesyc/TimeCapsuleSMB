@@ -208,7 +208,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
             "distribution_root": .string("/bundle/Distribution"),
             "artifact_manifest_sha256": .string("abc"),
             "confirmation_schema_version": .number(1),
-            "summary": .string("helper capabilities resolved.")
+            "summary": .string("Helper capabilities resolved.")
         ])
     }
 
@@ -228,7 +228,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
                 "pass": .number(1),
                 "fail": .number(0)
             ]),
-            "summary": .string("install validation passed.")
+            "summary": .string("Install validation passed.")
         ])
     }
 }

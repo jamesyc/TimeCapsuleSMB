@@ -67,7 +67,7 @@ FLASH_WRITE_TIMEOUT_SECONDS = 300
 MAX_LOGIN_ERROR_UPLOAD_BYTES = 8192
 WRITE_OPERATIONS = {"patch", "restore"}
 POWERCYCLE_REQUIRED_MESSAGE = (
-    "POWER-CYCLE REQUIRED: unplug the Time Capsule, wait 10 seconds, then plug it back in."
+    "POWER-CYCLE REQUIRED: unplug the device, wait 10 seconds, then plug it back in."
 )
 ProgressLogger = LogCallback
 

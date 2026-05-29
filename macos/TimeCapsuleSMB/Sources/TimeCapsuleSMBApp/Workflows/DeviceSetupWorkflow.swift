@@ -287,7 +287,7 @@ final class DeviceSetupWorkflow: ObservableObject {
         error = BackendErrorViewModel(
             operation: event.operation,
             code: "operation_failed",
-            message: event.payloadSummaryText ?? event.summary
+            message: event.localizedPayloadSummaryText ?? event.localizedSummary
         )
         state = .failed
         finishActiveOperation()

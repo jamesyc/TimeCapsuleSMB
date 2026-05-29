@@ -183,6 +183,10 @@ final class AppSettingsStoreTests: XCTestCase {
         let expectedChinese = [
             "button.discover": "发现",
             "checkup.presentation.row.fail": "失败",
+            "backend.summary.doctor_checks_passed": "诊断检查通过。",
+            "backend.summary.fsck_plan_generated": "已生成 fsck dry-run 计划。",
+            "backend.summary.install_validation_passed": "安装验证通过。",
+            "backend.summary.repair_xattrs_found": "发现 %d 个元数据问题，其中 %d 个可修复。",
             "dashboard.overview.connection_target": "连接目标",
             "deploy.presentation.row.pre_upload_actions": "上传前操作",
             "diagnostics.title": "诊断",
@@ -247,7 +251,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "install_id": .string("install-one"),
             "telemetry_enabled": .bool(enabled),
             "bootstrap_path": .string("/tmp/.bootstrap"),
-            "summary": .string(enabled ? "telemetry is enabled." : "telemetry is disabled.")
+            "summary": .string(enabled ? "Telemetry is enabled." : "Telemetry is disabled.")
         ])
     }
 

@@ -13,7 +13,7 @@ final class BackendPayloadTests: XCTestCase {
           "distribution_root": "/repo",
           "artifact_manifest_sha256": "abc",
           "confirmation_schema_version": 1,
-          "summary": "helper capabilities resolved."
+          "summary": "Helper capabilities resolved."
         }
         """).decode(CapabilitiesPayload.self)
 
@@ -26,7 +26,7 @@ final class BackendPayloadTests: XCTestCase {
           "ok": false,
           "checks": [{"id": "artifact_hashes", "ok": false, "message": "artifact validation failed", "details": {"failures": ["bad hash"]}}],
           "counts": {"checks": 1, "pass": 0, "fail": 1},
-          "summary": "install validation failed."
+          "summary": "Install validation failed."
         }
         """).decode(InstallValidationPayload.self)
 
@@ -93,7 +93,7 @@ final class BackendPayloadTests: XCTestCase {
             }
           }],
           "counts": {"instances": 1, "resolved": 1, "devices": 1},
-          "summary": "discovered 1 Time Capsule device(s)."
+          "summary": "Discovered 1 device(s)."
         }
         """).decode(DiscoverPayload.self)
 
@@ -126,7 +126,7 @@ final class BackendPayloadTests: XCTestCase {
             "model_candidates": ["Time Capsule"]
           },
           "device": {"host": "root@10.0.0.2", "syap": "119", "model": "Time Capsule"},
-          "summary": "configuration saved and SSH authentication verified."
+          "summary": "Configuration saved and SSH authentication verified."
         }
         """).decode(ConfigurePayload.self)
 
@@ -152,7 +152,7 @@ final class BackendPayloadTests: XCTestCase {
           "post_upload_actions": [],
           "activation_actions": [],
           "post_deploy_checks": [{"id": "ssh_returns_after_reboot", "description": "SSH returns after reboot"}],
-          "summary": "deployment dry-run plan generated."
+          "summary": "Deployment dry-run plan generated."
         }
         """).decode(DeployPlanPayload.self)
 
@@ -186,7 +186,7 @@ final class BackendPayloadTests: XCTestCase {
           "results": [{"status": "FAIL", "message": "smbd is not running", "details": {"domain": "runtime"}}],
           "counts": {"FAIL": 1},
           "error": "smbd is not running",
-          "summary": "doctor found one or more fatal problems."
+          "summary": "Doctor found one or more fatal problems."
         }
         """).decode(DoctorPayload.self)
 
@@ -198,7 +198,7 @@ final class BackendPayloadTests: XCTestCase {
           "schema_version": 1,
           "targets": [{"device": "/dev/dk2", "mountpoint": "/Volumes/dk2", "name": "Data", "builtin": true}],
           "counts": {"targets": 1},
-          "summary": "found 1 mounted HFS volume(s)."
+          "summary": "Found 1 mounted HFS volume(s)."
         }
         """).decode(FsckVolumeListPayload.self)
 
@@ -207,7 +207,7 @@ final class BackendPayloadTests: XCTestCase {
         let maintenance = try jsonValue("""
         {
           "schema_version": 1,
-          "summary": "uninstall completed.",
+          "summary": "Uninstall completed.",
           "requires_reboot": true,
           "rebooted": true,
           "reboot_requested": true,

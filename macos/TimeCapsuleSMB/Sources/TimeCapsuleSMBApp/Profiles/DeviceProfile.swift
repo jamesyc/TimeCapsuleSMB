@@ -227,7 +227,7 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
         case .succeeded:
             let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                return trimmed
+                return BackendSummaryLocalization.localized(trimmed, operation: "deploy")
             }
             return L10n.string("deploy.result.default_message")
         case .failed:
@@ -329,14 +329,18 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
         case .installedVerified:
             let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                return trimmed
+                return source == .doctor
+                    ? BackendSummaryLocalization.localized(trimmed, operation: "doctor")
+                    : BackendSummaryLocalization.localized(trimmed, operation: "deploy")
             }
             return source == .doctor
                 ? L10n.string("summary.install_verified_by_checkup")
                 : L10n.string("deploy.result.default_message")
         case .installedUnverified:
             let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? L10n.string("deploy.result.default_message") : trimmed
+            return trimmed.isEmpty
+                ? L10n.string("deploy.result.default_message")
+                : BackendSummaryLocalization.localized(trimmed, operation: "deploy")
         case .installFailed:
             let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? L10n.string("install.state.deploy_failed") : trimmed
