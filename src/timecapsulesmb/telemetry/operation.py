@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 from timecapsulesmb.telemetry import TelemetryClient
 
@@ -186,7 +187,7 @@ def telemetry_details_from_payload(
     return extractor(params, payload)
 
 
-DetailExtractor = Callable[[Mapping[str, object], object | None], dict[str, object]]
+DetailExtractor = Callable[[Mapping[str, object], Optional[object]], dict[str, object]]
 
 
 def _details_common(_params: Mapping[str, object], payload: object | None) -> dict[str, object]:
