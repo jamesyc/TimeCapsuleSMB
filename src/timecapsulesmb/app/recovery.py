@@ -12,6 +12,7 @@ class RecoveryInfo:
     suggested_operation: str | None = None
     action_ids: tuple[str, ...] = ()
     docs_anchor: str | None = None
+    localization_key: str | None = None
 
     def to_jsonable(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -24,6 +25,8 @@ class RecoveryInfo:
         }
         if self.docs_anchor:
             payload["docs_anchor"] = self.docs_anchor
+        if self.localization_key:
+            payload["localization_key"] = self.localization_key
         return payload
 
 
@@ -230,11 +233,24 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
     ),
     ("deploy", "remote_error", "wait_for_reboot_up"): RecoveryInfo(
         "Reboot did not finish",
-        "The device went down but SSH did not return before the timeout.",
-        ("Wait a few more minutes.", "Power-cycle the device if needed.", "Run doctor once SSH returns."),
+        (
+            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH "
+            "again before the 4 minute timeout. It may still be booting, or it may have come back with a "
+            "different IP address."
+        ),
+        (
+            "Wait a few more minutes.",
+            "If the device is reachable at a new IP, update TC_HOST or rerun configure.",
+            "Make sure you are connected to the same network or Wi-Fi as the device.",
+            (
+                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "
+                "enough to activate Samba after reboot."
+            ),
+        ),
         retryable=True,
         suggested_operation="doctor",
         action_ids=("run_checkup",),
+        localization_key="deploy.remote_error.wait_for_reboot_up",
     ),
     ("deploy", "remote_error", "verify_runtime_reboot"): RecoveryInfo(
         "Runtime not ready",

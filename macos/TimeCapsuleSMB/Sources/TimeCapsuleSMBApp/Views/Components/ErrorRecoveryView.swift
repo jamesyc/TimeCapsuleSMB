@@ -2,13 +2,21 @@ import AppKit
 import SwiftUI
 
 struct ErrorBlock: View {
-    let error: BackendErrorViewModel
+    let presentation: RecoveryGuidancePresentation
+
+    init(error: BackendErrorViewModel) {
+        self.presentation = RecoveryGuidancePresentation(error: error)
+    }
+
+    init(presentation: RecoveryGuidancePresentation) {
+        self.presentation = presentation
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(error.recovery?.title ?? error.code)
+            Text(presentation.title)
                 .font(.body.weight(.medium))
-            Text(error.message)
+            Text(presentation.errorMessage)
                 .font(.caption)
         }
         .foregroundStyle(.red)
@@ -34,12 +42,30 @@ struct ErrorRecoveryView: View {
     }
 
     var body: some View {
+        let presentation = RecoveryGuidancePresentation(error: error)
         VStack(alignment: .leading, spacing: 6) {
-            ErrorBlock(error: error)
+            ErrorBlock(presentation: presentation)
             if let guidance {
                 Text(guidance)
                     .font(.caption)
                     .foregroundStyle(.red)
+            }
+            if let detail = presentation.detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !presentation.steps.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n.string("recovery.guidance.next_steps"))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(presentation.steps.enumerated()), id: \.offset) { index, step in
+                        Text("\(index + 1). \(step)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             let actions = RecoveryActionMapper.actions(for: error)
             if !actions.isEmpty {

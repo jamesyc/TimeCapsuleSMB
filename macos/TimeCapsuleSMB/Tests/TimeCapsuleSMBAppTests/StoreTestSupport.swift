@@ -262,16 +262,22 @@ func recoveryValue(
     title: String,
     actions: [String],
     suggestedOperation: String = "doctor",
-    actionIDs: [String] = []
+    actionIDs: [String] = [],
+    message: String? = nil,
+    localizationKey: String? = nil
 ) -> JSONValue {
-    return .object([
+    var values: [String: JSONValue] = [
         "title": .string(title),
-        "message": .string(title),
+        "message": .string(message ?? title),
         "actions": .array(actions.map(JSONValue.string)),
         "action_ids": .array(actionIDs.map(JSONValue.string)),
         "retryable": .bool(true),
         "suggested_operation": .string(suggestedOperation)
-    ])
+    ]
+    if let localizationKey {
+        values["localization_key"] = .string(localizationKey)
+    }
+    return .object(values)
 }
 
 func testDeviceRecord(

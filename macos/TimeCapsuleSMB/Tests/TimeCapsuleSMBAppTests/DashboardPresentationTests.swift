@@ -650,7 +650,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.stateTitle, "Deploy Failed")
         XCTAssertEqual(presentation.statusMessage, "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.")
         XCTAssertEqual(presentation.error?.recovery?.title, "No HFS volumes found")
-        XCTAssertEqual(presentation.failureGuidance, "Troubleshooting tip: try rebooting your device and waiting 5 minutes for it to load. Then try deploy again.")
+        XCTAssertNil(presentation.failureGuidance)
         XCTAssertEqual(presentation.timeline?.items.first?.title, "Find Payload Volume")
         XCTAssertEqual(presentation.timeline?.items.first?.state, .failed)
         XCTAssertNil(presentation.completion)

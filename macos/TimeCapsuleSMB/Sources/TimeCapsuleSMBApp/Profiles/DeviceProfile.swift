@@ -149,6 +149,7 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
     var retryable: Bool
     var suggestedOperation: String?
     var docsAnchor: String?
+    var localizationKey: String?
 
     init(
         title: String,
@@ -157,7 +158,8 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
         actionIDs: [String],
         retryable: Bool,
         suggestedOperation: String?,
-        docsAnchor: String?
+        docsAnchor: String?,
+        localizationKey: String? = nil
     ) {
         self.title = title
         self.message = message
@@ -166,6 +168,7 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
         self.retryable = retryable
         self.suggestedOperation = suggestedOperation
         self.docsAnchor = docsAnchor
+        self.localizationKey = localizationKey
     }
 
     init(_ recovery: BackendRecoveryPayload) {
@@ -176,7 +179,8 @@ struct DeviceRecoverySnapshot: Codable, Equatable {
             actionIDs: recovery.actionIDs,
             retryable: recovery.retryable,
             suggestedOperation: recovery.suggestedOperation,
-            docsAnchor: recovery.docsAnchor
+            docsAnchor: recovery.docsAnchor,
+            localizationKey: recovery.localizationKey
         )
     }
 }

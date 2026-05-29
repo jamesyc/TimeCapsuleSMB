@@ -238,6 +238,9 @@ enum DeployFailureGuidancePolicy {
         case "auth_failed", "validation_failed", "confirmation_required", "confirmation_cancelled":
             return nil
         default:
+            if error.recovery?.hasGuidanceText == true {
+                return nil
+            }
             return L10n.string("deploy.failure.reboot_guidance")
         }
     }

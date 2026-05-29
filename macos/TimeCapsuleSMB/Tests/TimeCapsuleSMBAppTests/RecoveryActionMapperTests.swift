@@ -2,6 +2,11 @@ import XCTest
 @testable import TimeCapsuleSMBApp
 
 final class RecoveryActionMapperTests: XCTestCase {
+    override func tearDown() {
+        L10n.apply(language: .system)
+        super.tearDown()
+    }
+
     func testAuthFailureStartsWithReplacePassword() {
         let error = BackendErrorViewModel(operation: "doctor", code: "auth_failed", message: "Password rejected.")
 
@@ -72,5 +77,78 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertFalse(actions.contains(where: { $0.kind == .openFinder }))
         XCTAssertFalse(actions.contains(where: { $0.kind == .installSMB }))
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
+    }
+
+    func testRecoveryGuidancePresentationLocalizesRebootTimeoutDetails() throws {
+        let recovery = try recoveryValue(
+            title: "Reboot did not finish",
+            actions: [
+                "Wait a few more minutes.",
+                "If the device is reachable at a new IP, update TC_HOST or rerun configure.",
+                "Make sure you are connected to the same network or Wi-Fi as the device.",
+                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot."
+            ],
+            actionIDs: ["run_checkup"],
+            message: "The device went down but SSH did not return before the timeout.",
+            localizationKey: "deploy.remote_error.wait_for_reboot_up"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "remote_error",
+            message: "Timed out waiting for SSH after reboot.",
+            recovery: recovery
+        )
+
+        L10n.apply(language: .english)
+        let english = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(english.title, "Reboot did not finish")
+        XCTAssertEqual(
+            english.detail,
+            "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address."
+        )
+        XCTAssertEqual(english.steps.count, 4)
+        XCTAssertEqual(english.steps[1], "If the device is reachable at a new IP, update TC_HOST or rerun configure.")
+
+        L10n.apply(language: .simplifiedChinese)
+        let chinese = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(chinese.title, "重启未完成")
+        XCTAssertEqual(chinese.steps[0], "再等待几分钟。")
+        XCTAssertEqual(chinese.steps.count, 4)
+    }
+
+    func testRecoveryGuidancePresentationSuppressesDuplicateMessage() throws {
+        let recovery = try recoveryValue(
+            title: "No HFS volumes found",
+            actions: [],
+            message: "No HFS volumes found"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "remote_error",
+            message: "No HFS volumes found",
+            recovery: recovery
+        )
+
+        let presentation = RecoveryGuidancePresentation(error: error)
+
+        XCTAssertNil(presentation.detail)
+        XCTAssertTrue(presentation.steps.isEmpty)
+    }
+
+    func testDeployGuidanceUsesStructuredRecoveryInsteadOfGenericTip() throws {
+        let recovery = try recoveryValue(
+            title: "Reboot did not finish",
+            actions: ["Wait a few more minutes."],
+            message: "The payload was uploaded.",
+            localizationKey: "deploy.remote_error.wait_for_reboot_up"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "remote_error",
+            message: "Timed out waiting for SSH after reboot.",
+            recovery: recovery
+        )
+
+        XCTAssertNil(DeployFailureGuidancePolicy.guidance(for: error))
     }
 }

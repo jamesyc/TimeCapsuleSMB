@@ -1016,6 +1016,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
     let retryable: Bool
     let suggestedOperation: String?
     let docsAnchor: String?
+    let localizationKey: String?
 
     enum CodingKeys: String, CodingKey {
         case title
@@ -1025,6 +1026,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         case retryable
         case suggestedOperation = "suggested_operation"
         case docsAnchor = "docs_anchor"
+        case localizationKey = "localization_key"
     }
 
     init(
@@ -1034,7 +1036,8 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         actionIDs: [String],
         retryable: Bool,
         suggestedOperation: String?,
-        docsAnchor: String?
+        docsAnchor: String?,
+        localizationKey: String? = nil
     ) {
         self.title = title
         self.message = message
@@ -1043,6 +1046,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         self.retryable = retryable
         self.suggestedOperation = suggestedOperation
         self.docsAnchor = docsAnchor
+        self.localizationKey = localizationKey
     }
 
     init(_ snapshot: DeviceRecoverySnapshot) {
@@ -1053,7 +1057,8 @@ struct BackendRecoveryPayload: Decodable, Equatable {
             actionIDs: snapshot.actionIDs,
             retryable: snapshot.retryable,
             suggestedOperation: snapshot.suggestedOperation,
-            docsAnchor: snapshot.docsAnchor
+            docsAnchor: snapshot.docsAnchor,
+            localizationKey: snapshot.localizationKey
         )
     }
 
@@ -1066,5 +1071,22 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         self.retryable = try container.decode(Bool.self, forKey: .retryable)
         self.suggestedOperation = try container.decodeIfPresent(String.self, forKey: .suggestedOperation)
         self.docsAnchor = try container.decodeIfPresent(String.self, forKey: .docsAnchor)
+        self.localizationKey = try container.decodeIfPresent(String.self, forKey: .localizationKey)
+    }
+}
+
+extension BackendRecoveryPayload {
+    var hasGuidanceText: Bool {
+        let titleText = title.normalizedRecoveryText
+        if let message, !message.normalizedRecoveryText.isEmpty, message.normalizedRecoveryText != titleText {
+            return true
+        }
+        return actions.contains { !$0.normalizedRecoveryText.isEmpty }
+    }
+}
+
+private extension String {
+    var normalizedRecoveryText: String {
+        trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
