@@ -6,12 +6,12 @@ import time
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS
+from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS, PS_CAPTURE_COMMAND
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes, ssh_opts_use_proxy
@@ -37,6 +37,16 @@ REMOTE_LOG_TAIL_LINES = 80
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
 REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
+MDNS_BINARY_PROBE_TIMEOUT_SECONDS = 8
+MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS = 12
+MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS = 24
+MDNS_FSTAT_PROBE_TIMEOUT_SECONDS = 16
+MDNS_READINESS_PROBE_TIMEOUT_SECONDS = (
+    MDNS_BINARY_PROBE_TIMEOUT_SECONDS
+    + MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS
+    + MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS
+    + MDNS_FSTAT_PROBE_TIMEOUT_SECONDS
+)
 NETBSD4_LOGIN_RC_LOCAL_MARKER = b"/mnt/Flash/rc.local"
 NETBSD4_LOGIN_PATH = "/etc/rc.d/LOGIN"
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
@@ -487,18 +497,38 @@ class RemoteInterfaceCandidate:
     loopback: bool
 
 
-@dataclass(frozen=True)
-class ManagedSmbdProbeResult:
-    ready: bool
-    detail: str
-    lines: tuple[str, ...] = ()
+ProbeStepStatus = Literal["pass", "fail", "timeout", "skip"]
 
 
 @dataclass(frozen=True)
-class ManagedMdnsTakeoverProbeResult:
+class ProbeStepResult:
+    id: str
+    status: ProbeStepStatus
+    detail: str
+    timeout_seconds: int | None = None
+    duration_seconds: float | None = None
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int | None = None
+
+    @property
+    def line(self) -> str:
+        if self.status == "pass":
+            return f"PASS:{self.detail}"
+        if self.status == "skip":
+            return f"SKIP:{self.detail}"
+        return f"FAIL:{self.detail}"
+
+
+@dataclass(frozen=True)
+class ReadinessProbeResult:
     ready: bool
     detail: str
-    lines: tuple[str, ...] = ()
+    steps: tuple[ProbeStepResult, ...] = ()
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        return tuple(step.line for step in self.steps if step.detail)
 
 
 @dataclass(frozen=True)
@@ -513,9 +543,17 @@ class RemoteNetworkCapabilitiesProbeResult:
 class ManagedRuntimeProbeResult:
     ready: bool
     detail: str
-    smbd: ManagedSmbdProbeResult
-    mdns: ManagedMdnsTakeoverProbeResult
-    lines: tuple[str, ...] = ()
+    smbd: ReadinessProbeResult
+    mdns: ReadinessProbeResult
+    extra_steps: tuple[ProbeStepResult, ...] = ()
+
+    @property
+    def steps(self) -> tuple[ProbeStepResult, ...]:
+        return self.smbd.steps + self.mdns.steps + self.extra_steps
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        return tuple(step.line for step in self.steps if step.detail)
 
 
 @dataclass(frozen=True)
@@ -994,17 +1032,145 @@ def _probe_lines(stdout: str) -> tuple[str, ...]:
     return tuple(line.strip() for line in stdout.splitlines() if line.strip())
 
 
-def _probe_detail(lines: tuple[str, ...], default: str) -> str:
-    failures = [line.removeprefix("FAIL:") for line in lines if line.startswith("FAIL:")]
+def _probe_step_from_line(index: int, line: str) -> ProbeStepResult:
+    if line.startswith("PASS:"):
+        return ProbeStepResult(id=f"remote_{index}", status="pass", detail=line.removeprefix("PASS:"))
+    if line.startswith("FAIL:"):
+        return ProbeStepResult(id=f"remote_{index}", status="fail", detail=line.removeprefix("FAIL:"))
+    if line.startswith("SKIP:"):
+        return ProbeStepResult(id=f"remote_{index}", status="skip", detail=line.removeprefix("SKIP:"))
+    return ProbeStepResult(id=f"remote_{index}", status="fail", detail=line)
+
+
+def _probe_steps_from_lines(lines: tuple[str, ...]) -> tuple[ProbeStepResult, ...]:
+    return tuple(_probe_step_from_line(index, line) for index, line in enumerate(lines))
+
+
+def _probe_detail_from_steps(steps: tuple[ProbeStepResult, ...], default: str) -> str:
+    failures = [step.detail for step in steps if step.status in {"fail", "timeout"}]
     if failures:
         return "; ".join(failures)
-    passes = [line.removeprefix("PASS:") for line in lines if line.startswith("PASS:")]
+    passes = [step.detail for step in steps if step.status == "pass"]
     if passes:
         return "; ".join(passes)
     return default
 
 
-def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedSmbdProbeResult:
+def _readiness_result_from_lines(
+    *,
+    ready: bool,
+    lines: tuple[str, ...],
+    default_detail: str,
+) -> ReadinessProbeResult:
+    steps = _probe_steps_from_lines(lines)
+    return ReadinessProbeResult(
+        ready=ready,
+        detail=_probe_detail_from_steps(steps, default_detail),
+        steps=steps,
+    )
+
+
+def _readiness_result_from_steps(
+    *,
+    ready: bool,
+    steps: list[ProbeStepResult],
+    default_detail: str,
+) -> ReadinessProbeResult:
+    tuple_steps = tuple(steps)
+    return ReadinessProbeResult(
+        ready=ready,
+        detail=_probe_detail_from_steps(tuple_steps, default_detail),
+        steps=tuple_steps,
+    )
+
+
+def _remaining_probe_timeout(deadline: float, default_timeout_seconds: int) -> int:
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        return 1
+    return max(1, min(default_timeout_seconds, remaining))
+
+
+def _run_timed_probe_step(
+    connection: SshConnection,
+    *,
+    step_id: str,
+    timeout_detail: str,
+    script: str,
+    timeout_seconds: int,
+) -> tuple[ProbeStepResult, subprocess.CompletedProcess[str] | None]:
+    started = time.monotonic()
+    try:
+        proc = run_ssh(
+            connection,
+            f"/bin/sh -c {shlex.quote(script)}",
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except SshCommandTimeout:
+        return (
+            ProbeStepResult(
+                id=step_id,
+                status="timeout",
+                detail=f"{timeout_detail} timed out after {timeout_seconds}s",
+                timeout_seconds=timeout_seconds,
+                duration_seconds=time.monotonic() - started,
+            ),
+            None,
+        )
+    status: ProbeStepStatus = "pass" if proc.returncode == 0 else "fail"
+    return (
+        ProbeStepResult(
+            id=step_id,
+            status=status,
+            detail=f"{timeout_detail} completed" if status == "pass" else f"{timeout_detail} failed with exit code {proc.returncode}",
+            timeout_seconds=timeout_seconds,
+            duration_seconds=time.monotonic() - started,
+            stdout=proc.stdout or "",
+            stderr=proc.stderr or "",
+            returncode=proc.returncode,
+        ),
+        proc,
+    )
+
+
+def _append_step(steps: list[ProbeStepResult], step_id: str, status: ProbeStepStatus, detail: str) -> None:
+    steps.append(ProbeStepResult(id=step_id, status=status, detail=detail))
+
+
+def _parse_live_pids_for_ucomm(ps_out: str, ucomm: str) -> tuple[str, ...]:
+    pids: list[str] = []
+    for raw_line in ps_out.splitlines():
+        fields = raw_line.split()
+        if len(fields) < 5:
+            continue
+        pid, _ppid, stat, _time_field, proc_ucomm = fields[:5]
+        if stat.startswith("Z") or proc_ucomm != ucomm:
+            continue
+        if pid.isdigit():
+            pids.append(pid)
+    return tuple(pids)
+
+
+def _process_present_for_ucomm(ps_out: str, ucomm: str) -> bool:
+    return bool(_parse_live_pids_for_ucomm(ps_out, ucomm))
+
+
+def _fstat_has_udp_port(fstat_out: str, proc_name: str, family: str, port: int) -> bool:
+    socket_family = "internet6" if family == "ipv6" else "internet"
+    needle = f" {socket_family} dgram udp "
+    port_suffix = f":{port}"
+    for line in fstat_out.splitlines():
+        if proc_name in line and needle in line and port_suffix in line:
+            return True
+    return False
+
+
+def _mdns_bound_required_5353(fstat_out: str, families: tuple[str, ...]) -> bool:
+    return bool(families) and all(_fstat_has_udp_port(fstat_out, "mdns-advertiser", family, 5353) for family in families)
+
+
+def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ReadinessProbeResult:
     script = rf'''
 {SMBD_STATUS_HELPERS}
 if [ ! -x /usr/bin/fstat ]; then
@@ -1028,53 +1194,155 @@ exit "$status"
         )
     except SshCommandTimeout:
         lines = ("FAIL:managed smbd readiness probe timed out",)
-        return ManagedSmbdProbeResult(ready=False, detail=_probe_detail(lines, "managed smbd not ready"), lines=lines)
+        return _readiness_result_from_lines(ready=False, lines=lines, default_detail="managed smbd not ready")
     lines = _probe_lines(proc.stdout)
     if proc.returncode == 0:
-        return ManagedSmbdProbeResult(ready=True, detail=_probe_detail(lines, "managed smbd ready"), lines=lines)
-    return ManagedSmbdProbeResult(ready=False, detail=_probe_detail(lines, "managed smbd not ready"), lines=lines)
+        return _readiness_result_from_lines(ready=True, lines=lines, default_detail="managed smbd ready")
+    return _readiness_result_from_lines(ready=False, lines=lines, default_detail="managed smbd not ready")
 
 
-def probe_managed_mdns_takeover_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
-    script = rf'''
-{SMBD_STATUS_HELPERS}
-if [ ! -x /usr/bin/fstat ]; then
-    echo "FAIL:fstat missing"
-    exit 1
+def probe_managed_mdns_takeover_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = MDNS_READINESS_PROBE_TIMEOUT_SECONDS,
+) -> ReadinessProbeResult:
+    steps: list[ProbeStepResult] = []
+    deadline = time.monotonic() + timeout_seconds
+
+    binary_script = r'''
+RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
+if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
+    echo "missing"
+    exit 2
 fi
-ps_out="$(capture_ps_out)"
-out="$(capture_fstat_for_ucomm "$ps_out" mdns-advertiser)"
-status=0
-if ! describe_managed_mdns_status "$ps_out" "$out"; then
-    status=1
+if [ ! -x "$RUNTIME_MDNS_BIN" ]; then
+    echo "not_executable"
+    exit 3
 fi
-exit "$status"
+echo "$RUNTIME_MDNS_BIN"
 '''
-    try:
-        proc = run_ssh(
-            connection,
-            f"/bin/sh -c {shlex.quote(script)}",
-            check=False,
-            timeout=timeout_seconds,
+    binary_step, binary_proc = _run_timed_probe_step(
+        connection,
+        step_id="mdns_binary_probe",
+        timeout_detail="mdns-advertiser binary probe",
+        script=binary_script,
+        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_BINARY_PROBE_TIMEOUT_SECONDS),
+    )
+    if binary_step.status == "timeout":
+        steps.append(binary_step)
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    if binary_proc is None or binary_proc.returncode != 0:
+        stdout = ("" if binary_proc is None else binary_proc.stdout).strip()
+        if stdout == "missing":
+            detail = "mdns-advertiser binary missing at /mnt/Flash/mdns-advertiser"
+        elif stdout == "not_executable":
+            detail = "mdns-advertiser binary is not executable at /mnt/Flash/mdns-advertiser"
+        else:
+            rc = "unknown" if binary_proc is None else str(binary_proc.returncode)
+            detail = f"mdns-advertiser binary probe failed with exit code {rc}"
+        _append_step(steps, "mdns_binary", "fail", detail)
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    _append_step(steps, "mdns_binary", "pass", "mdns-advertiser binary is executable")
+
+    ps_step, ps_proc = _run_timed_probe_step(
+        connection,
+        step_id="mdns_process_table_probe",
+        timeout_detail="mDNS process table probe",
+        script=PS_CAPTURE_COMMAND,
+        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS),
+    )
+    if ps_step.status == "timeout":
+        steps.append(ps_step)
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    ps_out = "" if ps_proc is None else ps_proc.stdout
+    mdns_pids = _parse_live_pids_for_ucomm(ps_out, "mdns-advertiser")
+    apple_mdns_running = _process_present_for_ucomm(ps_out, "mDNSResponder")
+
+    if mdns_pids:
+        _append_step(steps, "mdns_process", "pass", "mdns-advertiser process is running")
+
+    families_script = r'''
+RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
+"$RUNTIME_MDNS_BIN" --print-mdns-socket-families
+'''
+    families_step, families_proc = _run_timed_probe_step(
+        connection,
+        step_id="mdns_socket_families_probe",
+        timeout_detail="mdns-advertiser socket family probe",
+        script=families_script,
+        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS),
+    )
+    if families_step.status == "timeout":
+        steps.append(families_step)
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+
+    family_rc = 1 if families_proc is None else families_proc.returncode
+    families_out = "" if families_proc is None else families_proc.stdout
+    mdns_families = _capability_family_tokens(families_out)
+    if family_rc == 11:
+        if mdns_pids:
+            _append_step(steps, "mdns_auto_ip", "fail", "mdns-advertiser is waiting for a usable address")
+        else:
+            _append_step(steps, "mdns_process", "fail", "mDNS startup deferred; no usable address has appeared yet")
+        if apple_mdns_running:
+            _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
+        else:
+            _append_step(steps, "apple_mdns", "pass", "Apple mDNSResponder is stopped")
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    if family_rc != 0:
+        _append_step(
+            steps,
+            "mdns_socket_families",
+            "fail",
+            f"mdns-advertiser mDNS socket family probe failed with exit code {family_rc}",
         )
-    except SshCommandTimeout:
-        lines = ("FAIL:managed mDNS takeover probe timed out",)
-        return ManagedMdnsTakeoverProbeResult(
-            ready=False,
-            detail=_probe_detail(lines, "managed mDNS takeover not active"),
-            lines=lines,
-        )
-    lines = _probe_lines(proc.stdout)
-    if proc.returncode == 0:
-        return ManagedMdnsTakeoverProbeResult(
-            ready=True,
-            detail=_probe_detail(lines, "managed mDNS takeover active"),
-            lines=lines,
-        )
-    return ManagedMdnsTakeoverProbeResult(
-        ready=False,
-        detail=_probe_detail(lines, "managed mDNS takeover not active"),
-        lines=lines,
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    if not mdns_families:
+        _append_step(steps, "mdns_socket_families", "fail", "mdns-advertiser mDNS socket family probe returned no supported family")
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    _append_step(steps, "mdns_socket_families", "pass", f"mdns-advertiser socket families active: {' '.join(mdns_families)}")
+
+    if not mdns_pids:
+        _append_step(steps, "mdns_process", "fail", "mdns-advertiser process is not running")
+        if apple_mdns_running:
+            _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
+        else:
+            _append_step(steps, "apple_mdns", "pass", "Apple mDNSResponder is stopped")
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+
+    fstat_script = "if [ ! -x /usr/bin/fstat ]; then echo fstat_missing; exit 127; fi; " + " ".join(
+        f"/usr/bin/fstat -p {pid} 2>/dev/null || true;" for pid in mdns_pids
+    )
+    fstat_step, fstat_proc = _run_timed_probe_step(
+        connection,
+        step_id="mdns_fstat_probe",
+        timeout_detail="mdns-advertiser fstat probe",
+        script=fstat_script,
+        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_FSTAT_PROBE_TIMEOUT_SECONDS),
+    )
+    if fstat_step.status == "timeout":
+        steps.append(fstat_step)
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    if fstat_proc is None or fstat_proc.returncode == 127:
+        _append_step(steps, "mdns_fstat", "fail", "fstat missing")
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+    fstat_out = "" if fstat_proc is None else fstat_proc.stdout
+    if _mdns_bound_required_5353(fstat_out, mdns_families):
+        _append_step(steps, "mdns_udp_5353", "pass", "mdns-advertiser bound to required UDP 5353 listeners")
+        _append_step(steps, "mdns_bind_address", "pass", "mdns-advertiser bind address active")
+    else:
+        _append_step(steps, "mdns_udp_5353", "fail", "mdns-advertiser is not bound to required UDP 5353 listener")
+
+    if apple_mdns_running:
+        _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
+    else:
+        _append_step(steps, "apple_mdns", "pass", "Apple mDNSResponder is stopped")
+
+    ready = all(step.status == "pass" for step in steps)
+    return _readiness_result_from_steps(
+        ready=ready,
+        steps=steps,
+        default_detail="managed mDNS takeover active" if ready else "managed mDNS takeover not active",
     )
 
 
@@ -1185,8 +1453,8 @@ def probe_managed_runtime_conn(
     mdns_settle_seconds: float = 3.0,
 ) -> ManagedRuntimeProbeResult:
     deadline = time.monotonic() + timeout_seconds
-    last_smbd = ManagedSmbdProbeResult(ready=False, detail="managed smbd not ready")
-    last_mdns = ManagedMdnsTakeoverProbeResult(ready=False, detail="managed mDNS takeover not active")
+    last_smbd = ReadinessProbeResult(ready=False, detail="managed smbd not ready")
+    last_mdns = ReadinessProbeResult(ready=False, detail="managed mDNS takeover not active")
     smbd_ready = False
     mdns_ready = False
 
@@ -1200,27 +1468,38 @@ def probe_managed_runtime_conn(
         if not mdns_ready:
             if not smbd_ready:
                 time.sleep(smbd_mdns_stagger_seconds)
-            probe_timeout = max(1, min(20, int(deadline - time.monotonic())))
+            probe_timeout = max(1, min(MDNS_READINESS_PROBE_TIMEOUT_SECONDS, int(deadline - time.monotonic())))
             last_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=probe_timeout)
             mdns_ready = last_mdns.ready
 
         if smbd_ready and mdns_ready:
             time.sleep(mdns_settle_seconds)
-            probe_timeout = max(1, min(20, int(deadline - time.monotonic())))
+            probe_timeout = max(1, min(MDNS_READINESS_PROBE_TIMEOUT_SECONDS, int(deadline - time.monotonic())))
             settled_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=probe_timeout)
             if settled_mdns.ready:
-                lines = last_smbd.lines + settled_mdns.lines + ("PASS:mdns-advertiser remained healthy after settle delay",)
                 return ManagedRuntimeProbeResult(
                     ready=True,
                     detail="managed runtime is ready",
                     smbd=last_smbd,
                     mdns=settled_mdns,
-                    lines=lines,
+                    extra_steps=(
+                        ProbeStepResult(
+                            id="mdns_settle",
+                            status="pass",
+                            detail="mdns-advertiser remained healthy after settle delay",
+                        ),
+                    ),
                 )
-            last_mdns = ManagedMdnsTakeoverProbeResult(
+            last_mdns = ReadinessProbeResult(
                 ready=False,
                 detail=f"{settled_mdns.detail}; mdns-advertiser did not survive settle delay",
-                lines=settled_mdns.lines + ("FAIL:mdns-advertiser did not remain healthy after settle delay",),
+                steps=settled_mdns.steps + (
+                    ProbeStepResult(
+                        id="mdns_settle",
+                        status="fail",
+                        detail="mdns-advertiser did not remain healthy after settle delay",
+                    ),
+                ),
             )
             mdns_ready = False
 
@@ -1230,13 +1509,18 @@ def probe_managed_runtime_conn(
             time.sleep(sleep_for)
 
     timeout_detail = f"runtime verification timed out after {timeout_seconds}s"
-    lines = last_smbd.lines + last_mdns.lines + (f"FAIL:{timeout_detail}",)
     return ManagedRuntimeProbeResult(
         ready=False,
         detail=f"{timeout_detail}; {last_smbd.detail}; {last_mdns.detail}",
         smbd=last_smbd,
         mdns=last_mdns,
-        lines=lines,
+        extra_steps=(
+            ProbeStepResult(
+                id="runtime_timeout",
+                status="fail",
+                detail=timeout_detail,
+            ),
+        ),
     )
 
 

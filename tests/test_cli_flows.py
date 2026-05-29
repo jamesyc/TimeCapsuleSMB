@@ -27,12 +27,24 @@ from timecapsulesmb.cli.flows import (
     verify_managed_runtime_flow,
 )
 from timecapsulesmb.device.probe import (
-    ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
-    ManagedSmbdProbeResult,
+    ProbeStepResult,
+    ReadinessProbeResult,
 )
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+
+
+def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
+    steps = []
+    for index, line in enumerate(lines):
+        if line.startswith("PASS:"):
+            steps.append(ProbeStepResult(f"test_{index}", "pass", line.removeprefix("PASS:")))
+        elif line.startswith("FAIL:"):
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line.removeprefix("FAIL:")))
+        else:
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line))
+    return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
 
 
 class FakeCommandContext:
@@ -66,14 +78,13 @@ class CliFlowTests(unittest.TestCase):
     def managed_runtime_probe(self, ready: bool) -> ManagedRuntimeProbeResult:
         status = "PASS" if ready else "FAIL"
         detail = "managed runtime is ready" if ready else "managed runtime is not ready"
-        smbd = ManagedSmbdProbeResult(ready, detail, (f"{status}:managed smbd ready",))
-        mdns = ManagedMdnsTakeoverProbeResult(ready, detail, (f"{status}:managed mDNS takeover active",))
+        smbd = readiness_result(ready, detail, (f"{status}:managed smbd ready",))
+        mdns = readiness_result(ready, detail, (f"{status}:managed mDNS takeover active",))
         return ManagedRuntimeProbeResult(
             ready=ready,
             detail=detail,
             smbd=smbd,
             mdns=mdns,
-            lines=smbd.lines + mdns.lines,
         )
 
     def test_wait_for_tcp_port_state_checks_before_sleeping(self) -> None:
@@ -533,14 +544,14 @@ class CliFlowTests(unittest.TestCase):
 
     def test_verify_managed_runtime_flow_includes_runtime_timeout_detail(self) -> None:
         command_context = FakeCommandContext()
-        smbd = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
-        mdns = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
+        smbd = readiness_result(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        mdns = readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
         result = ManagedRuntimeProbeResult(
             ready=False,
             detail="runtime verification timed out after 180s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
             smbd=smbd,
             mdns=mdns,
-            lines=smbd.lines + mdns.lines + ("FAIL:runtime verification timed out after 180s",),
+            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 180s"),),
         )
         output = io.StringIO()
         with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=result):

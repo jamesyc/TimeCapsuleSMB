@@ -40,13 +40,13 @@ def render_managed_runtime_verification(
     lines: list[str] = []
     if heading:
         lines.append(heading)
-    for line in result.lines:
-        if line.startswith("PASS:"):
-            lines.append(f"  ok: {line.removeprefix('PASS:')}")
-        elif line.startswith("FAIL:"):
-            lines.append(f"  failed: {line.removeprefix('FAIL:')}")
-        elif line:
-            lines.append(f"  {line}")
+    for step in result.steps:
+        if step.status == "pass":
+            lines.append(f"  ok: {step.detail}")
+        elif step.status == "skip":
+            lines.append(f"  skipped: {step.detail}")
+        elif step.detail:
+            lines.append(f"  failed: {step.detail}")
     return lines
 
 

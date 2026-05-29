@@ -94,9 +94,9 @@ from timecapsulesmb.device.processes import (
     render_watchdog_process_present,
 )
 from timecapsulesmb.device.probe import (
-    ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
-    ManagedSmbdProbeResult,
+    ProbeStepResult,
+    ReadinessProbeResult,
     SMBD_STATUS_HELPERS,
     RcLocalAutostartProbeResult,
     derive_runtime_naming_identity,
@@ -114,6 +114,18 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.device.storage import MaStVolume, PayloadHome, mounted_mast_volumes_conn
 from timecapsulesmb.services.activation import decide_manual_activation, decide_netbsd4_post_reboot_activation
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+
+
+def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
+    steps = []
+    for index, line in enumerate(lines):
+        if line.startswith("PASS:"):
+            steps.append(ProbeStepResult(f"test_{index}", "pass", line.removeprefix("PASS:")))
+        elif line.startswith("FAIL:"):
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line.removeprefix("FAIL:")))
+        else:
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line))
+    return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -6278,9 +6290,8 @@ int main(void) {{
         result = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
-            smbd=ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
-            lines=("PASS:managed smbd ready", "PASS:managed mDNS takeover active"),
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
@@ -6300,9 +6311,8 @@ int main(void) {{
         result = ManagedRuntimeProbeResult(
             ready=False,
             detail="managed runtime is not ready",
-            smbd=ManagedSmbdProbeResult(False, "managed smbd is not ready", ("FAIL:managed smbd is not ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
-            lines=("FAIL:managed smbd is not ready", "PASS:managed mDNS takeover active"),
+            smbd=readiness_result(False, "managed smbd is not ready", ("FAIL:managed smbd is not ready",)),
+            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
@@ -6789,43 +6799,92 @@ fi
         self.assertEqual(result.detail, "managed smbd readiness probe timed out")
         self.assertEqual(result.lines, ("FAIL:managed smbd readiness probe timed out",))
 
-    def test_probe_managed_mdns_takeover_single_shot_checks_process_binding_and_apple_responder(self) -> None:
+    def test_probe_managed_mdns_takeover_uses_timed_subprobes(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0, stdout=""),
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            ],
         ) as run_ssh_mock:
-            self.assertTrue(probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45).ready)
-        remote_command = run_ssh_mock.call_args.args[1]
-        self.assertIn("capture_ps_out()", remote_command)
-        self.assertIn("mdns_process_present()", remote_command)
-        self.assertIn("apple_mdns_present()", remote_command)
-        self.assertIn('capture_fstat_for_ucomm "$ps_out" mdns-advertiser', remote_command)
-        self.assertIn('/usr/bin/fstat -p "$1"', remote_command)
-        self.assertIn("mdns_bound_5353()", remote_command)
-        self.assertIn("--print-mdns-socket-families", remote_command)
-        self.assertNotIn("--check-auto-ip", remote_command)
-        self.assertNotIn('out="$(fstat 2>&1)"', remote_command)
-        self.assertNotIn("max_attempts", remote_command)
-        self.assertNotIn("sleep 5", remote_command)
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
 
-    def test_probe_managed_mdns_takeover_returns_detail_when_not_ready(self) -> None:
+        self.assertTrue(result.ready)
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list], [8, 12, 24, 16])
+        remote_commands = [call.args[1] for call in run_ssh_mock.call_args_list]
+        self.assertIn("[ ! -e \"$RUNTIME_MDNS_BIN\" ]", remote_commands[0])
+        self.assertIn("ps axww", remote_commands[1])
+        self.assertIn("--print-mdns-socket-families", remote_commands[2])
+        self.assertIn("/usr/bin/fstat -p 123", remote_commands[3])
+        self.assertIn("PASS:mdns-advertiser bound to required UDP 5353 listeners", result.lines)
+        self.assertIn("PASS:Apple mDNSResponder is stopped", result.lines)
+
+    def test_probe_managed_mdns_takeover_reports_apple_responder_conflict(self) -> None:
+        ps_out = (
+            "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+            "124 1 S 0:00 mDNSResponder /usr/sbin/mDNSResponder\n"
+        )
+        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout="FAIL:Apple mDNSResponder is still running\n"),
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            ],
         ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "Apple mDNSResponder is still running")
 
-    def test_probe_managed_mdns_takeover_returns_detail_when_probe_times_out(self) -> None:
+    def test_probe_managed_mdns_takeover_reports_socket_family_timeout(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: runtime probe"),
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: socket families"),
+            ],
         ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
         self.assertFalse(result.ready)
-        self.assertEqual(result.detail, "managed mDNS takeover probe timed out")
-        self.assertEqual(result.lines, ("FAIL:managed mDNS takeover probe timed out",))
+        self.assertEqual(result.detail, "mdns-advertiser socket family probe timed out after 24s")
+        self.assertIn("FAIL:mdns-advertiser socket family probe timed out after 24s", result.lines)
+
+    def test_probe_managed_mdns_takeover_reports_process_table_timeout(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+            ],
+        ):
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "mDNS process table probe timed out after 12s")
+        self.assertIn("FAIL:mDNS process table probe timed out after 12s", result.lines)
+
+    def test_probe_managed_mdns_takeover_reports_fstat_timeout(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: fstat"),
+            ],
+        ):
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "mdns-advertiser fstat probe timed out after 16s")
+        self.assertIn("FAIL:mdns-advertiser fstat probe timed out after 16s", result.lines)
 
     def test_probe_netbsd4_rc_local_autostart_detects_login_marker(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
@@ -6851,8 +6910,8 @@ fi
         runtime_ready = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
-            smbd=ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
         with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime_ready) as runtime_mock:
             decision = decide_manual_activation(SshConnection("host", "pw", "-o foo"), runtime_probe_timeout_seconds=9)
@@ -6878,9 +6937,9 @@ fi
         self.assertIs(decision.autostart, autostart)
 
     def test_probe_managed_runtime_polls_both_probes_and_rechecks_mdns_after_settle(self) -> None:
-        smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
-        mdns_not_ready = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",))
-        mdns_ready = ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
+        smbd_ready = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns_not_ready = readiness_result(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",))
+        mdns_ready = readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.2, 1.3, 1.4, 5.1, 5.2, 5.3, 10.5, 10.6, 10.7])
         with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", side_effect=[smbd_ready, smbd_ready]) as smbd_mock:
@@ -6895,9 +6954,9 @@ fi
         self.assertIn(mock.call(3.0), sleep_mock.call_args_list)
 
     def test_probe_managed_runtime_continues_polling_after_single_probe_timeout(self) -> None:
-        smbd_timeout = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
-        smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
-        mdns_ready = ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
+        smbd_timeout = readiness_result(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        smbd_ready = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns_ready = readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
         with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", side_effect=[smbd_timeout, smbd_ready]) as smbd_mock:
@@ -6916,8 +6975,8 @@ fi
         self.assertEqual(mdns_mock.call_count, 2)
 
     def test_probe_managed_runtime_reports_readable_timeout(self) -> None:
-        smbd_timeout = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
-        mdns_timeout = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
+        smbd_timeout = readiness_result(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        mdns_timeout = readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.1, 0.2, 0.3, 1.1])
         with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", return_value=smbd_timeout):

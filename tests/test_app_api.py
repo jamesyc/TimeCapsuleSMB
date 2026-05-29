@@ -30,11 +30,11 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, ConfigError, parse_env_file
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
-    ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
-    ManagedSmbdProbeResult,
     ProbeResult,
+    ProbeStepResult,
     ProbedDeviceState,
+    ReadinessProbeResult,
 )
 from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
@@ -145,15 +145,26 @@ def unreachable_probed_state() -> ProbedDeviceState:
 def managed_runtime_probe(ready: bool = True) -> ManagedRuntimeProbeResult:
     status = "PASS" if ready else "FAIL"
     detail = "managed runtime is ready" if ready else "managed runtime is not ready"
-    smbd = ManagedSmbdProbeResult(ready, detail, (f"{status}:managed smbd ready",))
-    mdns = ManagedMdnsTakeoverProbeResult(ready, detail, (f"{status}:managed mDNS takeover active",))
+    smbd = readiness_result(ready, detail, (f"{status}:managed smbd ready",))
+    mdns = readiness_result(ready, detail, (f"{status}:managed mDNS takeover active",))
     return ManagedRuntimeProbeResult(
         ready=ready,
         detail=detail,
         smbd=smbd,
         mdns=mdns,
-        lines=smbd.lines + mdns.lines,
     )
+
+
+def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
+    steps = []
+    for index, line in enumerate(lines):
+        if line.startswith("PASS:"):
+            steps.append(ProbeStepResult(f"test_{index}", "pass", line.removeprefix("PASS:")))
+        elif line.startswith("FAIL:"):
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line.removeprefix("FAIL:")))
+        else:
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line))
+    return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
 
 
 class AppApiTests(unittest.TestCase):
@@ -2514,8 +2525,8 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         context = AppOperationContext("deploy", collector.sink)
         connection = SshConnection("root@169.254.44.9", "pw", "-o foo")
-        smbd = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
-        mdns = ManagedMdnsTakeoverProbeResult(
+        smbd = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns = readiness_result(
             False,
             "managed mDNS takeover probe timed out",
             ("FAIL:managed mDNS takeover probe timed out",),
@@ -2525,7 +2536,7 @@ class AppApiTests(unittest.TestCase):
             detail="runtime verification timed out after 180s; managed smbd ready; managed mDNS takeover probe timed out",
             smbd=smbd,
             mdns=mdns,
-            lines=smbd.lines + mdns.lines + ("FAIL:runtime verification timed out after 180s",),
+            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 180s"),),
         )
         with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=verification):
             with mock.patch(

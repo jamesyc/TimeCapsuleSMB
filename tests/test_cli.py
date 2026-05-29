@@ -66,11 +66,11 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.core.paths import AppPaths
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
-    ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
-    ManagedSmbdProbeResult,
     ProbeResult,
+    ProbeStepResult,
     ProbedDeviceState,
+    ReadinessProbeResult,
     RemoteInterfaceProbeResult,
 )
 from timecapsulesmb.device.storage import (
@@ -121,6 +121,18 @@ from timecapsulesmb.install_validation import InstallCheckResult
 def make_test_gzip_member(data: bytes) -> bytes:
     compressor = zlib.compressobj(level=1, wbits=16 + zlib.MAX_WBITS)
     return compressor.compress(data) + compressor.flush()
+
+
+def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
+    steps = []
+    for index, line in enumerate(lines):
+        if line.startswith("PASS:"):
+            steps.append(ProbeStepResult(f"test_{index}", "pass", line.removeprefix("PASS:")))
+        elif line.startswith("FAIL:"):
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line.removeprefix("FAIL:")))
+        else:
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line))
+    return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
 
 
 class FastFakeZopfliGzipForCli:
@@ -312,14 +324,13 @@ class CliTests(unittest.TestCase):
     def managed_runtime_probe(self, ready: bool) -> ManagedRuntimeProbeResult:
         status = "PASS" if ready else "FAIL"
         detail = "managed runtime is ready" if ready else "managed runtime is not ready"
-        smbd = ManagedSmbdProbeResult(ready, detail, (f"{status}:managed smbd ready",))
-        mdns = ManagedMdnsTakeoverProbeResult(ready, detail, (f"{status}:managed mDNS takeover active",))
+        smbd = readiness_result(ready, detail, (f"{status}:managed smbd ready",))
+        mdns = readiness_result(ready, detail, (f"{status}:managed mDNS takeover active",))
         return ManagedRuntimeProbeResult(
             ready=ready,
             detail=detail,
             smbd=smbd,
             mdns=mdns,
-            lines=smbd.lines + mdns.lines,
         )
 
     def setUp(self) -> None:
