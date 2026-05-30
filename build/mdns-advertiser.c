@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -19,6 +20,9 @@
 #include <sys/types.h>
 #if defined(__APPLE__) || defined(__NetBSD__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
 #include <sys/sysctl.h>
+#endif
+#if defined(__NetBSD__)
+#include <dev/usb/usb.h>
 #endif
 #include <time.h>
 #include <unistd.h>
@@ -43,6 +47,14 @@
 #define AFP_DEFAULT_PORT 548
 #define AIRPORT_SERVICE_TYPE "_airport._tcp.local."
 #define AIRPORT_DEFAULT_PORT 5009
+#define RIOUSBPRINT_SERVICE_TYPE "_riousbprint._tcp.local."
+#define RIOUSBPRINT_DEFAULT_PORT 10000
+#define PDL_DATASTREAM_SERVICE_TYPE "_pdl-datastream._tcp.local."
+#define PDL_DATASTREAM_DEFAULT_PORT 9100
+#define AIRPORT_USB_PRINTER_MAX_TXT_ITEMS 12
+#define RIOUSBPRINT_MAX_TXT_ITEMS AIRPORT_USB_PRINTER_MAX_TXT_ITEMS
+#define PDL_DATASTREAM_MAX_TXT_ITEMS AIRPORT_USB_PRINTER_MAX_TXT_ITEMS
+#define IEEE1284_DEVICE_ID_MAX 1024
 #define ADISK_SYS_TXT_PREFIX "sys=waMA="
 #define ADISK_SYS_TXT_SUFFIX ",adVF=" ADISK_SYS_ADVF
 #define ADISK_DISK_TXT_ADVF_PREFIX "=adVF="
@@ -68,7 +80,7 @@
 #define AUTO_IP_STABLE_POLL_SECONDS 30
 #define MDNS_DEGRADED_RETRY_SECONDS 5
 #define MDNS_COUNTER_LOG_INTERVAL_MS 30000
-#define ADVERTISER_VERSION_CODE 2104
+#define ADVERTISER_VERSION_CODE 2106
 #define DNS_SD_SERVICE_ENUMERATION_NAME "_services._dns-sd._udp.local."
 
 #define DNS_TYPE_A 1
@@ -112,6 +124,11 @@ static volatile sig_atomic_t g_stop = 0;
 #else
 #define TC_VA_COPY(dst, src) memcpy(&(dst), &(src), sizeof(va_list))
 #endif
+#endif
+#if defined(__GNUC__)
+#define TC_UNUSED __attribute__((unused))
+#else
+#define TC_UNUSED
 #endif
 
 static void log_timestamp_prefix(FILE *stream) {
@@ -259,13 +276,24 @@ struct config {
     char airport_syvs[32];
     char airport_srcv[32];
     char airport_bjsd[16];
+    char riousbprint_instance_name[MAX_NAME];
+    char riousbprint_note[MAX_NAME];
+    char riousbprint_mfg[64];
+    char riousbprint_mdl[128];
+    char riousbprint_serial[128];
+    char riousbprint_cmd[MAX_TXT_STRING + 1];
+    unsigned int riousbprint_vendor_id;
+    unsigned int riousbprint_product_id;
     uint16_t port;
     uint16_t adisk_port;
     uint16_t afp_port;
     uint16_t airport_port;
+    uint16_t riousbprint_port;
+    uint16_t pdl_datastream_port;
     uint32_t ttl;
     int diskless;
     int advertise_afp;
+    int generated_airport_services;
     char load_snapshot_path[MAX_NAME];
     char save_snapshot_path[MAX_NAME];
     char skip_capture_if_snapshot_newer_than_boot_path[MAX_NAME];
@@ -400,6 +428,9 @@ static long long monotonic_millis(void);
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
 static int is_airport_enabled(const struct config *cfg);
+static int is_riousbprint_enabled(const struct config *cfg);
+static int is_pdl_datastream_enabled(const struct config *cfg);
+static int snapshot_record_overridden_by_generated(const struct config *cfg, const struct service_record *record);
 static int smb_enabled(const struct config *cfg);
 static int adisk_enabled(const struct config *cfg);
 static int afp_enabled(const struct config *cfg);
@@ -706,6 +737,19 @@ static void log_startup_config(const struct config *cfg) {
             cfg->device_model[0] != '\0' ? cfg->device_model : "(empty)",
             is_airport_enabled(cfg) ? "enabled" : "disabled",
             cfg->diskless ? "diskless" : "diskful");
+    if (cfg->generated_airport_services) {
+        fprintf(stderr, "mdns startup: generated AirPort services enabled\n");
+    }
+    if (is_riousbprint_enabled(cfg)) {
+        fprintf(stderr,
+                "mdns startup: USB printer instance=%s mfg=%s mdl=%s cmd=%s riousbprint_port=%u pdl_datastream_port=%u\n",
+                cfg->riousbprint_instance_name,
+                cfg->riousbprint_mfg[0] != '\0' ? cfg->riousbprint_mfg : "(empty)",
+                cfg->riousbprint_mdl[0] != '\0' ? cfg->riousbprint_mdl : "(empty)",
+                cfg->riousbprint_cmd[0] != '\0' ? cfg->riousbprint_cmd : "(none)",
+                (unsigned int)cfg->riousbprint_port,
+                (unsigned int)cfg->pdl_datastream_port);
+    }
 }
 
 static void log_send_failure(const char *stage, const struct sockaddr_in *dest, int use_snapshot_records,
@@ -984,7 +1028,7 @@ static int link_context_topology_sets_equal(const struct link_context_set *a,
 
 static void log_served_records(const struct config *cfg, const struct service_record_set *snapshot_records,
                                int use_snapshot_records) {
-    fprintf(stderr, "serving summary: source=%s\n", use_snapshot_records ? "snapshot" : "generated");
+    fprintf(stderr, "serving summary: source=%s\n", use_snapshot_records ? "generated+snapshot" : "generated");
     if (smb_enabled(cfg)) {
         fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
                 cfg->service_type, cfg->instance_name, (unsigned int)cfg->port, cfg->host_fqdn);
@@ -1012,10 +1056,29 @@ static void log_served_records(const struct config *cfg, const struct service_re
                 cfg->airport_syvs[0] != '\0' ? cfg->airport_syvs : "(none)",
                 cfg->airport_srcv[0] != '\0' ? cfg->airport_srcv : "(none)");
     }
+    if (is_riousbprint_enabled(cfg)) {
+        fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s cmd=%s\n",
+                RIOUSBPRINT_SERVICE_TYPE,
+                cfg->riousbprint_instance_name,
+                (unsigned int)cfg->riousbprint_port,
+                cfg->host_fqdn,
+                cfg->riousbprint_cmd[0] != '\0' ? cfg->riousbprint_cmd : "(none)");
+    }
+    if (is_pdl_datastream_enabled(cfg)) {
+        fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s cmd=%s\n",
+                PDL_DATASTREAM_SERVICE_TYPE,
+                cfg->riousbprint_instance_name,
+                (unsigned int)cfg->pdl_datastream_port,
+                cfg->host_fqdn,
+                cfg->riousbprint_cmd[0] != '\0' ? cfg->riousbprint_cmd : "(none)");
+    }
     if (use_snapshot_records) {
         size_t i;
         for (i = 0; i < snapshot_records->count; i++) {
             const struct service_record *record = &snapshot_records->records[i];
+            if (snapshot_record_overridden_by_generated(cfg, record)) {
+                continue;
+            }
             fprintf(stderr, "serving snapshot record[%lu]: type=%s instance=%s host=%s port=%u txt=%lu\n",
                     (unsigned long)i,
                     record->service_type,
@@ -1032,6 +1095,39 @@ static int is_suppressed_snapshot_service_type(const char *service_type) {
            name_equals(service_type, "_adisk._tcp.local.") ||
            name_equals(service_type, "_device-info._tcp.local.") ||
            name_equals(service_type, "_afpovertcp._tcp.local.");
+}
+
+static int snapshot_record_overridden_by_generated(const struct config *cfg, const struct service_record *record) {
+    char generated_instance_fqdn[MAX_NAME];
+
+    if (is_airport_enabled(cfg) && name_equals(record->service_type, cfg->airport_service_type)) {
+        if (build_instance_fqdn(generated_instance_fqdn,
+                                sizeof(generated_instance_fqdn),
+                                cfg->instance_name,
+                                cfg->airport_service_type) == 0 &&
+            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
+            return 1;
+        }
+    }
+    if (is_riousbprint_enabled(cfg) && name_equals(record->service_type, RIOUSBPRINT_SERVICE_TYPE)) {
+        if (build_instance_fqdn(generated_instance_fqdn,
+                                sizeof(generated_instance_fqdn),
+                                cfg->riousbprint_instance_name,
+                                RIOUSBPRINT_SERVICE_TYPE) == 0 &&
+            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
+            return 1;
+        }
+    }
+    if (is_pdl_datastream_enabled(cfg) && name_equals(record->service_type, PDL_DATASTREAM_SERVICE_TYPE)) {
+        if (build_instance_fqdn(generated_instance_fqdn,
+                                sizeof(generated_instance_fqdn),
+                                cfg->riousbprint_instance_name,
+                                PDL_DATASTREAM_SERVICE_TYPE) == 0 &&
+            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void trim_trailing_dot(char *value) {
@@ -1205,11 +1301,22 @@ static void usage(const char *prog) {
             "  --snapshot-newer-than-boot <path> Exit 0 when snapshot exists, is non-empty, and is newer than boot\n"
             "  --save-airport-snapshot <path> Generate an AirPort-only Apple snapshot file and exit unless loading\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
+            "  --generated-airport-services Generate AirPort-owned services directly instead of snapshot replay\n"
             "  --diskless        Suppress generated _smb and _adisk records while replaying other snapshot records\n"
             "  --afp             Also advertise generated _afpovertcp._tcp on port 548\n"
             "  --adisk-shares-file <p> Tab-separated share,disk-key,uuid,adVF rows\n"
             "  --adisk-sys-wama <m> MAC address for _adisk sys TXT\n"
             "  --device-model <m> Also advertise _device-info._tcp with model=<m>\n"
+            "  --riousbprint-name <n> Also advertise AirPort Remote I/O USB printer service\n"
+            "  --riousbprint-note <n> TXT note for _riousbprint, normally AirPort system name\n"
+            "  --riousbprint-mfg <m> USB printer manufacturer for usb_MFG\n"
+            "  --riousbprint-mdl <m> USB printer model for usb_MDL\n"
+            "  --riousbprint-serial <s> USB printer serial used in rp\n"
+            "  --riousbprint-cmd <c> Override IEEE-1284 CMD command set for usb_CMD\n"
+            "  --riousbprint-vendor-id <n> USB vendor ID used to find IEEE-1284 CMD on NetBSD\n"
+            "  --riousbprint-product-id <n> USB product ID used to find IEEE-1284 CMD on NetBSD\n"
+            "  --riousbprint-port <p> _riousbprint._tcp service port (default: 10000)\n"
+            "  --pdl-datastream-port <p> _pdl-datastream._tcp service port for the same USB printer (default: 9100)\n"
             "  --airport-wama <m> Also advertise _airport._tcp with Apple-style TXT\n"
             "  --airport-rama <m> 5 GHz radio MAC for _airport._tcp\n"
             "  --airport-ram2 <m> 2.4 GHz radio MAC for _airport._tcp\n"
@@ -1581,6 +1688,18 @@ static int is_airport_enabled(const struct config *cfg) {
            cfg->airport_bjsd[0] != '\0';
 }
 
+static int is_airport_usb_printer_enabled(const struct config *cfg) {
+    return cfg->riousbprint_instance_name[0] != '\0';
+}
+
+static int is_riousbprint_enabled(const struct config *cfg) {
+    return is_airport_usb_printer_enabled(cfg);
+}
+
+static int is_pdl_datastream_enabled(const struct config *cfg) {
+    return is_airport_usb_printer_enabled(cfg);
+}
+
 static int validate_airport_ascii_field(const char *value, const char *field_name) {
     const unsigned char *p;
 
@@ -1674,6 +1793,476 @@ static int build_airport_txt(char *out, size_t out_len, const struct config *cfg
     #undef APPEND_AIRPORT_FIELD
     #undef APPEND_AIRPORT_CHUNK
 }
+
+static int validate_txt_ascii_field(const char *value, const char *field_name) {
+    const unsigned char *p;
+
+    if (value == NULL) {
+        return 0;
+    }
+    for (p = (const unsigned char *)value; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            fprintf(stderr, "%s contains an invalid control character\n", field_name);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int append_txt_itemf(char storage[][MAX_TXT_STRING + 1],
+                            const char *txts[],
+                            size_t *count,
+                            size_t max_count,
+                            const char *format,
+                            ...) {
+    va_list ap;
+    int written;
+    size_t len;
+
+    if (storage == NULL || txts == NULL || count == NULL || format == NULL || *count >= max_count) {
+        return -1;
+    }
+
+    va_start(ap, format);
+    written = vsnprintf(storage[*count], MAX_TXT_STRING + 1, format, ap);
+    va_end(ap);
+    if (written < 0 || written > MAX_TXT_STRING) {
+        return -1;
+    }
+
+    len = strlen(storage[*count]);
+    if (len > MAX_TXT_STRING) {
+        return -1;
+    }
+    txts[*count] = storage[*count];
+    *count += 1;
+    return 0;
+}
+
+static int build_riousbprint_pdl(char *out, size_t out_len, const char *cmd) {
+    const char *cursor;
+    size_t off = 0;
+    int appended = 0;
+
+    if (out == NULL || out_len == 0 || cmd == NULL || cmd[0] == '\0') {
+        return -1;
+    }
+    out[0] = '\0';
+
+    cursor = cmd;
+    while (*cursor != '\0') {
+        const char *start;
+        const char *end;
+        int written;
+
+        while (*cursor == ',' || isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        start = cursor;
+        while (*cursor != '\0' && *cursor != ',') {
+            cursor++;
+        }
+        end = cursor;
+        while (end > start && isspace((unsigned char)*(end - 1))) {
+            end--;
+        }
+        if (end == start) {
+            continue;
+        }
+        written = snprintf(out + off,
+                           out_len - off,
+                           "%sapplication/%.*s",
+                           appended ? "," : "",
+                           (int)(end - start),
+                           start);
+        if (written < 0 || (size_t)written >= out_len - off) {
+            return -1;
+        }
+        off += (size_t)written;
+        appended = 1;
+    }
+
+    if (!appended || off > MAX_TXT_STRING) {
+        return -1;
+    }
+    return 0;
+}
+
+static int validate_airport_usb_printer_txt_fields(const struct config *cfg) {
+    if (validate_txt_ascii_field(cfg->riousbprint_note, "USB printer note") != 0 ||
+        validate_txt_ascii_field(cfg->riousbprint_mfg, "USB printer manufacturer") != 0 ||
+        validate_txt_ascii_field(cfg->riousbprint_mdl, "USB printer model") != 0 ||
+        validate_txt_ascii_field(cfg->riousbprint_serial, "USB printer serial") != 0 ||
+        validate_txt_ascii_field(cfg->riousbprint_cmd, "USB printer command set") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int append_airport_usb_printer_intro_txt_items(const struct config *cfg,
+                                                      char storage[][MAX_TXT_STRING + 1],
+                                                      const char *txts[],
+                                                      size_t *txt_count,
+                                                      size_t max_count) {
+    const char *note;
+
+    note = cfg->riousbprint_note[0] != '\0' ? cfg->riousbprint_note : cfg->instance_name;
+    if (append_txt_itemf(storage, txts, txt_count, max_count, "txtvers=1") != 0 ||
+        append_txt_itemf(storage, txts, txt_count, max_count, "qtotal=1") != 0 ||
+        append_txt_itemf(storage, txts, txt_count, max_count, "note=%s", note) != 0 ||
+        append_txt_itemf(storage, txts, txt_count, max_count, "product=(%s)", cfg->riousbprint_instance_name) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int append_airport_usb_printer_device_txt_items(const struct config *cfg,
+                                                       char storage[][MAX_TXT_STRING + 1],
+                                                       const char *txts[],
+                                                       size_t *txt_count,
+                                                       size_t max_count) {
+    if (cfg->riousbprint_mfg[0] != '\0' &&
+        append_txt_itemf(storage, txts, txt_count, max_count, "usb_MFG=%s", cfg->riousbprint_mfg) != 0) {
+        return -1;
+    }
+    if (cfg->riousbprint_cmd[0] != '\0' &&
+        append_txt_itemf(storage, txts, txt_count, max_count, "usb_CMD=%s", cfg->riousbprint_cmd) != 0) {
+        return -1;
+    }
+    if (cfg->riousbprint_mdl[0] != '\0' &&
+        append_txt_itemf(storage, txts, txt_count, max_count, "usb_MDL=%s", cfg->riousbprint_mdl) != 0) {
+        return -1;
+    }
+    if (append_txt_itemf(storage, txts, txt_count, max_count, "usb_CLS=PRINTER") != 0 ||
+        append_txt_itemf(storage, txts, txt_count, max_count, "usb_DES=%s", cfg->riousbprint_instance_name) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int build_riousbprint_txt_items(const struct config *cfg,
+                                       char storage[][MAX_TXT_STRING + 1],
+                                       const char *txts[],
+                                       size_t *txt_count) {
+    char pdl[MAX_TXT_STRING + 1];
+
+    *txt_count = 0;
+    if (!is_riousbprint_enabled(cfg) ||
+        validate_airport_usb_printer_txt_fields(cfg) != 0 ||
+        append_airport_usb_printer_intro_txt_items(cfg, storage, txts, txt_count, RIOUSBPRINT_MAX_TXT_ITEMS) != 0) {
+        return -1;
+    }
+
+    if (cfg->riousbprint_serial[0] != '\0') {
+        if (append_txt_itemf(storage,
+                             txts,
+                             txt_count,
+                             RIOUSBPRINT_MAX_TXT_ITEMS,
+                             "rp=%s %s",
+                             cfg->riousbprint_instance_name,
+                             cfg->riousbprint_serial) != 0) {
+            return -1;
+        }
+    } else if (append_txt_itemf(storage,
+                                txts,
+                                txt_count,
+                                RIOUSBPRINT_MAX_TXT_ITEMS,
+                                "rp=%s",
+                                cfg->riousbprint_instance_name) != 0) {
+        return -1;
+    }
+
+    if (cfg->riousbprint_cmd[0] != '\0') {
+        if (build_riousbprint_pdl(pdl, sizeof(pdl), cfg->riousbprint_cmd) != 0 ||
+            append_txt_itemf(storage, txts, txt_count, RIOUSBPRINT_MAX_TXT_ITEMS, "pdl=%s", pdl) != 0) {
+            return -1;
+        }
+    }
+
+    if (append_txt_itemf(storage, txts, txt_count, RIOUSBPRINT_MAX_TXT_ITEMS, "priority=1") != 0) {
+        return -1;
+    }
+    if (append_airport_usb_printer_device_txt_items(cfg, storage, txts, txt_count, RIOUSBPRINT_MAX_TXT_ITEMS) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int build_pdl_datastream_txt_items(const struct config *cfg,
+                                          char storage[][MAX_TXT_STRING + 1],
+                                          const char *txts[],
+                                          size_t *txt_count) {
+    *txt_count = 0;
+    if (!is_pdl_datastream_enabled(cfg) ||
+        validate_airport_usb_printer_txt_fields(cfg) != 0 ||
+        append_airport_usb_printer_intro_txt_items(cfg, storage, txts, txt_count, PDL_DATASTREAM_MAX_TXT_ITEMS) != 0) {
+        return -1;
+    }
+
+    if (append_txt_itemf(storage, txts, txt_count, PDL_DATASTREAM_MAX_TXT_ITEMS, "pdl=U") != 0 ||
+        append_txt_itemf(storage, txts, txt_count, PDL_DATASTREAM_MAX_TXT_ITEMS, "priority=5") != 0 ||
+        append_airport_usb_printer_device_txt_items(cfg, storage, txts, txt_count, PDL_DATASTREAM_MAX_TXT_ITEMS) != 0 ||
+        append_txt_itemf(storage, txts, txt_count, PDL_DATASTREAM_MAX_TXT_ITEMS, "ty=%s", cfg->riousbprint_instance_name) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int ieee1284_lookup_field(char *out,
+                                 size_t out_len,
+                                 const unsigned char *id,
+                                 size_t id_len,
+                                 const char *key) {
+    size_t key_len;
+    size_t pos = 0;
+
+    if (out == NULL || out_len == 0 || id == NULL || key == NULL) {
+        return -1;
+    }
+    out[0] = '\0';
+    key_len = strlen(key);
+    while (pos < id_len) {
+        size_t start = pos;
+        size_t end;
+        size_t colon;
+        size_t value_start;
+        size_t value_end;
+        size_t value_len;
+
+        while (pos < id_len && id[pos] != ';') {
+            pos++;
+        }
+        end = pos;
+        if (pos < id_len && id[pos] == ';') {
+            pos++;
+        }
+        colon = start;
+        while (colon < end && id[colon] != ':') {
+            colon++;
+        }
+        if (colon == end || colon - start != key_len ||
+            strncasecmp((const char *)id + start, key, key_len) != 0) {
+            continue;
+        }
+        value_start = colon + 1;
+        value_end = end;
+        while (value_start < value_end && isspace((unsigned char)id[value_start])) {
+            value_start++;
+        }
+        while (value_end > value_start && isspace((unsigned char)id[value_end - 1])) {
+            value_end--;
+        }
+        value_len = value_end - value_start;
+        if (value_len == 0 || value_len >= out_len) {
+            return -1;
+        }
+        memcpy(out, id + value_start, value_len);
+        out[value_len] = '\0';
+        return 0;
+    }
+    return -1;
+}
+
+static int TC_UNUSED extract_cmd_from_ieee1284_device_id(char *out,
+                                                         size_t out_len,
+                                                         const unsigned char *buf,
+                                                         size_t actual_len) {
+    size_t reported_len;
+    size_t id_len;
+
+    if (out == NULL || out_len == 0 || buf == NULL || actual_len <= 2) {
+        return -1;
+    }
+    reported_len = ((size_t)buf[0] << 8) | (size_t)buf[1];
+    if (reported_len > 2 && reported_len <= actual_len) {
+        id_len = reported_len - 2;
+    } else {
+        id_len = actual_len - 2;
+    }
+
+    if (ieee1284_lookup_field(out, out_len, buf + 2, id_len, "CMD") == 0 ||
+        ieee1284_lookup_field(out, out_len, buf + 2, id_len, "COMMAND SET") == 0) {
+        return 0;
+    }
+    return -1;
+}
+
+static int TC_UNUSED sanitize_usb_printer_device_id_transfer(unsigned char *buf,
+                                                             size_t buf_len,
+                                                             int transferred_len,
+                                                             int *actual_len) {
+    if (buf == NULL || actual_len == NULL) {
+        return -1;
+    }
+    *actual_len = 0;
+    if (transferred_len < 0 || (size_t)transferred_len > buf_len) {
+        memset(buf, 0, buf_len);
+        return -1;
+    }
+    if ((size_t)transferred_len < buf_len) {
+        memset(buf + transferred_len, 0, buf_len - (size_t)transferred_len);
+    }
+    if (transferred_len <= 2) {
+        return -1;
+    }
+    *actual_len = transferred_len;
+    return 0;
+}
+
+#if defined(__NetBSD__)
+static int usb_device_info_has_ulpt(const struct usb_device_info *info) {
+    size_t i;
+
+    for (i = 0; i < USB_MAX_DEVNAMES; i++) {
+        if (strncmp(info->udi_devnames[i], "ulpt", 4) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int usb_device_info_matches_riousbprint(const struct config *cfg,
+                                               const struct usb_device_info *info) {
+    if (cfg->riousbprint_vendor_id != 0 &&
+        cfg->riousbprint_product_id != 0 &&
+        info->udi_vendorNo == cfg->riousbprint_vendor_id &&
+        info->udi_productNo == cfg->riousbprint_product_id) {
+        return 1;
+    }
+    return usb_device_info_has_ulpt(info);
+}
+
+static int add_unique_usb_candidate(unsigned int candidates[], size_t *count, unsigned int value) {
+    size_t i;
+
+    for (i = 0; i < *count; i++) {
+        if (candidates[i] == value) {
+            return 0;
+        }
+    }
+    if (*count >= 4) {
+        return -1;
+    }
+    candidates[*count] = value;
+    *count += 1;
+    return 0;
+}
+
+static int query_usb_printer_device_id(int fd,
+                                       int addr,
+                                       const struct usb_device_info *info,
+                                       unsigned char *buf,
+                                       size_t buf_len,
+                                       int *actual_len) {
+    unsigned int configs[4];
+    unsigned int indexes[4];
+    size_t config_count = 0;
+    size_t index_count = 0;
+    size_t i;
+    size_t j;
+
+    if (info->udi_config != 0) {
+        add_unique_usb_candidate(configs, &config_count, info->udi_config);
+    }
+    add_unique_usb_candidate(configs, &config_count, 1);
+    add_unique_usb_candidate(configs, &config_count, 0);
+    add_unique_usb_candidate(indexes, &index_count, 0);
+    add_unique_usb_candidate(indexes, &index_count, 1);
+    add_unique_usb_candidate(indexes, &index_count, 0x0100);
+    add_unique_usb_candidate(indexes, &index_count, 0x0101);
+
+    for (i = 0; i < config_count; i++) {
+        for (j = 0; j < index_count; j++) {
+            struct usb_ctl_request request;
+
+            memset(buf, 0, buf_len);
+            memset(&request, 0, sizeof(request));
+            request.ucr_addr = addr;
+            request.ucr_request.bmRequestType = UT_READ_CLASS_INTERFACE;
+            request.ucr_request.bRequest = 0;
+            USETW(request.ucr_request.wValue, configs[i]);
+            USETW(request.ucr_request.wIndex, indexes[j]);
+            USETW(request.ucr_request.wLength, buf_len);
+            request.ucr_data = buf;
+            request.ucr_flags = USBD_SHORT_XFER_OK;
+            if (ioctl(fd, USB_REQUEST, &request) == 0) {
+                if (sanitize_usb_printer_device_id_transfer(buf, buf_len, request.ucr_actlen, actual_len) == 0) {
+                    return 0;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+static int discover_riousbprint_usb_cmd(struct config *cfg) {
+    int bus;
+
+    if (!is_riousbprint_enabled(cfg) || cfg->riousbprint_cmd[0] != '\0') {
+        return 0;
+    }
+
+    for (bus = 0; bus < 4; bus++) {
+        char path[32];
+        int fd;
+        int addr;
+
+        snprintf(path, sizeof(path), "/dev/usb%d", bus);
+        fd = open(path, O_RDWR);
+        if (fd < 0) {
+            continue;
+        }
+        for (addr = 1; addr < USB_MAX_DEVICES; addr++) {
+            struct usb_device_info info;
+            unsigned char device_id[IEEE1284_DEVICE_ID_MAX];
+            int actual_len = 0;
+            char cmd[MAX_TXT_STRING + 1];
+
+            memset(&info, 0, sizeof(info));
+            info.udi_addr = (uint8_t)addr;
+            if (ioctl(fd, USB_DEVICEINFO, &info) != 0) {
+                continue;
+            }
+            if (!usb_device_info_matches_riousbprint(cfg, &info)) {
+                continue;
+            }
+            if (query_usb_printer_device_id(fd,
+                                            addr,
+                                            &info,
+                                            device_id,
+                                            sizeof(device_id),
+                                            &actual_len) != 0) {
+                continue;
+            }
+            if (extract_cmd_from_ieee1284_device_id(cmd, sizeof(cmd), device_id, (size_t)actual_len) == 0) {
+                strncpy(cfg->riousbprint_cmd, cmd, sizeof(cfg->riousbprint_cmd) - 1);
+                cfg->riousbprint_cmd[sizeof(cfg->riousbprint_cmd) - 1] = '\0';
+                close(fd);
+                fprintf(stderr,
+                        "riousbprint usb: found IEEE-1284 CMD via %s addr=%d vendor=0x%04x product=0x%04x\n",
+                        path,
+                        addr,
+                        info.udi_vendorNo,
+                        info.udi_productNo);
+                return 0;
+            }
+        }
+        close(fd);
+    }
+
+    fprintf(stderr, "riousbprint usb: IEEE-1284 CMD not available from NetBSD USB controller\n");
+    return -1;
+}
+#else
+static int discover_riousbprint_usb_cmd(struct config *cfg) {
+    if (is_riousbprint_enabled(cfg) && cfg->riousbprint_cmd[0] == '\0') {
+        fprintf(stderr, "riousbprint usb: IEEE-1284 CMD probing is unavailable on this platform\n");
+    }
+    return 0;
+}
+#endif
 
 static int validate_dns_name(const char *value, const char *field_name) {
     const unsigned char *p;
@@ -4008,6 +4597,56 @@ static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const stru
     return 0;
 }
 
+static int add_riousbprint_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, uint32_t ttl, int *answers) {
+    char instance_fqdn[MAX_NAME];
+    char txt_storage[RIOUSBPRINT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[RIOUSBPRINT_MAX_TXT_ITEMS];
+    size_t txt_count;
+
+    if (!is_riousbprint_enabled(cfg)) {
+        return 0;
+    }
+
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->riousbprint_instance_name, RIOUSBPRINT_SERVICE_TYPE) != 0 ||
+        build_riousbprint_txt_items(cfg, txt_storage, txts, &txt_count) != 0) {
+        return -1;
+    }
+
+    if (add_rr_ptr(buf, off, cap, RIOUSBPRINT_SERVICE_TYPE, instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->riousbprint_port, ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, ttl, txts, txt_count) != 0) {
+        return -1;
+    }
+
+    *answers += 3;
+    return 0;
+}
+
+static int add_pdl_datastream_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, uint32_t ttl, int *answers) {
+    char instance_fqdn[MAX_NAME];
+    char txt_storage[PDL_DATASTREAM_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[PDL_DATASTREAM_MAX_TXT_ITEMS];
+    size_t txt_count;
+
+    if (!is_pdl_datastream_enabled(cfg)) {
+        return 0;
+    }
+
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->riousbprint_instance_name, PDL_DATASTREAM_SERVICE_TYPE) != 0 ||
+        build_pdl_datastream_txt_items(cfg, txt_storage, txts, &txt_count) != 0) {
+        return -1;
+    }
+
+    if (add_rr_ptr(buf, off, cap, PDL_DATASTREAM_SERVICE_TYPE, instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->pdl_datastream_port, ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, ttl, txts, txt_count) != 0) {
+        return -1;
+    }
+
+    *answers += 3;
+    return 0;
+}
+
 static int add_empty_txt_service_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg,
                                          const char *service_type, uint16_t port,
                                          uint32_t ttl, int *answers) {
@@ -4049,6 +4688,97 @@ static int finalize_and_send_announcement_packet_any(int sockfd,
     hdr.ancount = htons((uint16_t)answers);
     memcpy(buf, &hdr, sizeof(hdr));
     return send_dns_packet_any("announcement", sockfd, buf, off, dest, dest_len, answers, use_snapshot_records);
+}
+
+typedef int (*generated_record_adder)(uint8_t *buf,
+                                      size_t *off,
+                                      size_t cap,
+                                      const struct config *cfg,
+                                      uint32_t ttl,
+                                      int *answers);
+
+static int append_generated_records_with_flush(int sockfd,
+                                               uint8_t *buf,
+                                               size_t *off,
+                                               size_t cap,
+                                               int *answers,
+                                               const struct sockaddr *dest,
+                                               socklen_t dest_len,
+                                               const struct config *cfg,
+                                               uint32_t ttl,
+                                               int use_snapshot_records,
+                                               generated_record_adder add_records,
+                                               const char *failure_stage) {
+    size_t before_off = *off;
+    int before_answers = *answers;
+
+    if (add_records(buf, off, cap, cfg, ttl, answers) == 0) {
+        return 0;
+    }
+
+    *off = before_off;
+    *answers = before_answers;
+    if (finalize_and_send_announcement_packet_any(sockfd, buf, *off, *answers, dest, dest_len, use_snapshot_records) != 0) {
+        return -1;
+    }
+    init_announcement_packet(off, answers);
+    if (add_records(buf, off, cap, cfg, ttl, answers) != 0) {
+        log_packet_build_failure("announcement", failure_stage, *off, *answers, use_snapshot_records);
+        return -1;
+    }
+    return 0;
+}
+
+static int append_generated_apple_records(int sockfd,
+                                          uint8_t *buf,
+                                          size_t *off,
+                                          size_t cap,
+                                          int *answers,
+                                          const struct sockaddr *dest,
+                                          socklen_t dest_len,
+                                          const struct config *cfg,
+                                          uint32_t ttl,
+                                          int use_snapshot_records) {
+    if (append_generated_records_with_flush(sockfd,
+                                            buf,
+                                            off,
+                                            cap,
+                                            answers,
+                                            dest,
+                                            dest_len,
+                                            cfg,
+                                            ttl,
+                                            use_snapshot_records,
+                                            add_pdl_datastream_records,
+                                            "add_pdl_datastream_records") != 0) {
+        return -1;
+    }
+    if (append_generated_records_with_flush(sockfd,
+                                            buf,
+                                            off,
+                                            cap,
+                                            answers,
+                                            dest,
+                                            dest_len,
+                                            cfg,
+                                            ttl,
+                                            use_snapshot_records,
+                                            add_riousbprint_records,
+                                            "add_riousbprint_records") != 0) {
+        return -1;
+    }
+    return append_generated_records_with_flush(sockfd,
+                                               buf,
+                                               off,
+                                               cap,
+                                               answers,
+                                               dest,
+                                               dest_len,
+                                               cfg,
+                                               ttl,
+                                               use_snapshot_records,
+                                               add_airport_records,
+                                               "add_airport_records");
 }
 
 static int append_generated_base_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg,
@@ -4122,6 +4852,18 @@ static int send_announcement_any(int sockfd,
         log_packet_build_failure("announcement", "add_core_records", off, answers, use_snapshot_records);
         return -1;
     }
+    if (append_generated_apple_records(sockfd,
+                                       buf,
+                                       &off,
+                                       sizeof(buf),
+                                       &answers,
+                                       dest,
+                                       dest_len,
+                                       cfg,
+                                       ttl,
+                                       use_snapshot_records) != 0) {
+        return -1;
+    }
     if (use_snapshot_records) {
         if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
             return -1;
@@ -4132,6 +4874,9 @@ static int send_announcement_any(int sockfd,
             int before_host_a_answers;
 
             if (is_suppressed_snapshot_service_type(snapshot_records->records[i].service_type)) {
+                continue;
+            }
+            if (snapshot_record_overridden_by_generated(cfg, &snapshot_records->records[i])) {
                 continue;
             }
             init_announcement_packet(&off, &answers);
@@ -4177,20 +4922,6 @@ static int send_announcement_any(int sockfd,
             }
         }
     } else {
-        size_t before_airport_off = off;
-        int before_airport_answers = answers;
-        if (add_airport_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-            off = before_airport_off;
-            answers = before_airport_answers;
-            if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-                return -1;
-            }
-            init_announcement_packet(&off, &answers);
-            if (add_airport_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-                log_packet_build_failure("announcement", "add_airport_records", off, answers, use_snapshot_records);
-                return -1;
-            }
-        }
         if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
             return -1;
         }
@@ -4548,6 +5279,76 @@ static int plan_airport_records(struct planned_rr_set *set,
     return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
 }
 
+static int plan_riousbprint_records(struct planned_rr_set *set,
+                                    int routes,
+                                    const struct config *cfg,
+                                    const char *instance_fqdn,
+                                    const struct link_context *link,
+                                    int include_ptr,
+                                    int include_srv,
+                                    int include_txt,
+                                    int include_a,
+                                    int include_aaaa) {
+    char txt_storage[RIOUSBPRINT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[RIOUSBPRINT_MAX_TXT_ITEMS];
+    size_t txt_count;
+
+    if (!is_riousbprint_enabled(cfg)) {
+        return 0;
+    }
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, RIOUSBPRINT_SERVICE_TYPE, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, cfg->riousbprint_port, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (include_txt) {
+        if (build_riousbprint_txt_items(cfg, txt_storage, txts, &txt_count) != 0) {
+            return -1;
+        }
+        if (planned_rr_add_txt_items(set, routes, instance_fqdn, txts, NULL, txt_count, cfg->ttl) != 0) {
+            return -1;
+        }
+    }
+    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+}
+
+static int plan_pdl_datastream_records(struct planned_rr_set *set,
+                                       int routes,
+                                       const struct config *cfg,
+                                       const char *instance_fqdn,
+                                       const struct link_context *link,
+                                       int include_ptr,
+                                       int include_srv,
+                                       int include_txt,
+                                       int include_a,
+                                       int include_aaaa) {
+    char txt_storage[PDL_DATASTREAM_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[PDL_DATASTREAM_MAX_TXT_ITEMS];
+    size_t txt_count;
+
+    if (!is_pdl_datastream_enabled(cfg)) {
+        return 0;
+    }
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, PDL_DATASTREAM_SERVICE_TYPE, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, cfg->pdl_datastream_port, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (include_txt) {
+        if (build_pdl_datastream_txt_items(cfg, txt_storage, txts, &txt_count) != 0) {
+            return -1;
+        }
+        if (planned_rr_add_txt_items(set, routes, instance_fqdn, txts, NULL, txt_count, cfg->ttl) != 0) {
+            return -1;
+        }
+    }
+    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+}
+
 static int plan_snapshot_record(struct planned_rr_set *set,
                                 int routes,
                                 const struct service_record *record,
@@ -4623,8 +5424,16 @@ static int plan_service_type_enumeration_records(struct planned_rr_set *set,
         plan_service_type_enumeration_type(set, routes, cfg->device_info_service_type, cfg->ttl) != 0) {
         return -1;
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) &&
+    if (is_airport_enabled(cfg) &&
         plan_service_type_enumeration_type(set, routes, cfg->airport_service_type, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (is_riousbprint_enabled(cfg) &&
+        plan_service_type_enumeration_type(set, routes, RIOUSBPRINT_SERVICE_TYPE, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (is_pdl_datastream_enabled(cfg) &&
+        plan_service_type_enumeration_type(set, routes, PDL_DATASTREAM_SERVICE_TYPE, cfg->ttl) != 0) {
         return -1;
     }
     if (use_snapshot_records) {
@@ -4830,7 +5639,11 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                  const char *afp_instance_fqdn,
                                  const char *adisk_instance_fqdn,
                                  const char *device_info_instance_fqdn,
-                                 const char *airport_instance_fqdn) {
+                                 const char *airport_instance_fqdn,
+                                 const char *riousbprint_instance_fqdn,
+                                 const char *pdl_datastream_instance_fqdn) {
+    int planned_generated_apple_service_type = 0;
+
     if (name_equals(qname, DNS_SD_SERVICE_ENUMERATION_NAME) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
         return plan_service_type_enumeration_records(planned,
@@ -4855,9 +5668,29 @@ static int plan_question_answers(struct planned_rr_set *planned,
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
         return plan_device_info_records(planned, route, cfg, device_info_instance_fqdn, response_link, 1, 1, 1, 1, 1);
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) && name_equals(qname, cfg->airport_service_type) &&
+    if (is_airport_enabled(cfg) && name_equals(qname, cfg->airport_service_type) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-        return plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+        if (plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link, 1, 1, 1, 1, 1) != 0) {
+            return -1;
+        }
+        planned_generated_apple_service_type = 1;
+    }
+    if (is_riousbprint_enabled(cfg) && name_equals(qname, RIOUSBPRINT_SERVICE_TYPE) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        if (plan_riousbprint_records(planned, route, cfg, riousbprint_instance_fqdn, response_link, 1, 1, 1, 1, 1) != 0) {
+            return -1;
+        }
+        planned_generated_apple_service_type = 1;
+    }
+    if (is_pdl_datastream_enabled(cfg) && name_equals(qname, PDL_DATASTREAM_SERVICE_TYPE) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        if (plan_pdl_datastream_records(planned, route, cfg, pdl_datastream_instance_fqdn, response_link, 1, 1, 1, 1, 1) != 0) {
+            return -1;
+        }
+        planned_generated_apple_service_type = 1;
+    }
+    if (planned_generated_apple_service_type && !use_snapshot_records) {
+        return 0;
     }
     if (smb_enabled(cfg) && name_equals(qname, instance_fqdn)) {
         return plan_smb_records(planned, route, cfg, instance_fqdn, response_link,
@@ -4891,13 +5724,29 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) && name_equals(qname, airport_instance_fqdn)) {
+    if (is_airport_enabled(cfg) && name_equals(qname, airport_instance_fqdn)) {
         return plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link,
                                     0,
                                     qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
                                     qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
                                     qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
                                     qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
+    }
+    if (is_riousbprint_enabled(cfg) && name_equals(qname, riousbprint_instance_fqdn)) {
+        return plan_riousbprint_records(planned, route, cfg, riousbprint_instance_fqdn, response_link,
+                                        0,
+                                        qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                        qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                        qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                        qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
+    }
+    if (is_pdl_datastream_enabled(cfg) && name_equals(qname, pdl_datastream_instance_fqdn)) {
+        return plan_pdl_datastream_records(planned, route, cfg, pdl_datastream_instance_fqdn, response_link,
+                                           0,
+                                           qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                           qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                           qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                           qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
     }
     if (name_equals(qname, cfg->host_fqdn)) {
         return planned_rr_add_link_addresses(planned,
@@ -4913,6 +5762,9 @@ static int plan_question_answers(struct planned_rr_set *planned,
         for (j = 0; j < snapshot_records->count; j++) {
             const struct service_record *record = &snapshot_records->records[j];
             if (is_suppressed_snapshot_service_type(record->service_type)) {
+                continue;
+            }
+            if (snapshot_record_overridden_by_generated(cfg, record)) {
                 continue;
             }
             if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
@@ -5256,6 +6108,8 @@ static int handle_query_any(int sockfd,
     char adisk_instance_fqdn[MAX_NAME];
     char device_info_instance_fqdn[MAX_NAME];
     char airport_instance_fqdn[MAX_NAME];
+    char riousbprint_instance_fqdn[MAX_NAME];
+    char pdl_datastream_instance_fqdn[MAX_NAME];
     uint16_t i;
     int status = 0;
     int source_port;
@@ -5272,6 +6126,8 @@ static int handle_query_any(int sockfd,
     adisk_instance_fqdn[0] = '\0';
     device_info_instance_fqdn[0] = '\0';
     airport_instance_fqdn[0] = '\0';
+    riousbprint_instance_fqdn[0] = '\0';
+    pdl_datastream_instance_fqdn[0] = '\0';
 
     if (packet_len < sizeof(struct dns_header)) {
         return 0;
@@ -5308,9 +6164,19 @@ static int handle_query_any(int sockfd,
         log_packet_build_failure("query_response", "build_device_info_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) &&
+    if (is_airport_enabled(cfg) &&
         build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
         log_packet_build_failure("query_response", "build_airport_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        return 0;
+    }
+    if (is_riousbprint_enabled(cfg) &&
+        build_instance_fqdn(riousbprint_instance_fqdn, sizeof(riousbprint_instance_fqdn), cfg->riousbprint_instance_name, RIOUSBPRINT_SERVICE_TYPE) != 0) {
+        log_packet_build_failure("query_response", "build_riousbprint_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        return 0;
+    }
+    if (is_pdl_datastream_enabled(cfg) &&
+        build_instance_fqdn(pdl_datastream_instance_fqdn, sizeof(pdl_datastream_instance_fqdn), cfg->riousbprint_instance_name, PDL_DATASTREAM_SERVICE_TYPE) != 0) {
+        log_packet_build_failure("query_response", "build_pdl_datastream_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
     }
 
@@ -5371,7 +6237,9 @@ static int handle_query_any(int sockfd,
                                   afp_instance_fqdn,
                                   adisk_instance_fqdn,
                                   device_info_instance_fqdn,
-                                  airport_instance_fqdn) != 0) {
+                                  airport_instance_fqdn,
+                                  riousbprint_instance_fqdn,
+                                  pdl_datastream_instance_fqdn) != 0) {
             log_packet_build_failure("query_response", "plan_question_answers", cursor, 0, use_snapshot_records);
             return -1;
         }
@@ -6021,6 +6889,8 @@ int main(int argc, char **argv) {
     cfg.adisk_port = 9;
     cfg.afp_port = AFP_DEFAULT_PORT;
     cfg.airport_port = AIRPORT_DEFAULT_PORT;
+    cfg.riousbprint_port = RIOUSBPRINT_DEFAULT_PORT;
+    cfg.pdl_datastream_port = PDL_DATASTREAM_DEFAULT_PORT;
     cfg.ttl = 120;
 
     for (i = 1; i < argc; i++) {
@@ -6040,6 +6910,8 @@ int main(int argc, char **argv) {
                     sizeof(cfg.snapshot_newer_than_boot_path) - 1);
         } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
+        } else if (strcmp(argv[i], "--generated-airport-services") == 0) {
+            cfg.generated_airport_services = 1;
         } else if (strcmp(argv[i], "--diskless") == 0) {
             cfg.diskless = 1;
         } else if (strcmp(argv[i], "--afp") == 0) {
@@ -6063,6 +6935,26 @@ int main(int argc, char **argv) {
             strncpy(cfg.adisk_sys_wama, argv[++i], sizeof(cfg.adisk_sys_wama) - 1);
         } else if (strcmp(argv[i], "--device-model") == 0 && i + 1 < argc) {
             strncpy(cfg.device_model, argv[++i], sizeof(cfg.device_model) - 1);
+        } else if (strcmp(argv[i], "--riousbprint-name") == 0 && i + 1 < argc) {
+            strncpy(cfg.riousbprint_instance_name, argv[++i], sizeof(cfg.riousbprint_instance_name) - 1);
+        } else if (strcmp(argv[i], "--riousbprint-note") == 0 && i + 1 < argc) {
+            strncpy(cfg.riousbprint_note, argv[++i], sizeof(cfg.riousbprint_note) - 1);
+        } else if (strcmp(argv[i], "--riousbprint-mfg") == 0 && i + 1 < argc) {
+            strncpy(cfg.riousbprint_mfg, argv[++i], sizeof(cfg.riousbprint_mfg) - 1);
+        } else if (strcmp(argv[i], "--riousbprint-mdl") == 0 && i + 1 < argc) {
+            strncpy(cfg.riousbprint_mdl, argv[++i], sizeof(cfg.riousbprint_mdl) - 1);
+        } else if (strcmp(argv[i], "--riousbprint-serial") == 0 && i + 1 < argc) {
+            strncpy(cfg.riousbprint_serial, argv[++i], sizeof(cfg.riousbprint_serial) - 1);
+        } else if (strcmp(argv[i], "--riousbprint-cmd") == 0 && i + 1 < argc) {
+            strncpy(cfg.riousbprint_cmd, argv[++i], sizeof(cfg.riousbprint_cmd) - 1);
+        } else if (strcmp(argv[i], "--riousbprint-vendor-id") == 0 && i + 1 < argc) {
+            cfg.riousbprint_vendor_id = (unsigned int)strtoul(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--riousbprint-product-id") == 0 && i + 1 < argc) {
+            cfg.riousbprint_product_id = (unsigned int)strtoul(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--riousbprint-port") == 0 && i + 1 < argc) {
+            cfg.riousbprint_port = (uint16_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--pdl-datastream-port") == 0 && i + 1 < argc) {
+            cfg.pdl_datastream_port = (uint16_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--airport-wama") == 0 && i + 1 < argc) {
             strncpy(cfg.airport_wama, argv[++i], sizeof(cfg.airport_wama) - 1);
         } else if (strcmp(argv[i], "--airport-rama") == 0 && i + 1 < argc) {
@@ -6171,6 +7063,30 @@ int main(int argc, char **argv) {
         char model_txt[MAX_NAME + 16];
         if (build_model_txt(model_txt, sizeof(model_txt), cfg.device_model) != 0) {
             return EXIT_INVALID_DEVICE_MODEL;
+        }
+    }
+    if (is_riousbprint_enabled(&cfg)) {
+        char txt_storage[RIOUSBPRINT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+        const char *txts[RIOUSBPRINT_MAX_TXT_ITEMS];
+        size_t txt_count;
+
+        if (validate_single_dns_label(cfg.riousbprint_instance_name, "riousbprint name") != 0) {
+            return EXIT_INVALID_DNS_LABEL;
+        }
+        if (cfg.riousbprint_port == 0) {
+            fprintf(stderr, "riousbprint port must not be zero\n");
+            return EXIT_INVALID_SERVICE_TYPE;
+        }
+        if (cfg.pdl_datastream_port == 0) {
+            fprintf(stderr, "pdl-datastream port must not be zero\n");
+            return EXIT_INVALID_SERVICE_TYPE;
+        }
+        discover_riousbprint_usb_cmd(&cfg);
+        if (build_riousbprint_txt_items(&cfg, txt_storage, txts, &txt_count) != 0) {
+            return EXIT_INVALID_AIRPORT_TXT;
+        }
+        if (build_pdl_datastream_txt_items(&cfg, txt_storage, txts, &txt_count) != 0) {
+            return EXIT_INVALID_AIRPORT_TXT;
         }
     }
     if (cfg.airport_wama[0] != '\0' || cfg.airport_rama[0] != '\0' || cfg.airport_ram2[0] != '\0' ||

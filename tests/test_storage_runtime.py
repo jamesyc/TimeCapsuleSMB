@@ -83,6 +83,7 @@ class StorageRuntimeTests(unittest.TestCase):
             common = common.replace(old, new)
             boot = boot.replace(old, new)
             manager = manager.replace(old, new)
+        common += "\nget_airport_prni_raw() { printf '%s\\n' '{' '    printers=[]' '}'; }\n"
 
         (flash / "common.sh").write_text(common)
         boot_path = flash / "boot.sh"
@@ -348,6 +349,342 @@ class StorageRuntimeTests(unittest.TestCase):
                 current_lines.append(line)
         self.assertIsNone(current_name, stdout)
         return sections
+
+    def run_riousbprint_prni_parser(self, prni_raw: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            prni_path = tmp_path / "prni.txt"
+            prni_path.write_text(textwrap.dedent(prni_raw).lstrip("\n"))
+            script = tmp_path / "parse-prni.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {shlex.quote(str(flash / "common.sh"))}
+                    raw=$(/bin/cat {shlex.quote(str(prni_path))})
+                    if tc_load_riousbprint_identity_from_prni "$raw"; then
+                        printf 'status=attached\\n'
+                        printf 'name=%s\\n' "$RIOUSBPRINT_INSTANCE_NAME"
+                        printf 'mfg=%s\\n' "$RIOUSBPRINT_MFG"
+                        printf 'mdl=%s\\n' "$RIOUSBPRINT_MDL"
+                        printf 'serial=%s\\n' "$RIOUSBPRINT_SERIAL"
+                        printf 'vendor=%s\\n' "$RIOUSBPRINT_VENDOR_ID"
+                        printf 'product=%s\\n' "$RIOUSBPRINT_PRODUCT_ID"
+                        printf 'port=%s\\n' "$PDL_DATASTREAM_PORT"
+                    else
+                        printf 'status=none\\n'
+                    fi
+                    """
+                )
+            )
+            script.chmod(0o755)
+            return subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_common_prni_parser_decodes_acp_quoted_usb_printer_values(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        generatedNumber=0
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series"
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "status=attached\n"
+            "name=Brother HL-L2370DN series\n"
+            "mfg=Brother\n"
+            "mdl=HL-L2370DN series\n"
+            "serial=E78098M7N216821\n"
+            "vendor=1273\n"
+            "product=160\n"
+            "port=9100\n",
+        )
+
+    def test_common_prni_parser_keeps_legacy_unquoted_usb_printer_values(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        make=Canon
+                        model=MP490 series
+                        name=Canon MP490 series
+                        pluggedIn=true
+                        productID=5948
+                        serialNumber=C0958C
+                        vendorID=1193
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=attached\n", proc.stdout)
+        self.assertIn("name=Canon MP490 series\n", proc.stdout)
+        self.assertIn("mfg=Canon\n", proc.stdout)
+        self.assertIn("mdl=MP490 series\n", proc.stdout)
+        self.assertIn("serial=C0958C\n", proc.stdout)
+
+    def test_common_prni_parser_decodes_escaped_string_characters(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            r"""
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        make="HP"
+                        model="LaserJet \"Office\""
+                        name="HP LaserJet \"Office\""
+                        pluggedIn=true
+                        productID=1234
+                        serialNumber="SN\\123"
+                        vendorID=5678
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('name=HP LaserJet "Office"\n', proc.stdout)
+        self.assertIn('mdl=LaserJet "Office"\n', proc.stdout)
+        self.assertIn("serial=SN\\123\n", proc.stdout)
+
+    def test_common_prni_parser_keeps_weird_but_valid_string_content(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            r"""
+            {
+                printers=[
+                    {
+                        unknownBefore="ignore=this"
+                        appSocketPort=9100
+                        make="Acme=Printers"
+                        model="Model } 42"
+                        name="Kitchen=Printer } \"Beta\""
+                        pluggedIn=true
+                        productID=65535
+                        serialNumber="SN=12\\34"
+                        vendorID=0
+                        unknownAfter="also=ignored"
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "status=attached\n"
+            "name=Kitchen=Printer } \"Beta\"\n"
+            "mfg=Acme=Printers\n"
+            "mdl=Model } 42\n"
+            "serial=SN=12\\34\n"
+            "vendor=0\n"
+            "product=65535\n"
+            "port=9100\n",
+        )
+
+    def test_common_prni_parser_accepts_missing_optional_usb_metadata(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        name="Bare Printer"
+                        pluggedIn=true
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "status=attached\n"
+            "name=Bare Printer\n"
+            "mfg=\n"
+            "mdl=\n"
+            "serial=\n"
+            "vendor=\n"
+            "product=\n"
+            "port=\n",
+        )
+
+    def test_common_prni_parser_accepts_numeric_boundaries(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=65535
+                        make="Boundary"
+                        model="Port"
+                        name="Boundary Printer"
+                        pluggedIn=true
+                        productID=0
+                        serialNumber="B65535"
+                        vendorID=65535
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=attached\n", proc.stdout)
+        self.assertIn("vendor=65535\n", proc.stdout)
+        self.assertIn("product=0\n", proc.stdout)
+        self.assertIn("port=65535\n", proc.stdout)
+
+    def test_common_prni_parser_rejects_malformed_quoted_string(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_rejects_invalid_decimal_value(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=91OO
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series"
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_rejects_zero_or_out_of_range_port(self) -> None:
+        for app_socket_port in ("0", "65536"):
+            with self.subTest(app_socket_port=app_socket_port):
+                proc = self.run_riousbprint_prni_parser(
+                    f"""
+                    {{
+                        printers=[
+                            {{
+                                appSocketPort={app_socket_port}
+                                make="Brother"
+                                model="HL-L2370DN series"
+                                name="Brother HL-L2370DN series"
+                                pluggedIn=true
+                                productID=160
+                                serialNumber="E78098M7N216821"
+                                vendorID=1273
+                            }}
+                        ]
+                    }}
+                    """
+                )
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_rejects_out_of_range_usb_ids(self) -> None:
+        for field_name in ("productID", "vendorID"):
+            with self.subTest(field_name=field_name):
+                product_id = "65536" if field_name == "productID" else "160"
+                vendor_id = "65536" if field_name == "vendorID" else "1273"
+                proc = self.run_riousbprint_prni_parser(
+                    f"""
+                    {{
+                        printers=[
+                            {{
+                                appSocketPort=9100
+                                make="Brother"
+                                model="HL-L2370DN series"
+                                name="Brother HL-L2370DN series"
+                                pluggedIn=true
+                                productID={product_id}
+                                serialNumber="E78098M7N216821"
+                                vendorID={vendor_id}
+                            }}
+                        ]
+                    }}
+                    """
+                )
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_skips_invalid_candidate_and_uses_next_printer(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=bad
+                        make="Bad"
+                        model="Bad"
+                        name="Bad Printer"
+                        pluggedIn=true
+                    }
+                    {
+                        appSocketPort=9100
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series"
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=attached\n", proc.stdout)
+        self.assertIn("name=Brother HL-L2370DN series\n", proc.stdout)
+        self.assertNotIn("Bad Printer", proc.stdout)
 
     def parse_topology_tsv(self, text: str, volumes_root: Path) -> tuple[MaStVolume, ...]:
         volumes: list[MaStVolume] = []
@@ -2314,13 +2651,12 @@ MaSt = (
         self.assertNotIn("Samba bind discovery deferred; no usable address has appeared yet", log_text)
         self.assertNotIn("bind=deferred_no_ip", log_text)
 
-    def test_manager_mdns_captures_with_one_retry_when_apple_responder_is_alive(self) -> None:
+    def test_manager_mdns_launches_generated_airport_once_when_apple_responder_is_alive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
             self.write_fake_acp(tmp_path, fixture.raw)
-            capture_count = tmp_path / "capture-count"
             launched = tmp_path / "mdns-launched"
             events = tmp_path / "mdns-events"
             (flash / "mdns-advertiser").write_text(
@@ -2328,22 +2664,10 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --save-all-snapshot)\n"
-                f"    count=$(/bin/cat {shlex.quote(str(capture_count))} 2>/dev/null || echo 0)\n"
-                "    count=$((count + 1))\n"
-                f"    echo \"$count\" >{shlex.quote(str(capture_count))}\n"
-                "    if [ \"$count\" -eq 1 ]; then exit 12; fi\n"
-                "    while [ \"$#\" -gt 0 ]; do\n"
-                "      case \"$1\" in --save-snapshot) shift; echo captured >\"$1\" ;; esac\n"
-                "      shift\n"
-                "    done\n"
-                "    exit 0 ;;\n"
-                "  --snapshot-newer-than-boot) echo unexpected-freshness; exit 14 ;;\n"
-                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
-                "  --load-snapshot) "
+                "  --generated-airport-services) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
-                "exit 0\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
             with (flash / "common.sh").open("a") as common:
@@ -2407,17 +2731,18 @@ MaSt = (
             )
             log_text = (memory / "samba4/var/manager.log").read_text()
             events_text = events.read_text()
-            capture_count_text = capture_count.read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("settle 3\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(capture_count_text.strip(), "2")
-        self.assertEqual(events_text.count("--save-all-snapshot"), 2, events_text)
+        self.assertEqual(events_text.count("--print-mdns-socket-families"), 1, events_text)
+        self.assertEqual(events_text.count("--generated-airport-services"), 1, events_text)
         self.assertNotIn("--skip-capture-if-snapshot-newer-than-boot", events_text)
         self.assertNotIn("--snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--save-all-snapshot", events_text)
+        self.assertNotIn("--save-snapshot", events_text)
         self.assertNotIn("--save-airport-snapshot", events_text)
-        self.assertIn("manager mDNS snapshot: capture failed; retrying once", log_text)
+        self.assertNotIn("--load-snapshot", events_text)
+        self.assertIn("mDNS auto-ip is available; starting advertiser", log_text)
 
     def test_manager_mdns_healthy_advertiser_does_not_probe_or_relaunch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2541,13 +2866,12 @@ MaSt = (
         self.assertEqual(events_text, "--print-mdns-socket-families\n")
         self.assertIn("mDNS startup deferred; no usable address has appeared yet", log_text)
 
-    def test_manager_mdns_uses_first_successful_capture_without_retry_or_freshness_probe(self) -> None:
+    def test_manager_mdns_generated_launch_includes_airport_identity_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
             self.write_fake_acp(tmp_path, fixture.raw)
-            capture_count = tmp_path / "capture-count"
             launched = tmp_path / "mdns-launched"
             events = tmp_path / "mdns-events"
             (flash / "mdns-advertiser").write_text(
@@ -2555,19 +2879,10 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --save-all-snapshot)\n"
-                f"    echo 1 >{shlex.quote(str(capture_count))}\n"
-                "    while [ \"$#\" -gt 0 ]; do\n"
-                "      case \"$1\" in --save-snapshot) shift; echo captured >\"$1\" ;; esac\n"
-                "      shift\n"
-                "    done\n"
-                "    exit 0 ;;\n"
-                "  --snapshot-newer-than-boot) echo unexpected-freshness; exit 14 ;;\n"
-                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
-                "  --load-snapshot) "
+                "  --generated-airport-services) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
-                "exit 0\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
             with (flash / "common.sh").open("a") as common:
@@ -2630,23 +2945,25 @@ MaSt = (
                 check=False,
             )
             events_text = events.read_text()
-            capture_count_text = capture_count.read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("settle 3\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(capture_count_text.strip(), "1")
-        self.assertEqual(events_text.count("--save-all-snapshot"), 1, events_text)
+        self.assertIn("--generated-airport-services", events_text)
+        self.assertIn("--afp", events_text)
+        self.assertIn("--auto-ip", events_text)
+        self.assertIn("--airport-wama 80:EA:96:E6:58:68", events_text)
         self.assertNotIn("--snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--save-all-snapshot", events_text)
+        self.assertNotIn("--save-snapshot", events_text)
         self.assertNotIn("--save-airport-snapshot", events_text)
+        self.assertNotIn("--load-snapshot", events_text)
 
-    def test_manager_mdns_reuses_fresh_snapshot_after_capture_attempts_fail(self) -> None:
+    def test_manager_mdns_generated_launch_passes_attached_usb_printer_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
             self.write_fake_acp(tmp_path, fixture.raw)
-            capture_count = tmp_path / "capture-count"
             launched = tmp_path / "mdns-launched"
             events = tmp_path / "mdns-events"
             (flash / "mdns-advertiser").write_text(
@@ -2654,17 +2971,10 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --save-all-snapshot)\n"
-                f"    count=$(/bin/cat {shlex.quote(str(capture_count))} 2>/dev/null || echo 0)\n"
-                "    count=$((count + 1))\n"
-                f"    echo \"$count\" >{shlex.quote(str(capture_count))}\n"
-                "    exit 12 ;;\n"
-                "  --snapshot-newer-than-boot) exit 0 ;;\n"
-                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
-                "  --load-snapshot) "
+                "  --generated-airport-services) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
-                "exit 0\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
             with (flash / "common.sh").open("a") as common:
@@ -2676,7 +2986,7 @@ MaSt = (
                     tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_INSTANCE_NAME="James's AirPort Time Capsule"
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
@@ -2684,7 +2994,7 @@ MaSt = (
                     tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME=AirPort
+                        AIRPORT_INSTANCE_NAME="James's AirPort Time Capsule"
                         AIRPORT_HOST_LABEL=airport
                         AIRPORT_WAMA=80:EA:96:E6:58:68
                         AIRPORT_RAMA=
@@ -2697,6 +3007,24 @@ MaSt = (
                         AIRPORT_SRCV=
                         AIRPORT_BJSD=
                         return 0
+                    }}
+                    get_airport_prni_raw() {{
+                        printf '%s\\n' \\
+                            '{{' \\
+                            '    printers=[' \\
+                            '        {{' \\
+                            '            appSocketPort=9100' \\
+                            '            generatedNumber=0' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
+                            '            pluggedIn=true' \\
+                            '            productID=5948' \\
+                            '            serialNumber="C0958C"' \\
+                            '            vendorID=1193' \\
+                            '        }}' \\
+                            '    ]' \\
+                            '}}'
                     }}
                     tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
@@ -2727,18 +3055,24 @@ MaSt = (
                 check=False,
             )
             events_text = events.read_text()
-            capture_count_text = capture_count.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("settle 3\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(capture_count_text.strip(), "2")
-        self.assertEqual(events_text.count("--save-all-snapshot"), 2, events_text)
-        self.assertIn("--snapshot-newer-than-boot", events_text)
-        self.assertNotIn("--save-airport-snapshot", events_text)
-        self.assertIn("--load-snapshot", events_text)
+        self.assertIn("--generated-airport-services", events_text)
+        self.assertIn("--riousbprint-name Canon MP490 series", events_text)
+        self.assertIn("--riousbprint-note James's AirPort Time Capsule", events_text)
+        self.assertIn("--riousbprint-mfg Canon", events_text)
+        self.assertIn("--riousbprint-mdl MP490 series", events_text)
+        self.assertIn("--riousbprint-serial C0958C", events_text)
+        self.assertIn("--riousbprint-vendor-id 1193", events_text)
+        self.assertIn("--riousbprint-product-id 5948", events_text)
+        self.assertIn("--pdl-datastream-port 9100", events_text)
+        self.assertNotIn("--riousbprint-cmd", events_text)
+        self.assertNotIn("--load-snapshot", events_text)
+        self.assertIn("USB printer advertisement prepared name=Canon MP490 series", log_text)
 
-    def test_manager_mdns_reuses_fresh_snapshot_when_apple_responder_is_dead(self) -> None:
+    def test_manager_mdns_generated_launch_skips_unplugged_usb_printer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -2751,13 +3085,10 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --snapshot-newer-than-boot) exit 0 ;;\n"
-                "  --save-all-snapshot) echo unexpected-capture; exit 9 ;;\n"
-                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
-                "  --load-snapshot) "
+                "  --generated-airport-services) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
-                "exit 0\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
             with (flash / "common.sh").open("a") as common:
@@ -2790,6 +3121,22 @@ MaSt = (
                         AIRPORT_SRCV=
                         AIRPORT_BJSD=
                         return 0
+                    }}
+                    get_airport_prni_raw() {{
+                        printf '%s\\n' \\
+                            '{{' \\
+                            '    printers=[' \\
+                            '        {{' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
+                            '            pluggedIn=false' \\
+                            '            productID=5948' \\
+                            '            serialNumber="C0958C"' \\
+                            '            vendorID=1193' \\
+                            '        }}' \\
+                            '    ]' \\
+                            '}}'
                     }}
                     tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
@@ -2822,16 +3169,252 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertNotIn("unexpected-settle", proc.stdout)
-        self.assertIn("--snapshot-newer-than-boot", events_text)
+        self.assertIn("--generated-airport-services", events_text)
+        self.assertNotIn("--riousbprint-", events_text)
+        self.assertNotIn("--pdl-datastream-", events_text)
+        self.assertNotIn("--snapshot-newer-than-boot", events_text)
         self.assertNotIn("--save-all-snapshot", events_text)
         self.assertNotIn("--save-airport-snapshot", events_text)
-        self.assertIn("--load-snapshot", events_text)
+        self.assertNotIn("--load-snapshot", events_text)
 
-    def test_manager_mdns_generates_fallback_when_snapshot_is_stale(self) -> None:
+    def test_manager_mdns_refreshes_when_usb_printer_plugs_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            phase = tmp_path / "printer-phase"
+            phase.write_text("0")
+            launched = tmp_path / "mdns-launched"
+            events = tmp_path / "mdns-events"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --generated-airport-services) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
+                "esac\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_manager_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME="James's AirPort Time Capsule"
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME="James's AirPort Time Capsule"
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    get_airport_prni_raw() {{
+                        if [ "$(/bin/cat {shlex.quote(str(phase))})" = "0" ]; then
+                            printf '%s\\n' '{{' '    printers=[]' '}}'
+                        else
+                            printf '%s\\n' \\
+                                '{{' \\
+                                '    printers=[' \\
+                                '        {{' \\
+                                '            make="Canon"' \\
+                                '            model="MP490 series"' \\
+                                '            name="Canon MP490 series"' \\
+                                '            pluggedIn=true' \\
+                                '            productID=5948' \\
+                                '            serialNumber="C0958C"' \\
+                                '            vendorID=1193' \\
+                                '        }}' \\
+                                '    ]' \\
+                                '}}'
+                        fi
+                    }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; rm -f {shlex.quote(str(launched))}; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    wait_for_process() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10)
+                                if [ "$(/bin/cat {shlex.quote(str(phase))})" = "0" ]; then
+                                    echo 1 >{shlex.quote(str(phase))}
+                                    return 0
+                                fi
+                                echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+
+        generated_lines = [line for line in events_text.splitlines() if "--generated-airport-services" in line]
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(len(generated_lines), 2, events_text)
+        self.assertNotIn("--riousbprint-", generated_lines[0])
+        self.assertNotIn("--pdl-datastream-", generated_lines[0])
+        self.assertIn("--riousbprint-name Canon MP490 series", generated_lines[1])
+        self.assertIn("manager USB printer signature changed; debouncing", log_text)
+        self.assertIn("manager scheduler: USB printer state changed; running full service reconciliation now", log_text)
+        self.assertIn("manager mDNS refresh required after disk, identity, or USB printer change", log_text)
+
+    def test_manager_mdns_refreshes_when_usb_printer_unplugs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            phase = tmp_path / "printer-phase"
+            phase.write_text("1")
+            launched = tmp_path / "mdns-launched"
+            events = tmp_path / "mdns-events"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --generated-airport-services) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
+                "esac\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_manager_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME="James's AirPort Time Capsule"
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME="James's AirPort Time Capsule"
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    get_airport_prni_raw() {{
+                        if [ "$(/bin/cat {shlex.quote(str(phase))})" = "0" ]; then
+                            printf '%s\\n' '{{' '    printers=[]' '}}'
+                        else
+                            printf '%s\\n' \\
+                                '{{' \\
+                                '    printers=[' \\
+                                '        {{' \\
+                                '            make="Canon"' \\
+                                '            model="MP490 series"' \\
+                                '            name="Canon MP490 series"' \\
+                                '            pluggedIn=true' \\
+                                '            productID=5948' \\
+                                '            serialNumber="C0958C"' \\
+                                '            vendorID=1193' \\
+                                '        }}' \\
+                                '    ]' \\
+                                '}}'
+                        fi
+                    }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; rm -f {shlex.quote(str(launched))}; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    wait_for_process() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10)
+                                if [ "$(/bin/cat {shlex.quote(str(phase))})" = "1" ]; then
+                                    echo 0 >{shlex.quote(str(phase))}
+                                    return 0
+                                fi
+                                echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+
+        generated_lines = [line for line in events_text.splitlines() if "--generated-airport-services" in line]
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(len(generated_lines), 2, events_text)
+        self.assertIn("--riousbprint-name Canon MP490 series", generated_lines[0])
+        self.assertNotIn("--riousbprint-", generated_lines[1])
+        self.assertNotIn("--pdl-datastream-", generated_lines[1])
+
+    def test_manager_mdns_refresh_restarts_existing_advertiser_with_generated_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
             self.write_fake_acp(tmp_path, fixture.raw)
             events = tmp_path / "mdns-events"
@@ -2841,13 +3424,10 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --snapshot-newer-than-boot) exit 14 ;;\n"
-                "  --save-airport-snapshot) shift; echo generated >\"$1\"; exit 0 ;;\n"
-                "  --save-all-snapshot) echo unexpected-capture; exit 9 ;;\n"
-                "  --load-snapshot) "
+                "  --generated-airport-services) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
-                "exit 0\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
             with (flash / "common.sh").open("a") as common:
@@ -2882,16 +3462,19 @@ MaSt = (
                         return 0
                     }}
                     tc_manager_stop_samba_lane_without_payload() {{ :; }}
+                    mdns_present=1
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            mdns-advertiser) [ "$mdns_present" = "1" ] || [ -f {shlex.quote(str(launched))} ] ;;
                             *) return 1 ;;
                         esac
                     }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; mdns_present=0; }}
+                    tc_mdns_bound_udp_5353() {{ return 1; }}
                     sleep() {{
                         case "$1" in
                             1) return 0 ;;
+                            3) echo "settle $1"; return 0 ;;
                             10) echo "status=$manager_status"; exit 0 ;;
                         esac
                         return 0
@@ -2908,13 +3491,18 @@ MaSt = (
                 check=False,
             )
             events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("stop mdns-advertiser\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("--snapshot-newer-than-boot", events_text)
-        self.assertIn("--save-airport-snapshot", events_text)
+        self.assertEqual(events_text.count("--print-mdns-socket-families"), 1, events_text)
+        self.assertIn("--generated-airport-services", events_text)
+        self.assertNotIn("--snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--save-airport-snapshot", events_text)
         self.assertNotIn("--save-all-snapshot", events_text)
-        self.assertIn("--load-snapshot", events_text)
+        self.assertNotIn("--load-snapshot", events_text)
+        self.assertIn("manager mDNS recovery: killing prior mdns-advertiser processes", log_text)
 
     def test_manager_diskless_state_resets_advertiser_logs_to_ram(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2928,9 +3516,7 @@ MaSt = (
                 "#!/bin/sh\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --snapshot-newer-than-boot) exit 14 ;;\n"
-                "  --save-airport-snapshot) shift; echo generated >\"$1\"; exit 0 ;;\n"
-                "  --load-snapshot) "
+                "  --generated-airport-services) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "esac\n"
                 "exit 0\n"
@@ -4342,19 +4928,19 @@ MaSt = (
         self.assertIn("pid-var-unset\n", proc.stdout)
         self.assertIn("timeout-var-unset\n", proc.stdout)
 
-    def test_common_mdns_capture_runs_foreground_without_status_file(self) -> None:
+    def test_common_mdns_launch_uses_single_generated_advertiser_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            marker = tmp_path / "capture.started"
+            marker = tmp_path / "mdns.started"
             (flash / "mdns-advertiser").write_text(
                 "#!/bin/sh\n"
-                "printf 'capture-args:%s\\n' \"$*\"\n"
+                "printf 'mdns-args:%s\\n' \"$*\"\n"
                 f"echo started >{shlex.quote(str(marker))}\n"
-                "exit 7\n"
+                "exit 0\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-capture-foreground.sh"
+            script = tmp_path / "mdns-generated-single-call.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -4365,8 +4951,6 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    echo stale >"$APPLE_MDNS_SNAPSHOT"
-                    echo stale >"$ALL_MDNS_SNAPSHOT"
                     get_radio_mac() {{
                         case "$1" in
                             bwl0) echo 80:EA:96:EB:2E:7D ;;
@@ -4387,7 +4971,8 @@ MaSt = (
                         esac
                     }}
                     get_airport_rast() {{ echo 3; }}
-                    tc_capture_mdns_snapshot_for_manager || true
+                    tc_launch_mdns_advertiser "mdns test" 1 0
+                    wait "$mdns_launch_pid" || true
                     [ -f {shlex.quote(str(marker))} ] || exit 99
                     cat "$TC_MDNS_LOG_FILE"
                     cat "$RAM_VAR/test.log"
@@ -4399,98 +4984,105 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("launching mdns-advertiser capture", proc.stdout)
-        self.assertIn("--save-all-snapshot", proc.stdout)
-        self.assertIn("--save-snapshot", proc.stdout)
+        self.assertIn("launching mdns-advertiser", proc.stdout)
+        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertIn("--afp", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("mDNS snapshot capture exited with failure; final advertiser will use generated records if needed", proc.stdout)
-
-    def test_common_mdns_advertiser_uses_capture_snapshot_without_generation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                "printf 'mdns-args:%s\\n' \"$*\"\n"
-                "while [ \"$#\" -gt 0 ]; do\n"
-                "  case \"$1\" in\n"
-                "    --save-all-snapshot) shift; echo all >\"$1\" ;;\n"
-                "    --save-snapshot) shift; echo captured >\"$1\" ;;\n"
-                "    --save-airport-snapshot) shift; echo generated >\"$1\" ;;\n"
-                "    --load-snapshot) shift; echo load=\"$1\" ;;\n"
-                "  esac\n"
-                "  shift\n"
-                "done\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-capture-used.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    get_radio_mac() {{ return 1; }}
-                    get_airport_host_label() {{ echo jamess-airport-time-capsule; }}
-                    get_airport_acp_value() {{
-                        case "$1" in
-                            syNm) echo "James's AirPort Time Capsule" ;;
-                            syVs) echo 7.9.1 ;;
-                            srcv) echo 79100.2 ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_capture_mdns_snapshot_for_manager
-                    tc_launch_mdns_advertiser "mdns test" 1 0
-                    wait "$mdns_launch_pid" || true
-                    cat "$APPLE_MDNS_SNAPSHOT"
-                    cat "$TC_MDNS_LOG_FILE"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("captured\n", proc.stdout)
-        self.assertIn("launching mdns-advertiser capture", proc.stdout)
-        self.assertIn("--save-all-snapshot", proc.stdout)
-        self.assertIn("--save-snapshot", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
+        self.assertNotIn("--save-all-snapshot", proc.stdout)
+        self.assertNotIn("--save-snapshot", proc.stdout)
         self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertIn("--load-snapshot", proc.stdout)
-        self.assertNotIn("--debug-logging", proc.stdout)
-        mdns_arg_lines = [line for line in proc.stdout.splitlines() if line.startswith("mdns-args:")]
-        capture_args = next(line for line in mdns_arg_lines if "--save-all-snapshot" in line)
-        live_args = next(line for line in mdns_arg_lines if "--load-snapshot" in line)
-        self.assertNotIn("--afp", capture_args)
-        self.assertIn("--afp", live_args)
+        self.assertNotIn("--load-snapshot", proc.stdout)
 
-    def test_common_mdns_advertiser_generates_airport_snapshot_when_capture_has_no_trusted_snapshot(self) -> None:
+    def test_common_mdns_advertiser_passes_prni_printer_args_to_generated_launch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             (flash / "mdns-advertiser").write_text(
                 "#!/bin/sh\n"
                 "printf 'mdns-args:%s\\n' \"$*\"\n"
-                "while [ \"$#\" -gt 0 ]; do\n"
-                "  case \"$1\" in\n"
-                "    --save-all-snapshot) shift; echo all >\"$1\" ;;\n"
-                "    --save-snapshot) shift ;;\n"
-                "    --save-airport-snapshot) shift; echo generated >\"$1\" ;;\n"
-                "    --load-snapshot) shift; echo load=\"$1\" ;;\n"
-                "  esac\n"
-                "  shift\n"
-                "done\n"
+                "exit 0\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-capture-fallback.sh"
+            script = tmp_path / "mdns-prni-printer.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    get_radio_mac() {{ return 1; }}
+                    get_airport_host_label() {{ echo jamess-airport-time-capsule; }}
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "James's AirPort Time Capsule" ;;
+                            syFl) echo 0x00000A0C ;;
+                            raNA) echo false ;;
+                            syVs) echo 7.9.1 ;;
+                            srcv) echo 79100.2 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    get_airport_prni_raw() {{
+                        printf '%s\\n' \\
+                            '{{' \\
+                            '    printers=[' \\
+                            '        {{' \\
+                            '            appSocketPort=9100' \\
+                            '            generatedNumber=0' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
+                            '            pluggedIn=true' \\
+                            '            productID=5948' \\
+                            '            serialNumber="C0958C"' \\
+                            '            vendorID=1193' \\
+                            '        }}' \\
+                            '    ]' \\
+                            '}}'
+                    }}
+                    tc_launch_mdns_advertiser "mdns test" 1 0
+                    wait "$mdns_launch_pid" || true
+                    cat "$TC_MDNS_LOG_FILE"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertIn("--riousbprint-name Canon MP490 series", proc.stdout)
+        self.assertIn("--riousbprint-note James's AirPort Time Capsule", proc.stdout)
+        self.assertIn("--riousbprint-mfg Canon", proc.stdout)
+        self.assertIn("--riousbprint-mdl MP490 series", proc.stdout)
+        self.assertIn("--riousbprint-serial C0958C", proc.stdout)
+        self.assertIn("--riousbprint-vendor-id 1193", proc.stdout)
+        self.assertIn("--riousbprint-product-id 5948", proc.stdout)
+        self.assertIn("--pdl-datastream-port 9100", proc.stdout)
+        self.assertNotIn("--riousbprint-cmd", proc.stdout)
+        self.assertNotIn("--save-all-snapshot", proc.stdout)
+        self.assertNotIn("--save-airport-snapshot", proc.stdout)
+        self.assertNotIn("--load-snapshot", proc.stdout)
+        self.assertNotIn("--debug-logging", proc.stdout)
+        self.assertIn("USB printer advertisement prepared name=Canon MP490 series", proc.stdout)
+
+    def test_common_mdns_advertiser_skips_unplugged_prni_printer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                "printf 'mdns-args:%s\\n' \"$*\"\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "mdns-prni-unplugged.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -4511,14 +5103,24 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    tc_capture_mdns_snapshot_for_manager || true
-                    if [ ! -s "$APPLE_MDNS_SNAPSHOT" ]; then
-                        tc_log "manager mDNS snapshot: no fresh snapshot exists; generating AirPort fallback"
-                        tc_generate_mdns
-                    fi
+                    get_airport_prni_raw() {{
+                        printf '%s\\n' \\
+                            '{{' \\
+                            '    printers=[' \\
+                            '        {{' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
+                            '            pluggedIn=false' \\
+                            '            productID=5948' \\
+                            '            serialNumber="C0958C"' \\
+                            '            vendorID=1193' \\
+                            '        }}' \\
+                            '    ]' \\
+                            '}}'
+                    }}
                     tc_launch_mdns_advertiser "mdns test" 1 0
                     wait "$mdns_launch_pid" || true
-                    cat "$APPLE_MDNS_SNAPSHOT"
                     cat "$TC_MDNS_LOG_FILE"
                     cat "$RAM_VAR/test.log"
                     """
@@ -4529,21 +5131,12 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("generated\n", proc.stdout)
-        self.assertIn("launching mdns-advertiser capture", proc.stdout)
-        self.assertIn("--save-all-snapshot", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("manager mDNS snapshot: no fresh snapshot exists; generating AirPort fallback", proc.stdout)
-        self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
-        self.assertIn("--save-airport-snapshot", proc.stdout)
-        self.assertIn("--load-snapshot", proc.stdout)
-        mdns_arg_lines = [line for line in proc.stdout.splitlines() if line.startswith("mdns-args:")]
-        capture_args = next(line for line in mdns_arg_lines if "--save-all-snapshot" in line)
-        airport_snapshot_args = next(line for line in mdns_arg_lines if "--save-airport-snapshot" in line)
-        live_args = next(line for line in mdns_arg_lines if "--load-snapshot" in line)
-        self.assertNotIn("--afp", capture_args)
-        self.assertNotIn("--afp", airport_snapshot_args)
-        self.assertIn("--afp", live_args)
+        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertNotIn("--riousbprint-", proc.stdout)
+        self.assertNotIn("--pdl-datastream-", proc.stdout)
+        self.assertNotIn("--save-all-snapshot", proc.stdout)
+        self.assertNotIn("--save-airport-snapshot", proc.stdout)
+        self.assertNotIn("--load-snapshot", proc.stdout)
 
     def test_common_mdns_diskless_start_omits_stale_adisk_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4567,7 +5160,6 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    echo snapshot >"$APPLE_MDNS_SNAPSHOT"
                     cat >"$TC_ADISK_TSV" <<'EOF'
                     Stale	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
                     EOF
@@ -4634,7 +5226,6 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    echo snapshot >"$APPLE_MDNS_SNAPSHOT"
                     tc_ensure_runtime_identity() {{
                         MDNS_INSTANCE_NAME=Debug
                         MDNS_HOST_LABEL=debug
@@ -4721,7 +5312,8 @@ MaSt = (
                     tc_set_payload_log_dir {payload} {volumes}/dk2
                     printf 'mdns-path=%s\\n' "$TC_MDNS_LOG_FILE"
                     printf 'nbns-path=%s\\n' "$TC_NBNS_LOG_FILE"
-                    tc_generate_mdns
+                    tc_launch_mdns_advertiser "mdns test" 0 0
+                    wait "$mdns_launch_pid" || true
                     tc_launch_nbns "nbns test" 0
                     wait "$!" || true
                     printf 'mdns\\n'
@@ -4740,11 +5332,13 @@ MaSt = (
         self.assertIn("/.samba4/logs/mdns.log", proc.stdout)
         self.assertIn("/.samba4/logs/nbns.log", proc.stdout)
         self.assertIn("mdns\n", proc.stdout)
-        self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
-        self.assertIn("--save-airport-snapshot", proc.stdout)
+        self.assertIn("launching mdns-advertiser", proc.stdout)
+        self.assertIn("--generated-airport-services", proc.stdout)
         self.assertIn("James's AirPort Time Capsule", proc.stdout)
         self.assertIn("--airport-syfl 0xA0C", proc.stdout)
         self.assertNotIn("--save-all-snapshot", proc.stdout)
+        self.assertNotIn("--save-airport-snapshot", proc.stdout)
+        self.assertNotIn("--load-snapshot", proc.stdout)
         self.assertIn("mdns-stdout", proc.stdout)
         self.assertIn("mdns-stderr", proc.stdout)
         self.assertIn("nbns\n", proc.stdout)
@@ -4753,15 +5347,15 @@ MaSt = (
         self.assertIn("nbns-stdout", proc.stdout)
         self.assertIn("nbns-stderr", proc.stdout)
 
-    def test_common_mdns_generation_failure_does_not_run_capture(self) -> None:
+    def test_common_mdns_generated_launch_failure_does_not_run_snapshot_capture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             (flash / "mdns-advertiser").write_text(
                 "#!/bin/sh\n"
                 "printf 'mdns-args:%s\\n' \"$*\"\n"
-                "if [ \"$1\" = \"--save-airport-snapshot\" ]; then\n"
-                "  echo airport-fail >&2\n"
+                "if [ \"$1\" = \"--generated-airport-services\" ]; then\n"
+                "  echo generated-fail >&2\n"
                 "  exit 2\n"
                 "fi\n"
                 "echo unexpected-capture\n"
@@ -4789,7 +5383,8 @@ MaSt = (
                         esac
                     }}
                     tc_set_log "$RAM_VAR/test.log" test
-                    tc_generate_mdns
+                    tc_launch_mdns_advertiser "mdns test" 0 0
+                    wait "$mdns_launch_pid" || true
                     cat "$TC_MDNS_LOG_FILE"
                     cat "$RAM_VAR/test.log"
                     """
@@ -4800,11 +5395,13 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
-        self.assertIn("airport-fail", proc.stdout)
-        self.assertIn("mDNS AirPort snapshot generation failed; final advertiser will use generated records if needed", proc.stdout)
+        self.assertIn("launching mdns-advertiser", proc.stdout)
+        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertIn("generated-fail", proc.stdout)
         self.assertNotIn("launching mdns-advertiser capture", proc.stdout)
         self.assertNotIn("--save-all-snapshot", proc.stdout)
+        self.assertNotIn("--save-airport-snapshot", proc.stdout)
+        self.assertNotIn("--load-snapshot", proc.stdout)
         self.assertNotIn("unexpected-capture", proc.stdout)
 
     def test_common_wake_or_mount_uses_diskd_without_mount_hfs_fallback_when_it_mounts(self) -> None:

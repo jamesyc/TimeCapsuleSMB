@@ -3837,20 +3837,19 @@ class CliTests(unittest.TestCase):
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["remote_rc_local_log_tail"] = "\n".join(
                 [
-                    "mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback",
-                    "mDNS AirPort snapshot generated",
-                    "trusted Apple mDNS snapshot is newer than current boot: /mnt/Flash/applemdns.txt",
+                    "mDNS auto-ip is available; starting advertiser",
+                    "manager mDNS recovery: starting mdns advertiser in auto-ip mode",
                 ]
             )
             kwargs["debug_fields"]["remote_mdns_log_tail"] = "\n".join(
                 [
-                    "warning: could not identify local Apple mDNS records for snapshot file: /mnt/Flash/applemdns.txt",
-                    "airport snapshot: wrote 1 record to /mnt/Flash/applemdns.txt",
-                    "snapshot load: loaded 1 records, advertising 1 snapshot records",
-                    "serving summary: source=snapshot",
+                    "serving summary: source=generated",
                     "serving service: type=_smb._tcp.local. instance=Home port=445 host=home.local.",
                     "serving service: type=_adisk._tcp.local. instance=Home share=Data disk_key=dk2 uuid=1234",
                     "serving service: type=_device-info._tcp.local. instance=Home model=TimeCapsule6,116",
+                    "serving service: type=_airport._tcp.local. instance=Home port=5009 host=home.local.",
+                    "serving service: type=_riousbprint._tcp.local. instance=Canon MP490 series port=10000 host=home.local. cmd=BJL,BJRaster3",
+                    "serving service: type=_pdl-datastream._tcp.local. instance=Canon MP490 series port=9100 host=home.local. cmd=BJL,BJRaster3",
                     "mDNS takeover established after SIGTERM + 0ms using exclusive bind",
                 ]
             )
@@ -3863,10 +3862,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("mDNS boot context:", telemetry_error)
-        self.assertIn("INFO trusted Apple mDNS snapshot capture failed; AirPort fallback snapshot was generated", telemetry_error)
-        self.assertIn("INFO mDNS snapshot load: loaded 1 records, advertising 1 snapshot records", telemetry_error)
         self.assertIn(
-            "INFO mdns-advertiser source=snapshot; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local.",
+            "INFO mdns-advertiser source=generated; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local., _airport._tcp.local., _riousbprint._tcp.local., _pdl-datastream._tcp.local.",
             telemetry_error,
         )
         self.assertIn("INFO mDNS takeover established after SIGTERM + 0ms using exclusive bind", telemetry_error)
