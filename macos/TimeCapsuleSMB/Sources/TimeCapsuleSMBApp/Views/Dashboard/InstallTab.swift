@@ -3,6 +3,7 @@ import SwiftUI
 struct InstallTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
+    @ObservedObject var operationCoordinator: OperationCoordinator
     let appSettings: AppSettings
     let showDiagnostics: () -> Void
     let diagnosticsText: () -> String
@@ -23,7 +24,7 @@ struct InstallTab: View {
             isCheckupRunning: summary.displayStatus == .checking
         )
         let progress = InstallProgressPresentation(state: store.state, currentStage: store.currentStage)
-        let isDeviceBusy = session.appStore.operationCoordinator.isDeviceBusy(profile)
+        let isDeviceBusy = operationCoordinator.isDeviceBusy(profile)
 
         ZStack {
             ScrollView {

@@ -2,6 +2,13 @@ import SwiftUI
 
 public struct ContentView: View {
     @StateObject private var appStore: AppStore
+    @ObservedObject private var appReadinessStore: AppReadinessStore
+    @ObservedObject private var appSettingsStore: AppSettingsStore
+    @ObservedObject private var deviceRegistry: DeviceRegistryStore
+    @ObservedObject private var operationCoordinator: OperationCoordinator
+    @ObservedObject private var activityStore: ActivityStore
+    @ObservedObject private var deviceDiscovery: DeviceDiscoveryStore
+    @ObservedObject private var appBackend: BackendClient
     @StateObject private var addDeviceStore: AddDeviceFlowStore
     @StateObject private var appSettingsEditorStore: AppSettingsEditorStore
     @StateObject private var dashboardStore: DashboardStore
@@ -15,6 +22,13 @@ public struct ContentView: View {
     public init() {
         let appStore = AppStore()
         _appStore = StateObject(wrappedValue: appStore)
+        _appReadinessStore = ObservedObject(wrappedValue: appStore.appReadinessStore)
+        _appSettingsStore = ObservedObject(wrappedValue: appStore.appSettingsStore)
+        _deviceRegistry = ObservedObject(wrappedValue: appStore.deviceRegistry)
+        _operationCoordinator = ObservedObject(wrappedValue: appStore.operationCoordinator)
+        _activityStore = ObservedObject(wrappedValue: appStore.activityStore)
+        _deviceDiscovery = ObservedObject(wrappedValue: appStore.deviceDiscovery)
+        _appBackend = ObservedObject(wrappedValue: appStore.backend)
         _appSettingsEditorStore = StateObject(wrappedValue: AppSettingsEditorStore(settings: appStore.appSettingsStore.settings))
         _addDeviceStore = StateObject(wrappedValue: AddDeviceFlowStore(
             coordinator: appStore.operationCoordinator,
@@ -31,19 +45,19 @@ public struct ContentView: View {
             sidebar
         } detail: {
             VStack(spacing: 0) {
-                if case .blocked = appStore.appReadinessStore.state {
-                    AppReadinessBlockedView(store: appStore.appReadinessStore) {
+                if case .blocked = appReadinessStore.state {
+                    AppReadinessBlockedView(store: appReadinessStore) {
                         diagnosticsPresented = true
                     }
                 } else {
-                    AppReadinessBannerView(store: appStore.appReadinessStore) {
+                    AppReadinessBannerView(store: appReadinessStore) {
                         diagnosticsPresented = true
                     }
                     detail
                     Divider()
                     ActivityCompactView(
-                        activityStore: appStore.activityStore,
-                        registry: appStore.deviceRegistry,
+                        activityStore: activityStore,
+                        registry: deviceRegistry,
                         context: activityDisplayContext
                     )
                 }
@@ -75,15 +89,15 @@ public struct ContentView: View {
                     ToolbarIconButton(
                         title: L10n.string("toolbar.cancel"),
                         systemImage: "xmark.circle",
-                        disabled: !appStore.operationCoordinator.canCancel
+                        disabled: !operationCoordinator.canCancel
                     ) {
-                        appStore.operationCoordinator.cancel()
+                        operationCoordinator.cancel()
                     }
                 }
             }
         }
         .frame(minWidth: 1080, minHeight: 720)
-        .preferredColorScheme(appStore.appSettingsStore.settings.appearance.preferredColorScheme(systemColorScheme: systemColorScheme))
+        .preferredColorScheme(appSettingsStore.settings.appearance.preferredColorScheme(systemColorScheme: systemColorScheme))
         .background(WindowCloseGuardInstaller())
         .onAppear {
             configureCloseGuard()
@@ -91,14 +105,14 @@ public struct ContentView: View {
         }
         .task {
             await appStore.start()
-            addDeviceStore.applyAppSettings(appStore.appSettingsStore.settings)
-            appSettingsEditorStore.sync(settings: appStore.appSettingsStore.settings)
+            addDeviceStore.applyAppSettings(appSettingsStore.settings)
+            appSettingsEditorStore.sync(settings: appSettingsStore.settings)
         }
         .onChange(of: addDeviceStore.savedProfile) { _, profile in
             guard let profile else { return }
             appStore.select(profile)
         }
-        .onChange(of: appStore.appSettingsStore.settings) { _, settings in
+        .onChange(of: appSettingsStore.settings) { _, settings in
             systemColorScheme = SystemAppearance.currentColorScheme
             addDeviceStore.applyAppSettings(settings)
             appSettingsEditorStore.sync(settings: settings)
@@ -108,18 +122,18 @@ public struct ContentView: View {
         }
         .onChange(of: diagnosticsPresented) { _, isPresented in
             guard isPresented else { return }
-            diagnosticsShowBackendEvents = appStore.appSettingsStore.settings.showRawBackendEventsByDefault
+            diagnosticsShowBackendEvents = appSettingsStore.settings.showRawBackendEventsByDefault
         }
         .sheet(isPresented: $diagnosticsPresented) {
             AppDiagnosticsView(
-                store: appStore.appReadinessStore,
+                store: appReadinessStore,
                 exportContext: { includeBackendEvents in
                     appStore.diagnosticsExportContext(includeBackendEvents: includeBackendEvents)
                 },
                 showBackendEvents: $diagnosticsShowBackendEvents,
                 helperPath: Binding(
-                    get: { appStore.backend.helperPath },
-                    set: { appStore.backend.helperPath = $0 }
+                    get: { appBackend.helperPath },
+                    set: { appBackend.helperPath = $0 }
                 )
             )
         }
@@ -152,15 +166,15 @@ public struct ContentView: View {
             Text(deleteErrorMessage ?? "")
         }
         .alert(
-            appStore.operationCoordinator.pendingConfirmation?.title ?? "",
+            operationCoordinator.pendingConfirmation?.title ?? "",
             isPresented: confirmationPresented,
-            presenting: appStore.operationCoordinator.pendingConfirmation
+            presenting: operationCoordinator.pendingConfirmation
         ) { confirmation in
             Button(confirmation.actionTitle, role: .destructive) {
-                appStore.operationCoordinator.confirmPending()
+                operationCoordinator.confirmPending()
             }
             Button(L10n.string("action.cancel"), role: .cancel) {
-                appStore.operationCoordinator.cancelPendingConfirmation()
+                operationCoordinator.cancelPendingConfirmation()
             }
         } message: { confirmation in
             Text(confirmation.message)
@@ -191,10 +205,10 @@ public struct ContentView: View {
 
     private var confirmationPresented: Binding<Bool> {
         Binding(
-            get: { appStore.operationCoordinator.pendingConfirmation != nil },
+            get: { operationCoordinator.pendingConfirmation != nil },
             set: { isPresented in
                 if !isPresented {
-                    appStore.operationCoordinator.cancelPendingConfirmation()
+                    operationCoordinator.cancelPendingConfirmation()
                 }
             }
         )
@@ -204,12 +218,12 @@ public struct ContentView: View {
         guard let profile = appStore.selectedProfile else {
             return true
         }
-        return appStore.operationCoordinator.isDeviceBusy(profile)
+        return operationCoordinator.isDeviceBusy(profile)
     }
 
     private func configureCloseGuard() {
-        AppCloseGuard.shared.configure { [weak appStore] in
-            appStore?.operationCoordinator.hasActiveWork ?? false
+        AppCloseGuard.shared.configure { [weak operationCoordinator] in
+            operationCoordinator?.hasActiveWork ?? false
         }
     }
 
@@ -229,18 +243,18 @@ public struct ContentView: View {
         List(selection: sidebarSelection) {
             Label(L10n.string("sidebar.all_airport_devices"), systemImage: "externaldrive.connected.to.line.below")
                 .tag(AppRoute.allDevices)
-            Label(L10n.string("sidebar.activity"), systemImage: appStore.activityStore.hasActiveActivity ? "hourglass" : "clock")
+            Label(L10n.string("sidebar.activity"), systemImage: activityStore.hasActiveActivity ? "hourglass" : "clock")
                 .tag(AppRoute.activity)
             Label(L10n.string("sidebar.settings"), systemImage: "gearshape")
                 .tag(AppRoute.appSettings)
 
             Section(L10n.string("sidebar.devices")) {
-                ForEach(appStore.deviceRegistry.profiles) { profile in
+                ForEach(deviceRegistry.profiles) { profile in
                     let summary = appStore.dashboardSummary(for: profile)
                     DeviceSidebarRow(
                         profile: profile,
                         summary: summary,
-                        lastSeenText: appStore.deviceDiscovery.lastSeenText(for: profile)
+                        lastSeenText: deviceDiscovery.lastSeenText(for: profile)
                     )
                         .contextMenu {
                             DeviceSidebarContextMenu(
@@ -269,7 +283,7 @@ public struct ContentView: View {
         DeviceSidebarContextMenuPresentation(
             profile: profile,
             summary: summary,
-            isDeviceBusy: appStore.operationCoordinator.isDeviceBusy(profile)
+            isDeviceBusy: operationCoordinator.isDeviceBusy(profile)
         )
     }
 
@@ -283,7 +297,7 @@ public struct ContentView: View {
         case .openFinder:
             dashboardStore.session(for: profile).performSecondaryAction(.openFinder, profile: profile)
         case .runCheckup:
-            guard !appStore.operationCoordinator.isDeviceBusy(profile) else {
+            guard !operationCoordinator.isDeviceBusy(profile) else {
                 return
             }
             appStore.select(profile)
@@ -291,7 +305,7 @@ public struct ContentView: View {
         case .viewCheckup:
             openDashboard(profile, tab: .checkup)
         case .refreshStatus:
-            guard !appStore.operationCoordinator.isDeviceBusy(profile) else {
+            guard !operationCoordinator.isDeviceBusy(profile) else {
                 return
             }
             dashboardStore.session(for: profile).performSecondaryAction(.refreshStatus, profile: profile)
@@ -300,7 +314,7 @@ public struct ContentView: View {
         case .copySMBAddress, .copyHostname, .copyIPAddress:
             copySidebarValue(action, profile: profile)
         case .removeFromThisMac:
-            guard !appStore.operationCoordinator.isDeviceBusy(profile) else {
+            guard !operationCoordinator.isDeviceBusy(profile) else {
                 return
             }
             profilePendingDeletion = profile
@@ -337,22 +351,28 @@ public struct ContentView: View {
         switch appStore.route {
         case .activity:
             ActivityDetailView(
-                activityStore: appStore.activityStore,
-                registry: appStore.deviceRegistry
+                activityStore: activityStore,
+                registry: deviceRegistry
             )
         case .appSettings:
             AppSettingsView(
                 appStore: appStore,
+                appSettingsStore: appSettingsStore,
+                appUpdateStore: appStore.appUpdateStore,
                 editor: appSettingsEditorStore
             )
         case .addDevice:
             AddDeviceView(store: addDeviceStore)
         case .device(let profileID):
-            if let profile = appStore.deviceRegistry.profile(id: profileID) {
+            if let profile = deviceRegistry.profile(id: profileID) {
                 DeviceDashboardView(
                     profile: profile,
                     session: dashboardStore.session(for: profile),
                     appStore: appStore,
+                    appSettingsStore: appSettingsStore,
+                    reachabilityStore: appStore.reachabilityStore,
+                    operationCoordinator: operationCoordinator,
+                    backend: appBackend,
                     showDiagnostics: {
                         diagnosticsPresented = true
                     }
@@ -360,6 +380,9 @@ public struct ContentView: View {
             } else {
                 DeviceListOverviewView(
                     appStore: appStore,
+                    deviceRegistry: deviceRegistry,
+                    deviceDiscovery: deviceDiscovery,
+                    backend: appBackend,
                     addDiscoveredDevice: { device in
                         addDeviceStore.select(device)
                         appStore.showAddDevice()
@@ -369,6 +392,9 @@ public struct ContentView: View {
         case .allDevices:
             DeviceListOverviewView(
                 appStore: appStore,
+                deviceRegistry: deviceRegistry,
+                deviceDiscovery: deviceDiscovery,
+                backend: appBackend,
                 addDiscoveredDevice: { device in
                     addDeviceStore.select(device)
                     appStore.showAddDevice()

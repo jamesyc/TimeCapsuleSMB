@@ -3,6 +3,7 @@ import SwiftUI
 struct CheckupTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
+    @ObservedObject var operationCoordinator: OperationCoordinator
     let appSettings: AppSettings
     let showDiagnostics: () -> Void
     let diagnosticsText: () -> String
@@ -17,7 +18,7 @@ struct CheckupTab: View {
             hostWarning: HostCompatibilityPolicy.warning(enabled: appSettings.timeMachineWarningsEnabled)
         )
         let progress = CheckupProgressPresentation(state: store.state, currentStage: store.currentStage)
-        let isDeviceBusy = session.appStore.operationCoordinator.isDeviceBusy(profile)
+        let isDeviceBusy = operationCoordinator.isDeviceBusy(profile)
 
         ZStack {
             ScrollView {

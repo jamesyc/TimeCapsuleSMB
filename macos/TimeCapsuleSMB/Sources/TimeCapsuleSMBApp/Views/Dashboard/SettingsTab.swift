@@ -3,7 +3,8 @@ import SwiftUI
 struct SettingsTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
-    @ObservedObject var appStore: AppStore
+    let appStore: AppStore
+    @ObservedObject var backend: BackendClient
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -19,7 +20,7 @@ struct SettingsTab: View {
             SummaryGrid(rows: [
                 (L10n.string("advanced.profile_id"), profile.id),
                 (L10n.string("advanced.config"), profile.configPath),
-                (L10n.string("advanced.helper"), appStore.backend.helperPath.isEmpty ? L10n.string("value.auto") : appStore.backend.helperPath)
+                (L10n.string("advanced.helper"), backend.helperPath.isEmpty ? L10n.string("value.auto") : backend.helperPath)
             ])
             EventList(events: session.events)
         }

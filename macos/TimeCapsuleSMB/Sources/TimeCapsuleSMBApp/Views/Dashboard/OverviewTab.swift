@@ -11,15 +11,15 @@ private enum OverviewLayout {
 struct OverviewTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
-    @ObservedObject var appStore: AppStore
+    @ObservedObject var reachabilityStore: DeviceReachabilityStore
 
     var body: some View {
         let summary = session.summary(for: profile)
         let presentation = DeviceDashboardOverviewPresentation(
             summary: summary,
             currentCheckupSummary: session.doctorStore.summary,
-            reachabilitySnapshot: appStore.reachabilityStore.snapshot(for: profile),
-            isReachabilityRunning: appStore.reachabilityStore.isRunning(profile: profile)
+            reachabilitySnapshot: reachabilityStore.snapshot(for: profile),
+            isReachabilityRunning: reachabilityStore.isRunning(profile: profile)
         )
 
         ScrollView {

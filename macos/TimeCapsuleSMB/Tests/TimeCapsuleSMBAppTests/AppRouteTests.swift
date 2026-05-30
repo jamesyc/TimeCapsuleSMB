@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -121,6 +122,47 @@ final class AppRouteTests: XCTestCase {
 
         fixture.appStore.showAllDevices()
         XCTAssertNil(fixture.appStore.diagnosticsExportContext().selectedProfile)
+    }
+
+    func testAppStorePublishesOnlyAppLevelRouteChanges() async throws {
+        let fixture = try await makeFixture()
+        var cancellables: Set<AnyCancellable> = []
+        let published = expectation(description: "AppStore publishes route changes")
+        fixture.appStore.objectWillChange
+            .sink {
+                published.fulfill()
+            }
+            .store(in: &cancellables)
+
+        fixture.appStore.showActivity()
+
+        await fulfillment(of: [published], timeout: 1)
+        XCTAssertEqual(fixture.appStore.route, .activity)
+        _ = cancellables
+    }
+
+    func testAppStoreDoesNotForwardChildStoreInvalidations() async throws {
+        let fixture = try await makeFixture()
+        var cancellables: Set<AnyCancellable> = []
+        let forwarded = expectation(description: "AppStore should not forward child store changes")
+        forwarded.isInverted = true
+        fixture.appStore.objectWillChange
+            .sink {
+                forwarded.fulfill()
+            }
+            .store(in: &cancellables)
+
+        fixture.appStore.appReadinessStore.objectWillChange.send()
+        fixture.appStore.appSettingsStore.objectWillChange.send()
+        fixture.appStore.appUpdateStore.objectWillChange.send()
+        fixture.appStore.deviceRegistry.objectWillChange.send()
+        fixture.appStore.operationCoordinator.objectWillChange.send()
+        fixture.appStore.activityStore.objectWillChange.send()
+        fixture.appStore.deviceDiscovery.objectWillChange.send()
+        fixture.appStore.reachabilityStore.objectWillChange.send()
+
+        await fulfillment(of: [forwarded], timeout: 0.1)
+        _ = cancellables
     }
 
     private func makeFixture() async throws -> (

@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct AppSettingsView: View {
-    @ObservedObject var appStore: AppStore
+    let appStore: AppStore
+    @ObservedObject var appSettingsStore: AppSettingsStore
+    @ObservedObject var appUpdateStore: AppUpdateStore
     @ObservedObject var editor: AppSettingsEditorStore
 
     private let contentWidth: CGFloat = 760
@@ -74,13 +76,13 @@ struct AppSettingsView: View {
                     }
                     HStack(spacing: 10) {
                         Button {
-                            appStore.appUpdateStore.checkNow(settings: appStore.appSettingsStore.settings)
+                            appUpdateStore.checkNow(settings: appSettingsStore.settings)
                         } label: {
                             Label(L10n.string("app_settings.check_now"), systemImage: "arrow.clockwise")
                         }
-                        .disabled(appStore.appUpdateStore.isChecking)
+                        .disabled(appUpdateStore.isChecking)
 
-                        if appStore.appUpdateStore.isChecking {
+                        if appUpdateStore.isChecking {
                             ProgressView()
                                 .controlSize(.small)
                         }
@@ -98,7 +100,7 @@ struct AppSettingsView: View {
                     Toggle(L10n.string("app_settings.time_machine_warnings"), isOn: $editor.draft.timeMachineWarningsEnabled)
                 }
 
-                if let message = editor.validationError ?? editor.errorMessage ?? appStore.appSettingsStore.error?.localizedDescription {
+                if let message = editor.validationError ?? editor.errorMessage ?? appSettingsStore.error?.localizedDescription {
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -151,17 +153,17 @@ struct AppSettingsView: View {
     }
 
     private var updateStatusText: String {
-        if let payload = appStore.appUpdateStore.payload {
+        if let payload = appUpdateStore.payload {
             return payload.localizedSummary
         }
-        if let error = appStore.appUpdateStore.error {
+        if let error = appUpdateStore.error {
             return error.message
         }
-        return appStore.appUpdateStore.state.title
+        return appUpdateStore.state.title
     }
 
     private var updateStatusColor: Color {
-        switch appStore.appUpdateStore.state {
+        switch appUpdateStore.state {
         case .updateAvailable, .unavailable, .failed:
             return .yellow
         case .current:

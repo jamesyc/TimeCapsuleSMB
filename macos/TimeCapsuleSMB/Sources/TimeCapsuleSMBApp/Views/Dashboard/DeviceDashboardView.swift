@@ -3,7 +3,11 @@ import SwiftUI
 struct DeviceDashboardView: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
-    @ObservedObject var appStore: AppStore
+    let appStore: AppStore
+    @ObservedObject var appSettingsStore: AppSettingsStore
+    @ObservedObject var reachabilityStore: DeviceReachabilityStore
+    @ObservedObject var operationCoordinator: OperationCoordinator
+    @ObservedObject var backend: BackendClient
     let showDiagnostics: () -> Void
 
     var body: some View {
@@ -21,12 +25,13 @@ struct DeviceDashboardView: View {
             Group {
                 switch session.selectedTab {
                 case .overview:
-                    OverviewTab(profile: profile, session: session, appStore: appStore)
+                    OverviewTab(profile: profile, session: session, reachabilityStore: reachabilityStore)
                 case .install:
                     InstallTab(
                         profile: profile,
                         session: session,
-                        appSettings: appStore.appSettingsStore.settings,
+                        operationCoordinator: operationCoordinator,
+                        appSettings: appSettingsStore.settings,
                         showDiagnostics: showDiagnostics,
                         diagnosticsText: diagnosticsText
                     )
@@ -34,7 +39,8 @@ struct DeviceDashboardView: View {
                     CheckupTab(
                         profile: profile,
                         session: session,
-                        appSettings: appStore.appSettingsStore.settings,
+                        operationCoordinator: operationCoordinator,
+                        appSettings: appSettingsStore.settings,
                         showDiagnostics: showDiagnostics,
                         diagnosticsText: diagnosticsText
                     )
@@ -47,7 +53,12 @@ struct DeviceDashboardView: View {
                     )
                 case .settings:
                     ScrollView {
-                        SettingsTab(profile: profile, session: session, appStore: appStore)
+                        SettingsTab(
+                            profile: profile,
+                            session: session,
+                            appStore: appStore,
+                            backend: backend
+                        )
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }

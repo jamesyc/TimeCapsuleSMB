@@ -1,7 +1,10 @@
 import SwiftUI
 
 struct DeviceListOverviewView: View {
-    @ObservedObject var appStore: AppStore
+    let appStore: AppStore
+    @ObservedObject var deviceRegistry: DeviceRegistryStore
+    @ObservedObject var deviceDiscovery: DeviceDiscoveryStore
+    @ObservedObject var backend: BackendClient
     let addDiscoveredDevice: (DiscoveredDevice) -> Void
 
     var body: some View {
@@ -18,12 +21,12 @@ struct DeviceListOverviewView: View {
     @ViewBuilder
     private var savedDevicesSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(appStore.deviceRegistry.profiles.isEmpty
+            Text(deviceRegistry.profiles.isEmpty
                 ? L10n.string("overview.empty.title")
                 : L10n.string("overview.saved_devices.title"))
             .font(.title2.weight(.semibold))
 
-            if appStore.deviceRegistry.profiles.isEmpty {
+            if deviceRegistry.profiles.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(L10n.string("overview.empty.message"))
                         .foregroundStyle(.secondary)
@@ -34,7 +37,7 @@ struct DeviceListOverviewView: View {
                     }
                 }
             } else {
-                ForEach(appStore.deviceRegistry.profiles) { profile in
+                ForEach(deviceRegistry.profiles) { profile in
                     let summary = appStore.dashboardSummary(for: profile)
                     Button {
                         appStore.select(profile)
@@ -66,16 +69,16 @@ struct DeviceListOverviewView: View {
                 Text(L10n.string("overview.discovery.title"))
                     .font(.headline)
                 Spacer()
-                Text(appStore.deviceDiscovery.state.title)
+                Text(deviceDiscovery.state.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button {
-                    appStore.deviceDiscovery.refresh()
+                    deviceDiscovery.refresh()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
-                .disabled(appStore.backend.isRunning)
+                .disabled(backend.isRunning)
                 .help(L10n.string("overview.discovery.refresh"))
             }
 
@@ -85,7 +88,7 @@ struct DeviceListOverviewView: View {
 
     @ViewBuilder
     private var discoveryContent: some View {
-        switch appStore.deviceDiscovery.state {
+        switch deviceDiscovery.state {
         case .idle, .waitingForReadiness:
             Text(L10n.string("overview.discovery.waiting"))
                 .foregroundStyle(.secondary)
@@ -99,18 +102,18 @@ struct DeviceListOverviewView: View {
                 .foregroundStyle(.secondary)
         case .failed:
             VStack(alignment: .leading, spacing: 6) {
-                Text(appStore.deviceDiscovery.error?.message ?? L10n.string("overview.discovery.failed"))
+                Text(deviceDiscovery.error?.message ?? L10n.string("overview.discovery.failed"))
                     .foregroundStyle(.red)
                 Button(L10n.string("overview.discovery.refresh")) {
-                    appStore.deviceDiscovery.refresh()
+                    deviceDiscovery.refresh()
                 }
             }
         case .empty:
             Text(L10n.string("overview.discovery.empty"))
                 .foregroundStyle(.secondary)
         case .ready:
-            let unsaved = appStore.deviceDiscovery.unsavedDevices
-            let saved = appStore.deviceDiscovery.savedDevices
+            let unsaved = deviceDiscovery.unsavedDevices
+            let saved = deviceDiscovery.savedDevices
             if unsaved.isEmpty && saved.isEmpty {
                 Text(L10n.string("overview.discovery.empty"))
                     .foregroundStyle(.secondary)
