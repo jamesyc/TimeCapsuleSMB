@@ -692,6 +692,27 @@ class SSHTransportTests(unittest.TestCase):
             f"Timed out copying {src.name} to remote path /tmp/test-upload via scp",
         )
 
+    def test_run_scp_brackets_ipv6_literal_destination(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection(
+                "root@fdbb:5737:6e53:9bf7:82ea:96ff:fee6:5868",
+                "pw",
+                "-o StrictHostKeyChecking=no",
+                remote_has_scp=True,
+            )
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh._verify_remote_size"):
+                    with mock.patch(
+                        "timecapsulesmb.transport.ssh._spawn_with_password",
+                        return_value=(0, ""),
+                    ) as spawn_mock:
+                        ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+
+        cmd = spawn_mock.call_args.args[0]
+        self.assertEqual(cmd[-1], "root@[fdbb:5737:6e53:9bf7:82ea:96ff:fee6:5868]:/tmp/test-upload")
+
     def test_run_scp_cat_fallback_timeout_reports_remote_destination(self) -> None:
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
