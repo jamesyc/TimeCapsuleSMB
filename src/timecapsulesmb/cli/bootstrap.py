@@ -31,14 +31,64 @@ LINUX_HOST_TOOL_PACKAGES = {
     "zypper": {"sshpass": "sshpass", "smbclient": "samba-client"},
     "pacman": {"sshpass": "sshpass", "smbclient": "smbclient"},
 }
+COMMAND_OUTPUT_ERROR_LIMIT = 8192
 
 
 class BootstrapError(Exception):
     pass
 
 
+class BootstrapCommandError(Exception):
+    def __init__(self, cmd: list[str], returncode: int, stdout: str, stderr: str) -> None:
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        super().__init__(f"Command failed with exit code {returncode}: {cmd}")
+
+
 def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+        sys.stdout.flush()
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+        sys.stderr.flush()
+    if proc.returncode != 0:
+        raise BootstrapCommandError(cmd, proc.returncode, proc.stdout or "", proc.stderr or "")
+
+
+def _truncate_command_output(text: str, limit: int = COMMAND_OUTPUT_ERROR_LIMIT) -> str:
+    if len(text) <= limit:
+        return text.rstrip()
+    omitted = len(text) - limit
+    return f"{text[:limit].rstrip()}\n...<truncated {omitted} chars>"
+
+
+def _format_command_output(label: str, text: str) -> str | None:
+    formatted = _truncate_command_output(text)
+    if not formatted:
+        return None
+    return f"{label}:\n{formatted}"
+
+
+def _format_command_error(exc: BootstrapCommandError) -> str:
+    message = f"Command failed with exit code {exc.returncode}: {exc.cmd}"
+    output = _format_command_output("stderr", exc.stderr)
+    if output is None:
+        output = _format_command_output("stdout", exc.stdout)
+    if output is not None:
+        message = f"{message}\n\n{output}"
+    return message
 
 
 def current_platform_label() -> str:
@@ -172,6 +222,13 @@ def install_required_host_tools() -> None:
                 f"Automatic host tool installation is not implemented for {platform_label}.",
                 f"Install {_format_tools(missing_tools)} with your OS package manager.",
             )
+    except BootstrapCommandError as exc:
+        message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
+        print(color_red(message), flush=True)
+        if manual_command:
+            print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+            print(manual_command, flush=True)
+        raise BootstrapError(f"{message}\n\n{_format_command_error(exc)}") from exc
     except subprocess.CalledProcessError as exc:
         message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
         print(color_red(message), flush=True)
@@ -232,6 +289,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             install_python_requirements(venv_python)
             command_context.set_stage("install_host_tools")
             install_required_host_tools()
+        except BootstrapCommandError as e:
+            message = _format_command_error(e)
+            print(message, file=sys.stderr)
+            command_context.fail_with_error(message)
+            return e.returncode or 1
         except subprocess.CalledProcessError as e:
             message = f"Command failed with exit code {e.returncode}: {e.cmd}"
             print(message, file=sys.stderr)

@@ -1379,6 +1379,68 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["requirements_present"], False)
         self.assertIn("stage=validate_requirements", finished["error"])
 
+    def test_bootstrap_telemetry_error_includes_command_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            requirements = root / "requirements.txt"
+            requirements.write_text("zeroconf\n")
+            venv = root / ".venv"
+            command_stderr = "The virtual environment was not created successfully because ensurepip is not available.\n"
+            failed = subprocess.CompletedProcess(["/usr/bin/python3", "-m", "venv", str(venv)], 1, "", command_stderr)
+
+            with mock.patch("timecapsulesmb.cli.bootstrap.REPO_ROOT", root):
+                with mock.patch("timecapsulesmb.cli.bootstrap.REQUIREMENTS", requirements):
+                    with mock.patch("timecapsulesmb.cli.bootstrap.VENVDIR", venv):
+                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.subprocess.run", return_value=failed):
+                                    rc = bootstrap.main(["--python", "/usr/bin/python3"])
+
+        self.assertEqual(rc, 1)
+        finished = self.telemetry_payload("bootstrap_finished")
+        error = finished["error"]
+        self.assertIn("Command failed with exit code 1", error)
+        self.assertIn("stderr:", error)
+        self.assertIn("ensurepip is not available", error)
+        self.assertIn("Debug context:", error)
+        self.assertIn("stage=ensure_venv", error)
+
+    def test_bootstrap_telemetry_error_uses_stdout_when_stderr_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            requirements = root / "requirements.txt"
+            requirements.write_text("zeroconf\n")
+            venv = root / ".venv"
+            failed = subprocess.CompletedProcess(["python3", "-m", "venv", str(venv)], 1, "stdout failure\n", "")
+
+            with mock.patch("timecapsulesmb.cli.bootstrap.REPO_ROOT", root):
+                with mock.patch("timecapsulesmb.cli.bootstrap.REQUIREMENTS", requirements):
+                    with mock.patch("timecapsulesmb.cli.bootstrap.VENVDIR", venv):
+                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.subprocess.run", return_value=failed):
+                                    rc = bootstrap.main(["--python", "python3"])
+
+        self.assertEqual(rc, 1)
+        error = self.telemetry_payload("bootstrap_finished")["error"]
+        self.assertIn("stdout:", error)
+        self.assertIn("stdout failure", error)
+        self.assertIn("stage=ensure_venv", error)
+
+    def test_bootstrap_command_error_output_is_truncated(self) -> None:
+        message = bootstrap._format_command_error(
+            bootstrap.BootstrapCommandError(
+                ["python3", "-m", "venv", ".venv"],
+                1,
+                "",
+                "x" * (bootstrap.COMMAND_OUTPUT_ERROR_LIMIT + 7),
+            )
+        )
+
+        self.assertIn("stderr:", message)
+        self.assertIn("...<truncated 7 chars>", message)
+        self.assertLess(len(message), bootstrap.COMMAND_OUTPUT_ERROR_LIMIT + 200)
+
     def test_bootstrap_install_python_requirements_repairs_venv_without_pip(self) -> None:
         output = io.StringIO()
         venv_python = Path("/tmp/tcapsule-venv/bin/python")
@@ -1563,6 +1625,28 @@ class CliTests(unittest.TestCase):
         self.assertIn("Failed to install missing host tools automatically", text)
         self.assertIn("sudo apt-get update && sudo apt-get install -y sshpass smbclient", text)
         self.assertIn("\033[31m", text)
+
+    def test_bootstrap_host_tool_install_error_keeps_command_stderr(self) -> None:
+        output = io.StringIO()
+        command_error = bootstrap.BootstrapCommandError(
+            ["sudo", "/usr/bin/apt-get", "update"],
+            100,
+            "",
+            "apt repository failure\n",
+        )
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.find_command", side_effect=lambda name: "/usr/bin/apt-get" if name == "apt-get" else None):
+                with mock.patch("timecapsulesmb.cli.bootstrap.run", side_effect=command_error):
+                    with self.assertRaises(bootstrap.BootstrapError) as raised:
+                        with redirect_stdout(output):
+                            bootstrap.install_required_host_tools()
+
+        self.assertIn("Failed to install missing host tools automatically", output.getvalue())
+        message = str(raised.exception)
+        self.assertIn("Command failed with exit code 100", message)
+        self.assertIn("stderr:", message)
+        self.assertIn("apt repository failure", message)
 
     def test_bootstrap_fails_when_linux_package_manager_missing_for_required_host_tools(self) -> None:
         output = io.StringIO()
