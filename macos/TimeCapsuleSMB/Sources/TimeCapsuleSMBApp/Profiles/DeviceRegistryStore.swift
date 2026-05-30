@@ -442,11 +442,15 @@ private actor DeviceRegistryRepository {
         let storedProfile = profileWithStorageFields(profile)
         let updatedProfiles = profiles.filter { $0.id != storedProfile.id }
         let configDirectory = storedProfile.configURL.deletingLastPathComponent()
-        try persist(updatedProfiles)
-        profiles = updatedProfiles
-        if fileManager.fileExists(atPath: configDirectory.path) {
-            try fileManager.removeItem(at: configDirectory)
+        let stagedDirectory = try stageConfigDirectoryDelete(configDirectory, profileID: storedProfile.id)
+        do {
+            try persist(updatedProfiles)
+        } catch {
+            restoreStagedConfigDirectory(stagedDirectory, to: configDirectory)
+            throw error
         }
+        profiles = updatedProfiles
+        removeStagedConfigDirectory(stagedDirectory)
         return updatedProfiles
     }
 
@@ -610,12 +614,12 @@ private actor DeviceRegistryRepository {
     }
 
     private func addressConflict(for profile: DeviceProfile, excluding profileID: DeviceProfile.ID) -> DeviceRegistryError? {
-        let keys = profile.network.addressKeys
+        let keys = profile.network.matchableAddressKeys
         guard !keys.isEmpty else {
             return nil
         }
         for existing in profiles where existing.id != profileID {
-            let overlap = keys.intersection(existing.network.addressKeys)
+            let overlap = keys.intersection(existing.network.matchableAddressKeys)
             guard let key = overlap.first else {
                 continue
             }
@@ -637,6 +641,38 @@ private actor DeviceRegistryRepository {
         try fileManager.createDirectory(at: applicationSupportURL, withIntermediateDirectories: true)
         let data = try encoder.encode(profiles.map(profileWithStorageFields))
         try data.write(to: registryURL, options: [.atomic])
+    }
+
+    private func stageConfigDirectoryDelete(_ configDirectory: URL, profileID: DeviceProfile.ID) throws -> URL? {
+        guard fileManager.fileExists(atPath: configDirectory.path) else {
+            return nil
+        }
+        let configDirectoryPath = configDirectory.standardizedFileURL.path
+        let devicesDirectoryPath = devicesDirectoryURL.standardizedFileURL.path
+        guard configDirectoryPath.hasPrefix(devicesDirectoryPath + "/") else {
+            throw DeviceRegistryError.io("Refusing to delete profile artifacts outside the devices directory.")
+        }
+
+        let stagingDirectory = devicesDirectoryURL.appendingPathComponent(".Staging", isDirectory: true)
+        try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        let stagedDirectory = stagingDirectory.appendingPathComponent("\(profileID)-delete-\(UUID().uuidString.lowercased())", isDirectory: true)
+        try fileManager.moveItem(at: configDirectory, to: stagedDirectory)
+        return stagedDirectory
+    }
+
+    private func restoreStagedConfigDirectory(_ stagedDirectory: URL?, to configDirectory: URL) {
+        guard let stagedDirectory, fileManager.fileExists(atPath: stagedDirectory.path) else {
+            return
+        }
+        try? fileManager.createDirectory(at: configDirectory.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fileManager.moveItem(at: stagedDirectory, to: configDirectory)
+    }
+
+    private func removeStagedConfigDirectory(_ stagedDirectory: URL?) {
+        guard let stagedDirectory, fileManager.fileExists(atPath: stagedDirectory.path) else {
+            return
+        }
+        try? fileManager.removeItem(at: stagedDirectory)
     }
 
     private func sorted(_ profiles: [DeviceProfile]) -> [DeviceProfile] {

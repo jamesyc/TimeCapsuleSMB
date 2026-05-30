@@ -118,10 +118,10 @@ public final class AppCloseGuard: NSObject {
     }
 
     func attach(to window: NSWindow) {
-        if objc_getAssociatedObject(window, &windowCloseGuardDelegateKey) is GuardedWindowDelegate {
+        if window.delegate is GuardedWindowDelegate {
             return
         }
-        let delegate = GuardedWindowDelegate(downstream: window.delegate)
+        let delegate = GuardedWindowDelegate(downstream: window.delegate, closeGuard: self)
         objc_setAssociatedObject(window, &windowCloseGuardDelegateKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         window.delegate = delegate
     }
@@ -144,20 +144,36 @@ private var windowCloseGuardDelegateKey: UInt8 = 0
 
 private final class GuardedWindowDelegate: NSObject, NSWindowDelegate {
     private weak var downstream: NSWindowDelegate?
+    private let closeGuard: AppCloseGuard
 
-    init(downstream: NSWindowDelegate?) {
+    init(downstream: NSWindowDelegate?, closeGuard: AppCloseGuard) {
         self.downstream = downstream
+        self.closeGuard = closeGuard
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if let downstreamAllows = downstream?.windowShouldClose?(sender), !downstreamAllows {
             return false
         }
-        return AppCloseGuard.shared.shouldCloseWindow(sender)
+        return closeGuard.shouldCloseWindow(sender)
     }
 
     func windowWillClose(_ notification: Notification) {
         downstream?.windowWillClose?(notification)
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        if super.responds(to: aSelector) {
+            return true
+        }
+        return downstream?.responds(to: aSelector) ?? false
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        guard let downstream, downstream.responds(to: aSelector) else {
+            return super.forwardingTarget(for: aSelector)
+        }
+        return downstream
     }
 }
 

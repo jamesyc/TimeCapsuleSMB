@@ -125,11 +125,11 @@ struct DeviceProfileEditorDraft: Equatable {
             throw DeviceProfileEditorValidationError.ataIdleSecondsInvalid
         }
         let trimmedAtaStandby = ataStandby.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedAtaStandby: String
+        let parsedAtaStandby: Int?
         if trimmedAtaStandby.isEmpty {
-            normalizedAtaStandby = ""
-        } else if let parsedAtaStandby = ValueParsers.nonNegativeInteger(trimmedAtaStandby) {
-            normalizedAtaStandby = String(parsedAtaStandby)
+            parsedAtaStandby = nil
+        } else if let value = ValueParsers.nonNegativeInteger(trimmedAtaStandby) {
+            parsedAtaStandby = value
         } else {
             throw DeviceProfileEditorValidationError.ataStandbyInvalid
         }
@@ -140,7 +140,7 @@ struct DeviceProfileEditorDraft: Equatable {
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait,
             ataIdleSeconds: ataIdle,
-            ataStandby: normalizedAtaStandby.isEmpty ? nil : ValueParsers.nonNegativeInteger(normalizedAtaStandby)
+            ataStandby: parsedAtaStandby
         )
     }
 

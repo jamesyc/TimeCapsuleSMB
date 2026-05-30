@@ -109,6 +109,10 @@ struct DeviceNetworkIdentity: Codable, Equatable {
         Set(addresses.map(\.identityKey))
     }
 
+    var matchableAddressKeys: Set<String> {
+        Set(addresses.filter { $0.scope == .regular }.map(\.identityKey))
+    }
+
     func matches(_ other: DeviceNetworkIdentity) -> Bool {
         if let leftFullname = Self.normalizedOptional(bonjourFullname)?.lowercased(),
            let rightFullname = Self.normalizedOptional(other.bonjourFullname)?.lowercased(),
@@ -121,7 +125,9 @@ struct DeviceNetworkIdentity: Codable, Equatable {
         if !normalizedHostname.isEmpty && normalizedHostname == other.normalizedHostname {
             return true
         }
-        return !addressKeys.isDisjoint(with: other.addressKeys)
+        let leftKeys = matchableAddressKeys
+        let rightKeys = other.matchableAddressKeys
+        return !leftKeys.isEmpty && !rightKeys.isEmpty && !leftKeys.isDisjoint(with: rightKeys)
     }
 
     mutating func setConfiguredSSHTarget(_ target: String) {

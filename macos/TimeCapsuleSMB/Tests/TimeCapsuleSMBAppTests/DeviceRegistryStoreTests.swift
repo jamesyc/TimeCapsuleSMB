@@ -95,6 +95,9 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .empty)
         XCTAssertEqual(store.profiles, [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: URL(fileURLWithPath: updated.configPath).deletingLastPathComponent().path))
+        let stagingURL = temp.url.appendingPathComponent("Devices/.Staging", isDirectory: true)
+        let stagedArtifacts = (try? FileManager.default.contentsOfDirectory(atPath: stagingURL.path)) ?? []
+        XCTAssertEqual(stagedArtifacts, [])
     }
 
     func testDuplicateSaveUpdatesByHostAndBonjourFullnameButNotWeakMetadata() async throws {
@@ -256,6 +259,95 @@ final class DeviceRegistryStoreTests: XCTestCase {
         }
         XCTAssertEqual(store.profiles.count, 2)
         XCTAssertEqual(store.profile(id: second.id)?.bonjourFullname, "Den._airport._tcp.local.")
+    }
+
+    func testUpdateProfileIgnoresLinkLocalAddressConflicts() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        _ = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try discovered(record: testDeviceRecord(
+                hostname: "office.local.",
+                ipv4: ["10.0.0.2", "169.254.44.9"],
+                fullname: "Office._airport._tcp.local."
+            )),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        var second = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: try discovered(record: testDeviceRecord(
+                hostname: "den.local.",
+                ipv4: ["10.0.0.3"],
+                fullname: "Den._airport._tcp.local."
+            )),
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+
+        second.addresses = ["169.254.44.9"]
+        let updated = try await store.updateProfile(second)
+
+        XCTAssertEqual(updated.addresses, ["169.254.44.9", "10.0.0.3"])
+        XCTAssertEqual(store.profiles.count, 2)
+    }
+
+    func testUpdateProfileRejectsRegularAddressConflicts() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let first = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        var second = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+
+        second.addresses = ["10.0.0.2"]
+
+        do {
+            _ = try await store.updateProfile(second)
+            XCTFail("Expected duplicate regular address update to fail.")
+        } catch {
+            XCTAssertEqual(
+                error as? DeviceRegistryError,
+                .duplicateProfile(field: "address", value: "10.0.0.2", conflictingProfileID: first.id)
+            )
+        }
+        XCTAssertEqual(store.profiles.count, 2)
+    }
+
+    func testDeleteRestoresConfigDirectoryWhenRegistryPersistFails() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try "TC_HOST=root@10.0.0.2\n".write(to: profile.configURL, atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: store.registryURL)
+        try FileManager.default.createDirectory(at: store.registryURL, withIntermediateDirectories: false)
+
+        do {
+            try await store.delete(profile)
+            XCTFail("Expected registry delete failure.")
+        } catch {
+            XCTAssertNotNil(error)
+        }
+
+        XCTAssertNotNil(store.profile(id: profile.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: profile.configURL.deletingLastPathComponent().path))
+        XCTAssertEqual(try String(contentsOf: profile.configURL, encoding: .utf8), "TC_HOST=root@10.0.0.2\n")
     }
 
     func testUpdateProfileMissingIDFailsWithoutCreatingProfile() async throws {

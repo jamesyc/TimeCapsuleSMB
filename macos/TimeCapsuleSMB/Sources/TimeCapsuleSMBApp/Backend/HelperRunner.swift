@@ -106,24 +106,9 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
         }
 
-        let requestWriter = self.requestWriter
-        let writeResult: Result<Void, Error> = await withTaskCancellationHandler {
-            do {
-                try await requestWriter.write(requestData, to: input.fileHandleForWriting)
-                try input.fileHandleForWriting.close()
-                return .success(())
-            } catch {
-                return .failure(error)
-            }
-        } onCancel: {
-            try? input.fileHandleForWriting.close()
-            Task {
-                await Self.cancelForTelemetry(process)
-            }
-        }
+        let writeResult = await writeRequest(requestData, to: input.fileHandleForWriting, process: process)
 
         if case .failure(let error) = writeResult {
-            try? input.fileHandleForWriting.close()
             if Task.isCancelled || error is CancellationError {
                 await Self.cancelForTelemetry(process)
             } else {
@@ -184,6 +169,25 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             sawTerminalEvent: finalSawTerminalEvent,
             stderr: stderrText
         )
+    }
+
+    private func writeRequest(_ data: Data, to handle: FileHandle, process: Process) async -> Result<Void, Error> {
+        let requestWriter = self.requestWriter
+        return await withTaskCancellationHandler {
+            defer {
+                try? handle.close()
+            }
+            do {
+                try await requestWriter.write(data, to: handle)
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        } onCancel: {
+            Task {
+                await Self.cancelForTelemetry(process)
+            }
+        }
     }
 
     private static func readOutput(

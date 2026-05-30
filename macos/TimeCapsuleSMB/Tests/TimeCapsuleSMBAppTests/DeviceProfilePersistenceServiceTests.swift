@@ -198,6 +198,7 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
 
         XCTAssertNotNil(registry.profile(id: profile.id))
         XCTAssertEqual(try passwordStore.password(for: profile.keychainAccount), "old-secret")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: profile.configURL.deletingLastPathComponent().path))
     }
 
     private func writeTestConfig(to url: URL, host: String = "root@10.0.0.2") throws {

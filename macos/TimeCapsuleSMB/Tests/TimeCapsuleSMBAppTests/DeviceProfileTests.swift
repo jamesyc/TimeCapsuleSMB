@@ -69,7 +69,8 @@ final class DeviceProfileTests: XCTestCase {
         let sameHost = makeProfile(id: "three", host: "tcapsule.local.")
         let sameHostWithRootUser = makeProfile(id: "five", host: "root@tcapsule.local")
         let sameHostname = makeProfile(id: "six", host: "10.0.0.10", hostname: "office-capsule.local.")
-        let sameAddress = makeProfile(id: "seven", host: "10.0.0.11", addresses: ["169.254.44.9"])
+        let sameAddress = makeProfile(id: "seven", host: "10.0.0.11", addresses: ["10.0.0.2"])
+        let sameLinkLocalAddress = makeProfile(id: "eight", host: "10.0.0.13", addresses: ["169.254.44.9"])
         let weakMetadataOnly = makeProfile(id: "four", host: "10.0.0.12", syap: "119", model: "Time Capsule")
 
         XCTAssertTrue(DeviceProfile.matches(first, sameFullname))
@@ -77,6 +78,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertTrue(DeviceProfile.matches(first, sameHostWithRootUser))
         XCTAssertTrue(DeviceProfile.matches(first, sameHostname))
         XCTAssertTrue(DeviceProfile.matches(first, sameAddress))
+        XCTAssertFalse(DeviceProfile.matches(first, sameLinkLocalAddress))
         XCTAssertFalse(DeviceProfile.matches(first, weakMetadataOnly))
     }
 
