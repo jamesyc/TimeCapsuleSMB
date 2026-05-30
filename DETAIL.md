@@ -14,14 +14,15 @@ What is working now:
 - static tiny SMB / Time Machine mDNS advertiser
 - static NBNS responder for NetBIOS name discovery
 - boot-time runtime staging via `/mnt/Flash/rc.local`
-- boot-time watchdog for `smbd`, the mDNS helper, and the NBNS helper when enabled
+- boot-time manager for `smbd`, the mDNS helper, and the NBNS helper when enabled
 - direct SMB service on port `445`
 - Bonjour advertisement for:
   - managed `_smb._tcp`
   - managed `_adisk._tcp`
-  - Apple-cloned `_airport._tcp`
-  - Apple-cloned `_afpovertcp._tcp`
-  - other Apple-cloned records
+  - generated `_device-info._tcp`
+  - generated `_airport._tcp`
+  - generated `_afpovertcp._tcp`
+  - generated USB printer records when applicable
 - authenticated SMB access using:
   - examples and docs use Samba username `admin`
   - generated auth stores a `root` Samba account
@@ -128,13 +129,11 @@ The actual working split is:
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/common.sh`
-  - `/mnt/Flash/start-samba.sh`
-  - `/mnt/Flash/watchdog.sh`
+  - `/mnt/Flash/boot.sh`
+  - `/mnt/Flash/manager.sh`
   - `/mnt/Flash/dfree.sh`
   - `/mnt/Flash/mdns-advertiser`
   - `/mnt/Flash/tcapsulesmb.conf`
-  - `/mnt/Flash/allmdns.txt`
-  - `/mnt/Flash/applemdns.txt`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
   - `/mnt/Locks`
@@ -252,7 +251,7 @@ Current maintainer build lanes:
 
 The direct scripts target the NetBSD 7 lane by default. The `*oldle.sh` and `*oldbe.sh` wrappers select the NetBSD 4 little-endian and big-endian lanes.
 
-## Why We Snapshot Apple’s mDNS And Override Only SMB / Time Machine
+## Why We Generate Apple-Compatible mDNS And Override SMB / Time Machine
 
 This was investigated deeply.
 
@@ -270,25 +269,23 @@ Important findings:
 - some Apple-advertised services such as USB printer advertisements should be preserved if present
 - the current Samba runtime uses `MaSt` as the source of truth for volumes and ADISK UUIDs; it does not read `/etc/cifs/cs_cfg.txt`
 
-So the current system does not fully replace Apple mDNS with a hardcoded record set. Instead it uses a separate tiny helper:
+So the current system does not hand control back to Apple mDNS for SMB and Time Machine, but it also does not discard the Apple device identity users expect. Instead it uses a separate tiny helper:
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 This helper:
-- can save a raw LAN-wide mDNS snapshot to `/mnt/Flash/allmdns.txt`
-- can generate an AirPort-only Apple identity snapshot at `/mnt/Flash/applemdns.txt`
-- normally captures a filtered Apple identity snapshot before takeover
-- can fall back to generated AirPort identity records when capture does not produce `applemdns.txt`
-- gracefully kills Apple `mDNSResponder` during takeover
-- replays Apple snapshot records afterward
-- overrides only:
+- derives Apple-compatible `_airport._tcp` fields from local AirPort identity values
+- can advertise USB printer services when a local AirPort printer identity is present
+- advertises managed records for:
   - `_smb._tcp.local.`
   - `_adisk._tcp.local.`
+- can suppress managed SMB/ADISK records in diskless mode while keeping generated AirPort identity records
+- aggressively terminates Apple `mDNSResponder` during takeover and binds UDP `5353`
 - continues to point clients at our `smbd` on port `445`
 
 Current practical result:
 - Our `_smb._tcp` and `_adisk._tcp` remain authoritative
-- Apple `_airport._tcp` and other records can be preserved
-- snapshot replay preserves non-ASCII or binary host targets via `HOST_HEX`
+- Apple `_airport._tcp` identity can still be advertised for AirPort Utility
+- attached USB printer advertisements can be generated from local AirPort printer metadata
 
 ## Bonjour Discovery Boundaries
 
@@ -301,92 +298,54 @@ That distinction matters:
 
 Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.discover()`. Merging service records creates ambiguous objects with one name/hostname but multiple meanings, and it causes duplicate-looking or misleading configure/doctor output. The stored `service_type` should remain the raw observed value. Callers should filter raw discovery results by the service prefix they actually need, such as `_airport` for configure and `_smb` for doctor/deploy. Prefix filtering intentionally matches both `_smb._tcp.local.` and `_smb._tcp.local`.
 
-## Apple mDNS Snapshot File
-
-The mDNS snapshot files are:
-
-- `/mnt/Flash/allmdns.txt`
-- `/mnt/Flash/applemdns.txt`
+## Generated mDNS Records
 
 Current behavior:
-- `start-samba.sh` stages the managed Samba runtime and launches `watchdog.sh`
-- the watchdog starts `mdns-advertiser --save-all-snapshot ... --save-snapshot ...` once a usable IPv4 is available
-- the final `mdns-advertiser --load-snapshot` phase waits for capture to finish or time out before killing `mDNSResponder`
-- if capture does not produce `applemdns.txt`, `mdns-advertiser --save-airport-snapshot` writes a generated local `_airport._tcp` fallback from values read directly on the device
-- `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the captured or generated snapshot
-- if snapshot load fails, the helper falls back to the generated managed records
+- `boot.sh` prepares the RAM runtime and launches `manager.sh`
+- `manager.sh` waits for usable network addresses, payload state, and AirPort identity data
+- the manager launches `mdns-advertiser` from `/mnt/Flash` with `--generated-airport-services`
+- `mdns-advertiser` generates managed `_smb._tcp`, `_adisk._tcp`, `_device-info._tcp`, and `_airport._tcp` records from live runtime state
+- when a USB printer is attached and discoverable through AirPort metadata, the manager also passes `_riousbprint._tcp` and `_pdl-datastream._tcp` arguments
+- if the disk payload is unavailable, the manager can launch the advertiser in diskless mode so AirPort identity remains visible while SMB/ADISK records are suppressed
+- `mdns-advertiser` kills Apple `mDNSResponder` during takeover and keeps UDP `5353` owned by the managed helper
 
-The raw `allmdns.txt` file is intentionally diagnostic and may contain all Apple records that were captured on the LAN.
-
-The `applemdns.txt` file is the one used for replay:
-- the preferred path contains captured records tied to the matching local `_airport._tcp` identity, including supported non-SMB Apple services such as printer advertisements
-- the fallback path contains a generated `_airport._tcp` record for the local unit
-- if capture cannot be tied back to the local unit, `applemdns.txt` is not refreshed and the generated fallback is used
-- if no local identity MACs are available, the helper saves the raw capture for diagnostics but still refuses to trust it for replay
-
-However, on replay:
-- `_smb._tcp` from the snapshot is ignored
-- `_adisk._tcp` from the snapshot is ignored
-- our managed `_smb._tcp` and `_adisk._tcp` are advertised instead
+The old snapshot files `/mnt/Flash/allmdns.txt` and `/mnt/Flash/applemdns.txt` are not part of the active runtime path. Deploy and uninstall deliberately leave those files alone if they exist from older experiments because they are diagnostic artifacts, not current managed state.
 
 ## Boot Flow In Detail
 
 The boot logic lives in:
 - [src/timecapsulesmb/assets/boot/samba4/rc.local](src/timecapsulesmb/assets/boot/samba4/rc.local)
-- [src/timecapsulesmb/assets/boot/samba4/start-samba.sh](src/timecapsulesmb/assets/boot/samba4/start-samba.sh)
-- [src/timecapsulesmb/assets/boot/samba4/watchdog.sh](src/timecapsulesmb/assets/boot/samba4/watchdog.sh)
+- [src/timecapsulesmb/assets/boot/samba4/boot.sh](src/timecapsulesmb/assets/boot/samba4/boot.sh)
+- [src/timecapsulesmb/assets/boot/samba4/manager.sh](src/timecapsulesmb/assets/boot/samba4/manager.sh)
+- [src/timecapsulesmb/assets/boot/samba4/common.d/](src/timecapsulesmb/assets/boot/samba4/common.d)
 
 ### `rc.local`
 
-`rc.local` is intentionally tiny. It just backgrounds `start-samba.sh`.
+`rc.local` is intentionally tiny. It just backgrounds `boot.sh`.
 
 This matters because:
 - boot ordering is messy
 - the HDD device nodes may not exist yet when `rc.local` first runs
 - a longer wait loop belongs in the second-stage script, not directly inline in the boot hook
 
-### `start-samba.sh`
+### `boot.sh`
 
-`start-samba.sh` does the real work:
+`boot.sh` performs the one-shot startup preparation:
 
 1. sources `/mnt/Flash/common.sh` and `/mnt/Flash/tcapsulesmb.conf`
-2. kills any prior managed `smbd`, mDNS advertiser, NBNS responder, and watchdog
+2. kills any prior managed `smbd`, mDNS advertiser, NBNS responder, and manager
 3. prepares the dedicated Samba lock ramdisk at `/mnt/Locks`
 4. recreates the RAM runtime tree under `/mnt/Memory/samba4`
-5. auto-discovers usable IPv4 CIDRs for Samba binding from the current device interfaces
-6. reads valid HFS partitions from `/usr/bin/acp -A MaSt`
-7. writes the current `MaSt` rows to the runtime topology signature
-8. requests `diskd.useVolume` for every valid `MaSt` volume
-9. polls all candidate volumes for one shared `APPLE_MOUNT_WAIT_SECONDS` window, default `30`
-10. leaves still-unmounted volumes unavailable; the boot runtime no longer falls back to `mount_hfs`
-11. builds RAM state files under `/mnt/Memory/samba4/var`:
-   - `shares.tsv`
-   - `adisk.tsv`
-   - `topology.signature`
-12. applies share path rules:
-   - external volumes always share `/Volumes/dkN`
-   - internal volumes share `/Volumes/dkN/ShareRoot` unless `INTERNAL_SHARE_USE_DISK_ROOT=1`
-   - internal `ShareRoot` is created when needed
-13. resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `.samba4`
-14. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
-15. configures payload runtime logs under `<payload>/logs/`
-16. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
-17. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
-18. starts `smbd` and waits up to `15` seconds for the IPv4 TCP `445` listener
-19. starts `watchdog.sh` with no disk/root positional arguments
+5. prepares compatibility symlinks under `/root`
+6. starts `manager.sh` if it is not already running
 
-The watchdog owns mDNS and NBNS startup after `smbd` is running. This keeps advertiser recovery in the same supervisor path that handles later service failures.
+The manager owns disk discovery, Samba staging, service startup, mDNS takeover, NBNS startup, and later recovery. This keeps boot short and puts all recurring runtime reconciliation in one process.
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
 
-Supported `start-samba.sh` modes:
-- `--print-topology-signature` prints the current `MaSt` topology for watchdog comparison.
-- `--refresh-disk-state` is diagnostic-only: it refreshes disk state files but does not stop services, regenerate live `smb.conf`, or restart Samba, mDNS, NBNS, or watchdog.
-- `--reload-disk-runtime` is the live recovery path used by watchdog: it refreshes disk state, restages the runtime, regenerates `smb.conf`, and starts managed services.
-
 Long-running process logs are written under:
-- `<payload>/logs/watchdog.log`
+- `<payload>/logs/manager.log`
 - `<payload>/logs/mdns.log`
 - `<payload>/logs/nbns.log`
 - `<payload>/logs/log.smbd`
@@ -413,41 +372,49 @@ Current mount behavior:
 - if the NetBSD 4 mfs mount fails, startup aborts instead of falling back to the tiny root filesystem
 
 Operational behavior:
-- `start-samba.sh` clears `/mnt/Locks/*` before starting `smbd`
-- `watchdog.sh` also clears `/mnt/Locks/*` before restarting `smbd`
+- `boot.sh` clears `/mnt/Locks/*` during startup preparation
+- `manager.sh` clears `/mnt/Locks/*` before restarting `smbd`
 
-### `watchdog.sh`
+### `manager.sh`
 
-`watchdog.sh` is a simple long-running supervisor launched at boot from flash.
+`manager.sh` is the long-running supervisor launched at boot from flash.
 
 Current behavior:
 - runs a disk/topology pass every `10` seconds
-- runs a managed service pass every `30` seconds
-- sleeps `10` seconds after a failed recovery pass before trying again
+- runs a Samba bind pass every `10` seconds by default
+- runs a full managed service pass every `30` seconds
+- retries failed recovery work on the next due pass
 - reads `MaSt` directly through the shared runtime helpers
-- if disk topology changed, live-reloads when possible and falls back to `/mnt/Flash/start-samba.sh --reload-disk-runtime` when a full runtime restart is required
-- remounts every active share volume from `shares.tsv`; if share state is unavailable, the runtime is treated as unhealthy and reloaded
+- debounces disk topology changes before applying runtime updates
+- requests `diskd.useVolume` for valid `MaSt` volumes and builds current share/ADISK state from mounted volumes
+- applies share path rules:
+  - external volumes always share `/Volumes/dkN`
+  - internal volumes share `/Volumes/dkN/ShareRoot` unless `INTERNAL_SHARE_USE_DISK_ROOT=1`
+  - internal `ShareRoot` is created when needed
+- resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `.samba4`
+- writes current `adisk.tsv` under `/mnt/Memory/samba4/var`
+- copies `smbd`, auth files, and optional `nbns-advertiser` into RAM when inputs change
+- generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
+- starts or reloads `smbd` as needed and keeps it bound to the current interfaces
+- starts generated mDNS advertisement from `/mnt/Flash/mdns-advertiser`
+- starts NBNS when `NBNS_ENABLED=1`
 - if the payload volume is unavailable, stops managed Samba/mDNS/NBNS and retries later
-- if only `smbd` is missing, starts it again from the RAM-staged binary and config
-- if `mdns-advertiser` is missing, starts the snapshot capture/load path the first time and restarts it from the existing `adisk.tsv` after that
-- if `NBNS_ENABLED=1` and `nbns-advertiser` is missing, restarts it
+- if disk, identity, network, or USB printer state changes, refreshes the affected generated config and service state
 
 This is intentionally simple:
 - SMB transfers are not interrupted because `smbd` is only restarted when absent
 - the mDNS helper is also only restarted when absent
 - disk topology changes restart through the same path as boot, so share generation, mDNS, and smbd config stay coherent
 
-The watchdog log is written to:
-- `<payload>/logs/watchdog.log` when the payload volume is mounted
-- `/mnt/Memory/samba4/var/watchdog.log` as a RAM fallback while the payload volume is unavailable
+The manager log is written to:
+- `<payload>/logs/manager.log` when the payload volume is mounted
+- `/mnt/Memory/samba4/var/manager.log` as a RAM fallback while the payload volume is unavailable
 
 Important implementation detail:
 - `mdns-advertiser` is short enough to match directly with `pkill`
-- the watchdog therefore uses the truncated process name for liveness checks and restarts
+- the manager therefore uses the truncated process name for liveness checks and restarts
 
 NetBSD 4-specific shell note:
-- `rc.local` uses a subshell-scoped `set +e` workaround only around the watchdog probe/start block
-- this avoids a NetBSD 4 `/bin/sh` edge case where launching a background job from an `if` branch can make the script report status `1`
 - backgrounded jobs redirect stdin from `/dev/null` so they do not hold the SSH session open during manual activation
 
 ## SMB Runtime Layout
@@ -531,7 +498,7 @@ Operational note:
 - the live runtime config at `/mnt/Memory/samba4/etc/smb.conf` is regenerated on each boot
 - `/mnt/Memory` is a RAM disk, so live edits there are ephemeral
 - temporary debug edits such as one-off `log level = ...` lines will disappear after reboot
-- watchdog logs under `/mnt/Memory/samba4/var` are also ephemeral for the same reason
+- manager logs under `/mnt/Memory/samba4/var` are also ephemeral for the same reason
 
 ## mDNS Advertiser Details
 
@@ -553,12 +520,13 @@ Important properties:
 At runtime it can:
 - advertise managed `_smb._tcp.local.`
 - advertise managed `_adisk._tcp.local.`
-- advertise loaded snapshot records
-- optionally advertise fallback generated `_airport._tcp.local.`
-- generate an AirPort-only Apple snapshot with `--save-airport-snapshot`
-- save an Apple snapshot with `--save-snapshot`
-- load and replay an Apple snapshot with `--load-snapshot`
-- answer A queries for loaded snapshot host targets using the current runtime IPv4
+- advertise managed `_device-info._tcp.local.`
+- advertise generated `_afpovertcp._tcp.local.` on port `548`
+- advertise generated `_airport._tcp.local.` records from local AirPort identity fields
+- optionally advertise `_riousbprint._tcp.local.` and `_pdl-datastream._tcp.local.` for an attached USB printer
+- suppress SMB/ADISK records in diskless mode while preserving generated AirPort identity records
+- aggressively take over UDP `5353` from Apple `mDNSResponder`
+- track runtime interface changes in auto-IP mode
 
 Current validation and behavior notes:
 - mDNS host labels are validated as DNS-label-safe host labels
@@ -686,7 +654,7 @@ Workflow details:
 ## Host-Side Architecture
 
 Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `activate`, `doctor`, `fsck`, `repair-xattrs`, and `uninstall`
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `activate`, `doctor`, `fsck`, `repair-xattrs`, `uninstall`, and the app-facing `api` helper
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
@@ -843,8 +811,8 @@ Current deploy flow:
 - renders and uploads the packaged boot/runtime files:
   - `rc.local`
   - `common.sh`
-  - `start-samba.sh`
-  - `watchdog.sh`
+  - `boot.sh`
+  - `manager.sh`
   - `dfree.sh`
 - generates and uploads flash runtime config:
   - `/mnt/Flash/tcapsulesmb.conf`
@@ -869,13 +837,13 @@ Current compatibility behavior:
 - `configure` reuses the same classification logic for compatibility and displayed device identity
 
 NetBSD 4 activation behavior:
-- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, watches for an already-running `/mnt/Flash/rc.local` or `/mnt/Flash/start-samba.sh` for up to 20 seconds, runs `/mnt/Flash/rc.local` only if startup is not already in progress, and verifies managed `smbd` plus mDNS takeover
-- `tcapsule deploy --no-reboot` uploads the payload, stops the old watchdog plus `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies managed `smbd` plus mDNS takeover on both NetBSD 4 and NetBSD 6 devices
+- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, watches for an already-running `/mnt/Flash/rc.local`, `/mnt/Flash/boot.sh`, or `/mnt/Flash/manager.sh`, runs `/mnt/Flash/rc.local` only if startup is not already in progress, and verifies managed `smbd` plus mDNS takeover
+- `tcapsule deploy --no-reboot` uploads the payload, stops the manager plus any legacy watchdog process and `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies managed `smbd` plus mDNS takeover on both NetBSD 4 and NetBSD 6 devices
 - `tcapsule activate` repeats the no-reboot activation sequence without re-uploading files
-- Apple `mDNSResponder` takeover is now handled inside `mdns-advertiser` when `--load-snapshot` is used
+- Apple `mDNSResponder` takeover is handled inside `mdns-advertiser` during normal generated-advertisement startup
 - tested 1st-generation NetBSD 4 hardware does not persist an `/etc` boot hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
-- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, or if `/mnt/Flash/rc.local` or `/mnt/Flash/start-samba.sh` is already running, it skips running `/mnt/Flash/rc.local`
+- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, or if `/mnt/Flash/rc.local`, `/mnt/Flash/boot.sh`, or `/mnt/Flash/manager.sh` is already running, it skips running `/mnt/Flash/rc.local`
 
 The current password flow is:
 - `TC_PASSWORD` is also used as the Samba password
@@ -905,6 +873,7 @@ Hidden operator mode:
 ## Client Telemetry
 
 Client telemetry is now emitted by:
+- `tcapsule api`
 - `tcapsule bootstrap`
 - `tcapsule paths`
 - `tcapsule validate-install`
@@ -920,6 +889,7 @@ Client telemetry is now emitted by:
 - `tcapsule uninstall`
 
 Current event model:
+- app helper operations emit operation-specific app events through the `api` command
 - `bootstrap_started`
 - `bootstrap_finished`
 - `paths_started`
@@ -960,7 +930,7 @@ Current transport behavior:
 ## Uninstall
 
 Current uninstall behavior:
-- stops the watchdog first so it cannot restart `smbd` during teardown
+- stops the manager first so it cannot restart `smbd` during teardown
 - removes the managed payload, flash hooks, runtime tree, and compatibility symlinks
 - runs remote uninstall actions sequentially over SSH
 - prompts before reboot by default
@@ -997,14 +967,14 @@ Current important outputs:
 
 Current active deploy artifact sizes:
 - NetBSD 6 `smbd`: about `9.7M`
-- NetBSD 6 `mdns-advertiser`: about `276K`
-- NetBSD 6 `nbns-advertiser`: about `190K`
+- NetBSD 6 `mdns-advertiser`: about `310K`
+- NetBSD 6 `nbns-advertiser`: about `210K`
 - NetBSD 4 little-endian `smbd`: about `9.7M`
 - NetBSD 4 big-endian `smbd`: about `9.7M`
-- NetBSD 4 little-endian `mdns-advertiser`: about `218K`
-- NetBSD 4 big-endian `mdns-advertiser`: about `216K`
-- NetBSD 4 little-endian `nbns-advertiser`: about `133K`
-- NetBSD 4 big-endian `nbns-advertiser`: about `132K`
+- NetBSD 4 little-endian `mdns-advertiser`: about `255K`
+- NetBSD 4 big-endian `mdns-advertiser`: about `253K`
+- NetBSD 4 little-endian `nbns-advertiser`: about `155K`
+- NetBSD 4 big-endian `nbns-advertiser`: about `155K`
 
 It assumes:
 - a NetBSD VM
