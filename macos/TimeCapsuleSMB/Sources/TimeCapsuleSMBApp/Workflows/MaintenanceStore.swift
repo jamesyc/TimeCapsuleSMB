@@ -371,8 +371,9 @@ final class MaintenanceStore: ObservableObject {
     func planActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         let start = startRun(
             operation: "activate",
-            params: OperationParams.activatePlan(password: password),
+            params: OperationParams.activatePlan(),
             profile: profile,
+            password: password,
             workflow: .activate
         )
         guard case .started = start else {
@@ -398,8 +399,9 @@ final class MaintenanceStore: ObservableObject {
         }
         let start = startRun(
             operation: "activate",
-            params: OperationParams.activateRun(password: password),
+            params: OperationParams.activateRun(),
             profile: profile,
+            password: password,
             workflow: .activate
         )
         guard case .started = start else {
@@ -423,10 +425,10 @@ final class MaintenanceStore: ObservableObject {
             params: OperationParams.uninstallPlan(
                 noReboot: options.noReboot,
                 noWait: options.noWait,
-                mountWait: Double(options.mountWait),
-                password: password
+                mountWait: Double(options.mountWait)
             ),
             profile: profile,
+            password: password,
             workflow: .uninstall
         )
         guard case .started = start else {
@@ -460,10 +462,10 @@ final class MaintenanceStore: ObservableObject {
             params: OperationParams.uninstallRun(
                 noReboot: options.noReboot,
                 noWait: options.noWait,
-                mountWait: Double(options.mountWait),
-                password: password
+                mountWait: Double(options.mountWait)
             ),
             profile: profile,
+            password: password,
             workflow: .uninstall
         )
         guard case .started = start else {
@@ -484,8 +486,9 @@ final class MaintenanceStore: ObservableObject {
         }
         let start = startRun(
             operation: "fsck",
-            params: OperationParams.fsckList(mountWait: Double(mountWaitValue), password: password),
+            params: OperationParams.fsckList(mountWait: Double(mountWaitValue)),
             profile: profile,
+            password: password,
             workflow: .fsck
         )
         guard case .started = start else {
@@ -517,10 +520,10 @@ final class MaintenanceStore: ObservableObject {
                 volume: target.volumeParam,
                 noReboot: options.noReboot,
                 noWait: options.noWait,
-                mountWait: Double(options.mountWait),
-                password: password
+                mountWait: Double(options.mountWait)
             ),
             profile: profile,
+            password: password,
             workflow: .fsck
         )
         guard case .started = start else {
@@ -560,10 +563,10 @@ final class MaintenanceStore: ObservableObject {
                 volume: target.volumeParam,
                 noReboot: options.noReboot,
                 noWait: options.noWait,
-                mountWait: Double(options.mountWait),
-                password: password
+                mountWait: Double(options.mountWait)
             ),
             profile: profile,
+            password: password,
             workflow: .fsck
         )
         guard case .started = start else {
@@ -1133,6 +1136,7 @@ final class MaintenanceStore: ObservableObject {
         operation: String,
         params: [String: JSONValue],
         profile: DeviceProfile?,
+        password: String? = nil,
         workflow: MaintenanceWorkflow
     ) -> OperationStartResult {
         guard !isBusy else {
@@ -1140,7 +1144,7 @@ final class MaintenanceStore: ObservableObject {
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         resetRunState(workflow: workflow)
-        let start = run(operation: operation, params: params, profile: profile, workflow: workflow)
+        let start = run(operation: operation, params: params, profile: profile, password: password, workflow: workflow)
         switch start {
         case .started(let operation):
             operationObserver.start(operation)
@@ -1154,6 +1158,7 @@ final class MaintenanceStore: ObservableObject {
         operation: String,
         params: [String: JSONValue],
         profile: DeviceProfile?,
+        password: String? = nil,
         workflow: MaintenanceWorkflow
     ) -> OperationStartResult {
         if let coordinator {
@@ -1162,6 +1167,7 @@ final class MaintenanceStore: ObservableObject {
                 params: params,
                 context: profile?.runtimeContext,
                 activeDeviceID: profile?.id,
+                password: password,
                 laneKey: laneKey(for: workflow)
             )
         } else {
@@ -1169,10 +1175,11 @@ final class MaintenanceStore: ObservableObject {
                 return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
             }
             let context = profile?.runtimeContext
+            let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
             backend(for: workflow).run(
                 operation: operation,
-                params: params,
+                params: updatedParams,
                 context: context,
                 requestID: activeOperation.id.uuidString
             )

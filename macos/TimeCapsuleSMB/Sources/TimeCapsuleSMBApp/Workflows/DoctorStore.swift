@@ -163,12 +163,12 @@ final class DoctorStore: ObservableObject {
         let start = run(
             operation: "doctor",
             params: OperationParams.doctor(
-                password: password,
                 skipSSH: skipSSH,
                 skipBonjour: skipBonjour,
                 skipSMB: skipSMB
             ),
-            profile: profile
+            profile: profile,
+            password: password
         )
         guard case .started(let operation) = start else {
             if let message = start.rejectionMessage {
@@ -289,24 +289,31 @@ final class DoctorStore: ObservableObject {
         operationObserver.finish()
     }
 
-    private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
+    private func run(
+        operation: String,
+        params: [String: JSONValue],
+        profile: DeviceProfile?,
+        password: String? = nil
+    ) -> OperationStartResult {
         if let coordinator {
             return coordinator.run(
                 operation: operation,
                 params: params,
                 context: profile?.runtimeContext,
                 activeDeviceID: profile?.id,
+                password: password,
                 laneKey: laneKey
             )
         } else {
             guard !isBusy else {
                 return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
             }
+            let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
             backend.run(
                 operation: operation,
-                params: params,
+                params: updatedParams,
                 context: context,
                 requestID: activeOperation.id.uuidString
             )

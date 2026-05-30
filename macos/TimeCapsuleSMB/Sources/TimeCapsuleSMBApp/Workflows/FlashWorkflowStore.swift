@@ -290,8 +290,9 @@ final class FlashWorkflowStore: ObservableObject {
         }
         let start = startRun(
             action: .backupAndInspect,
-            params: OperationParams.flashBackup(password: password),
-            profile: profile
+            params: OperationParams.flashBackup(),
+            profile: profile,
+            password: password
         )
         guard case .started = start else {
             return start
@@ -364,10 +365,10 @@ final class FlashWorkflowStore: ObservableObject {
                 backupDir: backupDir,
                 mode: mode,
                 firmwareVersion: selection.version,
-                firmwareTemplate: selection.templatePath,
-                password: password
+                firmwareTemplate: selection.templatePath
             ),
-            profile: profile
+            profile: profile,
+            password: password
         )
         guard case .started = start else {
             return start
@@ -639,13 +640,14 @@ final class FlashWorkflowStore: ObservableObject {
     private func startRun(
         action: FlashUserAction,
         params: [String: JSONValue],
-        profile: DeviceProfile?
+        profile: DeviceProfile?,
+        password: String? = nil
     ) -> OperationStartResult {
         guard !isBusy else {
             return reject(.operationAlreadyRunning)
         }
         resetRunState()
-        let start = run(operation: "flash", params: params, profile: profile)
+        let start = run(operation: "flash", params: params, profile: profile, password: password)
         switch start {
         case .started(let operation):
             operationObserver.start(operation)
@@ -667,13 +669,19 @@ final class FlashWorkflowStore: ObservableObject {
         activeAction = nil
     }
 
-    private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
+    private func run(
+        operation: String,
+        params: [String: JSONValue],
+        profile: DeviceProfile?,
+        password: String? = nil
+    ) -> OperationStartResult {
         if let coordinator {
             return coordinator.run(
                 operation: operation,
                 params: params,
                 context: profile?.runtimeContext,
                 activeDeviceID: profile?.id,
+                password: password,
                 laneKey: laneKey
             )
         }
@@ -681,10 +689,11 @@ final class FlashWorkflowStore: ObservableObject {
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
         }
         let context = profile?.runtimeContext
+        let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
         let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
         backend.run(
             operation: operation,
-            params: params,
+            params: updatedParams,
             context: context,
             requestID: activeOperation.id.uuidString
         )

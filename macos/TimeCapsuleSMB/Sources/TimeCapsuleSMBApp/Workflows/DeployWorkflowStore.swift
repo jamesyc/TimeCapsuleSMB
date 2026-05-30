@@ -232,10 +232,10 @@ final class DeployWorkflowStore: ObservableObject {
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
-                mountWait: Double(options.mountWait),
-                password: password
+                mountWait: Double(options.mountWait)
             ),
-            profile: profile
+            profile: profile,
+            password: password
         )
         guard case .started(let operation) = start else {
             if let message = start.rejectionMessage {
@@ -283,10 +283,10 @@ final class DeployWorkflowStore: ObservableObject {
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
-                mountWait: Double(options.mountWait),
-                password: password
+                mountWait: Double(options.mountWait)
             ),
-            profile: profile
+            profile: profile,
+            password: password
         )
         guard case .started(let operation) = start else {
             if let message = start.rejectionMessage {
@@ -540,24 +540,31 @@ final class DeployWorkflowStore: ObservableObject {
         operationObserver.finish()
     }
 
-    private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
+    private func run(
+        operation: String,
+        params: [String: JSONValue],
+        profile: DeviceProfile?,
+        password: String? = nil
+    ) -> OperationStartResult {
         if let coordinator {
             return coordinator.run(
                 operation: operation,
                 params: params,
                 context: profile?.runtimeContext,
                 activeDeviceID: profile?.id,
+                password: password,
                 laneKey: laneKey
             )
         } else {
             guard !isBusy else {
                 return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
             }
+            let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
             let context = profile?.runtimeContext
             let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
             backend.run(
                 operation: operation,
-                params: params,
+                params: updatedParams,
                 context: context,
                 requestID: activeOperation.id.uuidString
             )

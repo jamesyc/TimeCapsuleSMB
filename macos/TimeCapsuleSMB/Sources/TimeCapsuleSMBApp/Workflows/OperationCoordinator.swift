@@ -171,12 +171,7 @@ final class OperationLane: ObservableObject {
             return .rejected(message)
         }
 
-        var updatedParams = params
-        if let password,
-           !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           updatedParams["credentials"] == nil {
-            updatedParams["credentials"] = .object(["password": .string(password)])
-        }
+        let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
 
         let activeOperation = ActiveOperation(
             operation: operation,

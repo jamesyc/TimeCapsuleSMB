@@ -85,13 +85,11 @@ final class FlashWorkflowStoreTests: XCTestCase {
     func testFlashWriteParamsDefaultRestoreToRebootAndPatchToManualPowerCycle() {
         let restore = OperationParams.flashWrite(
             backupDir: "/tmp/flash-backup",
-            mode: .restore,
-            password: "pw"
+            mode: .restore
         )
         let patch = OperationParams.flashWrite(
             backupDir: "/tmp/flash-backup",
-            mode: .patch,
-            password: "pw"
+            mode: .patch
         )
 
         XCTAssertEqual(restore["reboot_after_write"], .bool(true))

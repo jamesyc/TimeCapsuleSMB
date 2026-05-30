@@ -14,16 +14,6 @@ enum OperationParams {
         DeviceEndpointPolicy.rootSSHTarget(host)
     }
 
-    private static func withCredentials(_ params: [String: JSONValue], password: String) -> [String: JSONValue] {
-        let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return params
-        }
-        var updated = params
-        updated["credentials"] = .object(["password": .string(password)])
-        return updated
-    }
-
     static func discover(timeout: Double) -> [String: JSONValue] {
         ["timeout": .number(timeout)]
     }
@@ -37,17 +27,13 @@ enum OperationParams {
         return params
     }
 
-    static func reachability(profile: DeviceProfile, password: String?) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
+    static func reachability(profile: DeviceProfile) -> [String: JSONValue] {
+        [
             "ssh_host": .string(rootSSHTarget(profile.host)),
             "smb_hosts": .array(SMBAddressPolicy.reachabilityHostCandidates(for: profile).map(JSONValue.string)),
             "tcp_timeout": .number(2),
             "ssh_timeout": .number(8)
         ]
-        if let password {
-            params = withCredentials(params, password: password)
-        }
-        return params
     }
 
     static func configure(
@@ -89,16 +75,15 @@ enum OperationParams {
     }
 
     static func doctor(
-        password: String,
         skipSSH: Bool = false,
         skipBonjour: Bool = false,
         skipSMB: Bool = false
     ) -> [String: JSONValue] {
-        withCredentials([
+        [
             "skip_ssh": .bool(skipSSH),
             "skip_bonjour": .bool(skipBonjour),
             "skip_smb": .bool(skipSMB)
-        ], password: password)
+        ]
     }
 
     static func deployPlan(
@@ -110,8 +95,7 @@ enum OperationParams {
         debugLogging: Bool,
         ataIdleSeconds: Int,
         ataStandby: Int?,
-        mountWait: Double,
-        password: String
+        mountWait: Double
     ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
             "dry_run": .bool(true),
@@ -129,7 +113,7 @@ enum OperationParams {
         } else {
             params["ata_standby"] = .string("")
         }
-        return withCredentials(params, password: password)
+        return params
     }
 
     static func deployRun(
@@ -141,8 +125,7 @@ enum OperationParams {
         debugLogging: Bool,
         ataIdleSeconds: Int,
         ataStandby: Int?,
-        mountWait: Double,
-        password: String
+        mountWait: Double
     ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
             "dry_run": .bool(false),
@@ -160,59 +143,59 @@ enum OperationParams {
         } else {
             params["ata_standby"] = .string("")
         }
-        return withCredentials(params, password: password)
+        return params
     }
 
-    static func uninstallPlan(noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
-        withCredentials([
+    static func uninstallPlan(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+        [
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait)
-        ], password: password)
+        ]
     }
 
-    static func uninstallRun(noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
-        withCredentials([
+    static func uninstallRun(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+        [
             "dry_run": .bool(false),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait)
-        ], password: password)
+        ]
     }
 
-    static func activatePlan(password: String) -> [String: JSONValue] {
-        withCredentials(["dry_run": .bool(true)], password: password)
+    static func activatePlan() -> [String: JSONValue] {
+        ["dry_run": .bool(true)]
     }
 
-    static func activateRun(password: String) -> [String: JSONValue] {
-        withCredentials(["dry_run": .bool(false)], password: password)
+    static func activateRun() -> [String: JSONValue] {
+        ["dry_run": .bool(false)]
     }
 
-    static func fsckList(mountWait: Double, password: String) -> [String: JSONValue] {
-        withCredentials([
+    static func fsckList(mountWait: Double) -> [String: JSONValue] {
+        [
             "list_volumes": .bool(true),
             "mount_wait": .number(mountWait)
-        ], password: password)
+        ]
     }
 
-    static func fsckPlan(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
-        withCredentials([
+    static func fsckPlan(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+        [
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait),
             "volume": .string(volume)
-        ], password: password)
+        ]
     }
 
-    static func fsckRun(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
-        withCredentials([
+    static func fsckRun(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+        [
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait),
             "volume": .string(volume)
-        ], password: password)
+        ]
     }
 
     static func repairXattrsScan(path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
@@ -223,10 +206,10 @@ enum OperationParams {
         repairXattrsParams(path: path, dryRun: false, options: options)
     }
 
-    static func flashBackup(password: String) -> [String: JSONValue] {
-        withCredentials([
+    static func flashBackup() -> [String: JSONValue] {
+        [
             "action": .string("backup")
-        ], password: password)
+        ]
     }
 
     static func flashPlan(
@@ -260,8 +243,7 @@ enum OperationParams {
         firmwareVersion: String = "",
         firmwareTemplate: String = "",
         rebootAfterWrite: Bool? = nil,
-        waitAfterReboot: Bool = true,
-        password: String
+        waitAfterReboot: Bool = true
     ) -> [String: JSONValue] {
         let shouldReboot = rebootAfterWrite ?? (mode == .restore)
         var params: [String: JSONValue] = [
@@ -282,7 +264,7 @@ enum OperationParams {
         if !trimmedTemplate.isEmpty {
             params["firmware_template"] = .string(trimmedTemplate)
         }
-        return withCredentials(params, password: password)
+        return params
     }
 
     private static func repairXattrsParams(path: String, dryRun: Bool, options: RepairXattrsOptions) -> [String: JSONValue] {

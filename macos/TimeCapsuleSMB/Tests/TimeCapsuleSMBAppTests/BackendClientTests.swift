@@ -205,7 +205,11 @@ final class BackendClientTests: XCTestCase {
         let client = BackendClient(runner: runner)
         let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
 
-        client.run(operation: "deploy", params: ["dry_run": .bool(false)], context: context)
+        client.run(
+            operation: "deploy",
+            params: OperationCredentialInjector.injectingPassword("pw", into: ["dry_run": .bool(false)]),
+            context: context
+        )
         try await waitUntil { client.pendingConfirmation != nil && !client.isRunning }
         XCTAssertEqual(client.pendingConfirmation?.context, context)
 
@@ -216,6 +220,7 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].context, context)
         XCTAssertEqual(runner.calls[1].params["confirmation_id"], .string("confirm-1"))
         XCTAssertEqual(runner.calls[1].params["config"], .string("/tmp/device-one/.env"))
+        XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw")]))
     }
 
     func testOperationCoordinatorRejectsSecondOperationWhileActive() async throws {
