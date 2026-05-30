@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 import platform
+import re
 from importlib import resources
 from pathlib import Path
 
@@ -87,6 +88,11 @@ def manifest_artifact_paths() -> tuple[str, ...]:
 
 def _resolve_user_path(path: Path | str) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def safe_path_part(value: str, *, default: str = "device") -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
+    return safe.strip("-.") or default
 
 
 def _has_source_checkout_markers(path: Path) -> bool:

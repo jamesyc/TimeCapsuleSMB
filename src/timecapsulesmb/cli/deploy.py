@@ -48,11 +48,9 @@ from timecapsulesmb.deploy.planner import (
 from timecapsulesmb.deploy.boot_assets import (
     boot_asset_path,
 )
-from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description
+from timecapsulesmb.device.compat import payload_family_description
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import (
-    MAST_DISCOVERY_ATTEMPTS,
-    MAST_DISCOVERY_DELAY_SECONDS,
-    build_dry_run_payload_home,
     verify_payload_home_conn,
 )
 from timecapsulesmb.telemetry import TelemetryClient
@@ -61,11 +59,11 @@ from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activa
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
     activation_complete_message,
-    no_mast_volumes_message,
-    no_writable_mast_volumes_message,
+    deploy_artifact_failures,
     payload_verification_error,
+    prepare_deploy_payload_context,
     render_flash_runtime_config,
-    startup_mode_for_deploy,
+    select_deploy_payload_home,
 )
 from timecapsulesmb.services.runtime import load_env_config
 
@@ -76,6 +74,7 @@ def _target_family_display_name(target) -> str:
         model=None if probe is None else probe.airport_model,
         syap=None if probe is None else probe.airport_syap,
     )
+
 
 def _non_negative_int(value: str) -> int:
     try:
@@ -141,8 +140,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("validate_artifacts")
         if not args.json:
             print("Validating local artifacts...", flush=True)
-        artifact_results = validate_artifacts(app_paths.distribution_root)
-        failures = [message for _, ok, message in artifact_results if not ok]
+        failures = deploy_artifact_failures(app_paths.distribution_root, validate=validate_artifacts)
         if failures:
             raise SystemExit("; ".join(failures))
         command_context.set_stage("check_compatibility")
@@ -153,15 +151,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             allow_unsupported=args.allow_unsupported,
             json_output=args.json,
         )
-        if not compatibility.payload_family:
-            raise SystemExit(f"{compatibility_message}\nNo deployable payload is available for this detected device.")
-        payload_family = compatibility.payload_family
-        is_netbsd4 = is_netbsd4_payload_family(payload_family)
-        if is_netbsd4:
-            # Apple NetBSD 4 firmware can expose /usr/bin/scp but hang after
-            # writing the file. Use the SSH pipe upload fallback consistently.
-            connection.remote_has_scp = False
-        startup_mode = startup_mode_for_deploy(no_reboot=args.no_reboot, is_netbsd4=is_netbsd4)
+        try:
+            payload_context = prepare_deploy_payload_context(connection, compatibility, no_reboot=args.no_reboot)
+        except DeviceError as exc:
+            raise SystemExit(f"{compatibility_message}\n{exc}") from exc
+        payload_family = payload_context.payload_family
+        is_netbsd4 = payload_context.is_netbsd4
+        startup_mode = payload_context.startup_mode
         command_context.update_fields(deploy_startup_mode=startup_mode)
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload.", flush=True)
@@ -170,35 +166,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
-        if args.dry_run:
-            payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
-        else:
-            if not args.json:
-                print("Finding payload volume...", flush=True)
-            mast_discovery = command_context.wait_for_mast_volumes(
+        if not args.dry_run and not args.json:
+            print("Finding payload volume...", flush=True)
+        try:
+            payload_home = select_deploy_payload_home(
                 connection,
-                attempts=MAST_DISCOVERY_ATTEMPTS,
-                delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
-            )
-            mast_volumes = mast_discovery.volumes
-            if not mast_volumes:
-                raise SystemExit(
-                    no_mast_volumes_message(
-                        attempts=MAST_DISCOVERY_ATTEMPTS,
-                        delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
-                    )
-                )
-            selection = command_context.select_payload_home(
-                connection,
-                mast_volumes,
-                MANAGED_PAYLOAD_DIR_NAME,
-                wait_seconds=apple_mount_wait_seconds,
-            )
-            if selection.payload_home is None:
-                raise SystemExit(no_writable_mast_volumes_message(len(mast_volumes)))
-            payload_home = selection.payload_home
-            if not args.json:
-                print(f"Using payload directory {payload_home.payload_dir}.", flush=True)
+                dry_run=args.dry_run,
+            payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
+            mount_wait_seconds=apple_mount_wait_seconds,
+            wait_for_mast_volumes=command_context.wait_for_mast_volumes,
+            select_payload_home=command_context.select_payload_home,
+        )
+        except DeviceError as exc:
+            raise SystemExit(str(exc)) from exc
+        if not args.dry_run and not args.json:
+            print(f"Using payload directory {payload_home.payload_dir}.", flush=True)
         command_context.set_stage("build_deployment_plan")
         plan = build_deployment_plan(
             host,

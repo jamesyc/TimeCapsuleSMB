@@ -9,6 +9,7 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
+    existing_config_value_or_default,
     valid_existing_config_value,
     validated_value_or_empty,
 )
@@ -63,10 +64,6 @@ def non_negative_integer_arg(value: str) -> str:
     if not value.isdigit():
         raise argparse.ArgumentTypeError("must be a non-negative integer")
     return str(int(value))
-
-
-def existing_config_value_or_default(existing: dict[str, str], key: str, label: str) -> str:
-    return valid_existing_config_value(existing, key, label) or DEFAULTS[key]
 
 
 def prompt(label: str, default: str, secret: bool) -> str:

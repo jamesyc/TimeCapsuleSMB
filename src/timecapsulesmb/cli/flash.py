@@ -46,9 +46,10 @@ from timecapsulesmb.services.flash import (
     apply_flash_plan_to_manifest,
     build_flash_backup_dir,
     default_flash_backup_root,
-    flash_target_from_connection,
     manifest_from_inspection,
     plan_from_operation,
+    record_write_outcome,
+    require_netbsd4_flash_target,
     save_acp_flash_payload,
     save_flash_banks,
     save_flash_manifest,
@@ -227,64 +228,6 @@ def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, 
     command_context.update_fields(**fields)
 
 
-def _write_outcome_payload(
-    *,
-    plan: FlashPlan,
-    status: str,
-    write_validated: bool,
-    write_may_have_modified_device: bool,
-    stage: str | None = None,
-    message: str | None = None,
-) -> dict[str, object]:
-    outcome: dict[str, object] = {
-        "status": status,
-        "mode": plan.mode,
-        "write_validated": write_validated,
-        "write_may_have_modified_device": write_may_have_modified_device,
-    }
-    if plan.target_bank is not None:
-        outcome.update({
-            "bank": plan.target_bank.name,
-            "device": plan.target_bank.device,
-        })
-    if plan.payload is not None:
-        outcome.update({
-            "firmware_payload_sha256": plan.payload.payload_sha256,
-            "firmware_payload_size": len(plan.payload.data),
-            "expected_prefix_sha256": plan.payload.expected_prefix_sha256,
-            "expected_prefix_size": len(plan.payload.expected_prefix),
-        })
-    if stage is not None:
-        outcome["stage"] = stage
-    if message is not None:
-        outcome["message"] = message
-    return outcome
-
-
-def _record_write_outcome(
-    *,
-    bundle: FlashAnalysisBundle,
-    plan: FlashPlan,
-    status: str,
-    write_validated: bool,
-    write_may_have_modified_device: bool,
-    stage: str | None = None,
-    message: str | None = None,
-    write_result: dict[str, object] | None = None,
-) -> None:
-    bundle.manifest["write_outcome"] = _write_outcome_payload(
-        plan=plan,
-        status=status,
-        write_validated=write_validated,
-        write_may_have_modified_device=write_may_have_modified_device,
-        stage=stage,
-        message=message,
-    )
-    if write_result is not None:
-        bundle.manifest["write_result"] = write_result
-    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze, patch, or restore the NetBSD4 firmware boot hook.")
     add_config_argument(parser)
@@ -365,7 +308,11 @@ def _resolve_flash_target(
         json_output=args.json,
         unsupported_message="flash is only supported for NetBSD4 AirPort storage devices.",
     )
-    flash_target = flash_target_from_connection(connection, compatibility)
+    flash_target = require_netbsd4_flash_target(
+        connection,
+        compatibility,
+        update_fields=command_context.update_fields,
+    )
     emit_progress(log, f"Using ACP host {flash_target.acp_host}.")
     return flash_target
 
@@ -563,7 +510,7 @@ def _prepare_write(
             print("Primary firmware bank is already patched; no write needed.")
         else:
             print("Active firmware bank already matches the requested Apple stock firmware; no write needed.")
-        _record_write_outcome(
+        record_write_outcome(
             bundle=bundle,
             plan=plan,
             status="not_needed",
@@ -588,7 +535,7 @@ def _prepare_write(
             return False, 1
         if not proceed:
             print("Flash write cancelled.", flush=True)
-            _record_write_outcome(
+            record_write_outcome(
                 bundle=bundle,
                 plan=plan,
                 status="cancelled",
@@ -620,7 +567,7 @@ def _write_flash(
         write_result = write_flash_plan(target=target, bundle=bundle, plan=plan, log=log)
     except FlashAnalysisError as exc:
         message = str(exc)
-        _record_write_outcome(
+        record_write_outcome(
             bundle=bundle,
             plan=plan,
             status="failed",
@@ -635,7 +582,7 @@ def _write_flash(
         return None
     except SshError as exc:
         message = f"SSH post-write validation failed: {exc}"
-        _record_write_outcome(
+        record_write_outcome(
             bundle=bundle,
             plan=plan,
             status="failed",
@@ -649,7 +596,7 @@ def _write_flash(
         command_context.fail()
         return None
 
-    _record_write_outcome(
+    record_write_outcome(
         bundle=bundle,
         plan=plan,
         status="validated",

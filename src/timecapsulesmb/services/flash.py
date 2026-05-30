@@ -4,15 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 import json
-import re
 from pathlib import Path
 from typing import Callable
 
 from timecapsulesmb.apple_firmware import normalize_syap
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP
 from timecapsulesmb.core.net import extract_host
-from timecapsulesmb.core.paths import default_user_data_dir
-from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.core.paths import default_user_data_dir, safe_path_part
+from timecapsulesmb.device.compat import DeviceCompatibility, is_netbsd4_payload_family, payload_family_description
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.flash import (
     FlashAnalysis,
     FlashAnalysisError,
@@ -78,11 +78,6 @@ def _emit(log: object | None, message: str) -> None:
     log(message)  # type: ignore[misc]
 
 
-def _safe_path_part(value: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
-    return safe.strip("-.") or "device"
-
-
 def default_flash_backup_root() -> Path:
     return default_user_data_dir() / "flash-backups"
 
@@ -92,7 +87,7 @@ def build_flash_backup_dir(*, base_dir: Path | None, host: str, syap: str) -> Pa
         return base_dir.expanduser().resolve()
     root = default_flash_backup_root()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%fZ")
-    return root / f"{timestamp}-{_safe_path_part(host)}-syAP{_safe_path_part(syap)}"
+    return root / f"{timestamp}-{safe_path_part(host)}-syAP{safe_path_part(syap)}"
 
 
 def flash_target_from_connection(connection: SshConnection, compatibility: DeviceCompatibility) -> FlashTarget:
@@ -101,6 +96,23 @@ def flash_target_from_connection(connection: SshConnection, compatibility: Devic
         acp_host=extract_host(connection.host),
         compatibility=compatibility,
     )
+
+
+def require_netbsd4_flash_target(
+    connection: SshConnection,
+    compatibility: DeviceCompatibility,
+    *,
+    update_fields: Callable[..., None] | None = None,
+    log: Callable[[str], None] | None = None,
+    unsupported_message: str = "flash is only supported for NetBSD4 AirPort storage devices.",
+) -> FlashTarget:
+    if update_fields is not None:
+        update_fields(device_family=compatibility.payload_family)
+    if not is_netbsd4_payload_family(compatibility.payload_family):
+        raise DeviceError(unsupported_message)
+    if log is not None:
+        log(f"Using {payload_family_description(compatibility.payload_family)} payload family for flash work.")
+    return flash_target_from_connection(connection, compatibility)
 
 
 def dump_remote_bank(connection: SshConnection, device: str, *, log: object | None = None) -> bytes:

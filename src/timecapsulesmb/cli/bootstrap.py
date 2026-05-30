@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
@@ -16,8 +17,6 @@ from timecapsulesmb.transport.local import find_command
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
-ANSI_RED = "\033[31m"
-ANSI_RESET = "\033[0m"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 MACOS_SSHPASS_FORMULA = "sshpass"
 REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
@@ -48,10 +47,6 @@ def current_platform_label() -> str:
     if sys.platform.startswith("linux"):
         return "Linux"
     return sys.platform
-
-
-def red(text: str) -> str:
-    return f"{ANSI_RED}{text}{ANSI_RESET}"
 
 
 def ensure_venv(python: str) -> Path:
@@ -128,9 +123,9 @@ def _linux_install_plan(missing_tools: list[str]) -> tuple[list[list[str]], str]
 
 
 def _raise_host_tool_install_error(message: str, manual_command: str | None = None) -> None:
-    print(red(message), flush=True)
+    print(color_red(message), flush=True)
     if manual_command:
-        print(red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+        print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
         print(manual_command, flush=True)
     raise BootstrapError(message)
 
@@ -138,8 +133,8 @@ def _raise_host_tool_install_error(message: str, manual_command: str | None = No
 def _install_macos_host_tools(missing_tools: list[str]) -> None:
     brew = find_command("brew")
     if brew is None:
-        print(red(f"Homebrew is required to install missing host tools: {_format_tools(missing_tools)}"), flush=True)
-        print(red("Install Homebrew, then rerun './tcapsule bootstrap':"), flush=True)
+        print(color_red(f"Homebrew is required to install missing host tools: {_format_tools(missing_tools)}"), flush=True)
+        print(color_red("Install Homebrew, then rerun './tcapsule bootstrap':"), flush=True)
         print(HOMEBREW_INSTALL_COMMAND, flush=True)
         raise BootstrapError("Homebrew is required to install missing host tools on macOS.")
 
@@ -179,9 +174,9 @@ def install_required_host_tools() -> None:
             )
     except subprocess.CalledProcessError as exc:
         message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
-        print(red(message), flush=True)
+        print(color_red(message), flush=True)
         if manual_command:
-            print(red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+            print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
             print(manual_command, flush=True)
         raise BootstrapError(message) from exc
 

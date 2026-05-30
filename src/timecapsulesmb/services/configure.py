@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 from typing import Callable, Mapping
 
-from timecapsulesmb.configure_defaults import valid_existing_config_value
+from timecapsulesmb.configure_defaults import existing_config_value_or_default
 from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_values, write_env_file
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.device.probe import ProbedDeviceState, probe_connection_state
@@ -105,10 +105,6 @@ def _optional_unsigned_config_value(value: object, key: str) -> str:
     return str(int(raw_value))
 
 
-def _existing_unsigned_config_value_or_default(existing: dict[str, str], key: str, label: str) -> str:
-    return valid_existing_config_value(existing, key, label) or DEFAULTS[key]
-
-
 def build_configure_env_values(
     existing: dict[str, str],
     *,
@@ -143,12 +139,12 @@ def build_configure_env_values(
             else debug_logging
         ) else "false",
         "TC_ATA_IDLE_SECONDS": (
-            _existing_unsigned_config_value_or_default(existing, "TC_ATA_IDLE_SECONDS", "ATA idle seconds")
+            existing_config_value_or_default(existing, "TC_ATA_IDLE_SECONDS", "ATA idle seconds")
             if ata_idle_seconds is None
             else _optional_unsigned_config_value(ata_idle_seconds, "TC_ATA_IDLE_SECONDS")
         ),
         "TC_ATA_STANDBY": (
-            _existing_unsigned_config_value_or_default(existing, "TC_ATA_STANDBY", "ATA standby timer")
+            existing_config_value_or_default(existing, "TC_ATA_STANDBY", "ATA standby timer")
             if ata_standby is None
             else _optional_unsigned_config_value(ata_standby, "TC_ATA_STANDBY")
         ),

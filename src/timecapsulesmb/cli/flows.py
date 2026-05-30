@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import time
-from typing import Callable, Iterable
+from typing import Iterable
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import LogCallback, emit_progress
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.cli.runtime import LogCallback
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.deploy.verify import (
@@ -19,9 +18,11 @@ from timecapsulesmb.device.probe import (
     runtime_startup_failure_debug_fields,
     wait_for_ssh_state_conn,
 )
-from timecapsulesmb.integrations.acp import ACPError, reboot as acp_reboot
+from timecapsulesmb.integrations.acp import reboot as acp_reboot
+from timecapsulesmb.services import runtime as runtime_service
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.transport.ssh import SshConnection
 
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
@@ -50,23 +51,16 @@ def wait_for_tcp_port_state(
     verbose: bool = True,
     service_name: str | None = None,
 ) -> bool:
-    label = service_name or f"TCP port {port}"
-    expected_state_string = "open" if expected_state else "closed"
-    if verbose:
-        print(f"Waiting for {label} to be {expected_state_string}...")
-    deadline = time.time() + timeout_seconds
-    while True:
-        is_open = tcp_open(host, port)
-        if is_open == expected_state:
-            if verbose:
-                print(f"{label} is {expected_state_string}.")
-            return True
-        if time.time() >= deadline:
-            break
-        time.sleep(interval_seconds)
-    if verbose:
-        print(f"{label} did not become {expected_state_string} within {timeout_seconds}s.")
-    return False
+    return runtime_service.wait_for_tcp_port_state(
+        host,
+        port,
+        expected_state=expected_state,
+        timeout_seconds=timeout_seconds,
+        interval_seconds=interval_seconds,
+        log=print if verbose else None,
+        service_name=service_name,
+        tcp_open_func=tcp_open,
+    )
 
 
 def wait_for_device_up(
@@ -84,6 +78,15 @@ def wait_for_device_up(
             break
         time.sleep(interval_seconds)
     return False
+
+
+def _runtime_callbacks(command_context: CommandContext) -> RuntimeOperationCallbacks:
+    return RuntimeOperationCallbacks(
+        set_stage=command_context.set_stage,
+        log=print,
+        add_debug_fields=command_context.add_debug_fields,
+        update_fields=command_context.update_fields,
+    )
 
 
 def request_reboot_and_wait(
@@ -113,9 +116,14 @@ def request_reboot(
     *,
     raise_on_request_error: bool = False,
 ) -> None:
-    command_context.set_stage("reboot")
-    command_context.update_fields(reboot_was_attempted=True)
-    _request_reboot_acp_then_ssh(connection, command_context, raise_on_request_error=raise_on_request_error)
+    runtime_service.request_runtime_reboot(
+        connection,
+        strategy="acp_then_ssh",
+        callbacks=_runtime_callbacks(command_context),
+        raise_on_request_error=raise_on_request_error,
+        request_reboot=remote_request_reboot,
+        request_acp_reboot=acp_reboot,
+    )
 
 
 def request_deploy_reboot_and_wait(
@@ -145,12 +153,12 @@ def request_deploy_reboot(
     *,
     raise_on_request_error: bool = False,
 ) -> None:
-    command_context.set_stage("reboot")
-    command_context.update_fields(reboot_was_attempted=True)
-    _request_reboot_via_ssh_shutdown(
+    runtime_service.request_runtime_reboot(
         connection,
-        command_context,
+        strategy="ssh_shutdown_then_reboot",
+        callbacks=_runtime_callbacks(command_context),
         raise_on_request_error=raise_on_request_error,
+        request_reboot=remote_request_reboot,
     )
 
 
@@ -161,109 +169,14 @@ def request_ssh_reboot(
     log: LogCallback = None,
     raise_on_request_error: bool = False,
 ) -> None:
-    command_context.set_stage("reboot")
-    command_context.update_fields(reboot_was_attempted=True)
-    command_context.add_debug_fields(reboot_request_strategy="ssh")
-    _request_reboot_via_ssh(
+    runtime_service.request_runtime_reboot(
         connection,
-        command_context,
-        log=log,
+        strategy="ssh",
+        callbacks=_runtime_callbacks(command_context),
+        progress_log=log,
         raise_on_request_error=raise_on_request_error,
-    )
-
-
-def _request_reboot_acp_then_ssh(
-    connection: SshConnection,
-    command_context: CommandContext,
-    *,
-    raise_on_request_error: bool = False,
-) -> None:
-    command_context.add_debug_fields(reboot_request_strategy="acp_then_ssh")
-    if _request_reboot_via_acp(connection, command_context):
-        return
-    _request_reboot_via_ssh(
-        connection,
-        command_context,
-        raise_on_request_error=raise_on_request_error,
-    )
-
-
-def _request_reboot_via_acp(connection: SshConnection, command_context: CommandContext) -> bool:
-    command_context.add_debug_fields(acp_reboot_attempted=True)
-    try:
-        acp_reboot(
-            extract_host(connection.host),
-            connection.password,
-            timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
-        )
-    except ACPError as exc:
-        command_context.add_debug_fields(
-            acp_reboot_succeeded=False,
-            acp_reboot_error=system_exit_message(exc),
-        )
-        print("ACP reboot request failed; trying SSH reboot request.")
-        return False
-
-    command_context.add_debug_fields(acp_reboot_succeeded=True)
-    print("ACP reboot requested.")
-    return True
-
-
-def _request_reboot_via_ssh_shutdown(
-    connection: SshConnection,
-    command_context: CommandContext,
-    *,
-    log: LogCallback = None,
-    raise_on_request_error: bool = False,
-) -> None:
-    command_context.add_debug_fields(reboot_request_strategy="ssh_shutdown_then_reboot")
-    _request_reboot_via_ssh(
-        connection,
-        command_context,
-        log=log,
         request_reboot=remote_request_reboot,
-        progress_message=SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
-        raise_on_request_error=raise_on_request_error,
     )
-
-
-def _request_reboot_via_ssh(
-    connection: SshConnection,
-    command_context: CommandContext,
-    *,
-    log: LogCallback = None,
-    request_reboot: Callable[[SshConnection], None] | None = None,
-    progress_message: str = SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
-    raise_on_request_error: bool = False,
-) -> None:
-    command_context.add_debug_fields(ssh_reboot_attempted=True)
-    emit_progress(log, progress_message)
-    try:
-        if request_reboot is None:
-            request_reboot = remote_request_reboot
-        request_reboot(connection)
-    except SshCommandTimeout as exc:
-        command_context.add_debug_fields(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_timed_out=True,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise
-        print("SSH reboot request timed out; checking whether the device is rebooting...")
-        return
-    except SshError as exc:
-        command_context.add_debug_fields(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise
-        print("SSH reboot request failed; checking whether the device is rebooting anyway...")
-        return
-
-    command_context.add_debug_fields(ssh_reboot_succeeded=True)
-    print("SSH reboot requested.")
 
 
 def observe_reboot_cycle(
@@ -275,22 +188,21 @@ def observe_reboot_cycle(
     up_timeout_seconds: int,
     reboot_up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
 ) -> bool:
-    print("Waiting for the device to go down...")
-    command_context.set_stage("wait_for_reboot_down")
-    if not wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=down_timeout_seconds):
+    result = runtime_service.observe_runtime_reboot_cycle(
+        connection,
+        callbacks=_runtime_callbacks(command_context),
+        down_timeout_seconds=down_timeout_seconds,
+        up_timeout_seconds=up_timeout_seconds,
+        wait_for_ssh_state=wait_for_ssh_state_conn,
+    )
+    if not result.went_down:
         print(reboot_no_down_message)
         command_context.fail_with_error(reboot_no_down_message)
         return False
-
-    print("Device went down; waiting for it to come back up...")
-    command_context.set_stage("wait_for_reboot_up")
-    if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
+    if not result.came_back_up:
         print(reboot_up_timeout_message)
         command_context.fail_with_error(reboot_up_timeout_message)
         return False
-
-    command_context.update_fields(device_came_back_after_reboot=True)
-    print("Device is back online.")
     return True
 
 

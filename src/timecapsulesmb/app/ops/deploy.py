@@ -16,7 +16,6 @@ from timecapsulesmb.core.config import (
     parse_bool,
 )
 from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -54,30 +53,20 @@ from timecapsulesmb.deploy.verify import (
     render_managed_runtime_verification,
     verify_managed_runtime,
 )
-from timecapsulesmb.device.compat import (
-    DeviceCompatibility,
-    is_netbsd4_payload_family,
-    payload_family_description,
-    render_compatibility_message,
-    require_compatibility,
-)
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     read_remote_network_diagnostics_conn,
     read_runtime_log_tails_conn,
     runtime_startup_failure_debug_fields,
     wait_for_ssh_state_conn,
 )
+from timecapsulesmb.device.compat import payload_family_description
 from timecapsulesmb.device.storage import (
-    MAST_DISCOVERY_ATTEMPTS,
-    MAST_DISCOVERY_DELAY_SECONDS,
-    build_dry_run_payload_home,
-    mast_volumes_debug_summary,
-    payload_candidate_checks_debug_summary,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
     wait_for_mast_volumes_conn,
 )
-from timecapsulesmb.integrations.acp import ACPError, reboot as acp_reboot
+from timecapsulesmb.integrations.acp import reboot as acp_reboot
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -91,52 +80,20 @@ from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
     DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
     activation_complete_message,
-    no_mast_volumes_message,
-    no_writable_mast_volumes_message,
+    deploy_artifact_failures,
+    deploy_upload_stage,
+    effective_no_wait_for_deploy,
     payload_verification_error,
+    prepare_deploy_payload_context,
+    require_supported_payload,
     render_flash_runtime_config,
-    startup_mode_for_deploy,
+    select_deploy_payload_home,
 )
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.runtime import ManagedTargetState, load_env_config, resolve_validated_managed_target
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
+from timecapsulesmb.services import runtime as runtime_service
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
-
-
-ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
-DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
-    PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_COMMON_SH_SOURCE,
-    PACKAGED_DFREE_SH_SOURCE,
-    PACKAGED_BOOT_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
-})
-DEPLOY_UPLOAD_ACCOUNT_SOURCES = frozenset({
-    GENERATED_SMBPASSWD_SOURCE,
-    GENERATED_USERNAME_MAP_SOURCE,
-})
-
-
-def _best_effort_debug_summary(render, value: object) -> object | None:
-    try:
-        return render(value)
-    except Exception:
-        return None
-
-
-def deploy_upload_stage(transfer: FileTransfer) -> str:
-    if transfer.source_id == BINARY_SMBD_SOURCE:
-        return "upload_smbd"
-    if transfer.source_id == BINARY_MDNS_SOURCE:
-        return "upload_mdns_advertiser"
-    if transfer.source_id == BINARY_NBNS_SOURCE:
-        return "upload_nbns_advertiser"
-    if transfer.source_id in DEPLOY_UPLOAD_BOOT_SOURCES:
-        return "upload_boot_files"
-    if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
-        return "upload_runtime_config"
-    if transfer.source_id in DEPLOY_UPLOAD_ACCOUNT_SOURCES:
-        return "upload_samba_accounts"
-    return "upload_payload"
 
 
 @dataclass(frozen=True)
@@ -147,10 +104,6 @@ class DeployConfirmationPresentation:
     risk: str
     summary: str
     presentation_id: str
-
-
-def effective_no_wait_for_deploy(*, requested: bool, no_reboot: bool) -> bool:
-    return False if no_reboot else requested
 
 
 def optional_unsigned_int_override_param(params: dict[str, object], name: str) -> int | str | None:
@@ -217,21 +170,6 @@ def confirmation_presentation_for_startup_mode(
     )
 
 
-def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: bool) -> DeviceCompatibility:
-    probe_state = target.probe_state
-    if probe_state is None:
-        raise AppOperationError("Failed to determine remote device OS compatibility.", code="remote_error")
-    compatibility = require_compatibility(
-        probe_state.compatibility,
-        fallback_error=probe_state.probe_result.error or "Failed to determine remote device OS compatibility.",
-    )
-    if not compatibility.supported and not allow_unsupported:
-        raise AppOperationError(render_compatibility_message(compatibility), code="unsupported_device")
-    if not compatibility.payload_family:
-        raise AppOperationError("No deployable payload is available for this detected device.", code="unsupported_device")
-    return compatibility
-
-
 def load_config_and_target(
     context: AppOperationContext,
     params: dict[str, object],
@@ -289,19 +227,19 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     )
 
     context.stage("validate_artifacts")
-    failures = [message for _, ok, message in validate_artifacts(app_paths.distribution_root) if not ok]
+    failures = deploy_artifact_failures(app_paths.distribution_root, validate=validate_artifacts)
     if failures:
         raise AppOperationError("; ".join(failures), code="validation_failed")
 
     context.stage("check_compatibility")
-    compatibility = require_supported_payload(target, allow_unsupported=allow_unsupported)
-    payload_family = compatibility.payload_family
-    is_netbsd4 = is_netbsd4_payload_family(payload_family)
-    if is_netbsd4:
-        # Apple NetBSD 4 firmware can expose /usr/bin/scp but hang after
-        # writing the file. Use the SSH pipe upload fallback consistently.
-        connection.remote_has_scp = False
-    startup_mode = startup_mode_for_deploy(no_reboot=no_reboot, is_netbsd4=is_netbsd4)
+    try:
+        compatibility = require_supported_payload(target, allow_unsupported=allow_unsupported)
+        payload_context = prepare_deploy_payload_context(connection, compatibility, no_reboot=no_reboot)
+    except DeviceError as exc:
+        raise AppOperationError(str(exc), code="unsupported_device") from exc
+    payload_family = payload_context.payload_family
+    is_netbsd4 = payload_context.is_netbsd4
+    startup_mode = payload_context.startup_mode
     no_wait = effective_no_wait_for_deploy(requested=no_wait, no_reboot=no_reboot)
     context.update_fields(deploy_startup_mode=startup_mode)
     context.log(f"Using {payload_family_description(payload_family)} payload.")
@@ -309,7 +247,12 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     if not dry_run:
         confirmation_plan = build_deployment_plan(
             connection.host,
-            build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME),
+            select_deploy_payload_home(
+                connection,
+                dry_run=True,
+                payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
+                mount_wait_seconds=mount_wait,
+            ),
             resolved_artifacts["smbd"].absolute_path,
             resolved_artifacts["mdns-advertiser"].absolute_path,
             resolved_artifacts["nbns-advertiser"].absolute_path,
@@ -357,47 +300,18 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 presentation_values=presentation_values,
             ),
         )
-    if dry_run:
-        payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
-    else:
-        context.stage("read_mast")
-        mast_discovery = wait_for_mast_volumes_conn(
+    try:
+        payload_home = select_deploy_payload_home(
             connection,
-            attempts=MAST_DISCOVERY_ATTEMPTS,
-            delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+            dry_run=dry_run,
+            payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
+            mount_wait_seconds=mount_wait,
+            callbacks=_runtime_callbacks(context),
+            wait_for_mast_volumes=wait_for_mast_volumes_conn,
+            select_payload_home=select_payload_home_with_diagnostics_conn,
         )
-        context.add_debug_fields(
-            mast_read_attempts=mast_discovery.attempts,
-            mast_volume_count=len(mast_discovery.volumes),
-            mast_candidates=_best_effort_debug_summary(mast_volumes_debug_summary, mast_discovery.volumes),
-        )
-        if not mast_discovery.volumes:
-            raise AppOperationError(
-                no_mast_volumes_message(
-                    attempts=MAST_DISCOVERY_ATTEMPTS,
-                    delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
-                ),
-                code="remote_error",
-            )
-        context.stage("select_payload_home")
-        selection = select_payload_home_with_diagnostics_conn(
-            connection,
-            mast_discovery.volumes,
-            MANAGED_PAYLOAD_DIR_NAME,
-            wait_seconds=mount_wait,
-        )
-        context.add_debug_fields(
-            mast_candidate_checks=_best_effort_debug_summary(
-                payload_candidate_checks_debug_summary,
-                getattr(selection, "checks", ()),
-            )
-        )
-        if selection.payload_home is None:
-            raise AppOperationError(
-                no_writable_mast_volumes_message(len(mast_discovery.volumes)),
-                code="remote_error",
-            )
-        payload_home = selection.payload_home
+    except DeviceError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
 
     context.stage("build_deployment_plan")
     plan = build_deployment_plan(
@@ -671,16 +585,17 @@ def request_reboot_and_wait(
 ) -> None:
     request_reboot(context, connection, strategy=strategy)
 
-    context.stage("wait_for_reboot_down")
-    context.log("Waiting for the device to go down...")
-    if not wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=down_timeout_seconds):
+    result = runtime_service.observe_runtime_reboot_cycle(
+        connection,
+        callbacks=_runtime_callbacks(context),
+        down_timeout_seconds=down_timeout_seconds,
+        up_timeout_seconds=up_timeout_seconds,
+        wait_for_ssh_state=wait_for_ssh_state_conn,
+    )
+    if not result.went_down:
         raise AppOperationError(reboot_no_down_message, code="remote_error")
-    context.stage("wait_for_reboot_up")
-    context.log("Waiting for the device to come back up...")
-    if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
+    if not result.came_back_up:
         raise AppOperationError(reboot_up_timeout_message, code="remote_error")
-    context.update_fields(device_came_back_after_reboot=True)
-    context.log("Device is back online.")
 
 
 def request_reboot(
@@ -690,32 +605,19 @@ def request_reboot(
     strategy: str,
     raise_on_request_error: bool = False,
 ) -> None:
-    context.stage("reboot")
-    context.update_fields(reboot_was_attempted=True)
-    context.add_debug_fields(reboot_request_strategy=strategy)
-    if strategy == "acp_then_ssh":
-        context.add_debug_fields(acp_reboot_attempted=True)
-        try:
-            acp_reboot(extract_host(connection.host), connection.password, timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
-            context.log("ACP reboot requested.")
-            context.add_debug_fields(acp_reboot_succeeded=True)
-        except ACPError as exc:
-            context.add_debug_fields(
-                acp_reboot_succeeded=False,
-                acp_reboot_error=system_exit_message(exc),
-            )
-            context.log(f"ACP reboot request failed; trying SSH reboot request: {exc}", level="warning")
-            request_ssh_reboot(
-                context,
-                connection,
-                raise_on_request_error=raise_on_request_error,
-            )
-    else:
-        request_ssh_reboot(
-            context,
+    try:
+        runtime_service.request_runtime_reboot(
             connection,
+            strategy=strategy,
+            callbacks=_runtime_callbacks(context),
             raise_on_request_error=raise_on_request_error,
+            request_reboot=remote_request_reboot,
+            request_acp_reboot=acp_reboot,
         )
+    except SshCommandTimeout as exc:
+        raise AppOperationError(f"SSH reboot request timed out: {exc}", code="remote_error") from exc
+    except SshError as exc:
+        raise AppOperationError(f"SSH reboot request failed: {exc}", code="remote_error") from exc
 
 
 def request_ssh_reboot(
@@ -724,27 +626,18 @@ def request_ssh_reboot(
     *,
     raise_on_request_error: bool = False,
 ) -> None:
-    context.add_debug_fields(ssh_reboot_attempted=True)
-    try:
-        remote_request_reboot(connection)
-    except SshCommandTimeout as exc:
-        context.add_debug_fields(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_timed_out=True,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise AppOperationError(f"SSH reboot request timed out: {exc}", code="remote_error") from exc
-        context.log(f"SSH reboot request timed out; checking whether the device is rebooting: {exc}", level="warning")
-        return
-    except SshError as exc:
-        context.add_debug_fields(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise AppOperationError(f"SSH reboot request failed: {exc}", code="remote_error") from exc
-        context.log(f"SSH reboot request failed; checking whether the device is rebooting anyway: {exc}", level="warning")
-        return
-    context.add_debug_fields(ssh_reboot_succeeded=True)
-    context.log("SSH reboot requested.")
+    request_reboot(
+        context,
+        connection,
+        strategy="ssh",
+        raise_on_request_error=raise_on_request_error,
+    )
+
+
+def _runtime_callbacks(context: AppOperationContext) -> RuntimeOperationCallbacks:
+    return RuntimeOperationCallbacks(
+        set_stage=context.stage,
+        log=context.log,
+        add_debug_fields=context.add_debug_fields,
+        update_fields=context.update_fields,
+    )

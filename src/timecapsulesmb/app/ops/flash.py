@@ -7,7 +7,6 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.app.contracts import flash_backup_payload, flash_plan_payload, flash_write_payload
 from timecapsulesmb.app.ops.deploy import request_reboot, request_reboot_and_wait
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.flash import FlashAnalysisError
 from timecapsulesmb.services.app import (
@@ -24,10 +23,10 @@ from timecapsulesmb.services.flash import (
     WRITE_OPERATIONS,
     FlashTarget,
     backup_flash,
-    flash_target_from_connection,
     plan_flash_from_backup,
     record_post_write_action,
     record_write_outcome,
+    require_netbsd4_flash_target,
     validate_live_target_matches_backup,
     write_flash_plan,
 )
@@ -123,14 +122,15 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> Fl
         compatibility = require_connection_compatibility(target.connection)
     except DeviceError as exc:
         raise AppOperationError(str(exc), code="unsupported_device") from exc
-    context.update_fields(device_family=compatibility.payload_family)
-    if not is_netbsd4_payload_family(compatibility.payload_family):
-        raise AppOperationError(
-            "flash is only supported for NetBSD4 AirPort storage devices.",
-            code="unsupported_device",
+    try:
+        return require_netbsd4_flash_target(
+            target.connection,
+            compatibility,
+            update_fields=context.update_fields,
+            log=context.log,
         )
-    context.log(f"Using {payload_family_description(compatibility.payload_family)} payload family for flash work.")
-    return flash_target_from_connection(target.connection, compatibility)
+    except DeviceError as exc:
+        raise AppOperationError(str(exc), code="unsupported_device") from exc
 
 
 def _backup_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
