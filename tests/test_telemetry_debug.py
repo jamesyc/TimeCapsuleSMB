@@ -53,6 +53,7 @@ class TelemetryDebugTests(unittest.TestCase):
                 "name": "James's AirPort Time Capsule",
                 "hostname": "Jamess-AirPort-Time-Capsule.local",
                 "ipv4": ["192.168.1.217"],
+                "ipv6": ["fe80::1"],
                 "syAP": "119",
                 "model": "TimeCapsule8,119",
             },

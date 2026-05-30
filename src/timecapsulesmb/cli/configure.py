@@ -28,7 +28,7 @@ from timecapsulesmb.cli.runtime import (
     ssh_target_link_local_resolution_error,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
-from timecapsulesmb.core.net import extract_host, is_link_local_ipv4
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
@@ -42,6 +42,7 @@ from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourMergedDiscoveryDiagnostics,
     discover_snapshot_merged_detailed,
+    discovered_record_has_only_link_local_ips,
     discovered_record_root_host,
 )
 from timecapsulesmb.telemetry import TelemetryClient
@@ -132,9 +133,9 @@ def discover_default_record(
     chosen_host = discovered_record_root_host(selected)
     selected_host = selected.display_host() or "manual SSH target required"
     print(f"Selected: {selected.name} ({selected_host})\n", flush=True)
-    if chosen_host is None and any(is_link_local_ipv4(ip) for ip in selected.ipv4):
+    if chosen_host is None and discovered_record_has_only_link_local_ips(selected):
         print(
-            "Selected device only advertised 169.254.x.x link-local IPv4. "
+            "Selected device only advertised link-local addresses. "
             "Enter the device's LAN IP or LAN-resolving hostname manually.\n",
             flush=True,
         )

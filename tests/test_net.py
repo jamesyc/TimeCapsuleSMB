@@ -16,7 +16,9 @@ from timecapsulesmb.core.net import (  # noqa: E402
     extract_host,
     ipv4_literal,
     ipv6_literal,
+    is_link_local_ip,
     is_link_local_ipv4,
+    is_link_local_ipv6,
     is_loopback_ipv4,
     resolve_host_ips,
     resolve_host_ipv4s,
@@ -37,12 +39,19 @@ class NetTests(unittest.TestCase):
 
     def test_ipv6_literal_accepts_ipv6_and_rejects_non_ipv6(self) -> None:
         self.assertEqual(ipv6_literal("FD00::1"), "fd00::1")
+        self.assertEqual(ipv6_literal("fe80::1%en0"), "fe80::1")
         self.assertIsNone(ipv6_literal("10.0.1.7"))
         self.assertIsNone(ipv6_literal("capsule.local"))
 
     def test_link_local_and_loopback_detection(self) -> None:
         self.assertTrue(is_link_local_ipv4("169.254.44.9"))
         self.assertFalse(is_link_local_ipv4("10.0.0.2"))
+        self.assertTrue(is_link_local_ipv6("fe80::1"))
+        self.assertTrue(is_link_local_ipv6("fe80::1%en0"))
+        self.assertFalse(is_link_local_ipv6("fd00::1"))
+        self.assertTrue(is_link_local_ip("169.254.44.9"))
+        self.assertTrue(is_link_local_ip("fe80::1"))
+        self.assertFalse(is_link_local_ip("10.0.0.2"))
         self.assertTrue(is_loopback_ipv4("127.0.0.1"))
         self.assertFalse(is_loopback_ipv4("169.254.44.9"))
 

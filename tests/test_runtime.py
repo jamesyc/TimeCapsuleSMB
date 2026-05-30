@@ -52,7 +52,20 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertIsNotNone(error)
         assert error is not None
-        self.assertIn("capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", error)
+        self.assertIn("capsule.local resolves to link-local address 169.254.44.9", error)
+
+    def test_ssh_target_link_local_resolution_error_rejects_resolved_ipv6_hostname(self) -> None:
+        addrinfo = [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("fe80::1%en0", 0, 0, 4))]
+
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
+            error = ssh_target_link_local_resolution_error(
+                "root@capsule.local",
+                DEFAULTS["TC_SSH_OPTS"],
+            )
+
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn("capsule.local resolves to link-local address fe80::1", error)
 
     def test_ssh_target_link_local_resolution_error_allows_loopback_hostname(self) -> None:
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]

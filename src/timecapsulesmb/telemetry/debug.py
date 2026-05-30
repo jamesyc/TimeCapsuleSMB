@@ -59,6 +59,8 @@ def _bonjour_record_summary(value: BonjourResolvedService) -> dict[str, object]:
         "port": value.port,
         "ipv4": list(value.ipv4),
     }
+    if value.ipv6:
+        summary["ipv6"] = list(value.ipv6)
     if value.fullname:
         summary["fullname"] = _truncate_debug_text(value.fullname)
     for key in ("syAP", "model"):
@@ -76,6 +78,8 @@ def _(value: BonjourResolvedService) -> dict[str, object]:
         "hostname": value.hostname,
         "ipv4": list(value.ipv4),
     }
+    if value.ipv6:
+        summary["ipv6"] = list(value.ipv6)
     for key in ("syAP", "model"):
         prop = value.properties.get(key)
         if prop:
