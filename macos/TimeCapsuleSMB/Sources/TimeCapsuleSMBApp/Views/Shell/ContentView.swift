@@ -213,42 +213,14 @@ public struct ContentView: View {
         }
     }
 
-    private var sidebarSelection: Binding<String?> {
+    private var sidebarSelection: Binding<AppRoute?> {
         Binding(
             get: {
-                if appStore.showingActivity {
-                    return "activity"
-                }
-                if appStore.showingAppSettings {
-                    return "settings"
-                }
-                if appStore.showingAddDevice {
-                    return "add"
-                }
-                if let selectedDeviceID = appStore.selectedDeviceID {
-                    return "device:\(selectedDeviceID)"
-                }
-                return "all"
+                appStore.route
             },
             set: { value in
                 guard let value else { return }
-                if value == "add" {
-                    appStore.showAddDevice()
-                } else if value == "activity" {
-                    appStore.showActivity()
-                } else if value == "settings" {
-                    appStore.showAppSettings()
-                } else if value == "all" {
-                    appStore.selectedDeviceID = nil
-                    appStore.showingAddDevice = false
-                    appStore.showingActivity = false
-                    appStore.showingAppSettings = false
-                } else if value.hasPrefix("device:") {
-                    let id = String(value.dropFirst("device:".count))
-                    if let profile = appStore.deviceRegistry.profile(id: id) {
-                        appStore.select(profile)
-                    }
-                }
+                appStore.navigate(to: value)
             }
         )
     }
@@ -256,11 +228,11 @@ public struct ContentView: View {
     private var sidebar: some View {
         List(selection: sidebarSelection) {
             Label(L10n.string("sidebar.all_airport_devices"), systemImage: "externaldrive.connected.to.line.below")
-                .tag("all")
+                .tag(AppRoute.allDevices)
             Label(L10n.string("sidebar.activity"), systemImage: appStore.activityStore.hasActiveActivity ? "hourglass" : "clock")
-                .tag("activity")
+                .tag(AppRoute.activity)
             Label(L10n.string("sidebar.settings"), systemImage: "gearshape")
-                .tag("settings")
+                .tag(AppRoute.appSettings)
 
             Section(L10n.string("sidebar.devices")) {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
@@ -277,13 +249,13 @@ public struct ContentView: View {
                                 performSidebarContextMenuAction(action, profile: profile)
                             }
                         }
-                        .tag("device:\(profile.id)")
+                        .tag(AppRoute.device(profile.id))
                 }
             }
 
             Section {
                 Label(L10n.string("sidebar.add_airport_device"), systemImage: "plus.circle")
-                    .tag("add")
+                    .tag(AppRoute.addDevice)
             }
         }
         .navigationTitle("TimeCapsuleSMB")
@@ -362,28 +334,39 @@ public struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if appStore.showingActivity {
+        switch appStore.route {
+        case .activity:
             ActivityDetailView(
                 activityStore: appStore.activityStore,
                 registry: appStore.deviceRegistry
             )
-        } else if appStore.showingAppSettings {
+        case .appSettings:
             AppSettingsView(
                 appStore: appStore,
                 editor: appSettingsEditorStore
             )
-        } else if appStore.showingAddDevice {
+        case .addDevice:
             AddDeviceView(store: addDeviceStore)
-        } else if let profile = appStore.selectedProfile {
-            DeviceDashboardView(
-                profile: profile,
-                session: dashboardStore.session(for: profile),
-                appStore: appStore,
-                showDiagnostics: {
-                    diagnosticsPresented = true
-                }
-            )
-        } else {
+        case .device(let profileID):
+            if let profile = appStore.deviceRegistry.profile(id: profileID) {
+                DeviceDashboardView(
+                    profile: profile,
+                    session: dashboardStore.session(for: profile),
+                    appStore: appStore,
+                    showDiagnostics: {
+                        diagnosticsPresented = true
+                    }
+                )
+            } else {
+                DeviceListOverviewView(
+                    appStore: appStore,
+                    addDiscoveredDevice: { device in
+                        addDeviceStore.select(device)
+                        appStore.showAddDevice()
+                    }
+                )
+            }
+        case .allDevices:
             DeviceListOverviewView(
                 appStore: appStore,
                 addDiscoveredDevice: { device in

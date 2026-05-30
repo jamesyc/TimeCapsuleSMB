@@ -3,10 +3,7 @@ import Foundation
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published var selectedDeviceID: DeviceProfile.ID?
-    @Published var showingAddDevice = false
-    @Published var showingActivity = false
-    @Published var showingAppSettings = false
+    @Published private(set) var route: AppRoute = .allDevices
 
     let appReadinessStore: AppReadinessStore
     let appSettingsStore: AppSettingsStore
@@ -116,6 +113,22 @@ final class AppStore: ObservableObject {
         deviceRegistry.profile(id: selectedDeviceID)
     }
 
+    var selectedDeviceID: DeviceProfile.ID? {
+        route.selectedDeviceID
+    }
+
+    var showingAddDevice: Bool {
+        route == .addDevice
+    }
+
+    var showingActivity: Bool {
+        route == .activity
+    }
+
+    var showingAppSettings: Bool {
+        route == .appSettings
+    }
+
     var backend: BackendClient {
         operationCoordinator.appLane.backend
     }
@@ -132,32 +145,28 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func navigate(to route: AppRoute) {
+        self.route = normalizedRoute(route)
+    }
+
     func select(_ profile: DeviceProfile) {
-        selectedDeviceID = profile.id
-        showingAddDevice = false
-        showingActivity = false
-        showingAppSettings = false
+        navigate(to: .device(profile.id))
     }
 
     func showAddDevice() {
-        selectedDeviceID = nil
-        showingAddDevice = true
-        showingActivity = false
-        showingAppSettings = false
+        navigate(to: .addDevice)
     }
 
     func showActivity() {
-        selectedDeviceID = nil
-        showingAddDevice = false
-        showingActivity = true
-        showingAppSettings = false
+        navigate(to: .activity)
     }
 
     func showAppSettings() {
-        selectedDeviceID = nil
-        showingAddDevice = false
-        showingActivity = false
-        showingAppSettings = true
+        navigate(to: .appSettings)
+    }
+
+    func showAllDevices() {
+        navigate(to: .allDevices)
     }
 
     func dashboardSummary(for profile: DeviceProfile) -> DeviceDashboardSummary {
@@ -214,12 +223,10 @@ final class AppStore: ObservableObject {
     }
 
     func forget(_ profile: DeviceProfile) async throws {
+        let wasSelectedProfile = selectedDeviceID == profile.id
         try await profilePersistence.forget(profile)
-        if selectedDeviceID == profile.id {
-            selectedDeviceID = deviceRegistry.profiles.first?.id
-            showingAddDevice = false
-            showingActivity = false
-            showingAppSettings = false
+        if wasSelectedProfile {
+            route = firstProfileRoute() ?? .allDevices
         }
     }
 
@@ -248,6 +255,20 @@ final class AppStore: ObservableObject {
             pendingConfirmation: operationCoordinator.pendingConfirmation,
             events: includeBackendEvents ? operationCoordinator.allLanes.flatMap { $0.backend.events } : []
         )
+    }
+
+    private func normalizedRoute(_ route: AppRoute) -> AppRoute {
+        guard case .device(let profileID) = route else {
+            return route
+        }
+        if deviceRegistry.profile(id: profileID) != nil {
+            return route
+        }
+        return firstProfileRoute() ?? .allDevices
+    }
+
+    private func firstProfileRoute() -> AppRoute? {
+        deviceRegistry.profiles.first.map { .device($0.id) }
     }
 
     private func effectivePasswordState(for profile: DeviceProfile) -> DevicePasswordState {
@@ -291,14 +312,12 @@ final class AppStore: ObservableObject {
     }
 
     private func syncSelection(profiles: [DeviceProfile]) {
-        if let selectedDeviceID, profiles.contains(where: { $0.id == selectedDeviceID }) {
+        guard case .device(let selectedDeviceID) = route else {
             return
         }
-        selectedDeviceID = profiles.first?.id
-        if !profiles.isEmpty {
-            showingAddDevice = false
-            showingActivity = false
-            showingAppSettings = false
+        if profiles.contains(where: { $0.id == selectedDeviceID }) {
+            return
         }
+        route = profiles.first.map { .device($0.id) } ?? .allDevices
     }
 }
