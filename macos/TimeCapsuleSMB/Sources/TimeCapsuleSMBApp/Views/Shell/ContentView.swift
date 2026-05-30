@@ -17,27 +17,27 @@ public struct ContentView: View {
     @State private var profilePendingDeletion: DeviceProfile?
     @State private var deleteErrorMessage: String?
     @State private var systemColorScheme = SystemAppearance.currentColorScheme
+    private let startsAutomatically: Bool
 
     @MainActor
     public init() {
-        let appStore = AppStore()
-        _appStore = StateObject(wrappedValue: appStore)
-        _appReadinessStore = ObservedObject(wrappedValue: appStore.appReadinessStore)
-        _appSettingsStore = ObservedObject(wrappedValue: appStore.appSettingsStore)
-        _deviceRegistry = ObservedObject(wrappedValue: appStore.deviceRegistry)
-        _operationCoordinator = ObservedObject(wrappedValue: appStore.operationCoordinator)
-        _activityStore = ObservedObject(wrappedValue: appStore.activityStore)
-        _deviceDiscovery = ObservedObject(wrappedValue: appStore.deviceDiscovery)
-        _appBackend = ObservedObject(wrappedValue: appStore.backend)
-        _appSettingsEditorStore = StateObject(wrappedValue: AppSettingsEditorStore(settings: appStore.appSettingsStore.settings))
-        _addDeviceStore = StateObject(wrappedValue: AddDeviceFlowStore(
-            coordinator: appStore.operationCoordinator,
-            registry: appStore.deviceRegistry,
-            passwordStore: appStore.passwordStore,
-            profilePersistence: appStore.profilePersistence,
-            discovery: appStore.deviceDiscovery
-        ))
-        _dashboardStore = StateObject(wrappedValue: DashboardStore(appStore: appStore))
+        self.init(composition: .production())
+    }
+
+    @MainActor
+    init(composition: AppViewComposition, startsAutomatically: Bool = true) {
+        _appStore = StateObject(wrappedValue: composition.appStore)
+        _appReadinessStore = ObservedObject(wrappedValue: composition.appStore.appReadinessStore)
+        _appSettingsStore = ObservedObject(wrappedValue: composition.appStore.appSettingsStore)
+        _deviceRegistry = ObservedObject(wrappedValue: composition.appStore.deviceRegistry)
+        _operationCoordinator = ObservedObject(wrappedValue: composition.appStore.operationCoordinator)
+        _activityStore = ObservedObject(wrappedValue: composition.appStore.activityStore)
+        _deviceDiscovery = ObservedObject(wrappedValue: composition.appStore.deviceDiscovery)
+        _appBackend = ObservedObject(wrappedValue: composition.appStore.backend)
+        _appSettingsEditorStore = StateObject(wrappedValue: composition.appSettingsEditorStore)
+        _addDeviceStore = StateObject(wrappedValue: composition.addDeviceStore)
+        _dashboardStore = StateObject(wrappedValue: composition.dashboardStore)
+        self.startsAutomatically = startsAutomatically
     }
 
     public var body: some View {
@@ -104,7 +104,9 @@ public struct ContentView: View {
             systemColorScheme = SystemAppearance.currentColorScheme
         }
         .task {
-            await appStore.start()
+            if startsAutomatically {
+                await appStore.start()
+            }
             addDeviceStore.applyAppSettings(appSettingsStore.settings)
             appSettingsEditorStore.sync(settings: appSettingsStore.settings)
         }
