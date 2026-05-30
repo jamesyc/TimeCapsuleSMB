@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, parse_bool, shell_quote
+from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.deploy.planner import DEFAULT_DISKD_USE_VOLUME_ATTEMPTS
+from timecapsulesmb.deploy.planner import (
+    DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
+    DEPLOY_STARTUP_ACTIVATE_NOW,
+    DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+    DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
+    DeploymentStartupMode,
+)
 from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
 
 
@@ -26,6 +33,20 @@ def no_writable_mast_volumes_message(volume_count: int) -> str:
 
 def payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
     return f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}"
+
+
+def startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentStartupMode:
+    if no_reboot:
+        return DEPLOY_STARTUP_ACTIVATE_NOW
+    if is_netbsd4:
+        return DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE
+    return DEPLOY_STARTUP_REBOOT_THEN_VERIFY
+
+
+def activation_complete_message(*, is_netbsd4: bool) -> str:
+    if is_netbsd4:
+        return f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}"
+    return "Runtime activation complete."
 
 
 def _render_flash_config_assignment(key: str, value: str | int) -> str:

@@ -332,7 +332,6 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
                 "wait_after_reboot": wait_after_reboot,
             },
         ),
-        legacy_names=("confirm_flash",),
     )
 
     try:

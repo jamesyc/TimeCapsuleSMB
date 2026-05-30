@@ -115,7 +115,6 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
             presentation_id="activate.netbsd4",
             presentation_values={"netbsd4": True},
         ),
-        legacy_names=("confirm_netbsd4_activation",),
     )
 
     context.stage("resolve_managed_target")
@@ -193,7 +192,6 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
                 presentation_id=presentation_id,
                 presentation_values=presentation_values,
             ),
-            legacy_names=("confirm_uninstall",) if no_reboot else ("confirm_uninstall", "confirm_reboot"),
         )
     if dry_run:
         volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
@@ -308,7 +306,6 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
                     "no_wait": no_wait,
                 },
             ),
-            legacy_names=("confirm_fsck",),
         )
     context.stage("load_config")
     config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
@@ -447,7 +444,6 @@ def repair_xattrs_operation(params: dict[str, object], context: AppOperationCont
                 presentation_id="repair_xattrs",
                 presentation_values={"path": str(path)},
             ),
-            legacy_names=("confirm_repair",),
         )
     context.stage("platform_check")
     if sys.platform != "darwin":

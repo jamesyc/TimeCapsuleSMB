@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from functools import partial
-import re
 from pathlib import Path
 from typing import Optional
 
@@ -27,21 +24,13 @@ from timecapsulesmb.cli.runtime import (
     prefixed_logger,
     print_json,
     require_netbsd4_device_compatibility,
-    write_json_file,
 )
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP
-from timecapsulesmb.core.net import extract_host
-from timecapsulesmb.core.paths import default_user_data_dir
-from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.flash import (
-    FlashAnalysis,
     FlashAnalysisError,
-    FlashInspection,
     STOCK_LOGIN_NETBSD4_DUMMY,
     analyze_flash_banks,
-    inspection_error_message,
-    inspection_to_jsonable,
     inspect_flash_banks,
     require_zopfli_gzip_available,
     sha256_hex,
@@ -49,15 +38,26 @@ from timecapsulesmb.flash import (
 from timecapsulesmb.flash_payloads import build_patch_payload_for_active_bank as build_acp_flash_payload_for_active_bank
 from timecapsulesmb.flash_workflow import (
     FlashPlan,
-    plan_check_apple,
-    plan_download_only,
-    plan_patch_primary,
-    plan_restore_apple,
     require_patch_ready as require_write_ready,
     write_and_validate_plan,
 )
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.acp import ACPError, flash_firmware_bank, get_property_int
+from timecapsulesmb.services.flash import (
+    FlashAnalysisBundle,
+    FlashInputs,
+    FlashTarget,
+    apply_flash_plan_to_manifest,
+    build_flash_backup_dir,
+    default_flash_backup_root,
+    flash_target_from_connection,
+    manifest_from_inspection,
+    plan_from_operation,
+    save_acp_flash_payload,
+    save_flash_banks,
+    save_flash_manifest,
+    save_primary_patched_bank_if_ready,
+)
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection, SshError, run_ssh_capture_bytes
 
@@ -70,48 +70,6 @@ POWERCYCLE_REQUIRED_MESSAGE = (
     "POWER-CYCLE REQUIRED: unplug the device, wait 10 seconds, then plug it back in."
 )
 ProgressLogger = LogCallback
-
-
-@dataclass(frozen=True)
-class FlashTarget:
-    connection: SshConnection
-    acp_host: str
-    compatibility: DeviceCompatibility
-
-
-@dataclass(frozen=True)
-class FlashInputs:
-    primary: bytes
-    secondary: bytes
-    cks1: int | None
-    cks2: int | None
-    syap: str
-    live_login: bytes
-
-
-@dataclass(frozen=True)
-class FlashAnalysisBundle:
-    inspection: FlashInspection
-    analysis: FlashAnalysis | None
-    backup_dir: Path
-    manifest: dict[str, object]
-
-
-def _safe_path_part(value: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
-    return safe.strip("-.") or "device"
-
-
-def default_flash_backup_root() -> Path:
-    return default_user_data_dir() / "flash-backups"
-
-
-def build_flash_backup_dir(*, base_dir: Path | None, host: str, syap: str) -> Path:
-    if base_dir is not None:
-        return base_dir.expanduser().resolve()
-    root = default_flash_backup_root()
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%fZ")
-    return root / f"{timestamp}-{_safe_path_part(host)}-syAP{_safe_path_part(syap)}"
 
 
 def dump_remote_bank(connection: SshConnection, device: str, *, log: ProgressLogger = None) -> bytes:
@@ -178,49 +136,6 @@ def get_property_int_for_validation(
     return get_property_int(host, password, name, **kwargs)
 
 
-def _manifest(
-    *,
-    operation: str,
-    inspection: FlashInspection,
-    host: str,
-    syap: str,
-    live_login: bytes,
-    backup_dir: Path,
-    os_release: str,
-) -> dict[str, object]:
-    payload = inspection_to_jsonable(
-        inspection,
-        write_policy="primary_bank_patch" if operation == "patch" else "active_bank_only",
-    )
-    if operation != "patch":
-        _mark_manifest_no_write(payload, "backup only; no patch candidate built")
-    files: dict[str, str] = {
-        "primary": str(backup_dir / "primary.raw"),
-        "secondary": str(backup_dir / "secondary.raw"),
-        "manifest": str(backup_dir / "manifest.json"),
-    }
-    payload.update({
-        "operation": operation,
-        "host": host,
-        "syap": syap,
-        "os_release": os_release,
-        "backup_dir": str(backup_dir),
-        "files": files,
-        "live_login": {
-            "size": len(live_login),
-            "sha256": sha256_hex(live_login),
-        },
-    })
-    return payload
-
-
-def _mark_manifest_no_write(manifest: dict[str, object], decision: str) -> None:
-    for bank in manifest["banks"]:
-        assert isinstance(bank, dict)
-        bank["would_write"] = False
-        bank["write_decision"] = decision
-
-
 def _manifest_banks(manifest: dict[str, object]) -> list[dict[str, object]]:
     banks = manifest.get("banks")
     assert isinstance(banks, list)
@@ -229,65 +144,6 @@ def _manifest_banks(manifest: dict[str, object]) -> list[dict[str, object]]:
         assert isinstance(bank, dict)
         typed_banks.append(bank)
     return typed_banks
-
-
-def _apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) -> None:
-    target_name = None if plan.target_bank is None else plan.target_bank.name
-    for bank in _manifest_banks(manifest):
-        if bank.get("name") != target_name:
-            bank["would_write"] = False
-            if target_name is not None and plan.mode == "patch":
-                bank["write_decision"] = "secondary backup left unmodified"
-            elif target_name is not None:
-                bank["write_decision"] = "inactive bank left unmodified"
-            continue
-
-        if plan.mode == "patch":
-            bank["would_write"] = plan.write_requested
-            if plan.already_satisfied:
-                bank["write_decision"] = "primary bank already patched; no write needed"
-            elif plan.write_requested:
-                bank["write_decision"] = "primary bank patch planned"
-        elif plan.mode == "restore":
-            bank["would_write"] = plan.write_requested
-            if plan.write_requested:
-                bank["write_decision"] = "active bank restore from Apple firmware planned"
-            else:
-                bank["write_decision"] = "active bank already matches requested Apple stock firmware; no write needed"
-        elif plan.mode == "check_apple":
-            bank["would_write"] = False
-            bank["write_decision"] = "check only; no firmware write planned"
-        elif plan.mode == "download_only":
-            bank["would_write"] = False
-            bank["write_decision"] = "download only; no firmware write planned"
-
-
-def save_flash_banks(*, backup_dir: Path, primary: bytes, secondary: bytes) -> None:
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    (backup_dir / "primary.raw").write_bytes(primary)
-    (backup_dir / "secondary.raw").write_bytes(secondary)
-
-
-def save_flash_manifest(*, backup_dir: Path, manifest: dict[str, object]) -> None:
-    write_json_file(backup_dir / "manifest.json", manifest)
-
-
-def save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashInspection) -> Path | None:
-    primary = inspection.primary.analysis
-    if primary is None or primary.patch is None:
-        return None
-    path = backup_dir / "primary.patched.raw"
-    path.write_bytes(primary.patch.target_bank)
-    return path
-
-
-def save_acp_flash_payload(*, backup_dir: Path, plan: FlashPlan) -> Path | None:
-    if plan.target_bank is None or plan.payload is None:
-        return None
-    suffix = "patched" if plan.mode == "patch" else plan.mode
-    path = backup_dir / f"{plan.target_bank.name}.{suffix}.basebinary"
-    path.write_bytes(plan.payload.data)
-    return path
 
 
 def live_login_mismatch_error_lines(live_login: bytes) -> list[str]:
@@ -404,50 +260,6 @@ def _operation_from_args(args: argparse.Namespace) -> str:
     if args.download_only:
         return "download_only"
     return "read_only"
-
-
-def _plan_from_operation(
-    *,
-    operation: str,
-    inspection: FlashInspection,
-    analysis: FlashAnalysis | None,
-    force: bool,
-    syap: str,
-    firmware_template: Path | None,
-    firmware_version: str | None,
-) -> FlashPlan | None:
-    if operation == "patch":
-        return plan_patch_primary(
-            inspection,
-            force=force,
-            syap=syap,
-            firmware_template=firmware_template,
-            firmware_version=firmware_version,
-        )
-    if analysis is None:
-        raise FlashAnalysisError(inspection_error_message(inspection))
-    if operation == "restore":
-        return plan_restore_apple(
-            analysis,
-            syap=syap,
-            firmware_template=firmware_template,
-            firmware_version=firmware_version,
-        )
-    if operation == "check_apple":
-        return plan_check_apple(
-            analysis,
-            syap=syap,
-            firmware_template=firmware_template,
-            firmware_version=firmware_version,
-        )
-    if operation == "download_only":
-        return plan_download_only(
-            analysis,
-            syap=syap,
-            firmware_template=firmware_template,
-            firmware_version=firmware_version,
-        )
-    return None
 
 
 def _confirmation_prompt(plan: FlashPlan) -> str:
@@ -612,8 +424,6 @@ def _resolve_flash_target(
     emit_progress(log, "Resolving SSH target...")
     target = command_context.resolve_validated_managed_target(profile="flash", include_probe=False)
     connection = target.connection
-    acp_host = extract_host(connection.host)
-    emit_progress(log, f"Using ACP host {acp_host}.")
 
     command_context.set_stage("check_compatibility")
     emit_progress(log, "Checking NetBSD4 device compatibility...")
@@ -623,7 +433,9 @@ def _resolve_flash_target(
         json_output=args.json,
         unsupported_message="flash is only supported for NetBSD4 AirPort storage devices.",
     )
-    return FlashTarget(connection=connection, acp_host=acp_host, compatibility=compatibility)
+    flash_target = flash_target_from_connection(connection, compatibility)
+    emit_progress(log, f"Using ACP host {flash_target.acp_host}.")
+    return flash_target
 
 
 def _read_flash(
@@ -719,14 +531,12 @@ def _analyze_flash(
         primary_login=None if primary_analysis is None else primary_analysis.login.classification,
         secondary_login=None if secondary_analysis is None else secondary_analysis.login.classification,
     )
-    manifest = _manifest(
+    manifest = manifest_from_inspection(
         operation=operation,
         inspection=inspection,
-        host=target.acp_host,
-        syap=inputs.syap,
-        live_login=inputs.live_login,
+        target=target,
+        inputs=inputs,
         backup_dir=backup_dir,
-        os_release=target.compatibility.os_release,
     )
     return FlashAnalysisBundle(inspection=inspection, analysis=analysis, backup_dir=backup_dir, manifest=manifest)
 
@@ -744,7 +554,7 @@ def _plan_flash(
 
     command_context.set_stage("plan_flash")
     try:
-        plan = _plan_from_operation(
+        plan = plan_from_operation(
             operation=operation,
             inspection=bundle.inspection,
             analysis=bundle.analysis,
@@ -792,7 +602,7 @@ def _plan_flash(
     if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
         files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
     bundle.manifest["flash_plan"] = plan.to_jsonable()
-    _apply_flash_plan_to_manifest(bundle.manifest, plan)
+    apply_flash_plan_to_manifest(bundle.manifest, plan)
     _update_context_with_plan(command_context, plan, payload_path)
     return True, plan
 

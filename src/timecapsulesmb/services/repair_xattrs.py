@@ -93,6 +93,7 @@ def run_repair_structured(
     *,
     emit_log: Callable[[str], None] | None = None,
     confirm: Callable[[str], bool] | None = None,
+    noninteractive: bool = False,
 ) -> RepairRunResult:
     def emit(message: str) -> None:
         if emit_log is not None:
@@ -183,6 +184,11 @@ def run_repair_structured(
         return RepairRunResult(1, root, findings, candidates, summary, report=report)
 
     command_context.set_stage("confirm_repair")
+    if noninteractive and not args.yes:
+        message = "Running `repair-xattrs` in non-interactive mode requires `--yes` to apply repairs."
+        emit(message)
+        command_context.fail_with_error(message)
+        return RepairRunResult(1, root, findings, candidates, summary, report=message)
     if not args.yes and not (confirm is not None and confirm(f"Repair {len(candidates)} paths with known-safe fixes?")):
         emit("No changes made.")
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))

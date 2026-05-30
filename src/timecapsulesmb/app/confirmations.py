@@ -9,20 +9,9 @@ from timecapsulesmb.services.app import AppOperationError, jsonable
 
 
 CONFIRMATION_SCHEMA_VERSION = 1
-_LEGACY_CONFIRM_KEYS = frozenset({
-    "yes",
-    "confirm",
-    "confirm_deploy",
-    "confirm_reboot",
-    "confirm_netbsd4_activation",
-    "confirm_uninstall",
-    "confirm_fsck",
-    "confirm_repair",
-})
 _CONFIRMATION_ONLY_KEYS = frozenset({
     "confirmation_id",
     "confirmation",
-    *_LEGACY_CONFIRM_KEYS,
 })
 _SECRET_PARAM_KEYS = frozenset({"password", "credentials"})
 
@@ -120,22 +109,10 @@ def supplied_confirmation_id(params: Mapping[str, object]) -> str:
     return ""
 
 
-def has_legacy_confirmation(params: Mapping[str, object], *names: str) -> bool:
-    from timecapsulesmb.services.app import bool_param
-
-    if "yes" in params and bool_param(dict(params), "yes"):
-        return True
-    return bool(names) and all(name in params and bool_param(dict(params), name) for name in names)
-
-
 def require_confirmation(
     params: Mapping[str, object],
     confirmation: ConfirmationRequest,
-    *,
-    legacy_names: tuple[str, ...] = (),
 ) -> None:
-    if has_legacy_confirmation(params, *legacy_names):
-        return
     if supplied_confirmation_id(params) == confirmation.confirmation_id:
         return
     raise AppConfirmationRequired(confirmation)

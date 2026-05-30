@@ -4835,7 +4835,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 1)
         self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", result.text)
-        self.assertIn(deploy.REBOOT_NO_DOWN_MESSAGE, result.text)
+        self.assertIn(deploy.DEPLOY_REBOOT_NO_DOWN_MESSAGE, result.text)
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.acp_reboot.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()

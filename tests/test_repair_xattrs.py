@@ -127,7 +127,7 @@ class RepairXattrsTests(unittest.TestCase):
         self.ensure_install_id_patch.start()
         self.addCleanup(self.ensure_install_id_patch.stop)
         self.path_guard_patch = mock.patch(
-            "timecapsulesmb.cli.repair_xattrs.validate_repair_root_under_volumes",
+            "timecapsulesmb.services.repair_xattrs.validate_repair_root_under_volumes",
             side_effect=lambda path: path.expanduser(),
         )
         self.path_guard_mock = self.path_guard_patch.start()
@@ -940,7 +940,7 @@ class RepairXattrsTests(unittest.TestCase):
             target = Path(tmp) / "file.txt"
             target.write_text("data")
             with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
-                with mock.patch("timecapsulesmb.cli.repair_xattrs.find_findings", return_value=[]):
+                with mock.patch("timecapsulesmb.services.repair_xattrs.find_findings", return_value=[]):
                     with redirect_stdout(io.StringIO()):
                         rc = repair_xattrs.main(["--path", str(target)])
         self.assertEqual(rc, 0)

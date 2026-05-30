@@ -68,12 +68,6 @@ def optional_bool_param(params: dict[str, object], name: str) -> bool | None:
     return bool_param(params, name)
 
 
-def confirm_param(params: dict[str, object], name: str) -> bool:
-    if name in params:
-        return bool_param(params, name)
-    return bool_param(params, "yes")
-
-
 def int_param(params: dict[str, object], name: str, default: int) -> int:
     value = params.get(name, default)
     if isinstance(value, bool):

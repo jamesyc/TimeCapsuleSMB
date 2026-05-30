@@ -17,16 +17,10 @@ from timecapsulesmb.cli.runtime import (
     require_supported_device_compatibility,
 )
 from timecapsulesmb.core.config import (
-    DEFAULTS,
     MANAGED_PAYLOAD_DIR_NAME,
-    AppConfig,
     airport_family_display_name_from_identity,
-    parse_bool,
-    shell_quote,
 )
-from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -39,11 +33,8 @@ from timecapsulesmb.deploy.planner import (
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
-    DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
-    DeploymentStartupMode,
     FileTransfer,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
@@ -62,100 +53,21 @@ from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_fami
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
-    PayloadHome,
-    PayloadVerificationResult,
     build_dry_run_payload_home,
     verify_payload_home_conn,
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_green
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
-
-
-REBOOT_NO_DOWN_MESSAGE = (
-    "Reboot was requested but the device did not go down.\n"
-    "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
+from timecapsulesmb.services.deploy import (
+    DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+    activation_complete_message,
+    no_mast_volumes_message,
+    no_writable_mast_volumes_message,
+    payload_verification_error,
+    render_flash_runtime_config,
+    startup_mode_for_deploy,
 )
-
-
-def _no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
-    return (
-        f"No deployable HFS disk was found after {attempts} MaSt queries "
-        f"spaced {delay_seconds} seconds apart."
-    )
-
-
-def _no_writable_mast_volumes_message(volume_count: int) -> str:
-    return f"MaSt found {volume_count} deployable HFS volume(s), but deploy could not write to any of them."
-
-
-def _render_flash_config_assignment(key: str, value: str | int) -> str:
-    if isinstance(value, int):
-        return f"{key}={value}"
-    return f"{key}={shell_quote(value)}"
-
-
-def _runtime_unsigned_config_value(config: AppConfig, key: str, default: str) -> str:
-    raw_value = config.get(key, default).strip()
-    if raw_value == "":
-        raw_value = default
-    if raw_value == "":
-        return ""
-    if not raw_value.isdigit():
-        raise ValueError(f"{key} must be a non-negative integer")
-    return str(int(raw_value))
-
-
-def _runtime_unsigned_override_value(value: str | int) -> str | int:
-    if isinstance(value, int):
-        if value < 0:
-            raise ValueError("runtime setting override must be a non-negative integer")
-        return value
-    raw_value = value.strip()
-    if raw_value == "":
-        return ""
-    if not raw_value.isdigit():
-        raise ValueError("runtime setting override must be a non-negative integer")
-    return str(int(raw_value))
-
-
-def render_flash_runtime_config(
-    config: AppConfig,
-    payload_home: PayloadHome,
-    *,
-    nbns_enabled: bool,
-    debug_logging: bool,
-    ata_idle_seconds: str | int | None = None,
-    ata_standby: str | int | None = None,
-    diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
-) -> str:
-    internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
-    any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
-    runtime_ata_idle_seconds = (
-        _runtime_unsigned_config_value(config, "TC_ATA_IDLE_SECONDS", DEFAULTS["TC_ATA_IDLE_SECONDS"])
-        if ata_idle_seconds is None
-        else _runtime_unsigned_override_value(ata_idle_seconds)
-    )
-    runtime_ata_standby = (
-        _runtime_unsigned_config_value(config, "TC_ATA_STANDBY", DEFAULTS["TC_ATA_STANDBY"])
-        if ata_standby is None
-        else _runtime_unsigned_override_value(ata_standby)
-    )
-
-    values: list[tuple[str, str | int]] = [
-        ("TC_CONFIG_VERSION", 2),
-        ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
-        ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
-        ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
-        ("ANY_PROTOCOL", 1 if parse_bool(any_protocol_default) else 0),
-        ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
-        ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
-        ("ATA_STANDBY", runtime_ata_standby),
-        ("NBNS_ENABLED", 1 if nbns_enabled else 0),
-        ("SMBD_DEBUG_LOGGING", 1 if debug_logging else 0),
-        ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
-    ]
-    return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
 
 
 def _target_family_display_name(target) -> str:
@@ -164,25 +76,6 @@ def _target_family_display_name(target) -> str:
         model=None if probe is None else probe.airport_model,
         syap=None if probe is None else probe.airport_syap,
     )
-
-
-def _payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
-    return f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}"
-
-
-def _startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentStartupMode:
-    if no_reboot:
-        return DEPLOY_STARTUP_ACTIVATE_NOW
-    if is_netbsd4:
-        return DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE
-    return DEPLOY_STARTUP_REBOOT_THEN_VERIFY
-
-
-def _activation_complete_message(*, is_netbsd4: bool) -> str:
-    if is_netbsd4:
-        return f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}"
-    return "Runtime activation complete."
-
 
 def _non_negative_int(value: str) -> int:
     try:
@@ -268,7 +161,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             # Apple NetBSD 4 firmware can expose /usr/bin/scp but hang after
             # writing the file. Use the SSH pipe upload fallback consistently.
             connection.remote_has_scp = False
-        startup_mode = _startup_mode_for_deploy(no_reboot=args.no_reboot, is_netbsd4=is_netbsd4)
+        startup_mode = startup_mode_for_deploy(no_reboot=args.no_reboot, is_netbsd4=is_netbsd4)
         command_context.update_fields(deploy_startup_mode=startup_mode)
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload.", flush=True)
@@ -290,7 +183,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             mast_volumes = mast_discovery.volumes
             if not mast_volumes:
                 raise SystemExit(
-                    _no_mast_volumes_message(
+                    no_mast_volumes_message(
                         attempts=MAST_DISCOVERY_ATTEMPTS,
                         delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
                     )
@@ -302,7 +195,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 wait_seconds=apple_mount_wait_seconds,
             )
             if selection.payload_home is None:
-                raise SystemExit(_no_writable_mast_volumes_message(len(mast_volumes)))
+                raise SystemExit(no_writable_mast_volumes_message(len(mast_volumes)))
             payload_home = selection.payload_home
             if not args.json:
                 print(f"Using payload directory {payload_home.payload_dir}.", flush=True)
@@ -410,7 +303,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.add_debug_fields(payload_upload_verification=payload_verification.detail)
         if not payload_verification.ok:
-            raise SystemExit(_payload_verification_error(payload_home, payload_verification))
+            raise SystemExit(payload_verification_error(payload_home, payload_verification))
 
         command_context.set_stage("flush_payload_upload")
         if not args.json:
@@ -428,7 +321,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.add_debug_fields(payload_post_sync_verification=payload_verification.detail)
         if not payload_verification.ok:
-            raise SystemExit(_payload_verification_error(payload_home, payload_verification))
+            raise SystemExit(payload_verification_error(payload_home, payload_verification))
 
         print("Verified uploaded payload.", flush=True)
         print(f"Deployed Samba payload to {plan.payload_dir}", flush=True)
@@ -447,7 +340,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 failure_message="Managed runtime activation failed.",
             ):
                 return 1
-            print(_activation_complete_message(is_netbsd4=is_netbsd4))
+            print(activation_complete_message(is_netbsd4=is_netbsd4))
             print(color_green("Deploy Finished."))
             command_context.succeed()
             return 0
@@ -475,7 +368,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not request_deploy_reboot_and_wait(
             connection,
             command_context,
-            reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,
+            reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
         ):
             return 1
 
@@ -502,7 +395,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 failure_message="NetBSD4 activation failed.",
             ):
                 return 1
-            print(_activation_complete_message(is_netbsd4=is_netbsd4))
+            print(activation_complete_message(is_netbsd4=is_netbsd4))
             print(color_green("Deploy Finished."))
             command_context.succeed()
             return 0

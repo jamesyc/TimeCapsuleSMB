@@ -205,6 +205,24 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(details["presentation_values"][key], value)
         return details
 
+    def confirmation_id_for(
+        self,
+        operation: str,
+        params: dict[str, object],
+        context: dict[str, object],
+    ) -> str:
+        return build_confirmation(
+            operation=operation,
+            params=params,
+            title="test",
+            message="test?",
+            action_title="test",
+            risk="remote_write",
+            summary="test",
+            context=context,
+            presentation_id="test",
+        ).confirmation_id
+
     def test_event_redacts_sensitive_fields(self) -> None:
         event = AppEvent("result", "configure", {
             "ok": True,
@@ -607,6 +625,24 @@ class AppApiTests(unittest.TestCase):
             connection = object()
             target = SimpleNamespace(acp_host="10.0.0.2", connection=connection)
             collector = CollectingSink()
+            params = {
+                "action": "write",
+                "backup_dir": str(backup_dir),
+                "mode": "restore",
+            }
+            params["confirmation_id"] = self.confirmation_id_for(
+                "flash",
+                params,
+                {
+                    "host": "10.0.0.2",
+                    "backup_dir": str(backup_dir),
+                    "mode": "restore",
+                    "target_bank": "primary",
+                    "target_sha256": "bank-sha",
+                    "reboot_after_write": True,
+                    "wait_after_reboot": True,
+                },
+            )
 
             with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
                 with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
@@ -617,12 +653,7 @@ class AppApiTests(unittest.TestCase):
                                     rc = service.run_api_request(
                                         {
                                             "operation": "flash",
-                                            "params": {
-                                                "action": "write",
-                                                "backup_dir": str(backup_dir),
-                                                "mode": "restore",
-                                                "confirm_flash": True,
-                                            },
+                                            "params": params,
                                         },
                                         collector.sink,
                                     )
@@ -649,7 +680,6 @@ class AppApiTests(unittest.TestCase):
                         "backup_dir": "/tmp/flash-backup",
                         "mode": "patch",
                         "reboot_after_write": True,
-                        "confirm_flash": True,
                     },
                 },
                 collector.sink,
@@ -1636,17 +1666,26 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
+            params = {
+                "config": str(config_path),
+                "host": "root@10.0.0.2",
+                "password": "badpw",
+            }
+            params["confirmation_id"] = self.confirmation_id_for(
+                "configure",
+                params,
+                {
+                    "host": "root@10.0.0.2",
+                    "device_name": "10.0.0.2",
+                    "requires_reboot": True,
+                },
+            )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
                 with mock.patch("timecapsulesmb.app.ops.configure.enable_ssh", side_effect=ACPAuthError("bad password")):
                     rc = service.run_api_request(
                         {
                             "operation": "configure",
-                            "params": {
-                                "config": str(config_path),
-                                "host": "root@10.0.0.2",
-                                "password": "badpw",
-                                "yes": True,
-                            },
+                            "params": params,
                         },
                         collector.sink,
                     )
@@ -1687,18 +1726,27 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
+            params = {
+                "config": str(config_path),
+                "host": "root@10.0.0.2",
+                "password": "pw",
+                "ssh_wait_timeout": True,
+            }
+            params["confirmation_id"] = self.confirmation_id_for(
+                "configure",
+                params,
+                {
+                    "host": "root@10.0.0.2",
+                    "device_name": "10.0.0.2",
+                    "requires_reboot": True,
+                },
+            )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
                 with mock.patch("timecapsulesmb.app.ops.configure.enable_ssh") as enable_ssh:
                     rc = service.run_api_request(
                         {
                             "operation": "configure",
-                            "params": {
-                                "config": str(config_path),
-                                "host": "root@10.0.0.2",
-                                "password": "pw",
-                                "ssh_wait_timeout": True,
-                                "yes": True,
-                            },
+                            "params": params,
                         },
                         collector.sink,
                     )
@@ -1861,7 +1909,7 @@ class AppApiTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions", side_effect=AssertionError("dry run should not run remote actions")):
                                 rc = service.run_api_request(
-                                    {"operation": "deploy", "params": {"dry_run": True, "yes": True}},
+                                    {"operation": "deploy", "params": {"dry_run": True}},
                                     collector.sink,
                                 )
 
@@ -1946,7 +1994,7 @@ class AppApiTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions") as remote_actions:
                                 rc = service.run_api_request(
-                                    {"operation": "deploy", "params": {"dry_run": False, "confirm_deploy": True}},
+                                    {"operation": "deploy", "params": {"dry_run": False}},
                                     collector.sink,
                                 )
 
@@ -1982,7 +2030,7 @@ class AppApiTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_mast_volumes_conn") as read_mast:
                                 with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions") as remote_actions:
                                     rc = service.run_api_request(
-                                        {"operation": "deploy", "params": {"dry_run": False, "confirm_deploy": True}},
+                                        {"operation": "deploy", "params": {"dry_run": False}},
                                         collector.sink,
                                     )
 
@@ -2294,6 +2342,28 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+        params = {
+            "dry_run": False,
+            "no_reboot": True,
+            "internal_share_use_disk_root": False,
+            "any_protocol": False,
+            "debug_logging": False,
+            "ata_idle_seconds": 0,
+            "ata_standby": 0,
+        }
+        params["confirmation_id"] = self.confirmation_id_for(
+            "deploy",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "payload_family": "netbsd6_samba4",
+                "netbsd4": False,
+                "requires_reboot": False,
+                "no_reboot": True,
+                "no_wait": False,
+                "startup_mode": "activate_now",
+            },
+        )
 
         with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
@@ -2312,16 +2382,7 @@ class AppApiTests(unittest.TestCase):
                                                                 rc = service.run_api_request(
                                                                     {
                                                                         "operation": "deploy",
-                                                                        "params": {
-                                                                            "dry_run": False,
-                                                                            "no_reboot": True,
-                                                                            "confirm_deploy": True,
-                                                                            "internal_share_use_disk_root": False,
-                                                                            "any_protocol": False,
-                                                                            "debug_logging": False,
-                                                                            "ata_idle_seconds": 0,
-                                                                            "ata_standby": 0,
-                                                                        },
+                                                                        "params": params,
                                                                     },
                                                                     collector.sink,
                                                                 )
@@ -2355,6 +2416,20 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+        params = {"dry_run": False, "no_reboot": True}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "deploy",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "payload_family": "netbsd6_samba4",
+                "netbsd4": False,
+                "requires_reboot": False,
+                "no_reboot": True,
+                "no_wait": False,
+                "startup_mode": "activate_now",
+            },
+        )
 
         def fake_upload(plan, *, connection, source_resolver, on_uploading=None):
             for transfer in plan.uploads:
@@ -2376,11 +2451,7 @@ class AppApiTests(unittest.TestCase):
                                                         rc = service.run_api_request(
                                                             {
                                                                 "operation": "deploy",
-                                                                "params": {
-                                                                    "dry_run": False,
-                                                                    "no_reboot": True,
-                                                                    "confirm_deploy": True,
-                                                                },
+                                                                "params": params,
                                                             },
                                                             collector.sink,
                                                         )
@@ -2410,6 +2481,20 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+        params = {"dry_run": False, "no_wait": True}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "deploy",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "payload_family": "netbsd6_samba4",
+                "netbsd4": False,
+                "requires_reboot": True,
+                "no_reboot": False,
+                "no_wait": True,
+                "startup_mode": "reboot_then_verify",
+            },
+        )
 
         with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
@@ -2428,12 +2513,7 @@ class AppApiTests(unittest.TestCase):
                                                                 rc = service.run_api_request(
                                                                     {
                                                                         "operation": "deploy",
-                                                                        "params": {
-                                                                            "dry_run": False,
-                                                                            "confirm_deploy": True,
-                                                                            "confirm_reboot": True,
-                                                                            "no_wait": True,
-                                                                        },
+                                                                        "params": params,
                                                                     },
                                                                     collector.sink,
                                                                 )
@@ -2460,6 +2540,20 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+        params = {"dry_run": False, "no_wait": True}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "deploy",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "payload_family": "netbsd4be_samba4",
+                "netbsd4": True,
+                "requires_reboot": True,
+                "no_reboot": False,
+                "no_wait": True,
+                "startup_mode": "reboot_then_activate",
+            },
+        )
 
         with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
@@ -2477,11 +2571,7 @@ class AppApiTests(unittest.TestCase):
                                                             rc = service.run_api_request(
                                                                 {
                                                                     "operation": "deploy",
-                                                                    "params": {
-                                                                        "dry_run": False,
-                                                                        "confirm_deploy": True,
-                                                                        "no_wait": True,
-                                                                    },
+                                                                    "params": params,
                                                                 },
                                                                 collector.sink,
                                                             )
@@ -2505,6 +2595,20 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+        params = {"dry_run": False, "no_wait": True}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "deploy",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "payload_family": "netbsd6_samba4",
+                "netbsd4": False,
+                "requires_reboot": True,
+                "no_reboot": False,
+                "no_wait": True,
+                "startup_mode": "reboot_then_verify",
+            },
+        )
 
         with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
@@ -2523,12 +2627,7 @@ class AppApiTests(unittest.TestCase):
                                                                 rc = service.run_api_request(
                                                                     {
                                                                         "operation": "deploy",
-                                                                        "params": {
-                                                                            "dry_run": False,
-                                                                            "confirm_deploy": True,
-                                                                            "confirm_reboot": True,
-                                                                            "no_wait": True,
-                                                                        },
+                                                                        "params": params,
                                                                     },
                                                                     collector.sink,
                                                                 )
@@ -2646,6 +2745,20 @@ class AppApiTests(unittest.TestCase):
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
+        params = {"dry_run": False}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "deploy",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "payload_family": "netbsd6_samba4",
+                "netbsd4": False,
+                "requires_reboot": True,
+                "no_reboot": False,
+                "no_wait": False,
+                "startup_mode": "reboot_then_verify",
+            },
+        )
 
         with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
@@ -2656,11 +2769,7 @@ class AppApiTests(unittest.TestCase):
                                 rc = service.run_api_request(
                                     {
                                         "operation": "deploy",
-                                        "params": {
-                                            "dry_run": False,
-                                            "confirm_deploy": True,
-                                            "confirm_reboot": True,
-                                        },
+                                        "params": params,
                                     },
                                     collector.sink,
                                 )
@@ -2698,17 +2807,26 @@ class AppApiTests(unittest.TestCase):
         runtime_probe.assert_not_called()
         remote_actions.assert_not_called()
 
-    def test_activate_accepts_yes_alias_for_confirmation(self) -> None:
+    def test_activate_accepts_confirmation_id(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
+        params = {}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "activate",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "netbsd4": True,
+            },
+        )
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(True)):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
                         rc = service.run_api_request(
-                            {"operation": "activate", "params": {"yes": True}},
+                            {"operation": "activate", "params": params},
                             collector.sink,
                         )
 
@@ -2773,7 +2891,7 @@ class AppApiTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn") as read_mast:
                     rc = service.run_api_request(
-                        {"operation": "uninstall", "params": {"confirm_uninstall": True}},
+                        {"operation": "uninstall", "params": {}},
                         collector.sink,
                     )
 
@@ -2827,6 +2945,20 @@ class AppApiTests(unittest.TestCase):
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         mounted = [SimpleNamespace(volume_root="/Volumes/dk2")]
+        params = {
+            "mount_wait": 13,
+            "no_wait": True,
+        }
+        params["confirmation_id"] = self.confirmation_id_for(
+            "uninstall",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "requires_reboot": True,
+                "no_reboot": False,
+                "no_wait": True,
+            },
+        )
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
@@ -2839,12 +2971,7 @@ class AppApiTests(unittest.TestCase):
                                         rc = service.run_api_request(
                                             {
                                                 "operation": "uninstall",
-                                                "params": {
-                                                    "confirm_uninstall": True,
-                                                    "confirm_reboot": True,
-                                                    "mount_wait": 13,
-                                                    "no_wait": True,
-                                                },
+                                                "params": params,
                                             },
                                             collector.sink,
                                         )
@@ -3126,6 +3253,12 @@ class AppApiTests(unittest.TestCase):
 
     def test_repair_xattrs_checks_platform_after_confirmation(self) -> None:
         collector = CollectingSink()
+        params = {"path": "/Volumes/Data", "dry_run": False}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "repair-xattrs",
+            params,
+            {"path": "/Volumes/Data"},
+        )
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "linux"):
             with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config") as load_config:
@@ -3133,7 +3266,7 @@ class AppApiTests(unittest.TestCase):
                     rc = service.run_api_request(
                         {
                             "operation": "repair-xattrs",
-                            "params": {"path": "/Volumes/Data", "dry_run": False, "confirm_repair": True},
+                            "params": params,
                         },
                         collector.sink,
                     )

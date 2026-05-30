@@ -16,7 +16,6 @@ from timecapsulesmb.core.config import (
     parse_bool,
 )
 from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
@@ -91,10 +90,12 @@ from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
     DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+    activation_complete_message,
     no_mast_volumes_message,
     no_writable_mast_volumes_message,
     payload_verification_error,
     render_flash_runtime_config,
+    startup_mode_for_deploy,
 )
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.runtime import ManagedTargetState, load_env_config, resolve_validated_managed_target
@@ -146,15 +147,6 @@ class DeployConfirmationPresentation:
     risk: str
     summary: str
     presentation_id: str
-    legacy_names: tuple[str, ...]
-
-
-def startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentStartupMode:
-    if no_reboot:
-        return DEPLOY_STARTUP_ACTIVATE_NOW
-    if is_netbsd4:
-        return DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE
-    return DEPLOY_STARTUP_REBOOT_THEN_VERIFY
 
 
 def effective_no_wait_for_deploy(*, requested: bool, no_reboot: bool) -> bool:
@@ -168,12 +160,6 @@ def optional_unsigned_int_override_param(params: dict[str, object], name: str) -
     if isinstance(value, str) and value.strip() == "":
         return ""
     return int_param(params, name, 0)
-
-
-def activation_complete_message(*, is_netbsd4: bool) -> str:
-    if is_netbsd4:
-        return f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}"
-    return "Runtime activation complete."
 
 
 def confirmation_presentation_for_startup_mode(
@@ -194,7 +180,6 @@ def confirmation_presentation_for_startup_mode(
                 risk="reboot",
                 summary="NetBSD4 deployment with reboot request and no post-reboot activation wait",
                 presentation_id="deploy.netbsd4_no_wait",
-                legacy_names=("confirm_deploy",),
             )
         return DeployConfirmationPresentation(
             title="Confirm NetBSD4 deployment",
@@ -203,7 +188,6 @@ def confirmation_presentation_for_startup_mode(
             risk="reboot",
             summary="NetBSD4 deployment with reboot and service activation",
             presentation_id="deploy.netbsd4",
-            legacy_names=("confirm_deploy", "confirm_netbsd4_activation"),
         )
     if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
         return DeployConfirmationPresentation(
@@ -213,7 +197,6 @@ def confirmation_presentation_for_startup_mode(
             risk="remote_write",
             summary="Deployment without reboot and runtime start",
             presentation_id="deploy.activate_now",
-            legacy_names=("confirm_deploy",),
         )
     if no_wait:
         return DeployConfirmationPresentation(
@@ -223,7 +206,6 @@ def confirmation_presentation_for_startup_mode(
             risk="reboot",
             summary="Deployment with reboot request and no post-reboot verification wait",
             presentation_id="deploy.reboot_no_wait",
-            legacy_names=("confirm_deploy",),
         )
     return DeployConfirmationPresentation(
         title="Confirm deployment and reboot",
@@ -232,7 +214,6 @@ def confirmation_presentation_for_startup_mode(
         risk="reboot",
         summary="Deployment with reboot request",
         presentation_id="deploy.reboot",
-        legacy_names=("confirm_deploy", "confirm_reboot"),
     )
 
 
@@ -375,7 +356,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 presentation_id=presentation.presentation_id,
                 presentation_values=presentation_values,
             ),
-            legacy_names=presentation.legacy_names,
         )
     if dry_run:
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)

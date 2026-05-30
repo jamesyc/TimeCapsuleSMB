@@ -463,7 +463,7 @@ def plan_from_operation(
     raise FlashAnalysisError(f"unsupported flash plan operation: {operation}")
 
 
-def _save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashInspection) -> Path | None:
+def save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashInspection) -> Path | None:
     primary = inspection.primary.analysis
     if primary is None or primary.patch is None:
         return None
@@ -472,7 +472,7 @@ def _save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashIn
     return path
 
 
-def _save_acp_flash_payload(*, backup_dir: Path, plan: FlashPlan) -> Path | None:
+def save_acp_flash_payload(*, backup_dir: Path, plan: FlashPlan) -> Path | None:
     if plan.target_bank is None or plan.payload is None:
         return None
     suffix = "patched" if plan.mode == "patch" else plan.mode
@@ -511,7 +511,7 @@ def plan_flash_from_backup(
     }
     if plan is not None:
         if operation == "patch":
-            patched_primary_path = _save_primary_patched_bank_if_ready(
+            patched_primary_path = save_primary_patched_bank_if_ready(
                 backup_dir=bundle.backup_dir,
                 inspection=bundle.inspection,
             )
@@ -519,7 +519,7 @@ def plan_flash_from_backup(
                 files = bundle.manifest.get("files")
                 if isinstance(files, dict):
                     files["primary_patched"] = str(patched_primary_path)
-        payload_path = _save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
+        payload_path = save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
         files = bundle.manifest.get("files")
         if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
             files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
