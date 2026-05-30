@@ -418,6 +418,7 @@ final class AppReadinessStoreTests: XCTestCase {
         .object([
             "schema_version": .number(1),
             "should_block": .bool(shouldBlock),
+            "update_available": .bool(shouldBlock),
             "checked_url": .string("https://example.invalid/version.json"),
             "message": .string("Please update."),
             "download_url": .string("https://example.invalid/download"),

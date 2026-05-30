@@ -101,6 +101,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         VersionCheckPayload(
             schemaVersion: 1,
             shouldBlock: false,
+            updateAvailable: false,
             checkedURL: "https://example.invalid/version.json",
             message: "Current.",
             downloadURL: "https://example.invalid/download",

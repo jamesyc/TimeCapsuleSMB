@@ -723,9 +723,56 @@ class AppApiTests(unittest.TestCase):
             )
             payload = self.assert_single_terminal_event(collector, "result")["payload"]
             self.assertTrue(payload["should_block"])
+            self.assertTrue(payload["update_available"])
             self.assertEqual(payload["current_version"], 20005)
             self.assertEqual(payload["latest_tag"], "v2.0.5")
             self.assertEqual(payload["source"], "network")
+            self.assertEqual(payload["summary"], "Update required.")
+
+    def test_version_check_payload_reports_optional_update(self) -> None:
+        payload = contracts.version_check_payload(
+            VersionCheckResult(
+                should_block=False,
+                local_version_code=20000,
+                current_version=20005,
+                min_supported_version=19999,
+                source="network",
+            )
+        )
+
+        self.assertFalse(payload["should_block"])
+        self.assertTrue(payload["update_available"])
+        self.assertEqual(payload["summary"], "Update available.")
+
+    def test_version_check_payload_reports_current_when_versions_match(self) -> None:
+        payload = contracts.version_check_payload(
+            VersionCheckResult(
+                should_block=False,
+                local_version_code=20005,
+                current_version=20005,
+                min_supported_version=19999,
+                source="network",
+            )
+        )
+
+        self.assertFalse(payload["should_block"])
+        self.assertFalse(payload["update_available"])
+        self.assertEqual(payload["summary"], "TimeCapsuleSMB is up to date.")
+
+    def test_version_check_payload_preserves_unavailable_summary(self) -> None:
+        payload = contracts.version_check_payload(
+            VersionCheckResult(
+                should_block=False,
+                local_version_code=20000,
+                current_version=None,
+                min_supported_version=None,
+                source="unavailable",
+            )
+        )
+
+        self.assertFalse(payload["should_block"])
+        self.assertFalse(payload["update_available"])
+        self.assertEqual(payload["summary"], "Version metadata is unavailable.")
 
     def test_version_check_operation_rejects_non_http_url(self) -> None:
         collector = CollectingSink()

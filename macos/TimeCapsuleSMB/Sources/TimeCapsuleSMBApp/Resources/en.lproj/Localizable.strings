@@ -392,6 +392,7 @@
 "backend.summary.uninstall_plan_generated" = "Uninstall dry-run plan generated.";
 "backend.summary.uninstall_unverified" = "Uninstall completed without post-reboot verification.";
 "backend.summary.up_to_date" = "TimeCapsuleSMB is up to date.";
+"backend.summary.update_available" = "Update available.";
 "backend.summary.update_required" = "Update required.";
 "backend.summary.version_metadata_unavailable" = "Version metadata is unavailable.";
 "field.ata_idle_seconds" = "ATA idle seconds";

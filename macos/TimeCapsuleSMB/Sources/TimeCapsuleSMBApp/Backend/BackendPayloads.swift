@@ -43,6 +43,7 @@ struct InstallValidationPayload: Decodable, Equatable {
 struct VersionCheckPayload: Decodable, Equatable {
     let schemaVersion: Int
     let shouldBlock: Bool
+    let updateAvailable: Bool
     let checkedURL: String
     let message: String
     let downloadURL: String
@@ -56,6 +57,7 @@ struct VersionCheckPayload: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case shouldBlock = "should_block"
+        case updateAvailable = "update_available"
         case checkedURL = "checked_url"
         case message
         case downloadURL = "download_url"

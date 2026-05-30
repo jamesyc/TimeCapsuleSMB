@@ -392,6 +392,7 @@
 "backend.summary.uninstall_plan_generated" = "卸载 dry-run 计划已生成。";
 "backend.summary.uninstall_unverified" = "卸载已完成，但未在重启后验证。";
 "backend.summary.up_to_date" = "TimeCapsuleSMB 已是最新版本。";
+"backend.summary.update_available" = "有可用更新。";
 "backend.summary.update_required" = "需要更新。";
 "backend.summary.version_metadata_unavailable" = "版本元数据不可用。";
 "field.ata_idle_seconds" = "ATA idle 秒数";

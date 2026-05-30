@@ -119,7 +119,7 @@ final class AppUpdateStore: ObservableObject {
         do {
             let result = try event.decodePayload(VersionCheckPayload.self)
             payload = result
-            if result.shouldBlock {
+            if result.shouldBlock || result.updateAvailable {
                 state = .updateAvailable
             } else if result.source == "unavailable" {
                 state = .unavailable

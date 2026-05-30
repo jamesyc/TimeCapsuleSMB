@@ -91,7 +91,11 @@ enum BackendSummaryLocalization {
         case "set-telemetry":
             return payload.bool("telemetry_enabled").map { telemetrySummary(enabled: $0) }
         case "version-check":
-            return versionSummary(source: payload.string("source"), shouldBlock: payload.bool("should_block"))
+            return versionSummary(
+                source: payload.string("source"),
+                shouldBlock: payload.bool("should_block"),
+                updateAvailable: payload.bool("update_available")
+            )
         case "discover":
             return payload.count("devices").map { discoveredDevicesSummary(count: $0) }
         case "configure":
@@ -134,12 +138,15 @@ enum BackendSummaryLocalization {
             : L10n.string("backend.summary.telemetry_enabled")
     }
 
-    static func versionSummary(source: String?, shouldBlock: Bool?) -> String {
+    static func versionSummary(source: String?, shouldBlock: Bool?, updateAvailable: Bool?) -> String {
         if source == "unavailable" {
             return L10n.string("backend.summary.version_metadata_unavailable")
         }
         if shouldBlock == true {
             return L10n.string("backend.summary.update_required")
+        }
+        if updateAvailable == true {
+            return L10n.string("backend.summary.update_available")
         }
         return L10n.string("backend.summary.up_to_date")
     }
@@ -403,7 +410,11 @@ extension InstallValidationPayload {
 
 extension VersionCheckPayload {
     var localizedSummary: String {
-        BackendSummaryLocalization.versionSummary(source: source, shouldBlock: shouldBlock)
+        BackendSummaryLocalization.versionSummary(
+            source: source,
+            shouldBlock: shouldBlock,
+            updateAvailable: updateAvailable
+        )
     }
 }
 
