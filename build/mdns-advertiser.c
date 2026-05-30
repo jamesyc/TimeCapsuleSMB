@@ -430,6 +430,7 @@ static int build_instance_fqdn(char *out, size_t out_len, const char *instance_n
 static int is_airport_enabled(const struct config *cfg);
 static int is_riousbprint_enabled(const struct config *cfg);
 static int is_pdl_datastream_enabled(const struct config *cfg);
+static int snapshot_record_overridden_by_generated(const struct config *cfg, const struct service_record *record);
 static int smb_enabled(const struct config *cfg);
 static int adisk_enabled(const struct config *cfg);
 static int afp_enabled(const struct config *cfg);
@@ -1027,7 +1028,7 @@ static int link_context_topology_sets_equal(const struct link_context_set *a,
 
 static void log_served_records(const struct config *cfg, const struct service_record_set *snapshot_records,
                                int use_snapshot_records) {
-    fprintf(stderr, "serving summary: source=%s\n", use_snapshot_records ? "snapshot" : "generated");
+    fprintf(stderr, "serving summary: source=%s\n", use_snapshot_records ? "generated+snapshot" : "generated");
     if (smb_enabled(cfg)) {
         fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
                 cfg->service_type, cfg->instance_name, (unsigned int)cfg->port, cfg->host_fqdn);
@@ -1075,6 +1076,9 @@ static void log_served_records(const struct config *cfg, const struct service_re
         size_t i;
         for (i = 0; i < snapshot_records->count; i++) {
             const struct service_record *record = &snapshot_records->records[i];
+            if (snapshot_record_overridden_by_generated(cfg, record)) {
+                continue;
+            }
             fprintf(stderr, "serving snapshot record[%lu]: type=%s instance=%s host=%s port=%u txt=%lu\n",
                     (unsigned long)i,
                     record->service_type,
@@ -1091,6 +1095,39 @@ static int is_suppressed_snapshot_service_type(const char *service_type) {
            name_equals(service_type, "_adisk._tcp.local.") ||
            name_equals(service_type, "_device-info._tcp.local.") ||
            name_equals(service_type, "_afpovertcp._tcp.local.");
+}
+
+static int snapshot_record_overridden_by_generated(const struct config *cfg, const struct service_record *record) {
+    char generated_instance_fqdn[MAX_NAME];
+
+    if (is_airport_enabled(cfg) && name_equals(record->service_type, cfg->airport_service_type)) {
+        if (build_instance_fqdn(generated_instance_fqdn,
+                                sizeof(generated_instance_fqdn),
+                                cfg->instance_name,
+                                cfg->airport_service_type) == 0 &&
+            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
+            return 1;
+        }
+    }
+    if (is_riousbprint_enabled(cfg) && name_equals(record->service_type, RIOUSBPRINT_SERVICE_TYPE)) {
+        if (build_instance_fqdn(generated_instance_fqdn,
+                                sizeof(generated_instance_fqdn),
+                                cfg->riousbprint_instance_name,
+                                RIOUSBPRINT_SERVICE_TYPE) == 0 &&
+            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
+            return 1;
+        }
+    }
+    if (is_pdl_datastream_enabled(cfg) && name_equals(record->service_type, PDL_DATASTREAM_SERVICE_TYPE)) {
+        if (build_instance_fqdn(generated_instance_fqdn,
+                                sizeof(generated_instance_fqdn),
+                                cfg->riousbprint_instance_name,
+                                PDL_DATASTREAM_SERVICE_TYPE) == 0 &&
+            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void trim_trailing_dot(char *value) {
@@ -4652,6 +4689,97 @@ static int finalize_and_send_announcement_packet_any(int sockfd,
     return send_dns_packet_any("announcement", sockfd, buf, off, dest, dest_len, answers, use_snapshot_records);
 }
 
+typedef int (*generated_record_adder)(uint8_t *buf,
+                                      size_t *off,
+                                      size_t cap,
+                                      const struct config *cfg,
+                                      uint32_t ttl,
+                                      int *answers);
+
+static int append_generated_records_with_flush(int sockfd,
+                                               uint8_t *buf,
+                                               size_t *off,
+                                               size_t cap,
+                                               int *answers,
+                                               const struct sockaddr *dest,
+                                               socklen_t dest_len,
+                                               const struct config *cfg,
+                                               uint32_t ttl,
+                                               int use_snapshot_records,
+                                               generated_record_adder add_records,
+                                               const char *failure_stage) {
+    size_t before_off = *off;
+    int before_answers = *answers;
+
+    if (add_records(buf, off, cap, cfg, ttl, answers) == 0) {
+        return 0;
+    }
+
+    *off = before_off;
+    *answers = before_answers;
+    if (finalize_and_send_announcement_packet_any(sockfd, buf, *off, *answers, dest, dest_len, use_snapshot_records) != 0) {
+        return -1;
+    }
+    init_announcement_packet(off, answers);
+    if (add_records(buf, off, cap, cfg, ttl, answers) != 0) {
+        log_packet_build_failure("announcement", failure_stage, *off, *answers, use_snapshot_records);
+        return -1;
+    }
+    return 0;
+}
+
+static int append_generated_apple_records(int sockfd,
+                                          uint8_t *buf,
+                                          size_t *off,
+                                          size_t cap,
+                                          int *answers,
+                                          const struct sockaddr *dest,
+                                          socklen_t dest_len,
+                                          const struct config *cfg,
+                                          uint32_t ttl,
+                                          int use_snapshot_records) {
+    if (append_generated_records_with_flush(sockfd,
+                                            buf,
+                                            off,
+                                            cap,
+                                            answers,
+                                            dest,
+                                            dest_len,
+                                            cfg,
+                                            ttl,
+                                            use_snapshot_records,
+                                            add_pdl_datastream_records,
+                                            "add_pdl_datastream_records") != 0) {
+        return -1;
+    }
+    if (append_generated_records_with_flush(sockfd,
+                                            buf,
+                                            off,
+                                            cap,
+                                            answers,
+                                            dest,
+                                            dest_len,
+                                            cfg,
+                                            ttl,
+                                            use_snapshot_records,
+                                            add_riousbprint_records,
+                                            "add_riousbprint_records") != 0) {
+        return -1;
+    }
+    return append_generated_records_with_flush(sockfd,
+                                               buf,
+                                               off,
+                                               cap,
+                                               answers,
+                                               dest,
+                                               dest_len,
+                                               cfg,
+                                               ttl,
+                                               use_snapshot_records,
+                                               add_airport_records,
+                                               "add_airport_records");
+}
+
 static int append_generated_base_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg,
                                          const struct link_context *response_link,
                                          int include_a, int include_aaaa,
@@ -4723,6 +4851,18 @@ static int send_announcement_any(int sockfd,
         log_packet_build_failure("announcement", "add_core_records", off, answers, use_snapshot_records);
         return -1;
     }
+    if (append_generated_apple_records(sockfd,
+                                       buf,
+                                       &off,
+                                       sizeof(buf),
+                                       &answers,
+                                       dest,
+                                       dest_len,
+                                       cfg,
+                                       ttl,
+                                       use_snapshot_records) != 0) {
+        return -1;
+    }
     if (use_snapshot_records) {
         if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
             return -1;
@@ -4733,6 +4873,9 @@ static int send_announcement_any(int sockfd,
             int before_host_a_answers;
 
             if (is_suppressed_snapshot_service_type(snapshot_records->records[i].service_type)) {
+                continue;
+            }
+            if (snapshot_record_overridden_by_generated(cfg, &snapshot_records->records[i])) {
                 continue;
             }
             init_announcement_packet(&off, &answers);
@@ -4778,50 +4921,6 @@ static int send_announcement_any(int sockfd,
             }
         }
     } else {
-        size_t before_printer_off = off;
-        int before_printer_answers = answers;
-        size_t before_airport_off;
-        int before_airport_answers;
-        if (add_pdl_datastream_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-            off = before_printer_off;
-            answers = before_printer_answers;
-            if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-                return -1;
-            }
-            init_announcement_packet(&off, &answers);
-            if (add_pdl_datastream_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-                log_packet_build_failure("announcement", "add_pdl_datastream_records", off, answers, use_snapshot_records);
-                return -1;
-            }
-        }
-        before_printer_off = off;
-        before_printer_answers = answers;
-        if (add_riousbprint_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-            off = before_printer_off;
-            answers = before_printer_answers;
-            if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-                return -1;
-            }
-            init_announcement_packet(&off, &answers);
-            if (add_riousbprint_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-                log_packet_build_failure("announcement", "add_riousbprint_records", off, answers, use_snapshot_records);
-                return -1;
-            }
-        }
-        before_airport_off = off;
-        before_airport_answers = answers;
-        if (add_airport_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-            off = before_airport_off;
-            answers = before_airport_answers;
-            if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-                return -1;
-            }
-            init_announcement_packet(&off, &answers);
-            if (add_airport_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
-                log_packet_build_failure("announcement", "add_airport_records", off, answers, use_snapshot_records);
-                return -1;
-            }
-        }
         if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
             return -1;
         }
@@ -5324,15 +5423,15 @@ static int plan_service_type_enumeration_records(struct planned_rr_set *set,
         plan_service_type_enumeration_type(set, routes, cfg->device_info_service_type, cfg->ttl) != 0) {
         return -1;
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) &&
+    if (is_airport_enabled(cfg) &&
         plan_service_type_enumeration_type(set, routes, cfg->airport_service_type, cfg->ttl) != 0) {
         return -1;
     }
-    if (!use_snapshot_records && is_riousbprint_enabled(cfg) &&
+    if (is_riousbprint_enabled(cfg) &&
         plan_service_type_enumeration_type(set, routes, RIOUSBPRINT_SERVICE_TYPE, cfg->ttl) != 0) {
         return -1;
     }
-    if (!use_snapshot_records && is_pdl_datastream_enabled(cfg) &&
+    if (is_pdl_datastream_enabled(cfg) &&
         plan_service_type_enumeration_type(set, routes, PDL_DATASTREAM_SERVICE_TYPE, cfg->ttl) != 0) {
         return -1;
     }
@@ -5542,6 +5641,8 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                  const char *airport_instance_fqdn,
                                  const char *riousbprint_instance_fqdn,
                                  const char *pdl_datastream_instance_fqdn) {
+    int planned_generated_apple_service_type = 0;
+
     if (name_equals(qname, DNS_SD_SERVICE_ENUMERATION_NAME) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
         return plan_service_type_enumeration_records(planned,
@@ -5566,17 +5667,29 @@ static int plan_question_answers(struct planned_rr_set *planned,
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
         return plan_device_info_records(planned, route, cfg, device_info_instance_fqdn, response_link, 1, 1, 1, 1, 1);
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) && name_equals(qname, cfg->airport_service_type) &&
+    if (is_airport_enabled(cfg) && name_equals(qname, cfg->airport_service_type) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-        return plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+        if (plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link, 1, 1, 1, 1, 1) != 0) {
+            return -1;
+        }
+        planned_generated_apple_service_type = 1;
     }
-    if (!use_snapshot_records && is_riousbprint_enabled(cfg) && name_equals(qname, RIOUSBPRINT_SERVICE_TYPE) &&
+    if (is_riousbprint_enabled(cfg) && name_equals(qname, RIOUSBPRINT_SERVICE_TYPE) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-        return plan_riousbprint_records(planned, route, cfg, riousbprint_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+        if (plan_riousbprint_records(planned, route, cfg, riousbprint_instance_fqdn, response_link, 1, 1, 1, 1, 1) != 0) {
+            return -1;
+        }
+        planned_generated_apple_service_type = 1;
     }
-    if (!use_snapshot_records && is_pdl_datastream_enabled(cfg) && name_equals(qname, PDL_DATASTREAM_SERVICE_TYPE) &&
+    if (is_pdl_datastream_enabled(cfg) && name_equals(qname, PDL_DATASTREAM_SERVICE_TYPE) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-        return plan_pdl_datastream_records(planned, route, cfg, pdl_datastream_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+        if (plan_pdl_datastream_records(planned, route, cfg, pdl_datastream_instance_fqdn, response_link, 1, 1, 1, 1, 1) != 0) {
+            return -1;
+        }
+        planned_generated_apple_service_type = 1;
+    }
+    if (planned_generated_apple_service_type && !use_snapshot_records) {
+        return 0;
     }
     if (smb_enabled(cfg) && name_equals(qname, instance_fqdn)) {
         return plan_smb_records(planned, route, cfg, instance_fqdn, response_link,
@@ -5610,7 +5723,7 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) && name_equals(qname, airport_instance_fqdn)) {
+    if (is_airport_enabled(cfg) && name_equals(qname, airport_instance_fqdn)) {
         return plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link,
                                     0,
                                     qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
@@ -5618,7 +5731,7 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                     qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
                                     qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
     }
-    if (!use_snapshot_records && is_riousbprint_enabled(cfg) && name_equals(qname, riousbprint_instance_fqdn)) {
+    if (is_riousbprint_enabled(cfg) && name_equals(qname, riousbprint_instance_fqdn)) {
         return plan_riousbprint_records(planned, route, cfg, riousbprint_instance_fqdn, response_link,
                                         0,
                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
@@ -5626,7 +5739,7 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
     }
-    if (!use_snapshot_records && is_pdl_datastream_enabled(cfg) && name_equals(qname, pdl_datastream_instance_fqdn)) {
+    if (is_pdl_datastream_enabled(cfg) && name_equals(qname, pdl_datastream_instance_fqdn)) {
         return plan_pdl_datastream_records(planned, route, cfg, pdl_datastream_instance_fqdn, response_link,
                                            0,
                                            qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
@@ -5648,6 +5761,9 @@ static int plan_question_answers(struct planned_rr_set *planned,
         for (j = 0; j < snapshot_records->count; j++) {
             const struct service_record *record = &snapshot_records->records[j];
             if (is_suppressed_snapshot_service_type(record->service_type)) {
+                continue;
+            }
+            if (snapshot_record_overridden_by_generated(cfg, record)) {
                 continue;
             }
             if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
@@ -6047,17 +6163,17 @@ static int handle_query_any(int sockfd,
         log_packet_build_failure("query_response", "build_device_info_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
     }
-    if (!use_snapshot_records && is_airport_enabled(cfg) &&
+    if (is_airport_enabled(cfg) &&
         build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
         log_packet_build_failure("query_response", "build_airport_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
     }
-    if (!use_snapshot_records && is_riousbprint_enabled(cfg) &&
+    if (is_riousbprint_enabled(cfg) &&
         build_instance_fqdn(riousbprint_instance_fqdn, sizeof(riousbprint_instance_fqdn), cfg->riousbprint_instance_name, RIOUSBPRINT_SERVICE_TYPE) != 0) {
         log_packet_build_failure("query_response", "build_riousbprint_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
     }
-    if (!use_snapshot_records && is_pdl_datastream_enabled(cfg) &&
+    if (is_pdl_datastream_enabled(cfg) &&
         build_instance_fqdn(pdl_datastream_instance_fqdn, sizeof(pdl_datastream_instance_fqdn), cfg->riousbprint_instance_name, PDL_DATASTREAM_SERVICE_TYPE) != 0) {
         log_packet_build_failure("query_response", "build_pdl_datastream_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;

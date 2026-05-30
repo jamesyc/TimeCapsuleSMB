@@ -5166,6 +5166,286 @@ int main(void) {
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "ok")
 
+    def test_mdns_advertiser_generated_printer_records_overlay_snapshot_records(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+#undef sendto
+
+static unsigned char captured_packets[16][BUF_SIZE];
+static size_t captured_lengths[16];
+static size_t captured_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {
+    (void)sockfd;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+    if (captured_count < 16) {
+        memcpy(captured_packets[captured_count], buf, len);
+        captured_lengths[captured_count] = len;
+        captured_count++;
+    }
+    return (ssize_t)len;
+}
+
+static void reset_captures(void) {
+    memset(captured_packets, 0, sizeof(captured_packets));
+    memset(captured_lengths, 0, sizeof(captured_lengths));
+    captured_count = 0;
+}
+
+static void configure_base(struct config *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    snprintf(cfg->instance_name, sizeof(cfg->instance_name), "%s", "Alton Time Capsule");
+    snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
+    snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
+    snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
+    snprintf(cfg->afp_service_type, sizeof(cfg->afp_service_type), "%s", AFP_SERVICE_TYPE);
+    snprintf(cfg->adisk_service_type, sizeof(cfg->adisk_service_type), "%s", "_adisk._tcp.local.");
+    snprintf(cfg->device_info_service_type, sizeof(cfg->device_info_service_type), "%s", "_device-info._tcp.local.");
+    snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
+    snprintf(cfg->airport_wama, sizeof(cfg->airport_wama), "%s", "80:EA:96:E6:58:68");
+    snprintf(cfg->riousbprint_instance_name, sizeof(cfg->riousbprint_instance_name), "%s", "Canon MP490 series");
+    snprintf(cfg->riousbprint_mfg, sizeof(cfg->riousbprint_mfg), "%s", "Canon");
+    snprintf(cfg->riousbprint_mdl, sizeof(cfg->riousbprint_mdl), "%s", "MP490 series");
+    snprintf(cfg->riousbprint_cmd, sizeof(cfg->riousbprint_cmd), "%s", "BJL,BJRaster3");
+    cfg->port = 445;
+    cfg->afp_port = AFP_DEFAULT_PORT;
+    cfg->adisk_port = 9;
+    cfg->airport_port = 5009;
+    cfg->riousbprint_port = 10000;
+    cfg->pdl_datastream_port = 9100;
+    cfg->ttl = 120;
+}
+
+static void configure_link(struct link_context *link) {
+    memset(link, 0, sizeof(*link));
+    snprintf(link->name, sizeof(link->name), "%s", "bridge0");
+    link->flags = IFF_UP | IFF_RUNNING;
+    link->ipv4[0].addr = inet_addr("10.0.1.77");
+    link->ipv4[0].netmask = inet_addr("255.255.255.0");
+    link->ipv4_count = 1;
+    link->mdns_ipv4_transport = 1;
+    link->mdns_ipv4_transport_addr = link->ipv4[0].addr;
+}
+
+static void add_snapshot_record(struct service_record_set *set, const char *type, const char *instance,
+                                const char *host, unsigned short port, const char *txt) {
+    struct service_record *record = &set->records[set->count++];
+    memset(record, 0, sizeof(*record));
+    snprintf(record->service_type, sizeof(record->service_type), "%s", type);
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", instance);
+    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
+    snprintf(record->host_label, sizeof(record->host_label), "%s", host);
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
+    record->port = port;
+    if (txt != NULL) {
+        snprintf(record->txt[0], sizeof(record->txt[0]), "%s", txt);
+        record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
+        record->txt_count = 1;
+    }
+}
+
+static int planned_count_ptr_target(const struct planned_rr_set *planned, const char *target) {
+    size_t i;
+    int matches = 0;
+
+    for (i = 0; i < planned->count; i++) {
+        char ptr_target[MAX_NAME];
+        size_t cursor = 0;
+        if (planned->records[i].type == DNS_TYPE_PTR &&
+            decode_name(planned->records[i].rdata, planned->records[i].rdlength, &cursor, ptr_target, sizeof(ptr_target)) == 0 &&
+            cursor == planned->records[i].rdlength &&
+            name_equals(ptr_target, target)) {
+            matches++;
+        }
+    }
+    return matches;
+}
+
+static int planned_has_srv_port(const struct planned_rr_set *planned, unsigned short want_port) {
+    size_t i;
+
+    for (i = 0; i < planned->count; i++) {
+        if (planned->records[i].type == DNS_TYPE_SRV && planned->records[i].rdlength >= 6) {
+            unsigned short port;
+            memcpy(&port, planned->records[i].rdata + 4, 2);
+            if (ntohs(port) == want_port) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int packet_has_srv_port(const unsigned char *packet, size_t packet_len, unsigned short want_port) {
+    struct dns_header hdr;
+    size_t cursor = sizeof(hdr);
+    unsigned short total_answers;
+    unsigned short i;
+
+    if (packet_len < sizeof(hdr)) {
+        return 0;
+    }
+    memcpy(&hdr, packet, sizeof(hdr));
+    total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return 0;
+        }
+        cursor += 4;
+    }
+    for (i = 0; i < total_answers; i++) {
+        char name[MAX_NAME];
+        unsigned short rrtype;
+        unsigned short rdlength;
+
+        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
+            return 0;
+        }
+        memcpy(&rrtype, packet + cursor, 2);
+        memcpy(&rdlength, packet + cursor + 8, 2);
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > packet_len) {
+            return 0;
+        }
+        if (rrtype == DNS_TYPE_SRV && rdlength >= 6) {
+            unsigned short port;
+            memcpy(&port, packet + cursor + 4, 2);
+            if (ntohs(port) == want_port) {
+                return 1;
+            }
+        }
+        cursor += rdlength;
+    }
+    return 0;
+}
+
+static int captured_has_srv_port(unsigned short want_port) {
+    size_t i;
+
+    for (i = 0; i < captured_count; i++) {
+        if (packet_has_srv_port(captured_packets[i], captured_lengths[i], want_port)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int plan_printer_type(const struct config *cfg,
+                             const struct link_context *link,
+                             const struct service_record_set *snapshot,
+                             const char *service_type,
+                             const char *riousbprint_instance_fqdn,
+                             const char *pdl_datastream_instance_fqdn,
+                             struct planned_rr_set *planned) {
+    memset(planned, 0, sizeof(*planned));
+    return plan_question_answers(planned,
+                                 MDNS_REPLY_MULTICAST,
+                                 service_type,
+                                 DNS_TYPE_PTR,
+                                 cfg,
+                                 link,
+                                 snapshot,
+                                 1,
+                                 "",
+                                 "",
+                                 "",
+                                 "",
+                                 "",
+                                 riousbprint_instance_fqdn,
+                                 pdl_datastream_instance_fqdn);
+}
+
+int main(void) {
+    struct config cfg;
+    struct link_context response_link;
+    struct service_record_set snapshot;
+    struct planned_rr_set planned;
+    struct sockaddr_in announcement_dest;
+    char riousbprint_instance_fqdn[MAX_NAME];
+    char pdl_datastream_instance_fqdn[MAX_NAME];
+
+    configure_base(&cfg);
+    configure_link(&response_link);
+    memset(&snapshot, 0, sizeof(snapshot));
+    add_snapshot_record(&snapshot, RIOUSBPRINT_SERVICE_TYPE, "Canon MP490 series", "stale-printer", 10001, "rp=stale");
+    add_snapshot_record(&snapshot, RIOUSBPRINT_SERVICE_TYPE, "Other Printer", "other-printer", 10002, "rp=other");
+    add_snapshot_record(&snapshot, PDL_DATASTREAM_SERVICE_TYPE, "Canon MP490 series", "stale-printer", 9101, "rp=stale");
+    add_snapshot_record(&snapshot, PDL_DATASTREAM_SERVICE_TYPE, "Other Printer", "other-printer", 9102, "rp=other");
+
+    if (build_instance_fqdn(riousbprint_instance_fqdn,
+                            sizeof(riousbprint_instance_fqdn),
+                            cfg.riousbprint_instance_name,
+                            RIOUSBPRINT_SERVICE_TYPE) != 0 ||
+        build_instance_fqdn(pdl_datastream_instance_fqdn,
+                            sizeof(pdl_datastream_instance_fqdn),
+                            cfg.riousbprint_instance_name,
+                            PDL_DATASTREAM_SERVICE_TYPE) != 0) {
+        return 1;
+    }
+
+    if (plan_printer_type(&cfg, &response_link, &snapshot, RIOUSBPRINT_SERVICE_TYPE,
+                          riousbprint_instance_fqdn, pdl_datastream_instance_fqdn, &planned) != 0 ||
+        planned_count_ptr_target(&planned, "Canon MP490 series._riousbprint._tcp.local.") != 1 ||
+        planned_count_ptr_target(&planned, "Other Printer._riousbprint._tcp.local.") != 1 ||
+        !planned_has_srv_port(&planned, 10000) ||
+        planned_has_srv_port(&planned, 10001) ||
+        !planned_has_srv_port(&planned, 10002)) {
+        return 2;
+    }
+
+    if (plan_printer_type(&cfg, &response_link, &snapshot, PDL_DATASTREAM_SERVICE_TYPE,
+                          riousbprint_instance_fqdn, pdl_datastream_instance_fqdn, &planned) != 0 ||
+        planned_count_ptr_target(&planned, "Canon MP490 series._pdl-datastream._tcp.local.") != 1 ||
+        planned_count_ptr_target(&planned, "Other Printer._pdl-datastream._tcp.local.") != 1 ||
+        !planned_has_srv_port(&planned, 9100) ||
+        planned_has_srv_port(&planned, 9101) ||
+        !planned_has_srv_port(&planned, 9102)) {
+        return 3;
+    }
+
+    memset(&announcement_dest, 0, sizeof(announcement_dest));
+    announcement_dest.sin_family = AF_INET;
+    announcement_dest.sin_port = htons(MDNS_PORT);
+    announcement_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
+    reset_captures();
+    if (send_announcement(1, &announcement_dest, &cfg, &response_link, cfg.ttl, &snapshot, 1) != 0 ||
+        !captured_has_srv_port(10000) ||
+        captured_has_srv_port(10001) ||
+        !captured_has_srv_port(10002) ||
+        !captured_has_srv_port(9100) ||
+        captured_has_srv_port(9101) ||
+        !captured_has_srv_port(9102)) {
+        return 4;
+    }
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_generated_printer_snapshot_overlay")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
     def test_mdns_advertiser_retries_interrupted_sendto(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''
