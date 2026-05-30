@@ -4,7 +4,7 @@ import XCTest
 @MainActor
 final class ActivityStoreTests: XCTestCase {
     func testActivitySnapshotTracksActiveOperationTimelineAndDevice() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(
                     type: "stage",
@@ -18,7 +18,7 @@ final class ActivityStoreTests: XCTestCase {
                     ok: true,
                     payload: .object(["summary": .string("Deployment completed.")])
                 )
-            ], delayNanoseconds: 80_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let activity = ActivityStore(coordinator: coordinator)
@@ -32,6 +32,7 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.operationTitle, "Install / Update")
         XCTAssertEqual(activity.snapshot.scope, .device("device-one"))
 
+        runner.finishAll()
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
         XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["Upload Payload", "Done"])
         XCTAssertEqual(activity.snapshot.latestMessage, "Deployment completed.")
@@ -43,7 +44,7 @@ final class ActivityStoreTests: XCTestCase {
         L10n.apply(language: .simplifiedChinese)
 
         let temp = try TemporaryDirectory()
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(
                     type: "stage",
@@ -91,7 +92,7 @@ final class ActivityStoreTests: XCTestCase {
     }
 
     func testActivitySnapshotTracksBackendOnlyReadinessOperationAsAppScoped() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(
                     type: "stage",
@@ -105,7 +106,7 @@ final class ActivityStoreTests: XCTestCase {
                     ok: true,
                     payload: .object(["schema_version": .number(1)])
                 )
-            ], delayNanoseconds: 80_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let backend = BackendClient(runner: runner)
         let coordinator = OperationCoordinator(backend: backend)
@@ -117,13 +118,14 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.operationTitle, "App Readiness")
         XCTAssertEqual(activity.snapshot.scope, .app)
 
+        runner.finishAll()
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
         XCTAssertEqual(activity.snapshot.scope, .app)
         XCTAssertEqual(activity.snapshot.operationTitle, "App Readiness")
     }
 
     func testActivitySnapshotTracksDiscoveryAsAppScoped() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(
                     type: "stage",
@@ -137,7 +139,7 @@ final class ActivityStoreTests: XCTestCase {
                     ok: true,
                     payload: testDiscoverPayload(records: [])
                 )
-            ], delayNanoseconds: 80_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let backend = BackendClient(runner: runner)
         let coordinator = OperationCoordinator(backend: backend)
@@ -148,6 +150,8 @@ final class ActivityStoreTests: XCTestCase {
         try await waitUntilStoreState { activity.snapshot.isRunning }
         XCTAssertEqual(activity.snapshot.operationTitle, "Discovery")
         XCTAssertEqual(activity.snapshot.scope, .app)
+        runner.finishAll()
+        try await waitUntilStoreState { !activity.snapshot.isRunning }
     }
 
     func testActivityStoreTracksMultipleActiveLanesAndPrefersDeviceSnapshot() async throws {
@@ -160,7 +164,7 @@ final class ActivityStoreTests: XCTestCase {
                         ok: true,
                         payload: testDiscoverPayload(records: [])
                     )
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
@@ -173,7 +177,7 @@ final class ActivityStoreTests: XCTestCase {
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                         testDoctorCheck(status: "PASS", message: "ok", domain: "Runtime")
                     ]))
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -189,6 +193,7 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.scope, .device("device-one"))
         XCTAssertEqual(activity.snapshot.operationTitle, "Checkup")
         XCTAssertEqual(Set(activity.laneSnapshots.map(\.laneKey)), [.app, .device("device-one")])
+        runner.finishAll()
     }
 
     func testCompactStatusPrefersSelectedDeviceOverRunningStartupDiscovery() async throws {
@@ -196,7 +201,7 @@ final class ActivityStoreTests: XCTestCase {
             .init("discover"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
@@ -207,7 +212,7 @@ final class ActivityStoreTests: XCTestCase {
                         description: "Run local and remote diagnostic checks."
                     ),
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -233,6 +238,7 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(status.scope, .device("device-one"))
         XCTAssertEqual(status.operationTitle, "Checkup")
         XCTAssertEqual(status.activeLaneCount, 2)
+        runner.finishAll()
     }
 
     func testCompactStatusShowsMultipleActiveOperationsWhenNoSelectedLaneCanOwnTheBar() async throws {
@@ -240,12 +246,12 @@ final class ActivityStoreTests: XCTestCase {
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("deploy", profileID: "device-two"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "deploy", ok: true, payload: .object(["summary": .string("done")]))
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -273,6 +279,7 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(status.operationTitle, "2 active operations")
         XCTAssertEqual(status.latestMessage, "Open Activity for details.")
         XCTAssertEqual(status.activeLaneCount, 2)
+        runner.finishAll()
     }
 
     func testCompactStatusShowsMultipleActiveOperationsOnActivityScreenEvenWhenAppLaneRuns() async throws {
@@ -280,12 +287,12 @@ final class ActivityStoreTests: XCTestCase {
             .init("discover"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -310,6 +317,7 @@ final class ActivityStoreTests: XCTestCase {
         ))
         XCTAssertEqual(status.scope, .unknown)
         XCTAssertEqual(status.operationTitle, "2 active operations")
+        runner.finishAll()
     }
 
     func testCompactStatusShowsSelectedPendingConfirmationBeforeRunningDiscovery() async throws {
@@ -317,7 +325,7 @@ final class ActivityStoreTests: XCTestCase {
             .init("discover"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("deploy", profileID: "device-one"): [
                 .init(events: [
@@ -350,6 +358,7 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(status.operationTitle, "Install / Update")
         XCTAssertTrue(status.requiresAttention)
         XCTAssertFalse(status.isRunning)
+        runner.finishAll()
     }
 
     func testCompactStatusUsesAppLaneForAddDeviceDiscoveryUnlessConfigureIsActive() async throws {
@@ -357,17 +366,17 @@ final class ActivityStoreTests: XCTestCase {
             .init("discover"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-                ], delayNanoseconds: 250_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 250_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("configure", profileID: "device-two"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "configure", ok: true, payload: .object(["summary": .string("configured")]))
-                ], delayNanoseconds: 250_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -405,6 +414,7 @@ final class ActivityStoreTests: XCTestCase {
         let status = activity.compactStatus(for: addDeviceContext)
         XCTAssertEqual(status.scope, .device("device-two"))
         XCTAssertEqual(status.operationTitle, "Add Device")
+        runner.finishAll()
     }
 
     func testCompactStatusKeepsSelectedDeviceHistoryAfterStartupDiscoveryCompletes() async throws {
@@ -456,7 +466,7 @@ final class ActivityStoreTests: XCTestCase {
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -474,10 +484,11 @@ final class ActivityStoreTests: XCTestCase {
             activity.activeLaneSnapshots.map(\.laneKey) == [.device("device-one")]
                 && activity.recentLaneSnapshots.map(\.laneKey) == [.app]
         }
+        runner.finishAll()
     }
 
     func testSuccessfulAppValidationPresentsAppReadyWithoutDetailMessage() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(
                     type: "stage",
@@ -491,7 +502,7 @@ final class ActivityStoreTests: XCTestCase {
                     ok: true,
                     payload: .object(["summary": .string("Install validation passed.")])
                 )
-            ], delayNanoseconds: 80_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let backend = BackendClient(runner: runner)
         let coordinator = OperationCoordinator(backend: backend)
@@ -503,6 +514,7 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.operationTitle, "App Readiness")
         XCTAssertEqual(activity.snapshot.scope, .app)
 
+        runner.finishAll()
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.operationTitle == "App Ready" }
         XCTAssertEqual(activity.snapshot.scope, .app)
         XCTAssertNil(activity.snapshot.latestMessage)

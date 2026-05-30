@@ -160,22 +160,23 @@ final class DeployWorkflowStoreTests: XCTestCase {
     }
 
     func testRejectedPlanDoesNotEnterPlanning() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
-            ], delayNanoseconds: 100_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = DeployWorkflowStore(coordinator: coordinator)
 
         _ = coordinator.run(operation: "doctor", profile: nil)
-        try await waitUntilStoreState { runner.calls.count == 1 }
+        try await waitUntilStoreState { runner.calls.count == 1 && coordinator.backend.isRunning }
         let result = store.runPlan(password: "pw")
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(store.state, .planFailed)
         XCTAssertEqual(store.error?.code, "operation_already_running")
         XCTAssertEqual(runner.calls.count, 1)
+        runner.finishAll()
         try await waitUntilStoreState { !store.isRunning }
     }
 
@@ -228,10 +229,10 @@ final class DeployWorkflowStoreTests: XCTestCase {
     }
 
     func testOptionChangeWhilePlanningMakesReturnedPlanStaleAndAllowsRegeneration() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ], delayNanoseconds: 50_000_000),
+            ], pauseBeforeEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
             ])
@@ -244,10 +245,15 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         store.noWait = true
 
-        try await waitUntilStoreState { store.state == .planStale }
+        XCTAssertEqual(store.state, .planning)
         XCTAssertFalse(store.canDeploy)
+        XCTAssertNil(store.plan)
+        runner.finishAll()
+
+        try await waitUntilStoreState { store.state == .planStale }
         XCTAssertNotNil(store.plan)
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(false))
+        try await waitUntilStoreState { !store.isBusy }
 
         store.runPlan(password: "pw")
 
@@ -385,7 +391,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runPlan(password: "pw")
         try await waitUntilStoreState { store.state == .planReady }
         store.runDeploy(password: "pw")
-        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil }
+        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
 
         backend.confirmPending()
 
@@ -416,7 +422,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runPlan(password: "pw")
         try await waitUntilStoreState { store.state == .planReady }
         store.runDeploy(password: "pw")
-        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil }
+        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
 
         backend.cancelPendingConfirmation()
 
@@ -449,7 +455,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runPlan(password: "pw")
         try await waitUntilStoreState { store.state == .planReady }
         store.runDeploy(password: "pw")
-        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil }
+        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
 
         store.noWait = true
         backend.cancelPendingConfirmation()

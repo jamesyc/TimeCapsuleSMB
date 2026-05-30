@@ -20,7 +20,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             responses: [
                 .init(
                     events: [BackendEvent(type: "stage", operation: "deploy", stage: "build_deployment_plan")],
-                    delayNanoseconds: 250_000_000
+                    pauseAfterEvents: true
                 )
             ],
             expectedState: .planning,
@@ -42,7 +42,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
                 ]),
                 .init(
                     events: [BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd")],
-                    delayNanoseconds: 250_000_000
+                    pauseAfterEvents: true
                 )
             ],
             expectedState: .deploying,
@@ -96,7 +96,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             responses: [
                 .init(
                     events: [BackendEvent(type: "stage", operation: "doctor", stage: "run_checks")],
-                    delayNanoseconds: 250_000_000
+                    pauseAfterEvents: true
                 )
             ],
             expectedState: .running
@@ -207,7 +207,8 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         expectedState: DeployWorkflowState,
         runDeploy: Bool
     ) async throws {
-        let fixture = try await AppViewFixture(responses: responses)
+        let runner = PausingStoreTestRunner(responses: responses)
+        let fixture = try await AppViewFixture(runner: runner)
         let profile = try await fixture.saveProfile(id: "device-one")
         let session = fixture.dashboardSession(for: profile)
 
@@ -222,13 +223,15 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
 
         XCTAssertEqual(session.deployStore.state, expectedState)
         try assertRendersNonBlank(dashboardView(fixture: fixture, profile: profile, session: session))
+        runner.finishAll()
     }
 
     private func renderCheckupState(
         responses: [StoreTestRunner.Response],
         expectedState: DoctorWorkflowState
     ) async throws {
-        let fixture = try await AppViewFixture(responses: responses)
+        let runner = PausingStoreTestRunner(responses: responses)
+        let fixture = try await AppViewFixture(runner: runner)
         let profile = try await fixture.saveProfile(id: "device-one")
         let session = fixture.dashboardSession(for: profile)
 
@@ -239,6 +242,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
 
         XCTAssertEqual(session.doctorStore.state, expectedState)
         try assertRendersNonBlank(dashboardView(fixture: fixture, profile: profile, session: session))
+        runner.finishAll()
     }
 
     private func dashboardView(

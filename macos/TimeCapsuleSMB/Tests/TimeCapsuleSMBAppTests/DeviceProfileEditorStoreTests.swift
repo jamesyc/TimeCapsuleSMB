@@ -453,7 +453,10 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
         await authStore.save(profile: authProfile)
 
-        try await waitUntilStoreState { authStore.state == .authFailed }
+        try await waitUntilStoreState {
+            authStore.state == .authFailed &&
+            auth.registry.profile(id: authProfile.id)?.passwordState == .invalid
+        }
         XCTAssertEqual(auth.registry.profile(id: authProfile.id)?.host, "10.0.0.2")
         XCTAssertEqual(auth.registry.profile(id: authProfile.id)?.passwordState, .invalid)
 

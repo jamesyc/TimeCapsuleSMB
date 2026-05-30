@@ -405,7 +405,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
                 ]))
-            ], delayNanoseconds: 150_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -424,6 +424,7 @@ final class DashboardStoreTests: XCTestCase {
         session = nil
 
         XCTAssertNotNil(weakSession)
+        fixture.runner.finishAll()
         try await waitUntilStoreState { !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         try await waitUntilStoreState { weakSession == nil }
     }
@@ -434,7 +435,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
                 ]))
-            ], delayNanoseconds: 200_000_000),
+            ], pauseBeforeEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
@@ -467,6 +468,8 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(secondSession.doctorStore.state, .running)
         try await waitUntilStoreState { secondSession.doctorStore.state == .passed }
         XCTAssertEqual(Set(fixture.runner.calls.map { $0.context?.profileID }), ["device-one", "device-two"])
+        fixture.runner.finishAll()
+        try await waitUntilStoreState { !self.deviceLaneIsRunning(first, appStore: fixture.appStore) }
     }
 
     func testDashboardOperationsUpdateCheckupDeployAndRuntimeSnapshots() async throws {
@@ -482,7 +485,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
-            ], delayNanoseconds: 200_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -519,6 +522,7 @@ final class DashboardStoreTests: XCTestCase {
                 && fixture.registry.profile(id: profile.id)?.lastCheckup == nil
                 && session.doctorStore.summary == nil
         }
+        fixture.runner.finishAll()
         try await waitUntilStoreState {
             session.deployStore.state == .deployed
                 && fixture.registry.profile(id: profile.id)?.lastDeployState?.status == .succeeded
@@ -554,7 +558,7 @@ final class DashboardStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
                 BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: failure, recovery: recovery)
-            ], delayNanoseconds: 100_000_000)
+            ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -598,12 +602,12 @@ final class DashboardStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
                 BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: failure)
-            ], delayNanoseconds: 100_000_000),
+            ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
                 ]))
-            ], delayNanoseconds: 100_000_000)
+            ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -691,7 +695,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
-            ], delayNanoseconds: 200_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -722,6 +726,7 @@ final class DashboardStoreTests: XCTestCase {
             session.maintenanceStore.uninstallState == .running
                 && fixture.registry.profile(id: installed.id)?.lastCheckup == nil
         }
+        fixture.runner.finishAll()
         try await waitUntilStoreState {
             session.maintenanceStore.uninstallState == .succeeded
                 && fixture.registry.profile(id: installed.id)?.lastDeployState == nil
@@ -741,7 +746,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
-            ], delayNanoseconds: 200_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -772,6 +777,7 @@ final class DashboardStoreTests: XCTestCase {
             session.maintenanceStore.activateState == .running
                 && fixture.registry.profile(id: checked.id)?.lastCheckup == nil
         }
+        fixture.runner.finishAll()
         try await waitUntilStoreState { session.maintenanceStore.activateState == .succeeded }
         XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
@@ -783,7 +789,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
                 ]))
-            ], delayNanoseconds: 100_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let first = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -804,6 +810,7 @@ final class DashboardStoreTests: XCTestCase {
 
         session.runCheckup(profile: first)
         fixture.appStore.select(second)
+        fixture.runner.finishAll()
 
         try await waitUntilStoreState {
             session.doctorStore.state == .passed
@@ -827,7 +834,7 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "local checks passed", domain: "General")
                 ]))
-            ], delayNanoseconds: 100_000_000)
+            ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -857,7 +864,7 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
-            ], delayNanoseconds: 100_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let first = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -880,6 +887,7 @@ final class DashboardStoreTests: XCTestCase {
         try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: first)
         fixture.appStore.select(second)
+        fixture.runner.finishAll()
 
         try await waitUntilStoreState { session.deployStore.state == .deployed }
         try await waitUntilStoreState {
@@ -1158,12 +1166,12 @@ final class DashboardStoreTests: XCTestCase {
         appStore: AppStore,
         registry: DeviceRegistryStore,
         passwordStore: InMemoryPasswordStore,
-        runner: StoreTestRunner
+        runner: PausingStoreTestRunner
     ) {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let runner = StoreTestRunner(responses: responses)
+        let runner = PausingStoreTestRunner(responses: responses)
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let passwordStore = InMemoryPasswordStore()
         let appStore = AppStore(

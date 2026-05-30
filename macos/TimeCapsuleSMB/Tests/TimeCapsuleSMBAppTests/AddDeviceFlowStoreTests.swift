@@ -419,7 +419,11 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .awaitingConfirmation }
+        try await waitUntilStoreState {
+            fixture.store.state == .awaitingConfirmation &&
+            fixture.store.coordinator.pendingConfirmation != nil &&
+            !fixture.store.coordinator.lane(for: .candidateHost("10.0.0.2")).backend.isRunning
+        }
         XCTAssertFalse(fixture.store.canConfigure)
         XCTAssertEqual(fixture.registry.profiles, [])
 
@@ -453,7 +457,11 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         fixture.store.password = "secret"
 
         fixture.store.runConfigure()
-        try await waitUntilStoreState { fixture.store.state == .awaitingConfirmation }
+        try await waitUntilStoreState {
+            fixture.store.state == .awaitingConfirmation &&
+            fixture.store.coordinator.pendingConfirmation != nil &&
+            !fixture.store.coordinator.lane(for: .candidateHost("10.0.0.2")).backend.isRunning
+        }
 
         fixture.store.coordinator.cancelPendingConfirmation()
 
@@ -552,7 +560,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
-            ], delayNanoseconds: 100_000_000)
+            ], pauseAfterEvents: true)
         ])
         let existing = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -578,6 +586,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.error?.code, "operation_rejected")
         XCTAssertEqual(fixture.registry.profiles, [existing])
         XCTAssertEqual(fixture.runner.calls.count, 1)
+        fixture.runner.finishAll()
         try await waitUntilStoreState { !fixture.store.coordinator.lane(for: existing).backend.isRunning }
     }
 
@@ -585,7 +594,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-            ], delayNanoseconds: 150_000_000),
+            ], pauseAfterEvents: true),
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
             ])
@@ -603,6 +612,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertTrue(fixture.store.coordinator.appLane.backend.isRunning)
         try await waitUntilStoreState { fixture.store.state == .saved }
         XCTAssertEqual(fixture.registry.profiles.count, 1)
+        fixture.runner.finishAll()
     }
 
     func testSelectedBonjourConfigureSuccessSavesProfileMetadata() async throws {
@@ -850,14 +860,14 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
     private func makeStore(responses: [StoreTestRunner.Response]) async throws -> (
         store: AddDeviceFlowStore,
-        runner: StoreTestRunner,
+        runner: PausingStoreTestRunner,
         registry: DeviceRegistryStore,
         passwordStore: InMemoryPasswordStore
     ) {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let runner = StoreTestRunner(responses: responses)
+        let runner = PausingStoreTestRunner(responses: responses)
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let passwordStore = InMemoryPasswordStore()
         let store = AddDeviceFlowStore(coordinator: coordinator, registry: registry, passwordStore: passwordStore)

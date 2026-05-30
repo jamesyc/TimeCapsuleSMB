@@ -98,17 +98,19 @@ final class AppUpdateStoreTests: XCTestCase {
     }
 
     func testCheckNowBlocksConcurrentUpdateChecks() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [], delayNanoseconds: 250_000_000)
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [], pauseBeforeEvents: true)
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = AppUpdateStore(coordinator: coordinator)
 
         store.checkNow(settings: .default)
+        try await waitUntilStoreState { runner.calls.count == 1 && store.isChecking }
         store.checkNow(settings: .default)
 
         XCTAssertEqual(store.state, .failed)
         XCTAssertEqual(store.error?.code, "operation_rejected")
+        runner.finishAll()
     }
 
     private func versionCheckPayload(

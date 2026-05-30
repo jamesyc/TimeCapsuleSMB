@@ -99,10 +99,10 @@ final class DashboardPresentationTests: XCTestCase {
     }
 
     func testInstallActionAvailabilityBlocksMutatingActionsWhileDeviceIsBusy() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: []))
-            ], delayNanoseconds: 100_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let laneKey = OperationLaneKey.device("device-one")
@@ -120,6 +120,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.openFinder, store: store))
         XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.viewCheckup, store: store))
         XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.viewDiagnostics, store: store))
+        runner.finishAll()
     }
 
     func testSidebarContextMenuIncludesRequestedActionsAndCopyValues() throws {

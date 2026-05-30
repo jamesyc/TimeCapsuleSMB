@@ -83,22 +83,23 @@ final class DoctorStoreTests: XCTestCase {
     }
 
     func testRejectedRunDoesNotEnterRunning() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: .object(["ok": .bool(true)]))
-            ], delayNanoseconds: 100_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = DoctorStore(coordinator: coordinator)
 
         _ = coordinator.run(operation: "deploy", profile: nil)
-        try await waitUntilStoreState { runner.calls.count == 1 }
+        try await waitUntilStoreState { runner.calls.count == 1 && coordinator.backend.isRunning }
         let result = store.runDoctor(password: "pw")
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(store.state, .runFailed)
         XCTAssertEqual(store.error?.code, "operation_already_running")
         XCTAssertEqual(runner.calls.count, 1)
+        runner.finishAll()
         try await waitUntilStoreState { !store.isRunning }
     }
 

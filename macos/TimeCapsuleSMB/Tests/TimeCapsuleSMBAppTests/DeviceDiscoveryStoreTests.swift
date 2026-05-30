@@ -84,7 +84,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "ok", domain: "Runtime")
                 ]))
-            ], delayNanoseconds: 150_000_000),
+            ], pauseAfterEvents: true),
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
                 testDeviceRecord(hostname: "paused.local.")
             ]))])
@@ -94,6 +94,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         fixture.monitor.startMonitoring()
 
         XCTAssertEqual(fixture.monitor.state, .paused)
+        fixture.runner.finishAll()
         try await waitUntilStoreState { fixture.monitor.state == .ready }
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["capabilities", "validate-install", "doctor", "discover"])
     }
@@ -104,7 +105,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "ok", domain: "Runtime")
                 ]))
-            ], delayNanoseconds: 150_000_000),
+            ], pauseAfterEvents: true),
             .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
                 testDeviceRecord(hostname: "parallel.local.")
             ]))])
@@ -120,13 +121,17 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
             activeDeviceID: "device-one",
             laneKey: .device("device-one")
         )
-        try await waitUntilStoreState { fixture.coordinator.lane(for: .device("device-one")).backend.isRunning }
+        try await waitUntilStoreState {
+            fixture.coordinator.lane(for: .device("device-one")).backend.isRunning &&
+            fixture.runner.calls.map(\.operation) == ["capabilities", "validate-install", "doctor"]
+        }
         fixture.monitor.startMonitoring()
 
         XCTAssertNotEqual(fixture.monitor.state, .paused)
         try await waitUntilStoreState { fixture.runner.calls.count == 4 }
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["capabilities", "validate-install", "doctor", "discover"])
         try await waitUntilStoreState { fixture.monitor.state == .ready }
+        fixture.runner.finishAll()
     }
 
     func testReadinessBlockedPreventsDiscovery() async throws {
@@ -159,7 +164,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
     }
 
     private struct Fixture {
-        let runner: StoreTestRunner
+        let runner: PausingStoreTestRunner
         let coordinator: OperationCoordinator
         let readiness: AppReadinessStore
         let registry: DeviceRegistryStore
@@ -168,7 +173,7 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
 
     private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> Fixture {
         let temp = try TemporaryDirectory()
-        let runner = StoreTestRunner(responses: responses)
+        let runner = PausingStoreTestRunner(responses: responses)
         let backend = BackendClient(runner: runner)
         let coordinator = OperationCoordinator(backend: backend)
         let readiness = AppReadinessStore(

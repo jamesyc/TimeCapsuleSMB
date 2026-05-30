@@ -96,15 +96,21 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
         let events: [BackendEvent]
         let result: HelperRunResult
         let delayNanoseconds: UInt64
+        let pauseBeforeEvents: Bool
+        let pauseAfterEvents: Bool
 
         init(
             events: [BackendEvent],
             result: HelperRunResult = HelperRunResult(exitCode: 0, sawTerminalEvent: true, stderr: ""),
-            delayNanoseconds: UInt64 = 0
+            delayNanoseconds: UInt64 = 0,
+            pauseBeforeEvents: Bool = false,
+            pauseAfterEvents: Bool = false
         ) {
             self.events = events
             self.result = result
             self.delayNanoseconds = delayNanoseconds
+            self.pauseBeforeEvents = pauseBeforeEvents
+            self.pauseAfterEvents = pauseAfterEvents
         }
     }
 
@@ -164,6 +170,123 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
     }
 }
 
+final class PausingStoreTestRunner: HelperRunning, @unchecked Sendable {
+    typealias Call = StoreTestRunner.Call
+    typealias Response = StoreTestRunner.Response
+
+    private let queue = DispatchQueue(label: "TimeCapsuleSMBAppTests.PausingStoreTestRunner")
+    private let pauseGate = PauseGate()
+    private var storedResponses: [Response]
+    private var storedCalls: [Call] = []
+
+    init(responses: [Response]) {
+        self.storedResponses = responses
+    }
+
+    var calls: [Call] {
+        queue.sync { storedCalls }
+    }
+
+    func finishAll() {
+        pauseGate.resumeAll()
+    }
+
+    func run(
+        helperPath: String?,
+        operation: String,
+        params: [String: JSONValue],
+        requestID: String,
+        context: DeviceRuntimeContext?,
+        onEvent: @escaping @Sendable (BackendEvent) async -> Void
+    ) async -> HelperRunResult {
+        let response = queue.sync {
+            storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
+            if storedResponses.isEmpty {
+                return Response(
+                    events: [BackendEvent.error(
+                        operation: operation,
+                        code: "missing_test_response",
+                        message: "No pausing test response queued.",
+                        requestId: requestID
+                    )],
+                    result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
+                )
+            }
+            return storedResponses.removeFirst()
+        }
+        writeConfigureArtifactIfNeeded(operation: operation, context: context, events: response.events)
+
+        if response.pauseBeforeEvents {
+            await pauseGate.wait()
+        }
+        if Task.isCancelled {
+            await onEvent(BackendEvent.error(
+                operation: operation,
+                code: "cancelled",
+                message: L10n.string("helper.error.cancelled"),
+                requestId: requestID
+            ))
+            return HelperRunResult(exitCode: 130, sawTerminalEvent: true, stderr: "")
+        }
+        for event in response.events {
+            await onEvent(event.withRequestId(requestID))
+        }
+        if response.pauseAfterEvents {
+            await pauseGate.wait()
+        }
+        if Task.isCancelled {
+            await onEvent(BackendEvent.error(
+                operation: operation,
+                code: "cancelled",
+                message: L10n.string("helper.error.cancelled"),
+                requestId: requestID
+            ))
+            return HelperRunResult(exitCode: 130, sawTerminalEvent: true, stderr: "")
+        }
+        return response.result
+    }
+}
+
+private final class PauseGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [UUID: CheckedContinuation<Void, Never>] = [:]
+    private var isOpen = false
+
+    func wait() async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if isOpen {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                continuations[id] = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            resume(id)
+        }
+    }
+
+    func resumeAll() {
+        lock.lock()
+        isOpen = true
+        let pending = Array(continuations.values)
+        continuations.removeAll()
+        lock.unlock()
+        pending.forEach { $0.resume() }
+    }
+
+    private func resume(_ id: UUID) {
+        lock.lock()
+        let continuation = continuations.removeValue(forKey: id)
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
 final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
     struct Key: Hashable, Sendable {
         let operation: String
@@ -181,6 +304,7 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
     private let queue = DispatchQueue(label: "TimeCapsuleSMBAppTests.OperationKeyedStoreTestRunner")
     private var storedResponses: [Key: [Response]]
     private var storedCalls: [Call] = []
+    private var pauseGates: [Key: PauseGate] = [:]
 
     init(responses: [Key: [Response]]) {
         self.storedResponses = responses
@@ -188,6 +312,16 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
 
     var calls: [Call] {
         queue.sync { storedCalls }
+    }
+
+    func finishAll() {
+        let gates = queue.sync { Array(pauseGates.values) }
+        gates.forEach { $0.resumeAll() }
+    }
+
+    func finish(_ key: Key) {
+        let gate = queue.sync { pauseGates[key] }
+        gate?.resumeAll()
     }
 
     func run(
@@ -198,21 +332,27 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
         context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
-        let response = queue.sync {
+        let (response, pauseGate) = queue.sync {
             storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
             let key = Key(operation, profileID: context?.profileID)
             if var responses = storedResponses[key], !responses.isEmpty {
                 let response = responses.removeFirst()
                 storedResponses[key] = responses
-                return response
+                let pauseGate = pauseGates[key] ?? PauseGate()
+                pauseGates[key] = pauseGate
+                return (response, pauseGate)
             }
             let fallbackKey = Key(operation)
             if var responses = storedResponses[fallbackKey], !responses.isEmpty {
                 let response = responses.removeFirst()
                 storedResponses[fallbackKey] = responses
-                return response
+                let pauseGate = pauseGates[fallbackKey] ?? PauseGate()
+                pauseGates[fallbackKey] = pauseGate
+                return (response, pauseGate)
             }
-            return Response(
+            let pauseGate = pauseGates[key] ?? PauseGate()
+            pauseGates[key] = pauseGate
+            return (Response(
                 events: [BackendEvent.error(
                     operation: operation,
                     code: "missing_test_response",
@@ -220,12 +360,15 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
                     requestId: requestID
                 )],
                 result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
-            )
+            ), pauseGate)
         }
         writeConfigureArtifactIfNeeded(operation: operation, context: context, events: response.events)
 
         if response.delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: response.delayNanoseconds)
+        }
+        if response.pauseBeforeEvents {
+            await pauseGate.wait()
         }
         if Task.isCancelled {
             await onEvent(BackendEvent.error(
@@ -238,6 +381,9 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
         }
         for event in response.events {
             await onEvent(event.withRequestId(requestID))
+        }
+        if response.pauseAfterEvents {
+            await pauseGate.wait()
         }
         return response.result
     }

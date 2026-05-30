@@ -343,7 +343,7 @@ final class FlashWorkflowStoreTests: XCTestCase {
         try await waitUntilStoreState { store.plan != nil }
 
         store.write(mode: .patch, password: "pw", profile: profile)
-        try await waitUntilStoreState { store.state == .awaitingStrongConfirmation && backend.pendingConfirmation != nil }
+        try await waitUntilStoreState { store.state == .awaitingStrongConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
 
         backend.cancelPendingConfirmation()
 

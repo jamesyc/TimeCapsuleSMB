@@ -9,14 +9,18 @@ struct AppViewFixture {
     let appStore: AppStore
     let registry: DeviceRegistryStore
     let passwordStore: InMemoryPasswordStore
-    let runner: StoreTestRunner
+    let runner: any HelperRunning
     let composition: AppViewComposition
 
     init(responses: [StoreTestRunner.Response] = []) async throws {
+        try await self.init(runner: StoreTestRunner(responses: responses))
+    }
+
+    init(runner: any HelperRunning) async throws {
         temp = try TemporaryDirectory()
         registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        runner = StoreTestRunner(responses: responses)
+        self.runner = runner
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         passwordStore = InMemoryPasswordStore()
         appStore = AppStore(
@@ -84,16 +88,8 @@ func renderView<V: View>(_ view: V, size: CGSize) throws -> NSBitmapImageRep {
     host.wantsLayer = true
     host.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
-    let window = NSWindow(
-        contentRect: host.frame,
-        styleMask: [.borderless],
-        backing: .buffered,
-        defer: false
-    )
-    window.contentView = host
-    window.layoutIfNeeded()
     host.layoutSubtreeIfNeeded()
-    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    host.displayIfNeeded()
 
     guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
         throw ViewRenderError.bitmapCreationFailed

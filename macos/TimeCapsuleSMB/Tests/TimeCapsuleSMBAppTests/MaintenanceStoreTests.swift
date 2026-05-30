@@ -85,10 +85,10 @@ final class MaintenanceStoreTests: XCTestCase {
     }
 
     func testSameDeviceRejectedActivationPlanDoesNotEnterPlanning() async throws {
-        let runner = StoreTestRunner(responses: [
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
-            ], delayNanoseconds: 100_000_000)
+            ], pauseBeforeEvents: true)
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let profile = DeviceProfile.make(
@@ -103,13 +103,14 @@ final class MaintenanceStoreTests: XCTestCase {
         )
 
         _ = coordinator.run(operation: "doctor", profile: profile)
-        try await waitUntilStoreState { runner.calls.count == 1 }
+        try await waitUntilStoreState { runner.calls.count == 1 && coordinator.isDeviceBusy(profile) }
         let result = store.planActivation(password: "pw", profile: profile)
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(store.activateState, .failed)
         XCTAssertEqual(store.error(for: .activate)?.code, "operation_already_running")
         XCTAssertEqual(runner.calls.count, 1)
+        runner.finishAll()
         try await waitUntilStoreState { !store.isRunning }
     }
 
@@ -135,7 +136,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.planActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
         store.runActivation(password: "pw")
-        try await waitUntilStoreState { store.activateState == .awaitingConfirmation && store.pendingConfirmation(for: .activate) != nil }
+        try await waitUntilStoreState { store.activateState == .awaitingConfirmation && store.pendingConfirmation(for: .activate) != nil && !store.isRunning }
 
         store.confirmPending(for: .activate)
 
@@ -159,7 +160,7 @@ final class MaintenanceStoreTests: XCTestCase {
             store.planActivation(password: "pw")
             try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
             store.runActivation(password: "pw")
-            try await waitUntilStoreState { store.activateState == .awaitingConfirmation && store.pendingConfirmation(for: .activate) != nil }
+            try await waitUntilStoreState { store.activateState == .awaitingConfirmation && store.pendingConfirmation(for: .activate) != nil && !store.isRunning }
             store.cancelPendingConfirmation(for: .activate)
 
             try await waitUntilStoreState { store.activateState == .planReady && store.pendingConfirmation(for: .activate) == nil }
@@ -180,7 +181,7 @@ final class MaintenanceStoreTests: XCTestCase {
             store.planUninstall(password: "pw")
             try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
             store.runUninstall(password: "pw")
-            try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && store.pendingConfirmation(for: .uninstall) != nil }
+            try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && store.pendingConfirmation(for: .uninstall) != nil && !store.isRunning }
             store.noWait = true
             store.cancelPendingConfirmation(for: .uninstall)
 
@@ -207,7 +208,7 @@ final class MaintenanceStoreTests: XCTestCase {
             store.planFsck(password: "pw")
             try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
             store.runFsck(password: "pw")
-            try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && store.pendingConfirmation(for: .fsck) != nil }
+            try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && store.pendingConfirmation(for: .fsck) != nil && !store.isRunning }
             store.noWait = true
             store.cancelPendingConfirmation(for: .fsck)
 
@@ -230,7 +231,7 @@ final class MaintenanceStoreTests: XCTestCase {
             store.scanRepairXattrs()
             try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
             store.runRepairXattrs()
-            try await waitUntilStoreState { store.repairState == .awaitingConfirmation && store.pendingConfirmation(for: .repairXattrs) != nil }
+            try await waitUntilStoreState { store.repairState == .awaitingConfirmation && store.pendingConfirmation(for: .repairXattrs) != nil && !store.isRunning }
             store.repairPath = "/Volumes/Other"
             store.cancelPendingConfirmation(for: .repairXattrs)
 
@@ -360,7 +361,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.planUninstall(password: "pw")
         try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
         store.runUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && store.pendingConfirmation(for: .uninstall) != nil }
+        try await waitUntilStoreState { store.uninstallState == .awaitingConfirmation && store.pendingConfirmation(for: .uninstall) != nil && !store.isRunning }
 
         store.confirmPending(for: .uninstall)
 
@@ -408,7 +409,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.planFsck(password: "pw")
         try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
         store.runFsck(password: "pw")
-        try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && store.pendingConfirmation(for: .fsck) != nil }
+        try await waitUntilStoreState { store.fsckState == .awaitingConfirmation && store.pendingConfirmation(for: .fsck) != nil && !store.isRunning }
 
         store.confirmPending(for: .fsck)
 
@@ -559,7 +560,7 @@ final class MaintenanceStoreTests: XCTestCase {
         store.scanRepairXattrs()
         try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
         store.runRepairXattrs()
-        try await waitUntilStoreState { store.repairState == .awaitingConfirmation && store.pendingConfirmation(for: .repairXattrs) != nil }
+        try await waitUntilStoreState { store.repairState == .awaitingConfirmation && store.pendingConfirmation(for: .repairXattrs) != nil && !store.isRunning }
         store.confirmPending(for: .repairXattrs)
         try await waitUntilStoreState { store.repairState == .repaired }
         XCTAssertEqual(store.repairResult?.repairableCount, 0)

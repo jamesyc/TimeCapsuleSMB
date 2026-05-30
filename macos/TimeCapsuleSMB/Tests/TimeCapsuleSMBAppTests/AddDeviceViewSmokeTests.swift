@@ -23,12 +23,13 @@ final class AddDeviceViewSmokeTests: XCTestCase {
                 events: [
                     BackendEvent(type: "stage", operation: "discover", stage: "browse_bonjour")
                 ],
-                delayNanoseconds: 250_000_000
+                pauseAfterEvents: true
             )
         ])
         discovering.store.runDiscover()
         XCTAssertEqual(discovering.store.state, .discovering)
         try assertRendersNonBlank(AddDeviceView(store: discovering.store), size: CGSize(width: 900, height: 700))
+        discovering.runner.finishAll()
 
         let empty = try await makeFixture(responses: [
             .init(events: [
@@ -61,7 +62,7 @@ final class AddDeviceViewSmokeTests: XCTestCase {
             responses: [
                 .init(
                     events: [BackendEvent(type: "stage", operation: "configure", stage: "connect_ssh")],
-                    delayNanoseconds: 250_000_000
+                    pauseAfterEvents: true
                 )
             ],
             expectedState: .configuring
@@ -121,17 +122,18 @@ final class AddDeviceViewSmokeTests: XCTestCase {
 
         XCTAssertEqual(fixture.store.state, expectedState)
         try assertRendersNonBlank(AddDeviceView(store: fixture.store), size: CGSize(width: 900, height: 700))
+        fixture.runner.finishAll()
     }
 
     private func makeFixture(responses: [StoreTestRunner.Response] = []) async throws -> (
         store: AddDeviceFlowStore,
         registry: DeviceRegistryStore,
-        runner: StoreTestRunner
+        runner: PausingStoreTestRunner
     ) {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
-        let runner = StoreTestRunner(responses: responses)
+        let runner = PausingStoreTestRunner(responses: responses)
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let passwordStore = InMemoryPasswordStore()
         let persistence = DeviceProfilePersistenceService(registry: registry, passwordStore: passwordStore)

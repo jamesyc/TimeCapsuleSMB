@@ -8,12 +8,12 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("discover"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -34,6 +34,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertNil(coordinator.rejectedOperationMessage)
         XCTAssertEqual(Set(coordinator.activeOperations.keys), [.app, .device("device-one")])
 
+        runner.finishAll()
         try await waitUntilStoreState {
             !coordinator.appLane.backend.isRunning && !deviceLane.backend.isRunning
         }
@@ -44,7 +45,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -58,6 +59,8 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(second.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(coordinator.rejectedOperationMessages[laneKey], "Another operation is already running.")
         XCTAssertEqual(runner.calls.count, 1)
+        runner.finishAll()
+        try await waitUntilStoreState { !coordinator.lane(for: laneKey).backend.isRunning }
     }
 
     func testSameDeviceWorkflowLanesShareResourceLockWithoutSharingEvents() async throws {
@@ -65,7 +68,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("deploy", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd")
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("reachability", profileID: "device-one"): [
                 .init(events: [
@@ -99,6 +102,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(runner.calls.map(\.operation), ["deploy"])
         XCTAssertTrue(coordinator.lane(for: reachabilityLane).backend.events.isEmpty)
 
+        runner.finishAll()
         try await waitUntilStoreState { !coordinator.lane(for: deployLane).backend.events.isEmpty }
         XCTAssertEqual(coordinator.lane(for: deployLane).backend.events.first?.operation, "deploy")
     }
@@ -234,12 +238,12 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("deploy", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("deploy", profileID: "device-two"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -267,6 +271,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(Set(coordinator.activeOperations.keys), [firstLane, secondLane])
         XCTAssertTrue(coordinator.isDeviceBusy("device-one"))
         XCTAssertTrue(coordinator.isDeviceBusy("device-two"))
+        runner.finishAll()
     }
 
     func testDifferentDeviceLanesRunSameOperationInParallel() async throws {
@@ -274,12 +279,12 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("doctor", profileID: "device-two"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -304,6 +309,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         }
         XCTAssertEqual(Set(runner.calls.compactMap { $0.context?.profileID }), ["device-one", "device-two"])
         XCTAssertEqual(Set(coordinator.activeOperations.keys), [.device("device-one"), .device("device-two")])
+        runner.finishAll()
     }
 
     func testAppLaneRejectsSecondAppOperation() async throws {
@@ -311,7 +317,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("discover"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-                ], delayNanoseconds: 200_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -323,6 +329,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(second.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(coordinator.rejectedOperationMessages[.app], "Another operation is already running.")
         XCTAssertEqual(runner.calls.map(\.operation), ["discover"])
+        runner.finishAll()
     }
 
     func testPendingConfirmationBlocksSameLaneButNotOtherLaneAndReplayKeepsContext() async throws {
@@ -338,7 +345,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("doctor", profileID: "device-two"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 100_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -377,6 +384,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(runner.calls[2].operation, "deploy")
         XCTAssertEqual(runner.calls[2].context, context("device-one"))
         XCTAssertEqual(runner.calls[2].params["confirmation_id"], .string("deploy-confirm"))
+        runner.finishAll()
     }
 
     func testCancelPendingConfirmationClearsTargetLaneAndPublishesCancellationEvent() async throws {
@@ -417,7 +425,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("deploy", profileID: "device-one"): [
                 .init(events: [
                     confirmationRequiredEvent(operation: "deploy", id: "deploy-confirm")
-                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""), delayNanoseconds: 100_000_000)
+                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -449,12 +457,12 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             .init("doctor", profileID: "device-one"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
-                ], delayNanoseconds: 1_000_000_000)
+                ], pauseBeforeEvents: true)
             ],
             .init("discover"): [
                 .init(events: [
                     BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
-                ], delayNanoseconds: 500_000_000)
+                ], pauseBeforeEvents: true)
             ]
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -468,15 +476,20 @@ final class OperationCoordinatorLaneTests: XCTestCase {
             laneKey: deviceLaneKey
         ))
         try await waitUntilStoreState {
-            coordinator.appLane.backend.isRunning && coordinator.lane(for: deviceLaneKey).backend.isRunning
+            coordinator.appLane.backend.isRunning &&
+                coordinator.lane(for: deviceLaneKey).backend.isRunning &&
+                runner.calls.count == 2
         }
 
         coordinator.cancel(laneKey: deviceLaneKey)
+        runner.finish(.init("doctor", profileID: "device-one"))
 
         try await waitUntilStoreState {
             !coordinator.lane(for: deviceLaneKey).backend.isRunning && coordinator.appLane.backend.isRunning
         }
         XCTAssertEqual(coordinator.lane(for: deviceLaneKey).backend.events.last?.code, "cancelled")
+        runner.finishAll()
+        try await waitUntilStoreState { !coordinator.appLane.backend.isRunning }
     }
 
     func testClearingOneLaneDoesNotClearOtherLaneEvents() async throws {
