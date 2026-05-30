@@ -349,6 +349,74 @@ def test_prepared_python_framework_reuses_cache(monkeypatch: pytest.MonkeyPatch,
     assert (second / "Versions" / "Current" / "bin" / "python3").is_file()
 
 
+def assert_no_python_bytecode(root: Path) -> None:
+    assert not list(root.rglob("__pycache__"))
+    assert not list(root.rglob("*.pyc"))
+    assert not list(root.rglob("*.pyo"))
+
+
+def create_python_bytecode(root: Path) -> None:
+    pycache = root / "timecapsulesmb" / "__pycache__"
+    pycache.mkdir(parents=True, exist_ok=True)
+    (pycache / "__init__.cpython-313.pyc").write_bytes(b"pyc")
+    (root / "timecapsulesmb" / "stale.pyo").write_bytes(b"pyo")
+
+
+def test_python_subprocess_env_disables_bytecode_and_redirects_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+
+    env = package_app.python_subprocess_env(
+        {"PYTHONDONTWRITEBYTECODE": "0", "PYTHONNOUSERSITE": "0"},
+        python_home=tmp_path / "Python.framework" / "Versions" / "Current",
+    )
+
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert env["PYTHONHOME"] == str(tmp_path / "Python.framework" / "Versions" / "Current")
+    assert env["PYTHONPYCACHEPREFIX"] == str(tmp_path / ".build" / "package-app" / "python-bytecode")
+
+
+def test_build_python_packages_uses_bytecode_safe_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kwargs["env"]))  # type: ignore[index]
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "python_major_minor", lambda python: (3, 13))
+    monkeypatch.setattr(package_app, "run", fake_run)
+    monkeypatch.setattr(package_app, "remove_optional_zeroconf_extensions", lambda site_packages: None)
+
+    package_app.build_python_packages("python3", tmp_path / "site-packages")
+
+    assert len(calls) == 4
+    for _cmd, env in calls:
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert env["PYTHONNOUSERSITE"] == "1"
+        assert Path(env["PYTHONPYCACHEPREFIX"]).name == "pycache"
+
+
+def test_remove_python_bytecode_removes_nested_pycache_and_orphans(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    root = tmp_path / "site-packages"
+    package = root / "timecapsulesmb"
+    create_python_bytecode(root)
+    (package / "module.py").write_text("value = 1\n", encoding="utf-8")
+
+    package_app.remove_python_bytecode(root)
+
+    assert (package / "module.py").is_file()
+    assert_no_python_bytecode(root)
+
+
 def test_create_python_packages_reuses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     package_app = load_package_app_module()
     cache_entry = tmp_path / "cache" / "site"
@@ -359,6 +427,7 @@ def test_create_python_packages_reuses_cache(monkeypatch: pytest.MonkeyPatch, tm
         package = site_packages / "timecapsulesmb"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("# cached package\n", encoding="utf-8")
+        create_python_bytecode(site_packages)
 
     monkeypatch.setattr(package_app, "python_site_packages_cache_entry", lambda python, architectures: cache_entry)
     monkeypatch.setattr(package_app, "build_python_packages", fake_build)
@@ -372,6 +441,65 @@ def test_create_python_packages_reuses_cache(monkeypatch: pytest.MonkeyPatch, tm
     assert len(calls) == 1
     assert (first_resources / "Python" / "site-packages" / "timecapsulesmb" / "__init__.py").is_file()
     assert (second_resources / "Python" / "site-packages" / "timecapsulesmb" / "__init__.py").is_file()
+    assert_no_python_bytecode(first_resources / "Python" / "site-packages")
+    assert_no_python_bytecode(second_resources / "Python" / "site-packages")
+    assert_no_python_bytecode(cache_entry / "site-packages")
+
+
+def test_create_python_packages_cleans_bytecode_from_existing_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    cache_entry = tmp_path / "cache" / "site"
+    cached_site_packages = cache_entry / "site-packages"
+    package = cached_site_packages / "timecapsulesmb"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# cached package\n", encoding="utf-8")
+    create_python_bytecode(cached_site_packages)
+    (cache_entry / ".complete").write_text("ok\n", encoding="utf-8")
+    monkeypatch.setattr(package_app, "python_site_packages_cache_entry", lambda python, architectures: cache_entry)
+    monkeypatch.setattr(package_app, "build_python_packages", lambda python, site_packages: pytest.fail("cache was not reused"))
+
+    resources = tmp_path / "Resources"
+    package_app.create_python_packages("python3", resources, ("arm64",))
+
+    assert (resources / "Python" / "site-packages" / "timecapsulesmb" / "__init__.py").is_file()
+    assert_no_python_bytecode(resources / "Python" / "site-packages")
+
+
+def test_finalize_python_bundle_cleans_before_resigning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    resources = tmp_path / "Resources"
+    framework = resources / "Python" / "Runtime" / "Python.framework"
+    site_packages = resources / "Python" / "site-packages"
+    framework.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    create_python_bytecode(framework)
+    create_python_bytecode(site_packages)
+    calls: list[str] = []
+
+    def fake_sign_framework(path: Path) -> None:
+        assert path == framework
+        assert_no_python_bytecode(resources)
+        calls.append("framework")
+
+    def fake_sign_site_packages(path: Path) -> None:
+        assert path == site_packages
+        assert_no_python_bytecode(resources)
+        calls.append("site-packages")
+
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_python_framework", fake_sign_framework)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_site_packages", fake_sign_site_packages)
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid_for_roots", lambda roots: calls.append("verify"))
+
+    package_app.finalize_python_bundle(resources)
+
+    assert calls == ["framework", "site-packages", "verify"]
+    assert_no_python_bytecode(resources)
 
 
 def test_package_args_do_not_allow_missing_bundled_tools() -> None:
@@ -851,6 +979,7 @@ def test_python_dependency_validation_uses_bundled_python(
     tmp_path: Path,
 ) -> None:
     package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
     app = tmp_path / "TimeCapsuleSMB.app"
     create_fake_app_executable_and_resources(app)
     site_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
@@ -871,6 +1000,8 @@ def test_python_dependency_validation_uses_bundled_python(
     assert env["PYTHONHOME"] == str(package_app.bundled_python_home(app))
     assert env["PYTHONPATH"] == str(site_packages)
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert env["PYTHONPYCACHEPREFIX"] == str(tmp_path / ".build" / "package-app" / "python-bytecode")
 
 
 def test_validate_app_resources_rejects_swift_resource_bundle_crash(tmp_path: Path) -> None:

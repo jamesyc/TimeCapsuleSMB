@@ -45,6 +45,7 @@ CACHE_COMPLETE_MARKER = ".complete"
 CACHE_MANIFEST_FILE = "manifest.json"
 PACKAGE_CACHE_IGNORED_NAMES = {"__pycache__", ".DS_Store"}
 PACKAGE_CACHE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
+PYTHON_SUBPROCESS_BYTECODE_CACHE = "python-bytecode"
 APP_ICON_ENTRIES = [
     ("icon_16x16.png", 16),
     ("icon_16x16@2x.png", 32),
@@ -283,6 +284,7 @@ def python_major_minor(python: str) -> tuple[int, int]:
     code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
     completed = subprocess.run(
         [python, "-c", code],
+        env=python_subprocess_env(),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -296,6 +298,25 @@ def package_cache_dir(name: str) -> Path:
     path = PACKAGE_ROOT / ".build" / "package-app" / name
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def python_subprocess_env(
+    env: dict[str, str] | None = None,
+    *,
+    python_home: Path | None = None,
+    pycache_prefix: Path | None = None,
+) -> dict[str, str]:
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    if python_home is not None:
+        merged["PYTHONHOME"] = str(python_home)
+    prefix = pycache_prefix or package_cache_dir(PYTHON_SUBPROCESS_BYTECODE_CACHE)
+    prefix.mkdir(parents=True, exist_ok=True)
+    merged["PYTHONPYCACHEPREFIX"] = str(prefix)
+    merged["PYTHONNOUSERSITE"] = "1"
+    merged["PYTHONDONTWRITEBYTECODE"] = "1"
+    return merged
 
 
 def sha256_file(path: Path) -> str:
@@ -501,6 +522,7 @@ def prepared_python_framework(args: argparse.Namespace, architectures: tuple[str
         else:
             extract_python_framework(source, staged_framework)
         prune_python_runtime(staged_framework)
+        remove_python_bytecode(staged_framework)
         rewrite_python_framework_install_names(staged_framework)
         assert_macho_has_architectures(python_framework_executable(staged_framework), architectures, "Bundled Python executable")
         assert_macho_has_architectures(python_framework_dylib(staged_framework), architectures, "Bundled Python framework")
@@ -543,6 +565,7 @@ def copy_python_runtime(args: argparse.Namespace, resources_dir: Path, architect
         else:
             extract_python_framework(python_runtime_pkg(args), framework)
         prune_python_runtime(framework)
+        remove_python_bytecode(framework)
         rewrite_python_framework_install_names(framework)
         assert_macho_architectures_for_roots([framework], architectures, "Bundled Python runtime architecture")
         assert_no_external_macho_dependencies_for_roots([framework])
@@ -659,6 +682,21 @@ def prune_python_runtime(framework: Path) -> None:
         path.unlink()
 
 
+def remove_python_bytecode(root: Path) -> None:
+    if not root.exists():
+        return
+    pycache_dirs = [
+        path
+        for path in root.rglob("__pycache__")
+        if path.is_dir() and not path.is_symlink()
+    ]
+    for path in sorted(pycache_dirs, key=lambda candidate: len(candidate.parts), reverse=True):
+        shutil.rmtree(path)
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix in PACKAGE_CACHE_IGNORED_SUFFIXES:
+            path.unlink()
+
+
 def python_cache_identity(python: str) -> dict[str, object]:
     code = (
         "import json, platform, sys, sysconfig\n"
@@ -671,6 +709,7 @@ def python_cache_identity(python: str) -> dict[str, object]:
     )
     completed = subprocess.run(
         [python, "-c", code],
+        env=python_subprocess_env(),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -707,18 +746,20 @@ def build_python_packages(python: str, site_packages: Path) -> None:
 
     with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-python-") as tmp:
         build_venv = Path(tmp) / "venv"
-        run([python, "-m", "venv", str(build_venv)])
+        env = python_subprocess_env(pycache_prefix=Path(tmp) / "pycache")
+        run([python, "-m", "venv", str(build_venv)], env=env)
         build_python = build_venv / "bin" / "python"
-        run([str(build_python), "-m", "pip", "install", "-U", "pip"])
+        run([str(build_python), "-m", "pip", "install", "-U", "pip"], env=env)
         generated_build_lib = REPO_ROOT / "build" / "lib"
         build_lib_existed = generated_build_lib.exists()
         try:
-            run([str(build_python), "-m", "pip", "install", "--target", str(site_packages), str(REPO_ROOT)])
-            run([str(build_python), "-m", "pip", "install", "--target", str(site_packages), *APP_BUNDLED_PYTHON_REQUIREMENTS])
+            run([str(build_python), "-m", "pip", "install", "--target", str(site_packages), str(REPO_ROOT)], env=env)
+            run([str(build_python), "-m", "pip", "install", "--target", str(site_packages), *APP_BUNDLED_PYTHON_REQUIREMENTS], env=env)
         finally:
             if not build_lib_existed and generated_build_lib.exists():
                 shutil.rmtree(generated_build_lib)
     remove_optional_zeroconf_extensions(site_packages)
+    remove_python_bytecode(site_packages)
 
 
 def create_python_packages(
@@ -740,6 +781,7 @@ def create_python_packages(
         if cache_is_complete(entry, cached_site_packages):
             print("Using cached Python site-packages.", file=sys.stderr)
             shutil.copytree(cached_site_packages, site_packages)
+            remove_python_bytecode(site_packages)
             return
 
         cache_root = entry.parent
@@ -749,6 +791,7 @@ def create_python_packages(
             staged_site_packages = staging / "site-packages"
             staged_site_packages.mkdir(parents=True)
             build_python_packages(python, staged_site_packages)
+            remove_python_bytecode(staged_site_packages)
             assert_macho_architectures_for_roots([staged_site_packages], architectures, "Bundled Python package architecture")
             assert_no_external_macho_dependencies_for_roots([staged_site_packages])
             ad_hoc_codesign_site_packages(staged_site_packages)
@@ -760,6 +803,7 @@ def create_python_packages(
 
     site_packages.mkdir()
     build_python_packages(python, site_packages)
+    remove_python_bytecode(site_packages)
     assert_macho_architectures_for_roots([site_packages], architectures, "Bundled Python package architecture")
     assert_no_external_macho_dependencies_for_roots([site_packages])
     ad_hoc_codesign_site_packages(site_packages)
@@ -1106,6 +1150,18 @@ def ad_hoc_codesign_site_packages(site_packages: Path) -> None:
     ad_hoc_codesign_macho_roots([site_packages])
 
 
+def finalize_python_bundle(resources_dir: Path) -> None:
+    framework = resources_dir / "Python" / "Runtime" / PYTHON_FRAMEWORK_NAME
+    site_packages = resources_dir / "Python" / "site-packages"
+    remove_python_bytecode(framework)
+    remove_python_bytecode(site_packages)
+    if framework.is_dir():
+        ad_hoc_codesign_python_framework(framework)
+    if site_packages.is_dir():
+        ad_hoc_codesign_site_packages(site_packages)
+    assert_macho_code_signatures_valid_for_roots([framework, site_packages])
+
+
 def codesign_order(path: Path, app: Path) -> tuple[int, str]:
     try:
         relative = path.resolve().relative_to(app.resolve())
@@ -1344,13 +1400,12 @@ def assert_no_external_macho_dependencies(app: Path) -> None:
 
 
 def assert_python_dependencies_are_bundled(app: Path) -> None:
-    env = os.environ.copy()
     site_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
     python_home = bundled_python_home(app)
-    env["PYTHONPATH"] = str(site_packages)
-    env["PYTHONNOUSERSITE"] = "1"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONHOME"] = str(python_home)
+    env = python_subprocess_env(
+        {"PYTHONPATH": str(site_packages)},
+        python_home=python_home,
+    )
     code = (
         "from pathlib import Path\n"
         "import certifi, Crypto, ifaddr, pexpect, timecapsulesmb, zeroconf, zopfli.gzip\n"
@@ -1669,6 +1724,7 @@ def package_app(args: argparse.Namespace) -> Path:
     write_helper_wrapper(helpers / "tcapsule")
     python_executable = copy_python_runtime(args, resources, architectures)
     create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
+    finalize_python_bundle(resources)
     copy_distribution(resources)
     copy_native_tools_layer(app, architectures, use_cache=not args.no_cache)
     assert_bundle_layout(
