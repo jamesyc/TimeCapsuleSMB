@@ -350,6 +350,342 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIsNone(current_name, stdout)
         return sections
 
+    def run_riousbprint_prni_parser(self, prni_raw: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            prni_path = tmp_path / "prni.txt"
+            prni_path.write_text(textwrap.dedent(prni_raw).lstrip("\n"))
+            script = tmp_path / "parse-prni.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {shlex.quote(str(flash / "common.sh"))}
+                    raw=$(/bin/cat {shlex.quote(str(prni_path))})
+                    if tc_load_riousbprint_identity_from_prni "$raw"; then
+                        printf 'status=attached\\n'
+                        printf 'name=%s\\n' "$RIOUSBPRINT_INSTANCE_NAME"
+                        printf 'mfg=%s\\n' "$RIOUSBPRINT_MFG"
+                        printf 'mdl=%s\\n' "$RIOUSBPRINT_MDL"
+                        printf 'serial=%s\\n' "$RIOUSBPRINT_SERIAL"
+                        printf 'vendor=%s\\n' "$RIOUSBPRINT_VENDOR_ID"
+                        printf 'product=%s\\n' "$RIOUSBPRINT_PRODUCT_ID"
+                        printf 'port=%s\\n' "$PDL_DATASTREAM_PORT"
+                    else
+                        printf 'status=none\\n'
+                    fi
+                    """
+                )
+            )
+            script.chmod(0o755)
+            return subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_common_prni_parser_decodes_acp_quoted_usb_printer_values(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        generatedNumber=0
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series"
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "status=attached\n"
+            "name=Brother HL-L2370DN series\n"
+            "mfg=Brother\n"
+            "mdl=HL-L2370DN series\n"
+            "serial=E78098M7N216821\n"
+            "vendor=1273\n"
+            "product=160\n"
+            "port=9100\n",
+        )
+
+    def test_common_prni_parser_keeps_legacy_unquoted_usb_printer_values(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        make=Canon
+                        model=MP490 series
+                        name=Canon MP490 series
+                        pluggedIn=true
+                        productID=5948
+                        serialNumber=C0958C
+                        vendorID=1193
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=attached\n", proc.stdout)
+        self.assertIn("name=Canon MP490 series\n", proc.stdout)
+        self.assertIn("mfg=Canon\n", proc.stdout)
+        self.assertIn("mdl=MP490 series\n", proc.stdout)
+        self.assertIn("serial=C0958C\n", proc.stdout)
+
+    def test_common_prni_parser_decodes_escaped_string_characters(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            r"""
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        make="HP"
+                        model="LaserJet \"Office\""
+                        name="HP LaserJet \"Office\""
+                        pluggedIn=true
+                        productID=1234
+                        serialNumber="SN\\123"
+                        vendorID=5678
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('name=HP LaserJet "Office"\n', proc.stdout)
+        self.assertIn('mdl=LaserJet "Office"\n', proc.stdout)
+        self.assertIn("serial=SN\\123\n", proc.stdout)
+
+    def test_common_prni_parser_keeps_weird_but_valid_string_content(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            r"""
+            {
+                printers=[
+                    {
+                        unknownBefore="ignore=this"
+                        appSocketPort=9100
+                        make="Acme=Printers"
+                        model="Model } 42"
+                        name="Kitchen=Printer } \"Beta\""
+                        pluggedIn=true
+                        productID=65535
+                        serialNumber="SN=12\\34"
+                        vendorID=0
+                        unknownAfter="also=ignored"
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "status=attached\n"
+            "name=Kitchen=Printer } \"Beta\"\n"
+            "mfg=Acme=Printers\n"
+            "mdl=Model } 42\n"
+            "serial=SN=12\\34\n"
+            "vendor=0\n"
+            "product=65535\n"
+            "port=9100\n",
+        )
+
+    def test_common_prni_parser_accepts_missing_optional_usb_metadata(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        name="Bare Printer"
+                        pluggedIn=true
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "status=attached\n"
+            "name=Bare Printer\n"
+            "mfg=\n"
+            "mdl=\n"
+            "serial=\n"
+            "vendor=\n"
+            "product=\n"
+            "port=\n",
+        )
+
+    def test_common_prni_parser_accepts_numeric_boundaries(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=65535
+                        make="Boundary"
+                        model="Port"
+                        name="Boundary Printer"
+                        pluggedIn=true
+                        productID=0
+                        serialNumber="B65535"
+                        vendorID=65535
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=attached\n", proc.stdout)
+        self.assertIn("vendor=65535\n", proc.stdout)
+        self.assertIn("product=0\n", proc.stdout)
+        self.assertIn("port=65535\n", proc.stdout)
+
+    def test_common_prni_parser_rejects_malformed_quoted_string(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=9100
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_rejects_invalid_decimal_value(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=91OO
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series"
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_rejects_zero_or_out_of_range_port(self) -> None:
+        for app_socket_port in ("0", "65536"):
+            with self.subTest(app_socket_port=app_socket_port):
+                proc = self.run_riousbprint_prni_parser(
+                    f"""
+                    {{
+                        printers=[
+                            {{
+                                appSocketPort={app_socket_port}
+                                make="Brother"
+                                model="HL-L2370DN series"
+                                name="Brother HL-L2370DN series"
+                                pluggedIn=true
+                                productID=160
+                                serialNumber="E78098M7N216821"
+                                vendorID=1273
+                            }}
+                        ]
+                    }}
+                    """
+                )
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_rejects_out_of_range_usb_ids(self) -> None:
+        for field_name in ("productID", "vendorID"):
+            with self.subTest(field_name=field_name):
+                product_id = "65536" if field_name == "productID" else "160"
+                vendor_id = "65536" if field_name == "vendorID" else "1273"
+                proc = self.run_riousbprint_prni_parser(
+                    f"""
+                    {{
+                        printers=[
+                            {{
+                                appSocketPort=9100
+                                make="Brother"
+                                model="HL-L2370DN series"
+                                name="Brother HL-L2370DN series"
+                                pluggedIn=true
+                                productID={product_id}
+                                serialNumber="E78098M7N216821"
+                                vendorID={vendor_id}
+                            }}
+                        ]
+                    }}
+                    """
+                )
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout, "status=none\n")
+
+    def test_common_prni_parser_skips_invalid_candidate_and_uses_next_printer(self) -> None:
+        proc = self.run_riousbprint_prni_parser(
+            """
+            {
+                printers=[
+                    {
+                        appSocketPort=bad
+                        make="Bad"
+                        model="Bad"
+                        name="Bad Printer"
+                        pluggedIn=true
+                    }
+                    {
+                        appSocketPort=9100
+                        make="Brother"
+                        model="HL-L2370DN series"
+                        name="Brother HL-L2370DN series"
+                        pluggedIn=true
+                        productID=160
+                        serialNumber="E78098M7N216821"
+                        vendorID=1273
+                    }
+                ]
+            }
+            """
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=attached\n", proc.stdout)
+        self.assertIn("name=Brother HL-L2370DN series\n", proc.stdout)
+        self.assertNotIn("Bad Printer", proc.stdout)
+
     def parse_topology_tsv(self, text: str, volumes_root: Path) -> tuple[MaStVolume, ...]:
         volumes: list[MaStVolume] = []
         for line in text.splitlines():
@@ -2679,12 +3015,12 @@ MaSt = (
                             '        {{' \\
                             '            appSocketPort=9100' \\
                             '            generatedNumber=0' \\
-                            '            make=Canon' \\
-                            '            model=MP490 series' \\
-                            '            name=Canon MP490 series' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
                             '            pluggedIn=true' \\
                             '            productID=5948' \\
-                            '            serialNumber=C0958C' \\
+                            '            serialNumber="C0958C"' \\
                             '            vendorID=1193' \\
                             '        }}' \\
                             '    ]' \\
@@ -2791,12 +3127,12 @@ MaSt = (
                             '{{' \\
                             '    printers=[' \\
                             '        {{' \\
-                            '            make=Canon' \\
-                            '            model=MP490 series' \\
-                            '            name=Canon MP490 series' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
                             '            pluggedIn=false' \\
                             '            productID=5948' \\
-                            '            serialNumber=C0958C' \\
+                            '            serialNumber="C0958C"' \\
                             '            vendorID=1193' \\
                             '        }}' \\
                             '    ]' \\
@@ -2901,12 +3237,12 @@ MaSt = (
                                 '{{' \\
                                 '    printers=[' \\
                                 '        {{' \\
-                                '            make=Canon' \\
-                                '            model=MP490 series' \\
-                                '            name=Canon MP490 series' \\
+                                '            make="Canon"' \\
+                                '            model="MP490 series"' \\
+                                '            name="Canon MP490 series"' \\
                                 '            pluggedIn=true' \\
                                 '            productID=5948' \\
-                                '            serialNumber=C0958C' \\
+                                '            serialNumber="C0958C"' \\
                                 '            vendorID=1193' \\
                                 '        }}' \\
                                 '    ]' \\
@@ -3020,12 +3356,12 @@ MaSt = (
                                 '{{' \\
                                 '    printers=[' \\
                                 '        {{' \\
-                                '            make=Canon' \\
-                                '            model=MP490 series' \\
-                                '            name=Canon MP490 series' \\
+                                '            make="Canon"' \\
+                                '            model="MP490 series"' \\
+                                '            name="Canon MP490 series"' \\
                                 '            pluggedIn=true' \\
                                 '            productID=5948' \\
-                                '            serialNumber=C0958C' \\
+                                '            serialNumber="C0958C"' \\
                                 '            vendorID=1193' \\
                                 '        }}' \\
                                 '    ]' \\
@@ -4697,12 +5033,12 @@ MaSt = (
                             '        {{' \\
                             '            appSocketPort=9100' \\
                             '            generatedNumber=0' \\
-                            '            make=Canon' \\
-                            '            model=MP490 series' \\
-                            '            name=Canon MP490 series' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
                             '            pluggedIn=true' \\
                             '            productID=5948' \\
-                            '            serialNumber=C0958C' \\
+                            '            serialNumber="C0958C"' \\
                             '            vendorID=1193' \\
                             '        }}' \\
                             '    ]' \\
@@ -4772,12 +5108,12 @@ MaSt = (
                             '{{' \\
                             '    printers=[' \\
                             '        {{' \\
-                            '            make=Canon' \\
-                            '            model=MP490 series' \\
-                            '            name=Canon MP490 series' \\
+                            '            make="Canon"' \\
+                            '            model="MP490 series"' \\
+                            '            name="Canon MP490 series"' \\
                             '            pluggedIn=false' \\
                             '            productID=5948' \\
-                            '            serialNumber=C0958C' \\
+                            '            serialNumber="C0958C"' \\
                             '            vendorID=1193' \\
                             '        }}' \\
                             '    ]' \\

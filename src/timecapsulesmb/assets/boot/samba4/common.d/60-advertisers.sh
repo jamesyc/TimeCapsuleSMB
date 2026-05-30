@@ -188,6 +188,7 @@ tc_clear_riousbprint_identity() {
 
 tc_riousbprint_reset_candidate() {
     prni_candidate_seen=0
+    prni_candidate_valid=1
     prni_candidate_plugged=
     prni_candidate_name=
     prni_candidate_mfg=
@@ -198,8 +199,42 @@ tc_riousbprint_reset_candidate() {
     prni_candidate_app_socket_port=
 }
 
+tc_riousbprint_decode_prni_string_value() {
+    prni_value=$1
+    case "$prni_value" in
+        \"*\")
+            prni_value=${prni_value#\"}
+            prni_value=${prni_value%\"}
+            ;;
+        \"*|*\")
+            return 1
+            ;;
+    esac
+    printf '%s\n' "$prni_value" | sed -e 's/\\"/"/g' -e 's/\\\\/\\/g'
+}
+
+tc_riousbprint_decode_prni_decimal_value() {
+    prni_decimal_value=$1
+    prni_decimal_min=${2:-0}
+    prni_decimal_max=${3:-}
+
+    case "$prni_decimal_value" in
+        ""|*[!0-9]*)
+            return 1
+            ;;
+    esac
+    if [ "$prni_decimal_value" -lt "$prni_decimal_min" ]; then
+        return 1
+    fi
+    if [ -n "$prni_decimal_max" ] && [ "$prni_decimal_value" -gt "$prni_decimal_max" ]; then
+        return 1
+    fi
+    printf '%s\n' "$prni_decimal_value"
+}
+
 tc_riousbprint_commit_candidate() {
     [ "$prni_candidate_seen" = "1" ] || return 1
+    [ "$prni_candidate_valid" = "1" ] || return 1
     [ "$prni_candidate_plugged" = "true" ] || return 1
     [ -n "$prni_candidate_name" ] || return 1
 
@@ -222,38 +257,70 @@ tc_load_riousbprint_identity_from_prni() {
         case "$prni_line" in
             *appSocketPort=*)
                 prni_candidate_seen=1
-                prni_candidate_app_socket_port=${prni_line#*=}
+                prni_value=${prni_line#*=}
+                if ! prni_candidate_app_socket_port=$(tc_riousbprint_decode_prni_decimal_value "$prni_value" 1 65535); then
+                    prni_candidate_valid=0
+                    prni_candidate_app_socket_port=
+                fi
                 ;;
             *generatedNumber=*)
                 prni_candidate_seen=1
                 ;;
             *make=*)
                 prni_candidate_seen=1
-                prni_candidate_mfg=${prni_line#*=}
+                prni_value=${prni_line#*=}
+                if ! prni_candidate_mfg=$(tc_riousbprint_decode_prni_string_value "$prni_value"); then
+                    prni_candidate_valid=0
+                    prni_candidate_mfg=
+                fi
                 ;;
             *model=*)
                 prni_candidate_seen=1
-                prni_candidate_mdl=${prni_line#*=}
+                prni_value=${prni_line#*=}
+                if ! prni_candidate_mdl=$(tc_riousbprint_decode_prni_string_value "$prni_value"); then
+                    prni_candidate_valid=0
+                    prni_candidate_mdl=
+                fi
                 ;;
             *name=*)
                 prni_candidate_seen=1
-                prni_candidate_name=${prni_line#*=}
+                prni_value=${prni_line#*=}
+                if ! prni_candidate_name=$(tc_riousbprint_decode_prni_string_value "$prni_value"); then
+                    prni_candidate_valid=0
+                    prni_candidate_name=
+                fi
                 ;;
             *pluggedIn=*)
                 prni_candidate_seen=1
                 prni_candidate_plugged=${prni_line#*=}
+                case "$prni_candidate_plugged" in
+                    true|false) ;;
+                    *) prni_candidate_valid=0 ;;
+                esac
                 ;;
             *productID=*)
                 prni_candidate_seen=1
-                prni_candidate_product_id=${prni_line#*=}
+                prni_value=${prni_line#*=}
+                if ! prni_candidate_product_id=$(tc_riousbprint_decode_prni_decimal_value "$prni_value" 0 65535); then
+                    prni_candidate_valid=0
+                    prni_candidate_product_id=
+                fi
                 ;;
             *serialNumber=*)
                 prni_candidate_seen=1
-                prni_candidate_serial=${prni_line#*=}
+                prni_value=${prni_line#*=}
+                if ! prni_candidate_serial=$(tc_riousbprint_decode_prni_string_value "$prni_value"); then
+                    prni_candidate_valid=0
+                    prni_candidate_serial=
+                fi
                 ;;
             *vendorID=*)
                 prni_candidate_seen=1
-                prni_candidate_vendor_id=${prni_line#*=}
+                prni_value=${prni_line#*=}
+                if ! prni_candidate_vendor_id=$(tc_riousbprint_decode_prni_decimal_value "$prni_value" 0 65535); then
+                    prni_candidate_valid=0
+                    prni_candidate_vendor_id=
+                fi
                 ;;
             *"}"*)
                 if tc_riousbprint_commit_candidate; then
