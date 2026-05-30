@@ -1,123 +1,11 @@
 import Combine
 import Foundation
 
-enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
-    case activate
-    case uninstall
-    case fsck
-    case repairXattrs
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .activate:
-            return L10n.string("maintenance.workflow.activate")
-        case .uninstall:
-            return L10n.string("maintenance.workflow.uninstall")
-        case .fsck:
-            return L10n.string("maintenance.workflow.fsck")
-        case .repairXattrs:
-            return L10n.string("maintenance.workflow.repair_xattrs")
-        }
-    }
-
-    var deviceWorkflowLane: DeviceWorkflowLane {
-        switch self {
-        case .activate:
-            return .activate
-        case .uninstall:
-            return .uninstall
-        case .fsck:
-            return .fsck
-        case .repairXattrs:
-            return .repairXattrs
-        }
-    }
-}
-
-enum MaintenanceOperationState: String, CaseIterable, Equatable {
-    case idle
-    case loading
-    case listReady
-    case planning
-    case planReady
-    case planStale
-    case scanning
-    case scanReady
-    case scanStale
-    case awaitingConfirmation
-    case running
-    case repairing
-    case succeeded
-    case repaired
-    case failed
-
-    var title: String {
-        switch self {
-        case .idle:
-            return L10n.string("workflow.state.idle")
-        case .loading:
-            return L10n.string("workflow.state.loading")
-        case .listReady:
-            return L10n.string("workflow.state.list_ready")
-        case .planning:
-            return L10n.string("workflow.state.planning")
-        case .planReady:
-            return L10n.string("workflow.state.plan_ready")
-        case .planStale:
-            return L10n.string("workflow.state.plan_stale")
-        case .scanning:
-            return L10n.string("workflow.state.scanning")
-        case .scanReady:
-            return L10n.string("workflow.state.scan_ready")
-        case .scanStale:
-            return L10n.string("workflow.state.scan_stale")
-        case .awaitingConfirmation:
-            return L10n.string("workflow.state.awaiting_confirmation")
-        case .running:
-            return L10n.string("workflow.state.running")
-        case .repairing:
-            return L10n.string("workflow.state.repairing")
-        case .succeeded:
-            return L10n.string("workflow.state.succeeded")
-        case .repaired:
-            return L10n.string("workflow.state.repaired")
-        case .failed:
-            return L10n.string("workflow.state.failed")
-        }
-    }
-}
-
-struct MaintenanceOptions: Equatable {
-    let noReboot: Bool
-    let noWait: Bool
-    let mountWait: Int
-}
-
-struct FsckTargetViewModel: Identifiable, Equatable {
-    let id: String
-    let device: String
-    let mountpoint: String
-    let name: String?
-    let builtin: Bool?
-
-    init(payload: FsckTargetPayload) {
-        self.id = "\(payload.device)|\(payload.mountpoint)"
-        self.device = payload.device
-        self.mountpoint = payload.mountpoint
-        self.name = payload.name
-        self.builtin = payload.builtin
-    }
-
-    var volumeParam: String {
-        device
-    }
-}
-
 @MainActor
 final class MaintenanceStore: ObservableObject {
-    @Published var selectedWorkflow: MaintenanceWorkflow = .activate
+    @Published var selectedWorkflow: MaintenanceWorkflow = .activate {
+        didSet { syncFromWorkflowStores() }
+    }
     @Published var mountWait = "30" {
         didSet { markPlansStaleForOptionChange() }
     }
@@ -149,7 +37,13 @@ final class MaintenanceStore: ObservableObject {
         didSet { markRepairScanStaleIfNeeded() }
     }
     @Published var selectedFsckTargetID: FsckTargetViewModel.ID? {
-        didSet { markFsckPlanStaleIfNeeded() }
+        didSet {
+            guard selectedFsckTargetID != fsckStore.selectedTargetID else {
+                return
+            }
+            fsckStore.selectTarget(id: selectedFsckTargetID, options: currentOptions)
+            syncFromWorkflowStores()
+        }
     }
 
     @Published private(set) var activateState: MaintenanceOperationState = .idle
@@ -173,16 +67,13 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var errorsByWorkflow: [MaintenanceWorkflow: BackendErrorViewModel] = [:]
 
     let backend: BackendClient
-    private let backendsByWorkflow: [MaintenanceWorkflow: BackendClient]
+    let activationStore: ActivationStore
+    let uninstallStore: UninstallStore
+    let fsckStore: FsckStore
+    let repairXattrsStore: RepairXattrsStore
+
     private let coordinator: OperationCoordinator?
     private let laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
-
-    private var plannedUninstallOptions: MaintenanceOptions?
-    private var plannedFsckOptions: MaintenanceOptions?
-    private var plannedFsckTargetID: FsckTargetViewModel.ID?
-    private var scannedRepairPath: String?
-    private var scannedRepairOptions: RepairXattrsOptions?
-    private let operationObserver = BackendOperationObserver()
     private var cancellables: Set<AnyCancellable> = []
 
     convenience init() {
@@ -192,10 +83,14 @@ final class MaintenanceStore: ObservableObject {
     init(backend: BackendClient) {
         let backendsByWorkflow = Self.standaloneBackends(primary: backend)
         self.backend = backend
-        self.backendsByWorkflow = backendsByWorkflow
         self.coordinator = nil
         self.laneKeysByWorkflow = [:]
-        observeBackends(backendsByWorkflow)
+        self.activationStore = ActivationStore(backend: backendsByWorkflow[.activate] ?? backend)
+        self.uninstallStore = UninstallStore(backend: backendsByWorkflow[.uninstall] ?? backend.makeSibling())
+        self.fsckStore = FsckStore(backend: backendsByWorkflow[.fsck] ?? backend.makeSibling())
+        self.repairXattrsStore = RepairXattrsStore(backend: backendsByWorkflow[.repairXattrs] ?? backend.makeSibling())
+        observeWorkflowStores()
+        syncFromWorkflowStores()
     }
 
     convenience init(coordinator: OperationCoordinator) {
@@ -209,10 +104,30 @@ final class MaintenanceStore: ObservableObject {
             laneKeysByWorkflow: laneKeysByWorkflow
         )
         self.backend = backendsByWorkflow[.activate] ?? coordinator.lane(for: laneKey).backend
-        self.backendsByWorkflow = backendsByWorkflow
         self.coordinator = coordinator
         self.laneKeysByWorkflow = laneKeysByWorkflow
-        observeBackends(backendsByWorkflow)
+        self.activationStore = ActivationStore(
+            backend: backendsByWorkflow[.activate] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.activate]
+        )
+        self.uninstallStore = UninstallStore(
+            backend: backendsByWorkflow[.uninstall] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.uninstall]
+        )
+        self.fsckStore = FsckStore(
+            backend: backendsByWorkflow[.fsck] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.fsck]
+        )
+        self.repairXattrsStore = RepairXattrsStore(
+            backend: backendsByWorkflow[.repairXattrs] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.repairXattrs]
+        )
+        observeWorkflowStores()
+        syncFromWorkflowStores()
     }
 
     private static func standaloneBackends(primary backend: BackendClient) -> [MaintenanceWorkflow: BackendClient] {
@@ -248,46 +163,43 @@ final class MaintenanceStore: ObservableObject {
         }
     }
 
-    private func observeBackends(_ backendsByWorkflow: [MaintenanceWorkflow: BackendClient]) {
-        for backend in uniqueBackends(backendsByWorkflow.values) {
-            backend.$events
-                .sink { [weak self] events in
-                    Task { @MainActor in
-                        self?.process(events)
-                    }
+    private func observeWorkflowStores() {
+        observe(activationStore)
+        observe(uninstallStore)
+        observe(fsckStore)
+        observe(repairXattrsStore)
+    }
+
+    private func observe<Store: ObservableObject>(_ store: Store) where Store.ObjectWillChangePublisher == ObservableObjectPublisher {
+        store.objectWillChange
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.syncFromWorkflowStores()
                 }
-                .store(in: &cancellables)
-            backend.$isRunning
-                .dropFirst()
-                .sink { [weak self] _ in
-                    self?.objectWillChange.send()
-                }
-                .store(in: &cancellables)
-        }
+            }
+            .store(in: &cancellables)
     }
 
     var events: [BackendEvent] {
-        uniqueBackends(backendsByWorkflow.values).flatMap(\.events)
+        workflowStores.flatMap(\.events)
     }
 
     var isRunning: Bool {
-        uniqueBackends(backendsByWorkflow.values).contains { $0.isRunning }
+        workflowStores.contains { $0.isRunning }
     }
 
     var isBusy: Bool {
-        let maintenanceBusy = uniqueBackends(backendsByWorkflow.values).contains {
-            $0.isRunning || $0.pendingConfirmation != nil
-        }
+        let maintenanceBusy = workflowStores.contains { $0.isBusy }
         let deviceBusy = deviceProfileID.map { coordinator?.isDeviceBusy($0) ?? false } == true
         return maintenanceBusy || deviceBusy
     }
 
     var canCancel: Bool {
-        activeBackend?.canCancel ?? false
+        activeWorkflowStore?.canCancel ?? false
     }
 
     func timelineEvents(for workflow: MaintenanceWorkflow) -> [BackendEvent] {
-        backend(for: workflow).events
+        workflowStore(for: workflow).events
     }
 
     func currentStage(for workflow: MaintenanceWorkflow) -> OperationStageState? {
@@ -299,15 +211,25 @@ final class MaintenanceStore: ObservableObject {
     }
 
     func pendingConfirmation(for workflow: MaintenanceWorkflow) -> PendingConfirmation? {
-        backend(for: workflow).pendingConfirmation
+        workflowStore(for: workflow).pendingConfirmation
     }
 
     func confirmPending(for workflow: MaintenanceWorkflow) {
-        backend(for: workflow).confirmPending()
+        workflowStore(for: workflow).confirmPending()
     }
 
     func cancelPendingConfirmation(for workflow: MaintenanceWorkflow) {
-        backend(for: workflow).cancelPendingConfirmation()
+        switch workflow {
+        case .activate:
+            activationStore.cancelPendingConfirmation()
+        case .uninstall:
+            uninstallStore.cancelPendingConfirmation(options: currentOptions)
+        case .fsck:
+            fsckStore.cancelPendingConfirmation(options: currentOptions)
+        case .repairXattrs:
+            repairXattrsStore.cancelPendingConfirmation(path: trimmedRepairPath, options: currentRepairOptions)
+        }
+        syncFromWorkflowStores()
     }
 
     var mountWaitValue: Int? {
@@ -315,415 +237,193 @@ final class MaintenanceStore: ObservableObject {
     }
 
     var selectedFsckTarget: FsckTargetViewModel? {
-        guard let selectedFsckTargetID else {
-            return nil
-        }
-        return fsckTargets.first { $0.id == selectedFsckTargetID }
+        fsckStore.selectedTarget
     }
 
     var canPlanActivation: Bool {
-        !isBusy
+        !isBusy && activationStore.canPlan
     }
 
     var canRunActivation: Bool {
-        !isBusy && activationPlan != nil && activateState == .planReady
+        !isBusy && activationStore.canRun
     }
 
     var canPlanUninstall: Bool {
-        !isBusy && currentOptions != nil
+        !isBusy && uninstallStore.canPlan(options: currentOptions)
     }
 
     var canRunUninstall: Bool {
-        !isBusy && uninstallPlan != nil && uninstallState == .planReady && currentOptions == plannedUninstallOptions
+        !isBusy && uninstallStore.canRun(options: currentOptions)
     }
 
     var canFindFsckVolumes: Bool {
-        !isBusy && mountWaitValue != nil
+        !isBusy && fsckStore.canFindVolumes(mountWaitValue: mountWaitValue)
     }
 
     var canPlanFsck: Bool {
-        !isBusy && selectedFsckTarget != nil && currentOptions != nil
+        !isBusy && fsckStore.canPlan(options: currentOptions)
     }
 
     var canRunFsck: Bool {
-        !isBusy
-            && fsckPlan != nil
-            && fsckState == .planReady
-            && currentOptions == plannedFsckOptions
-            && selectedFsckTargetID == plannedFsckTargetID
+        !isBusy && fsckStore.canRun(options: currentOptions)
     }
 
     var canRepairXattrs: Bool {
-        !isBusy
-            && repairState == .scanReady
-            && repairScan?.repairableCount ?? 0 > 0
-            && scannedRepairPath == trimmedRepairPath
-            && scannedRepairOptions == currentRepairOptions
+        !isBusy && repairXattrsStore.canRepair(path: trimmedRepairPath, options: currentRepairOptions)
     }
 
     var canScanRepairXattrs: Bool {
-        !isBusy
-            && !trimmedRepairPath.isEmpty
-            && currentRepairOptions != nil
+        !isBusy && repairXattrsStore.canScan(path: trimmedRepairPath, options: currentRepairOptions)
     }
 
     @discardableResult
     func planActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        let start = startRun(
-            operation: "activate",
-            params: OperationParams.activatePlan(),
-            profile: profile,
-            password: password,
-            workflow: .activate
-        )
-        guard case .started = start else {
+        guard begin(workflow: .activate) else {
+            let start = activationStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .activate
-        activateState = .planning
-        activationPlan = nil
-        activationResult = nil
-        process(backend(for: .activate).events)
+        let start = activationStore.planActivation(password: password, profile: profile)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func runActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard !isBusy else {
-            rejectRun(workflow: .activate, localError: .operationAlreadyRunning)
-            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-        }
-        guard canRunActivation else {
-            failLocally(workflow: .activate, localError: .activationPlanRequired)
-            return .rejected(WorkflowLocalError.activationPlanRequired.message)
-        }
-        let start = startRun(
-            operation: "activate",
-            params: OperationParams.activateRun(),
-            profile: profile,
-            password: password,
-            workflow: .activate
-        )
-        guard case .started = start else {
+        guard begin(workflow: .activate) else {
+            let start = activationStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .activate
-        activateState = .running
-        activationResult = nil
-        process(backend(for: .activate).events)
+        let start = activationStore.runActivation(password: password, profile: profile)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func planUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard let options = currentOptions else {
-            failLocally(workflow: .uninstall, localError: .mountWaitInvalid)
-            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
-        }
-        let start = startRun(
-            operation: "uninstall",
-            params: OperationParams.uninstallPlan(
-                noReboot: options.noReboot,
-                noWait: options.noWait,
-                mountWait: Double(options.mountWait)
-            ),
-            profile: profile,
-            password: password,
-            workflow: .uninstall
-        )
-        guard case .started = start else {
+        guard begin(workflow: .uninstall) else {
+            let start = uninstallStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .uninstall
-        uninstallState = .planning
-        uninstallPlan = nil
-        uninstallResult = nil
-        plannedUninstallOptions = options
-        process(backend(for: .uninstall).events)
+        let start = uninstallStore.planUninstall(options: currentOptions, password: password, profile: profile)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func runUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard !isBusy else {
-            rejectRun(workflow: .uninstall, localError: .operationAlreadyRunning)
-            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-        }
-        guard let options = plannedUninstallOptions, currentOptions == options, uninstallPlan != nil else {
-            uninstallState = .planStale
-            setError(BackendErrorViewModel(operation: "uninstall", localError: .uninstallPlanStale), for: .uninstall)
-            return .rejected(WorkflowLocalError.uninstallPlanStale.message)
-        }
-        guard uninstallState == .planReady else {
-            return .rejected(WorkflowLocalError.uninstallPlanNotReady.message)
-        }
-        let start = startRun(
-            operation: "uninstall",
-            params: OperationParams.uninstallRun(
-                noReboot: options.noReboot,
-                noWait: options.noWait,
-                mountWait: Double(options.mountWait)
-            ),
-            profile: profile,
-            password: password,
-            workflow: .uninstall
-        )
-        guard case .started = start else {
+        guard begin(workflow: .uninstall) else {
+            let start = uninstallStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .uninstall
-        uninstallState = .running
-        uninstallResult = nil
-        process(backend(for: .uninstall).events)
+        let start = uninstallStore.runUninstall(options: currentOptions, password: password, profile: profile)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func refreshFsckTargets(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard let mountWaitValue else {
-            failLocally(workflow: .fsck, localError: .mountWaitInvalid)
-            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
-        }
-        let start = startRun(
-            operation: "fsck",
-            params: OperationParams.fsckList(mountWait: Double(mountWaitValue)),
-            profile: profile,
-            password: password,
-            workflow: .fsck
-        )
-        guard case .started = start else {
+        guard begin(workflow: .fsck) else {
+            let start = fsckStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .fsck
-        fsckState = .loading
-        fsckTargets = []
-        selectedFsckTargetID = nil
-        fsckPlan = nil
-        fsckResult = nil
-        process(backend(for: .fsck).events)
+        let start = fsckStore.refreshTargets(mountWaitValue: mountWaitValue, password: password, profile: profile)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func planFsck(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard let options = currentOptions else {
-            failLocally(workflow: .fsck, localError: .mountWaitInvalid)
-            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
-        }
-        guard let target = selectedFsckTarget else {
-            failLocally(workflow: .fsck, localError: .fsckTargetRequired)
-            return .rejected(WorkflowLocalError.fsckTargetRequired.message)
-        }
-        let start = startRun(
-            operation: "fsck",
-            params: OperationParams.fsckPlan(
-                volume: target.volumeParam,
-                noReboot: options.noReboot,
-                noWait: options.noWait,
-                mountWait: Double(options.mountWait)
-            ),
-            profile: profile,
-            password: password,
-            workflow: .fsck
-        )
-        guard case .started = start else {
+        guard begin(workflow: .fsck) else {
+            let start = fsckStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .fsck
-        fsckState = .planning
-        fsckPlan = nil
-        fsckResult = nil
-        plannedFsckOptions = options
-        plannedFsckTargetID = target.id
-        process(backend(for: .fsck).events)
+        let start = fsckStore.planFsck(options: currentOptions, password: password, profile: profile)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func runFsck(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard !isBusy else {
-            rejectRun(workflow: .fsck, localError: .operationAlreadyRunning)
-            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-        }
-        guard let options = plannedFsckOptions,
-              let target = selectedFsckTarget,
-              selectedFsckTargetID == plannedFsckTargetID,
-            currentOptions == options,
-            fsckPlan != nil else {
-            fsckState = .planStale
-            setError(BackendErrorViewModel(operation: "fsck", localError: .fsckPlanStale), for: .fsck)
-            return .rejected(WorkflowLocalError.fsckPlanStale.message)
-        }
-        guard fsckState == .planReady else {
-            return .rejected(WorkflowLocalError.fsckPlanNotReady.message)
-        }
-        let start = startRun(
-            operation: "fsck",
-            params: OperationParams.fsckRun(
-                volume: target.volumeParam,
-                noReboot: options.noReboot,
-                noWait: options.noWait,
-                mountWait: Double(options.mountWait)
-            ),
-            profile: profile,
-            password: password,
-            workflow: .fsck
-        )
-        guard case .started = start else {
+        guard begin(workflow: .fsck) else {
+            let start = fsckStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .fsck
-        fsckState = .running
-        fsckResult = nil
-        process(backend(for: .fsck).events)
+        let start = fsckStore.runFsck(options: currentOptions, password: password, profile: profile)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func scanRepairXattrs() -> OperationStartResult {
-        guard let options = currentRepairOptions else {
-            failLocally(workflow: .repairXattrs, localError: .repairXattrsDepthInvalid)
-            return .rejected(WorkflowLocalError.repairXattrsDepthInvalid.message)
-        }
-        guard !trimmedRepairPath.isEmpty else {
-            failLocally(workflow: .repairXattrs, localError: .repairXattrsPathRequired)
-            return .rejected(WorkflowLocalError.repairXattrsPathRequired.message)
-        }
-        let path = trimmedRepairPath
-        let start = startRun(
-            operation: "repair-xattrs",
-            params: OperationParams.repairXattrsScan(path: path, options: options),
-            profile: nil,
-            workflow: .repairXattrs
-        )
-        guard case .started = start else {
+        guard begin(workflow: .repairXattrs) else {
+            let start = repairXattrsStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .repairXattrs
-        repairState = .scanning
-        repairScan = nil
-        repairResult = nil
-        scannedRepairPath = path
-        scannedRepairOptions = options
-        process(backend(for: .repairXattrs).events)
+        let start = repairXattrsStore.scanRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions)
+        syncFromWorkflowStores()
         return start
     }
 
     @discardableResult
     func runRepairXattrs() -> OperationStartResult {
-        guard !isBusy else {
-            rejectRun(workflow: .repairXattrs, localError: .operationAlreadyRunning)
-            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-        }
-        guard canRepairXattrs else {
-            repairState = .scanStale
-            setError(BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale), for: .repairXattrs)
-            return .rejected(WorkflowLocalError.repairXattrsScanStale.message)
-        }
-        guard let options = scannedRepairOptions else {
-            repairState = .scanStale
-            setError(BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale), for: .repairXattrs)
-            return .rejected(WorkflowLocalError.repairXattrsScanStale.message)
-        }
-        let start = startRun(
-            operation: "repair-xattrs",
-            params: OperationParams.repairXattrsRun(path: trimmedRepairPath, options: options),
-            profile: nil,
-            workflow: .repairXattrs
-        )
-        guard case .started = start else {
+        guard begin(workflow: .repairXattrs) else {
+            let start = repairXattrsStore.rejectAlreadyRunning()
+            syncFromWorkflowStores()
             return start
         }
-        selectedWorkflow = .repairXattrs
-        repairState = .repairing
-        repairResult = nil
-        process(backend(for: .repairXattrs).events)
+        let start = repairXattrsStore.runRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions)
+        syncFromWorkflowStores()
         return start
     }
 
     func clear() {
-        for backend in uniqueBackends(backendsByWorkflow.values) {
-            backend.clear()
-        }
-        operationObserver.clear()
-        activateState = .idle
-        uninstallState = .idle
-        fsckState = .idle
-        repairState = .idle
-        activationPlan = nil
-        activationResult = nil
-        uninstallPlan = nil
-        uninstallResult = nil
-        fsckTargets = []
-        selectedFsckTargetID = nil
-        fsckPlan = nil
-        fsckResult = nil
-        repairScan = nil
-        repairResult = nil
-        currentStage = nil
-        error = nil
-        passwordInvalidProfileID = nil
-        currentStagesByWorkflow = [:]
-        errorsByWorkflow = [:]
-        plannedUninstallOptions = nil
-        plannedFsckOptions = nil
-        plannedFsckTargetID = nil
-        scannedRepairPath = nil
-        scannedRepairOptions = nil
-        operationObserver.finish()
+        activationStore.clear()
+        uninstallStore.clear()
+        fsckStore.clear()
+        repairXattrsStore.clear()
+        syncFromWorkflowStores()
     }
 
     func cancel() {
-        activeBackend?.cancel()
+        activeWorkflowStore?.cancel()
     }
 
-    private var activeBackend: BackendClient? {
-        uniqueBackends(backendsByWorkflow.values)
-            .first { $0.isRunning || $0.pendingConfirmation != nil }
+    private func begin(workflow: MaintenanceWorkflow) -> Bool {
+        selectedWorkflow = workflow
+        return !isBusy
+    }
+
+    private var workflowStores: [any MaintenanceWorkflowStore] {
+        [activationStore, uninstallStore, fsckStore, repairXattrsStore]
+    }
+
+    private var activeWorkflowStore: (any MaintenanceWorkflowStore)? {
+        workflowStores.first { $0.isBusy }
     }
 
     private var deviceProfileID: DeviceProfile.ID? {
         laneKeysByWorkflow.values.lazy.compactMap(\.deviceProfileID).first
     }
 
-    private func backend(for workflow: MaintenanceWorkflow) -> BackendClient {
-        backendsByWorkflow[workflow] ?? backend
-    }
-
-    private func laneKey(for workflow: MaintenanceWorkflow) -> OperationLaneKey? {
-        laneKeysByWorkflow[workflow]
-    }
-
-    private func workflow(for operation: String) -> MaintenanceWorkflow? {
-        MaintenanceWorkflow.allCases.first { $0.operationName == operation }
-    }
-
-    private func setError(_ error: BackendErrorViewModel, for workflow: MaintenanceWorkflow) {
-        errorsByWorkflow[workflow] = error
-        self.error = error
-    }
-
-    private func clearError(for workflow: MaintenanceWorkflow) {
-        errorsByWorkflow[workflow] = nil
-        if error?.operation == workflow.operationName {
-            error = errorsByWorkflow[selectedWorkflow] ?? errorsByWorkflow.values.first
+    private func workflowStore(for workflow: MaintenanceWorkflow) -> any MaintenanceWorkflowStore {
+        switch workflow {
+        case .activate:
+            return activationStore
+        case .uninstall:
+            return uninstallStore
+        case .fsck:
+            return fsckStore
+        case .repairXattrs:
+            return repairXattrsStore
         }
-    }
-
-    private func clearCurrentStage(for workflow: MaintenanceWorkflow) {
-        currentStagesByWorkflow[workflow] = nil
-        if currentStage?.operation == workflow.operationName {
-            currentStage = currentStagesByWorkflow[selectedWorkflow] ?? currentStagesByWorkflow.values.first
-        }
-    }
-
-    private func uniqueBackends<S: Sequence>(_ backends: S) -> [BackendClient] where S.Element == BackendClient {
-        var seen: Set<ObjectIdentifier> = []
-        var unique: [BackendClient] = []
-        for backend in backends where seen.insert(ObjectIdentifier(backend)).inserted {
-            unique.append(backend)
-        }
-        return unique
     }
 
     private var currentOptions: MaintenanceOptions? {
@@ -760,430 +460,81 @@ final class MaintenanceStore: ObservableObject {
         )
     }
 
-    private func resetRunState(workflow: MaintenanceWorkflow) {
-        backend(for: workflow).clear()
-        operationObserver.clear()
-        clearError(for: workflow)
-        clearCurrentStage(for: workflow)
-        passwordInvalidProfileID = nil
-        operationObserver.finish()
-    }
-
-    private func process(_ events: [BackendEvent]) {
-        operationObserver.process(events) { event, operation in
-            handle(event, activeOperation: operation)
-        }
-    }
-
-    private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
-        guard let workflow = workflow(for: event.operation) else {
-            return
-        }
-
-        if let stage = OperationStageState(event: event) {
-            currentStage = stage
-            currentStagesByWorkflow[workflow] = stage
-            if event.operation == "activate", activateState == .awaitingConfirmation {
-                activateState = .running
-            } else if event.operation == "uninstall", uninstallState == .awaitingConfirmation {
-                uninstallState = .running
-            } else if event.operation == "fsck", fsckState == .awaitingConfirmation {
-                fsckState = .running
-            } else if event.operation == "repair-xattrs", repairState == .awaitingConfirmation {
-                repairState = .repairing
-            }
-            return
-        }
-
-        if event.type == "error" {
-            applyError(event, activeOperation: activeOperation)
-            return
-        }
-
-        guard event.type == "result" else {
-            return
-        }
-
-        if event.ok == false {
-            applyFalseResult(event)
-            return
-        }
-
-        switch event.operation {
-        case "activate":
-            handleActivateResult(event)
-        case "uninstall":
-            handleUninstallResult(event)
-        case "fsck":
-            handleFsckResult(event)
-        case "repair-xattrs":
-            handleRepairResult(event)
-        default:
-            break
-        }
-    }
-
-    private func handleActivateResult(_ event: BackendEvent) {
-        if activateState == .planning {
-            do {
-                activationPlan = try event.decodePayload(ActivationPlanPayload.self)
-                activateState = .planReady
-                operationObserver.finish()
-            } catch {
-                failContract(workflow: .activate, error: error)
-            }
-            return
-        }
-        do {
-            activationResult = try event.decodePayload(ActivationResultPayload.self)
-            activateState = .succeeded
-            clearError(for: .activate)
-            operationObserver.finish()
-        } catch {
-            failContract(workflow: .activate, error: error)
-        }
-    }
-
-    private func handleUninstallResult(_ event: BackendEvent) {
-        if uninstallState == .planning {
-            do {
-                uninstallPlan = try event.decodePayload(UninstallPlanPayload.self)
-                uninstallState = .planReady
-                operationObserver.finish()
-            } catch {
-                failContract(workflow: .uninstall, error: error)
-            }
-            return
-        }
-        do {
-            uninstallResult = try event.decodePayload(MaintenanceResultPayload.self)
-            uninstallState = .succeeded
-            clearError(for: .uninstall)
-            operationObserver.finish()
-        } catch {
-            failContract(workflow: .uninstall, error: error)
-        }
-    }
-
-    private func handleFsckResult(_ event: BackendEvent) {
-        switch fsckState {
-        case .loading:
-            do {
-                let payload = try event.decodePayload(FsckVolumeListPayload.self)
-                fsckTargets = payload.targets.map(FsckTargetViewModel.init)
-                selectedFsckTargetID = fsckTargets.count == 1 ? fsckTargets[0].id : nil
-                fsckState = .listReady
-                clearError(for: .fsck)
-                operationObserver.finish()
-            } catch {
-                failContract(workflow: .fsck, error: error)
-            }
-        case .planning:
-            do {
-                fsckPlan = try event.decodePayload(FsckPlanPayload.self)
-                fsckState = .planReady
-                clearError(for: .fsck)
-                operationObserver.finish()
-            } catch {
-                failContract(workflow: .fsck, error: error)
-            }
-        default:
-            do {
-                fsckResult = try event.decodePayload(FsckResultPayload.self)
-                fsckState = .succeeded
-                clearError(for: .fsck)
-                operationObserver.finish()
-            } catch {
-                failContract(workflow: .fsck, error: error)
-            }
-        }
-    }
-
-    private func handleRepairResult(_ event: BackendEvent) {
-        do {
-            let payload = try event.decodePayload(RepairXattrsPayload.self)
-            if repairState == .scanning {
-                repairScan = payload
-                repairState = .scanReady
-                operationObserver.finish()
-            } else {
-                repairResult = payload
-                repairState = .repaired
-                operationObserver.finish()
-            }
-            clearError(for: .repairXattrs)
-        } catch {
-            failContract(workflow: .repairXattrs, error: error)
-        }
-    }
-
-    private func applyError(_ event: BackendEvent, activeOperation: ActiveOperation) {
-        guard let workflow = workflow(for: event.operation) else {
-            return
-        }
-        if event.code == "confirmation_required" {
-            clearError(for: workflow)
-            switch event.operation {
-            case "activate":
-                activateState = .awaitingConfirmation
-            case "uninstall":
-                uninstallState = .awaitingConfirmation
-            case "fsck":
-                fsckState = .awaitingConfirmation
-            case "repair-xattrs":
-                repairState = .awaitingConfirmation
-            default:
-                break
-            }
-            return
-        }
-        if event.code == "confirmation_cancelled" {
-            applyConfirmationCancelled(operation: event.operation)
-            return
-        }
-        if event.code == "auth_failed" {
-            passwordInvalidProfileID = activeOperation.profileID
-        }
-        setError(BackendErrorViewModel(event: event), for: workflow)
-        failState(for: event.operation)
-    }
-
-    private func applyConfirmationCancelled(operation: String) {
-        if let workflow = workflow(for: operation) {
-            clearError(for: workflow)
-            clearCurrentStage(for: workflow)
-        }
-        operationObserver.finish()
-        switch operation {
-        case "activate":
-            activateState = activationPlan == nil ? .idle : .planReady
-        case "uninstall":
-            restoreUninstallStateAfterCancellation()
-        case "fsck":
-            restoreFsckStateAfterCancellation()
-        case "repair-xattrs":
-            restoreRepairStateAfterCancellation()
-        default:
-            break
-        }
-    }
-
-    private func restoreUninstallStateAfterCancellation() {
-        guard uninstallPlan != nil else {
-            uninstallState = .idle
-            return
-        }
-        uninstallState = currentOptions == plannedUninstallOptions ? .planReady : .planStale
-    }
-
-    private func restoreFsckStateAfterCancellation() {
-        guard fsckPlan != nil else {
-            fsckState = fsckTargets.isEmpty ? .idle : .listReady
-            return
-        }
-        fsckState = currentOptions == plannedFsckOptions && selectedFsckTargetID == plannedFsckTargetID
-            ? .planReady
-            : .planStale
-    }
-
-    private func restoreRepairStateAfterCancellation() {
-        guard repairScan != nil else {
-            repairState = .idle
-            return
-        }
-        repairState = scannedRepairPath == trimmedRepairPath && scannedRepairOptions == currentRepairOptions
-            ? .scanReady
-            : .scanStale
-    }
-
-    private func applyFalseResult(_ event: BackendEvent) {
-        if let workflow = workflow(for: event.operation) {
-            setError(
-                BackendErrorViewModel(
-                    operation: event.operation,
-                    code: "operation_failed",
-                    message: event.localizedPayloadSummaryText ?? event.localizedSummary
-                ),
-                for: workflow
-            )
-        }
-        failState(for: event.operation)
-    }
-
-    private func failContract(workflow: MaintenanceWorkflow, error: Error) {
-        setError(
-            BackendErrorViewModel(
-                operation: operationName(for: workflow),
-                code: "contract_decode_failed",
-                message: error.localizedDescription
-            ),
-            for: workflow
-        )
-        setState(.failed, for: workflow)
-        operationObserver.finish()
-    }
-
-    private func failLocally(workflow: MaintenanceWorkflow, message: String) {
-        setError(
-            BackendErrorViewModel(
-                operation: operationName(for: workflow),
-                code: "validation_failed",
-                message: message
-            ),
-            for: workflow
-        )
-        selectedWorkflow = workflow
-        clearCurrentStage(for: workflow)
-        setState(.failed, for: workflow)
-        operationObserver.finish()
-    }
-
-    private func failLocally(workflow: MaintenanceWorkflow, localError: WorkflowLocalError) {
-        setError(BackendErrorViewModel(operation: operationName(for: workflow), localError: localError), for: workflow)
-        selectedWorkflow = workflow
-        clearCurrentStage(for: workflow)
-        setState(.failed, for: workflow)
-        operationObserver.finish()
-    }
-
-    private func rejectRun(workflow: MaintenanceWorkflow, message: String) {
-        setError(
-            BackendErrorViewModel(
-                operation: operationName(for: workflow),
-                code: "operation_rejected",
-                message: message
-            ),
-            for: workflow
-        )
-        selectedWorkflow = workflow
-        clearCurrentStage(for: workflow)
-        setState(.failed, for: workflow)
-        operationObserver.finish()
-    }
-
-    private func rejectRun(workflow: MaintenanceWorkflow, localError: WorkflowLocalError) {
-        setError(BackendErrorViewModel(operation: operationName(for: workflow), localError: localError), for: workflow)
-        selectedWorkflow = workflow
-        clearCurrentStage(for: workflow)
-        setState(.failed, for: workflow)
-        operationObserver.finish()
-    }
-
-    private func failState(for operation: String) {
-        switch operation {
-        case "activate":
-            activateState = .failed
-        case "uninstall":
-            uninstallState = .failed
-        case "fsck":
-            fsckState = .failed
-        case "repair-xattrs":
-            repairState = .failed
-        default:
-            break
-        }
-        operationObserver.finish()
-    }
-
-    private func setState(_ state: MaintenanceOperationState, for workflow: MaintenanceWorkflow) {
-        switch workflow {
-        case .activate:
-            activateState = state
-        case .uninstall:
-            uninstallState = state
-        case .fsck:
-            fsckState = state
-        case .repairXattrs:
-            repairState = state
-        }
-    }
-
-    private func operationName(for workflow: MaintenanceWorkflow) -> String {
-        switch workflow {
-        case .activate:
-            return "activate"
-        case .uninstall:
-            return "uninstall"
-        case .fsck:
-            return "fsck"
-        case .repairXattrs:
-            return "repair-xattrs"
-        }
-    }
-
     private func markPlansStaleForOptionChange() {
-        if uninstallState == .planReady, currentOptions != plannedUninstallOptions {
-            uninstallState = .planStale
-        }
-        markFsckPlanStaleIfNeeded()
-    }
-
-    private func markFsckPlanStaleIfNeeded() {
-        if fsckState == .planReady,
-           currentOptions != plannedFsckOptions || selectedFsckTargetID != plannedFsckTargetID {
-            fsckState = .planStale
-        }
+        uninstallStore.markPlanStaleIfNeeded(options: currentOptions)
+        fsckStore.markPlanStaleIfNeeded(options: currentOptions)
+        syncFromWorkflowStores()
     }
 
     private func markRepairScanStaleIfNeeded() {
-        if repairState == .scanReady,
-           scannedRepairPath != trimmedRepairPath || scannedRepairOptions != currentRepairOptions {
-            repairState = .scanStale
-        }
+        repairXattrsStore.markScanStaleIfNeeded(path: trimmedRepairPath, options: currentRepairOptions)
+        syncFromWorkflowStores()
     }
 
-    private func startRun(
-        operation: String,
-        params: [String: JSONValue],
-        profile: DeviceProfile?,
-        password: String? = nil,
-        workflow: MaintenanceWorkflow
-    ) -> OperationStartResult {
-        guard !isBusy else {
-            rejectRun(workflow: workflow, localError: .operationAlreadyRunning)
-            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
+    private func syncFromWorkflowStores() {
+        activateState = activationStore.state
+        activationPlan = activationStore.plan
+        activationResult = activationStore.result
+
+        uninstallState = uninstallStore.state
+        uninstallPlan = uninstallStore.plan
+        uninstallResult = uninstallStore.result
+
+        fsckState = fsckStore.state
+        fsckTargets = fsckStore.targets
+        if selectedFsckTargetID != fsckStore.selectedTargetID {
+            selectedFsckTargetID = fsckStore.selectedTargetID
         }
-        resetRunState(workflow: workflow)
-        let start = run(operation: operation, params: params, profile: profile, password: password, workflow: workflow)
-        switch start {
-        case .started(let operation):
-            operationObserver.start(operation)
-        case .rejected(let message):
-            rejectRun(workflow: workflow, message: message)
-        }
-        return start
+        fsckPlan = fsckStore.plan
+        fsckResult = fsckStore.result
+
+        repairState = repairXattrsStore.state
+        repairScan = repairXattrsStore.scan
+        repairResult = repairXattrsStore.result
+
+        currentStagesByWorkflow = workflowStages
+        errorsByWorkflow = workflowErrors
+        currentStage = currentStagesByWorkflow[selectedWorkflow] ?? currentStagesByWorkflow.values.first
+        error = errorsByWorkflow[selectedWorkflow] ?? errorsByWorkflow.values.first
+        passwordInvalidProfileID = [
+            activationStore.passwordInvalidProfileID,
+            uninstallStore.passwordInvalidProfileID,
+            fsckStore.passwordInvalidProfileID,
+            repairXattrsStore.passwordInvalidProfileID
+        ].compactMap { $0 }.first
     }
 
-    private func run(
-        operation: String,
-        params: [String: JSONValue],
-        profile: DeviceProfile?,
-        password: String? = nil,
-        workflow: MaintenanceWorkflow
-    ) -> OperationStartResult {
-        if let coordinator {
-            return coordinator.run(
-                operation: operation,
-                params: params,
-                context: profile?.runtimeContext,
-                activeDeviceID: profile?.id,
-                password: password,
-                laneKey: laneKey(for: workflow)
-            )
-        } else {
-            guard !isBusy else {
-                return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-            }
-            let context = profile?.runtimeContext
-            let updatedParams = OperationCredentialInjector.injectingPassword(password, into: params)
-            let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
-            backend(for: workflow).run(
-                operation: operation,
-                params: updatedParams,
-                context: context,
-                requestID: activeOperation.id.uuidString
-            )
-            return .started(activeOperation)
-        }
+    private var workflowStages: [MaintenanceWorkflow: OperationStageState] {
+        var stages: [MaintenanceWorkflow: OperationStageState] = [:]
+        stages[.activate] = activationStore.currentStage
+        stages[.uninstall] = uninstallStore.currentStage
+        stages[.fsck] = fsckStore.currentStage
+        stages[.repairXattrs] = repairXattrsStore.currentStage
+        return stages
+    }
+
+    private var workflowErrors: [MaintenanceWorkflow: BackendErrorViewModel] {
+        var errors: [MaintenanceWorkflow: BackendErrorViewModel] = [:]
+        errors[.activate] = activationStore.error
+        errors[.uninstall] = uninstallStore.error
+        errors[.fsck] = fsckStore.error
+        errors[.repairXattrs] = repairXattrsStore.error
+        return errors
     }
 }
+
+@MainActor
+private protocol MaintenanceWorkflowStore: ObservableObject {
+    var events: [BackendEvent] { get }
+    var isRunning: Bool { get }
+    var isBusy: Bool { get }
+    var canCancel: Bool { get }
+    var pendingConfirmation: PendingConfirmation? { get }
+    func confirmPending()
+    func cancel()
+}
+
+extension ActivationStore: MaintenanceWorkflowStore {}
+extension UninstallStore: MaintenanceWorkflowStore {}
+extension FsckStore: MaintenanceWorkflowStore {}
+extension RepairXattrsStore: MaintenanceWorkflowStore {}
