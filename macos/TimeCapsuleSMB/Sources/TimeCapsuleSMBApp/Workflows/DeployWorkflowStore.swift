@@ -223,7 +223,8 @@ final class DeployWorkflowStore: ObservableObject {
         backend.clear()
         let start = run(
             operation: "deploy",
-            params: OperationParams.deployPlan(
+            params: OperationParams.deployRun(
+                dryRun: true,
                 noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
@@ -275,6 +276,7 @@ final class DeployWorkflowStore: ObservableObject {
         let start = run(
             operation: "deploy",
             params: OperationParams.deployRun(
+                dryRun: false,
                 noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,

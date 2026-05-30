@@ -147,7 +147,8 @@ final class FsckStore: ObservableObject {
         }
         let start = startRun(
             operation: "fsck",
-            params: OperationParams.fsckPlan(
+            params: OperationParams.fsckRun(
+                dryRun: true,
                 volume: target.volumeParam,
                 noReboot: options.noReboot,
                 noWait: options.noWait,
@@ -192,6 +193,7 @@ final class FsckStore: ObservableObject {
         let start = startRun(
             operation: "fsck",
             params: OperationParams.fsckRun(
+                dryRun: false,
                 volume: target.volumeParam,
                 noReboot: options.noReboot,
                 noWait: options.noWait,

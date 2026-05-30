@@ -12,7 +12,7 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testUninstallPlanParamsCarryNoRebootSelection() {
-        let params = OperationParams.uninstallPlan(noReboot: true, noWait: true, mountWait: 9)
+        let params = OperationParams.uninstallRun(dryRun: true, noReboot: true, noWait: true, mountWait: 9)
 
         XCTAssertEqual(params["dry_run"], .bool(true))
         XCTAssertEqual(params["no_reboot"], .bool(true))
@@ -23,6 +23,7 @@ final class PendingConfirmationTests: XCTestCase {
 
     func testDeployRunParamsCarryOptionsWithoutFrontendConsentFlags() {
         let params = OperationParams.deployRun(
+            dryRun: false,
             noReboot: false,
             noWait: true,
             nbnsEnabled: true,
@@ -49,7 +50,8 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testDeployPlanParamsCarryAdvancedRuntimeOverridesWhenEnabled() {
-        let params = OperationParams.deployPlan(
+        let params = OperationParams.deployRun(
+            dryRun: true,
             noReboot: false,
             noWait: false,
             nbnsEnabled: true,
@@ -140,7 +142,7 @@ final class PendingConfirmationTests: XCTestCase {
         )
         let originalParams = OperationCredentialInjector.injectingPassword(
             "pw",
-            into: OperationParams.uninstallRun(noReboot: true, noWait: true, mountWait: 12)
+            into: OperationParams.uninstallRun(dryRun: false, noReboot: true, noWait: true, mountWait: 12)
         )
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: originalParams))
@@ -347,8 +349,9 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testMaintenanceRunParamsDoNotCarryFrontendConsentFlags() {
-        let fsck = OperationParams.fsckRun(volume: "Data", noReboot: true, noWait: true, mountWait: 18)
+        let fsck = OperationParams.fsckRun(dryRun: false, volume: "Data", noReboot: true, noWait: true, mountWait: 18)
         let repair = OperationParams.repairXattrsRun(
+            dryRun: false,
             path: "/Volumes/Data",
             options: RepairXattrsOptions(
                 recursive: false,
@@ -361,6 +364,7 @@ final class PendingConfirmationTests: XCTestCase {
         )
 
         XCTAssertNil(fsck["confirm_fsck"])
+        XCTAssertEqual(fsck["dry_run"], .bool(false))
         XCTAssertEqual(fsck["no_reboot"], .bool(true))
         XCTAssertEqual(fsck["mount_wait"], .number(18))
         XCTAssertEqual(fsck["no_wait"], .bool(true))

@@ -86,32 +86,8 @@ enum OperationParams {
         ]
     }
 
-    static func deployPlan(
-        noReboot: Bool,
-        noWait: Bool,
-        nbnsEnabled: Bool,
-        internalShareUseDiskRoot: Bool = false,
-        anyProtocol: Bool = false,
-        debugLogging: Bool,
-        ataIdleSeconds: Int,
-        ataStandby: Int?,
-        mountWait: Double
-    ) -> [String: JSONValue] {
-        deployParams(
-            dryRun: true,
-            noReboot: noReboot,
-            noWait: noWait,
-            nbnsEnabled: nbnsEnabled,
-            internalShareUseDiskRoot: internalShareUseDiskRoot,
-            anyProtocol: anyProtocol,
-            debugLogging: debugLogging,
-            ataIdleSeconds: ataIdleSeconds,
-            ataStandby: ataStandby,
-            mountWait: mountWait
-        )
-    }
-
     static func deployRun(
+        dryRun: Bool,
         noReboot: Bool,
         noWait: Bool,
         nbnsEnabled: Bool,
@@ -123,7 +99,7 @@ enum OperationParams {
         mountWait: Double
     ) -> [String: JSONValue] {
         deployParams(
-            dryRun: false,
+            dryRun: dryRun,
             noReboot: noReboot,
             noWait: noWait,
             nbnsEnabled: nbnsEnabled,
@@ -167,12 +143,8 @@ enum OperationParams {
         return params
     }
 
-    static func uninstallPlan(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        uninstallParams(dryRun: true, noReboot: noReboot, noWait: noWait, mountWait: mountWait)
-    }
-
-    static func uninstallRun(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        uninstallParams(dryRun: false, noReboot: noReboot, noWait: noWait, mountWait: mountWait)
+    static func uninstallRun(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+        uninstallParams(dryRun: dryRun, noReboot: noReboot, noWait: noWait, mountWait: mountWait)
     }
 
     private static func uninstallParams(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
@@ -184,12 +156,8 @@ enum OperationParams {
         ]
     }
 
-    static func activatePlan() -> [String: JSONValue] {
-        activateParams(dryRun: true)
-    }
-
-    static func activateRun() -> [String: JSONValue] {
-        activateParams(dryRun: false)
+    static func activateRun(dryRun: Bool) -> [String: JSONValue] {
+        activateParams(dryRun: dryRun)
     }
 
     private static func activateParams(dryRun: Bool) -> [String: JSONValue] {
@@ -203,9 +171,9 @@ enum OperationParams {
         ]
     }
 
-    static func fsckPlan(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+    static func fsckRun(dryRun: Bool, volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
         [
-            "dry_run": .bool(true),
+            "dry_run": .bool(dryRun),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait),
@@ -213,21 +181,20 @@ enum OperationParams {
         ]
     }
 
-    static func fsckRun(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
-            "no_reboot": .bool(noReboot),
-            "no_wait": .bool(noWait),
-            "mount_wait": .number(mountWait),
-            "volume": .string(volume)
+    static func repairXattrsRun(dryRun: Bool, path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
+        var params: [String: JSONValue] = [
+            "path": .string(path),
+            "dry_run": .bool(dryRun),
+            "recursive": .bool(options.recursive),
+            "include_hidden": .bool(options.includeHidden),
+            "include_time_machine": .bool(options.includeTimeMachine),
+            "fix_permissions": .bool(options.fixPermissions),
+            "verbose": .bool(options.verbose)
         ]
-    }
-
-    static func repairXattrsScan(path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
-        repairXattrsParams(path: path, dryRun: true, options: options)
-    }
-
-    static func repairXattrsRun(path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
-        repairXattrsParams(path: path, dryRun: false, options: options)
+        if let maxDepth = options.maxDepth {
+            params["max_depth"] = .number(Double(maxDepth))
+        }
+        return params
     }
 
     static func flashBackup() -> [String: JSONValue] {
@@ -298,21 +265,5 @@ enum OperationParams {
         if !trimmedTemplate.isEmpty {
             params["firmware_template"] = .string(trimmedTemplate)
         }
-    }
-
-    private static func repairXattrsParams(path: String, dryRun: Bool, options: RepairXattrsOptions) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
-            "path": .string(path),
-            "dry_run": .bool(dryRun),
-            "recursive": .bool(options.recursive),
-            "include_hidden": .bool(options.includeHidden),
-            "include_time_machine": .bool(options.includeTimeMachine),
-            "fix_permissions": .bool(options.fixPermissions),
-            "verbose": .bool(options.verbose)
-        ]
-        if let maxDepth = options.maxDepth {
-            params["max_depth"] = .number(Double(maxDepth))
-        }
-        return params
     }
 }
