@@ -19,7 +19,6 @@ from timecapsulesmb.cli.runtime import (
     add_no_input_argument,
     add_no_wait_argument,
     emit_progress,
-    load_env_config,
     no_input_enabled,
     prefixed_logger,
     print_json,
@@ -58,6 +57,7 @@ from timecapsulesmb.services.flash import (
     save_flash_manifest,
     save_primary_patched_bank_if_ready,
 )
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection, SshError, run_ssh_capture_bytes
 

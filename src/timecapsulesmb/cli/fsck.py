@@ -6,7 +6,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
-from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, load_env_config, no_input_enabled
+from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, no_input_enabled
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.maintenance import (
@@ -16,6 +16,7 @@ from timecapsulesmb.services.maintenance import (
     fsck_target_from_volume,
     select_fsck_target,
 )
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
 

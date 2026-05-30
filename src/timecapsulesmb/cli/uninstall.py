@@ -10,7 +10,6 @@ from timecapsulesmb.cli.runtime import (
     add_mount_wait_argument,
     add_no_input_argument,
     add_no_wait_argument,
-    load_env_config,
     no_input_enabled,
     print_json,
 )
@@ -22,6 +21,7 @@ from timecapsulesmb.deploy.verify import render_post_uninstall_verification, ver
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.maintenance import UNINSTALL_REBOOT_NO_DOWN_MESSAGE as REBOOT_NO_DOWN_MESSAGE
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 
 

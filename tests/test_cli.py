@@ -53,6 +53,7 @@ from timecapsulesmb.cli import (
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
@@ -354,14 +355,8 @@ class CliTests(unittest.TestCase):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
         self._exit_stack.enter_context(
             mock.patch(
-                "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
+                "timecapsulesmb.services.runtime.probe_remote_interface_conn",
                 return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
-            )
-        )
-        self._exit_stack.enter_context(
-            mock.patch(
-                "timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn",
-                return_value=("192.168.1.217",),
             )
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
@@ -1225,8 +1220,8 @@ class CliTests(unittest.TestCase):
                 state_dir=Path(tmp),
                 package_root=SRC_ROOT / "timecapsulesmb",
             )
-            with mock.patch("timecapsulesmb.cli.runtime.resolve_app_paths", return_value=app_paths):
-                config = cli_runtime.load_optional_env_config()
+            with mock.patch("timecapsulesmb.services.runtime.resolve_app_paths", return_value=app_paths):
+                config = service_runtime.load_optional_env_config()
 
         self.assertFalse(config.exists)
         self.assertEqual(config.path, env_path)
@@ -1242,8 +1237,8 @@ class CliTests(unittest.TestCase):
                 state_dir=Path(tmp),
                 package_root=SRC_ROOT / "timecapsulesmb",
             )
-            with mock.patch("timecapsulesmb.cli.runtime.resolve_app_paths", return_value=app_paths):
-                config = cli_runtime.load_optional_env_config()
+            with mock.patch("timecapsulesmb.services.runtime.resolve_app_paths", return_value=app_paths):
+                config = service_runtime.load_optional_env_config()
 
         self.assertTrue(config.exists)
         self.assertEqual(config.path, env_path)
@@ -5076,14 +5071,13 @@ class CliTests(unittest.TestCase):
 
     def test_managed_target_does_not_probe_runtime_interface(self) -> None:
         config = self.make_app_config(self.make_valid_env())
-        with mock.patch("timecapsulesmb.cli.runtime.probe_remote_interface_conn", side_effect=AssertionError("interface should not be probed")):
-            with mock.patch("timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn", side_effect=AssertionError("interface IPv4 should not be read")):
-                target = cli_runtime.resolve_validated_managed_target(
-                    config,
-                    command_name="deploy",
-                    profile="deploy",
-                    include_probe=False,
-                )
+        with mock.patch("timecapsulesmb.services.runtime.probe_remote_interface_conn", side_effect=AssertionError("interface should not be probed")):
+            target = service_runtime.resolve_validated_managed_target(
+                config,
+                command_name="deploy",
+                profile="deploy",
+                include_probe=False,
+            )
 
         self.assertEqual(target.connection.host, config.require("TC_HOST"))
         self.assertIsNone(target.interface_probe)
@@ -5093,11 +5087,11 @@ class CliTests(unittest.TestCase):
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
             with mock.patch(
-                "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
+                "timecapsulesmb.services.runtime.probe_remote_interface_conn",
                 side_effect=AssertionError("should fail before SSH probing"),
             ):
                 with self.assertRaises(ConfigError) as ctx:
-                    cli_runtime.resolve_validated_managed_target(
+                    service_runtime.resolve_validated_managed_target(
                         config,
                         command_name="deploy",
                         profile="deploy",
@@ -5115,19 +5109,15 @@ class CliTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=AssertionError("should not resolve")):
             with mock.patch(
-                "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
+                "timecapsulesmb.services.runtime.probe_remote_interface_conn",
                 return_value=RemoteInterfaceProbeResult("bridge0", True, "interface bridge0 exists"),
             ):
-                with mock.patch(
-                    "timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn",
-                    return_value=("10.0.0.2",),
-                ):
-                    target = cli_runtime.resolve_validated_managed_target(
-                        config,
-                        command_name="deploy",
-                        profile="deploy",
-                        include_probe=False,
-                    )
+                target = service_runtime.resolve_validated_managed_target(
+                    config,
+                    command_name="deploy",
+                    profile="deploy",
+                    include_probe=False,
+                )
 
         self.assertEqual(target.connection.host, "root@capsule.local")
 
@@ -5135,7 +5125,7 @@ class CliTests(unittest.TestCase):
         config = self.make_app_config({"TC_HOST": "root@10.0.0.2"})
         with mock.patch("getpass.getpass", side_effect=AssertionError("non-interactive callers must not prompt")):
             with self.assertRaises(ConfigError) as ctx:
-                cli_runtime.resolve_env_connection(config, allow_password_prompt=False)
+                service_runtime.resolve_env_connection(config, allow_password_prompt=False)
 
         self.assertIn("TC_PASSWORD is required when --no-input is used.", str(ctx.exception))
 
@@ -5245,9 +5235,9 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "not-a-syap",
             "TC_MDNS_DEVICE_MODEL": "not-a-model",
         })
-        with mock.patch("timecapsulesmb.cli.runtime.probe_remote_interface_conn", side_effect=AssertionError("flash should not probe TC_NET_IFACE")):
-            with mock.patch("timecapsulesmb.cli.runtime.probe_connection_state", side_effect=AssertionError("flash target resolution should not probe the device")):
-                target = cli_runtime.resolve_validated_managed_target(
+        with mock.patch("timecapsulesmb.services.runtime.probe_remote_interface_conn", side_effect=AssertionError("flash should not probe TC_NET_IFACE")):
+            with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", side_effect=AssertionError("flash target resolution should not probe the device")):
+                target = service_runtime.resolve_validated_managed_target(
                     config,
                     command_name="flash",
                     profile="flash",
@@ -7294,7 +7284,7 @@ class CliTests(unittest.TestCase):
                                 unknown_login,
                             ),
                         ):
-                            with mock.patch("timecapsulesmb.cli.context.runtime.confirm", side_effect=AssertionError("confirm should not be called")) as confirm_mock:
+                            with mock.patch("timecapsulesmb.cli.context.cli_runtime.confirm", side_effect=AssertionError("confirm should not be called")) as confirm_mock:
                                 with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([

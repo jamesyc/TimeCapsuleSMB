@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_optional_env_config
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import find_command
 

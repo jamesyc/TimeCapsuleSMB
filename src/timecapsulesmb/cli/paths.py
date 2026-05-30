@@ -4,10 +4,11 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, load_optional_env_config, print_json
+from timecapsulesmb.cli.runtime import add_config_argument, print_json
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.install_validation import paths_to_jsonable
+from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 
 

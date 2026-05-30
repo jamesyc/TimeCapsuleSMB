@@ -15,11 +15,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli.runtime import (
     json_text,
-    resolve_env_connection,
-    ssh_target_link_local_resolution_error,
     write_json_file,
 )
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
+from timecapsulesmb.services.runtime import resolve_env_connection, ssh_target_link_local_resolution_error
 
 
 class RuntimeTests(unittest.TestCase):

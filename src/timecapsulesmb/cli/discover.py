@@ -4,7 +4,7 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, load_optional_env_config, print_json
+from timecapsulesmb.cli.runtime import add_config_argument, print_json
 from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourResolvedService,
@@ -14,6 +14,7 @@ from timecapsulesmb.discovery.bonjour import (
     service_instance_to_jsonable,
 )
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 
 

@@ -13,7 +13,6 @@ from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
     confirm as confirm_prompt,
-    load_optional_env_config,
     no_input_enabled,
 )
 from timecapsulesmb.core.config import AppConfig
@@ -57,6 +56,7 @@ from timecapsulesmb.services.repair_xattrs import (
     render_summary_lines,
     run_repair_structured as _run_repair_structured,
 )
+from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 
 

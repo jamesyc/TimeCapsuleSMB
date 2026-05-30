@@ -8,7 +8,6 @@ from timecapsulesmb.cli.flows import verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
-    load_env_config,
     no_input_enabled,
     print_json,
     require_netbsd4_device_compatibility,
@@ -19,6 +18,7 @@ from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, format_ac
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_runtime_activation_plan
 from timecapsulesmb.services.activation import decide_manual_activation
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE

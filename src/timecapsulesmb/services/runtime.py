@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
 from timecapsulesmb.core.net import (
@@ -14,7 +14,7 @@ from timecapsulesmb.core.net import (
     resolve_host_ipv4s,
     resolve_host_ipv6s,
 )
-from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -37,8 +37,10 @@ def load_env_config(
     *,
     env_path: Path | None = None,
     defaults: dict[str, str] | None = None,
-    resolve_paths=resolve_app_paths,
+    resolve_paths: Callable[..., AppPaths] | None = None,
 ) -> AppConfig:
+    if resolve_paths is None:
+        resolve_paths = resolve_app_paths
     resolved_path = resolve_paths(config_path=env_path).config_path
     return load_app_config(resolved_path, defaults=defaults)
 
@@ -47,9 +49,11 @@ def load_optional_env_config(
     *,
     env_path: Path | None = None,
     defaults: dict[str, str] | None = None,
-    resolve_paths=resolve_app_paths,
+    resolve_paths: Callable[..., AppPaths] | None = None,
 ) -> AppConfig:
     try:
+        if resolve_paths is None:
+            resolve_paths = resolve_app_paths
         resolved_path = resolve_paths(config_path=env_path).config_path
     except Exception:
         return AppConfig.missing(path=env_path or Path.cwd() / ".env")

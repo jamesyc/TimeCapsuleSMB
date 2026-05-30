@@ -77,7 +77,7 @@ class CommandContextHelperTests(unittest.TestCase):
 
     def test_confirm_or_fail_returns_prompt_result(self) -> None:
         context = self.make_context()
-        with mock.patch("timecapsulesmb.cli.context.runtime.confirm", return_value=True) as confirm_mock:
+        with mock.patch("timecapsulesmb.cli.context.cli_runtime.confirm", return_value=True) as confirm_mock:
             result = context.confirm_or_fail("Continue?", default=False, noninteractive_message="no stdin")
 
         self.assertTrue(result)
@@ -95,7 +95,7 @@ class CommandContextHelperTests(unittest.TestCase):
         context = self.make_context()
         output = io.StringIO()
         with mock.patch(
-            "timecapsulesmb.cli.context.runtime.confirm",
+            "timecapsulesmb.cli.context.cli_runtime.confirm",
             side_effect=NonInteractivePromptError("no stdin"),
         ):
             with redirect_stdout(output):

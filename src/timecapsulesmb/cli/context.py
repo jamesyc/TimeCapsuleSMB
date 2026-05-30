@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from timecapsulesmb.cli import runtime
+from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import require_compatibility as require_device_compatibility
@@ -25,6 +25,7 @@ from timecapsulesmb.services.context import (
     OperationContext,
     render_operation_debug_lines,
 )
+from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.operation import (
     OperationTelemetrySession,
@@ -35,11 +36,11 @@ from timecapsulesmb.telemetry.operation import (
 from timecapsulesmb.transport.errors import TransportError
 
 if TYPE_CHECKING:
-    from timecapsulesmb.cli.runtime import ManagedTargetState
     from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.compat import DeviceCompatibility
     from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
     from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume, PayloadHomeSelection
+    from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
 
@@ -293,14 +294,14 @@ class CommandContext:
             self.fail_with_error(noninteractive_message)
             return None
         try:
-            return runtime.confirm(
+            return cli_runtime.confirm(
                 prompt_text,
                 default=default,
                 eof_default=eof_default,
                 interrupt_default=interrupt_default,
                 noninteractive_message=noninteractive_message,
             )
-        except runtime.NonInteractivePromptError as exc:
+        except cli_runtime.NonInteractivePromptError as exc:
             message = str(exc)
             print(message)
             self.fail_with_error(message)
@@ -405,11 +406,11 @@ class CommandContext:
     ) -> SshConnection:
         if self.config is None:
             raise RuntimeError("CommandContext config is not set.")
-        self.connection = runtime.resolve_env_connection(
+        self.connection = service_runtime.resolve_env_connection(
             self.config,
             required_keys=required_keys,
             allow_empty_password=allow_empty_password,
-            allow_password_prompt=not runtime.no_input_enabled(self.args),
+            allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
         )
         return self.connection
 
@@ -443,18 +444,18 @@ class CommandContext:
 
     def inspect_managed_connection(self, *, iface: str, include_probe: bool = False) -> ManagedTargetState:
         connection = self.connection if self.connection is not None else self.resolve_env_connection()
-        target = runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
+        target = service_runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
         return self._apply_managed_target_state(target)
 
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.config is None:
             raise RuntimeError("CommandContext config is not set.")
-        target = runtime.resolve_validated_managed_target(
+        target = service_runtime.resolve_validated_managed_target(
             self.config,
             command_name=self.command_name,
             profile=profile,
             include_probe=include_probe,
-            allow_password_prompt=not runtime.no_input_enabled(self.args),
+            allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
         )
         return self._apply_managed_target_state(target)
 

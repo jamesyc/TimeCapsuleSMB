@@ -6,10 +6,11 @@ from typing import Optional
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config, print_json
+from timecapsulesmb.cli.runtime import add_config_argument, print_json
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.doctor import build_doctor_error, doctor_status_counts
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.core.paths import resolve_app_paths
 

@@ -32,12 +32,12 @@ from timecapsulesmb.cli.runtime import (
     no_input_enabled,
     print_json,
     read_password_source_args,
-    ssh_target_link_local_resolution_error,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,

@@ -4,34 +4,16 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from timecapsulesmb.core.config import (
-    DEFAULTS,
-    AppConfig,
-    ConfigError,
-    load_app_config,
-    require_valid_app_config,
-)
-from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4, resolve_host_ipv4s
-from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     is_netbsd4_payload_family,
     render_compatibility_message,
 )
-from timecapsulesmb.device.probe import (
-    ProbedDeviceState,
-    RemoteInterfaceProbeResult,
-    probe_connection_state,
-    probe_remote_interface_conn,
-    read_interface_ipv4_addrs_conn,
-)
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
-from timecapsulesmb.services import runtime as service_runtime
-from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 
 
 LogCallback = Optional[Callable[[str], None]]
@@ -39,13 +21,6 @@ LogCallback = Optional[Callable[[str], None]]
 
 class NonInteractivePromptError(RuntimeError):
     """Raised when a required confirmation cannot be read from stdin."""
-
-
-@dataclass(frozen=True)
-class ManagedTargetState:
-    connection: SshConnection
-    interface_probe: RemoteInterfaceProbeResult | None
-    probe_state: ProbedDeviceState | None
 
 
 def add_config_argument(parser: argparse.ArgumentParser) -> None:
@@ -133,10 +108,6 @@ def add_no_wait_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for the device to go down and come back after reboot")
 
 
-def config_path_from_args(args: argparse.Namespace) -> Path | None:
-    return getattr(args, "config", None)
-
-
 def json_text(data: object) -> str:
     return json.dumps(data, indent=2, sort_keys=True)
 
@@ -196,81 +167,6 @@ def confirm(
         if answer in {"n", "no"}:
             return False
         print("Please answer 'y' or 'n'.")
-
-
-def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | None = None) -> AppConfig:
-    return service_runtime.load_env_config(env_path=env_path, defaults=defaults, resolve_paths=resolve_app_paths)
-
-
-def load_optional_env_config(
-    *,
-    env_path: Path | None = None,
-    defaults: dict[str, str] | None = None,
-) -> AppConfig:
-    return service_runtime.load_optional_env_config(env_path=env_path, defaults=defaults, resolve_paths=resolve_app_paths)
-
-
-def resolve_ssh_credentials(
-    config: AppConfig,
-    *,
-    allow_empty_password: bool = False,
-    allow_password_prompt: bool = True,
-) -> tuple[str, str]:
-    return service_runtime.resolve_ssh_credentials(
-        config,
-        allow_empty_password=allow_empty_password,
-        allow_password_prompt=allow_password_prompt,
-    )
-
-
-def resolve_env_connection(
-    config: AppConfig,
-    *,
-    required_keys: tuple[str, ...] = (),
-    allow_empty_password: bool = False,
-    allow_password_prompt: bool = True,
-) -> SshConnection:
-    return service_runtime.resolve_env_connection(
-        config,
-        required_keys=required_keys,
-        allow_empty_password=allow_empty_password,
-        allow_password_prompt=allow_password_prompt,
-    )
-
-
-def inspect_managed_connection(
-    connection: SshConnection,
-    iface: str,
-    *,
-    include_probe: bool = False,
-) -> ManagedTargetState:
-    return service_runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
-
-
-def ssh_target_link_local_resolution_error(
-    target: str,
-    ssh_opts: str,
-    *,
-    field_name: str = "Device SSH target",
-) -> str | None:
-    return service_runtime.ssh_target_link_local_resolution_error(target, ssh_opts, field_name=field_name)
-
-
-def resolve_validated_managed_target(
-    config: AppConfig,
-    *,
-    command_name: str,
-    profile: str,
-    include_probe: bool = False,
-    allow_password_prompt: bool = True,
-) -> ManagedTargetState:
-    return service_runtime.resolve_validated_managed_target(
-        config,
-        command_name=command_name,
-        profile=profile,
-        include_probe=include_probe,
-        allow_password_prompt=allow_password_prompt,
-    )
 
 
 def require_supported_device_compatibility(

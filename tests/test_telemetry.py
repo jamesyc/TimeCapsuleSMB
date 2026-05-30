@@ -23,12 +23,12 @@ from timecapsulesmb.cli.context import (
     CommandContext,
     render_command_debug_lines,
 )
-from timecapsulesmb.cli.runtime import ManagedTargetState
 from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
+from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 from timecapsulesmb.telemetry.debug import render_debug_mapping
 from timecapsulesmb.transport.ssh import SshConnection, SshError
@@ -273,11 +273,11 @@ class TelemetryTests(unittest.TestCase):
             config=config,
         )
         with mock.patch(
-            "timecapsulesmb.cli.context.runtime.resolve_env_connection",
+            "timecapsulesmb.cli.context.service_runtime.resolve_env_connection",
             return_value=connection,
         ) as resolve_mock:
             with mock.patch(
-                "timecapsulesmb.cli.context.runtime.inspect_managed_connection",
+                "timecapsulesmb.cli.context.service_runtime.inspect_managed_connection",
                 return_value=target,
             ) as inspect_mock:
                 result = context.inspect_managed_connection(iface="bridge0", include_probe=True)

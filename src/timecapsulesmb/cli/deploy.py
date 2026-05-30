@@ -11,7 +11,6 @@ from timecapsulesmb.cli.flows import request_deploy_reboot_and_wait, verify_mana
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
-    load_env_config,
     no_input_enabled,
     print_json,
     require_supported_device_compatibility,
@@ -68,6 +67,7 @@ from timecapsulesmb.services.deploy import (
     render_flash_runtime_config,
     startup_mode_for_deploy,
 )
+from timecapsulesmb.services.runtime import load_env_config
 
 
 def _target_family_display_name(target) -> str:

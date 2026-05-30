@@ -13,7 +13,6 @@ from timecapsulesmb.cli.runtime import (
     add_no_wait_argument,
     confirm,
     emit_progress,
-    load_env_config,
     no_input_enabled,
 )
 from timecapsulesmb.cli.util import color_red
@@ -22,6 +21,7 @@ from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.acp import enable_ssh
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 from timecapsulesmb.transport.local import tcp_open
