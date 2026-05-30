@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from timecapsulesmb.core.errors import missing_dependency_message
+from timecapsulesmb.core.net import ipv6_literal
 from timecapsulesmb.transport.errors import ScpError, SshCommandTimeout, SshError, TransportError
 
 from .local import find_command, tcp_open
@@ -394,6 +395,17 @@ def ensure_remote_scp_capability(connection: SshConnection) -> bool:
     return connection.remote_has_scp
 
 
+def _scp_remote_target(connection_host: str, dest: str) -> str:
+    user_prefix = ""
+    host = connection_host
+    if "@" in connection_host:
+        user, host = connection_host.split("@", 1)
+        user_prefix = f"{user}@"
+    if ipv6_literal(host) is not None:
+        host = f"[{host}]"
+    return f"{user_prefix}{host}:{dest}"
+
+
 def _verify_remote_size(connection: SshConnection, src: Path, dest: str, *, timeout: int) -> None:
     expected_size = src.stat().st_size
     quoted_dest = shlex.quote(dest)
@@ -421,7 +433,7 @@ def _verify_remote_size(connection: SshConnection, src: Path, dest: str, *, time
 
 def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
     if ensure_remote_scp_capability(connection):
-        cmd = ["scp", "-O", *_normalize_ssh_tokens(connection.ssh_opts), str(src), f"{connection.host}:{dest}"]
+        cmd = ["scp", "-O", *_normalize_ssh_tokens(connection.ssh_opts), str(src), _scp_remote_target(connection.host, dest)]
         rc = 1
         stdout = ""
         for attempt in range(3):

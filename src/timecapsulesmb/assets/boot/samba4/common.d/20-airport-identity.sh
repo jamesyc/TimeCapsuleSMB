@@ -18,6 +18,11 @@ get_airport_acp_value() {
     printf '%s\n' "$acp_value"
 }
 
+get_airport_prni_raw() {
+    [ -x /usr/bin/acp ] || return 1
+    /usr/bin/acp -A prni 2>/dev/null
+}
+
 tc_get_airport_acp_mac() {
     acp_key=$1
     acp_value=$(get_airport_acp_value "$acp_key" || true)

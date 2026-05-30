@@ -401,10 +401,11 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("LOCKS_ROOT=/mnt/Locks", content)
         self.assertIn("MDNS_PROC_NAME=mdns-advertiser", content)
         self.assertIn("NBNS_PROC_NAME=nbns-advertiser", content)
-        self.assertIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
-        self.assertIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
+        self.assertNotIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
+        self.assertNotIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
         self.assertIn("tc_select_advertise_mac()", content)
         self.assertIn("tc_select_live_iface_mac()", content)
+        self.assertIn("get_airport_prni_raw()", content)
         self.assertNotIn("get_iface_mac()", content)
         self.assertNotIn("tc_select_advertise_network()", content)
         self.assertNotIn("tc_find_iface_for_ipv4()", content)
@@ -1277,7 +1278,7 @@ int main(void) {{
             bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stdout, "2106\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_accepts_debug_logging_before_version(self) -> None:
@@ -1290,7 +1291,7 @@ int main(void) {{
                 check=False,
             )
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stdout, "2106\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_traffic_summary_counters_are_debug_only(self) -> None:
@@ -2361,6 +2362,283 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_scoped_ipv6_dest")
         self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_mdns_advertiser_builds_riousbprint_txt_from_printer_identity(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+static int has_txt(const char *txts[], size_t count, const char *want) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        if (strcmp(txts[i], want) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(void) {
+    struct config cfg;
+    char storage[RIOUSBPRINT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[RIOUSBPRINT_MAX_TXT_ITEMS];
+    size_t txt_count = 0;
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_instance_name, sizeof(cfg.riousbprint_instance_name), "%s", "Canon MP490 series");
+    snprintf(cfg.riousbprint_note, sizeof(cfg.riousbprint_note), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_mfg, sizeof(cfg.riousbprint_mfg), "%s", "Canon");
+    snprintf(cfg.riousbprint_mdl, sizeof(cfg.riousbprint_mdl), "%s", "MP490 series");
+    snprintf(cfg.riousbprint_serial, sizeof(cfg.riousbprint_serial), "%s", "C0958C");
+    snprintf(cfg.riousbprint_cmd, sizeof(cfg.riousbprint_cmd), "%s", "BJL,BJRaster3,BSCCe,IVEC,IVECPLI");
+
+    if (build_riousbprint_txt_items(&cfg, storage, txts, &txt_count) != 0) {
+        return 1;
+    }
+    if (txt_count != 12) {
+        return 2;
+    }
+    if (!has_txt(txts, txt_count, "txtvers=1") ||
+        !has_txt(txts, txt_count, "qtotal=1") ||
+        !has_txt(txts, txt_count, "note=James's AirPort Time Capsule") ||
+        !has_txt(txts, txt_count, "product=(Canon MP490 series)") ||
+        !has_txt(txts, txt_count, "rp=Canon MP490 series C0958C") ||
+        !has_txt(txts, txt_count, "pdl=application/BJL,application/BJRaster3,application/BSCCe,application/IVEC,application/IVECPLI") ||
+        !has_txt(txts, txt_count, "priority=1") ||
+        !has_txt(txts, txt_count, "usb_MFG=Canon") ||
+        !has_txt(txts, txt_count, "usb_CMD=BJL,BJRaster3,BSCCe,IVEC,IVECPLI") ||
+        !has_txt(txts, txt_count, "usb_MDL=MP490 series") ||
+        !has_txt(txts, txt_count, "usb_CLS=PRINTER") ||
+        !has_txt(txts, txt_count, "usb_DES=Canon MP490 series")) {
+        return 3;
+    }
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_riousbprint_txt")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_builds_pdl_datastream_txt_from_printer_identity(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+static int has_txt(const char *txts[], size_t count, const char *want) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        if (strcmp(txts[i], want) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(void) {
+    struct config cfg;
+    char storage[PDL_DATASTREAM_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[PDL_DATASTREAM_MAX_TXT_ITEMS];
+    size_t txt_count = 0;
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_instance_name, sizeof(cfg.riousbprint_instance_name), "%s", "Canon MP490 series");
+    snprintf(cfg.riousbprint_note, sizeof(cfg.riousbprint_note), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_mfg, sizeof(cfg.riousbprint_mfg), "%s", "Canon");
+    snprintf(cfg.riousbprint_mdl, sizeof(cfg.riousbprint_mdl), "%s", "MP490 series");
+    snprintf(cfg.riousbprint_serial, sizeof(cfg.riousbprint_serial), "%s", "C0958C");
+    snprintf(cfg.riousbprint_cmd, sizeof(cfg.riousbprint_cmd), "%s", "BJL,BJRaster3,BSCCe,IVEC,IVECPLI");
+
+    if (build_pdl_datastream_txt_items(&cfg, storage, txts, &txt_count) != 0) {
+        return 1;
+    }
+    if (txt_count != 12) {
+        return 2;
+    }
+    if (!has_txt(txts, txt_count, "txtvers=1") ||
+        !has_txt(txts, txt_count, "qtotal=1") ||
+        !has_txt(txts, txt_count, "note=James's AirPort Time Capsule") ||
+        !has_txt(txts, txt_count, "product=(Canon MP490 series)") ||
+        !has_txt(txts, txt_count, "pdl=U") ||
+        !has_txt(txts, txt_count, "priority=5") ||
+        !has_txt(txts, txt_count, "usb_MFG=Canon") ||
+        !has_txt(txts, txt_count, "usb_CMD=BJL,BJRaster3,BSCCe,IVEC,IVECPLI") ||
+        !has_txt(txts, txt_count, "usb_MDL=MP490 series") ||
+        !has_txt(txts, txt_count, "usb_CLS=PRINTER") ||
+        !has_txt(txts, txt_count, "usb_DES=Canon MP490 series") ||
+        !has_txt(txts, txt_count, "ty=Canon MP490 series")) {
+        return 3;
+    }
+    if (has_txt(txts, txt_count, "rp=Canon MP490 series C0958C")) {
+        return 4;
+    }
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_pdl_datastream_txt")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_extracts_riousbprint_cmd_from_ieee1284_device_id(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+int main(void) {
+    const char *device_id = "MFG:Canon;MDL:MP490 series;CMD:BJL,BJRaster3,BSCCe,IVEC,IVECPLI;";
+    unsigned char buf[256];
+    char cmd[MAX_TXT_STRING + 1];
+    size_t len = strlen(device_id) + 2;
+
+    memset(buf, 0, sizeof(buf));
+    buf[0] = (unsigned char)((len >> 8) & 0xff);
+    buf[1] = (unsigned char)(len & 0xff);
+    memcpy(buf + 2, device_id, strlen(device_id));
+
+    if (extract_cmd_from_ieee1284_device_id(cmd, sizeof(cmd), buf, len) != 0) {
+        return 1;
+    }
+    if (strcmp(cmd, "BJL,BJRaster3,BSCCe,IVEC,IVECPLI") != 0) {
+        return 2;
+    }
+    printf("%s\n", cmd);
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_riousbprint_ieee1284")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "BJL,BJRaster3,BSCCe,IVEC,IVECPLI")
+
+    def test_mdns_advertiser_rejects_null_usb_printer_helper_args(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+int main(void) {
+    char storage[RIOUSBPRINT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[RIOUSBPRINT_MAX_TXT_ITEMS];
+    size_t txt_count = 0;
+    char out[MAX_TXT_STRING + 1];
+    unsigned char device_id[] = {0, 10, 'C', 'M', 'D', ':', 'P', 'W', 'G', ';'};
+
+    if (append_txt_itemf(NULL, txts, &txt_count, RIOUSBPRINT_MAX_TXT_ITEMS, "txtvers=1") == 0) {
+        return 1;
+    }
+    if (append_txt_itemf(storage, NULL, &txt_count, RIOUSBPRINT_MAX_TXT_ITEMS, "txtvers=1") == 0) {
+        return 2;
+    }
+    if (append_txt_itemf(storage, txts, NULL, RIOUSBPRINT_MAX_TXT_ITEMS, "txtvers=1") == 0) {
+        return 3;
+    }
+    if (append_txt_itemf(storage, txts, &txt_count, RIOUSBPRINT_MAX_TXT_ITEMS, NULL) == 0) {
+        return 4;
+    }
+    txt_count = RIOUSBPRINT_MAX_TXT_ITEMS;
+    if (append_txt_itemf(storage, txts, &txt_count, RIOUSBPRINT_MAX_TXT_ITEMS, "txtvers=1") == 0) {
+        return 5;
+    }
+
+    if (build_riousbprint_pdl(NULL, sizeof(out), "PWG") == 0) {
+        return 6;
+    }
+    if (build_riousbprint_pdl(out, 0, "PWG") == 0) {
+        return 7;
+    }
+    if (build_riousbprint_pdl(out, sizeof(out), NULL) == 0) {
+        return 8;
+    }
+
+    if (ieee1284_lookup_field(NULL, sizeof(out), device_id + 2, sizeof(device_id) - 2, "CMD") == 0) {
+        return 9;
+    }
+    if (extract_cmd_from_ieee1284_device_id(NULL, sizeof(out), device_id, sizeof(device_id)) == 0) {
+        return 10;
+    }
+    if (extract_cmd_from_ieee1284_device_id(out, 0, device_id, sizeof(device_id)) == 0) {
+        return 11;
+    }
+    if (extract_cmd_from_ieee1284_device_id(out, sizeof(out), NULL, sizeof(device_id)) == 0) {
+        return 12;
+    }
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_usb_printer_helper_null_args")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_rejects_short_usb_device_id_transfer(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+int main(void) {
+    unsigned char buf[64];
+    int actual_len = 99;
+
+    memset(buf, 'X', sizeof(buf));
+    buf[0] = 0;
+    buf[1] = 32;
+    memcpy(buf + 2, "CMD:LEAK;", 9);
+
+    if (sanitize_usb_printer_device_id_transfer(buf, sizeof(buf), 2, &actual_len) == 0) {
+        return 1;
+    }
+    if (actual_len != 0) {
+        return 2;
+    }
+    if (buf[0] != 0 || buf[1] != 32 || buf[2] != 0 || buf[10] != 0 || buf[63] != 0) {
+        return 3;
+    }
+
+    memset(buf, 'Y', sizeof(buf));
+    if (sanitize_usb_printer_device_id_transfer(buf, sizeof(buf), 8, &actual_len) != 0) {
+        return 4;
+    }
+    if (actual_len != 8 || buf[7] != 'Y' || buf[8] != 0 || buf[63] != 0) {
+        return 5;
+    }
+
+    memset(buf, 'Z', sizeof(buf));
+    if (sanitize_usb_printer_device_id_transfer(buf, sizeof(buf), 65, &actual_len) == 0) {
+        return 6;
+    }
+    if (buf[0] != 0 || buf[63] != 0) {
+        return 7;
+    }
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_usb_device_id_short_transfer")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
 
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
         if shutil.which("cc") is None:
@@ -4961,6 +5239,286 @@ int main(void) {
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "ok")
 
+    def test_mdns_advertiser_generated_printer_records_overlay_snapshot_records(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+#undef sendto
+
+static unsigned char captured_packets[16][BUF_SIZE];
+static size_t captured_lengths[16];
+static size_t captured_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {
+    (void)sockfd;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+    if (captured_count < 16) {
+        memcpy(captured_packets[captured_count], buf, len);
+        captured_lengths[captured_count] = len;
+        captured_count++;
+    }
+    return (ssize_t)len;
+}
+
+static void reset_captures(void) {
+    memset(captured_packets, 0, sizeof(captured_packets));
+    memset(captured_lengths, 0, sizeof(captured_lengths));
+    captured_count = 0;
+}
+
+static void configure_base(struct config *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    snprintf(cfg->instance_name, sizeof(cfg->instance_name), "%s", "Alton Time Capsule");
+    snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
+    snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
+    snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
+    snprintf(cfg->afp_service_type, sizeof(cfg->afp_service_type), "%s", AFP_SERVICE_TYPE);
+    snprintf(cfg->adisk_service_type, sizeof(cfg->adisk_service_type), "%s", "_adisk._tcp.local.");
+    snprintf(cfg->device_info_service_type, sizeof(cfg->device_info_service_type), "%s", "_device-info._tcp.local.");
+    snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
+    snprintf(cfg->airport_wama, sizeof(cfg->airport_wama), "%s", "80:EA:96:E6:58:68");
+    snprintf(cfg->riousbprint_instance_name, sizeof(cfg->riousbprint_instance_name), "%s", "Canon MP490 series");
+    snprintf(cfg->riousbprint_mfg, sizeof(cfg->riousbprint_mfg), "%s", "Canon");
+    snprintf(cfg->riousbprint_mdl, sizeof(cfg->riousbprint_mdl), "%s", "MP490 series");
+    snprintf(cfg->riousbprint_cmd, sizeof(cfg->riousbprint_cmd), "%s", "BJL,BJRaster3");
+    cfg->port = 445;
+    cfg->afp_port = AFP_DEFAULT_PORT;
+    cfg->adisk_port = 9;
+    cfg->airport_port = 5009;
+    cfg->riousbprint_port = 10000;
+    cfg->pdl_datastream_port = 9100;
+    cfg->ttl = 120;
+}
+
+static void configure_link(struct link_context *link) {
+    memset(link, 0, sizeof(*link));
+    snprintf(link->name, sizeof(link->name), "%s", "bridge0");
+    link->flags = IFF_UP | IFF_RUNNING;
+    link->ipv4[0].addr = inet_addr("10.0.1.77");
+    link->ipv4[0].netmask = inet_addr("255.255.255.0");
+    link->ipv4_count = 1;
+    link->mdns_ipv4_transport = 1;
+    link->mdns_ipv4_transport_addr = link->ipv4[0].addr;
+}
+
+static void add_snapshot_record(struct service_record_set *set, const char *type, const char *instance,
+                                const char *host, unsigned short port, const char *txt) {
+    struct service_record *record = &set->records[set->count++];
+    memset(record, 0, sizeof(*record));
+    snprintf(record->service_type, sizeof(record->service_type), "%s", type);
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", instance);
+    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
+    snprintf(record->host_label, sizeof(record->host_label), "%s", host);
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
+    record->port = port;
+    if (txt != NULL) {
+        snprintf(record->txt[0], sizeof(record->txt[0]), "%s", txt);
+        record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
+        record->txt_count = 1;
+    }
+}
+
+static int planned_count_ptr_target(const struct planned_rr_set *planned, const char *target) {
+    size_t i;
+    int matches = 0;
+
+    for (i = 0; i < planned->count; i++) {
+        char ptr_target[MAX_NAME];
+        size_t cursor = 0;
+        if (planned->records[i].type == DNS_TYPE_PTR &&
+            decode_name(planned->records[i].rdata, planned->records[i].rdlength, &cursor, ptr_target, sizeof(ptr_target)) == 0 &&
+            cursor == planned->records[i].rdlength &&
+            name_equals(ptr_target, target)) {
+            matches++;
+        }
+    }
+    return matches;
+}
+
+static int planned_has_srv_port(const struct planned_rr_set *planned, unsigned short want_port) {
+    size_t i;
+
+    for (i = 0; i < planned->count; i++) {
+        if (planned->records[i].type == DNS_TYPE_SRV && planned->records[i].rdlength >= 6) {
+            unsigned short port;
+            memcpy(&port, planned->records[i].rdata + 4, 2);
+            if (ntohs(port) == want_port) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int packet_has_srv_port(const unsigned char *packet, size_t packet_len, unsigned short want_port) {
+    struct dns_header hdr;
+    size_t cursor = sizeof(hdr);
+    unsigned short total_answers;
+    unsigned short i;
+
+    if (packet_len < sizeof(hdr)) {
+        return 0;
+    }
+    memcpy(&hdr, packet, sizeof(hdr));
+    total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return 0;
+        }
+        cursor += 4;
+    }
+    for (i = 0; i < total_answers; i++) {
+        char name[MAX_NAME];
+        unsigned short rrtype;
+        unsigned short rdlength;
+
+        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
+            return 0;
+        }
+        memcpy(&rrtype, packet + cursor, 2);
+        memcpy(&rdlength, packet + cursor + 8, 2);
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > packet_len) {
+            return 0;
+        }
+        if (rrtype == DNS_TYPE_SRV && rdlength >= 6) {
+            unsigned short port;
+            memcpy(&port, packet + cursor + 4, 2);
+            if (ntohs(port) == want_port) {
+                return 1;
+            }
+        }
+        cursor += rdlength;
+    }
+    return 0;
+}
+
+static int captured_has_srv_port(unsigned short want_port) {
+    size_t i;
+
+    for (i = 0; i < captured_count; i++) {
+        if (packet_has_srv_port(captured_packets[i], captured_lengths[i], want_port)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int plan_printer_type(const struct config *cfg,
+                             const struct link_context *link,
+                             const struct service_record_set *snapshot,
+                             const char *service_type,
+                             const char *riousbprint_instance_fqdn,
+                             const char *pdl_datastream_instance_fqdn,
+                             struct planned_rr_set *planned) {
+    memset(planned, 0, sizeof(*planned));
+    return plan_question_answers(planned,
+                                 MDNS_REPLY_MULTICAST,
+                                 service_type,
+                                 DNS_TYPE_PTR,
+                                 cfg,
+                                 link,
+                                 snapshot,
+                                 1,
+                                 "",
+                                 "",
+                                 "",
+                                 "",
+                                 "",
+                                 riousbprint_instance_fqdn,
+                                 pdl_datastream_instance_fqdn);
+}
+
+int main(void) {
+    struct config cfg;
+    struct link_context response_link;
+    struct service_record_set snapshot;
+    struct planned_rr_set planned;
+    struct sockaddr_in announcement_dest;
+    char riousbprint_instance_fqdn[MAX_NAME];
+    char pdl_datastream_instance_fqdn[MAX_NAME];
+
+    configure_base(&cfg);
+    configure_link(&response_link);
+    memset(&snapshot, 0, sizeof(snapshot));
+    add_snapshot_record(&snapshot, RIOUSBPRINT_SERVICE_TYPE, "Canon MP490 series", "stale-printer", 10001, "rp=stale");
+    add_snapshot_record(&snapshot, RIOUSBPRINT_SERVICE_TYPE, "Other Printer", "other-printer", 10002, "rp=other");
+    add_snapshot_record(&snapshot, PDL_DATASTREAM_SERVICE_TYPE, "Canon MP490 series", "stale-printer", 9101, "rp=stale");
+    add_snapshot_record(&snapshot, PDL_DATASTREAM_SERVICE_TYPE, "Other Printer", "other-printer", 9102, "rp=other");
+
+    if (build_instance_fqdn(riousbprint_instance_fqdn,
+                            sizeof(riousbprint_instance_fqdn),
+                            cfg.riousbprint_instance_name,
+                            RIOUSBPRINT_SERVICE_TYPE) != 0 ||
+        build_instance_fqdn(pdl_datastream_instance_fqdn,
+                            sizeof(pdl_datastream_instance_fqdn),
+                            cfg.riousbprint_instance_name,
+                            PDL_DATASTREAM_SERVICE_TYPE) != 0) {
+        return 1;
+    }
+
+    if (plan_printer_type(&cfg, &response_link, &snapshot, RIOUSBPRINT_SERVICE_TYPE,
+                          riousbprint_instance_fqdn, pdl_datastream_instance_fqdn, &planned) != 0 ||
+        planned_count_ptr_target(&planned, "Canon MP490 series._riousbprint._tcp.local.") != 1 ||
+        planned_count_ptr_target(&planned, "Other Printer._riousbprint._tcp.local.") != 1 ||
+        !planned_has_srv_port(&planned, 10000) ||
+        planned_has_srv_port(&planned, 10001) ||
+        !planned_has_srv_port(&planned, 10002)) {
+        return 2;
+    }
+
+    if (plan_printer_type(&cfg, &response_link, &snapshot, PDL_DATASTREAM_SERVICE_TYPE,
+                          riousbprint_instance_fqdn, pdl_datastream_instance_fqdn, &planned) != 0 ||
+        planned_count_ptr_target(&planned, "Canon MP490 series._pdl-datastream._tcp.local.") != 1 ||
+        planned_count_ptr_target(&planned, "Other Printer._pdl-datastream._tcp.local.") != 1 ||
+        !planned_has_srv_port(&planned, 9100) ||
+        planned_has_srv_port(&planned, 9101) ||
+        !planned_has_srv_port(&planned, 9102)) {
+        return 3;
+    }
+
+    memset(&announcement_dest, 0, sizeof(announcement_dest));
+    announcement_dest.sin_family = AF_INET;
+    announcement_dest.sin_port = htons(MDNS_PORT);
+    announcement_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
+    reset_captures();
+    if (send_announcement(1, &announcement_dest, &cfg, &response_link, cfg.ttl, &snapshot, 1) != 0 ||
+        !captured_has_srv_port(10000) ||
+        captured_has_srv_port(10001) ||
+        !captured_has_srv_port(10002) ||
+        !captured_has_srv_port(9100) ||
+        captured_has_srv_port(9101) ||
+        !captured_has_srv_port(9102)) {
+        return 4;
+    }
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_generated_printer_snapshot_overlay")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
     def test_mdns_advertiser_retries_interrupted_sendto(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''
@@ -7128,17 +7686,17 @@ fi
         self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", rendered[0])
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[1])
 
-    def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
+    def test_build_uninstall_plan_removes_flash_configuration(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
 
-        self.assertEqual(plan.flash_targets["allmdns.txt"], "/mnt/Flash/allmdns.txt")
-        self.assertEqual(plan.flash_targets["applemdns.txt"], "/mnt/Flash/applemdns.txt")
+        self.assertNotIn("allmdns.txt", plan.flash_targets)
+        self.assertNotIn("applemdns.txt", plan.flash_targets)
         self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
-        self.assertIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
-        self.assertIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
+        self.assertNotIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
+        self.assertNotIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
         self.assertIn("/mnt/Flash/tcapsulesmb.conf", plan.verify_absent_targets)
-        self.assertIn(RemovePathAction("/mnt/Flash/allmdns.txt"), plan.remote_actions)
-        self.assertIn(RemovePathAction("/mnt/Flash/applemdns.txt"), plan.remote_actions)
+        self.assertNotIn(RemovePathAction("/mnt/Flash/allmdns.txt"), plan.remote_actions)
+        self.assertNotIn(RemovePathAction("/mnt/Flash/applemdns.txt"), plan.remote_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/tcapsulesmb.conf"), plan.remote_actions)
 
     def test_build_uninstall_plan_removes_each_payload_home_once(self) -> None:

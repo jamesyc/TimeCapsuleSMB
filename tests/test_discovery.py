@@ -38,6 +38,7 @@ from timecapsulesmb.discovery.bonjour import (
     _source_ipv4_for_target,
     _source_ipv6_for_target,
     _zeroconf_interfaces_for_target,
+    discovered_record_has_only_link_local_ips,
     resolve_service_instance,
 )
 from timecapsulesmb.cli.discover import run_cli  # noqa: E402
@@ -74,6 +75,21 @@ class DiscoveryTests(unittest.TestCase):
             ipv6=["fd00::4"],
         )
         self.assertEqual(discovered_record_root_host(record), "root@fd00::4")
+
+    def test_discovered_record_root_host_rejects_link_local_only_ipv4_and_ipv6(self) -> None:
+        record = BonjourResolvedService(
+            name="TC",
+            hostname="capsule.local",
+            ipv4=["169.254.1.2"],
+            ipv6=["fe80::4"],
+        )
+        self.assertIsNone(discovered_record_root_host(record))
+        self.assertTrue(discovered_record_has_only_link_local_ips(record))
+
+    def test_discovered_record_root_host_rejects_link_local_only_ipv6(self) -> None:
+        record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=[], ipv6=["fe80::4"])
+        self.assertIsNone(discovered_record_root_host(record))
+        self.assertTrue(discovered_record_has_only_link_local_ips(record))
 
     def test_discovered_record_root_host_supports_ipv6_only_records(self) -> None:
         record = BonjourResolvedService(name="TC", hostname="capsule.local", ipv4=[], ipv6=["fd00::4"])

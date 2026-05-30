@@ -29,7 +29,7 @@ def ipv4_literal(value: str) -> str | None:
 
 
 def ipv6_literal(value: str) -> str | None:
-    value = value.strip()
+    value = value.strip().split("%", 1)[0]
     try:
         parsed = ipaddress.ip_address(value)
     except ValueError:
@@ -42,6 +42,17 @@ def ipv6_literal(value: str) -> str | None:
 def is_link_local_ipv4(value: str) -> bool:
     literal = ipv4_literal(value)
     return literal is not None and literal.startswith("169.254.")
+
+
+def is_link_local_ipv6(value: str) -> bool:
+    literal = ipv6_literal(value)
+    if literal is None:
+        return False
+    return ipaddress.ip_address(literal).is_link_local
+
+
+def is_link_local_ip(value: str) -> bool:
+    return is_link_local_ipv4(value) or is_link_local_ipv6(value)
 
 
 def is_loopback_ipv4(value: str) -> bool:

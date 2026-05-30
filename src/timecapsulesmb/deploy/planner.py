@@ -345,8 +345,6 @@ def build_uninstall_plan(
         "dfree.sh": "/mnt/Flash/dfree.sh",
         "mdns-advertiser": "/mnt/Flash/mdns-advertiser",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
-        "allmdns.txt": "/mnt/Flash/allmdns.txt",
-        "applemdns.txt": "/mnt/Flash/applemdns.txt",
     }
     verify_absent_targets = [
         *payload_dirs,
@@ -379,8 +377,6 @@ def build_uninstall_plan(
             RemovePathAction(flash_targets["dfree.sh"]),
             RemovePathAction(flash_targets["mdns-advertiser"]),
             RemovePathAction(flash_targets["tcapsulesmb.conf"]),
-            RemovePathAction(flash_targets["allmdns.txt"]),
-            RemovePathAction(flash_targets["applemdns.txt"]),
             RemovePathAction("/mnt/Memory/samba4"),
             RemovePathAction("/root/tc-netbsd7"),
             RemovePathAction("/root/tc-netbsd4"),

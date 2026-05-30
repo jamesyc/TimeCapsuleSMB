@@ -6,7 +6,14 @@ import time
 from typing import Callable
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
-from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4, resolve_host_ipv4s
+from timecapsulesmb.core.net import (
+    extract_host,
+    ipv4_literal,
+    is_link_local_ipv4,
+    is_link_local_ipv6,
+    resolve_host_ipv4s,
+    resolve_host_ipv6s,
+)
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
@@ -110,13 +117,15 @@ def ssh_target_link_local_resolution_error(
     if not host or ipv4_literal(host) is not None:
         return None
     link_local_ips = tuple(ip for ip in resolve_host_ipv4s(host) if is_link_local_ipv4(ip))
-    if not link_local_ips:
+    link_local_ipv6s = tuple(ip for ip in resolve_host_ipv6s(host) if is_link_local_ipv6(ip))
+    link_local_hosts = link_local_ips + link_local_ipv6s
+    if not link_local_hosts:
         return None
-    noun = "address" if len(link_local_ips) == 1 else "addresses"
+    noun = "address" if len(link_local_hosts) == 1 else "addresses"
     return (
-        f"{field_name} host {host} resolves to 169.254.x.x link-local IPv4 {noun} "
-        f"{', '.join(link_local_ips)}. Use the device's LAN IP or a hostname that resolves "
-        "to its LAN IP; 169.254.x.x is only suitable for temporary SSH recovery."
+        f"{field_name} host {host} resolves to link-local {noun} "
+        f"{', '.join(link_local_hosts)}. Use the device's LAN IP or a hostname that resolves "
+        "to its LAN IP; link-local addresses are only suitable for temporary SSH recovery."
     )
 
 

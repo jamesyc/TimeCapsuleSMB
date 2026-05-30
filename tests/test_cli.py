@@ -2190,7 +2190,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
-        self.assertIn("Device SSH target host must not be a 169.254.x.x link-local address", result.text)
+        self.assertIn("Device SSH target host must not be a link-local address", result.text)
 
     def test_configure_reprompts_hostname_that_resolves_link_local(self) -> None:
         prompt_values = iter([
@@ -2220,7 +2220,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
-        self.assertIn("capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", result.text)
+        self.assertIn("capsule.local resolves to link-local address 169.254.44.9", result.text)
 
     def test_configure_skipped_mdns_netbsd6_little_autofills_syap_and_model(self) -> None:
         record = BonjourResolvedService(
@@ -2838,8 +2838,50 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Device SSH target"], DEFAULTS["TC_HOST"])
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
-        self.assertIn("Selected device only advertised 169.254.x.x link-local IPv4", result.text)
+        self.assertIn("Selected device only advertised link-local addresses", result.text)
         self.assertNotIn("host: 169.254.44.9", result.text)
+
+    def test_configure_does_not_default_to_discovered_link_local_ipv4_or_ipv6(self) -> None:
+        seen_defaults = {}
+        record = BonjourResolvedService(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["169.254.44.9"],
+            ipv6=["fe80::82ea:96ff:fee6:c7e5"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the device":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        result = self.run_configure_cli(
+            discovered_records=[record],
+            input_side_effect=["1"],
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(seen_defaults["Device SSH target"], DEFAULTS["TC_HOST"])
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self.assertIn("Selected device only advertised link-local addresses", result.text)
+        self.assertIn("IPv6: fe80::82ea:96ff:fee6:c7e5", result.text)
 
     def test_configure_defaults_to_ipv6_when_discovery_has_no_routable_ipv4(self) -> None:
         seen_defaults = {}
@@ -2871,7 +2913,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_HOST"], f"root@{ipv6}")
         self.assertIn(f"host: {ipv6}", result.text)
         self.assertIn(f"IPv6: {ipv6}", result.text)
-        self.assertNotIn("Selected device only advertised 169.254.x.x link-local IPv4", result.text)
+        self.assertNotIn("Selected device only advertised link-local addresses", result.text)
 
     def test_configure_ctrl_c_during_discovery_selection_cancels(self) -> None:
         record = BonjourResolvedService(
@@ -3910,20 +3952,19 @@ class CliTests(unittest.TestCase):
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["remote_rc_local_log_tail"] = "\n".join(
                 [
-                    "mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback",
-                    "mDNS AirPort snapshot generated",
-                    "trusted Apple mDNS snapshot is newer than current boot: /mnt/Flash/applemdns.txt",
+                    "mDNS auto-ip is available; starting advertiser",
+                    "manager mDNS recovery: starting mdns advertiser in auto-ip mode",
                 ]
             )
             kwargs["debug_fields"]["remote_mdns_log_tail"] = "\n".join(
                 [
-                    "warning: could not identify local Apple mDNS records for snapshot file: /mnt/Flash/applemdns.txt",
-                    "airport snapshot: wrote 1 record to /mnt/Flash/applemdns.txt",
-                    "snapshot load: loaded 1 records, advertising 1 snapshot records",
-                    "serving summary: source=snapshot",
+                    "serving summary: source=generated",
                     "serving service: type=_smb._tcp.local. instance=Home port=445 host=home.local.",
                     "serving service: type=_adisk._tcp.local. instance=Home share=Data disk_key=dk2 uuid=1234",
                     "serving service: type=_device-info._tcp.local. instance=Home model=TimeCapsule6,116",
+                    "serving service: type=_airport._tcp.local. instance=Home port=5009 host=home.local.",
+                    "serving service: type=_riousbprint._tcp.local. instance=Canon MP490 series port=10000 host=home.local. cmd=BJL,BJRaster3",
+                    "serving service: type=_pdl-datastream._tcp.local. instance=Canon MP490 series port=9100 host=home.local. cmd=BJL,BJRaster3",
                     "mDNS takeover established after SIGTERM + 0ms using exclusive bind",
                 ]
             )
@@ -3936,10 +3977,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("mDNS boot context:", telemetry_error)
-        self.assertIn("INFO trusted Apple mDNS snapshot capture failed; AirPort fallback snapshot was generated", telemetry_error)
-        self.assertIn("INFO mDNS snapshot load: loaded 1 records, advertising 1 snapshot records", telemetry_error)
         self.assertIn(
-            "INFO mdns-advertiser source=snapshot; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local.",
+            "INFO mdns-advertiser source=generated; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local., _airport._tcp.local., _riousbprint._tcp.local., _pdl-datastream._tcp.local.",
             telemetry_error,
         )
         self.assertIn("INFO mDNS takeover established after SIGTERM + 0ms using exclusive bind", telemetry_error)
@@ -5065,7 +5104,7 @@ class CliTests(unittest.TestCase):
                         include_probe=False,
                     )
 
-        self.assertIn("TC_HOST host capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", str(ctx.exception))
+        self.assertIn("TC_HOST host capsule.local resolves to link-local address 169.254.44.9", str(ctx.exception))
 
     def test_managed_target_allows_proxied_hostname_that_resolves_link_local(self) -> None:
         config = self.make_app_config(

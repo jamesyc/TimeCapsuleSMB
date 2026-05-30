@@ -69,17 +69,17 @@ A reboot and clean deploy will fix 90% of issues. This is especially useful for 
 
 #### Time Machine backups are broken on macOS?
 
-Time Machine network backups have known macOS-side regressions on macOS 26.4.x and macOS 15.7.5-15.7.7. 
+Time Machine network backups have known macOS-side regressions on macOS 26.4.x and macOS 15.7.5-15.7.7. You may get an error like `The network backup disk could not be accessed because there was a problem with the network username or password. You may need to re-select the backup disk and enter the correct username and password.`
 
 | macOS Version    |                      Release date |
 | ---------------- | --------------------------------: |
 | `26.4`           |                **March 24, 2026** |
-| `26.4.1`         |                 **April 9, 2026** |
 | `15.7.5`         |                **March 24, 2026** |
+| `26.4.1`         |                 **April 9, 2026** |
 | `15.7.6`         |            **Beta versions only** |
 | `15.7.7`         |                  **May 11, 2026** |
 
-See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) and this later [MacObserver report about a 26.5 fix](https://www.macobserver.com/news/macos-tahoe-26-4-breaks-time-machine-users-report-widespread-failures/) for context.  Either update to macOS 26.5 or newer, or try the plist fix here: https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
+See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) and this later [MacObserver report about a 26.5 fix](https://www.macobserver.com/news/macos-tahoe-26-4-breaks-time-machine-users-report-widespread-failures/) for context. Either update to macOS 26.5 or newer, or try the plist fix here: https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
 
 **Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article. See also this [community discussion regarding Error 80](https://community.qnap.com/t/time-machine-backup-fails-with-authentication-error-80-on-tbs-h574tx/5613/9).
 
@@ -191,6 +191,20 @@ When filing an issue, please include:
 3. Output of `tcapsule doctor`
 4. Any error messages you're seeing
 5. Steps to reproduce the problem
+
+#### How do I get logs from my Mac?
+
+Run:
+```
+log stream --style compact --level debug --predicate '
+  process IN {"backupd","backupd-helper","diskimagesiod","diskarbitrationd","NetAuthSysAgent"} OR
+  process == "kernel" OR
+  subsystem CONTAINS[c] "TimeMachine" OR
+  subsystem CONTAINS[c] "smb"
+  ' >> /tmp/tm-debug/tm-live.log 2>&1
+```
+
+The logs are then located at `/tmp/tm-debug/tm-live.log`
 
 ## Advanced Topics
 

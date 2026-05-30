@@ -11,7 +11,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal
 
 from timecapsulesmb.core.errors import missing_dependency_message
-from timecapsulesmb.core.net import is_link_local_ipv4
+from timecapsulesmb.core.net import is_link_local_ip, is_link_local_ipv4, is_link_local_ipv6
 
 
 SERVICE_TYPES = [
@@ -68,14 +68,20 @@ class BonjourResolvedService:
                 return ip
         return None
 
+    def preferred_ipv6(self) -> str | None:
+        for ip in self.ipv6:
+            if not is_link_local_ipv6(ip):
+                return ip
+        return None
+
     def preferred_ip(self) -> str | None:
-        return self.preferred_ipv4() or (self.ipv6[0] if self.ipv6 else None)
+        return self.preferred_ipv4() or self.preferred_ipv6()
 
     def preferred_connection_host(self) -> str:
         preferred_ip = self.preferred_ip()
         if preferred_ip:
             return preferred_ip
-        if self.ipv4:
+        if self.ipv4 or self.ipv6:
             return ""
         return self.hostname
 
@@ -179,6 +185,11 @@ class ServiceObservation:
 def discovered_record_root_host(rec: BonjourResolvedService) -> str | None:
     chosen_host = rec.preferred_connection_host()
     return f"root@{chosen_host}" if chosen_host else None
+
+
+def discovered_record_has_only_link_local_ips(rec: BonjourResolvedService) -> bool:
+    addresses = list(rec.ipv4) + list(rec.ipv6)
+    return bool(addresses) and all(is_link_local_ip(ip) for ip in addresses)
 
 
 def _bytes_to_ip(addr_bytes: bytes) -> str:

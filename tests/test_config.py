@@ -396,9 +396,15 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             validate_ssh_target("root@169.254.44.9", "Device SSH target"),
-            "Device SSH target host must not be a 169.254.x.x link-local address. "
+            "Device SSH target host must not be a link-local address. "
             "Use the device's LAN IP or a hostname that resolves to its LAN IP; "
-            "169.254.x.x is only suitable for temporary SSH recovery.",
+            "link-local addresses are only suitable for temporary SSH recovery.",
+        )
+        self.assertEqual(
+            validate_ssh_target("root@fe80::1%en0", "Device SSH target"),
+            "Device SSH target host must not be a link-local address. "
+            "Use the device's LAN IP or a hostname that resolves to its LAN IP; "
+            "link-local addresses are only suitable for temporary SSH recovery.",
         )
 
     def test_validate_ssh_target_rejects_placeholder_default_ip(self) -> None:
@@ -536,7 +542,18 @@ class ConfigTests(unittest.TestCase):
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].key, "TC_HOST")
-        self.assertIn("must not be a 169.254.x.x link-local address", errors[0].message)
+        self.assertIn("must not be a link-local address", errors[0].message)
+
+    def test_validate_app_config_rejects_ipv6_link_local_deploy_host(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@fe80::82ea:96ff:fee6:c7e5"
+        values["TC_PASSWORD"] = "pw"
+        values["TC_AIRPORT_SYAP"] = "119"
+        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].key, "TC_HOST")
+        self.assertIn("must not be a link-local address", errors[0].message)
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig.from_values({"TC_HOST": ""})

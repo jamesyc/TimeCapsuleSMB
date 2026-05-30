@@ -594,6 +594,7 @@ class TelemetryTests(unittest.TestCase):
                                         hostname="AirPort-Time-Capsule.local",
                                         service_type="_airport._tcp.local.",
                                         ipv4=["192.168.1.72"],
+                                        ipv6=["fe80::1"],
                                         properties={"syAP": "119"},
                                     )
                                 )
@@ -602,6 +603,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("selected_bonjour_record={", finished_payload["error"])
         self.assertIn("service_type:_airport._tcp.local.", finished_payload["error"])
         self.assertIn("hostname:AirPort-Time-Capsule.local", finished_payload["error"])
+        self.assertIn("ipv6:[fe80::1]", finished_payload["error"])
         self.assertIn("syAP:119", finished_payload["error"])
 
     def test_command_context_debug_context_includes_only_probe_fields_not_already_in_telemetry(self) -> None:

@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 
-from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4
+from timecapsulesmb.core.net import extract_host, ipv4_literal, ipv6_literal, is_link_local_ip
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
 
 REPO_ROOT = package_project_root()
@@ -352,12 +352,12 @@ def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} username may contain only letters, numbers, dots, underscores, and hyphens."
     if host.startswith("-"):
         return f"{field_name} host must not start with a hyphen."
-    host_ip = ipv4_literal(host)
-    if host_ip is not None and is_link_local_ipv4(host_ip):
+    host_ip = ipv4_literal(host) or ipv6_literal(host)
+    if host_ip is not None and is_link_local_ip(host_ip):
         return (
-            f"{field_name} host must not be a 169.254.x.x link-local address. "
+            f"{field_name} host must not be a link-local address. "
             "Use the device's LAN IP or a hostname that resolves to its LAN IP; "
-            "169.254.x.x is only suitable for temporary SSH recovery."
+            "link-local addresses are only suitable for temporary SSH recovery."
         )
     return None
 
