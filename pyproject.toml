@@ -16,6 +16,13 @@ dependencies = [
   "zeroconf>=0.132.2",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "coverage>=7.6.0",
+  "pytest>=8.4.0,<9",
+  "pytest-xdist>=3.6.1,<4",
+]
+
 [project.scripts]
 tcapsule = "timecapsulesmb.cli.main:main"
 
