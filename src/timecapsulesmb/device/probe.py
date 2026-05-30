@@ -38,6 +38,8 @@ REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
 REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
 MDNS_BINARY_PROBE_TIMEOUT_SECONDS = 8
+MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS = 5
+MDNS_BINARY_PROBE_ATTEMPTS = 2
 MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS = 12
 MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS = 24
 MDNS_FSTAT_PROBE_TIMEOUT_SECONDS = 16
@@ -1070,11 +1072,16 @@ def _readiness_result_from_steps(
     )
 
 
-def _remaining_probe_timeout(deadline: float, default_timeout_seconds: int) -> int:
+def _remaining_probe_timeout(
+    deadline: float,
+    default_timeout_seconds: int,
+    *,
+    minimum_timeout_seconds: int = 1,
+) -> int:
     remaining = int(deadline - time.monotonic())
     if remaining <= 0:
-        return 1
-    return max(1, min(default_timeout_seconds, remaining))
+        return minimum_timeout_seconds
+    return max(minimum_timeout_seconds, min(default_timeout_seconds, remaining))
 
 
 def _run_timed_probe_step(
@@ -1212,8 +1219,26 @@ echo "$RUNTIME_MDNS_BIN"
         step_id="mdns_binary_probe",
         timeout_detail="mdns-advertiser binary probe",
         script=binary_script,
-        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_BINARY_PROBE_TIMEOUT_SECONDS),
+        timeout_seconds=_remaining_probe_timeout(
+            deadline,
+            MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
+            minimum_timeout_seconds=MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS,
+        ),
     )
+    for _attempt in range(1, MDNS_BINARY_PROBE_ATTEMPTS):
+        if binary_step.status != "timeout":
+            break
+        binary_step, binary_proc = _run_timed_probe_step(
+            connection,
+            step_id="mdns_binary_probe",
+            timeout_detail="mdns-advertiser binary probe",
+            script=binary_script,
+            timeout_seconds=_remaining_probe_timeout(
+                deadline,
+                MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
+                minimum_timeout_seconds=MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS,
+            ),
+        )
     if binary_step.status == "timeout":
         steps.append(binary_step)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")

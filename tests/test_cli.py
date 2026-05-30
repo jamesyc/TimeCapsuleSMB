@@ -5313,7 +5313,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
-        self.assertEqual(verify_mock.call_args.kwargs["timeout_seconds"], 180)
+        self.assertEqual(verify_mock.call_args.kwargs["timeout_seconds"], 200)
         self.assertIn("without file transfer", output.getvalue())
 
     def test_main_registers_flash_command(self) -> None:

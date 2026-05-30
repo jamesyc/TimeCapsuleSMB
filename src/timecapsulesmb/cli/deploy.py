@@ -319,7 +319,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 connection,
                 command_context,
                 stage="verify_runtime_activation",
-                timeout_seconds=180,
+                timeout_seconds=200,
                 heading="Waiting for managed runtime to finish starting...",
                 failure_message="Managed runtime activation failed.",
             ):
@@ -382,7 +382,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 connection,
                 command_context,
                 stage="verify_runtime_activation",
-                timeout_seconds=180,
+                timeout_seconds=200,
                 heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
                 failure_message="NetBSD4 activation failed.",
             ):

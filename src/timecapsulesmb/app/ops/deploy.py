@@ -384,7 +384,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             activation_message="Starting deployed runtime without reboot.",
             activation_stage="activate_runtime",
             verification_stage="verify_runtime_activation",
-            verification_timeout_seconds=180,
+            verification_timeout_seconds=200,
             failure_message="Managed runtime activation failed.",
         )
         return OperationResult(True, deploy_result_payload(
@@ -445,7 +445,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 activation_message="Activating deployed runtime after reboot.",
                 activation_stage="post_reboot_activation",
                 verification_stage="verify_runtime_activation",
-                verification_timeout_seconds=180,
+                verification_timeout_seconds=200,
                 failure_message="NetBSD4 activation failed.",
             )
         else:
@@ -454,7 +454,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 context,
                 connection,
                 stage="verify_runtime_activation",
-                timeout_seconds=180,
+                timeout_seconds=200,
                 failure_message="NetBSD4 activation failed.",
             )
         return OperationResult(True, deploy_result_payload(

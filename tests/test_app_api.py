@@ -2712,10 +2712,10 @@ class AppApiTests(unittest.TestCase):
         )
         verification = ManagedRuntimeProbeResult(
             ready=False,
-            detail="runtime verification timed out after 180s; managed smbd ready; managed mDNS takeover probe timed out",
+            detail="runtime verification timed out after 200s; managed smbd ready; managed mDNS takeover probe timed out",
             smbd=smbd,
             mdns=mdns,
-            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 180s"),),
+            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 200s"),),
         )
         with mock.patch("timecapsulesmb.app.ops.deploy.probe_managed_runtime_conn", return_value=verification):
             with mock.patch(
@@ -2737,7 +2737,7 @@ class AppApiTests(unittest.TestCase):
                             context,
                             connection,
                             stage="verify_runtime_activation",
-                            timeout_seconds=180,
+                            timeout_seconds=200,
                             failure_message="NetBSD4 activation failed.",
                         )
 

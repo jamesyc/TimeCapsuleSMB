@@ -540,10 +540,10 @@ class CliFlowTests(unittest.TestCase):
         mdns = readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
         result = ManagedRuntimeProbeResult(
             ready=False,
-            detail="runtime verification timed out after 180s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+            detail="runtime verification timed out after 200s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
             smbd=smbd,
             mdns=mdns,
-            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 180s"),),
+            extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 200s"),),
         )
         output = io.StringIO()
         with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=result):
@@ -552,7 +552,7 @@ class CliFlowTests(unittest.TestCase):
                     self.make_connection(),
                     command_context,
                     stage="verify_runtime",
-                    timeout_seconds=180,
+                    timeout_seconds=200,
                     heading="Checking runtime",
                     failure_message="NetBSD4 activation failed.",
                 )
@@ -560,9 +560,9 @@ class CliFlowTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(
             command_context.error,
-            "NetBSD4 activation failed. runtime verification timed out after 180s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+            "NetBSD4 activation failed. runtime verification timed out after 200s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
         )
-        self.assertIn("failed: runtime verification timed out after 180s", output.getvalue())
+        self.assertIn("failed: runtime verification timed out after 200s", output.getvalue())
 
 
 if __name__ == "__main__":

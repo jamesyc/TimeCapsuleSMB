@@ -7373,6 +7373,40 @@ fi
         self.assertIn("PASS:mdns-advertiser bound to required UDP 5353 listeners", result.lines)
         self.assertIn("PASS:Apple mDNSResponder is stopped", result.lines)
 
+    def test_probe_managed_mdns_takeover_retries_binary_probe_timeout_with_min_timeout(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=[
+                SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            ],
+        ) as run_ssh_mock:
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=1)
+
+        self.assertTrue(result.ready)
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]], [5, 5])
+        self.assertNotIn("FAIL:mdns-advertiser binary probe timed out after 5s", result.lines)
+
+    def test_probe_managed_mdns_takeover_reports_binary_timeout_after_retry(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=[
+                SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
+            ],
+        ) as run_ssh_mock:
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=1)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "mdns-advertiser binary probe timed out after 5s")
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list], [5, 5])
+        self.assertIn("FAIL:mdns-advertiser binary probe timed out after 5s", result.lines)
+
     def test_probe_managed_mdns_takeover_reports_apple_responder_conflict(self) -> None:
         ps_out = (
             "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"

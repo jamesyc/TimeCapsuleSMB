@@ -140,7 +140,7 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
 
     context.stage("run_activation")
     run_remote_actions(connection, plan.actions)
-    verify_runtime(context, connection, stage="verify_runtime_activation", timeout_seconds=180)
+    verify_runtime(context, connection, stage="verify_runtime_activation", timeout_seconds=200)
     return OperationResult(True, activation_result_payload(
         already_active=False,
         message=f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}",
