@@ -1819,7 +1819,7 @@ static int append_txt_itemf(char storage[][MAX_TXT_STRING + 1],
     int written;
     size_t len;
 
-    if (*count >= max_count) {
+    if (storage == NULL || txts == NULL || count == NULL || format == NULL || *count >= max_count) {
         return -1;
     }
 
@@ -1844,9 +1844,10 @@ static int build_riousbprint_pdl(char *out, size_t out_len, const char *cmd) {
     size_t off = 0;
     int appended = 0;
 
-    if (cmd == NULL || cmd[0] == '\0') {
+    if (out == NULL || out_len == 0 || cmd == NULL || cmd[0] == '\0') {
         return -1;
     }
+    out[0] = '\0';
 
     cursor = cmd;
     while (*cursor != '\0') {
@@ -2017,7 +2018,7 @@ static int ieee1284_lookup_field(char *out,
     size_t key_len;
     size_t pos = 0;
 
-    if (out_len == 0 || id == NULL || key == NULL) {
+    if (out == NULL || out_len == 0 || id == NULL || key == NULL) {
         return -1;
     }
     out[0] = '\0';
@@ -2071,7 +2072,7 @@ static int TC_UNUSED extract_cmd_from_ieee1284_device_id(char *out,
     size_t reported_len;
     size_t id_len;
 
-    if (actual_len <= 2) {
+    if (out == NULL || out_len == 0 || buf == NULL || actual_len <= 2) {
         return -1;
     }
     reported_len = ((size_t)buf[0] << 8) | (size_t)buf[1];
