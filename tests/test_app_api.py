@@ -38,7 +38,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError, ACPIdentity
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import STALE_BACKUP_AFTER_WRITE_MESSAGE, require_backup_fresh_for_plan
 from timecapsulesmb.services.reboot import RebootFlowError
@@ -1586,7 +1586,7 @@ class AppApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.configure.enable_ssh") as enable_ssh:
+                with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh_with_identity_preflight") as enable_ssh:
                     rc = service.run_api_request(
                         {
                             "operation": "configure",
@@ -1631,26 +1631,28 @@ class AppApiTests(unittest.TestCase):
             confirmed_collector = CollectingSink()
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()) as initial_probe:
                 with mock.patch("timecapsulesmb.services.configure.probe_connection_state", return_value=probed_state()) as reprobe:
-                    with mock.patch("timecapsulesmb.services.configure.enable_ssh") as enable_ssh:
-                        with mock.patch("timecapsulesmb.services.configure.wait_for_tcp_port_state", return_value=True) as wait_for_ssh:
-                            rc = service.run_api_request(
-                                {
-                                    "operation": "configure",
-                                    "params": {
-                                        "config": str(config_path),
-                                        "host": "root@10.0.0.2",
-                                        "password": "secret",
-                                        "confirmation_id": confirmation_id,
+                    with mock.patch("timecapsulesmb.services.acp_ssh.read_identity", return_value=ACPIdentity(syap=119)) as read_identity:
+                        with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
+                            with mock.patch("timecapsulesmb.services.configure.wait_for_tcp_port_state", return_value=True) as wait_for_ssh:
+                                rc = service.run_api_request(
+                                    {
+                                        "operation": "configure",
+                                        "params": {
+                                            "config": str(config_path),
+                                            "host": "root@10.0.0.2",
+                                            "password": "secret",
+                                            "confirmation_id": confirmation_id,
+                                        },
                                     },
-                                },
-                                confirmed_collector.sink,
-                            )
+                                    confirmed_collector.sink,
+                                )
 
             values = parse_env_file(config_path)
 
         self.assertEqual(rc, 0)
         initial_probe.assert_called_once()
         reprobe.assert_called_once()
+        read_identity.assert_called_once_with("10.0.0.2", "secret", timeout=10.0)
         enable_ssh.assert_called_once()
         wait_for_ssh.assert_called_once_with(
             "10.0.0.2",
@@ -1661,6 +1663,8 @@ class AppApiTests(unittest.TestCase):
             log=mock.ANY,
         )
         self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
+        stages = [event["stage"] for event in confirmed_collector.events_of_type("stage")]
+        self.assertLess(stages.index("acp_identity_probe"), stages.index("acp_enable_ssh"))
         self.assertNotIn("secret", json.dumps(confirmed_collector.events))
 
     def test_configure_enable_ssh_false_fails_without_confirmation(self) -> None:
@@ -1668,7 +1672,7 @@ class AppApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".env"
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.configure.enable_ssh") as enable_ssh:
+                with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh_with_identity_preflight") as enable_ssh:
                     rc = service.run_api_request(
                         {
                             "operation": "configure",
@@ -1708,7 +1712,7 @@ class AppApiTests(unittest.TestCase):
                 },
             )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.configure.enable_ssh", side_effect=ACPAuthError("bad password")):
+                with mock.patch("timecapsulesmb.services.acp_ssh.read_identity", side_effect=ACPAuthError("bad password")):
                     rc = service.run_api_request(
                         {
                             "operation": "configure",
@@ -1723,6 +1727,43 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(collector.events_of_type("error")[0]["recovery"]["suggested_operation"], "configure")
         self.assertEqual(collector.events_of_type("error")[0]["recovery"]["action_ids"], ["replace_password"])
         self.assertNotIn("badpw", json.dumps(collector.events))
+
+    def test_configure_reports_acp_identity_preflight_connection_failure(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            params = {
+                "config": str(config_path),
+                "host": "root@10.0.0.99",
+                "password": "pw",
+            }
+            params["confirmation_id"] = self.confirmation_id_for(
+                "configure",
+                params,
+                {
+                    "host": "root@10.0.0.99",
+                    "device_name": "10.0.0.99",
+                    "requires_reboot": True,
+                },
+            )
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
+                with mock.patch("timecapsulesmb.services.acp_ssh.read_identity", side_effect=ACPConnectionError("connection failed")):
+                    with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
+                        rc = service.run_api_request(
+                            {
+                                "operation": "configure",
+                                "params": params,
+                            },
+                            collector.sink,
+                        )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        self.assertFalse(config_path.exists())
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["recovery"]["title"], "AirPort not reachable at this address")
+        self.assertIn("No AirPort ACP service responded", error["message"])
 
     def test_configure_reports_unsupported_device(self) -> None:
         collector = CollectingSink()
@@ -1769,7 +1810,7 @@ class AppApiTests(unittest.TestCase):
                 },
             )
             with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()):
-                with mock.patch("timecapsulesmb.services.configure.enable_ssh") as enable_ssh:
+                with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh_with_identity_preflight") as enable_ssh:
                     rc = service.run_api_request(
                         {
                             "operation": "configure",

@@ -20,8 +20,8 @@ from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.integrations.acp import enable_ssh
-from timecapsulesmb.services.runtime import load_env_config
+from timecapsulesmb.services.acp_ssh import enable_ssh_with_identity_preflight
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 from timecapsulesmb.transport.local import tcp_open
@@ -152,12 +152,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.update_fields(set_ssh_action=action.value)
             print("SSH not reachable. Attempting to enable via ACP...")
             try:
-                command_context.set_stage("enable_ssh")
-                enable_ssh(acp_host, password, reboot_device=True, log=print)
+                enable_ssh_with_identity_preflight(
+                    acp_host,
+                    password,
+                    reboot_device=True,
+                    callbacks=RuntimeOperationCallbacks(
+                        set_stage=command_context.set_stage,
+                        log=print,
+                        add_debug_fields=command_context.add_debug_fields,
+                        update_fields=command_context.update_fields,
+                    ),
+                )
             except Exception as e:
                 error_text = str(e)
-                message = f"Failed to enable SSH via ACP: {error_text}"
-                print(color_red("Failed to enable SSH via ACP:"))
+                if command_context.debug_stage == "acp_identity_probe":
+                    label = "Failed to read AirPort identity via ACP"
+                else:
+                    label = "Failed to enable SSH via ACP"
+                message = f"{label}: {error_text}"
+                print(color_red(f"{label}:"))
                 print("\n".join(error_text.splitlines()))
                 command_context.fail_with_error(message)
                 return 1

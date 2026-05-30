@@ -8,7 +8,8 @@ from timecapsulesmb.configure_defaults import existing_config_value_or_default
 from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_values, write_env_file
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.device.probe import ProbedDeviceState, probe_connection_state
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
+from timecapsulesmb.services.acp_ssh import enable_ssh_with_identity_preflight
 from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, wait_for_tcp_port_state
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -43,9 +44,13 @@ def enable_ssh_and_reprobe(
         ssh_initially_reachable=False,
     )
     _call_log(callbacks.log, "\nSSH is not reachable. Attempting to enable SSH on the device...")
-    _call_stage(callbacks.set_stage, "acp_enable_ssh")
     try:
-        enable_ssh(host, connection.password, reboot_device=True, log=callbacks.log)
+        enable_ssh_with_identity_preflight(
+            host,
+            connection.password,
+            reboot_device=True,
+            callbacks=callbacks,
+        )
     except ACPAuthError:
         _call_fields(
             callbacks.add_debug_fields,

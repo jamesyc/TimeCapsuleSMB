@@ -101,6 +101,14 @@ final class OperationTimelineBuilderTests: XCTestCase {
         )
     }
 
+    func testConfigureAcpIdentityStageIsUserFacing() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "configure", stage: "acp_identity_probe")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Checking AirPort Identity"])
+    }
+
     func testActivateRuntimeProbeStageIsUserFacing() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "activate", stage: "probe_runtime")

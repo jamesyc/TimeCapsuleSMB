@@ -15,7 +15,7 @@ from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import probe_connection_state
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -150,7 +150,16 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             )
         except ACPAuthError as exc:
             raise AppOperationError("The AirPort admin password did not work.", code="auth_failed", debug=str(exc)) from exc
+        except ACPConnectionError as exc:
+            if context.current_stage == "acp_identity_probe":
+                raise AppOperationError(
+                    f"No AirPort ACP service responded at this address: {exc}",
+                    code="remote_error",
+                ) from exc
+            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
         except ACPError as exc:
+            if context.current_stage == "acp_identity_probe":
+                raise AppOperationError(f"Failed to read AirPort identity via ACP: {exc}", code="remote_error") from exc
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
 
         if probed_state is None:

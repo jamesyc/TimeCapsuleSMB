@@ -442,9 +442,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                     prompt_host_and_password(existing, values, discovered_host, ssh_opts)
                     continue
                 except ACPError as exc:
-                    message = f"Failed to enable SSH via ACP: {exc}"
+                    if command_context.debug_stage == "acp_identity_probe":
+                        label = "Failed to read AirPort identity via ACP"
+                    else:
+                        label = "Failed to enable SSH via ACP"
+                    message = f"{label}: {exc}"
                     if not args.json:
-                        print(color_red("Failed to enable SSH via ACP:"))
+                        print(color_red(f"{label}:"))
                         print(str(exc))
                     return fail_configure(message)
                 if probed_state is None:

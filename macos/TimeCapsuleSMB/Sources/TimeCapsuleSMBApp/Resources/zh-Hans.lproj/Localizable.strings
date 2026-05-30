@@ -793,6 +793,7 @@
 "timeline.stage.checking_bundled_files" = "正在检查 Bundled Files";
 "timeline.stage.checking_runtime" = "正在检查 SMB";
 "timeline.stage.checking_ssh" = "正在检查 SSH";
+"timeline.stage.checking_airport_identity" = "正在检查 AirPort 身份";
 "timeline.stage.confirming_ssh_enable" = "正在确认启用 SSH";
 "timeline.stage.deleting_old_deployed_files" = "正在删除旧 deployed files";
 "timeline.stage.enabling_ssh" = "正在启用 SSH";

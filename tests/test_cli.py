@@ -4225,7 +4225,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_ssh_mock:
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_identity_preflight") as enable_ssh_mock:
                     with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", return_value=True):
                         with redirect_stdout(output):
                             rc = set_ssh.main([])
@@ -4243,7 +4243,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_mock:
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_identity_preflight") as enable_mock:
                     with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
                         with redirect_stdout(output):
                             rc = set_ssh.main(["--status"])
@@ -4260,7 +4260,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_mock:
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_identity_preflight") as enable_mock:
                     with redirect_stdout(output):
                         rc = set_ssh.main(["--enable"])
 
@@ -4286,7 +4286,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_mock:
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_identity_preflight") as enable_mock:
                     with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state") as wait_mock:
                         with redirect_stdout(output):
                             rc = set_ssh.main(["--enable", "--no-wait"])
@@ -4301,7 +4301,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh", side_effect=RuntimeError("ACP failed")):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_identity_preflight", side_effect=RuntimeError("ACP failed")):
                     with redirect_stdout(output):
                         rc = set_ssh.main([])
         self.assertEqual(rc, 1)
@@ -4311,9 +4311,28 @@ class CliTests(unittest.TestCase):
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["set_ssh_action"], "enable_ssh")
-        self.assertIn("stage=enable_ssh", finished["error"])
+        self.assertIn("stage=probe_ssh", finished["error"])
         self.assertIn(message, finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
+
+    def test_set_ssh_enable_stops_when_identity_preflight_cannot_connect(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.99", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.services.acp_ssh.read_identity", side_effect=ACPConnectionError("connection failed")):
+                    with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_mock:
+                        with redirect_stdout(output):
+                            rc = set_ssh.main([])
+
+        self.assertEqual(rc, 1)
+        enable_mock.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn(f"{ANSI_RED}Failed to read AirPort identity via ACP:{ANSI_RESET}", rendered)
+        self.assertIn("connection failed", rendered)
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertIn("stage=acp_identity_probe", finished["error"])
+        self.assertIn("Failed to read AirPort identity via ACP: connection failed", finished["error"])
 
     def test_set_ssh_enable_failure_reports_acp_error_without_bootstrap_guidance(self) -> None:
         output = io.StringIO()
@@ -4321,7 +4340,7 @@ class CliTests(unittest.TestCase):
         error = "ACP command failed with error_code -0x1234 (likely wrong AirPort admin password)"
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh", side_effect=RuntimeError(error)):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_identity_preflight", side_effect=RuntimeError(error)):
                     with redirect_stdout(output):
                         rc = set_ssh.main([])
 
