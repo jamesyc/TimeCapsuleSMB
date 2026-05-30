@@ -1,11 +1,87 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 from timecapsulesmb.configure_defaults import valid_existing_config_value
 from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_values, write_env_file
+from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.device.probe import ProbedDeviceState, probe_connection_state
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
+from timecapsulesmb.services.runtime import wait_for_tcp_port_state
+from timecapsulesmb.transport.ssh import SshConnection
+
+
+@dataclass(frozen=True)
+class ConfigureEnableSshCallbacks:
+    set_stage: Callable[[str], None] | None = None
+    log: Callable[[str], None] | None = None
+    add_debug_fields: Callable[..., None] | None = None
+    update_fields: Callable[..., None] | None = None
+
+
+def _call_fields(callback: Callable[..., None] | None, **fields: object) -> None:
+    if callback is not None:
+        callback(**fields)
+
+
+def _call_stage(callback: Callable[[str], None] | None, stage: str) -> None:
+    if callback is not None:
+        callback(stage)
+
+
+def _call_log(callback: Callable[[str], None] | None, message: str) -> None:
+    if callback is not None:
+        callback(message)
+
+
+def enable_ssh_and_reprobe(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = 180,
+    verbose_wait: bool = True,
+    callbacks: ConfigureEnableSshCallbacks | None = None,
+) -> ProbedDeviceState | None:
+    callbacks = callbacks or ConfigureEnableSshCallbacks()
+    host = extract_host(connection.host)
+    _call_fields(
+        callbacks.add_debug_fields,
+        configure_acp_enable_attempted=True,
+        ssh_initially_reachable=False,
+    )
+    _call_log(callbacks.log, "\nSSH is not reachable. Attempting to enable SSH on the device...")
+    _call_stage(callbacks.set_stage, "acp_enable_ssh")
+    try:
+        enable_ssh(host, connection.password, reboot_device=True, log=callbacks.log)
+    except ACPAuthError:
+        _call_fields(
+            callbacks.add_debug_fields,
+            configure_acp_enable_succeeded=False,
+            configure_retry_reason="acp_authentication_failed",
+        )
+        raise
+    except ACPError:
+        _call_fields(callbacks.add_debug_fields, configure_acp_enable_succeeded=False)
+        raise
+
+    _call_fields(callbacks.add_debug_fields, configure_acp_enable_succeeded=True)
+    _call_stage(callbacks.set_stage, "wait_for_ssh_after_acp")
+    if not wait_for_tcp_port_state(
+        host,
+        22,
+        expected_state=True,
+        timeout_seconds=timeout_seconds,
+        service_name="SSH port",
+        log=callbacks.log if verbose_wait else None,
+    ):
+        _call_fields(callbacks.update_fields, ssh_final_reachable=False)
+        return None
+
+    _call_fields(callbacks.update_fields, ssh_final_reachable=True)
+    _call_stage(callbacks.set_stage, "ssh_probe_after_acp")
+    return probe_connection_state(connection)
 
 
 def _optional_unsigned_config_value(value: object, key: str) -> str:

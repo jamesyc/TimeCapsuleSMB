@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import argparse
 import base64
-from functools import partial
 from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.apple_firmware import (
     APPLE_FIRMWARE_CATALOG_URL,
     FirmwareTemplateCandidate,
-    normalize_syap,
 )
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle, request_ssh_reboot
@@ -38,10 +36,9 @@ from timecapsulesmb.flash_payloads import build_patch_payload_for_active_bank as
 from timecapsulesmb.flash_workflow import (
     FlashPlan,
     require_patch_ready as require_write_ready,
-    write_and_validate_plan,
 )
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.integrations.acp import ACPError, flash_firmware_bank, get_property_int
+from timecapsulesmb.services import flash as flash_service
 from timecapsulesmb.services.flash import (
     FlashAnalysisBundle,
     FlashInputs,
@@ -56,84 +53,19 @@ from timecapsulesmb.services.flash import (
     save_flash_banks,
     save_flash_manifest,
     save_primary_patched_bank_if_ready,
+    write_flash_plan,
 )
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.ssh import SshConnection, SshError, run_ssh_capture_bytes
+from timecapsulesmb.transport.ssh import SshError
 
 
-FLASH_READ_TIMEOUT_SECONDS = 180
-FLASH_WRITE_TIMEOUT_SECONDS = 300
 MAX_LOGIN_ERROR_UPLOAD_BYTES = 8192
 WRITE_OPERATIONS = {"patch", "restore"}
 POWERCYCLE_REQUIRED_MESSAGE = (
     "POWER-CYCLE REQUIRED: unplug the device, wait 10 seconds, then plug it back in."
 )
 ProgressLogger = LogCallback
-
-
-def dump_remote_bank(connection: SshConnection, device: str, *, log: ProgressLogger = None) -> bytes:
-    emit_progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
-    return run_ssh_capture_bytes(
-        connection,
-        f"/bin/dd if={device} bs=65536 2>/dev/null",
-        timeout=FLASH_READ_TIMEOUT_SECONDS,
-    )
-
-
-def read_live_login(connection: SshConnection, *, log: ProgressLogger = None) -> bytes:
-    emit_progress(log, "SSH: /bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null")
-    return run_ssh_capture_bytes(connection, "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null", timeout=30)
-
-
-def read_acp_property_int(acp_host: str, password: str, name: str) -> int:
-    try:
-        return get_property_int(acp_host, password, name)
-    except ACPError as exc:
-        raise FlashAnalysisError(f"ACP property {name} read failed: {exc}") from exc
-
-
-def read_flash_inputs(
-    connection: SshConnection,
-    *,
-    acp_host: str,
-    password: str,
-    log: ProgressLogger = None,
-) -> tuple[bytes, bytes, int | None, int | None, int | None, bytes]:
-    emit_progress(log, "Reading primary firmware bank from /dev/rflash0.raw...")
-    primary = dump_remote_bank(connection, "/dev/rflash0.raw", log=log)
-    emit_progress(log, "Reading secondary firmware bank from /dev/rflash1.raw...")
-    secondary = dump_remote_bank(connection, "/dev/rflash1.raw", log=log)
-    emit_progress(log, "Reading ACP checksum properties cks1 and cks2...")
-    cks1 = read_acp_property_int(acp_host, password, "cks1")
-    cks2 = read_acp_property_int(acp_host, password, "cks2")
-    emit_progress(log, "Reading ACP product property syAP...")
-    syap = read_acp_property_int(acp_host, password, "syAP")
-    emit_progress(log, "Reading live /etc/rc.d/LOGIN...")
-    login = read_live_login(connection, log=log)
-    return primary, secondary, cks1, cks2, syap, login
-
-
-def dump_remote_bank_for_validation(
-    connection: SshConnection,
-    device: str,
-    *,
-    log: ProgressLogger = None,
-) -> bytes:
-    emit_progress(log, f"Reading back written firmware bank from {device}...")
-    return dump_remote_bank(connection, device)
-
-
-def get_property_int_for_validation(
-    host: str,
-    password: str,
-    name: str,
-    *,
-    log: ProgressLogger = None,
-    **kwargs: object,
-) -> int:
-    emit_progress(log, f"Reading ACP checksum property {name} after write...")
-    return get_property_int(host, password, name, **kwargs)
 
 
 def _manifest_banks(manifest: dict[str, object]) -> list[dict[str, object]]:
@@ -446,7 +378,7 @@ def _read_flash(
 ) -> FlashInputs | None:
     command_context.set_stage("read_flash")
     try:
-        primary, secondary, cks1, cks2, acp_syap, live_login = read_flash_inputs(
+        inputs = flash_service.read_flash_inputs(
             target.connection,
             acp_host=target.acp_host,
             password=target.connection.password,
@@ -465,28 +397,12 @@ def _read_flash(
         command_context.fail()
         return None
 
-    try:
-        syap = normalize_syap(acp_syap)
-    except FlashAnalysisError as exc:
-        message = str(exc)
-        record_flash_error(command_context, message, stage="read_flash", live_login=live_login)
-        print(message)
-        command_context.fail()
-        return None
-
-    identity = AIRPORT_IDENTITIES_BY_SYAP.get(syap)
+    identity = AIRPORT_IDENTITIES_BY_SYAP.get(inputs.syap)
     command_context.update_fields(
-        device_syap=syap,
+        device_syap=inputs.syap,
         device_model=None if identity is None else identity.mdns_model,
     )
-    return FlashInputs(
-        primary=primary,
-        secondary=secondary,
-        cks1=cks1,
-        cks2=cks2,
-        syap=syap,
-        live_login=live_login,
-    )
+    return inputs
 
 
 def _analyze_flash(
@@ -700,25 +616,8 @@ def _write_flash(
     target_text = "primary" if plan.mode == "patch" else f"active {plan.target_bank.name}"
     command_context.set_stage(stage)
     emit_progress(log, f"Sending ACP flash command for {target_text} bank...")
-    _record_write_outcome(
-        bundle=bundle,
-        plan=plan,
-        status="attempting",
-        write_validated=False,
-        write_may_have_modified_device=True,
-        stage=stage,
-    )
     try:
-        write_result = write_and_validate_plan(
-            connection=target.connection,
-            acp_host=target.acp_host,
-            plan=plan,
-            os_release=target.compatibility.os_release,
-            flash_firmware_bank_func=flash_firmware_bank,
-            dump_remote_bank_func=partial(dump_remote_bank_for_validation, log=log),
-            get_property_int_func=partial(get_property_int_for_validation, log=log),
-            timeout=FLASH_WRITE_TIMEOUT_SECONDS,
-        )
+        write_result = write_flash_plan(target=target, bundle=bundle, plan=plan, log=log)
     except FlashAnalysisError as exc:
         message = str(exc)
         _record_write_outcome(

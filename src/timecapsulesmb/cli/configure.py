@@ -23,7 +23,6 @@ from timecapsulesmb.core.config import (
     write_env_file,
 )
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import wait_for_tcp_port_state
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -34,9 +33,9 @@ from timecapsulesmb.cli.runtime import (
     read_password_source_args,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
-from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
@@ -54,7 +53,7 @@ from timecapsulesmb.discovery.bonjour import (
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.cli.util import color_cyan, color_red
 
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect")
@@ -268,51 +267,6 @@ def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None
         print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
 
 
-def enable_ssh_and_reprobe_for_configure(
-    connection: SshConnection,
-    command_context: CommandContext,
-    *,
-    timeout_seconds: int = 180,
-    log: Callable[[str], None] = print,
-    verbose_wait: bool = True,
-) -> ProbedDeviceState | None:
-    host = extract_host(connection.host)
-    command_context.add_debug_fields(
-        configure_acp_enable_attempted=True,
-        ssh_initially_reachable=False,
-    )
-    log("\nSSH is not reachable. Attempting to enable SSH on the device...")
-    command_context.set_stage("acp_enable_ssh")
-    try:
-        enable_ssh(host, connection.password, reboot_device=True, log=log)
-    except ACPAuthError:
-        command_context.add_debug_fields(
-            configure_acp_enable_succeeded=False,
-            configure_retry_reason="acp_authentication_failed",
-        )
-        raise
-    except ACPError:
-        command_context.add_debug_fields(configure_acp_enable_succeeded=False)
-        raise
-
-    command_context.add_debug_fields(configure_acp_enable_succeeded=True)
-    command_context.set_stage("wait_for_ssh_after_acp")
-    if not wait_for_tcp_port_state(
-        host,
-        22,
-        expected_state=True,
-        timeout_seconds=timeout_seconds,
-        service_name="SSH port",
-        verbose=verbose_wait,
-    ):
-        command_context.update_fields(ssh_final_reachable=False)
-        return None
-
-    command_context.update_fields(ssh_final_reachable=True)
-    command_context.set_stage("ssh_probe_after_acp")
-    return probe_connection_state(connection)
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Create or update the local TimeCapsuleSMB .env configuration.")
     add_config_argument(parser)
@@ -488,11 +442,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if no_input_enabled(args) and not args.yes:
                     return fail_configure("configure --enable-ssh in non-interactive mode requires --yes.")
                 try:
-                    probed_state = enable_ssh_and_reprobe_for_configure(
+                    probed_state = configure_service.enable_ssh_and_reprobe(
                         connection,
-                        command_context,
-                        log=progress,
                         verbose_wait=not args.json,
+                        callbacks=configure_service.ConfigureEnableSshCallbacks(
+                            set_stage=command_context.set_stage,
+                            add_debug_fields=command_context.add_debug_fields,
+                            update_fields=command_context.update_fields,
+                            log=progress,
+                        ),
                     )
                 except ACPAuthError as exc:
                     if no_input_enabled(args):

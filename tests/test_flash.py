@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import timecapsulesmb.flash as flash_module
+from timecapsulesmb.services import flash as flash_service
 from timecapsulesmb.flash import (
     PATCHED_LOGIN_SCRIPT,
     STOCK_LOGIN_NETBSD4_DUMMY,
@@ -28,6 +29,8 @@ from timecapsulesmb.flash import (
     inspection_to_jsonable,
     write_decision_for_bank,
 )
+from timecapsulesmb.integrations.acp import ACPAuthError
+from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
 def make_gzip_member(data: bytes) -> bytes:
@@ -67,6 +70,61 @@ class FlashAnalysisTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._zopfli_patch.stop()
+
+    def test_service_read_flash_inputs_normalizes_syap_and_reads_login_last(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        primary = b"primary"
+        secondary = b"secondary"
+        login = b"login"
+        logs: list[str] = []
+        with mock.patch("timecapsulesmb.services.flash.run_ssh_capture_bytes", side_effect=[primary, secondary, login]) as capture:
+            with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=[11, 22, 113]) as get_property:
+                inputs = flash_service.read_flash_inputs(connection, acp_host="10.0.0.2", password="pw", log=logs.append)
+
+        self.assertEqual(inputs.primary, primary)
+        self.assertEqual(inputs.secondary, secondary)
+        self.assertEqual(inputs.cks1, 11)
+        self.assertEqual(inputs.cks2, 22)
+        self.assertEqual(inputs.syap, "113")
+        self.assertEqual(inputs.live_login, login)
+        self.assertEqual(capture.call_count, 3)
+        self.assertEqual([call.args[2] for call in get_property.mock_calls], ["cks1", "cks2", "syAP"])
+        self.assertIn("Reading live /etc/rc.d/LOGIN...", logs)
+
+    def test_service_read_flash_inputs_stops_before_login_when_acp_fails(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.services.flash.run_ssh_capture_bytes", side_effect=[b"primary", b"secondary"]) as capture:
+            with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=ACPAuthError("bad password")):
+                with self.assertRaises(FlashAnalysisError) as raised:
+                    flash_service.read_flash_inputs(connection, acp_host="10.0.0.2", password="pw")
+
+        self.assertEqual(capture.call_count, 2)
+        self.assertIn("ACP property cks1 read failed", str(raised.exception))
+
+    def test_service_read_flash_inputs_stops_before_acp_when_secondary_read_fails(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.services.flash.run_ssh_capture_bytes", side_effect=[b"primary", SshError("rc=255")]):
+            with mock.patch("timecapsulesmb.services.flash.get_property_int") as get_property:
+                with self.assertRaises(SshError):
+                    flash_service.read_flash_inputs(connection, acp_host="10.0.0.2", password="pw")
+
+        get_property.assert_not_called()
+
+    def test_service_validation_dump_preserves_validation_and_ssh_read_logs(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        logs: list[str] = []
+        with mock.patch("timecapsulesmb.services.flash.run_ssh_capture_bytes", return_value=b"bank") as capture:
+            payload = flash_service.dump_remote_bank_for_validation(connection, "/dev/rflash0.raw", log=logs.append)
+
+        self.assertEqual(payload, b"bank")
+        capture.assert_called_once_with(connection, "/bin/dd if=/dev/rflash0.raw bs=65536 2>/dev/null", timeout=180)
+        self.assertEqual(
+            logs,
+            [
+                "Reading back written firmware bank from /dev/rflash0.raw...",
+                "SSH: /bin/dd if=/dev/rflash0.raw bs=65536 2>/dev/null",
+            ],
+        )
 
     def test_find_footer_and_gzip_member_ignore_false_gzip_signature(self) -> None:
         bank = make_bank(extra_gzip_magic=b"\x1f\x8b\x08bad")

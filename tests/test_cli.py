@@ -53,6 +53,7 @@ from timecapsulesmb.cli import (
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.services import flash as flash_service
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.core.config import (
     AppConfig,
@@ -104,7 +105,7 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.flash_payloads import find_apple_firmware_match
-from timecapsulesmb.flash import PATCHED_LOGIN_SCRIPT, STOCK_LOGIN_NETBSD4_DUMMY, sha256_hex
+from timecapsulesmb.flash import FlashAnalysisError, PATCHED_LOGIN_SCRIPT, STOCK_LOGIN_NETBSD4_DUMMY, sha256_hex
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
@@ -361,18 +362,18 @@ class CliTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=None))
-        def fake_configure_acp_probe(_connection, command_context, **_kwargs):
-            command_context.add_debug_fields(
+        def fake_configure_acp_probe(_connection, *, callbacks=None, **_kwargs):
+            callbacks.add_debug_fields(
                 configure_acp_enable_attempted=True,
                 configure_acp_enable_succeeded=True,
                 ssh_initially_reachable=False,
             )
-            command_context.update_fields(ssh_final_reachable=True)
+            callbacks.update_fields(ssh_final_reachable=True)
             return self.make_probe_state(self.make_probe_result_netbsd6())
 
         self._configure_acp_probe_mock = self._exit_stack.enter_context(
             mock.patch(
-                "timecapsulesmb.cli.configure.enable_ssh_and_reprobe_for_configure",
+                "timecapsulesmb.services.configure.enable_ssh_and_reprobe",
                 side_effect=fake_configure_acp_probe,
             )
         )
@@ -459,6 +460,25 @@ class CliTests(unittest.TestCase):
             if end_offset < offset and end_offset <= len(bank) and zlib.adler32(bank[:end_offset]) & 0xFFFFFFFF == checksum:
                 return checksum
         self.fail("synthetic flash bank footer not found")
+
+    def make_flash_inputs(
+        self,
+        primary: bytes,
+        secondary: bytes,
+        *,
+        cks1: int | None = None,
+        cks2: int | None = None,
+        syap: str = "113",
+        live_login: bytes = STOCK_LOGIN_NETBSD4_DUMMY,
+    ) -> cli_flash.FlashInputs:
+        return cli_flash.FlashInputs(
+            primary=primary,
+            secondary=secondary,
+            cks1=self.flash_bank_checksum(primary) if cks1 is None else cks1,
+            cks2=self.flash_bank_checksum(secondary) if cks2 is None else cks2,
+            syap=syap,
+            live_login=live_login,
+        )
 
     def flash_bank_end_offset(self, bank: bytes) -> int:
         for offset in range(max(0, len(bank) - 4096), len(bank) - 7):
@@ -5218,8 +5238,8 @@ class CliTests(unittest.TestCase):
     def test_flash_live_login_read_uses_binary_capture(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         payload = b"#!/bin/sh\n\xff"
-        with mock.patch("timecapsulesmb.cli.flash.run_ssh_capture_bytes", return_value=payload) as capture_mock:
-            self.assertEqual(cli_flash.read_live_login(connection), payload)
+        with mock.patch("timecapsulesmb.services.flash.run_ssh_capture_bytes", return_value=payload) as capture_mock:
+            self.assertEqual(flash_service.read_live_login(connection), payload)
         capture_mock.assert_called_once_with(
             connection,
             "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null",
@@ -5279,15 +5299,8 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=config):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with redirect_stdout(output):
                                 rc = cli_flash.main(["--read-only", "--backup-dir", str(backup_dir)])
@@ -5325,9 +5338,9 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
-                    with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=[primary, secondary]) as dump_mock:
-                        with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=ACPAuthError("ACP command failed with error_code -0x10")):
-                            with mock.patch("timecapsulesmb.cli.flash.read_live_login", side_effect=AssertionError("LOGIN should not be read after ACP failure")) as login_mock:
+                    with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=[primary, secondary]) as dump_mock:
+                        with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=ACPAuthError("ACP command failed with error_code -0x10")):
+                            with mock.patch("timecapsulesmb.services.flash.read_live_login", side_effect=AssertionError("LOGIN should not be read after ACP failure")) as login_mock:
                                 with redirect_stdout(output):
                                     rc = cli_flash.main([
                                         "--read-only",
@@ -5355,11 +5368,11 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.dump_remote_bank",
+                        "timecapsulesmb.services.flash.dump_remote_bank",
                         side_effect=[primary, SshError("ssh command failed with rc=255")],
                     ) as dump_mock:
-                        with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=AssertionError("ACP should not be read after SSH failure")) as acp_mock:
-                            with mock.patch("timecapsulesmb.cli.flash.read_live_login", side_effect=AssertionError("LOGIN should not be read after SSH failure")) as login_mock:
+                        with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=AssertionError("ACP should not be read after SSH failure")) as acp_mock:
+                            with mock.patch("timecapsulesmb.services.flash.read_live_login", side_effect=AssertionError("LOGIN should not be read after SSH failure")) as login_mock:
                                 with redirect_stdout(output):
                                     rc = cli_flash.main([
                                         "--read-only",
@@ -5392,14 +5405,11 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(
                             primary,
                             corrupt_secondary,
-                            self.flash_bank_checksum(primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            STOCK_LOGIN_NETBSD4_DUMMY,
+                            cks2=self.flash_bank_checksum(secondary),
                         ),
                     ):
                         with redirect_stdout(output):
@@ -5430,15 +5440,8 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env(TC_AIRPORT_SYAP="113"))):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            primary,
-                            secondary,
-                            self.flash_bank_checksum(primary),
-                            self.flash_bank_checksum(secondary),
-                            None,
-                            STOCK_LOGIN_NETBSD4_DUMMY,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        side_effect=FlashAnalysisError("syAP is missing"),
                     ):
                         with redirect_stdout(output):
                             rc = cli_flash.main(["--read-only", "--backup-dir", str(Path(tmp) / "backup")])
@@ -5464,15 +5467,8 @@ class CliTests(unittest.TestCase):
                 ):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                0,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary, syap="0"),
                         ):
                             with redirect_stdout(output):
                                 rc = cli_flash.main(["--read-only", "--backup-dir", str(backup_dir)])
@@ -5495,15 +5491,8 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with redirect_stdout(output):
                                 rc = cli_flash.main(["--read-only", "--backup-dir", str(backup_dir)])
@@ -5530,15 +5519,8 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with redirect_stdout(output):
                                 rc = cli_flash.main(["--read-only", "--backup-dir", str(backup_dir)])
@@ -5571,15 +5553,8 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with redirect_stdout(output):
                                 rc = cli_flash.main(["--read-only", "--backup-dir", str(backup_dir)])
@@ -5615,17 +5590,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with mock.patch("builtins.input", return_value="n"):
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
@@ -5661,17 +5629,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with redirect_stdout(output):
                                     rc = cli_flash.main(["--patch", "--yes", "--backup-dir", str(backup_dir)])
             manifest = json.loads((backup_dir / "manifest.json").read_text())
@@ -5696,17 +5657,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with redirect_stdout(output):
                                     rc = cli_flash.main(["--patch", "--yes", "--backup-dir", str(backup_dir)])
             manifest = json.loads((backup_dir / "manifest.json").read_text())
@@ -5733,17 +5687,14 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(
                                 primary,
                                 corrupt_secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
+                                cks2=self.flash_bank_checksum(secondary),
                             ),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with mock.patch("builtins.input", return_value="n"):
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
@@ -5777,17 +5728,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with mock.patch("builtins.input", return_value="n"):
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
@@ -5821,15 +5765,8 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with redirect_stdout(output):
                                 rc = cli_flash.main(["--read-only", "--json", "--backup-dir", str(Path(tmp) / "backup")])
@@ -5872,7 +5809,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.ensure_install_id") as ensure_mock:
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config") as load_mock:
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext") as context_mock:
-                        with mock.patch("timecapsulesmb.cli.flash.read_flash_inputs") as read_mock:
+                        with mock.patch("timecapsulesmb.services.flash.read_flash_inputs") as read_mock:
                             with redirect_stdout(output):
                                 with self.assertRaises(SystemExit) as raised:
                                     cli_flash.main(["--patch"])
@@ -5896,15 +5833,8 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with redirect_stdout(output):
                                 rc = cli_flash.main(["--read-only", "--backup-dir", str(Path(tmp) / "backup")])
@@ -5925,15 +5855,8 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with mock.patch("builtins.input", return_value="n"):
                                 with redirect_stdout(output):
@@ -6233,18 +6156,11 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
                             with mock.patch("timecapsulesmb.flash_payloads.resolve_firmware_template_candidates", return_value=[unsupported_template]):
-                                with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                                with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
                                             "--patch",
@@ -6280,7 +6196,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(name, "cks1")
             return self.flash_bank_checksum(fake_readback(None, ""))
 
-        def fake_readback(_conn: object, _dev: str) -> bytes:
+        def fake_readback(_conn: object, _dev: str, **_kwargs: object) -> bytes:
             reparsed = parse_nested_basebinary(written["payload"])
             end_offset = self.flash_bank_end_offset(primary)
             rebuilt = bytearray(primary)
@@ -6301,19 +6217,12 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
-                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
-                                    with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
+                                with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
+                                    with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
                                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
@@ -6360,7 +6269,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(name, "cks1")
             return self.flash_bank_checksum(fake_readback(None, ""))
 
-        def fake_readback(_conn: object, _dev: str) -> bytes:
+        def fake_readback(_conn: object, _dev: str, **_kwargs: object) -> bytes:
             reparsed = parse_nested_basebinary(written["payload"])
             end_offset = self.flash_bank_end_offset(primary)
             rebuilt = bytearray(primary)
@@ -6381,19 +6290,12 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash):
-                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
-                                    with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash):
+                                with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
+                                    with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--patch",
@@ -6427,18 +6329,11 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                patched_primary,
-                                secondary,
-                                self.flash_bank_checksum(patched_primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                PATCHED_LOGIN_SCRIPT,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(patched_primary, secondary, live_login=PATCHED_LOGIN_SCRIPT),
                         ):
                             with mock.patch("timecapsulesmb.flash_payloads.resolve_firmware_template_candidates", side_effect=AssertionError("no template needed")):
-                                with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                                with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
                                             "--patch",
@@ -6489,7 +6384,7 @@ class CliTests(unittest.TestCase):
             written["payload"] = payload
             return SimpleNamespace(command=0x03, reply_body=b"")
 
-        def fake_readback(_conn: object, _dev: str) -> bytes:
+        def fake_readback(_conn: object, _dev: str, **_kwargs: object) -> bytes:
             reparsed = parse_nested_basebinary(written["payload"])
             end_offset = self.flash_bank_end_offset(patched_primary)
             rebuilt = bytearray(patched_primary)
@@ -6513,19 +6408,12 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            patched_primary,
-                            secondary,
-                            self.flash_bank_checksum(patched_primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            PATCHED_LOGIN_SCRIPT,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(patched_primary, secondary, live_login=PATCHED_LOGIN_SCRIPT),
                     ):
-                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
-                            with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
-                                with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
+                                with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
                                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
@@ -6573,7 +6461,7 @@ class CliTests(unittest.TestCase):
             written["payload"] = payload
             return SimpleNamespace(command=0x03, reply_body=b"")
 
-        def fake_readback(_conn: object, _dev: str) -> bytes:
+        def fake_readback(_conn: object, _dev: str, **_kwargs: object) -> bytes:
             reparsed = parse_nested_basebinary(written["payload"])
             end_offset = self.flash_bank_end_offset(patched_primary)
             rebuilt = bytearray(patched_primary)
@@ -6597,19 +6485,12 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            patched_primary,
-                            secondary,
-                            self.flash_bank_checksum(patched_primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            PATCHED_LOGIN_SCRIPT,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(patched_primary, secondary, live_login=PATCHED_LOGIN_SCRIPT),
                     ):
-                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash):
-                            with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
-                                with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash):
+                            with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
+                                with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
                                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as ssh_reboot_mock:
                                         with mock.patch("timecapsulesmb.cli.flows.acp_reboot", side_effect=AssertionError("flash should not request ACP reboot")) as acp_reboot_mock:
                                             with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
@@ -6695,17 +6576,10 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            primary,
-                            secondary,
-                            self.flash_bank_checksum(primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            STOCK_LOGIN_NETBSD4_DUMMY,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(primary, secondary),
                     ):
-                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                             with redirect_stdout(output):
                                 rc = cli_flash.main([
                                     "--restore",
@@ -6741,17 +6615,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with redirect_stdout(output):
                                     rc = cli_flash.main([
                                         "--check-apple",
@@ -6781,17 +6648,10 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            primary,
-                            secondary,
-                            self.flash_bank_checksum(primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            STOCK_LOGIN_NETBSD4_DUMMY,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(primary, secondary),
                     ):
-                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                             with redirect_stdout(output):
                                 rc = cli_flash.main([
                                     "--download-only",
@@ -6823,17 +6683,10 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            patched_primary,
-                            secondary,
-                            self.flash_bank_checksum(patched_primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            PATCHED_LOGIN_SCRIPT,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(patched_primary, secondary, live_login=PATCHED_LOGIN_SCRIPT),
                     ):
-                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                             with redirect_stdout(output):
                                 rc = cli_flash.main([
                                     "--download-only",
@@ -6864,17 +6717,10 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            primary,
-                            secondary,
-                            self.flash_bank_checksum(primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            STOCK_LOGIN_NETBSD4_DUMMY,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(primary, secondary),
                     ):
-                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                             with redirect_stdout(output):
                                 rc = cli_flash.main([
                                     "--restore",
@@ -6904,17 +6750,10 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                     with mock.patch(
-                        "timecapsulesmb.cli.flash.read_flash_inputs",
-                        return_value=(
-                            stock_primary,
-                            secondary,
-                            self.flash_bank_checksum(stock_primary),
-                            self.flash_bank_checksum(secondary),
-                            113,
-                            STOCK_LOGIN_NETBSD4_DUMMY,
-                        ),
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(stock_primary, secondary),
                     ):
-                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                             with redirect_stdout(output):
                                 rc = cli_flash.main([
                                     "--restore",
@@ -6951,18 +6790,11 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")):
-                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", return_value=primary):
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")):
+                                with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", return_value=primary):
                                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
@@ -6995,7 +6827,7 @@ class CliTests(unittest.TestCase):
             written["payload"] = payload
             return SimpleNamespace(command=0x03, reply_body=b"")
 
-        def fake_readback(_conn: object, _dev: str) -> bytes:
+        def fake_readback(_conn: object, _dev: str, **_kwargs: object) -> bytes:
             reparsed = parse_nested_basebinary(written["payload"])
             end_offset = self.flash_bank_end_offset(primary)
             rebuilt = bytearray(primary)
@@ -7017,19 +6849,12 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
-                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
-                                    with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after full-bank mismatch")) as acp_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
+                                with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
+                                    with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after full-bank mismatch")) as acp_mock:
                                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
@@ -7064,19 +6889,12 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")) as flash_mock:
-                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=SshError("ssh command failed with rc=255")):
-                                    with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after read-back failure")) as acp_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")) as flash_mock:
+                                with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=SshError("ssh command failed with rc=255")):
+                                    with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after read-back failure")) as acp_mock:
                                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
@@ -7114,17 +6932,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=ACPAuthError("ACP command failed with error_code -0x14")):
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=ACPAuthError("ACP command failed with error_code -0x14")):
                                 with redirect_stdout(output):
                                     rc = cli_flash.main([
                                         "--patch",
@@ -7156,7 +6967,7 @@ class CliTests(unittest.TestCase):
             written["payload"] = payload
             return SimpleNamespace(command=0x03, reply_body=b"")
 
-        def fake_readback(_conn: object, _dev: str) -> bytes:
+        def fake_readback(_conn: object, _dev: str, **_kwargs: object) -> bytes:
             reparsed = parse_nested_basebinary(written["payload"])
             end_offset = self.flash_bank_end_offset(primary)
             rebuilt = bytearray(primary)
@@ -7180,19 +6991,12 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                STOCK_LOGIN_NETBSD4_DUMMY,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
-                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
-                                    with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
+                                with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
+                                    with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
                                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
@@ -7227,17 +7031,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                unknown_login,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary, live_login=unknown_login),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                 with redirect_stdout(output):
                                     rc = cli_flash.main([
                                         "--patch",
@@ -7274,18 +7071,11 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                     with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
                         with mock.patch(
-                            "timecapsulesmb.cli.flash.read_flash_inputs",
-                            return_value=(
-                                primary,
-                                secondary,
-                                self.flash_bank_checksum(primary),
-                                self.flash_bank_checksum(secondary),
-                                113,
-                                unknown_login,
-                            ),
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary, live_login=unknown_login),
                         ):
                             with mock.patch("timecapsulesmb.cli.context.cli_runtime.confirm", side_effect=AssertionError("confirm should not be called")) as confirm_mock:
-                                with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                                with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([
                                             "--patch",
@@ -7308,7 +7098,7 @@ class CliTests(unittest.TestCase):
         with self.flash_zopfli_available():
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
                 with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
-                    with mock.patch("timecapsulesmb.cli.flash.read_flash_inputs") as read_mock:
+                    with mock.patch("timecapsulesmb.services.flash.read_flash_inputs") as read_mock:
                         with self.assertRaises(SystemExit) as raised:
                             cli_flash.main(["--read-only"])
 

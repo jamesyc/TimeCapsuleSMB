@@ -15,7 +15,7 @@ from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import probe_connection_state
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -26,8 +26,12 @@ from timecapsulesmb.services.app import (
     require_string_param,
     string_param,
 )
-from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
-from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error, wait_for_tcp_port_state
+from timecapsulesmb.services import configure as configure_service
+from timecapsulesmb.services.configure import (
+    build_configure_env_values,
+    write_configure_env_file,
+)
+from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -130,21 +134,27 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     if not probe.ssh_port_reachable:
         if not bool_param(params, "enable_ssh", True):
             raise AppOperationError("SSH is not reachable and enable_ssh is false.", code="remote_error")
+        ssh_wait_timeout = int_param(params, "ssh_wait_timeout", 180)
         context.stage("confirm_enable_ssh")
         require_enable_ssh_confirmation(params, host=host)
-        context.stage("acp_enable_ssh")
         try:
-            enable_ssh(extract_host(host), password, reboot_device=True, log=context.log)
+            probed_state = configure_service.enable_ssh_and_reprobe(
+                connection,
+                timeout_seconds=ssh_wait_timeout,
+                callbacks=configure_service.ConfigureEnableSshCallbacks(
+                    set_stage=context.stage,
+                    add_debug_fields=context.add_debug_fields,
+                    update_fields=context.update_fields,
+                    log=context.log,
+                ),
+            )
         except ACPAuthError as exc:
             raise AppOperationError("The AirPort admin password did not work.", code="auth_failed", debug=str(exc)) from exc
         except ACPError as exc:
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
 
-        context.stage("wait_for_ssh_after_acp")
-        if not wait_for_ssh_port(host, timeout_seconds=int_param(params, "ssh_wait_timeout", 180)):
+        if probed_state is None:
             raise AppOperationError("SSH did not open after enabling via ACP.", code="remote_error")
-        context.stage("ssh_probe_after_acp")
-        probed_state = probe_connection_state(connection)
         context.apply_probe_state(probed_state)
         probe = probed_state.probe_result
 
@@ -181,13 +191,3 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         device_model=observed_model,
         compatibility=jsonable(compatibility) if compatibility is not None else None,
     ))
-
-
-def wait_for_ssh_port(host: str, *, timeout_seconds: int) -> bool:
-    return wait_for_tcp_port_state(
-        extract_host(host),
-        22,
-        expected_state=True,
-        timeout_seconds=timeout_seconds,
-        service_name="SSH port",
-    )
