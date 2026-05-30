@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import request_deploy_reboot_and_wait, verify_managed_runtime_flow
+from timecapsulesmb.cli.flows import runtime_callbacks, verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -58,6 +58,7 @@ from timecapsulesmb.cli.util import color_green
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+    DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
     activation_complete_message,
     deploy_artifact_failures,
     payload_verification_error,
@@ -65,6 +66,7 @@ from timecapsulesmb.services.deploy import (
     render_flash_runtime_config,
     select_deploy_payload_home,
 )
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot_and_wait
 from timecapsulesmb.services.runtime import load_env_config
 
 
@@ -347,11 +349,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 0
 
         print("Requesting reboot...", flush=True)
-        if not request_deploy_reboot_and_wait(
-            connection,
-            command_context,
-            reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-        ):
+        try:
+            request_reboot_and_wait(
+                connection,
+                strategy="ssh_shutdown_then_reboot",
+                callbacks=runtime_callbacks(command_context),
+                down_timeout_seconds=60,
+                up_timeout_seconds=240,
+                reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+                reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+            )
+        except RebootFlowError as exc:
+            print(str(exc))
+            command_context.fail_with_error(str(exc))
             return 1
 
         if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:

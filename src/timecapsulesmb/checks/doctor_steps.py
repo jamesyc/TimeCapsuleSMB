@@ -1250,23 +1250,6 @@ def _doctor_check_direct_smb_port(target: DoctorTarget, remote: RemoteAccess, ne
         _add_remote_service_socket_debug(target, remote, sink)
 
 
-def _doctor_check_bonjour(
-    inputs: DoctorInputs,
-    target: DoctorTarget,
-    naming: RuntimeNamingState,
-    network_plan: NetworkPlanState,
-    sink: DoctorSink,
-) -> DoctorBonjourResult:
-    return _add_bonjour_results(
-        inputs.config,
-        naming.identity,
-        proxied_ssh=target.proxied_ssh,
-        skip_bonjour=inputs.options.skip_bonjour,
-        network_plan=network_plan.plan,
-        add_result=sink.add,
-    )
-
-
 def _doctor_add_bonjour_naming_info(bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
     if bonjour_result.instance is not None:
         sink.add(CheckResult("INFO", f"advertised Bonjour instance: {bonjour_result.instance}"))
@@ -1278,10 +1261,6 @@ def _doctor_add_bonjour_naming_info(bonjour_result: DoctorBonjourResult, sink: D
         sink.add(CheckResult("INFO", f"advertised Bonjour host label: {bonjour_host_label}"))
     else:
         sink.add(CheckResult("INFO", f"advertised Bonjour host label: unavailable ({bonjour_result.reason})"))
-
-
-def _doctor_add_active_smb_conf_info(smb_config: SmbConfigState, sink: DoctorSink) -> None:
-    _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
 
 
 def _doctor_check_nbns(

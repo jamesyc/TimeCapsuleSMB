@@ -5,18 +5,18 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.checks.doctor_debug import (
-    _doctor_add_bonjour_debug_fields,
+    _add_bonjour_debug_fields,
     _doctor_add_fatal_runtime_log_tails,
     _doctor_add_mast_probe_on_disk_failure,
 )
 from timecapsulesmb.checks.doctor_state import DoctorBonjourResult, DoctorInputs, DoctorOptions, DoctorSink
 from timecapsulesmb.checks.doctor_steps import (
+    _add_active_smb_conf_results,
+    _add_bonjour_results,
     _build_doctor_target,
-    _doctor_add_active_smb_conf_info,
     _doctor_add_bonjour_naming_info,
     _doctor_check_active_smb_conf,
     _doctor_check_authenticated_smb,
-    _doctor_check_bonjour,
     _doctor_check_deployed_config,
     _doctor_check_deployed_version,
     _doctor_check_device_compatibility,
@@ -88,10 +88,22 @@ def run_doctor_checks(
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
     network_plan = _doctor_check_network_plan(target, remote, smb_config, sink)
     _doctor_check_direct_smb_port(target, remote, network_plan, sink)
-    bonjour_result = _doctor_check_bonjour(inputs, target, naming, network_plan, sink)
-    _doctor_add_bonjour_debug_fields(bonjour_result, sink)
+    bonjour_result = _add_bonjour_results(
+        inputs.config,
+        naming.identity,
+        proxied_ssh=target.proxied_ssh,
+        skip_bonjour=inputs.options.skip_bonjour,
+        network_plan=network_plan.plan,
+        add_result=sink.add,
+    )
+    _add_bonjour_debug_fields(
+        sink.debug_fields,
+        bonjour_debug_needed=bonjour_result.debug_needed,
+        bonjour_expected_debug=bonjour_result.expected_debug,
+        bonjour_zeroconf_debug=bonjour_result.zeroconf_debug,
+    )
     _doctor_add_bonjour_naming_info(bonjour_result, sink)
-    _doctor_add_active_smb_conf_info(smb_config, sink)
+    _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
     _doctor_check_nbns(target, remote, smb_config, naming, network_plan, sink)
     _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, network_plan, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)

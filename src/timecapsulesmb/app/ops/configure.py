@@ -31,7 +31,7 @@ from timecapsulesmb.services.configure import (
     build_configure_env_values,
     write_configure_env_file,
 )
-from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, ssh_target_link_local_resolution_error
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -141,7 +141,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             probed_state = configure_service.enable_ssh_and_reprobe(
                 connection,
                 timeout_seconds=ssh_wait_timeout,
-                callbacks=configure_service.ConfigureEnableSshCallbacks(
+                callbacks=RuntimeOperationCallbacks(
                     set_stage=context.stage,
                     add_debug_fields=context.add_debug_fields,
                     update_fields=context.update_fields,

@@ -556,12 +556,12 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.title, "Install / Update SMB, Reboot, and Start Runtime")
         XCTAssertFalse(presentation.sections.contains { $0.title == "Files" })
         let target = try XCTUnwrap(presentation.sections.first { $0.title == "Target" })
-        XCTAssertTrue(target.rows.contains(InstallPlanRow(label: "Payload", value: "netbsd4_samba4")))
+        XCTAssertTrue(target.rows.contains(PresentationRow(label: "Payload", value: "netbsd4_samba4")))
         XCTAssertFalse(target.rows.contains { $0.label == "Disk" || $0.label == "Payload Directory" })
         let actions = try XCTUnwrap(presentation.sections.first { $0.title == "Device Actions" })
-        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Uploads", value: "1")))
-        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Remote Actions", value: "1")))
-        XCTAssertTrue(actions.rows.contains(InstallPlanRow(label: "Expected Downtime", value: "Several minutes while the device reboots.")))
+        XCTAssertTrue(actions.rows.contains(PresentationRow(label: "Uploads", value: "1")))
+        XCTAssertTrue(actions.rows.contains(PresentationRow(label: "Remote Actions", value: "1")))
+        XCTAssertTrue(actions.rows.contains(PresentationRow(label: "Expected Downtime", value: "Several minutes while the device reboots.")))
         XCTAssertEqual(presentation.warnings.count, 2)
     }
 
@@ -576,7 +576,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.title, "Install / Update SMB and Start Runtime")
         XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(InstallPlanRow(
+            section.rows.contains(PresentationRow(
                 label: "Expected Downtime",
                 value: "Usually under a minute while Samba starts without rebooting."
             ))
@@ -601,7 +601,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.title, "Install / Update SMB and Request Reboot")
         XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(InstallPlanRow(
+            section.rows.contains(PresentationRow(
                 label: "Expected Downtime",
                 value: "The app will request reboot and return immediately."
             ))

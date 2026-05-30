@@ -20,10 +20,9 @@ from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.ops.common import (
     load_request_config,
-    request_reboot,
-    request_reboot_and_wait,
     resolve_request_connection,
     resolve_request_target,
+    runtime_callbacks,
 )
 from timecapsulesmb.app.ops.deploy import (
     require_supported_payload,
@@ -41,7 +40,6 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.probe import wait_for_ssh_state_conn
 from timecapsulesmb.device.storage import (
     UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER,
     mast_volumes_debug_summary,
@@ -59,7 +57,7 @@ from timecapsulesmb.services.app import (
     required_path_param,
     string_param,
 )
-from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
+from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.activation import decide_manual_activation
 from timecapsulesmb.services.maintenance import (
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
@@ -80,7 +78,10 @@ from timecapsulesmb.services.runtime import (
     load_optional_env_config,
     resolve_env_connection,
 )
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh
+from timecapsulesmb.transport.ssh import run_ssh
+
+
+REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 
 
 def _best_effort_mast_debug_summary(volumes: object) -> object | None:
@@ -226,24 +227,33 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
             waited=False,
         ))
     if no_wait:
-        request_reboot(
-            context,
-            connection,
-            strategy="acp_then_ssh",
-            raise_on_request_error=True,
-        )
+        try:
+            request_reboot(
+                connection,
+                strategy="acp_then_ssh",
+                callbacks=runtime_callbacks(context),
+                raise_on_request_error=True,
+            )
+        except RebootFlowError as exc:
+            raise AppOperationError(str(exc), code="remote_error") from exc
         return OperationResult(True, uninstall_result_payload(
             rebooted=False,
             verified=False,
             reboot_requested=True,
             waited=False,
         ))
-    request_reboot_and_wait(
-        context,
-        connection,
-        strategy="acp_then_ssh",
-        reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
-    )
+    try:
+        request_reboot_and_wait(
+            connection,
+            strategy="acp_then_ssh",
+            callbacks=runtime_callbacks(context),
+            down_timeout_seconds=60,
+            up_timeout_seconds=240,
+            reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
+            reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
     context.stage("verify_post_uninstall")
     verification = verify_post_uninstall(connection, plan)
     for line in render_post_uninstall_verification(verification):
@@ -377,13 +387,17 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
             waited=False,
             verified=False,
         ))
-    observe_reboot_cycle(
-        context,
-        connection,
-        reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
-        down_timeout_seconds=90,
-        up_timeout_seconds=420,
-    )
+    try:
+        observe_reboot_cycle(
+            connection,
+            callbacks=runtime_callbacks(context),
+            reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
+            reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
+            down_timeout_seconds=90,
+            up_timeout_seconds=420,
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
     return OperationResult(True, fsck_result_payload(
         device=target.device,
         mountpoint=target.mountpoint,
@@ -391,22 +405,6 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         waited=True,
         verified=True,
     ))
-
-
-def observe_reboot_cycle(
-    context: AppOperationContext,
-    connection: SshConnection,
-    *,
-    reboot_no_down_message: str,
-    down_timeout_seconds: int,
-    up_timeout_seconds: int,
-) -> None:
-    context.stage("wait_for_reboot_down")
-    if not wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=down_timeout_seconds):
-        raise AppOperationError(reboot_no_down_message, code="remote_error")
-    context.stage("wait_for_reboot_up")
-    if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
-        raise AppOperationError(DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE, code="remote_error")
 
 
 def repair_xattrs_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:

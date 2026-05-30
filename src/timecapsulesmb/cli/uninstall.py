@@ -4,7 +4,7 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import request_reboot, request_reboot_and_wait
+from timecapsulesmb.cli.flows import runtime_callbacks
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_mount_wait_argument,
@@ -21,6 +21,7 @@ from timecapsulesmb.deploy.verify import render_post_uninstall_verification, ver
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.maintenance import UNINSTALL_REBOOT_NO_DOWN_MESSAGE as REBOOT_NO_DOWN_MESSAGE
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 
@@ -128,17 +129,35 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 0
 
         if args.no_wait:
-            request_reboot(connection, command_context, raise_on_request_error=True)
+            try:
+                request_reboot(
+                    connection,
+                    strategy="acp_then_ssh",
+                    callbacks=runtime_callbacks(command_context),
+                    raise_on_request_error=True,
+                )
+            except RebootFlowError as exc:
+                print(str(exc))
+                command_context.fail_with_error(str(exc))
+                return 1
             print("Reboot requested; not waiting for the device to go down or come back.")
             print("Post-uninstall verification skipped.")
             command_context.succeed()
             return 0
 
-        if not request_reboot_and_wait(
-            connection,
-            command_context,
-            reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,
-        ):
+        try:
+            request_reboot_and_wait(
+                connection,
+                strategy="acp_then_ssh",
+                callbacks=runtime_callbacks(command_context),
+                down_timeout_seconds=60,
+                up_timeout_seconds=240,
+                reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,
+                reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
+            )
+        except RebootFlowError as exc:
+            print(str(exc))
+            command_context.fail_with_error(str(exc))
             return 1
 
         command_context.set_stage("verify_post_uninstall")

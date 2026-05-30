@@ -5,7 +5,7 @@ import shlex
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import observe_reboot_cycle
+from timecapsulesmb.cli.flows import runtime_callbacks
 from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, no_input_enabled
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.identity import ensure_install_id
@@ -16,6 +16,7 @@ from timecapsulesmb.services.maintenance import (
     fsck_target_from_volume,
     select_fsck_target,
 )
+from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
@@ -106,13 +107,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
-        if not observe_reboot_cycle(
-            connection,
-            command_context,
-            reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
-            down_timeout_seconds=90,
-            up_timeout_seconds=420,
-        ):
+        try:
+            observe_reboot_cycle(
+                connection,
+                callbacks=runtime_callbacks(command_context),
+                reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
+                reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
+                down_timeout_seconds=90,
+                up_timeout_seconds=420,
+            )
+        except RebootFlowError as exc:
+            print(str(exc))
+            command_context.fail_with_error(str(exc))
             return 1
 
         command_context.succeed()

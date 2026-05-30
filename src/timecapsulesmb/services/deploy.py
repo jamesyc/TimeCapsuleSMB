@@ -44,7 +44,17 @@ from timecapsulesmb.services.runtime import ManagedTargetState, RuntimeOperation
 from timecapsulesmb.transport.ssh import SshConnection
 
 
-DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
+    "Timed out waiting for SSH after reboot.\n\n"
+    "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again "
+    "before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address.\n\n"
+    "Next steps:\n"
+    "  1. Wait a few more minutes.\n"
+    "  2. If the device is reachable at a new IP, update TC_HOST or rerun configure.\n"
+    "  3. Make sure you are connected to the same network/wifi as the device.\n"
+    "  4. On NetBSD 4 devices, run `tcapsule activate` once SSH is reachable; "
+    "deploy did not get far enough to activate Samba after reboot."
+)
 DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."

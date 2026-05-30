@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Callable, Mapping
@@ -10,16 +9,8 @@ from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.device.probe import ProbedDeviceState, probe_connection_state
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
-from timecapsulesmb.services.runtime import wait_for_tcp_port_state
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, wait_for_tcp_port_state
 from timecapsulesmb.transport.ssh import SshConnection
-
-
-@dataclass(frozen=True)
-class ConfigureEnableSshCallbacks:
-    set_stage: Callable[[str], None] | None = None
-    log: Callable[[str], None] | None = None
-    add_debug_fields: Callable[..., None] | None = None
-    update_fields: Callable[..., None] | None = None
 
 
 def _call_fields(callback: Callable[..., None] | None, **fields: object) -> None:
@@ -42,9 +33,9 @@ def enable_ssh_and_reprobe(
     *,
     timeout_seconds: int = 180,
     verbose_wait: bool = True,
-    callbacks: ConfigureEnableSshCallbacks | None = None,
+    callbacks: RuntimeOperationCallbacks | None = None,
 ) -> ProbedDeviceState | None:
-    callbacks = callbacks or ConfigureEnableSshCallbacks()
+    callbacks = callbacks or RuntimeOperationCallbacks()
     host = extract_host(connection.host)
     _call_fields(
         callbacks.add_debug_fields,

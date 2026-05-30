@@ -7,9 +7,8 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.app.contracts import flash_backup_payload, flash_plan_payload, flash_write_payload
 from timecapsulesmb.app.ops.common import (
     load_request_config,
-    request_reboot,
-    request_reboot_and_wait,
     resolve_request_target,
+    runtime_callbacks,
 )
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.errors import DeviceError
@@ -36,6 +35,7 @@ from timecapsulesmb.services.flash import (
 from timecapsulesmb.services.runtime import (
     require_connection_compatibility,
 )
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.transport.errors import TransportError
 
 
@@ -220,13 +220,18 @@ def _finish_validated_write(
         waited_after_reboot=wait_after_reboot,
     )
     if wait_after_reboot:
-        request_reboot_and_wait(
-            context,
-            target.connection,
-            strategy=FLASH_RESTORE_REBOOT_STRATEGY,
-            reboot_no_down_message=FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE,
-            reboot_up_timeout_message=FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE,
-        )
+        try:
+            request_reboot_and_wait(
+                target.connection,
+                strategy=FLASH_RESTORE_REBOOT_STRATEGY,
+                callbacks=runtime_callbacks(context),
+                down_timeout_seconds=60,
+                up_timeout_seconds=240,
+                reboot_no_down_message=FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE,
+                reboot_up_timeout_message=FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE,
+            )
+        except RebootFlowError as exc:
+            raise AppOperationError(str(exc), code="remote_error") from exc
         record_post_write_action(
             bundle=bundle,
             post_write_action="ssh_reboot",
@@ -235,12 +240,15 @@ def _finish_validated_write(
             waited_after_reboot=True,
         )
         return
-    request_reboot(
-        context,
-        target.connection,
-        strategy=FLASH_RESTORE_REBOOT_STRATEGY,
-        raise_on_request_error=True,
-    )
+    try:
+        request_reboot(
+            target.connection,
+            strategy=FLASH_RESTORE_REBOOT_STRATEGY,
+            callbacks=runtime_callbacks(context),
+            raise_on_request_error=True,
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
 
 
 def _write_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:

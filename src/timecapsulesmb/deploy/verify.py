@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from timecapsulesmb.deploy.planner import UninstallPlan
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
-    probe_managed_runtime_conn,
     probe_paths_absent_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -18,18 +17,6 @@ class VerificationResult:
 
     def __bool__(self) -> bool:
         return self.ok
-
-
-def verify_managed_runtime(
-    connection: SshConnection,
-    *,
-    timeout_seconds: int = 180,
-) -> ManagedRuntimeProbeResult:
-    return probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
-
-
-def managed_runtime_ready(result: ManagedRuntimeProbeResult) -> bool:
-    return result.ready
 
 
 def render_managed_runtime_verification(

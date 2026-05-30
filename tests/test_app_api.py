@@ -41,6 +41,7 @@ from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourRe
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import STALE_BACKUP_AFTER_WRITE_MESSAGE, require_backup_fresh_for_plan
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -222,6 +223,26 @@ class AppApiTests(unittest.TestCase):
             context=context,
             presentation_id="test",
         ).confirmation_id
+
+    @staticmethod
+    def fake_reboot_request(*_args, callbacks=None, **_kwargs) -> None:
+        if callbacks is not None:
+            if callbacks.set_stage is not None:
+                callbacks.set_stage("reboot")
+            if callbacks.update_fields is not None:
+                callbacks.update_fields(reboot_was_attempted=True)
+            if callbacks.add_debug_fields is not None:
+                callbacks.add_debug_fields(
+                    reboot_request_strategy="ssh_shutdown_then_reboot",
+                    ssh_reboot_attempted=True,
+                    ssh_reboot_succeeded=True,
+                )
+
+    @staticmethod
+    def fake_reboot_request_and_wait(*_args, callbacks=None, **_kwargs) -> None:
+        AppApiTests.fake_reboot_request(callbacks=callbacks)
+        if callbacks is not None and callbacks.update_fields is not None:
+            callbacks.update_fields(device_came_back_after_reboot=True)
 
     def test_event_redacts_sensitive_fields(self) -> None:
         event = AppEvent("result", "configure", {
@@ -660,7 +681,7 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         reboot_wait.assert_called_once()
-        self.assertIs(reboot_wait.call_args.args[1], connection)
+        self.assertIs(reboot_wait.call_args.args[0], connection)
         payload = self.assert_single_terminal_event(collector, "result")["payload"]
         self.assertEqual(payload["post_write_action"], "ssh_reboot")
         self.assertTrue(payload["reboot_requested"])
@@ -2280,7 +2301,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=managed_runtime_probe()):
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.probe_managed_runtime_conn", return_value=managed_runtime_probe()):
                                                         confirmed = dict(base_params)
                                                         confirmed["confirmation_id"] = confirmation_id
                                                         rc = service.run_api_request(
@@ -2382,8 +2403,8 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions") as remote_actions:
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
-                                                        with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=managed_runtime_probe()) as verify_runtime:
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.request_reboot_and_wait") as wait:
+                                                        with mock.patch("timecapsulesmb.app.ops.deploy.probe_managed_runtime_conn", return_value=managed_runtime_probe()) as verify_runtime:
                                                             with mock.patch("timecapsulesmb.app.ops.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime:
                                                                 rc = service.run_api_request(
                                                                     {
@@ -2453,7 +2474,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload", side_effect=fake_upload):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=managed_runtime_probe()):
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.probe_managed_runtime_conn", return_value=managed_runtime_probe()):
                                                         rc = service.run_api_request(
                                                             {
                                                                 "operation": "deploy",
@@ -2513,9 +2534,9 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
-                                                        with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
-                                                            with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.request_reboot", side_effect=self.fake_reboot_request) as reboot:
+                                                        with mock.patch("timecapsulesmb.app.ops.deploy.request_reboot_and_wait") as wait:
+                                                            with mock.patch("timecapsulesmb.app.ops.deploy.probe_managed_runtime_conn") as verify_runtime:
                                                                 rc = service.run_api_request(
                                                                     {
                                                                         "operation": "deploy",
@@ -2572,7 +2593,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.request_reboot", side_effect=self.fake_reboot_request) as reboot:
                                                         with mock.patch("timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn") as autostart_probe:
                                                             rc = service.run_api_request(
                                                                 {
@@ -2627,9 +2648,9 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot:
-                                                        with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
-                                                            with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.request_reboot", side_effect=RebootFlowError("SSH reboot request failed: ssh command failed with rc=255", "request_failed")) as reboot:
+                                                        with mock.patch("timecapsulesmb.app.ops.deploy.request_reboot_and_wait") as wait:
+                                                            with mock.patch("timecapsulesmb.app.ops.deploy.probe_managed_runtime_conn") as verify_runtime:
                                                                 rc = service.run_api_request(
                                                                     {
                                                                         "operation": "deploy",
@@ -2649,19 +2670,25 @@ class AppApiTests(unittest.TestCase):
 
     def test_deploy_request_reboot_and_wait_records_lifecycle_fields(self) -> None:
         from timecapsulesmb.app.ops import common as common_ops
+        from timecapsulesmb.services.reboot import request_reboot_and_wait
 
         collector = CollectingSink()
         context = AppOperationContext("deploy", collector.sink)
         context.update_fields(reboot_was_attempted=False, device_came_back_after_reboot=False)
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
-            with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn", side_effect=[True, True]) as wait:
-                common_ops.request_reboot_and_wait(
-                    context,
-                    connection,
-                    strategy="ssh_shutdown_then_reboot",
-                    reboot_no_down_message="device did not go down",
-                )
+        reboot = mock.Mock()
+        wait = mock.Mock(side_effect=[True, True])
+        request_reboot_and_wait(
+            connection,
+            strategy="ssh_shutdown_then_reboot",
+            callbacks=common_ops.runtime_callbacks(context),
+            reboot_no_down_message="device did not go down",
+            reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
+            down_timeout_seconds=60,
+            up_timeout_seconds=240,
+            request_reboot_func=reboot,
+            wait_for_ssh_state=wait,
+        )
 
         reboot.assert_called_once()
         self.assertEqual([call.kwargs["expected_up"] for call in wait.call_args_list], [False, True])
@@ -2690,7 +2717,7 @@ class AppApiTests(unittest.TestCase):
             mdns=mdns,
             extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 180s"),),
         )
-        with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=verification):
+        with mock.patch("timecapsulesmb.app.ops.deploy.probe_managed_runtime_conn", return_value=verification):
             with mock.patch(
                 "timecapsulesmb.app.ops.deploy.read_runtime_log_tails_conn",
                 return_value={
@@ -2728,23 +2755,20 @@ class AppApiTests(unittest.TestCase):
 
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
         from timecapsulesmb.app.ops import common as common_ops
+        from timecapsulesmb.services.reboot import request_reboot
 
         collector = CollectingSink()
         context = AppOperationContext("deploy", collector.sink)
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch(
-            "timecapsulesmb.app.ops.common.remote_request_reboot",
-            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
-        ):
-            with self.assertRaises(AppOperationError) as raised:
-                common_ops.request_reboot(
-                    context,
-                    connection,
-                    strategy="ssh",
-                    raise_on_request_error=True,
-                )
+        with self.assertRaises(RebootFlowError) as raised:
+            request_reboot(
+                connection,
+                strategy="ssh",
+                callbacks=common_ops.runtime_callbacks(context),
+                raise_on_request_error=True,
+                request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
+            )
 
-        self.assertEqual(raised.exception.code, "remote_error")
         self.assertIn("Timed out waiting for ssh command to finish: reboot", str(raised.exception))
 
     def test_deploy_reports_no_mast_volumes_as_remote_error(self) -> None:
@@ -2976,17 +3000,16 @@ class AppApiTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn", return_value=[]):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
                         with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload"):
-                            with mock.patch("timecapsulesmb.app.ops.common.acp_reboot", side_effect=ACPError("ACP unavailable")):
-                                with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
-                                    with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
-                                        with mock.patch("timecapsulesmb.app.ops.maintenance.verify_post_uninstall") as verify:
-                                            rc = service.run_api_request(
-                                                {
-                                                    "operation": "uninstall",
-                                                    "params": params,
-                                                },
-                                                collector.sink,
-                                            )
+                            with mock.patch("timecapsulesmb.app.ops.maintenance.request_reboot", side_effect=self.fake_reboot_request) as reboot:
+                                with mock.patch("timecapsulesmb.app.ops.maintenance.request_reboot_and_wait") as wait:
+                                    with mock.patch("timecapsulesmb.app.ops.maintenance.verify_post_uninstall") as verify:
+                                        rc = service.run_api_request(
+                                            {
+                                                "operation": "uninstall",
+                                                "params": params,
+                                            },
+                                            collector.sink,
+                                        )
 
         self.assertEqual(rc, 0)
         self.assertEqual(mounted_mock.call_args.kwargs["wait_seconds"], 13)

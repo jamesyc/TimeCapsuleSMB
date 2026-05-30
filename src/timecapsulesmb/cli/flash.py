@@ -10,7 +10,7 @@ from timecapsulesmb.apple_firmware import (
     FirmwareTemplateCandidate,
 )
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import observe_reboot_cycle, request_ssh_reboot
+from timecapsulesmb.cli.flows import runtime_callbacks
 from timecapsulesmb.cli.runtime import (
     LogCallback,
     add_config_argument,
@@ -56,6 +56,7 @@ from timecapsulesmb.services.flash import (
     save_primary_patched_bank_if_ready,
     write_flash_plan,
 )
+from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshError
@@ -636,18 +637,34 @@ def _finish_write(
         command_context.succeed()
         return 0
 
-    request_ssh_reboot(target.connection, command_context, log=log, raise_on_request_error=args.no_wait)
+    try:
+        request_reboot(
+            target.connection,
+            strategy="ssh",
+            callbacks=runtime_callbacks(command_context),
+            progress_log=log,
+            raise_on_request_error=args.no_wait,
+        )
+    except RebootFlowError as exc:
+        print(str(exc))
+        command_context.fail_with_error(str(exc))
+        return 1
     if args.no_wait:
         print("Reboot requested; not waiting for the device to go down or come back.", flush=True)
         command_context.succeed()
         return 0
-    if not observe_reboot_cycle(
-        target.connection,
-        command_context,
-        reboot_no_down_message="Firmware write validated, but the device did not go down after reboot request.",
-        down_timeout_seconds=60,
-        up_timeout_seconds=240,
-    ):
+    try:
+        observe_reboot_cycle(
+            target.connection,
+            callbacks=runtime_callbacks(command_context),
+            reboot_no_down_message="Firmware write validated, but the device did not go down after reboot request.",
+            reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
+            down_timeout_seconds=60,
+            up_timeout_seconds=240,
+        )
+    except RebootFlowError as exc:
+        print(str(exc))
+        command_context.fail_with_error(str(exc))
         print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
         return 1
     print("Device returned after reboot. Run `tcapsule flash --check-apple` to verify Apple stock firmware.", flush=True)

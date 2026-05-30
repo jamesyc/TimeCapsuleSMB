@@ -47,12 +47,11 @@ from timecapsulesmb.deploy.planner import (
     build_deployment_plan,
 )
 from timecapsulesmb.deploy.verify import (
-    managed_runtime_ready,
     render_managed_runtime_verification,
-    verify_managed_runtime,
 )
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
+    probe_managed_runtime_conn,
     read_remote_network_diagnostics_conn,
     read_runtime_log_tails_conn,
     runtime_startup_failure_debug_fields,
@@ -65,8 +64,6 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.app.ops.common import (
     load_request_config,
-    request_reboot,
-    request_reboot_and_wait,
     resolve_request_target,
     runtime_callbacks,
 )
@@ -80,6 +77,7 @@ from timecapsulesmb.services.app import (
 )
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+    DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
     activation_complete_message,
     deploy_artifact_failures,
     deploy_upload_stage,
@@ -90,6 +88,7 @@ from timecapsulesmb.services.deploy import (
     render_flash_runtime_config,
     select_deploy_payload_home,
 )
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -400,12 +399,15 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         ))
 
     if no_wait:
-        request_reboot(
-            context,
-            connection,
-            strategy="ssh_shutdown_then_reboot",
-            raise_on_request_error=True,
-        )
+        try:
+            request_reboot(
+                connection,
+                strategy="ssh_shutdown_then_reboot",
+                callbacks=runtime_callbacks(context),
+                raise_on_request_error=True,
+            )
+        except RebootFlowError as exc:
+            raise AppOperationError(str(exc), code="remote_error") from exc
         return OperationResult(True, deploy_result_payload(
             payload_dir=plan.payload_dir,
             reboot_requested=True,
@@ -414,12 +416,18 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             payload_family=payload_family,
         ))
 
-    request_reboot_and_wait(
-        context,
-        connection,
-        strategy="ssh_shutdown_then_reboot",
-        reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-    )
+    try:
+        request_reboot_and_wait(
+            connection,
+            strategy="ssh_shutdown_then_reboot",
+            callbacks=runtime_callbacks(context),
+            down_timeout_seconds=60,
+            up_timeout_seconds=240,
+            reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+            reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         context.stage("probe_runtime")
@@ -521,13 +529,13 @@ def verify_runtime(
     failure_message: str = "Managed runtime did not become ready.",
 ) -> None:
     context.stage(stage)
-    verification = verify_managed_runtime(connection, timeout_seconds=timeout_seconds)
+    verification = probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
     for line in render_managed_runtime_verification(
         verification,
         heading="Waiting for managed runtime to finish starting...",
     ):
         context.log(line)
-    if not managed_runtime_ready(verification):
+    if not verification.ready:
         runtime_log_fields: dict[str, object] = {}
         try:
             runtime_log_fields = read_runtime_log_tails_conn(connection)

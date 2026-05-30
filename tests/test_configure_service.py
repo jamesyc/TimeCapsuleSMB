@@ -13,7 +13,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
-from timecapsulesmb.services.configure import ConfigureEnableSshCallbacks, enable_ssh_and_reprobe
+from timecapsulesmb.services.configure import enable_ssh_and_reprobe
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -35,13 +36,13 @@ class ConfigureServiceTests(unittest.TestCase):
             compatibility=None,
         )
 
-    def callbacks(self) -> tuple[ConfigureEnableSshCallbacks, list[str], list[str], list[dict[str, object]], list[dict[str, object]]]:
+    def callbacks(self) -> tuple[RuntimeOperationCallbacks, list[str], list[str], list[dict[str, object]], list[dict[str, object]]]:
         stages: list[str] = []
         logs: list[str] = []
         debug_fields: list[dict[str, object]] = []
         update_fields: list[dict[str, object]] = []
         return (
-            ConfigureEnableSshCallbacks(
+            RuntimeOperationCallbacks(
                 set_stage=stages.append,
                 log=logs.append,
                 add_debug_fields=lambda **fields: debug_fields.append(fields),

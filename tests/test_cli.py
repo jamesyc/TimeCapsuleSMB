@@ -379,7 +379,7 @@ class CliTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(
             mock.patch(
-                "timecapsulesmb.cli.flows.acp_reboot",
+                "timecapsulesmb.services.reboot.acp_reboot",
                 side_effect=ACPConnectionError("ACP unavailable in tests"),
             )
         )
@@ -929,7 +929,7 @@ class CliTests(unittest.TestCase):
             )
             mocks.verify_managed_runtime = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.flows.verify_managed_runtime",
+                    "timecapsulesmb.cli.flows.probe_managed_runtime_conn",
                     return_value=verify_runtime or self.managed_runtime_probe(True),
                 )
             )
@@ -948,17 +948,17 @@ class CliTests(unittest.TestCase):
                 )
             )
             mocks.remote_request_reboot = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=reboot_side_effect)
+                mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=reboot_side_effect)
             )
             mocks.acp_reboot = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.flows.acp_reboot",
+                    "timecapsulesmb.services.reboot.acp_reboot",
                     side_effect=AssertionError("deploy should not request ACP reboot"),
                 )
             )
             if wait_side_effect is not None:
                 mocks.wait_for_ssh_state_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=wait_side_effect)
+                    mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=wait_side_effect)
                 )
             if input_side_effect is not None:
                 mocks.input = stack.enter_context(mock.patch("builtins.input", side_effect=input_side_effect))
@@ -5213,7 +5213,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock:
+                        with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock:
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -6223,7 +6223,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                                 with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                     with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                                        with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--patch",
@@ -6414,7 +6414,7 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                             with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                 with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                                    with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--restore",
@@ -6491,9 +6491,9 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash):
                             with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                 with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as ssh_reboot_mock:
-                                        with mock.patch("timecapsulesmb.cli.flows.acp_reboot", side_effect=AssertionError("flash should not request ACP reboot")) as acp_reboot_mock:
-                                            with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                                    with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as ssh_reboot_mock:
+                                        with mock.patch("timecapsulesmb.services.reboot.acp_reboot", side_effect=AssertionError("flash should not request ACP reboot")) as acp_reboot_mock:
+                                            with mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
                                                 with redirect_stdout(output):
                                                     rc = cli_flash.main([
                                                         "--restore",
@@ -6525,7 +6525,7 @@ class CliTests(unittest.TestCase):
         target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
         args = argparse.Namespace(reboot=True, no_wait=True)
 
-        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+        with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
             with mock.patch("timecapsulesmb.cli.flash.observe_reboot_cycle") as observe_mock:
                 with redirect_stdout(output):
                     rc = cli_flash._finish_write(
@@ -6547,20 +6547,21 @@ class CliTests(unittest.TestCase):
         target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
         args = argparse.Namespace(reboot=True, no_wait=True)
 
-        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot_mock:
+        with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot_mock:
             with mock.patch("timecapsulesmb.cli.flash.observe_reboot_cycle") as observe_mock:
-                with self.assertRaises(SshError):
-                    with redirect_stdout(output):
-                        cli_flash._finish_write(
-                            command_context,
-                            args=args,
-                            operation="restore",
-                            target=target,
-                            log=None,
-                        )
+                with redirect_stdout(output):
+                    rc = cli_flash._finish_write(
+                        command_context,
+                        args=args,
+                        operation="restore",
+                        target=target,
+                        log=None,
+                    )
 
+        self.assertEqual(rc, 1)
         reboot_mock.assert_called_once()
         observe_mock.assert_not_called()
+        self.assertIn("ssh command failed with rc=255", output.getvalue())
         self.assertNotIn("not waiting for the device", output.getvalue())
 
     def test_flash_restore_noops_when_active_bank_already_matches_apple(self) -> None:
@@ -6795,7 +6796,7 @@ class CliTests(unittest.TestCase):
                         ):
                             with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")):
                                 with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", return_value=primary):
-                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                                    with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--patch",
@@ -6855,7 +6856,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                                 with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                     with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after full-bank mismatch")) as acp_mock:
-                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                                        with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--patch",
@@ -6895,7 +6896,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")) as flash_mock:
                                 with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=SshError("ssh command failed with rc=255")):
                                     with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after read-back failure")) as acp_mock:
-                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                                        with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--patch",
@@ -6997,7 +6998,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                                 with mock.patch("timecapsulesmb.services.flash.dump_remote_bank", side_effect=fake_readback):
                                     with mock.patch("timecapsulesmb.services.flash.get_property_int", side_effect=fake_get_property):
-                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                                        with mock.patch("timecapsulesmb.services.reboot.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--patch",
@@ -7112,7 +7113,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime") as verify_mock:
+                        with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn") as verify_mock:
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -7127,7 +7128,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
-                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)):
+                        with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)
@@ -7329,8 +7330,8 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             uninstall_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(True, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
@@ -7356,8 +7357,8 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             mast_mocks = self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            reboot_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn"))
+            reboot_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall"))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes", "--mount-wait", "17", "--no-wait"])
@@ -7377,15 +7378,15 @@ class CliTests(unittest.TestCase):
             self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             reboot_mock = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255"))
+                mock.patch("timecapsulesmb.services.reboot.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255"))
             )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn"))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn"))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall"))
-            with self.assertRaises(SystemExit) as raised:
-                with redirect_stdout(output):
-                    uninstall.main(["--yes", "--no-wait"])
+            with redirect_stdout(output):
+                rc = uninstall.main(["--yes", "--no-wait"])
 
-        self.assertIn("ssh command failed with rc=255", str(raised.exception))
+        self.assertEqual(rc, 1)
+        self.assertIn("ssh command failed with rc=255", output.getvalue())
         reboot_mock.assert_called_once()
         wait_mock.assert_not_called()
         verify_mock.assert_not_called()
@@ -7401,11 +7402,11 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.flows.remote_request_reboot",
+                    "timecapsulesmb.services.reboot.remote_request_reboot",
                     side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
                 )
             )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(True, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
@@ -7432,11 +7433,11 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.flows.remote_request_reboot",
+                    "timecapsulesmb.services.reboot.remote_request_reboot",
                     side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
                 )
             )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", return_value=False))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall"))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
@@ -7467,7 +7468,7 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             uninstall_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
             verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall"))
             with redirect_stdout(output):
                 rc = uninstall.main(["--no-reboot"])
@@ -7521,7 +7522,7 @@ class CliTests(unittest.TestCase):
                     return_value=SimpleNamespace(model="AirPort7,120", syap="120"),
                 )
             )
-            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
             with redirect_stdout(output):
                 rc = uninstall.main([])
         self.assertEqual(rc, 0)
@@ -7544,8 +7545,8 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            stack.enter_context(mock.patch("timecapsulesmb.services.reboot.remote_request_reboot"))
+            stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(False, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
@@ -7566,7 +7567,7 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, True]))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -7799,7 +7800,7 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", return_value=False))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)
@@ -7819,7 +7820,7 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, False]))
+            stack.enter_context(mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=[True, False]))
             with redirect_stdout(output):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)

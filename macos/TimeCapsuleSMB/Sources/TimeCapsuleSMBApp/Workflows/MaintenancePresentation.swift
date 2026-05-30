@@ -80,6 +80,45 @@ struct MaintenanceWorkflowCardPresentation: Equatable, Identifiable {
     var id: MaintenanceWorkflow.ID { workflow.id }
 }
 
+extension MaintenanceWorkflow {
+    var presentationTitle: String {
+        switch self {
+        case .activate:
+            return L10n.string("maintenance.presentation.activate.title")
+        case .uninstall:
+            return L10n.string("maintenance.presentation.uninstall.title")
+        case .fsck:
+            return L10n.string("maintenance.presentation.fsck.title")
+        case .repairXattrs:
+            return L10n.string("maintenance.presentation.repair_xattrs.title")
+        }
+    }
+
+    var presentationSubtitle: String {
+        switch self {
+        case .activate:
+            return L10n.string("maintenance.presentation.activate.subtitle")
+        case .uninstall:
+            return L10n.string("maintenance.presentation.uninstall.subtitle")
+        case .fsck:
+            return L10n.string("maintenance.presentation.fsck.subtitle")
+        case .repairXattrs:
+            return L10n.string("maintenance.presentation.repair_xattrs.subtitle")
+        }
+    }
+
+    var presentationRisk: String {
+        switch self {
+        case .activate:
+            return L10n.string("maintenance.presentation.risk.remote_write")
+        case .uninstall, .fsck:
+            return L10n.string("maintenance.presentation.risk.destructive")
+        case .repairXattrs:
+            return L10n.string("maintenance.presentation.risk.local_destructive")
+        }
+    }
+}
+
 struct MaintenancePlanPresentation: Equatable {
     let title: String
     let rows: [PresentationRow]
@@ -222,12 +261,11 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     @MainActor
     init(store: MaintenanceStore, profile: DeviceProfile, workflow selectedWorkflow: MaintenanceWorkflow? = nil) {
         let workflow = selectedWorkflow ?? store.selectedWorkflow
-        let legacy = MaintenanceWorkflowPresentation.presentation(for: workflow)
         let state = store.state(for: workflow)
         self.workflow = workflow
-        self.title = legacy.title
-        self.subtitle = legacy.subtitle
-        self.risk = legacy.risk
+        self.title = workflow.presentationTitle
+        self.subtitle = workflow.presentationSubtitle
+        self.risk = workflow.presentationRisk
         self.stateTitle = state.title
         self.statusMessage = state.maintenanceStatusMessage(for: workflow)
         self.actions = MaintenanceActionPolicy.actions(for: workflow)
@@ -385,11 +423,10 @@ struct MaintenanceDashboardPresentation: Equatable {
             ? store.selectedWorkflow
             : workflows.first ?? store.selectedWorkflow
         self.cards = workflows.map { workflow in
-            let legacy = MaintenanceWorkflowPresentation.presentation(for: workflow)
             return MaintenanceWorkflowCardPresentation(
                 workflow: workflow,
-                title: legacy.title,
-                subtitle: legacy.subtitle,
+                title: workflow.presentationTitle,
+                subtitle: workflow.presentationSubtitle,
                 stateTitle: store.state(for: workflow).title,
                 isSelected: workflow == selectedWorkflow
             )

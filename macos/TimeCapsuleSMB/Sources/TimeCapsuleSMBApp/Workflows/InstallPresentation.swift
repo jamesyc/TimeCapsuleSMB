@@ -1,10 +1,8 @@
 import Foundation
 
-typealias InstallPlanRow = PresentationRow
-
 struct InstallPlanSection: Equatable, Identifiable {
     let title: String
-    let rows: [InstallPlanRow]
+    let rows: [PresentationRow]
 
     var id: String { title }
 }
@@ -24,16 +22,16 @@ struct InstallPlanPresentation: Equatable {
         self.title = Self.title(for: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)
         self.sections = [
             InstallPlanSection(title: L10n.string("install.plan.section.target"), rows: [
-                InstallPlanRow(label: L10n.string("deploy.presentation.row.target"), value: profile.title),
-                InstallPlanRow(label: L10n.string("deploy.presentation.row.host"), value: plan.host),
-                InstallPlanRow(label: L10n.string("deploy.presentation.row.payload"), value: plan.payloadFamily ?? profile.payloadFamily ?? L10n.string("value.unknown"))
+                PresentationRow(label: L10n.string("deploy.presentation.row.target"), value: profile.title),
+                PresentationRow(label: L10n.string("deploy.presentation.row.host"), value: plan.host),
+                PresentationRow(label: L10n.string("deploy.presentation.row.payload"), value: plan.payloadFamily ?? profile.payloadFamily ?? L10n.string("value.unknown"))
             ]),
             InstallPlanSection(title: L10n.string("install.plan.section.device_actions"), rows: [
-                InstallPlanRow(label: L10n.string("install.plan.row.uploads"), value: "\(plan.uploads.count)"),
-                InstallPlanRow(label: L10n.string("deploy.presentation.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
-                InstallPlanRow(label: L10n.string("install.plan.row.expected_downtime"), value: Self.expectedDowntime(plan: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)),
-                InstallPlanRow(label: L10n.string("install.plan.row.remote_actions"), value: "\(plan.preUploadActions.count + plan.postUploadActions.count + plan.activationActions.count)"),
-                InstallPlanRow(label: L10n.string("deploy.presentation.row.post_install_checks"), value: "\(plan.postDeployChecks.count)")
+                PresentationRow(label: L10n.string("install.plan.row.uploads"), value: "\(plan.uploads.count)"),
+                PresentationRow(label: L10n.string("deploy.presentation.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
+                PresentationRow(label: L10n.string("install.plan.row.expected_downtime"), value: Self.expectedDowntime(plan: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)),
+                PresentationRow(label: L10n.string("install.plan.row.remote_actions"), value: "\(plan.preUploadActions.count + plan.postUploadActions.count + plan.activationActions.count)"),
+                PresentationRow(label: L10n.string("deploy.presentation.row.post_install_checks"), value: "\(plan.postDeployChecks.count)")
             ])
         ]
         var warnings: [String] = []

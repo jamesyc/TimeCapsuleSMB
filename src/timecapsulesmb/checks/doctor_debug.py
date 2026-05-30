@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.doctor_state import DoctorBonjourResult, DoctorSink, DoctorTarget, RemoteAccess
+from timecapsulesmb.checks.doctor_state import DoctorSink, DoctorTarget, RemoteAccess
 from timecapsulesmb.device.probe import read_remote_service_socket_diagnostics_conn, read_runtime_log_tails_conn
 from timecapsulesmb.device.storage import mast_probe_debug_summary, probe_mast_diagnostics_conn
 from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
@@ -53,15 +53,6 @@ def _add_bonjour_debug_fields(
     else:
         if native_dns_sd is not None:
             debug_fields["bonjour_native_dns_sd"] = native_dns_sd
-
-
-def _doctor_add_bonjour_debug_fields(bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
-    _add_bonjour_debug_fields(
-        sink.debug_fields,
-        bonjour_debug_needed=bonjour_result.debug_needed,
-        bonjour_expected_debug=bonjour_result.expected_debug,
-        bonjour_zeroconf_debug=bonjour_result.zeroconf_debug,
-    )
 
 
 def _add_remote_service_socket_debug(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:

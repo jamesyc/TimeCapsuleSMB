@@ -35,7 +35,7 @@ from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
-from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, ssh_target_link_local_resolution_error
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -424,7 +424,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     probed_state = configure_service.enable_ssh_and_reprobe(
                         connection,
                         verbose_wait=not args.json,
-                        callbacks=configure_service.ConfigureEnableSshCallbacks(
+                        callbacks=RuntimeOperationCallbacks(
                             set_stage=command_context.set_stage,
                             add_debug_fields=command_context.add_debug_fields,
                             update_fields=command_context.update_fields,

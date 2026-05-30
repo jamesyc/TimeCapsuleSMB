@@ -81,10 +81,8 @@ from timecapsulesmb.deploy.boot_assets import (
 )
 from timecapsulesmb.deploy.verify import (
     VerificationResult,
-    managed_runtime_ready,
     render_managed_runtime_verification,
     render_post_uninstall_verification,
-    verify_managed_runtime,
     verify_post_uninstall,
 )
 from timecapsulesmb.core.config import AppConfig
@@ -6668,15 +6666,15 @@ int main(void) {{
         internal = self._mast_volume("dk2", name="Internal", builtin=True)
         external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", side_effect=[True, False]) as mount_mock:
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[True, False]) as mount_mock:
             mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=17)
 
         self.assertEqual(mounted, (internal,))
         self.assertEqual(
             mount_mock.call_args_list,
             [
-                mock.call(connection, internal, wait_seconds=17),
-                mock.call(connection, external, wait_seconds=17),
+                mock.call(connection, internal.volume_root, internal.device_path, wait_seconds=17),
+                mock.call(connection, external.volume_root, external.device_path, wait_seconds=17),
             ],
         )
 
@@ -6685,7 +6683,7 @@ int main(void) {{
         internal = self._mast_volume("dk2", name="Internal", builtin=True)
         external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=False):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=False):
             mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=30)
 
         self.assertEqual(mounted, ())
@@ -6844,18 +6842,15 @@ int main(void) {{
         self.assertIn("mv -f /mnt/Flash/.mdns-advertiser.tmp /mnt/Flash/mdns-advertiser", ssh_commands[1])
         self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
 
-    def test_verify_managed_runtime_passes_when_runtime_probe_succeeds(self) -> None:
-        result = ManagedRuntimeProbeResult(
+    def test_render_managed_runtime_verification_passes_when_runtime_probe_succeeds(self) -> None:
+        verification = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
             mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
-        with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
 
-        self.assertIs(verification, result)
-        self.assertTrue(managed_runtime_ready(verification))
+        self.assertTrue(verification.ready)
         self.assertEqual(
             render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
             [
@@ -6865,18 +6860,15 @@ int main(void) {{
             ],
         )
 
-    def test_verify_managed_runtime_fails_when_runtime_probe_fails(self) -> None:
-        result = ManagedRuntimeProbeResult(
+    def test_render_managed_runtime_verification_fails_when_runtime_probe_fails(self) -> None:
+        verification = ManagedRuntimeProbeResult(
             ready=False,
             detail="managed runtime is not ready",
             smbd=readiness_result(False, "managed smbd is not ready", ("FAIL:managed smbd is not ready",)),
             mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
-        with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
 
-        self.assertIs(verification, result)
-        self.assertFalse(managed_runtime_ready(verification))
+        self.assertFalse(verification.ready)
         self.assertEqual(
             render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
             [
