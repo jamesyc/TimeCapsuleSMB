@@ -1791,20 +1791,212 @@ class CheckTests(unittest.TestCase):
                 "FAIL:smbd is not bound to required TCP 445 sockets",
             ),
         )
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            smb_instance=[],
-            smb_listing=self.smb_listing_result(),
-            smb_file_ops=[],
-            smbd_probe=smbd_probe,
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
-            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
-        )
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                smb_instance=[],
+                smb_listing=self.smb_listing_result(),
+                smb_file_ops=[],
+                smbd_probe=smbd_probe,
+                mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+                run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
+            )
         self.assertTrue(run.fatal)
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [10, 15])
         self.assertTrue(any(result.status == "PASS" and result.message == "managed smbd parent process is running" for result in run.results))
         self.assertTrue(any(result.status == "FAIL" and result.message == "smbd is not bound to required TCP 445 sockets" for result in run.results))
         self.assertFalse(any(result.message.startswith("managed smbd is not ready") for result in run.results))
+
+    def test_run_doctor_checks_retries_transient_smbd_parent_failure_before_streaming_result(self) -> None:
+        transient = mock.Mock(
+            ready=False,
+            detail="managed smbd parent process is not running",
+            lines=("FAIL:managed smbd parent process is not running",),
+        )
+        ready = mock.Mock(
+            ready=True,
+            detail="managed smbd ready",
+            lines=("PASS:managed smbd parent process is running", "PASS:smbd bound to required TCP 445 sockets"),
+        )
+        smbd_mock = mock.Mock(side_effect=[transient, ready])
+        streamed: list[CheckResult] = []
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                skip_bonjour=True,
+                skip_smb=True,
+                on_result=streamed.append,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": smbd_mock},
+            )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(smbd_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(10)
+        self.assertFalse(any(result.message == "managed smbd parent process is not running" for result in run.results))
+        self.assertFalse(any(result.message == "managed smbd parent process is not running" for result in streamed))
+        self.assertTrue(any(result.status == "PASS" and result.message == "smbd bound to required TCP 445 sockets" for result in run.results))
+
+    def test_run_doctor_checks_retries_transient_smbd_tcp_binding_failure(self) -> None:
+        transient = mock.Mock(
+            ready=False,
+            detail="smbd is not bound to required TCP 445 sockets",
+            lines=(
+                "PASS:managed smbd parent process is running",
+                "FAIL:smbd is not bound to required TCP 445 sockets",
+            ),
+        )
+        ready = mock.Mock(
+            ready=True,
+            detail="managed smbd ready",
+            lines=(
+                "PASS:managed smbd parent process is running",
+                "PASS:smbd bound to required TCP 445 sockets",
+            ),
+        )
+        smbd_mock = mock.Mock(side_effect=[transient, ready])
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                skip_bonjour=True,
+                skip_smb=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": smbd_mock},
+            )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(smbd_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(10)
+        self.assertFalse(any(result.message == "smbd is not bound to required TCP 445 sockets" for result in run.results))
+        self.assertTrue(any(result.status == "PASS" and result.message == "smbd bound to required TCP 445 sockets" for result in run.results))
+
+    def test_run_doctor_checks_does_not_retry_structural_smbd_failure_mixed_with_transient_failure(self) -> None:
+        smbd_probe = mock.Mock(
+            ready=False,
+            detail="managed runtime smbd binary missing; smbd is not bound to required TCP 445 sockets",
+            lines=(
+                "FAIL:managed runtime smbd binary missing",
+                "FAIL:smbd is not bound to required TCP 445 sockets",
+            ),
+        )
+        smbd_mock = mock.Mock(return_value=smbd_probe)
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                skip_bonjour=True,
+                skip_smb=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": smbd_mock},
+            )
+
+        self.assertTrue(run.fatal)
+        smbd_mock.assert_called_once()
+        sleep_mock.assert_not_called()
+
+    def test_run_doctor_checks_retries_transient_mdns_process_failure(self) -> None:
+        transient = mock.Mock(
+            ready=False,
+            detail="mdns-advertiser process is not running",
+            lines=("FAIL:mdns-advertiser process is not running",),
+        )
+        ready = mock.Mock(
+            ready=True,
+            detail="managed mDNS takeover active",
+            lines=("PASS:mdns-advertiser process is running", "PASS:mdns-advertiser bound to required UDP 5353 listeners"),
+        )
+        mdns_mock = mock.Mock(side_effect=[transient, ready])
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                skip_bonjour=True,
+                skip_smb=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+            )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(mdns_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(10)
+        self.assertFalse(any(result.message == "mdns-advertiser process is not running" for result in run.results))
+        self.assertTrue(any(result.status == "PASS" and result.message == "mdns-advertiser bound to required UDP 5353 listeners" for result in run.results))
+
+    def test_run_doctor_checks_retries_transient_mdns_udp_binding_failure(self) -> None:
+        transient = mock.Mock(
+            ready=False,
+            detail="mdns-advertiser is not bound to required UDP 5353 listener",
+            lines=(
+                "PASS:mdns-advertiser process is running",
+                "FAIL:mdns-advertiser is not bound to required UDP 5353 listener",
+            ),
+        )
+        ready = mock.Mock(
+            ready=True,
+            detail="managed mDNS takeover active",
+            lines=(
+                "PASS:mdns-advertiser process is running",
+                "PASS:mdns-advertiser bound to required UDP 5353 listeners",
+            ),
+        )
+        mdns_mock = mock.Mock(side_effect=[transient, ready])
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                skip_bonjour=True,
+                skip_smb=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+            )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(mdns_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(10)
+        self.assertFalse(any(result.message == "mdns-advertiser is not bound to required UDP 5353 listener" for result in run.results))
+        self.assertTrue(any(result.status == "PASS" and result.message == "mdns-advertiser bound to required UDP 5353 listeners" for result in run.results))
+
+    def test_run_doctor_checks_exhausts_transient_mdns_udp_binding_retries(self) -> None:
+        mdns_probe = mock.Mock(
+            ready=False,
+            detail="mdns-advertiser is not bound to required UDP 5353 listener",
+            lines=("FAIL:mdns-advertiser is not bound to required UDP 5353 listener",),
+        )
+        mdns_mock = mock.Mock(return_value=mdns_probe)
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                skip_bonjour=True,
+                skip_smb=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+            )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(mdns_mock.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [10, 15])
+        self.assertTrue(any(result.status == "FAIL" and result.message == "mdns-advertiser is not bound to required UDP 5353 listener" for result in run.results))
+
+    def test_run_doctor_checks_does_not_retry_structural_mdns_failure_mixed_with_transient_failure(self) -> None:
+        mdns_probe = mock.Mock(
+            ready=False,
+            detail="mdns-advertiser binary missing at /mnt/Flash/mdns-advertiser; mdns-advertiser process is not running",
+            lines=(
+                "FAIL:mdns-advertiser binary missing at /mnt/Flash/mdns-advertiser",
+                "FAIL:mdns-advertiser process is not running",
+            ),
+        )
+        mdns_mock = mock.Mock(return_value=mdns_probe)
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                skip_bonjour=True,
+                skip_smb=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+            )
+
+        self.assertTrue(run.fatal)
+        mdns_mock.assert_called_once()
+        sleep_mock.assert_not_called()
 
     def test_run_doctor_checks_reports_supported_device_compatibility(self) -> None:
         run = self.run_doctor_with_mocks(
@@ -1975,7 +2167,6 @@ class CheckTests(unittest.TestCase):
             "pw",
             "127.0.0.1",
             port=1445,
-            retry_delays=(10, 15),
         )
         smb_file_ops_mock.assert_called_once_with(
             "admin",
@@ -2360,7 +2551,6 @@ class CheckTests(unittest.TestCase):
             "pw",
             ["timecapsulesamba4.local", "10.0.0.2"],
             port=445,
-            retry_delays=(10, 15),
         )
         file_ops_mock.assert_called_once_with(
             "admin",
@@ -2417,7 +2607,6 @@ class CheckTests(unittest.TestCase):
             "pw",
             ["10.0.0.2"],
             port=445,
-            retry_delays=(10, 15),
         )
         file_ops_mock.assert_called_once_with(
             "admin",
@@ -2628,124 +2817,136 @@ class CheckTests(unittest.TestCase):
         self.assertIn("NT_STATUS_IO_TIMEOUT", result.message)
         self.assertNotIn("secret-password", result.message)
 
-    def test_try_authenticated_smb_listing_retries_transient_failure_after_configured_delay(self) -> None:
-        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_IO_TIMEOUT\n")
-        good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
-            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
-                with mock.patch(
-                    "timecapsulesmb.checks.smb.run_local_capture",
-                    side_effect=[failed_proc, good_proc],
-                ) as run_mock:
-                    result = try_authenticated_smb_listing(
-                        "admin",
-                        "pw",
-                        ["home.local"],
-                        expected_share_name="Data",
-                        retry_delays=(10, 15),
-                    )
-
-        self.assertEqual(result.status, "PASS")
-        self.assertEqual(run_mock.call_count, 2)
-        sleep_mock.assert_called_once_with(10)
-        attempts = result.details["attempts"]
-        self.assertEqual(len(attempts), 2)
-        self.assertEqual(attempts[0]["failure"], "NT_STATUS_IO_TIMEOUT")
-        self.assertEqual(attempts[0]["next_retry_delay_sec"], 10)
-        self.assertEqual(attempts[1]["outcome"], "pass")
-
-    def test_try_authenticated_smb_listing_retries_targets_by_round(self) -> None:
-        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_CONNECTION_REFUSED\n")
-        good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
-            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
-                with mock.patch(
-                    "timecapsulesmb.checks.smb.run_local_capture",
-                    side_effect=[failed_proc, failed_proc, good_proc],
-                ):
-                    result = try_authenticated_smb_listing(
-                        "admin",
-                        "pw",
-                        ["home.local", "10.0.1.1"],
-                        expected_share_name="Data",
-                        retry_delays=(10, 15),
-                    )
-
-        self.assertEqual(result.status, "PASS")
-        sleep_mock.assert_called_once_with(10)
-        self.assertEqual(
-            [attempt["server"] for attempt in result.details["attempts"]],
-            ["home.local", "10.0.1.1", "home.local"],
+    def test_run_doctor_checks_retries_transient_smb_listing_after_shared_delay(self) -> None:
+        transient = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 home.local: NT_STATUS_IO_TIMEOUT",
+            {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_IO_TIMEOUT"}]},
         )
+        listing_mock = mock.Mock(side_effect=[transient, self.smb_listing_result()])
 
-    def test_try_authenticated_smb_listing_exhausts_configured_transient_retries(self) -> None:
-        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_IO_TIMEOUT\n")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
-            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
-                with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=failed_proc):
-                    result = try_authenticated_smb_listing(
-                        "admin",
-                        "pw",
-                        ["home.local"],
-                        expected_share_name="Data",
-                        retry_delays=(10, 15),
-                    )
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                skip_bonjour=True,
+                smb_file_ops=[],
+                extra_patches={"timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock},
+            )
 
-        self.assertEqual(result.status, "FAIL")
-        self.assertIn("authenticated SMB listing failed after 3 attempt(s)", result.message)
+        self.assertFalse(run.fatal)
+        self.assertEqual(listing_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(10)
+        listing_results = [result for result in run.results if result.message == "listing ok"]
+        self.assertEqual(len(listing_results), 1)
+        self.assertEqual(listing_results[0].details["attempts"][0]["next_retry_delay_sec"], 10)
+
+    def test_run_doctor_checks_retries_smb_listing_targets_by_round(self) -> None:
+        first_round = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 2 attempt(s)",
+            {
+                "attempts": [
+                    {"server": "home.local", "outcome": "error", "failure": "NT_STATUS_CONNECTION_REFUSED"},
+                    {"server": "10.0.1.1", "outcome": "error", "failure": "NT_STATUS_CONNECTION_REFUSED"},
+                ]
+            },
+        )
+        listing_mock = mock.Mock(side_effect=[first_round, self.smb_listing_result("home.local")])
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                skip_bonjour=True,
+                smb_file_ops=[],
+                extra_patches={"timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock},
+            )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(listing_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(10)
+        listing_result = next(result for result in run.results if result.message == "listing ok")
+        self.assertEqual([attempt["server"] for attempt in listing_result.details["attempts"]], ["home.local", "10.0.1.1"])
+
+    def test_run_doctor_checks_exhausts_transient_smb_listing_retries(self) -> None:
+        failures = [
+            CheckResult("FAIL", "listing failed", {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_IO_TIMEOUT"}]}),
+            CheckResult("FAIL", "listing failed", {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_IO_TIMEOUT"}]}),
+            CheckResult("FAIL", "listing failed", {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_IO_TIMEOUT"}]}),
+        ]
+        listing_mock = mock.Mock(side_effect=failures)
+
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                skip_bonjour=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock},
+            )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(listing_mock.call_count, 3)
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [10, 15])
-        attempts = result.details["attempts"]
+        final_listing = next(result for result in run.results if result.message.startswith("authenticated SMB listing failed after 3 attempt(s)"))
+        attempts = final_listing.details["attempts"]
         self.assertEqual(len(attempts), 3)
         self.assertEqual(attempts[0]["next_retry_delay_sec"], 10)
         self.assertEqual(attempts[1]["next_retry_delay_sec"], 15)
         self.assertNotIn("next_retry_delay_sec", attempts[2])
 
-    def test_try_authenticated_smb_listing_does_not_retry_auth_failure(self) -> None:
-        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_LOGON_FAILURE\n")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
-            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
-                with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=failed_proc) as run_mock:
-                    result = try_authenticated_smb_listing(
-                        "admin",
-                        "pw",
-                        ["home.local"],
-                        expected_share_name="Data",
-                        retry_delays=(10, 15),
-                    )
+    def test_run_doctor_checks_does_not_retry_smb_listing_auth_failure(self) -> None:
+        failure = CheckResult(
+            "FAIL",
+            "listing failed",
+            {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_LOGON_FAILURE"}]},
+        )
+        listing_mock = mock.Mock(return_value=failure)
 
-        self.assertEqual(result.status, "FAIL")
-        self.assertEqual(run_mock.call_count, 1)
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                skip_bonjour=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock},
+            )
+
+        self.assertTrue(run.fatal)
+        listing_mock.assert_called_once()
         sleep_mock.assert_not_called()
 
-    def test_try_authenticated_smb_listing_does_not_retry_missing_expected_share(self) -> None:
-        missing_proc = subprocess.CompletedProcess(["smbclient"], 0, "Public\n", "")
-        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
-            with mock.patch("timecapsulesmb.checks.smb.time.sleep") as sleep_mock:
-                with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=missing_proc) as run_mock:
-                    result = try_authenticated_smb_listing(
-                        "admin",
-                        "pw",
-                        ["home.local"],
-                        expected_share_name="Data",
-                        retry_delays=(10, 15),
-                    )
+    def test_run_doctor_checks_does_not_retry_smb_listing_missing_expected_share(self) -> None:
+        failure = CheckResult(
+            "FAIL",
+            "listing failed",
+            {"attempts": [{"server": "home.local", "outcome": "missing_expected_share", "expected_share": "Data"}]},
+        )
+        listing_mock = mock.Mock(return_value=failure)
 
-        self.assertEqual(result.status, "FAIL")
-        self.assertEqual(run_mock.call_count, 1)
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                skip_bonjour=True,
+                extra_patches={"timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock},
+            )
+
+        self.assertTrue(run.fatal)
+        listing_mock.assert_called_once()
         sleep_mock.assert_not_called()
 
     def test_run_doctor_checks_adds_smb_listing_attempts_to_debug_fields(self) -> None:
         debug_fields: dict[str, object] = {}
         listing_attempts = [
-            {"server": "timecapsulesamba4.local", "outcome": "timeout", "timeout_sec": 30},
-            {"server": "10.0.0.2", "outcome": "timeout", "timeout_sec": 30},
+            {"server": "timecapsulesamba4.local", "outcome": "error", "failure": "NT_STATUS_LOGON_FAILURE"},
+            {"server": "10.0.0.2", "outcome": "error", "failure": "NT_STATUS_LOGON_FAILURE"},
         ]
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             smb_listing=CheckResult(
                 "FAIL",
-                "authenticated SMB listing failed: timed out via 10.0.0.2",
+                "authenticated SMB listing failed: NT_STATUS_LOGON_FAILURE",
                 {"attempts": listing_attempts},
             ),
             smb_file_ops=[],
@@ -3337,7 +3538,6 @@ class CheckTests(unittest.TestCase):
             ],
         )
         self.assertEqual(listing_mock.call_args.kwargs["port"], 445)
-        self.assertEqual(listing_mock.call_args.kwargs["retry_delays"], (10, 15))
         file_ops_mock.assert_called_once_with(
             "admin",
             "pw",

@@ -154,6 +154,31 @@ def _smbclient_attempt_retryable(attempt: dict[str, object]) -> bool:
     return False
 
 
+def authenticated_smb_listing_attempts(result: CheckResult) -> list[dict[str, object]]:
+    attempts = result.details.get("attempts")
+    if not isinstance(attempts, list):
+        return []
+    return [attempt for attempt in attempts if isinstance(attempt, dict)]
+
+
+def authenticated_smb_listing_retryable(result: CheckResult) -> bool:
+    if result.status == "PASS":
+        return False
+    attempts = authenticated_smb_listing_attempts(result)
+    return bool(attempts) and all(_smbclient_attempt_retryable(attempt) for attempt in attempts)
+
+
+def authenticated_smb_listing_with_attempts(result: CheckResult, attempts: list[dict[str, object]]) -> CheckResult:
+    if not attempts:
+        return result
+    details = dict(result.details)
+    details["attempts"] = attempts
+    if result.status == "PASS":
+        return CheckResult(result.status, result.message, details)
+    failure_msg = _smbclient_attempts_failure_summary(attempts)
+    return CheckResult(result.status, f"authenticated SMB listing failed after {len(attempts)} attempt(s): {failure_msg}", details)
+
+
 def _redacted_smbclient_command(args: list[str]) -> str:
     redacted: list[str] = []
     redact_next = False
@@ -221,11 +246,10 @@ def check_authenticated_smb_listing(
     expected_share_name: Optional[str] = None,
     port: Optional[int] = None,
     timeout: int = 20,
-    retry_delays: tuple[int, ...] = (),
 ) -> CheckResult:
     if not command_exists("smbclient"):
         return CheckResult("FAIL", "missing local tool smbclient")
-    if isinstance(server, list) or retry_delays:
+    if isinstance(server, list):
         servers = server if isinstance(server, list) else [server]
         return try_authenticated_smb_listing(
             username,
@@ -234,7 +258,6 @@ def check_authenticated_smb_listing(
             expected_share_name=expected_share_name,
             port=port,
             timeout=timeout,
-            retry_delays=retry_delays,
         )
 
     target = _normalize_smb_client_target(server)
@@ -307,78 +330,63 @@ def try_authenticated_smb_listing(
     expected_share_name: Optional[str] = None,
     port: Optional[int] = None,
     timeout: int = 30,
-    retry_delays: tuple[int, ...] = (),
 ) -> CheckResult:
     if not command_exists("smbclient"):
         return CheckResult("WARN", "SMB listing verification skipped: smbclient not found")
 
     attempts: list[dict[str, object]] = []
     targets = [_normalize_smb_client_target(server_input) for server_input in servers]
-    for round_index in range(len(retry_delays) + 1):
-        round_attempts: list[dict[str, object]] = []
-        for target in targets:
-            command = _redacted_smbclient_command(_smbclient_listing_args(target, username, password, port=port))
-            try:
-                start = time.monotonic()
-                proc = _run_smbclient_listing(target, username, password, port=port, timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                attempt = _new_listing_attempt(target, timeout, start, command)
-                attempt["outcome"] = "timeout"
-                stdout_tail = _smbclient_text_tail(exc.stdout)
-                stderr_tail = _smbclient_text_tail(exc.stderr)
-                if stdout_tail is not None:
-                    attempt["stdout_tail"] = stdout_tail
-                if stderr_tail is not None:
-                    attempt["stderr_tail"] = stderr_tail
-                attempts.append(attempt)
-                round_attempts.append(attempt)
-                continue
+    for target in targets:
+        command = _redacted_smbclient_command(_smbclient_listing_args(target, username, password, port=port))
+        try:
+            start = time.monotonic()
+            proc = _run_smbclient_listing(target, username, password, port=port, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
             attempt = _new_listing_attempt(target, timeout, start, command)
-            attempt["returncode"] = proc.returncode
-            stdout_tail = _smbclient_text_tail(proc.stdout)
-            stderr_tail = _smbclient_text_tail(proc.stderr)
+            attempt["outcome"] = "timeout"
+            stdout_tail = _smbclient_text_tail(exc.stdout)
+            stderr_tail = _smbclient_text_tail(exc.stderr)
             if stdout_tail is not None:
                 attempt["stdout_tail"] = stdout_tail
             if stderr_tail is not None:
                 attempt["stderr_tail"] = stderr_tail
-            if proc.returncode == 0:
-                disk_shares = parse_smbclient_disk_shares(proc.stdout)
-                attempt["disk_shares"] = disk_shares
-                if expected_share_name is not None and expected_share_name not in proc.stdout:
-                    attempt["outcome"] = "missing_expected_share"
-                    attempt["expected_share"] = expected_share_name
-                    attempts.append(attempt)
-                    round_attempts.append(attempt)
-                    continue
-                attempt["outcome"] = "pass"
-                if expected_share_name is not None:
-                    attempt["expected_share"] = expected_share_name
-                    attempt["expected_share_found"] = True
-                attempts.append(attempt)
-                return CheckResult(
-                    "PASS",
-                    f"authenticated SMB listing works for {username}@{target.display}",
-                    {
-                        "server": target.server,
-                        "ip_address": target.ip_address,
-                        "disk_shares": disk_shares,
-                        "attempts": attempts,
-                    },
-                )
-            attempt["outcome"] = "error"
-            raw_failure = _smbclient_failure_line(proc)
-            attempt["failure"] = raw_failure
             attempts.append(attempt)
-            round_attempts.append(attempt)
-
-        if round_index >= len(retry_delays):
-            break
-        if not round_attempts or not all(_smbclient_attempt_retryable(attempt) for attempt in round_attempts):
-            break
-        retry_delay = retry_delays[round_index]
-        for attempt in round_attempts:
-            attempt["next_retry_delay_sec"] = retry_delay
-        time.sleep(retry_delay)
+            continue
+        attempt = _new_listing_attempt(target, timeout, start, command)
+        attempt["returncode"] = proc.returncode
+        stdout_tail = _smbclient_text_tail(proc.stdout)
+        stderr_tail = _smbclient_text_tail(proc.stderr)
+        if stdout_tail is not None:
+            attempt["stdout_tail"] = stdout_tail
+        if stderr_tail is not None:
+            attempt["stderr_tail"] = stderr_tail
+        if proc.returncode == 0:
+            disk_shares = parse_smbclient_disk_shares(proc.stdout)
+            attempt["disk_shares"] = disk_shares
+            if expected_share_name is not None and expected_share_name not in proc.stdout:
+                attempt["outcome"] = "missing_expected_share"
+                attempt["expected_share"] = expected_share_name
+                attempts.append(attempt)
+                continue
+            attempt["outcome"] = "pass"
+            if expected_share_name is not None:
+                attempt["expected_share"] = expected_share_name
+                attempt["expected_share_found"] = True
+            attempts.append(attempt)
+            return CheckResult(
+                "PASS",
+                f"authenticated SMB listing works for {username}@{target.display}",
+                {
+                    "server": target.server,
+                    "ip_address": target.ip_address,
+                    "disk_shares": disk_shares,
+                    "attempts": attempts,
+                },
+            )
+        attempt["outcome"] = "error"
+        raw_failure = _smbclient_failure_line(proc)
+        attempt["failure"] = raw_failure
+        attempts.append(attempt)
 
     failure_msg = _smbclient_attempts_failure_summary(attempts)
     return CheckResult("FAIL", f"authenticated SMB listing failed after {len(attempts)} attempt(s): {failure_msg}", {"attempts": attempts})

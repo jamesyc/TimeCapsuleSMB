@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import TypeVar
 
 from timecapsulesmb.checks.bonjour import (
     BonjourServiceTarget,
@@ -43,6 +45,9 @@ from timecapsulesmb.checks.nbns import check_nbns_name_resolution
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
     SmbClientTargetInput,
+    authenticated_smb_listing_attempts,
+    authenticated_smb_listing_retryable,
+    authenticated_smb_listing_with_attempts,
     check_authenticated_smb_listing,
     check_authenticated_smb_file_ops_detailed,
 )
@@ -60,6 +65,7 @@ from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_p
 from timecapsulesmb.device.probe import (
     FLASH_RUNTIME_CONFIG,
     ProbedDeviceState,
+    ReadinessProbeResult,
     RemoteInterfaceProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
@@ -81,7 +87,87 @@ from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward
 
 
-AUTHENTICATED_SMB_LISTING_RETRY_DELAYS = (10, 15)
+T = TypeVar("T")
+
+
+DOCTOR_TRANSIENT_RETRY_DELAYS = (10, 15)
+TRANSIENT_SMBD_READINESS_FAILURES = {
+    "managed smbd parent process is not running",
+    "smbd is not bound to required TCP 445 sockets",
+}
+TRANSIENT_MDNS_READINESS_FAILURES = {
+    "mdns-advertiser process is not running",
+    "mdns-advertiser is not bound to required UDP 5353 listener",
+}
+
+
+def _run_doctor_retryable_check(
+    run_attempt: Callable[[], T],
+    should_retry: Callable[[T], bool],
+    *,
+    retry_delays: tuple[int, ...] = DOCTOR_TRANSIENT_RETRY_DELAYS,
+    before_retry: Callable[[T, int], None] | None = None,
+) -> T:
+    result = run_attempt()
+    for retry_delay in retry_delays:
+        if not should_retry(result):
+            break
+        if before_retry is not None:
+            before_retry(result, retry_delay)
+        time.sleep(retry_delay)
+        result = run_attempt()
+    return result
+
+
+def _readiness_failure_details(probe: ReadinessProbeResult) -> list[str]:
+    details: list[str] = []
+    steps = getattr(probe, "steps", ())
+    if isinstance(steps, (list, tuple)):
+        for step in steps:
+            if getattr(step, "status", None) in {"fail", "timeout"}:
+                detail = getattr(step, "detail", None)
+                if isinstance(detail, str) and detail:
+                    details.append(detail)
+    if details:
+        return details
+
+    lines = getattr(probe, "lines", ())
+    if not isinstance(lines, (list, tuple)):
+        return []
+    return [line.removeprefix("FAIL:") for line in lines if isinstance(line, str) and line.startswith("FAIL:")]
+
+
+def _readiness_probe_retryable(probe: ReadinessProbeResult, retryable_failures: set[str]) -> bool:
+    if probe.ready:
+        return False
+    failure_details = _readiness_failure_details(probe)
+    return bool(failure_details) and all(detail in retryable_failures for detail in failure_details)
+
+
+def _authenticated_smb_listing_with_doctor_retries(
+    username: str,
+    password: str,
+    server: SmbClientTargetInput | list[SmbClientTargetInput],
+    *,
+    port: int | None = None,
+) -> CheckResult:
+    attempts: list[dict[str, object]] = []
+
+    def run_attempt() -> CheckResult:
+        result = check_authenticated_smb_listing(username, password, server, port=port)
+        attempts.extend(authenticated_smb_listing_attempts(result))
+        return authenticated_smb_listing_with_attempts(result, attempts)
+
+    def mark_retry_delay(result: CheckResult, retry_delay: int) -> None:
+        for attempt in authenticated_smb_listing_attempts(result):
+            if "next_retry_delay_sec" not in attempt:
+                attempt["next_retry_delay_sec"] = retry_delay
+
+    return _run_doctor_retryable_check(
+        run_attempt,
+        authenticated_smb_listing_retryable,
+        before_retry=mark_retry_delay,
+    )
 
 
 def _add_probe_line_results(
@@ -714,12 +800,11 @@ def _add_tunneled_authenticated_smb_results(
             remote_host=host,
             remote_port=remote_port,
         ):
-            listing_result = check_authenticated_smb_listing(
+            listing_result = _authenticated_smb_listing_with_doctor_retries(
                 DEFAULT_SAMBA_AUTH_USER,
                 smb_password,
                 "127.0.0.1",
                 port=local_port,
-                retry_delays=AUTHENTICATED_SMB_LISTING_RETRY_DELAYS,
             )
             if debug_fields is not None and listing_result.details.get("attempts"):
                 debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
@@ -786,12 +871,11 @@ def _add_authenticated_smb_results(
     if debug_fields is not None:
         debug_fields["authenticated_smb_listing_servers"] = [_smb_client_target_debug(target) for target in smb_servers]
         debug_fields["authenticated_smb_listing_active_shares"] = active_share_names
-    listing_result = check_authenticated_smb_listing(
+    listing_result = _authenticated_smb_listing_with_doctor_retries(
         DEFAULT_SAMBA_AUTH_USER,
         smb_password,
         smb_servers,
         port=445,
-        retry_delays=AUTHENTICATED_SMB_LISTING_RETRY_DELAYS,
     )
     if debug_fields is not None and listing_result.details.get("attempts"):
         debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
@@ -1028,7 +1112,10 @@ def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink:
     if not remote.remote_checks_enabled:
         return
 
-    smbd_probe = probe_managed_smbd_conn(target.connection)
+    smbd_probe = _run_doctor_retryable_check(
+        lambda: probe_managed_smbd_conn(target.connection),
+        lambda probe: _readiness_probe_retryable(probe, TRANSIENT_SMBD_READINESS_FAILURES),
+    )
     smbd_probe_lines = getattr(smbd_probe, "lines", ())
     if not isinstance(smbd_probe_lines, (list, tuple)):
         smbd_probe_lines = ()
@@ -1045,7 +1132,10 @@ def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink:
     if not remote.remote_checks_enabled:
         return
 
-    mdns_probe = probe_managed_mdns_takeover_conn(target.connection)
+    mdns_probe = _run_doctor_retryable_check(
+        lambda: probe_managed_mdns_takeover_conn(target.connection),
+        lambda probe: _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES),
+    )
     mdns_probe_lines = getattr(mdns_probe, "lines", ())
     if not isinstance(mdns_probe_lines, (list, tuple)):
         mdns_probe_lines = ()
