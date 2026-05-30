@@ -844,6 +844,7 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": resolve_mock,
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
                 "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(
                     side_effect=AssertionError("native dns-sd should not decide Bonjour success")
                 ),
@@ -1759,6 +1760,7 @@ class CheckTests(unittest.TestCase):
 
         self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="FAIL", message="ssh failed"),
+            smb_listing=CheckResult("FAIL", "mock authenticated SMB listing failure"),
             debug_fields=debug_fields,
             extra_patches={"timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn": mast_probe_mock},
         )

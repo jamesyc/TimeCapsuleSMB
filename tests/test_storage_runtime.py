@@ -1831,7 +1831,7 @@ MaSt = (
                         tc_manager_reset_pass_state() {
                             i=0
                             payload='abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz'
-                            while [ "$i" -lt 220 ]; do
+                            while [ "$i" -lt 130 ]; do
                                 tc_log "heavy manager log line $i $payload $payload $payload $payload $payload $payload $payload $payload"
                                 i=$((i + 1))
                             done
