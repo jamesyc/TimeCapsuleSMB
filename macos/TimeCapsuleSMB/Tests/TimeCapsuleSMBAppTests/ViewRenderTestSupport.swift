@@ -65,6 +65,7 @@ struct AppViewFixture {
 func assertRendersNonBlank<V: View>(
     _ view: V,
     size: CGSize = CGSize(width: 1200, height: 800),
+    minimumDistinctPixelCount: Int = 8,
     file: StaticString = #filePath,
     line: UInt = #line
 ) throws -> NSBitmapImageRep {
@@ -73,7 +74,7 @@ func assertRendersNonBlank<V: View>(
     XCTAssertGreaterThan(bitmap.pixelsHigh, 0, file: file, line: line)
     XCTAssertGreaterThan(
         sampledDistinctPixelCount(in: bitmap),
-        8,
+        minimumDistinctPixelCount,
         "Rendered view appears blank or visually uniform.",
         file: file,
         line: line

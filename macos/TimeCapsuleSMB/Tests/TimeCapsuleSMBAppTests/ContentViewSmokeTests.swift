@@ -7,7 +7,7 @@ final class ContentViewSmokeTests: XCTestCase {
         let fixture = try await AppViewFixture()
         for route in [AppRoute.allDevices, .activity, .appSettings, .addDevice] {
             fixture.appStore.navigate(to: route)
-            try assertRendersNonBlank(fixture.contentView)
+            try assertRendersNonBlank(fixture.contentView, minimumDistinctPixelCount: 4)
         }
     }
 
