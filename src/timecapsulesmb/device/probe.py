@@ -998,20 +998,6 @@ def preferred_interface_name(
     return best.name
 
 
-def read_interface_ipv4_addrs_conn(connection: SshConnection, iface: str) -> tuple[str, ...]:
-    probe_cmd = (
-        f"/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | "
-        "sed -n 's/^[[:space:]]*inet[[:space:]]\\([0-9.]*\\).*/\\1/p' | "
-        "sed -n '/^$/d;p'"
-    )
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(probe_cmd)}",
-        check=False,
-    )
-    return tuple(line.strip() for line in proc.stdout.splitlines() if line.strip())
-
-
 def read_active_smb_conf_conn(
     connection: SshConnection,
     *,
@@ -1737,35 +1723,6 @@ def _remote_interface_debug_summary(candidates: Iterable[RemoteInterfaceCandidat
         }
         for candidate in candidates
     ]
-
-
-def _network_failure_hint(
-    *,
-    configured_iface: str | None,
-    candidates: tuple[RemoteInterfaceCandidate, ...],
-    target_host: str,
-) -> str | None:
-    if not configured_iface:
-        return None
-
-    configured_candidate = next((candidate for candidate in candidates if candidate.name == configured_iface), None)
-    if configured_candidate is None:
-        return f"configured interface {configured_iface} was not reported by ifconfig -a"
-    if not configured_candidate.ipv4_addrs:
-        return f"configured interface {configured_iface} has no IPv4 address"
-
-    target_matches = [
-        candidate.name
-        for candidate in candidates
-        if target_host and target_host in candidate.ipv4_addrs and candidate.name != configured_iface
-    ]
-    if target_matches:
-        return f"SSH target {target_host} is on {','.join(target_matches)}, not configured interface {configured_iface}"
-
-    if target_host.startswith("169.254."):
-        return f"SSH target {target_host} is link-local; configured interface {configured_iface} has IPv4"
-
-    return None
 
 
 def read_remote_network_diagnostics_conn(connection: SshConnection) -> dict[str, object]:

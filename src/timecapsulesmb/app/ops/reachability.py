@@ -2,17 +2,14 @@ from __future__ import annotations
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import reachability_payload
-from timecapsulesmb.services.app import OperationResult, config_path
-from timecapsulesmb.services.credentials import overlay_request_credentials, request_password
+from timecapsulesmb.app.ops.common import load_optional_request_config
+from timecapsulesmb.services.app import OperationResult
+from timecapsulesmb.services.credentials import request_password
 from timecapsulesmb.services.reachability import run_reachability
-from timecapsulesmb.services.runtime import load_optional_env_config
 
 
 def reachability_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    context.stage("load_config")
-    config = load_optional_env_config(env_path=config_path(params))
-    config = overlay_request_credentials(config, params)
-    context.config = config
+    config = load_optional_request_config(params, context)
 
     result = run_reachability(
         config,

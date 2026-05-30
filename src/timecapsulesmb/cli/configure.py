@@ -9,7 +9,6 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    existing_config_value_or_default,
     valid_existing_config_value,
     validated_value_or_empty,
 )
@@ -20,8 +19,6 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     infer_mdns_device_model_from_airport_syap,
     parse_env_file,
-    parse_bool,
-    write_env_file,
 )
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
@@ -37,6 +34,7 @@ from timecapsulesmb.core.errors import missing_dependency_message, missing_requi
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
+from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
 from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
@@ -344,7 +342,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Most users can just keep the suggested values.\n")
 
         ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
-        values["TC_SSH_OPTS"] = ssh_opts
+        values.update(
+            build_configure_env_values(
+                existing,
+                host="",
+                password="",
+                ssh_opts=ssh_opts,
+                configure_id=configure_id,
+            )
+        )
+        values.pop("TC_HOST", None)
+        values.pop("TC_PASSWORD", None)
         if args.host:
             values["TC_HOST"] = args.host
         if not no_input_enabled(args):
@@ -354,32 +362,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return fail_configure(str(exc))
             if password_arg is not None:
                 values["TC_PASSWORD"] = password_arg
-        existing_internal_share_use_disk_root = parse_bool(
-            existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
-        )
-        values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = (
-            "true" if args.internal_share_use_disk_root or existing_internal_share_use_disk_root else "false"
-        )
-        existing_any_protocol = parse_bool(
-            existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
-        )
-        values["TC_ANY_PROTOCOL"] = (
-            "true" if args.any_protocol or existing_any_protocol else "false"
-        )
-        existing_ata_idle_seconds = existing_config_value_or_default(
-            existing,
-            "TC_ATA_IDLE_SECONDS",
-            "ATA idle seconds",
-        )
-        values["TC_ATA_IDLE_SECONDS"] = (
-            args.ata_idle_seconds if args.ata_idle_seconds is not None else existing_ata_idle_seconds
-        )
-        existing_ata_standby = existing_config_value_or_default(
-            existing,
-            "TC_ATA_STANDBY",
-            "ATA standby timer",
-        )
-        values["TC_ATA_STANDBY"] = args.ata_standby if args.ata_standby is not None else existing_ata_standby
         command_context.set_stage("bonjour_discovery")
         if args.skip_discovery or args.host or no_input_enabled(args):
             discovered_record = None
@@ -529,8 +511,24 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
 
         command_context.set_stage("write_env")
-        values["TC_CONFIGURE_ID"] = configure_id
-        write_env_file(env_path, values)
+        final_values = build_configure_env_values(
+            existing,
+            host=values["TC_HOST"],
+            password=values["TC_PASSWORD"],
+            ssh_opts=ssh_opts,
+            configure_id=configure_id,
+            internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
+            any_protocol=True if args.any_protocol else None,
+            ata_idle_seconds=args.ata_idle_seconds,
+            ata_standby=args.ata_standby,
+        )
+        if observed_syap is not None:
+            final_values["TC_AIRPORT_SYAP"] = observed_syap
+        if observed_model is not None:
+            final_values["TC_MDNS_DEVICE_MODEL"] = observed_model
+        values.clear()
+        values.update(final_values)
+        write_configure_env_file(env_path, values, persist_password=True)
         command_context.update_fields(
             configure_id=configure_id,
             device_syap=observed_syap,

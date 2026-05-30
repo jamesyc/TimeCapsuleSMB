@@ -23,7 +23,6 @@ from timecapsulesmb.services.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
     OperationContext,
-    render_operation_debug_lines,
 )
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.telemetry import build_device_os_version
@@ -56,31 +55,6 @@ def _mast_acp_output_debug_text(raw_output: str) -> str:
         return raw_output
     omitted = len(raw_output) - MAST_ACP_OUTPUT_DEBUG_LIMIT
     return f"{raw_output[:MAST_ACP_OUTPUT_DEBUG_LIMIT]}...<truncated {omitted} chars>"
-
-
-def render_command_debug_lines(
-    *,
-    command_name: str,
-    stage: str | None,
-    connection: SshConnection | None,
-    values: Mapping[str, str] | None,
-    preflight_error: str | None,
-    finish_fields: Mapping[str, object],
-    probe_state: ProbedDeviceState | None,
-    debug_fields: Mapping[str, object],
-    config: AppConfig | None = None,
-) -> list[str]:
-    return render_operation_debug_lines(
-        operation_name=command_name,
-        stage=stage,
-        connection=connection,
-        values=values,
-        preflight_error=preflight_error,
-        finish_fields=finish_fields,
-        probe_state=probe_state,
-        debug_fields=debug_fields,
-        config=config,
-    )
 
 
 class CommandContext:

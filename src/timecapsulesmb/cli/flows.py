@@ -98,16 +98,17 @@ def request_reboot_and_wait(
     up_timeout_seconds: int = 240,
     reboot_up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
 ) -> bool:
-    request_reboot(connection, command_context)
-
-    return observe_reboot_cycle(
+    result = runtime_service.request_runtime_reboot_and_observe(
         connection,
-        command_context,
-        reboot_no_down_message=reboot_no_down_message,
+        strategy="acp_then_ssh",
+        callbacks=_runtime_callbacks(command_context),
         down_timeout_seconds=down_timeout_seconds,
         up_timeout_seconds=up_timeout_seconds,
-        reboot_up_timeout_message=reboot_up_timeout_message,
+        request_reboot=remote_request_reboot,
+        request_acp_reboot=acp_reboot,
+        wait_for_ssh_state=wait_for_ssh_state_conn,
     )
+    return _reboot_cycle_ok(command_context, result, reboot_no_down_message, reboot_up_timeout_message)
 
 
 def request_reboot(
@@ -135,31 +136,16 @@ def request_deploy_reboot_and_wait(
     up_timeout_seconds: int = 240,
     reboot_up_timeout_message: str = DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
 ) -> bool:
-    request_deploy_reboot(connection, command_context)
-
-    return observe_reboot_cycle(
-        connection,
-        command_context,
-        reboot_no_down_message=reboot_no_down_message,
-        down_timeout_seconds=down_timeout_seconds,
-        up_timeout_seconds=up_timeout_seconds,
-        reboot_up_timeout_message=reboot_up_timeout_message,
-    )
-
-
-def request_deploy_reboot(
-    connection: SshConnection,
-    command_context: CommandContext,
-    *,
-    raise_on_request_error: bool = False,
-) -> None:
-    runtime_service.request_runtime_reboot(
+    result = runtime_service.request_runtime_reboot_and_observe(
         connection,
         strategy="ssh_shutdown_then_reboot",
         callbacks=_runtime_callbacks(command_context),
-        raise_on_request_error=raise_on_request_error,
+        down_timeout_seconds=down_timeout_seconds,
+        up_timeout_seconds=up_timeout_seconds,
         request_reboot=remote_request_reboot,
+        wait_for_ssh_state=wait_for_ssh_state_conn,
     )
+    return _reboot_cycle_ok(command_context, result, reboot_no_down_message, reboot_up_timeout_message)
 
 
 def request_ssh_reboot(
@@ -195,6 +181,15 @@ def observe_reboot_cycle(
         up_timeout_seconds=up_timeout_seconds,
         wait_for_ssh_state=wait_for_ssh_state_conn,
     )
+    return _reboot_cycle_ok(command_context, result, reboot_no_down_message, reboot_up_timeout_message)
+
+
+def _reboot_cycle_ok(
+    command_context: CommandContext,
+    result: runtime_service.RebootCycleResult,
+    reboot_no_down_message: str,
+    reboot_up_timeout_message: str,
+) -> bool:
     if not result.went_down:
         print(reboot_no_down_message)
         command_context.fail_with_error(reboot_no_down_message)

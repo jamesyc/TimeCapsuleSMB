@@ -5,7 +5,12 @@ from pathlib import Path
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.contracts import flash_backup_payload, flash_plan_payload, flash_write_payload
-from timecapsulesmb.app.ops.deploy import request_reboot, request_reboot_and_wait
+from timecapsulesmb.app.ops.common import (
+    load_request_config,
+    request_reboot,
+    request_reboot_and_wait,
+    resolve_request_target,
+)
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.flash import FlashAnalysisError
@@ -13,12 +18,10 @@ from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
     bool_param,
-    config_path,
     optional_bool_param,
     required_path_param,
     string_param,
 )
-from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.flash import (
     WRITE_OPERATIONS,
     FlashTarget,
@@ -31,9 +34,7 @@ from timecapsulesmb.services.flash import (
     write_flash_plan,
 )
 from timecapsulesmb.services.runtime import (
-    load_env_config,
     require_connection_compatibility,
-    resolve_validated_managed_target,
 )
 from timecapsulesmb.transport.errors import TransportError
 
@@ -102,21 +103,11 @@ def _write_reboot_policy(params: dict[str, object], plan_operation: str) -> tupl
 
 
 def _load_flash_config(params: dict[str, object], context: AppOperationContext) -> AppConfig:
-    context.stage("load_config")
-    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
-    context.config = config
-    return config
+    return load_request_config(params, context)
 
 
 def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> FlashTarget:
-    context.stage("resolve_connection")
-    target = resolve_validated_managed_target(
-        config,
-        command_name="flash",
-        profile="flash",
-        include_probe=False,
-    )
-    context.apply_managed_target(target)
+    target = resolve_request_target(config, context, profile="flash", include_probe=False)
     context.stage("check_compatibility")
     try:
         compatibility = require_connection_compatibility(target.connection)

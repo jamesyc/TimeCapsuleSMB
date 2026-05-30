@@ -16,10 +16,16 @@ from timecapsulesmb.app.contracts import (
     uninstall_plan_payload,
     uninstall_result_payload,
 )
+from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
-from timecapsulesmb.app.ops.deploy import (
+from timecapsulesmb.app.ops.common import (
+    load_request_config,
     request_reboot,
     request_reboot_and_wait,
+    resolve_request_connection,
+    resolve_request_target,
+)
+from timecapsulesmb.app.ops.deploy import (
     require_supported_payload,
     verify_runtime,
 )
@@ -53,7 +59,6 @@ from timecapsulesmb.services.app import (
     required_path_param,
     string_param,
 )
-from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
 from timecapsulesmb.services.activation import decide_manual_activation
 from timecapsulesmb.services.maintenance import (
@@ -74,7 +79,6 @@ from timecapsulesmb.services.runtime import (
     load_env_config,
     load_optional_env_config,
     resolve_env_connection,
-    resolve_validated_managed_target,
 )
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
@@ -94,10 +98,8 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
     if dry_run:
         return OperationResult(True, activation_plan_payload(activation_plan_to_jsonable(plan)))
 
-    context.stage("load_config")
-    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
-    context.config = config
-    confirmation_connection = resolve_env_connection(config, allow_empty_password=True)
+    config = load_request_config(params, context)
+    confirmation_connection = resolve_request_connection(config, context, allow_empty_password=True)
     require_confirmation(
         params,
         build_confirmation(
@@ -117,14 +119,7 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
         ),
     )
 
-    context.stage("resolve_managed_target")
-    target = resolve_validated_managed_target(
-        config,
-        command_name=operation,
-        profile="activate",
-        include_probe=True,
-    )
-    context.apply_managed_target(target)
+    target = resolve_request_target(config, context, profile="activate", include_probe=True)
     compatibility = require_supported_payload(target, allow_unsupported=False)
     if not is_netbsd4_payload_family(compatibility.payload_family):
         raise AppOperationError(
@@ -157,12 +152,8 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
     no_reboot = bool_param(params, "no_reboot")
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-    context.stage("load_config")
-    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
-    context.config = config
-    context.stage("resolve_connection")
-    connection = resolve_env_connection(config, allow_empty_password=True)
-    context.connection = connection
+    config = load_request_config(params, context)
+    connection = resolve_request_connection(config, context, allow_empty_password=True)
     if not dry_run:
         presentation_id = "uninstall.no_reboot" if no_reboot else "uninstall.reboot"
         presentation_values = {

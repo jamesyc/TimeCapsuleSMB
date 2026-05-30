@@ -97,23 +97,18 @@ enum OperationParams {
         ataStandby: Int?,
         mountWait: Double
     ) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
-            "dry_run": .bool(true),
-            "no_reboot": .bool(noReboot),
-            "no_wait": .bool(noWait),
-            "nbns_enabled": .bool(nbnsEnabled),
-            "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
-            "any_protocol": .bool(anyProtocol),
-            "debug_logging": .bool(debugLogging),
-            "mount_wait": .number(mountWait)
-        ]
-        params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
-        if let ataStandby {
-            params["ata_standby"] = .number(Double(ataStandby))
-        } else {
-            params["ata_standby"] = .string("")
-        }
-        return params
+        deployParams(
+            dryRun: true,
+            noReboot: noReboot,
+            noWait: noWait,
+            nbnsEnabled: nbnsEnabled,
+            internalShareUseDiskRoot: internalShareUseDiskRoot,
+            anyProtocol: anyProtocol,
+            debugLogging: debugLogging,
+            ataIdleSeconds: ataIdleSeconds,
+            ataStandby: ataStandby,
+            mountWait: mountWait
+        )
     }
 
     static func deployRun(
@@ -127,8 +122,34 @@ enum OperationParams {
         ataStandby: Int?,
         mountWait: Double
     ) -> [String: JSONValue] {
+        deployParams(
+            dryRun: false,
+            noReboot: noReboot,
+            noWait: noWait,
+            nbnsEnabled: nbnsEnabled,
+            internalShareUseDiskRoot: internalShareUseDiskRoot,
+            anyProtocol: anyProtocol,
+            debugLogging: debugLogging,
+            ataIdleSeconds: ataIdleSeconds,
+            ataStandby: ataStandby,
+            mountWait: mountWait
+        )
+    }
+
+    private static func deployParams(
+        dryRun: Bool,
+        noReboot: Bool,
+        noWait: Bool,
+        nbnsEnabled: Bool,
+        internalShareUseDiskRoot: Bool,
+        anyProtocol: Bool,
+        debugLogging: Bool,
+        ataIdleSeconds: Int,
+        ataStandby: Int?,
+        mountWait: Double
+    ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
-            "dry_run": .bool(false),
+            "dry_run": .bool(dryRun),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "nbns_enabled": .bool(nbnsEnabled),
@@ -147,17 +168,16 @@ enum OperationParams {
     }
 
     static func uninstallPlan(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
-            "dry_run": .bool(true),
-            "no_reboot": .bool(noReboot),
-            "no_wait": .bool(noWait),
-            "mount_wait": .number(mountWait)
-        ]
+        uninstallParams(dryRun: true, noReboot: noReboot, noWait: noWait, mountWait: mountWait)
     }
 
     static func uninstallRun(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+        uninstallParams(dryRun: false, noReboot: noReboot, noWait: noWait, mountWait: mountWait)
+    }
+
+    private static func uninstallParams(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
         [
-            "dry_run": .bool(false),
+            "dry_run": .bool(dryRun),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait)
@@ -165,11 +185,15 @@ enum OperationParams {
     }
 
     static func activatePlan() -> [String: JSONValue] {
-        ["dry_run": .bool(true)]
+        activateParams(dryRun: true)
     }
 
     static func activateRun() -> [String: JSONValue] {
-        ["dry_run": .bool(false)]
+        activateParams(dryRun: false)
+    }
+
+    private static func activateParams(dryRun: Bool) -> [String: JSONValue] {
+        ["dry_run": .bool(dryRun)]
     }
 
     static func fsckList(mountWait: Double) -> [String: JSONValue] {
@@ -225,14 +249,11 @@ enum OperationParams {
             "mode": .string(mode.rawValue),
             "force": .bool(force)
         ]
-        let trimmedVersion = firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedVersion.isEmpty {
-            params["firmware_version"] = .string(trimmedVersion)
-        }
-        let trimmedTemplate = firmwareTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedTemplate.isEmpty {
-            params["firmware_template"] = .string(trimmedTemplate)
-        }
+        appendFirmwareSelection(
+            to: &params,
+            firmwareVersion: firmwareVersion,
+            firmwareTemplate: firmwareTemplate
+        )
         return params
     }
 
@@ -256,6 +277,19 @@ enum OperationParams {
         if shouldReboot {
             params["wait_after_reboot"] = .bool(waitAfterReboot)
         }
+        appendFirmwareSelection(
+            to: &params,
+            firmwareVersion: firmwareVersion,
+            firmwareTemplate: firmwareTemplate
+        )
+        return params
+    }
+
+    private static func appendFirmwareSelection(
+        to params: inout [String: JSONValue],
+        firmwareVersion: String,
+        firmwareTemplate: String
+    ) {
         let trimmedVersion = firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedVersion.isEmpty {
             params["firmware_version"] = .string(trimmedVersion)
@@ -264,7 +298,6 @@ enum OperationParams {
         if !trimmedTemplate.isEmpty {
             params["firmware_template"] = .string(trimmedTemplate)
         }
-        return params
     }
 
     private static func repairXattrsParams(path: String, dryRun: Bool, options: RepairXattrsOptions) -> [String: JSONValue] {

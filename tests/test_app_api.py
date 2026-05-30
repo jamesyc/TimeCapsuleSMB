@@ -38,7 +38,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
-from timecapsulesmb.integrations.acp import ACPAuthError
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import STALE_BACKUP_AFTER_WRITE_MESSAGE, require_backup_fresh_for_plan
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError
@@ -387,7 +387,7 @@ class AppApiTests(unittest.TestCase):
         }
         bundle = SimpleNamespace(manifest=manifest)
 
-        with mock.patch("timecapsulesmb.app.ops.flash.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch(
                 "timecapsulesmb.app.ops.flash.require_connection_compatibility",
                 return_value=supported_compatibility("netbsd4be_samba4"),
@@ -1772,9 +1772,9 @@ class AppApiTests(unittest.TestCase):
             kwargs["on_result"](CheckResult("PASS", "smbd is bound to TCP 445", {"port": 445}))
             return [CheckResult("PASS", "smbd is bound to TCP 445", {"port": 445})], False
 
-        with mock.patch("timecapsulesmb.app.ops.doctor.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
-                with mock.patch("timecapsulesmb.app.ops.doctor.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
                     with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
                         rc = service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
 
@@ -1788,9 +1788,9 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
-        with mock.patch("timecapsulesmb.app.ops.doctor.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
-                with mock.patch("timecapsulesmb.app.ops.doctor.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
                     with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", return_value=([], False)) as checks:
                         rc = service.run_api_request(
                             {"operation": "doctor", "params": {"bonjour_timeout": "2.75"}},
@@ -1818,7 +1818,7 @@ class AppApiTests(unittest.TestCase):
             self.assertFalse(config_arg.has_file_value("TC_PASSWORD"))
             return [], False
 
-        with mock.patch("timecapsulesmb.app.ops.doctor.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                 with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
                     rc = service.run_api_request(
@@ -1845,9 +1845,9 @@ class AppApiTests(unittest.TestCase):
             kwargs["on_result"](CheckResult("FAIL", "SMB is not reachable", {"password": "pw"}))
             return [CheckResult("FAIL", "SMB is not reachable", {"password": "pw"})], True
 
-        with mock.patch("timecapsulesmb.app.ops.doctor.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
-                with mock.patch("timecapsulesmb.app.ops.doctor.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
                     with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
                         rc = service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
 
@@ -1869,9 +1869,9 @@ class AppApiTests(unittest.TestCase):
             kwargs["on_result"](result)
             return [result], True
 
-        with mock.patch("timecapsulesmb.app.ops.doctor.load_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
-                with mock.patch("timecapsulesmb.app.ops.doctor.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
                     with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
                         rc = service.run_api_request({"operation": "doctor", "params": {}}, collector.sink)
 
@@ -1902,14 +1902,14 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
             "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
             "TC_ANY_PROTOCOL": "true",
             "TC_DEBUG_LOGGING": "true",
         })):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -1938,8 +1938,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -1966,8 +1966,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -1993,8 +1993,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2028,8 +2028,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2065,8 +2065,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2102,8 +2102,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2141,8 +2141,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2177,8 +2177,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2215,8 +2215,8 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2256,8 +2256,8 @@ class AppApiTests(unittest.TestCase):
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         base_params = {"dry_run": False, "no_reboot": True, "mount_wait": 30}
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2269,8 +2269,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         confirmation_id = first.events_of_type("error")[0]["details"]["confirmation_id"]
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2295,7 +2295,7 @@ class AppApiTests(unittest.TestCase):
     def test_deploy_rejects_boolean_mount_wait_before_remote_connection(self) -> None:
         collector = CollectingSink()
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config") as load_config:
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config") as load_config:
             rc = service.run_api_request(
                 {
                     "operation": "deploy",
@@ -2320,7 +2320,7 @@ class AppApiTests(unittest.TestCase):
         ):
             with self.subTest(field=field):
                 collector = CollectingSink()
-                with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config") as load_config:
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config") as load_config:
                     rc = service.run_api_request(
                         {
                             "operation": "deploy",
@@ -2371,8 +2371,8 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2382,7 +2382,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions") as remote_actions:
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn") as wait:
+                                                    with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
                                                         with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=managed_runtime_probe()) as verify_runtime:
                                                             with mock.patch("timecapsulesmb.app.ops.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime:
                                                                 rc = service.run_api_request(
@@ -2442,8 +2442,8 @@ class AppApiTests(unittest.TestCase):
                 if on_uploading is not None:
                     on_uploading(transfer)
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2502,8 +2502,8 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2513,8 +2513,8 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
-                                                        with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn") as wait:
+                                                    with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
+                                                        with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
                                                             with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
                                                                 rc = service.run_api_request(
                                                                     {
@@ -2561,8 +2561,8 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2572,7 +2572,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
+                                                    with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
                                                         with mock.patch("timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn") as autostart_probe:
                                                             rc = service.run_api_request(
                                                                 {
@@ -2616,8 +2616,8 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2627,8 +2627,8 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot:
-                                                        with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn") as wait:
+                                                    with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot:
+                                                        with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
                                                             with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
                                                                 rc = service.run_api_request(
                                                                     {
@@ -2648,15 +2648,15 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(collector.events_of_type("result"), [])
 
     def test_deploy_request_reboot_and_wait_records_lifecycle_fields(self) -> None:
-        from timecapsulesmb.app.ops import deploy as deploy_ops
+        from timecapsulesmb.app.ops import common as common_ops
 
         collector = CollectingSink()
         context = AppOperationContext("deploy", collector.sink)
         context.update_fields(reboot_was_attempted=False, device_came_back_after_reboot=False)
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
-            with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn", side_effect=[True, True]) as wait:
-                deploy_ops.request_reboot_and_wait(
+        with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
+            with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn", side_effect=[True, True]) as wait:
+                common_ops.request_reboot_and_wait(
                     context,
                     connection,
                     strategy="ssh_shutdown_then_reboot",
@@ -2727,17 +2727,22 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("remote_network_target_ip_matches=[]", error)
 
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
-        from timecapsulesmb.app.ops import deploy as deploy_ops
+        from timecapsulesmb.app.ops import common as common_ops
 
         collector = CollectingSink()
         context = AppOperationContext("deploy", collector.sink)
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch(
-            "timecapsulesmb.app.ops.deploy.remote_request_reboot",
+            "timecapsulesmb.app.ops.common.remote_request_reboot",
             side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
         ):
             with self.assertRaises(AppOperationError) as raised:
-                deploy_ops.request_ssh_reboot(context, connection, raise_on_request_error=True)
+                common_ops.request_reboot(
+                    context,
+                    connection,
+                    strategy="ssh",
+                    raise_on_request_error=True,
+                )
 
         self.assertEqual(raised.exception.code, "remote_error")
         self.assertIn("Timed out waiting for ssh command to finish: reboot", str(raised.exception))
@@ -2766,8 +2771,8 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.app.ops.deploy.resolve_payload_artifacts", return_value=artifacts):
@@ -2801,8 +2806,8 @@ class AppApiTests(unittest.TestCase):
     def test_activate_requires_explicit_confirmation(self) -> None:
         collector = CollectingSink()
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_validated_managed_target") as resolve_target:
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target") as resolve_target:
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn") as runtime_probe:
                     with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
                         rc = service.run_api_request({"operation": "activate", "params": {}}, collector.sink)
@@ -2827,8 +2832,8 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=managed_runtime_probe(True)):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
                         rc = service.run_api_request(
@@ -2847,8 +2852,8 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection") as resolve_connection:
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection") as resolve_connection:
                 with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
                     rc = service.run_api_request({"operation": "uninstall", "params": {}}, collector.sink)
 
@@ -2869,8 +2874,8 @@ class AppApiTests(unittest.TestCase):
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection") as resolve_connection:
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection") as resolve_connection:
                 with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
                     rc = service.run_api_request(
                         {"operation": "uninstall", "params": {"no_reboot": True}},
@@ -2893,8 +2898,8 @@ class AppApiTests(unittest.TestCase):
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn") as read_mast:
                     rc = service.run_api_request(
                         {"operation": "uninstall", "params": {}},
@@ -2910,8 +2915,8 @@ class AppApiTests(unittest.TestCase):
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
                     rc = service.run_api_request(
                         {"operation": "uninstall", "params": {"dry_run": True}},
@@ -2930,8 +2935,8 @@ class AppApiTests(unittest.TestCase):
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
                     rc = service.run_api_request(
                         {"operation": "uninstall", "params": {"dry_run": True, "no_wait": True}},
@@ -2966,21 +2971,22 @@ class AppApiTests(unittest.TestCase):
             },
         )
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
                 with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn", return_value=[]):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
                         with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload"):
-                            with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
-                                with mock.patch("timecapsulesmb.app.ops.maintenance.wait_for_ssh_state_conn") as wait:
-                                    with mock.patch("timecapsulesmb.app.ops.maintenance.verify_post_uninstall") as verify:
-                                        rc = service.run_api_request(
-                                            {
-                                                "operation": "uninstall",
-                                                "params": params,
-                                            },
-                                            collector.sink,
-                                        )
+                            with mock.patch("timecapsulesmb.app.ops.common.acp_reboot", side_effect=ACPError("ACP unavailable")):
+                                with mock.patch("timecapsulesmb.app.ops.common.remote_request_reboot") as reboot:
+                                    with mock.patch("timecapsulesmb.app.ops.common.wait_for_ssh_state_conn") as wait:
+                                        with mock.patch("timecapsulesmb.app.ops.maintenance.verify_post_uninstall") as verify:
+                                            rc = service.run_api_request(
+                                                {
+                                                    "operation": "uninstall",
+                                                    "params": params,
+                                                },
+                                                collector.sink,
+                                            )
 
         self.assertEqual(rc, 0)
         self.assertEqual(mounted_mock.call_args.kwargs["wait_seconds"], 13)

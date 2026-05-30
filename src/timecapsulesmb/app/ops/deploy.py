@@ -11,7 +11,6 @@ from timecapsulesmb.app.confirmations import build_confirmation, require_confirm
 from timecapsulesmb.core.config import (
     DEFAULTS,
     MANAGED_PAYLOAD_DIR_NAME,
-    AppConfig,
     airport_family_display_name_from_identity,
     parse_bool,
 )
@@ -24,7 +23,6 @@ from timecapsulesmb.deploy.boot_assets import boot_asset_path
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable
 from timecapsulesmb.deploy.executor import (
     flush_remote_filesystem_writes,
-    remote_request_reboot,
     run_remote_actions,
     upload_deployment_payload,
 )
@@ -58,7 +56,6 @@ from timecapsulesmb.device.probe import (
     read_remote_network_diagnostics_conn,
     read_runtime_log_tails_conn,
     runtime_startup_failure_debug_fields,
-    wait_for_ssh_state_conn,
 )
 from timecapsulesmb.device.compat import payload_family_description
 from timecapsulesmb.device.storage import (
@@ -66,7 +63,13 @@ from timecapsulesmb.device.storage import (
     verify_payload_home_conn,
     wait_for_mast_volumes_conn,
 )
-from timecapsulesmb.integrations.acp import reboot as acp_reboot
+from timecapsulesmb.app.ops.common import (
+    load_request_config,
+    request_reboot,
+    request_reboot_and_wait,
+    resolve_request_target,
+    runtime_callbacks,
+)
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -75,10 +78,8 @@ from timecapsulesmb.services.app import (
     int_param,
     optional_bool_param,
 )
-from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-    DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
     activation_complete_message,
     deploy_artifact_failures,
     deploy_upload_stage,
@@ -90,10 +91,7 @@ from timecapsulesmb.services.deploy import (
     select_deploy_payload_home,
 )
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
-from timecapsulesmb.services.runtime import ManagedTargetState, load_env_config, resolve_validated_managed_target
-from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
-from timecapsulesmb.services import runtime as runtime_service
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.transport.ssh import SshConnection
 
 
 @dataclass(frozen=True)
@@ -170,27 +168,6 @@ def confirmation_presentation_for_startup_mode(
     )
 
 
-def load_config_and_target(
-    context: AppOperationContext,
-    params: dict[str, object],
-    *,
-    profile: str,
-    include_probe: bool,
-) -> tuple[AppConfig, ManagedTargetState]:
-    context.stage("load_config")
-    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
-    context.config = config
-    context.stage("resolve_managed_target")
-    target = resolve_validated_managed_target(
-        config,
-        command_name=context.operation,
-        profile=profile,
-        include_probe=include_probe,
-    )
-    context.apply_managed_target(target)
-    return config, target
-
-
 def deploy_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     operation = "deploy"
     nbns_enabled = bool_param(params, "nbns_enabled", True)
@@ -212,7 +189,8 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         device_came_back_after_reboot=False,
     )
 
-    config, target = load_config_and_target(context, params, profile="deploy", include_probe=True)
+    config = load_request_config(params, context)
+    target = resolve_request_target(config, context, profile="deploy", include_probe=True)
     connection = target.connection
     app_paths = resolve_app_paths(config_path=config_path(params))
     internal_share_use_disk_root = bool_param(
@@ -306,7 +284,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             dry_run=dry_run,
             payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
             mount_wait_seconds=mount_wait,
-            callbacks=_runtime_callbacks(context),
+            callbacks=runtime_callbacks(context),
             wait_for_mast_volumes=wait_for_mast_volumes_conn,
             select_payload_home=select_payload_home_with_diagnostics_conn,
         )
@@ -571,73 +549,3 @@ def verify_runtime(
             f"{failure_message.rstrip()} {verification.detail.strip()}".strip(),
             code="remote_error",
         )
-
-
-def request_reboot_and_wait(
-    context: AppOperationContext,
-    connection: SshConnection,
-    *,
-    strategy: str,
-    reboot_no_down_message: str,
-    reboot_up_timeout_message: str = DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
-    down_timeout_seconds: int = 60,
-    up_timeout_seconds: int = 240,
-) -> None:
-    request_reboot(context, connection, strategy=strategy)
-
-    result = runtime_service.observe_runtime_reboot_cycle(
-        connection,
-        callbacks=_runtime_callbacks(context),
-        down_timeout_seconds=down_timeout_seconds,
-        up_timeout_seconds=up_timeout_seconds,
-        wait_for_ssh_state=wait_for_ssh_state_conn,
-    )
-    if not result.went_down:
-        raise AppOperationError(reboot_no_down_message, code="remote_error")
-    if not result.came_back_up:
-        raise AppOperationError(reboot_up_timeout_message, code="remote_error")
-
-
-def request_reboot(
-    context: AppOperationContext,
-    connection: SshConnection,
-    *,
-    strategy: str,
-    raise_on_request_error: bool = False,
-) -> None:
-    try:
-        runtime_service.request_runtime_reboot(
-            connection,
-            strategy=strategy,
-            callbacks=_runtime_callbacks(context),
-            raise_on_request_error=raise_on_request_error,
-            request_reboot=remote_request_reboot,
-            request_acp_reboot=acp_reboot,
-        )
-    except SshCommandTimeout as exc:
-        raise AppOperationError(f"SSH reboot request timed out: {exc}", code="remote_error") from exc
-    except SshError as exc:
-        raise AppOperationError(f"SSH reboot request failed: {exc}", code="remote_error") from exc
-
-
-def request_ssh_reboot(
-    context: AppOperationContext,
-    connection: SshConnection,
-    *,
-    raise_on_request_error: bool = False,
-) -> None:
-    request_reboot(
-        context,
-        connection,
-        strategy="ssh",
-        raise_on_request_error=raise_on_request_error,
-    )
-
-
-def _runtime_callbacks(context: AppOperationContext) -> RuntimeOperationCallbacks:
-    return RuntimeOperationCallbacks(
-        set_stage=context.stage,
-        log=context.log,
-        add_debug_fields=context.add_debug_fields,
-        update_fields=context.update_fields,
-    )

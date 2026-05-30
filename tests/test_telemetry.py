@@ -21,8 +21,8 @@ from timecapsulesmb.cli.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
     CommandContext,
-    render_command_debug_lines,
 )
+from timecapsulesmb.services.context import render_operation_debug_lines
 from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
@@ -689,7 +689,7 @@ class TelemetryTests(unittest.TestCase):
 
         self.assertEqual(lines, ["selected_net_iface=bridge0"])
 
-    def test_render_command_debug_lines_combines_context_sources(self) -> None:
+    def test_render_operation_debug_lines_combines_context_sources(self) -> None:
         state = ProbedDeviceState(
             probe_result=ProbeResult(
                 ssh_port_reachable=True,
@@ -702,8 +702,8 @@ class TelemetryTests(unittest.TestCase):
             ),
             compatibility=None,
         )
-        lines = render_command_debug_lines(
-            command_name="configure",
+        lines = render_operation_debug_lines(
+            operation_name="configure",
             stage="ssh_probe",
             connection=SshConnection("root@192.168.1.217", "secret", "-o ProxyJump=bastion"),
             values={
@@ -743,9 +743,9 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn("reboot_was_attempted=true", lines)
         self.assertNotIn("device_model=TimeCapsule8,119", lines)
 
-    def test_render_command_debug_lines_uses_values_when_connection_is_missing(self) -> None:
-        lines = render_command_debug_lines(
-            command_name="doctor",
+    def test_render_operation_debug_lines_uses_values_when_connection_is_missing(self) -> None:
+        lines = render_operation_debug_lines(
+            operation_name="doctor",
             stage=None,
             connection=None,
             values={"TC_HOST": "root@10.0.0.1", "TC_SSH_OPTS": "-o ConnectTimeout=5"},
@@ -758,11 +758,11 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("host=root@10.0.0.1", lines)
         self.assertIn("ssh_opts=-o ConnectTimeout=5", lines)
 
-    def test_render_command_debug_lines_includes_env_path_when_config_is_available(self) -> None:
+    def test_render_operation_debug_lines_includes_env_path_when_config_is_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
-            lines = render_command_debug_lines(
-                command_name="deploy",
+            lines = render_operation_debug_lines(
+                operation_name="deploy",
                 stage="validate_config",
                 connection=None,
                 values={},

@@ -178,7 +178,7 @@ class ReachabilityTests(unittest.TestCase):
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
 
-        with mock.patch("timecapsulesmb.app.ops.reachability.load_optional_env_config", return_value=config):
+        with mock.patch("timecapsulesmb.app.ops.common.load_optional_env_config", return_value=config):
             with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
                 with mock.patch(
                     "timecapsulesmb.services.reachability.subprocess.run",

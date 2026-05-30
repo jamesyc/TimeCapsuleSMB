@@ -350,6 +350,38 @@ def _request_reboot_via_ssh(
     _call_log(callbacks, "SSH reboot requested.")
 
 
+def request_runtime_reboot_and_observe(
+    connection: SshConnection,
+    *,
+    strategy: str,
+    callbacks: RuntimeOperationCallbacks | None = None,
+    progress_log: Callable[[str], None] | None = None,
+    raise_on_request_error: bool = False,
+    down_timeout_seconds: int,
+    up_timeout_seconds: int,
+    request_reboot: Callable[[SshConnection], None] = remote_request_reboot,
+    request_acp_reboot: Callable[..., object] = acp_reboot,
+    wait_for_ssh_state: Callable[..., bool] = wait_for_ssh_state_conn,
+) -> RebootCycleResult:
+    callbacks = callbacks or RuntimeOperationCallbacks()
+    request_runtime_reboot(
+        connection,
+        strategy=strategy,
+        callbacks=callbacks,
+        progress_log=progress_log,
+        raise_on_request_error=raise_on_request_error,
+        request_reboot=request_reboot,
+        request_acp_reboot=request_acp_reboot,
+    )
+    return observe_runtime_reboot_cycle(
+        connection,
+        callbacks=callbacks,
+        down_timeout_seconds=down_timeout_seconds,
+        up_timeout_seconds=up_timeout_seconds,
+        wait_for_ssh_state=wait_for_ssh_state,
+    )
+
+
 def observe_runtime_reboot_cycle(
     connection: SshConnection,
     *,

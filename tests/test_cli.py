@@ -746,7 +746,7 @@ class CliTests(unittest.TestCase):
         mocks = SimpleNamespace()
         raised = None
 
-        def capture_write_env(_path, values):
+        def capture_write_env(_path, values, **_kwargs):
             written_values.update(values)
 
         with ExitStack() as stack:
@@ -792,7 +792,7 @@ class CliTests(unittest.TestCase):
                 mocks.confirm = stack.enter_context(mock.patch("timecapsulesmb.cli.configure.confirm", return_value=confirm))
             mocks.write_env_file = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.configure.write_env_file",
+                    "timecapsulesmb.cli.configure.write_configure_env_file",
                     side_effect=write_side_effect if write_side_effect is not None else capture_write_env,
                 )
             )
