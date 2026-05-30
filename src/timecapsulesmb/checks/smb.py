@@ -32,6 +32,25 @@ class SmbClientTarget:
 SmbClientTargetInput = Union[str, SmbClientTarget]
 
 
+def parse_smbclient_disk_shares(stdout: str) -> list[str]:
+    shares: list[str] = []
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            parts = line.split("|", 2)
+            if len(parts) >= 2 and parts[0] == "Disk":
+                share_name = parts[1].strip()
+            else:
+                continue
+        else:
+            share_name = line
+        if share_name and share_name != "IPC$" and share_name not in shares:
+            shares.append(share_name)
+    return shares
+
+
 def _normalize_smb_client_target(target: SmbClientTargetInput) -> SmbClientTarget:
     if isinstance(target, SmbClientTarget):
         return target
@@ -246,13 +265,15 @@ def check_authenticated_smb_listing(
     if stderr_tail is not None:
         attempt["stderr_tail"] = stderr_tail
     if proc.returncode == 0:
+        disk_shares = parse_smbclient_disk_shares(proc.stdout)
+        attempt["disk_shares"] = disk_shares
         if expected_share_name is not None and expected_share_name not in proc.stdout:
             attempt["outcome"] = "missing_expected_share"
             attempt["expected_share"] = expected_share_name
             return CheckResult(
                 "FAIL",
                 f"authenticated SMB listing did not include expected share {expected_share_name!r} on {target.display}",
-                {"attempts": [attempt]},
+                {"attempts": [attempt], "disk_shares": disk_shares},
             )
         attempt["outcome"] = "pass"
         if expected_share_name is not None:
@@ -264,6 +285,7 @@ def check_authenticated_smb_listing(
             {
                 "server": target.server,
                 "ip_address": target.ip_address,
+                "disk_shares": disk_shares,
                 "attempts": [attempt],
             },
         )
@@ -320,6 +342,8 @@ def try_authenticated_smb_listing(
             if stderr_tail is not None:
                 attempt["stderr_tail"] = stderr_tail
             if proc.returncode == 0:
+                disk_shares = parse_smbclient_disk_shares(proc.stdout)
+                attempt["disk_shares"] = disk_shares
                 if expected_share_name is not None and expected_share_name not in proc.stdout:
                     attempt["outcome"] = "missing_expected_share"
                     attempt["expected_share"] = expected_share_name
@@ -337,6 +361,7 @@ def try_authenticated_smb_listing(
                     {
                         "server": target.server,
                         "ip_address": target.ip_address,
+                        "disk_shares": disk_shares,
                         "attempts": attempts,
                     },
                 )

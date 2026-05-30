@@ -42,6 +42,7 @@ from timecapsulesmb.checks.smb import (
     SmbClientTarget,
     check_authenticated_smb_file_ops_detailed,
     check_authenticated_smb_listing,
+    parse_smbclient_disk_shares,
     try_authenticated_smb_listing,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
@@ -78,8 +79,8 @@ DEFAULT_ACTIVE_SMB_CONF = """[global]
 
 
 class CheckTests(unittest.TestCase):
-    def smb_listing_result(self, server: str = "timecapsulesamba4.local") -> CheckResult:
-        return CheckResult("PASS", "listing ok", {"server": server})
+    def smb_listing_result(self, server: str = "timecapsulesamba4.local", disk_shares: list[str] | None = None) -> CheckResult:
+        return CheckResult("PASS", "listing ok", {"server": server, "disk_shares": ["Data"] if disk_shares is None else disk_shares})
 
     def doctor_config(self, values: dict[str, str], *, exists: bool = True) -> AppConfig:
         return AppConfig.from_values(
@@ -1973,7 +1974,6 @@ class CheckTests(unittest.TestCase):
             "admin",
             "pw",
             "127.0.0.1",
-            expected_share_name="Data",
             port=1445,
             retry_delays=(10, 15),
         )
@@ -2322,7 +2322,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("resolved _smb._tcp instance 'Home' to home.local:445", pass_messages)
         self.assertIn("resolved Bonjour host home.local to 10.0.1.1", pass_messages)
 
-    def test_run_doctor_checks_passes_expected_share_to_listing(self) -> None:
+    def test_run_doctor_checks_lists_shares_before_selecting_active_file_ops_share(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -2353,12 +2353,12 @@ class CheckTests(unittest.TestCase):
                                         return_value=self.runtime_identity_from_values(values),
                                     ):
                                         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
-                                            run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+                                            results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
         listing_mock.assert_called_once_with(
             "admin",
             "pw",
             ["timecapsulesamba4.local", "10.0.0.2"],
-            expected_share_name="Data",
             port=445,
             retry_delays=(10, 15),
         )
@@ -2369,6 +2369,117 @@ class CheckTests(unittest.TestCase):
             "Data",
             port=445,
         )
+        self.assertTrue(any(result.status == "PASS" and "includes active share 'Data'" in result.message for result in results))
+
+    def test_run_doctor_checks_fails_when_active_share_missing_from_smb_listing(self) -> None:
+        listing_mock = mock.Mock(return_value=self.smb_listing_result(disk_shares=["Public"]))
+        file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            skip_bonjour=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertTrue(
+            any(
+                result.status == "FAIL"
+                and "authenticated SMB listing did not include any active Samba share" in result.message
+                and "Data" in result.message
+                and "Public" in result.message
+                for result in run.results
+            )
+        )
+        file_ops_mock.assert_not_called()
+
+    def test_run_doctor_checks_skip_ssh_uses_listed_smb_share_for_file_ops(self) -> None:
+        listing_mock = mock.Mock(return_value=self.smb_listing_result("10.0.0.2", disk_shares=["Public"]))
+        file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            skip_ssh=True,
+            skip_bonjour=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertTrue(any(result.status == "INFO" and "active Samba share comparison skipped; SSH check skipped" in result.message for result in run.results))
+        listing_mock.assert_called_once_with(
+            "admin",
+            "pw",
+            ["10.0.0.2"],
+            port=445,
+            retry_delays=(10, 15),
+        )
+        file_ops_mock.assert_called_once_with(
+            "admin",
+            "pw",
+            "10.0.0.2",
+            "Public",
+            port=445,
+        )
+
+    def test_run_doctor_checks_skip_ssh_fails_when_smb_listing_has_no_disk_shares(self) -> None:
+        listing_mock = mock.Mock(return_value=self.smb_listing_result(disk_shares=[]))
+        file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            skip_ssh=True,
+            skip_bonjour=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertTrue(any(result.status == "FAIL" and "no disk shares were advertised" in result.message for result in run.results))
+        file_ops_mock.assert_not_called()
+
+    def test_run_doctor_checks_ssh_ok_skips_authenticated_smb_when_requested(self) -> None:
+        listing_mock = mock.Mock(return_value=self.smb_listing_result())
+        file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        listing_mock.assert_not_called()
+        file_ops_mock.assert_not_called()
+
+    def test_run_doctor_checks_skip_ssh_and_skip_smb_runs_no_authenticated_smb(self) -> None:
+        listing_mock = mock.Mock(return_value=self.smb_listing_result())
+        file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            skip_ssh=True,
+            skip_bonjour=True,
+            skip_smb=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        listing_mock.assert_not_called()
+        file_ops_mock.assert_not_called()
 
     def test_run_doctor_checks_ignores_legacy_mdns_host_label_for_smb_targets(self) -> None:
         values = {
@@ -2432,6 +2543,18 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "PASS")
         self.assertIn("listing works", result.message)
         self.assertEqual(result.details["server"], "server.local")
+        self.assertEqual(result.details["disk_shares"], ["Data", "Public"])
+
+    def test_parse_smbclient_disk_shares_uses_machine_listing_types(self) -> None:
+        output = "\n".join([
+            "Disk|Data|Main storage",
+            "IPC|IPC$|IPC Service",
+            "Printer|lp|Printer",
+            "Disk|Archive Data|",
+            "Disk|Data|Duplicate",
+        ])
+
+        self.assertEqual(parse_smbclient_disk_shares(output), ["Data", "Archive Data"])
 
     def test_try_authenticated_smb_listing_falls_back_to_second_server_when_first_times_out(self) -> None:
         proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
@@ -2634,7 +2757,7 @@ class CheckTests(unittest.TestCase):
             debug_fields["authenticated_smb_listing_servers"],
             ["timecapsulesamba4.local", "10.0.0.2"],
         )
-        self.assertEqual(debug_fields["authenticated_smb_listing_expected_share"], "Data")
+        self.assertEqual(debug_fields["authenticated_smb_listing_active_shares"], ["Data"])
         self.assertEqual(debug_fields["authenticated_smb_listing_attempts"], listing_attempts)
 
     def test_run_doctor_checks_retries_host_unreachable_smbclient_through_ssh_tunnel(self) -> None:
@@ -3179,6 +3302,7 @@ class CheckTests(unittest.TestCase):
             {
                 "server": "timecapsulesamba4.local",
                 "ip_address": "fd00::2",
+                "disk_shares": ["Data"],
                 "attempts": [],
             },
         )

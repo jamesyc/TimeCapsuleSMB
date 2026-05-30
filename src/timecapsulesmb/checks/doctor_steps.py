@@ -516,11 +516,46 @@ def _add_bonjour_results(
     )
 
 
-def _doctor_share_name(active_smb_conf: str | None) -> str:
-    active_share_names = parse_active_share_names(active_smb_conf or "")
+def _listing_disk_shares(listing_result: CheckResult) -> list[str]:
+    value = listing_result.details.get("disk_shares")
+    if not isinstance(value, list):
+        return []
+    shares: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item and item not in shares:
+            shares.append(item)
+    return shares
+
+
+def _select_smb_file_ops_share(
+    listing_result: CheckResult,
+    active_share_names: list[str],
+    active_smb_conf_reason: str,
+    add_result: Callable[[CheckResult], None],
+) -> str | None:
+    disk_shares = _listing_disk_shares(listing_result)
     if active_share_names:
-        return active_share_names[0]
-    raise RuntimeError("could not determine active Samba share name")
+        for active_share_name in active_share_names:
+            if active_share_name in disk_shares:
+                add_result(CheckResult("PASS", f"authenticated SMB listing includes active share {active_share_name!r}"))
+                return active_share_name
+        expected = ", ".join(active_share_names)
+        listed = ", ".join(disk_shares) if disk_shares else "none"
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"authenticated SMB listing did not include any active Samba share; expected one of: {expected}; listed disk shares: {listed}",
+            )
+        )
+        return None
+
+    if not disk_shares:
+        add_result(CheckResult("FAIL", "authenticated SMB listing worked, but no disk shares were advertised"))
+        return None
+
+    reason = active_smb_conf_reason or "active smb.conf did not list share names"
+    add_result(CheckResult("INFO", f"active Samba share comparison skipped; {reason}"))
+    return disk_shares[0]
 
 
 def _nbns_family_targets(network_plan: NetworkCheckPlan | None) -> tuple[NetworkFamilyPlan, ...]:
@@ -661,7 +696,8 @@ def _add_tunneled_authenticated_smb_results(
     *,
     host: str,
     smb_password: str,
-    share_name: str,
+    active_share_names: list[str],
+    active_smb_conf_reason: str,
     remote_port: int,
     debug_prefix: str,
     debug_fields: dict[str, object] | None,
@@ -670,7 +706,7 @@ def _add_tunneled_authenticated_smb_results(
     local_port = find_free_local_port()
     if debug_fields is not None:
         debug_fields[f"{debug_prefix}_listing_servers"] = ["127.0.0.1"]
-        debug_fields[f"{debug_prefix}_listing_expected_share"] = share_name
+        debug_fields[f"{debug_prefix}_listing_active_shares"] = active_share_names
     try:
         with ssh_local_forward(
             connection,
@@ -682,7 +718,6 @@ def _add_tunneled_authenticated_smb_results(
                 DEFAULT_SAMBA_AUTH_USER,
                 smb_password,
                 "127.0.0.1",
-                expected_share_name=share_name,
                 port=local_port,
                 retry_delays=AUTHENTICATED_SMB_LISTING_RETRY_DELAYS,
             )
@@ -690,6 +725,14 @@ def _add_tunneled_authenticated_smb_results(
                 debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
             add_result(listing_result)
             if listing_result.status != "PASS":
+                return False
+            share_name = _select_smb_file_ops_share(
+                listing_result,
+                active_share_names,
+                active_smb_conf_reason,
+                add_result,
+            )
+            if share_name is None:
                 return False
 
             file_ops_ok = True
@@ -719,21 +762,19 @@ def _add_authenticated_smb_results(
     smb_password: str,
     proxied_ssh: bool,
     active_smb_conf: str | None,
+    active_smb_conf_reason: str,
     network_plan: NetworkCheckPlan | None,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
-    try:
-        share_name = _doctor_share_name(active_smb_conf)
-    except RuntimeError as exc:
-        add_result(CheckResult("FAIL", str(exc)))
-        return
+    active_share_names = parse_active_share_names(active_smb_conf or "")
     if proxied_ssh:
         _add_tunneled_authenticated_smb_results(
             connection,
             host=host,
             smb_password=smb_password,
-            share_name=share_name,
+            active_share_names=active_share_names,
+            active_smb_conf_reason=active_smb_conf_reason,
             remote_port=445,
             debug_prefix="authenticated_smb",
             debug_fields=debug_fields,
@@ -744,12 +785,11 @@ def _add_authenticated_smb_results(
     smb_servers = _doctor_smb_client_targets(config, bonjour_target, runtime_naming_identity, network_plan)
     if debug_fields is not None:
         debug_fields["authenticated_smb_listing_servers"] = [_smb_client_target_debug(target) for target in smb_servers]
-        debug_fields["authenticated_smb_listing_expected_share"] = share_name
+        debug_fields["authenticated_smb_listing_active_shares"] = active_share_names
     listing_result = check_authenticated_smb_listing(
         DEFAULT_SAMBA_AUTH_USER,
         smb_password,
         smb_servers,
-        expected_share_name=share_name,
         port=445,
         retry_delays=AUTHENTICATED_SMB_LISTING_RETRY_DELAYS,
     )
@@ -768,7 +808,8 @@ def _add_authenticated_smb_results(
                 connection,
                 host=host,
                 smb_password=smb_password,
-                share_name=share_name,
+                active_share_names=active_share_names,
+                active_smb_conf_reason=active_smb_conf_reason,
                 remote_port=445,
                 debug_prefix="authenticated_smb_tunnel",
                 debug_fields=debug_fields,
@@ -778,6 +819,14 @@ def _add_authenticated_smb_results(
         add_result(listing_result)
         return
     add_result(listing_result)
+    share_name = _select_smb_file_ops_share(
+        listing_result,
+        active_share_names,
+        active_smb_conf_reason,
+        add_result,
+    )
+    if share_name is None:
+        return
 
     smb_server = listing_result.details.get("server")
     if not isinstance(smb_server, str) or not smb_server:
@@ -1190,6 +1239,7 @@ def _doctor_check_authenticated_smb(
         smb_password=target.smb_password,
         proxied_ssh=target.proxied_ssh,
         active_smb_conf=smb_config.text,
+        active_smb_conf_reason=smb_config.reason,
         network_plan=network_plan.plan,
         debug_fields=sink.debug_fields,
         add_result=sink.add,

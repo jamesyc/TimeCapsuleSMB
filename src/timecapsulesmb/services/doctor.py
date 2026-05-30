@@ -113,7 +113,8 @@ def _authenticated_smb_listing_passed(debug_fields: Mapping[str, object]) -> boo
     for attempt in _as_sequence(_mapping_value(debug_fields, "authenticated_smb_listing_attempts")):
         outcome = _mapping_value(attempt, "outcome")
         expected_share_found = _mapping_value(attempt, "expected_share_found")
-        if outcome == "pass" and expected_share_found is True:
+        disk_shares = _as_sequence(_mapping_value(attempt, "disk_shares"))
+        if outcome == "pass" and (expected_share_found is True or disk_shares):
             return True
     return False
 
