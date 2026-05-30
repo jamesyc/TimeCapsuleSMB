@@ -2051,6 +2051,28 @@ static int TC_UNUSED extract_cmd_from_ieee1284_device_id(char *out,
     return -1;
 }
 
+static int TC_UNUSED sanitize_usb_printer_device_id_transfer(unsigned char *buf,
+                                                             size_t buf_len,
+                                                             int transferred_len,
+                                                             int *actual_len) {
+    if (buf == NULL || actual_len == NULL) {
+        return -1;
+    }
+    *actual_len = 0;
+    if (transferred_len < 0 || (size_t)transferred_len > buf_len) {
+        memset(buf, 0, buf_len);
+        return -1;
+    }
+    if ((size_t)transferred_len < buf_len) {
+        memset(buf + transferred_len, 0, buf_len - (size_t)transferred_len);
+    }
+    if (transferred_len <= 2) {
+        return -1;
+    }
+    *actual_len = transferred_len;
+    return 0;
+}
+
 #if defined(__NetBSD__)
 static int usb_device_info_has_ulpt(const struct usb_device_info *info) {
     size_t i;
@@ -2128,15 +2150,7 @@ static int query_usb_printer_device_id(int fd,
             request.ucr_data = buf;
             request.ucr_flags = USBD_SHORT_XFER_OK;
             if (ioctl(fd, USB_REQUEST, &request) == 0) {
-                size_t reported_len;
-
-                if (request.ucr_actlen > 2) {
-                    *actual_len = request.ucr_actlen;
-                    return 0;
-                }
-                reported_len = ((size_t)buf[0] << 8) | (size_t)buf[1];
-                if (reported_len > 2 && reported_len <= buf_len) {
-                    *actual_len = (int)reported_len;
+                if (sanitize_usb_printer_device_id_transfer(buf, buf_len, request.ucr_actlen, actual_len) == 0) {
                     return 0;
                 }
             }
@@ -4766,8 +4780,8 @@ static int send_announcement_any(int sockfd,
     } else {
         size_t before_printer_off = off;
         int before_printer_answers = answers;
-        size_t before_airport_off = off;
-        int before_airport_answers = answers;
+        size_t before_airport_off;
+        int before_airport_answers;
         if (add_pdl_datastream_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
             off = before_printer_off;
             answers = before_printer_answers;

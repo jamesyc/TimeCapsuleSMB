@@ -2515,6 +2515,58 @@ int main(void) {
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "BJL,BJRaster3,BSCCe,IVEC,IVECPLI")
 
+    def test_mdns_advertiser_rejects_short_usb_device_id_transfer(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+int main(void) {
+    unsigned char buf[64];
+    int actual_len = 99;
+
+    memset(buf, 'X', sizeof(buf));
+    buf[0] = 0;
+    buf[1] = 32;
+    memcpy(buf + 2, "CMD:LEAK;", 9);
+
+    if (sanitize_usb_printer_device_id_transfer(buf, sizeof(buf), 2, &actual_len) == 0) {
+        return 1;
+    }
+    if (actual_len != 0) {
+        return 2;
+    }
+    if (buf[0] != 0 || buf[1] != 32 || buf[2] != 0 || buf[10] != 0 || buf[63] != 0) {
+        return 3;
+    }
+
+    memset(buf, 'Y', sizeof(buf));
+    if (sanitize_usb_printer_device_id_transfer(buf, sizeof(buf), 8, &actual_len) != 0) {
+        return 4;
+    }
+    if (actual_len != 8 || buf[7] != 'Y' || buf[8] != 0 || buf[63] != 0) {
+        return 5;
+    }
+
+    memset(buf, 'Z', sizeof(buf));
+    if (sanitize_usb_printer_device_id_transfer(buf, sizeof(buf), 65, &actual_len) == 0) {
+        return 6;
+    }
+    if (buf[0] != 0 || buf[63] != 0) {
+        return 7;
+    }
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_usb_device_id_short_transfer")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
