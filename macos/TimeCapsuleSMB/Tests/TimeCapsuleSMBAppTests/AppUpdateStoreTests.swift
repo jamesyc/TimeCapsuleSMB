@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -20,6 +21,39 @@ final class AppUpdateStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.map(\.operation), ["version-check"])
         XCTAssertEqual(runner.calls.first?.params["url"], .string("https://example.invalid/version.json"))
         XCTAssertEqual(store.payload?.source, "network")
+    }
+
+    func testPublishesWhenBackendFinishesAfterVersionCheckResult() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "version-check", ok: true, payload: versionCheckPayload(shouldBlock: false))
+            ])
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = AppUpdateStore(coordinator: coordinator)
+        let finishPublished = expectation(description: "AppUpdateStore publishes after backend running state clears")
+        var didFulfill = false
+        var cancellables: Set<AnyCancellable> = []
+        store.objectWillChange
+            .sink { [weak store] _ in
+                Task { @MainActor in
+                    guard !didFulfill,
+                          store?.state == .current,
+                          store?.isChecking == false else {
+                        return
+                    }
+                    didFulfill = true
+                    finishPublished.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        store.checkNow(settings: .default)
+
+        try await waitUntilStoreState { store.state == .current }
+        await fulfillment(of: [finishPublished], timeout: 2)
+        XCTAssertFalse(store.isChecking)
+        _ = cancellables
     }
 
     func testCheckNowSurfacesUnavailableMetadataSeparatelyFromCurrentVersion() async throws {

@@ -158,6 +158,12 @@ final class DeviceSetupWorkflow: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        lane.backend.$isRunning
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     private func resetRunState() {

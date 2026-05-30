@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -65,6 +66,38 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["ata_standby"], .number(0))
         XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(45))
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
+    }
+
+    func testPublishesWhenBackendFinishesAfterPlanResult() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+            ])
+        ])
+        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
+        let finishPublished = expectation(description: "DeployWorkflowStore publishes after backend running state clears")
+        var didFulfill = false
+        var cancellables: Set<AnyCancellable> = []
+        store.objectWillChange
+            .sink { [weak store] _ in
+                Task { @MainActor in
+                    guard !didFulfill,
+                          store?.state == .planReady,
+                          store?.isBusy == false else {
+                        return
+                    }
+                    didFulfill = true
+                    finishPublished.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        store.runPlan(password: "pw")
+
+        try await waitUntilStoreState { store.state == .planReady }
+        await fulfillment(of: [finishPublished], timeout: 2)
+        XCTAssertFalse(store.isBusy)
+        _ = cancellables
     }
 
     func testInvalidAtaOptionsMoveToPlanFailedWithoutRunningHelper() {

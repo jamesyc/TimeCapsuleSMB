@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -44,6 +45,41 @@ final class DoctorStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.first?.params["skip_bonjour"], .bool(true))
         XCTAssertEqual(runner.calls.first?.params["skip_smb"], .bool(true))
         XCTAssertEqual(runner.calls.first?.params["credentials"], .object(["password": .string("pw")]))
+    }
+
+    func testPublishesWhenBackendFinishesAfterTerminalResult() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload(
+                    fatal: false,
+                    checks: [check(status: "PASS", message: "runtime ok", domain: "Runtime")]
+                ))
+            ])
+        ])
+        let store = DoctorStore(backend: BackendClient(runner: runner))
+        let finishPublished = expectation(description: "DoctorStore publishes after backend running state clears")
+        var didFulfill = false
+        var cancellables: Set<AnyCancellable> = []
+        store.objectWillChange
+            .sink { [weak store] _ in
+                Task { @MainActor in
+                    guard !didFulfill,
+                          store?.state == .passed,
+                          store?.isRunning == false else {
+                        return
+                    }
+                    didFulfill = true
+                    finishPublished.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        store.runDoctor(password: "")
+
+        try await waitUntilStoreState { store.state == .passed }
+        await fulfillment(of: [finishPublished], timeout: 2)
+        XCTAssertFalse(store.isRunning)
+        _ = cancellables
     }
 
     func testRejectedRunDoesNotEnterRunning() async throws {

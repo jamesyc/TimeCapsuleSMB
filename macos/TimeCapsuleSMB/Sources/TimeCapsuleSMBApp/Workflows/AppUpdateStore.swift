@@ -48,6 +48,12 @@ final class AppUpdateStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        lane.backend.$isRunning
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     var isChecking: Bool {

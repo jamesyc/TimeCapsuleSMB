@@ -131,7 +131,9 @@ final class AppReadinessStore: ObservableObject {
             }
             .store(in: &cancellables)
         backend.$isRunning
+            .dropFirst()
             .sink { [weak self] isRunning in
+                self?.objectWillChange.send()
                 guard !isRunning else { return }
                 Task { @MainActor in
                     self?.runPendingOperation()

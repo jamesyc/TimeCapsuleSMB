@@ -331,6 +331,11 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     private func observeSetupWorkflow() {
+        setupWorkflow.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
         setupWorkflow.$state
             .sink { [weak self] workflowState in
                 Task { @MainActor in

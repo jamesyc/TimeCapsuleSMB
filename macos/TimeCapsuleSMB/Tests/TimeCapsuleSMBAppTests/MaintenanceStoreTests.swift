@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -49,6 +50,38 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(store.activationResult?.alreadyActive, true)
         XCTAssertEqual(runner.calls[1].params["dry_run"], .bool(false))
         XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
+    }
+
+    func testPublishesWhenBackendFinishesAfterActivationPlanResult() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+            ])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let finishPublished = expectation(description: "MaintenanceStore publishes after backend running state clears")
+        var didFulfill = false
+        var cancellables: Set<AnyCancellable> = []
+        store.objectWillChange
+            .sink { [weak store] _ in
+                Task { @MainActor in
+                    guard !didFulfill,
+                          store?.activateState == .planReady,
+                          store?.isBusy == false else {
+                        return
+                    }
+                    didFulfill = true
+                    finishPublished.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        store.planActivation(password: "pw")
+
+        try await waitUntilStoreState { store.activateState == .planReady }
+        await fulfillment(of: [finishPublished], timeout: 2)
+        XCTAssertFalse(store.isBusy)
+        _ = cancellables
     }
 
     func testSameDeviceRejectedActivationPlanDoesNotEnterPlanning() async throws {

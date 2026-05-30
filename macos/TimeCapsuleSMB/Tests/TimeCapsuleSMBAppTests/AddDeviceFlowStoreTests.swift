@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -357,6 +358,40 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["persist_password"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["password"], .string("secret"))
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
+    }
+
+    func testPublishesWhenSetupBackendFinishesAfterConfigureResult() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
+            ])
+        ])
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+        let finishPublished = expectation(description: "AddDeviceFlowStore publishes after setup backend running state clears")
+        var didFulfill = false
+        var cancellables: Set<AnyCancellable> = []
+        fixture.store.objectWillChange
+            .sink { [weak store = fixture.store] _ in
+                Task { @MainActor in
+                    guard !didFulfill,
+                          store?.state == .saved,
+                          store?.isRunning == false else {
+                        return
+                    }
+                    didFulfill = true
+                    finishPublished.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        await fulfillment(of: [finishPublished], timeout: 2)
+        XCTAssertFalse(fixture.store.isRunning)
+        _ = cancellables
     }
 
     func testConfigureSSHEnableConfirmationCanBeConfirmedAndSavesProfile() async throws {

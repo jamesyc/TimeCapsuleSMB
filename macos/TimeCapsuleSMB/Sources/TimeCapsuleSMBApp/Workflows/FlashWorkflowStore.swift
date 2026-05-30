@@ -225,6 +225,12 @@ final class FlashWorkflowStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        backend.$isRunning
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     var events: [BackendEvent] {

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -128,6 +129,40 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].params["action"], .string("plan"))
         XCTAssertEqual(runner.calls[1].params["backup_dir"], .string("/tmp/flash-backup"))
         XCTAssertEqual(runner.calls[1].params["mode"], .string("patch"))
+    }
+
+    func testPublishesWhenBackendFinishesAfterBackupResult() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+            ])
+        ])
+        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        store.refresh(profile: profile)
+        let finishPublished = expectation(description: "FlashWorkflowStore publishes after backend running state clears")
+        var didFulfill = false
+        var cancellables: Set<AnyCancellable> = []
+        store.objectWillChange
+            .sink { [weak store] _ in
+                Task { @MainActor in
+                    guard !didFulfill,
+                          store?.state == .planAvailable,
+                          store?.isBusy == false else {
+                        return
+                    }
+                    didFulfill = true
+                    finishPublished.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        store.backupAndInspect(password: "pw", profile: profile)
+
+        try await waitUntilStoreState { store.state == .planAvailable }
+        await fulfillment(of: [finishPublished], timeout: 2)
+        XCTAssertFalse(store.isBusy)
+        _ = cancellables
     }
 
     func testPlanFlashCarriesAppleFirmwareSelectionOptions() async throws {

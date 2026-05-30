@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -97,6 +98,41 @@ final class AppReadinessStoreTests: XCTestCase {
         XCTAssertEqual(issue.code, .unsupportedVersion)
         XCTAssertEqual(issue.message, "Please update.")
         XCTAssertEqual(issue.recovery, "Download the latest version from https://example.invalid/download.")
+    }
+
+    func testPublishesWhenBackendFinishesAfterBlockingVersionCheck() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "version-check", ok: true, payload: versionCheckPayload(shouldBlock: true))
+            ])
+        ])
+        let store = makeStore(
+            runner: runner,
+            versionCheck: AppReadinessVersionCheck(url: "https://example.invalid/version.json")
+        )
+        let finishPublished = expectation(description: "AppReadinessStore publishes after backend running state clears")
+        var didFulfill = false
+        var cancellables: Set<AnyCancellable> = []
+        store.objectWillChange
+            .sink { [weak store] _ in
+                Task { @MainActor in
+                    guard !didFulfill,
+                          store?.state.kind == .blocked,
+                          store?.canRetry == true else {
+                        return
+                    }
+                    didFulfill = true
+                    finishPublished.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        store.start()
+
+        try await waitUntilStoreState { store.state.kind == .blocked }
+        await fulfillment(of: [finishPublished], timeout: 2)
+        XCTAssertTrue(store.canRetry)
+        _ = cancellables
     }
 
     func testUnavailableVersionMetadataDegradesButFailsOpenToReadinessChecks() async throws {
