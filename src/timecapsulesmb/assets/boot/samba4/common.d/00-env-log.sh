@@ -11,8 +11,6 @@ LOCKS_ROOT=/mnt/Locks
 
 MDNS_PROC_NAME=mdns-advertiser
 NBNS_PROC_NAME=nbns-advertiser
-ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
-APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 
 TC_CONFIG_FILE=/mnt/Flash/tcapsulesmb.conf
 TC_STATE_DIR="$RAM_VAR"

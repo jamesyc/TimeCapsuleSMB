@@ -392,10 +392,11 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("LOCKS_ROOT=/mnt/Locks", content)
         self.assertIn("MDNS_PROC_NAME=mdns-advertiser", content)
         self.assertIn("NBNS_PROC_NAME=nbns-advertiser", content)
-        self.assertIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
-        self.assertIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
+        self.assertNotIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
+        self.assertNotIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
         self.assertIn("tc_select_advertise_mac()", content)
         self.assertIn("tc_select_live_iface_mac()", content)
+        self.assertIn("get_airport_prni_raw()", content)
         self.assertNotIn("get_iface_mac()", content)
         self.assertNotIn("tc_select_advertise_network()", content)
         self.assertNotIn("tc_find_iface_for_ipv4()", content)
@@ -1268,7 +1269,7 @@ int main(void) {{
             bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stdout, "2106\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_accepts_debug_logging_before_version(self) -> None:
@@ -1281,7 +1282,7 @@ int main(void) {{
                 check=False,
             )
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stdout, "2106\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_traffic_summary_counters_are_debug_only(self) -> None:
@@ -2352,6 +2353,167 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_scoped_ipv6_dest")
         self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_mdns_advertiser_builds_riousbprint_txt_from_printer_identity(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+static int has_txt(const char *txts[], size_t count, const char *want) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        if (strcmp(txts[i], want) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(void) {
+    struct config cfg;
+    char storage[RIOUSBPRINT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[RIOUSBPRINT_MAX_TXT_ITEMS];
+    size_t txt_count = 0;
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_instance_name, sizeof(cfg.riousbprint_instance_name), "%s", "Canon MP490 series");
+    snprintf(cfg.riousbprint_note, sizeof(cfg.riousbprint_note), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_mfg, sizeof(cfg.riousbprint_mfg), "%s", "Canon");
+    snprintf(cfg.riousbprint_mdl, sizeof(cfg.riousbprint_mdl), "%s", "MP490 series");
+    snprintf(cfg.riousbprint_serial, sizeof(cfg.riousbprint_serial), "%s", "C0958C");
+    snprintf(cfg.riousbprint_cmd, sizeof(cfg.riousbprint_cmd), "%s", "BJL,BJRaster3,BSCCe,IVEC,IVECPLI");
+
+    if (build_riousbprint_txt_items(&cfg, storage, txts, &txt_count) != 0) {
+        return 1;
+    }
+    if (txt_count != 12) {
+        return 2;
+    }
+    if (!has_txt(txts, txt_count, "txtvers=1") ||
+        !has_txt(txts, txt_count, "qtotal=1") ||
+        !has_txt(txts, txt_count, "note=James's AirPort Time Capsule") ||
+        !has_txt(txts, txt_count, "product=(Canon MP490 series)") ||
+        !has_txt(txts, txt_count, "rp=Canon MP490 series C0958C") ||
+        !has_txt(txts, txt_count, "pdl=application/BJL,application/BJRaster3,application/BSCCe,application/IVEC,application/IVECPLI") ||
+        !has_txt(txts, txt_count, "priority=1") ||
+        !has_txt(txts, txt_count, "usb_MFG=Canon") ||
+        !has_txt(txts, txt_count, "usb_CMD=BJL,BJRaster3,BSCCe,IVEC,IVECPLI") ||
+        !has_txt(txts, txt_count, "usb_MDL=MP490 series") ||
+        !has_txt(txts, txt_count, "usb_CLS=PRINTER") ||
+        !has_txt(txts, txt_count, "usb_DES=Canon MP490 series")) {
+        return 3;
+    }
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_riousbprint_txt")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_builds_pdl_datastream_txt_from_printer_identity(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+static int has_txt(const char *txts[], size_t count, const char *want) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        if (strcmp(txts[i], want) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(void) {
+    struct config cfg;
+    char storage[PDL_DATASTREAM_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    const char *txts[PDL_DATASTREAM_MAX_TXT_ITEMS];
+    size_t txt_count = 0;
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_instance_name, sizeof(cfg.riousbprint_instance_name), "%s", "Canon MP490 series");
+    snprintf(cfg.riousbprint_note, sizeof(cfg.riousbprint_note), "%s", "James's AirPort Time Capsule");
+    snprintf(cfg.riousbprint_mfg, sizeof(cfg.riousbprint_mfg), "%s", "Canon");
+    snprintf(cfg.riousbprint_mdl, sizeof(cfg.riousbprint_mdl), "%s", "MP490 series");
+    snprintf(cfg.riousbprint_serial, sizeof(cfg.riousbprint_serial), "%s", "C0958C");
+    snprintf(cfg.riousbprint_cmd, sizeof(cfg.riousbprint_cmd), "%s", "BJL,BJRaster3,BSCCe,IVEC,IVECPLI");
+
+    if (build_pdl_datastream_txt_items(&cfg, storage, txts, &txt_count) != 0) {
+        return 1;
+    }
+    if (txt_count != 12) {
+        return 2;
+    }
+    if (!has_txt(txts, txt_count, "txtvers=1") ||
+        !has_txt(txts, txt_count, "qtotal=1") ||
+        !has_txt(txts, txt_count, "note=James's AirPort Time Capsule") ||
+        !has_txt(txts, txt_count, "product=(Canon MP490 series)") ||
+        !has_txt(txts, txt_count, "pdl=U") ||
+        !has_txt(txts, txt_count, "priority=5") ||
+        !has_txt(txts, txt_count, "usb_MFG=Canon") ||
+        !has_txt(txts, txt_count, "usb_CMD=BJL,BJRaster3,BSCCe,IVEC,IVECPLI") ||
+        !has_txt(txts, txt_count, "usb_MDL=MP490 series") ||
+        !has_txt(txts, txt_count, "usb_CLS=PRINTER") ||
+        !has_txt(txts, txt_count, "usb_DES=Canon MP490 series") ||
+        !has_txt(txts, txt_count, "ty=Canon MP490 series")) {
+        return 3;
+    }
+    if (has_txt(txts, txt_count, "rp=Canon MP490 series C0958C")) {
+        return 4;
+    }
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_pdl_datastream_txt")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_extracts_riousbprint_cmd_from_ieee1284_device_id(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+int main(void) {
+    const char *device_id = "MFG:Canon;MDL:MP490 series;CMD:BJL,BJRaster3,BSCCe,IVEC,IVECPLI;";
+    unsigned char buf[256];
+    char cmd[MAX_TXT_STRING + 1];
+    size_t len = strlen(device_id) + 2;
+
+    memset(buf, 0, sizeof(buf));
+    buf[0] = (unsigned char)((len >> 8) & 0xff);
+    buf[1] = (unsigned char)(len & 0xff);
+    memcpy(buf + 2, device_id, strlen(device_id));
+
+    if (extract_cmd_from_ieee1284_device_id(cmd, sizeof(cmd), buf, len) != 0) {
+        return 1;
+    }
+    if (strcmp(cmd, "BJL,BJRaster3,BSCCe,IVEC,IVECPLI") != 0) {
+        return 2;
+    }
+    printf("%s\n", cmd);
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_riousbprint_ieee1284")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "BJL,BJRaster3,BSCCe,IVEC,IVECPLI")
 
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
         if shutil.which("cc") is None:
@@ -7096,17 +7258,17 @@ fi
         self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", rendered[0])
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[1])
 
-    def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
+    def test_build_uninstall_plan_removes_flash_configuration(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
 
-        self.assertEqual(plan.flash_targets["allmdns.txt"], "/mnt/Flash/allmdns.txt")
-        self.assertEqual(plan.flash_targets["applemdns.txt"], "/mnt/Flash/applemdns.txt")
+        self.assertNotIn("allmdns.txt", plan.flash_targets)
+        self.assertNotIn("applemdns.txt", plan.flash_targets)
         self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
-        self.assertIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
-        self.assertIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
+        self.assertNotIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
+        self.assertNotIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
         self.assertIn("/mnt/Flash/tcapsulesmb.conf", plan.verify_absent_targets)
-        self.assertIn(RemovePathAction("/mnt/Flash/allmdns.txt"), plan.remote_actions)
-        self.assertIn(RemovePathAction("/mnt/Flash/applemdns.txt"), plan.remote_actions)
+        self.assertNotIn(RemovePathAction("/mnt/Flash/allmdns.txt"), plan.remote_actions)
+        self.assertNotIn(RemovePathAction("/mnt/Flash/applemdns.txt"), plan.remote_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/tcapsulesmb.conf"), plan.remote_actions)
 
     def test_build_uninstall_plan_removes_each_payload_home_once(self) -> None:

@@ -163,6 +163,140 @@ derive_airport_fields() {
     return 1
 }
 
+tc_prepare_riousbprint_identity() {
+    context=$1
+
+    tc_load_current_riousbprint_identity || {
+        RIOUSBPRINT_NOTE=
+        return 0
+    }
+    RIOUSBPRINT_NOTE=${AIRPORT_INSTANCE_NAME:-$MDNS_INSTANCE_NAME}
+
+    tc_log "$context: USB printer advertisement prepared name=$RIOUSBPRINT_INSTANCE_NAME make=${RIOUSBPRINT_MFG:-missing} model=${RIOUSBPRINT_MDL:-missing} serial=${RIOUSBPRINT_SERIAL:-missing} vendor=${RIOUSBPRINT_VENDOR_ID:-missing} product=${RIOUSBPRINT_PRODUCT_ID:-missing} appSocketPort=${PDL_DATASTREAM_PORT:-default}"
+}
+
+tc_clear_riousbprint_identity() {
+    RIOUSBPRINT_INSTANCE_NAME=
+    RIOUSBPRINT_NOTE=
+    RIOUSBPRINT_MFG=
+    RIOUSBPRINT_MDL=
+    RIOUSBPRINT_SERIAL=
+    RIOUSBPRINT_VENDOR_ID=
+    RIOUSBPRINT_PRODUCT_ID=
+    PDL_DATASTREAM_PORT=
+}
+
+tc_riousbprint_reset_candidate() {
+    prni_candidate_seen=0
+    prni_candidate_plugged=
+    prni_candidate_name=
+    prni_candidate_mfg=
+    prni_candidate_mdl=
+    prni_candidate_serial=
+    prni_candidate_vendor_id=
+    prni_candidate_product_id=
+    prni_candidate_app_socket_port=
+}
+
+tc_riousbprint_commit_candidate() {
+    [ "$prni_candidate_seen" = "1" ] || return 1
+    [ "$prni_candidate_plugged" = "true" ] || return 1
+    [ -n "$prni_candidate_name" ] || return 1
+
+    RIOUSBPRINT_INSTANCE_NAME=$prni_candidate_name
+    RIOUSBPRINT_MFG=$prni_candidate_mfg
+    RIOUSBPRINT_MDL=$prni_candidate_mdl
+    RIOUSBPRINT_SERIAL=$prni_candidate_serial
+    RIOUSBPRINT_VENDOR_ID=$prni_candidate_vendor_id
+    RIOUSBPRINT_PRODUCT_ID=$prni_candidate_product_id
+    PDL_DATASTREAM_PORT=$prni_candidate_app_socket_port
+    return 0
+}
+
+tc_load_riousbprint_identity_from_prni() {
+    prni_identity_raw=$1
+
+    tc_clear_riousbprint_identity
+    tc_riousbprint_reset_candidate
+    while IFS= read -r prni_line || [ -n "$prni_line" ]; do
+        case "$prni_line" in
+            *appSocketPort=*)
+                prni_candidate_seen=1
+                prni_candidate_app_socket_port=${prni_line#*=}
+                ;;
+            *generatedNumber=*)
+                prni_candidate_seen=1
+                ;;
+            *make=*)
+                prni_candidate_seen=1
+                prni_candidate_mfg=${prni_line#*=}
+                ;;
+            *model=*)
+                prni_candidate_seen=1
+                prni_candidate_mdl=${prni_line#*=}
+                ;;
+            *name=*)
+                prni_candidate_seen=1
+                prni_candidate_name=${prni_line#*=}
+                ;;
+            *pluggedIn=*)
+                prni_candidate_seen=1
+                prni_candidate_plugged=${prni_line#*=}
+                ;;
+            *productID=*)
+                prni_candidate_seen=1
+                prni_candidate_product_id=${prni_line#*=}
+                ;;
+            *serialNumber=*)
+                prni_candidate_seen=1
+                prni_candidate_serial=${prni_line#*=}
+                ;;
+            *vendorID=*)
+                prni_candidate_seen=1
+                prni_candidate_vendor_id=${prni_line#*=}
+                ;;
+            *"}"*)
+                if tc_riousbprint_commit_candidate; then
+                    return 0
+                fi
+                tc_riousbprint_reset_candidate
+                ;;
+        esac
+    done <<EOF
+$prni_identity_raw
+EOF
+
+    if tc_riousbprint_commit_candidate; then
+        return 0
+    fi
+    tc_clear_riousbprint_identity
+    return 1
+}
+
+tc_load_current_riousbprint_identity() {
+    prni_raw=$(get_airport_prni_raw || true)
+    [ -n "$prni_raw" ] || {
+        tc_clear_riousbprint_identity
+        return 1
+    }
+    tc_load_riousbprint_identity_from_prni "$prni_raw"
+}
+
+tc_riousbprint_current_signature() {
+    if tc_load_current_riousbprint_identity; then
+        printf 'attached\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$RIOUSBPRINT_INSTANCE_NAME" \
+            "$RIOUSBPRINT_MFG" \
+            "$RIOUSBPRINT_MDL" \
+            "$RIOUSBPRINT_SERIAL" \
+            "$RIOUSBPRINT_VENDOR_ID" \
+            "$RIOUSBPRINT_PRODUCT_ID" \
+            "$PDL_DATASTREAM_PORT"
+    else
+        printf 'none\n'
+    fi
+}
+
 tc_prepare_mdns_identity() {
     iface_mac=${1:-}
     context=$2
@@ -192,29 +326,6 @@ tc_prepare_mdns_identity() {
     fi
     TC_AIRPORT_FIELDS_READY=1
     return 0
-}
-
-tc_run_mdns_snapshot_command() {
-    log_context=$1
-    shift
-
-    if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
-        if tc_runtime_logs_unbounded; then
-            tc_log "$log_context: debug logging enabled at $TC_MDNS_LOG_FILE"
-        else
-            tc_log "$log_context: logging at $TC_MDNS_LOG_FILE"
-        fi
-        printf '%s %s: launching mdns-advertiser %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" "$log_context" >>"$TC_MDNS_LOG_FILE"
-        if "$@" >>"$TC_MDNS_LOG_FILE" 2>&1; then
-            return 0
-        fi
-    else
-        tc_log "$log_context: log unavailable at $TC_MDNS_LOG_FILE"
-        if "$@" >/dev/null 2>&1; then
-            return 0
-        fi
-    fi
-    return 1
 }
 
 tc_mdns_debug_logging_enabled() {
@@ -252,7 +363,7 @@ tc_ensure_mdns_auto_ip_seen() {
     if tc_mdns_auto_ip_available; then
         TC_MDNS_AUTO_IP_SEEN=1
         tc_log "mDNS auto-ip check: usable address is available"
-        tc_log "mDNS auto-ip is available; starting capture and advertiser"
+        tc_log "mDNS auto-ip is available; starting advertiser"
         return 0
     else
         mdns_auto_ip_status=$?
@@ -268,126 +379,6 @@ tc_ensure_mdns_auto_ip_seen() {
     return 1
 }
 
-tc_run_mdns_capture() {
-    if ! tc_prepare_mdns_identity "" "mdns capture"; then
-        return 1
-    fi
-
-    tc_log "starting mDNS snapshot capture"
-    set -- "$TC_MDNS_BIN" \
-        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
-        --save-snapshot "$APPLE_MDNS_SNAPSHOT"
-    if tc_mdns_debug_logging_enabled; then
-        set -- "$@" --debug-logging
-    fi
-    set -- "$@" --auto-ip
-    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
-        set -- "$@" \
-            --airport-wama "$AIRPORT_WAMA" \
-            --airport-rama "$AIRPORT_RAMA" \
-            --airport-ram2 "$AIRPORT_RAM2" \
-            --airport-rast "$AIRPORT_RAST" \
-            --airport-rana "$AIRPORT_RANA" \
-            --airport-syfl "$AIRPORT_SYFL" \
-            --airport-syap "$AIRPORT_SYAP" \
-            --airport-syvs "$AIRPORT_SYVS" \
-            --airport-srcv "$AIRPORT_SRCV" \
-            --airport-bjsd "$AIRPORT_BJSD"
-    fi
-
-    if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
-        if tc_runtime_logs_unbounded; then
-            tc_log "mdns capture: debug logging enabled at $TC_MDNS_LOG_FILE"
-        else
-            tc_log "mdns capture: logging at $TC_MDNS_LOG_FILE"
-        fi
-        printf '%s %s: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
-        if "$@" >>"$TC_MDNS_LOG_FILE" 2>&1; then
-            if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
-                tc_log "mDNS snapshot capture finished"
-                return 0
-            fi
-            tc_log "mDNS snapshot capture completed without trusted Apple snapshot"
-        else
-            tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
-        fi
-    else
-        tc_log "mdns capture: log unavailable at $TC_MDNS_LOG_FILE"
-        if "$@" >/dev/null 2>&1; then
-            if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
-                tc_log "mDNS snapshot capture finished"
-                return 0
-            fi
-            tc_log "mDNS snapshot capture completed without trusted Apple snapshot"
-        else
-            tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
-        fi
-    fi
-    return 1
-}
-
-tc_capture_mdns_snapshot_for_manager() {
-    tc_run_mdns_capture
-}
-
-tc_mdnsresponder_alive() {
-    runtime_process_present_by_ucomm mDNSResponder
-}
-
-tc_mdns_snapshot_newer_than_boot() {
-    if [ ! -x "$TC_MDNS_BIN" ]; then
-        tc_log "mDNS snapshot freshness check skipped; missing $TC_MDNS_BIN"
-        return 1
-    fi
-
-    set -- "$TC_MDNS_BIN" --snapshot-newer-than-boot "$APPLE_MDNS_SNAPSHOT"
-    if tc_mdns_debug_logging_enabled; then
-        set -- "$@" --debug-logging
-    fi
-    if tc_run_mdns_snapshot_command "snapshot freshness" "$@"; then
-        tc_log "trusted Apple mDNS snapshot is newer than current boot: $APPLE_MDNS_SNAPSHOT"
-        return 0
-    fi
-
-    tc_log "trusted Apple mDNS snapshot is missing, stale, or freshness check failed: $APPLE_MDNS_SNAPSHOT"
-    return 1
-}
-
-tc_generate_mdns() {
-    if ! tc_prepare_mdns_identity "" "mdns generation"; then
-        return 0
-    fi
-
-    tc_log "generating AirPort mDNS snapshot"
-    set -- "$TC_MDNS_BIN" \
-        --save-airport-snapshot "$APPLE_MDNS_SNAPSHOT" \
-        --instance "$AIRPORT_INSTANCE_NAME" \
-        --host "$AIRPORT_HOST_LABEL"
-    if tc_mdns_debug_logging_enabled; then
-        set -- "$@" --debug-logging
-    fi
-    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
-        set -- "$@" \
-            --airport-wama "$AIRPORT_WAMA" \
-            --airport-rama "$AIRPORT_RAMA" \
-            --airport-ram2 "$AIRPORT_RAM2" \
-            --airport-rast "$AIRPORT_RAST" \
-            --airport-rana "$AIRPORT_RANA" \
-            --airport-syfl "$AIRPORT_SYFL" \
-            --airport-syap "$AIRPORT_SYAP" \
-            --airport-syvs "$AIRPORT_SYVS" \
-            --airport-srcv "$AIRPORT_SRCV" \
-            --airport-bjsd "$AIRPORT_BJSD"
-    fi
-
-    if tc_run_mdns_snapshot_command "airport snapshot" "$@"; then
-        tc_log "mDNS AirPort snapshot generated"
-        return 0
-    fi
-
-    tc_log "mDNS AirPort snapshot generation failed; final advertiser will use generated records if needed"
-}
-
 tc_launch_mdns_advertiser() {
     context=$1
     kill_prior=$2
@@ -399,6 +390,7 @@ tc_launch_mdns_advertiser() {
     if ! tc_prepare_mdns_identity "" "$context"; then
         return 0
     fi
+    tc_prepare_riousbprint_identity "$context"
     iface_mac=$TC_AIRPORT_FIELDS_ADVERTISE_MAC
 
     if [ "$kill_prior" = "1" ]; then
@@ -412,7 +404,7 @@ tc_launch_mdns_advertiser() {
         tc_log "$context: starting mdns advertiser in auto-ip mode"
     fi
     set -- "$TC_MDNS_BIN" \
-        --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --generated-airport-services \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}" \
@@ -435,6 +427,30 @@ tc_launch_mdns_advertiser() {
             --airport-syvs "$AIRPORT_SYVS" \
             --airport-srcv "$AIRPORT_SRCV" \
             --airport-bjsd "$AIRPORT_BJSD"
+    fi
+    if [ -n "${RIOUSBPRINT_INSTANCE_NAME:-}" ]; then
+        set -- "$@" --riousbprint-name "$RIOUSBPRINT_INSTANCE_NAME"
+        if [ -n "${RIOUSBPRINT_NOTE:-}" ]; then
+            set -- "$@" --riousbprint-note "$RIOUSBPRINT_NOTE"
+        fi
+        if [ -n "${RIOUSBPRINT_MFG:-}" ]; then
+            set -- "$@" --riousbprint-mfg "$RIOUSBPRINT_MFG"
+        fi
+        if [ -n "${RIOUSBPRINT_MDL:-}" ]; then
+            set -- "$@" --riousbprint-mdl "$RIOUSBPRINT_MDL"
+        fi
+        if [ -n "${RIOUSBPRINT_SERIAL:-}" ]; then
+            set -- "$@" --riousbprint-serial "$RIOUSBPRINT_SERIAL"
+        fi
+        if [ -n "${RIOUSBPRINT_VENDOR_ID:-}" ]; then
+            set -- "$@" --riousbprint-vendor-id "$RIOUSBPRINT_VENDOR_ID"
+        fi
+        if [ -n "${RIOUSBPRINT_PRODUCT_ID:-}" ]; then
+            set -- "$@" --riousbprint-product-id "$RIOUSBPRINT_PRODUCT_ID"
+        fi
+        if [ -n "${PDL_DATASTREAM_PORT:-}" ]; then
+            set -- "$@" --pdl-datastream-port "$PDL_DATASTREAM_PORT"
+        fi
     fi
     if [ "$diskless" != "1" ] && [ -s "$TC_ADISK_TSV" ]; then
         set -- "$@" \

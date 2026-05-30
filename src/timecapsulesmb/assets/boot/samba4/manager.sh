@@ -217,6 +217,65 @@ tc_manager_samba_config_signature() {
         "${manager_share_rows:-}"
 }
 
+tc_manager_reconcile_printer_state() {
+    TC_MANAGER_PRINTER_PROBE_RESULT=unknown
+    TC_MANAGER_PRINTER_REFRESH_RESULT=skipped
+    TC_MANAGER_PRINTER_CHANGED=0
+
+    current_printer_signature=$(tc_riousbprint_current_signature) || {
+        TC_MANAGER_PRINTER_PROBE_RESULT=signature_failed
+        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_signature_failed
+        return 1
+    }
+
+    if [ "${TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY:-0}" != "1" ]; then
+        TC_MANAGER_PRINTER_PROBE_RESULT=initial
+        TC_MANAGER_PRINTER_REFRESH_RESULT=record_initial
+        TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE=$current_printer_signature
+        TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=1
+        tc_log "manager USB printer signature recorded from initial input"
+        return 0
+    fi
+
+    if [ "$current_printer_signature" = "$TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE" ]; then
+        TC_MANAGER_PRINTER_PROBE_RESULT=unchanged
+        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_unchanged
+        tc_manager_debug_log "manager USB printer signature unchanged; mDNS refresh skipped"
+        return 0
+    fi
+
+    pending_printer_signature=$current_printer_signature
+    TC_MANAGER_PRINTER_PROBE_RESULT=pending_change
+    tc_log "manager USB printer signature changed; debouncing ${MANAGER_PRINTER_DEBOUNCE_SECONDS}s before mDNS refresh"
+    sleep "$MANAGER_PRINTER_DEBOUNCE_SECONDS"
+    debounced_printer_signature=$(tc_riousbprint_current_signature) || {
+        TC_MANAGER_PRINTER_PROBE_RESULT=debounce_signature_failed
+        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_debounce_signature_failed
+        return 1
+    }
+
+    if [ "$debounced_printer_signature" = "$TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE" ]; then
+        TC_MANAGER_PRINTER_PROBE_RESULT=change_cleared
+        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_change_cleared
+        tc_log "manager USB printer signature change cleared after debounce; mDNS refresh skipped"
+        return 0
+    fi
+    if [ "$debounced_printer_signature" != "$pending_printer_signature" ]; then
+        TC_MANAGER_PRINTER_PROBE_RESULT=unstable
+        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_unstable
+        tc_log "manager USB printer signature still changing after debounce; postponing mDNS refresh"
+        return 0
+    fi
+
+    TC_MANAGER_PRINTER_PROBE_RESULT=change_confirmed
+    TC_MANAGER_PRINTER_REFRESH_RESULT=refresh_confirmed_change
+    TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE=$debounced_printer_signature
+    TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=1
+    TC_MANAGER_PRINTER_CHANGED=1
+    tc_log "manager USB printer signature recorded from confirmed-change input"
+    return 0
+}
+
 tc_manager_clear_payload_state() {
     manager_payload_ready=0
     manager_payload_dir=
@@ -1029,31 +1088,6 @@ tc_manager_launch_current_mdns_advertiser() {
     fi
 }
 
-tc_manager_prepare_mdns_snapshot() {
-    if tc_mdnsresponder_alive; then
-        tc_log "manager mDNS snapshot: Apple mDNSResponder is alive; settling 3s before capture"
-        sleep 3
-        if tc_capture_mdns_snapshot_for_manager; then
-            return 0
-        fi
-        tc_log "manager mDNS snapshot: capture failed; retrying once"
-        if tc_capture_mdns_snapshot_for_manager; then
-            return 0
-        fi
-        tc_log "manager mDNS snapshot: capture retry failed; checking for fresh snapshot fallback"
-    else
-        tc_log "manager mDNS snapshot: Apple mDNSResponder is not alive; capture skipped"
-    fi
-
-    if tc_mdns_snapshot_newer_than_boot; then
-        return 0
-    fi
-
-    tc_log "manager mDNS snapshot: no fresh snapshot exists; generating AirPort fallback"
-    tc_generate_mdns
-    return 0
-}
-
 tc_manager_reconcile_mdns() {
     mdns_auto_ip_status=0
 
@@ -1085,7 +1119,6 @@ tc_manager_reconcile_mdns() {
     if ! tc_ensure_mdns_auto_ip_seen; then
         return 0
     fi
-    tc_manager_prepare_mdns_snapshot
     tc_manager_launch_current_mdns_advertiser "manager mDNS recovery" 10
 }
 
@@ -1351,8 +1384,8 @@ tc_manager_run_mdns_step() {
     manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=mdns start"
     tc_manager_debug_log "manager mDNS: reconciling advertiser"
-    if [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] || [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ]; then
-        tc_log "manager mDNS refresh required after disk or identity change"
+    if [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] || [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ] || [ "${TC_MANAGER_PRINTER_CHANGED:-0}" = "1" ]; then
+        tc_log "manager mDNS refresh required after disk, identity, or USB printer change"
         stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
     fi
     if tc_manager_reconcile_mdns; then
@@ -1379,6 +1412,21 @@ tc_manager_run_nbns_wait_step() {
     manager_status=1
     manager_nbns_status=failed
     tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_seconds" failed
+    return 1
+}
+
+tc_manager_run_printer_step() {
+    manager_step_start_seconds=$(tc_now_seconds)
+    tc_manager_debug_log "manager pass $manager_iteration_id step=usb_printer start"
+    if tc_manager_reconcile_printer_state; then
+        manager_printer_status=${TC_MANAGER_PRINTER_REFRESH_RESULT:-ok}
+        tc_manager_log_step_end "$manager_iteration_id" usb_printer "$manager_step_start_seconds" ok
+        return 0
+    fi
+
+    manager_status=1
+    manager_printer_status=failed
+    tc_manager_log_step_end "$manager_iteration_id" usb_printer "$manager_step_start_seconds" failed
     return 1
 }
 
@@ -1416,6 +1464,7 @@ MANAGER_BIND_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_BIND_POLL_SE
 MANAGER_SERVICE_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_SERVICE_POLL_SECONDS:-30}" 30)
 MANAGER_MAST_RETRY_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_MAST_RETRY_SECONDS:-5}" 5)
 MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS:-5}" 5)
+MANAGER_PRINTER_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_PRINTER_DEBOUNCE_SECONDS:-$MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}" "$MANAGER_TOPOLOGY_DEBOUNCE_SECONDS")
 MANAGER_STOP_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_STOP_POLL_SECONDS:-1}" 1)
 TC_MANAGER_STOP_REQUESTED=0
 TC_MANAGER_ITERATION=0
@@ -1429,6 +1478,9 @@ TC_MANAGER_SMBD_APPLY_FAILURE=
 TC_MANAGER_SMB_BIND_PREVIOUS=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE_READY=0
+TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE=
+TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=0
+TC_MANAGER_PRINTER_CHANGED=0
 manager_payload_ready=0
 manager_payload_dir=
 manager_payload_volume=
@@ -1443,7 +1495,7 @@ manager_bind_seconds_until_due=0
 tc_manager_clear_payload_state
 
 tc_log "manager startup beginning"
-tc_log "manager intervals: disk=${MANAGER_DISK_POLL_SECONDS}s bind=${MANAGER_BIND_POLL_SECONDS}s services=${MANAGER_SERVICE_POLL_SECONDS}s mast_retry=${MANAGER_MAST_RETRY_SECONDS}s topology_debounce=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}s stop_poll=${MANAGER_STOP_POLL_SECONDS}s"
+tc_log "manager intervals: disk=${MANAGER_DISK_POLL_SECONDS}s bind=${MANAGER_BIND_POLL_SECONDS}s services=${MANAGER_SERVICE_POLL_SECONDS}s mast_retry=${MANAGER_MAST_RETRY_SECONDS}s topology_debounce=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}s printer_debounce=${MANAGER_PRINTER_DEBOUNCE_SECONDS}s stop_poll=${MANAGER_STOP_POLL_SECONDS}s"
 
 trap 'TC_MANAGER_STOP_REQUESTED=1' TERM INT
 
@@ -1456,6 +1508,7 @@ while ! tc_manager_stop_requested; do
     manager_identity_status=skipped
     manager_disk_status=skipped
     manager_payload_status=skipped
+    manager_printer_status=skipped
     manager_samba_status=skipped
     manager_bind_status=skipped
     manager_mdns_status=skipped
@@ -1465,6 +1518,7 @@ while ! tc_manager_stop_requested; do
     TC_MANAGER_RECOVERY_IDENTITY_REFRESHED=0
     TC_MANAGER_DISK_STATE_CHANGED=0
     TC_MANAGER_IDENTITY_CHANGED=0
+    TC_MANAGER_PRINTER_CHANGED=0
     manager_nbns_reconcile_status=skipped
     manager_services_due=0
     manager_bind_due=0
@@ -1481,11 +1535,16 @@ while ! tc_manager_stop_requested; do
 
     tc_manager_run_disk_step || true
     tc_manager_update_payload_status
+    tc_manager_run_printer_step || true
 
     if [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ]; then
         manager_services_due=1
         manager_bind_due=1
         tc_log "manager scheduler: disk state changed; running full service reconciliation now"
+    fi
+    if [ "${TC_MANAGER_PRINTER_CHANGED:-0}" = "1" ]; then
+        manager_services_due=1
+        tc_log "manager scheduler: USB printer state changed; running full service reconciliation now"
     fi
 
     if [ "$manager_services_due" -eq 0 ] &&
@@ -1535,9 +1594,10 @@ while ! tc_manager_stop_requested; do
         [ "$manager_pass_status" != "ok" ] ||
         [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] ||
         [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ] ||
+        [ "${TC_MANAGER_PRINTER_CHANGED:-0}" = "1" ] ||
         [ "$manager_bind_status" = "changed" ] ||
         [ "$manager_bind_status" = "deferred_no_ip" ]; then
-        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_seconds=$manager_iteration_duration_seconds"
+        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} printer=$manager_printer_status printer_probe=${TC_MANAGER_PRINTER_PROBE_RESULT:-unknown} printer_refresh=${TC_MANAGER_PRINTER_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_seconds=$manager_iteration_duration_seconds"
     fi
     tc_manager_debug_log "manager sleeping ${MANAGER_DISK_POLL_SECONDS}s after $manager_pass_status pass next_service=${manager_next_service_seconds}s next_bind=${manager_next_bind_seconds}s"
     if ! tc_manager_sleep_until_due "$MANAGER_DISK_POLL_SECONDS"; then
