@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import shlex
-from typing import Callable
 
 from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
 from timecapsulesmb.device.processes import (
@@ -144,46 +143,3 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
             DETACHED_SHUTDOWN_REBOOT_COMMAND,
         ])
     return "\n".join(lines)
-
-
-class RepairExecutionContext:
-    def __init__(self, stage_callback: Callable[[str], None]) -> None:
-        self._stage_callback = stage_callback
-        self.result = "failure"
-        self.error: str | None = None
-
-    def set_stage(self, stage: str) -> None:
-        self._stage_callback(stage)
-
-    def update_fields(self, **_fields: object) -> None:
-        pass
-
-    def succeed(self) -> None:
-        self.result = "success"
-
-    def fail_with_error(self, message: str) -> None:
-        self.result = "failure"
-        self.error = message
-
-
-class LineLogCapture:
-    def __init__(self, emit_line: Callable[[str], None]) -> None:
-        self._emit_line = emit_line
-        self._buffer = ""
-
-    def write(self, text: str) -> int:
-        self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            self._emit(line)
-        return len(text)
-
-    def flush(self) -> None:
-        if self._buffer:
-            self._emit(self._buffer)
-            self._buffer = ""
-
-    def _emit(self, line: str) -> None:
-        message = line.rstrip("\r")
-        if message:
-            self._emit_line(message)

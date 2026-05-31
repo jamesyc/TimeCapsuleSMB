@@ -1292,7 +1292,7 @@ class CliTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
             with mock.patch("timecapsulesmb.cli.repair_xattrs.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_repair_structured", return_value=result):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_repair_service", return_value=result):
                     with redirect_stdout(output):
                         rc = repair_xattrs.main(["--path", "/Volumes/Data", "--dry-run", "--json"])
 

@@ -18,6 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli import repair_xattrs
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 
 
 class RecordingCommandContext:
@@ -54,6 +55,22 @@ class RecordingCommandContext:
 
     def set_stage(self, stage: str) -> None:
         self.stages.append(stage)
+
+
+class RecordingRepairCallbacks:
+    def __init__(self) -> None:
+        self.stages: list[str] = []
+        self.fields: dict[str, object] = {}
+        self.logs: list[str] = []
+
+    def set_stage(self, stage: str) -> None:
+        self.stages.append(stage)
+
+    def update_fields(self, **fields: object) -> None:
+        self.fields.update(fields)
+
+    def log(self, message: str) -> None:
+        self.logs.append(message)
 
 
 UNSET = object()
@@ -403,6 +420,52 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(RecordingCommandContext.instances[-1].result, "failure")
         self.assertIn("repair-xattrs detected issues", RecordingCommandContext.instances[-1].error or "")
+
+    def test_service_dry_run_uses_typed_request_and_callbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+            callbacks = RecordingRepairCallbacks()
+            request = repair_xattrs_service.RepairXattrsRequest(
+                path=root,
+                dry_run=True,
+                approve_repairs=False,
+            )
+
+            with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=FakeXattrCommands()):
+                result = repair_xattrs_service.run_repair(
+                    request,
+                    self.app_config({}),
+                    callbacks=repair_xattrs_service.RepairXattrsCallbacks(
+                        set_stage=callbacks.set_stage,
+                        update_fields=callbacks.update_fields,
+                        log=callbacks.log,
+                    ),
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.telemetry_result, "failure")
+        self.assertIn("resolve_scan_root", callbacks.stages)
+        self.assertIn("scan_findings", callbacks.stages)
+        self.assertEqual(callbacks.fields["repairable_count"], 2)
+        self.assertTrue(any(line.startswith("Would repair:") for line in callbacks.logs))
+
+    def test_service_repair_requires_approval_or_confirm_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+            request = repair_xattrs_service.RepairXattrsRequest(
+                path=root,
+                dry_run=False,
+                approve_repairs=False,
+            )
+
+            with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=FakeXattrCommands()):
+                result = repair_xattrs_service.run_repair(request, self.app_config({}))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.telemetry_result, "failure")
+        self.assertIn("--yes", result.error or "")
 
     def test_apply_repairs_after_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -42,6 +42,7 @@ from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, AC
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import STALE_BACKUP_AFTER_WRITE_MESSAGE, require_backup_fresh_for_plan
 from timecapsulesmb.services.reboot import RebootFlowError
+from timecapsulesmb.services.repair_xattrs import RepairRunResult, RepairXattrsRequest
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -3160,7 +3161,7 @@ class AppApiTests(unittest.TestCase):
     def test_repair_xattrs_uses_structured_runner(self) -> None:
         collector = CollectingSink()
         summary = repair_xattrs_domain.RepairSummary(scanned=1, scanned_files=1, unreadable=1, repairable=1)
-        repair_result = SimpleNamespace(
+        repair_result = RepairRunResult(
             returncode=0,
             root=Path("/Volumes/Data"),
             findings=[SimpleNamespace(path=Path("/Volumes/Data/broken"))],
@@ -3171,7 +3172,7 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
             with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured", return_value=repair_result) as runner:
+                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair", return_value=repair_result) as runner:
                     rc = service.run_api_request(
                         {
                             "operation": "repair-xattrs",
@@ -3182,6 +3183,11 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         runner.assert_called_once()
+        request = runner.call_args.args[0]
+        self.assertIsInstance(request, RepairXattrsRequest)
+        self.assertEqual(request.path, Path("/Volumes/Data"))
+        self.assertTrue(request.dry_run)
+        self.assertFalse(request.approve_repairs)
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertEqual(payload["finding_count"], 1)
         self.assertEqual(payload["summary"], "Found 1 metadata issue(s), 1 repairable.")
@@ -3189,10 +3195,10 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["stats"]["scanned"], 1)
         self.assertNotIsInstance(payload["summary"], dict)
 
-    def test_repair_xattrs_captures_direct_stdout_and_stderr_logs(self) -> None:
+    def test_repair_xattrs_forwards_service_log_callbacks(self) -> None:
         collector = CollectingSink()
         summary = repair_xattrs_domain.RepairSummary(scanned=1)
-        repair_result = SimpleNamespace(
+        repair_result = RepairRunResult(
             returncode=0,
             root=Path("/Volumes/Data"),
             findings=[],
@@ -3201,14 +3207,13 @@ class AppApiTests(unittest.TestCase):
             report=None,
         )
 
-        def fake_runner(*_args, **_kwargs):
-            print("stdout detail")
-            print("stderr detail", file=sys.stderr)
+        def fake_runner(_request, _config, *, callbacks, **_kwargs):
+            callbacks.log("scan detail")
             return repair_result
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
             with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured", side_effect=fake_runner):
+                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair", side_effect=fake_runner):
                     rc = service.run_api_request(
                         {
                             "operation": "repair-xattrs",
@@ -3219,8 +3224,7 @@ class AppApiTests(unittest.TestCase):
 
         logs = collector.events_of_type("log")
         self.assertEqual(rc, 0)
-        self.assertIn({"info": "stdout detail"}, [{log["level"]: log["message"]} for log in logs])
-        self.assertIn({"warning": "stderr detail"}, [{log["level"]: log["message"]} for log in logs])
+        self.assertIn({"info": "scan detail"}, [{log["level"]: log["message"]} for log in logs])
 
     def test_repair_xattrs_rejects_invalid_path_before_runner(self) -> None:
         cases = [
@@ -3236,7 +3240,7 @@ class AppApiTests(unittest.TestCase):
                 params.update(extra_params)
                 with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config") as load_config:
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured") as runner:
+                        with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
                             rc = service.run_api_request(
                                 {
                                     "operation": "repair-xattrs",
@@ -3259,7 +3263,7 @@ class AppApiTests(unittest.TestCase):
                 collector = CollectingSink()
                 with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                        with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured") as runner:
+                        with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
                             rc = service.run_api_request(
                                 {
                                     "operation": "repair-xattrs",
@@ -3281,7 +3285,7 @@ class AppApiTests(unittest.TestCase):
     def test_repair_xattrs_passes_valid_max_depth_as_int(self) -> None:
         collector = CollectingSink()
         summary = repair_xattrs_domain.RepairSummary(scanned=1)
-        repair_result = SimpleNamespace(
+        repair_result = RepairRunResult(
             returncode=0,
             root=Path("/Volumes/Data"),
             findings=[],
@@ -3292,7 +3296,7 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "darwin"):
             with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config", return_value=AppConfig.missing()):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured", return_value=repair_result) as runner:
+                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair", return_value=repair_result) as runner:
                     rc = service.run_api_request(
                         {
                             "operation": "repair-xattrs",
@@ -3306,14 +3310,14 @@ class AppApiTests(unittest.TestCase):
                     )
 
         self.assertEqual(rc, 0)
-        args = runner.call_args.args[0]
-        self.assertEqual(args.max_depth, 2)
+        request = runner.call_args.args[0]
+        self.assertEqual(request.max_depth, 2)
 
     def test_repair_xattrs_requires_confirmation_for_non_dry_run(self) -> None:
         collector = CollectingSink()
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "linux"):
-            with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured") as runner:
+            with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
                 rc = service.run_api_request(
                     {
                         "operation": "repair-xattrs",
@@ -3338,7 +3342,7 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "linux"):
             with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config") as load_config:
-                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured") as runner:
+                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair") as runner:
                     rc = service.run_api_request(
                         {
                             "operation": "repair-xattrs",

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import argparse
 import shlex
 import sys
-from contextlib import redirect_stderr, redirect_stdout
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import (
@@ -29,7 +27,6 @@ from timecapsulesmb.app.ops.deploy import (
     verify_runtime,
 )
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
-from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload, run_remote_actions
@@ -52,7 +49,6 @@ from timecapsulesmb.services.app import (
     bool_param,
     config_path,
     int_param,
-    jsonable,
     optional_int_param,
     required_path_param,
     string_param,
@@ -63,7 +59,6 @@ from timecapsulesmb.services.maintenance import (
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     FSCK_REBOOT_NO_DOWN_MESSAGE,
     UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
-    LineLogCapture,
     build_remote_fsck_script,
     format_fsck_plan,
     format_fsck_targets,
@@ -442,10 +437,10 @@ def repair_xattrs_operation(params: dict[str, object], context: AppOperationCont
         )
     config = load_optional_env_config(env_path=config_path(params))
     context.config = config
-    args = argparse.Namespace(
+    request = repair_xattrs_service.RepairXattrsRequest(
         path=path,
         dry_run=dry_run,
-        yes=not dry_run,
+        approve_repairs=not dry_run,
         recursive=recursive,
         max_depth=max_depth,
         include_hidden=include_hidden,
@@ -453,29 +448,16 @@ def repair_xattrs_operation(params: dict[str, object], context: AppOperationCont
         fix_permissions=fix_permissions,
         verbose=verbose,
     )
-    stdout_capture = LineLogCapture(lambda message: context.log(message, level="info"))
-    stderr_capture = LineLogCapture(lambda message: context.log(message, level="warning"))
     try:
-        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-            result = repair_xattrs_service.run_repair_structured(
-                args,
-                context,
-                config,
-                emit_log=context.log,
-            )
-    except SystemExit as exc:
-        message = system_exit_message(exc) or "repair-xattrs failed"
-        raise AppOperationError(message, code="operation_failed") from exc
-    finally:
-        stdout_capture.flush()
-        stderr_capture.flush()
-    return OperationResult(result.returncode == 0, repair_xattrs_payload({
-        "returncode": result.returncode,
-        "root": str(result.root),
-        "finding_count": len(result.findings),
-        "repairable_count": len(result.candidates),
-        "stats": jsonable(result.summary),
-        "report": result.report,
-        "telemetry_result": context.result,
-        "error": context.error,
-    }))
+        result = repair_xattrs_service.run_repair(
+            request,
+            config,
+            callbacks=repair_xattrs_service.RepairXattrsCallbacks(
+                set_stage=context.stage,
+                update_fields=context.update_fields,
+                log=context.log,
+            ),
+        )
+    except repair_xattrs_service.RepairXattrsServiceError as exc:
+        raise AppOperationError(str(exc) or "repair-xattrs failed", code="validation_failed") from exc
+    return OperationResult(result.returncode == 0, repair_xattrs_payload(result.to_payload_fields()))

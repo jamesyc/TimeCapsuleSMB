@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from timecapsulesmb.app.contracts import repair_xattrs_payload
 from timecapsulesmb.app.events import EventSink
@@ -16,7 +15,6 @@ from timecapsulesmb.cli.runtime import (
     no_input_enabled,
 )
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.repair_xattrs import (
     ACTION_CLEAR_ARCH_FLAG,
@@ -48,13 +46,15 @@ from timecapsulesmb.repair_xattrs import (
     xattrs_readable,
 )
 from timecapsulesmb.services.app import jsonable
-from timecapsulesmb.services.maintenance import LineLogCapture, RepairExecutionContext
 from timecapsulesmb.services.repair_xattrs import (
+    RepairXattrsCallbacks,
+    RepairXattrsRequest,
+    RepairXattrsServiceError,
     RepairRunResult,
     render_candidate_lines,
     render_diagnostic_lines,
     render_summary_lines,
-    run_repair_structured as _run_repair_structured,
+    run_repair as run_repair_service,
 )
 from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
@@ -64,62 +64,70 @@ def confirm(prompt_text: str) -> bool:
     return confirm_prompt(prompt_text, default=False, eof_default=False, interrupt_default=False)
 
 
-def run_repair_structured(
-    args: argparse.Namespace,
-    command_context: CommandContext,
-    config: AppConfig,
-    *,
-    emit_log: Callable[[str], None] | None = None,
-) -> RepairRunResult:
-    return _run_repair_structured(
-        args,
-        command_context,
-        config,
-        emit_log=emit_log,
-        confirm=confirm,
-        noninteractive=no_input_enabled(args),
+def repair_request_from_args(args: argparse.Namespace) -> RepairXattrsRequest:
+    return RepairXattrsRequest(
+        path=args.path,
+        dry_run=args.dry_run,
+        approve_repairs=args.yes,
+        recursive=args.recursive,
+        max_depth=args.max_depth,
+        include_hidden=args.include_hidden,
+        include_time_machine=args.include_time_machine,
+        fix_permissions=args.fix_permissions,
+        verbose=args.verbose,
     )
 
 
 def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
-    return run_repair_structured(args, command_context, config, emit_log=print).returncode
+    try:
+        result = run_repair_service(
+            repair_request_from_args(args),
+            config,
+            callbacks=RepairXattrsCallbacks(
+                set_stage=command_context.set_stage,
+                update_fields=command_context.update_fields,
+                log=print,
+            ),
+            confirm=None if no_input_enabled(args) else confirm,
+        )
+    except RepairXattrsServiceError as exc:
+        raise SystemExit(str(exc)) from exc
+    apply_result_to_command_context(result, command_context)
+    return result.returncode
 
 
-def _repair_result_payload(result: RepairRunResult, context: RepairExecutionContext | CommandContext) -> dict[str, object]:
-    return repair_xattrs_payload({
-        "returncode": result.returncode,
-        "root": str(result.root),
-        "finding_count": len(result.findings),
-        "repairable_count": len(result.candidates),
-        "stats": jsonable(result.summary),
-        "report": result.report,
-        "telemetry_result": context.result,
-        "error": context.error if isinstance(context, RepairExecutionContext) else None,
-    })
+def apply_result_to_command_context(result: RepairRunResult, command_context: CommandContext) -> None:
+    if result.telemetry_result == "success":
+        command_context.succeed()
+    elif result.error:
+        command_context.fail_with_error(result.error)
+    else:
+        command_context.fail()
+
+
+def _repair_result_payload(result: RepairRunResult) -> dict[str, object]:
+    fields = result.to_payload_fields()
+    fields["stats"] = jsonable(result.summary)
+    return repair_xattrs_payload(fields)
 
 
 def run_repair_json(args: argparse.Namespace, config: AppConfig, sink: EventSink) -> int:
     operation = "repair-xattrs"
-    context = RepairExecutionContext(lambda stage: sink.stage(operation, stage))
-    stdout_capture = LineLogCapture(lambda message: sink.log(operation, message, level="info"))
-    stderr_capture = LineLogCapture(lambda message: sink.log(operation, message, level="warning"))
     try:
-        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-            result = run_repair_structured(
-                args,
-                context,
-                config,
-                emit_log=lambda message: sink.log(operation, message),
-            )
-    except SystemExit as exc:
-        message = system_exit_message(exc) or "repair-xattrs failed"
+        result = run_repair_service(
+            repair_request_from_args(args),
+            config,
+            callbacks=RepairXattrsCallbacks(
+                set_stage=lambda stage: sink.stage(operation, stage),
+                log=lambda message: sink.log(operation, message),
+            ),
+        )
+    except RepairXattrsServiceError as exc:
+        message = str(exc) or "repair-xattrs failed"
         sink.error(operation, message, code="operation_failed")
         sink.result(operation, ok=False, payload={"error": message})
         return 1
-    finally:
-        stdout_capture.flush()
-        stderr_capture.flush()
-    payload = _repair_result_payload(result, context)
+    payload = _repair_result_payload(result)
     sink.result(operation, ok=result.returncode == 0, payload=payload)
     return result.returncode
 

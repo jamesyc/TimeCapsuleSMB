@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -25,6 +24,30 @@ from timecapsulesmb.repair_xattrs import (
 )
 
 
+class RepairXattrsServiceError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class RepairXattrsRequest:
+    path: Path | None
+    dry_run: bool
+    approve_repairs: bool
+    recursive: bool = True
+    max_depth: int | None = None
+    include_hidden: bool = False
+    include_time_machine: bool = False
+    fix_permissions: bool = False
+    verbose: bool = False
+
+
+@dataclass(frozen=True)
+class RepairXattrsCallbacks:
+    set_stage: Callable[[str], None] | None = None
+    update_fields: Callable[..., None] | None = None
+    log: Callable[[str], None] | None = None
+
+
 @dataclass(frozen=True)
 class RepairRunResult:
     returncode: int
@@ -33,6 +56,24 @@ class RepairRunResult:
     candidates: list[RepairCandidate]
     summary: RepairSummary
     report: str | None = None
+    telemetry_result: str = "success"
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+    def to_payload_fields(self) -> dict[str, object]:
+        return {
+            "returncode": self.returncode,
+            "root": str(self.root),
+            "finding_count": len(self.findings),
+            "repairable_count": len(self.candidates),
+            "stats": self.summary,
+            "report": self.report,
+            "telemetry_result": self.telemetry_result,
+            "error": self.error,
+        }
 
 
 def render_candidate_lines(candidates: list[RepairCandidate], *, dry_run: bool) -> list[str]:
@@ -86,30 +127,41 @@ def _emit_lines(emit: Callable[[str], None], lines: list[str]) -> None:
         emit(line)
 
 
-def run_repair_structured(
-    args: argparse.Namespace,
-    command_context,
+def _call_stage(callbacks: RepairXattrsCallbacks, stage: str) -> None:
+    if callbacks.set_stage is not None:
+        callbacks.set_stage(stage)
+
+
+def _call_update(callbacks: RepairXattrsCallbacks, **fields: object) -> None:
+    if callbacks.update_fields is not None:
+        callbacks.update_fields(**fields)
+
+
+def run_repair(
+    request: RepairXattrsRequest,
     config: AppConfig,
     *,
-    emit_log: Callable[[str], None] | None = None,
+    callbacks: RepairXattrsCallbacks | None = None,
     confirm: Callable[[str], bool] | None = None,
-    noninteractive: bool = False,
 ) -> RepairRunResult:
-    def emit(message: str) -> None:
-        if emit_log is not None:
-            emit_log(message)
+    callbacks = callbacks or RepairXattrsCallbacks()
 
-    command_context.set_stage("resolve_scan_root")
-    command_context.update_fields(
-        dry_run=args.dry_run,
-        recursive=args.recursive,
-        max_depth=args.max_depth,
-        include_hidden=args.include_hidden,
-        include_time_machine=args.include_time_machine,
-        fix_permissions=args.fix_permissions,
-        explicit_path=args.path is not None,
+    def emit(message: str) -> None:
+        if callbacks.log is not None:
+            callbacks.log(message)
+
+    _call_stage(callbacks, "resolve_scan_root")
+    _call_update(
+        callbacks,
+        dry_run=request.dry_run,
+        recursive=request.recursive,
+        max_depth=request.max_depth,
+        include_hidden=request.include_hidden,
+        include_time_machine=request.include_time_machine,
+        fix_permissions=request.fix_permissions,
+        explicit_path=request.path is not None,
     )
-    if args.path is None:
+    if request.path is None:
         try:
             root = default_share_path_from_config(
                 config,
@@ -117,37 +169,38 @@ def run_repair_structured(
                 path_exists_func=path_exists,
             )
         except RuntimeError as exc:
-            raise SystemExit(str(exc)) from exc
+            raise RepairXattrsServiceError(str(exc)) from exc
     else:
-        root = args.path
+        root = request.path
     if root is None:
-        raise SystemExit("Could not determine mounted share path. Pass --path explicitly.")
+        raise RepairXattrsServiceError("Could not determine mounted share path. Pass --path explicitly.")
     try:
         root = validate_repair_root_under_volumes(root)
     except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
+        raise RepairXattrsServiceError(str(exc)) from exc
 
     summary = RepairSummary()
-    command_context.update_fields(repair_root=str(root))
-    command_context.set_stage("scan_findings")
+    _call_update(callbacks, repair_root=str(root))
+    _call_stage(callbacks, "scan_findings")
     emit(f"Scanning {root}")
     try:
         findings = find_findings(
             root,
-            recursive=args.recursive,
-            max_depth=args.max_depth,
-            include_hidden=args.include_hidden,
-            include_time_machine=args.include_time_machine,
+            recursive=request.recursive,
+            max_depth=request.max_depth,
+            include_hidden=request.include_hidden,
+            include_time_machine=request.include_time_machine,
             include_directories=True,
             include_root_directory=True,
-            fix_permissions=args.fix_permissions,
+            fix_permissions=request.fix_permissions,
             summary=summary,
         )
     except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
+        raise RepairXattrsServiceError(str(exc)) from exc
     repairs = actionable_findings(findings)
     candidates = [finding_to_candidate(finding) for finding in repairs]
-    command_context.update_fields(
+    _call_update(
+        callbacks,
         scanned_paths=summary.scanned,
         scanned_files=summary.scanned_files,
         scanned_dirs=summary.scanned_dirs,
@@ -161,42 +214,37 @@ def run_repair_structured(
     if not findings:
         emit("No repairable files found.")
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
-        command_context.succeed()
         return RepairRunResult(0, root, findings, candidates, summary)
 
-    command_context.set_stage("report_findings")
-    _emit_lines(emit, render_diagnostic_lines(findings, verbose=args.verbose))
+    _call_stage(callbacks, "report_findings")
+    _emit_lines(emit, render_diagnostic_lines(findings, verbose=request.verbose))
     if candidates:
-        _emit_lines(emit, render_candidate_lines(candidates, dry_run=args.dry_run))
+        _emit_lines(emit, render_candidate_lines(candidates, dry_run=request.dry_run))
 
-    if args.dry_run:
+    if request.dry_run:
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
         emit("No changes made.")
         report = build_repair_report(findings)
-        command_context.fail_with_error(report)
-        return RepairRunResult(0, root, findings, candidates, summary, report=report)
+        return RepairRunResult(0, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
 
     if not candidates:
         emit("No known-safe repairs are available for the detected issues.")
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
         report = build_repair_report(findings)
-        command_context.fail_with_error(report)
-        return RepairRunResult(1, root, findings, candidates, summary, report=report)
+        return RepairRunResult(1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
 
-    command_context.set_stage("confirm_repair")
-    if noninteractive and not args.yes:
+    _call_stage(callbacks, "confirm_repair")
+    if not request.approve_repairs and confirm is None:
         message = "Running `repair-xattrs` in non-interactive mode requires `--yes` to apply repairs."
         emit(message)
-        command_context.fail_with_error(message)
-        return RepairRunResult(1, root, findings, candidates, summary, report=message)
-    if not args.yes and not (confirm is not None and confirm(f"Repair {len(candidates)} paths with known-safe fixes?")):
+        return RepairRunResult(1, root, findings, candidates, summary, report=message, telemetry_result="failure", error=message)
+    if not request.approve_repairs and not confirm(f"Repair {len(candidates)} paths with known-safe fixes?"):
         emit("No changes made.")
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
         report = build_repair_report(findings)
-        command_context.fail_with_error(report)
-        return RepairRunResult(0, root, findings, candidates, summary, report=report)
+        return RepairRunResult(0, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
 
-    command_context.set_stage("repair_findings")
+    _call_stage(callbacks, "repair_findings")
     failed_findings: list[RepairFinding] = []
     for finding, candidate in zip(repairs, candidates):
         emit(f"Repairing: {candidate.path}")
@@ -215,11 +263,9 @@ def run_repair_structured(
                 emit(f"FAIL repair did not fix detected issue: {candidate.path}")
 
     unresolved = unresolved_findings_after_success(findings) + failed_findings
-    command_context.update_fields(repaired_count=summary.repaired, repair_failed_count=summary.failed)
+    _call_update(callbacks, repaired_count=summary.repaired, repair_failed_count=summary.failed)
     _emit_lines(emit, render_summary_lines(summary, dry_run=False))
     if unresolved:
         report = build_repair_report(findings, failed=unresolved)
-        command_context.fail_with_error(report)
-        return RepairRunResult(1, root, findings, candidates, summary, report=report)
-    command_context.succeed()
+        return RepairRunResult(1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
     return RepairRunResult(0, root, findings, candidates, summary)
