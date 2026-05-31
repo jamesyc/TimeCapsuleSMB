@@ -62,6 +62,16 @@ enum DeviceProfileEditorValidationError: String, CaseIterable, Equatable, Locali
     }
 }
 
+fileprivate struct DeviceProfileEditorSettingsValidation {
+    let settings: DeviceProfileSettings?
+    let errors: [DeviceProfileEditorValidationError]
+}
+
+fileprivate struct DeviceProfileEditorDraftValidation {
+    let settings: DeviceProfileSettings?
+    let errors: [DeviceProfileEditorValidationError]
+}
+
 struct DeviceProfileEditorDraft: Equatable {
     var displayName: String
     var host: String
@@ -118,11 +128,22 @@ struct DeviceProfileEditorDraft: Equatable {
     }
 
     func validatedSettings() throws -> DeviceProfileSettings {
-        guard let mountWait = ValueParsers.nonNegativeInteger(mountWaitSeconds) else {
-            throw DeviceProfileEditorValidationError.mountWaitInvalid
+        let validation = settingsValidation()
+        if let settings = validation.settings {
+            return settings
         }
-        guard let ataIdle = ValueParsers.nonNegativeInteger(ataIdleSeconds) else {
-            throw DeviceProfileEditorValidationError.ataIdleSecondsInvalid
+        throw validation.errors.first ?? DeviceProfileEditorValidationError.mountWaitInvalid
+    }
+
+    fileprivate func settingsValidation() -> DeviceProfileEditorSettingsValidation {
+        var errors: [DeviceProfileEditorValidationError] = []
+        let mountWait = ValueParsers.nonNegativeInteger(mountWaitSeconds)
+        if mountWait == nil {
+            errors.append(.mountWaitInvalid)
+        }
+        let ataIdle = ValueParsers.nonNegativeInteger(ataIdleSeconds)
+        if ataIdle == nil {
+            errors.append(.ataIdleSecondsInvalid)
         }
         let trimmedAtaStandby = ataStandby.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsedAtaStandby: Int?
@@ -131,9 +152,13 @@ struct DeviceProfileEditorDraft: Equatable {
         } else if let value = ValueParsers.nonNegativeInteger(trimmedAtaStandby) {
             parsedAtaStandby = value
         } else {
-            throw DeviceProfileEditorValidationError.ataStandbyInvalid
+            errors.append(.ataStandbyInvalid)
+            parsedAtaStandby = nil
         }
-        return DeviceProfileSettings(
+        guard errors.isEmpty, let mountWait, let ataIdle else {
+            return DeviceProfileEditorSettingsValidation(settings: nil, errors: errors)
+        }
+        let settings = DeviceProfileSettings(
             nbnsEnabled: nbnsEnabled,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             anyProtocol: anyProtocol,
@@ -142,6 +167,7 @@ struct DeviceProfileEditorDraft: Equatable {
             ataIdleSeconds: ataIdle,
             ataStandby: parsedAtaStandby
         )
+        return DeviceProfileEditorSettingsValidation(settings: settings, errors: [])
     }
 
     func editableFields() throws -> DeviceProfileEditableFields {
@@ -171,7 +197,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     private var baselineDraft: DeviceProfileEditorDraft
     private let operationObserver = BackendOperationObserver()
     private var pendingProfile: DeviceProfile?
-    private var pendingDraft: DeviceProfileEditorDraft?
+    private var pendingEditableFields: DeviceProfileEditableFields?
     private var pendingPassword: String?
     private var pendingConfigureDraft: ConfigureProfileDraft?
     private var isApplyingDraft = false
@@ -248,19 +274,9 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     func save(profile: DeviceProfile) async {
-        let validationErrors = validationErrors(for: profile)
-        guard validationErrors.isEmpty else {
-            self.validationErrors = validationErrors
-            error = nil
-            state = .invalid
-            return
-        }
-
-        let settings: DeviceProfileSettings
-        do {
-            settings = try draft.validatedSettings()
-        } catch {
-            self.validationErrors = validationErrors
+        let validation = validationResult(for: profile)
+        guard validation.errors.isEmpty, let settings = validation.settings else {
+            self.validationErrors = validation.errors
             self.error = nil
             self.state = .invalid
             return
@@ -278,7 +294,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             }
             startReconfigure(profile: profile, password: password, settings: settings)
         } else {
-            await saveRegistryOnly(profile: profile, replacementPassword: pendingReplacementPassword)
+            await saveRegistryOnly(profile: profile, settings: settings, replacementPassword: pendingReplacementPassword)
         }
     }
 
@@ -313,7 +329,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func validationErrors(for profile: DeviceProfile) -> [DeviceProfileEditorValidationError] {
+    private func validationResult(for profile: DeviceProfile) -> DeviceProfileEditorDraftValidation {
         var errors: [DeviceProfileEditorValidationError] = []
         if draft.trimmedHost.isEmpty {
             errors.append(.hostRequired)
@@ -321,20 +337,15 @@ final class DeviceProfileEditorStore: ObservableObject {
                   duplicate.id != profile.id {
             errors.append(.duplicateHost)
         }
-        if ValueParsers.nonNegativeInteger(draft.mountWaitSeconds) == nil {
-            errors.append(.mountWaitInvalid)
-        }
-        if ValueParsers.nonNegativeInteger(draft.ataIdleSeconds) == nil {
-            errors.append(.ataIdleSecondsInvalid)
-        }
-        let trimmedAtaStandby = draft.ataStandby.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedAtaStandby.isEmpty && ValueParsers.nonNegativeInteger(trimmedAtaStandby) == nil {
-            errors.append(.ataStandbyInvalid)
-        }
-        return errors
+        let settingsValidation = draft.settingsValidation()
+        errors.append(contentsOf: settingsValidation.errors)
+        return DeviceProfileEditorDraftValidation(
+            settings: errors.isEmpty ? settingsValidation.settings : nil,
+            errors: errors
+        )
     }
 
-    private func saveRegistryOnly(profile: DeviceProfile, replacementPassword: String?) async {
+    private func saveRegistryOnly(profile: DeviceProfile, settings: DeviceProfileSettings, replacementPassword: String?) async {
         state = .saving
         validationErrors = []
         error = nil
@@ -342,7 +353,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         do {
             let saved = try await appStore.saveProfileEdits(
                 profile: profile,
-                fields: draft.editableFields(),
+                fields: DeviceProfileEditableFields(displayName: draft.displayName, settings: settings),
                 replacementPassword: replacementPassword
             )
             savedProfile = saved
@@ -402,7 +413,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         }
         operationObserver.start(operation)
         pendingProfile = profile
-        pendingDraft = draft
+        pendingEditableFields = DeviceProfileEditableFields(displayName: draft.displayName, settings: settings)
         pendingPassword = password
         pendingConfigureDraft = configureDraft
         validationErrors = []
@@ -450,7 +461,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             return
         }
         guard pendingProfile != nil,
-              let draft = pendingDraft,
+              let editableFields = pendingEditableFields,
               let password = pendingPassword,
               let configureDraft = pendingConfigureDraft else {
             failContract(DeviceRegistryError.profileNotFound(activeOperation.profileID ?? "unknown"))
@@ -465,8 +476,8 @@ final class DeviceProfileEditorStore: ObservableObject {
                     draft: configureDraft,
                     password: password,
                     overrides: ConfiguredDeviceProfileOverrides(
-                        displayName: draft.displayName,
-                        settings: try draft.validatedSettings()
+                        displayName: editableFields.displayName,
+                        settings: editableFields.settings
                     )
                 )
                 savedProfile = saved
@@ -536,7 +547,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         operationObserver.finish()
         profilePersistence.discardConfigureDraft(pendingConfigureDraft)
         pendingProfile = nil
-        pendingDraft = nil
+        pendingEditableFields = nil
         pendingPassword = nil
         pendingConfigureDraft = nil
     }

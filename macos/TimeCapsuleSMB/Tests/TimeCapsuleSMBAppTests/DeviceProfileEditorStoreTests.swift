@@ -291,9 +291,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
         store.draft.host = first.host
         store.draft.mountWaitSeconds = "bad"
+        store.draft.ataIdleSeconds = "also-bad"
+        store.draft.ataStandby = "still-bad"
         await store.save(profile: first)
         XCTAssertEqual(store.state, .invalid)
-        XCTAssertEqual(store.validationErrors, [.mountWaitInvalid])
+        XCTAssertEqual(store.validationErrors, [.mountWaitInvalid, .ataIdleSecondsInvalid, .ataStandbyInvalid])
         XCTAssertEqual(fixture.runner.calls, [])
     }
 

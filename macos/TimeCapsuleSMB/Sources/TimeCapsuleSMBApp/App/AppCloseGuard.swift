@@ -58,18 +58,14 @@ private final class AppCloseGuardAlertPresenter: AppCloseGuardPresenting {
 
         if let window, window.isVisible {
             alert.beginSheetModal(for: window) { response in
-                Task { @MainActor in
-                    completion(response == .alertSecondButtonReturn)
-                }
+                completion(response == .alertSecondButtonReturn)
             }
             return
         }
 
         DispatchQueue.main.async {
             let response = alert.runModal()
-            Task { @MainActor in
-                completion(response == .alertSecondButtonReturn)
-            }
+            completion(response == .alertSecondButtonReturn)
         }
     }
 }

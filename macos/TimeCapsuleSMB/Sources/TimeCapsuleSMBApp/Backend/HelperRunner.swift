@@ -65,10 +65,10 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
 
         let input = Pipe()
         let output = Pipe()
-        let error = Pipe()
+        let stderrPipe = Pipe()
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = error
+        process.standardError = stderrPipe
 
         do {
             try process.run()
@@ -83,7 +83,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         }
         let stderrLimit = self.stderrLimit
         let stderrTask = Task.detached {
-            await Self.readCapped(error.fileHandleForReading, limit: stderrLimit, pipeReader: pipeReader)
+            await Self.readCapped(stderrPipe.fileHandleForReading, limit: stderrLimit, pipeReader: pipeReader)
         }
 
         let requestData: Data

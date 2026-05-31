@@ -105,6 +105,50 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(events.last?.ok, true)
     }
 
+    func testRunnerWritesLargeRequestPayloadWithoutCorruption() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            exec python3 -c '
+            import json, sys
+            request = json.load(sys.stdin)
+            payload = request["params"]["payload"]
+            print(json.dumps({
+                "schema_version": 1,
+                "request_id": request["request_id"],
+                "type": "result",
+                "operation": request["operation"],
+                "ok": True,
+                "payload": {
+                    "length": len(payload),
+                    "prefix": payload[:16],
+                    "suffix": payload[-16:]
+                }
+            }), flush=True)
+            '
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+        let largePayload = String(repeating: "abcdef0123456789", count: 8192)
+
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: ["payload": .string(largePayload)], requestID: "request-1") {
+            await recorder.append($0)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(events.last?.type, "result")
+        XCTAssertEqual(events.last?.ok, true)
+        guard case .object(let payload)? = events.last?.payload else {
+            return XCTFail("Expected structured payload")
+        }
+        XCTAssertEqual(payload["length"], .number(Double(largePayload.count)))
+        XCTAssertEqual(payload["prefix"], .string(String(largePayload.prefix(16))))
+        XCTAssertEqual(payload["suffix"], .string(String(largePayload.suffix(16))))
+    }
+
     func testRunnerDecodesTruncatedUTF8StderrWithReplacementCharacter() async throws {
         let temp = try TemporaryDirectory()
         let helper = try makeHelper(

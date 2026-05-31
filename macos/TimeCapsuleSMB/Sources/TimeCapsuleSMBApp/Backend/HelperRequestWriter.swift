@@ -2,6 +2,7 @@ import Foundation
 #if canImport(Darwin)
 import Darwin
 #endif
+import Dispatch
 
 public protocol HelperRequestWriting: Sendable {
     func write(_ data: Data, to handle: FileHandle) async throws
@@ -37,78 +38,113 @@ public final class PipeRequestWriter: HelperRequestWriting, @unchecked Sendable 
 
 private final class PipeRequestWriteState: @unchecked Sendable {
     private let data: Data
-    private let handle: FileHandle
+    private let fileDescriptor: CInt
     private let chunkSize: Int
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "TimeCapsuleSMB.PipeRequestWriter")
     private var offset = 0
+    private var originalFlags: CInt?
     private var continuation: CheckedContinuation<Void, Error>?
+    private var source: DispatchSourceWrite?
     private var completed = false
 
     init(data: Data, handle: FileHandle, chunkSize: Int) {
         self.data = data
-        self.handle = handle
+        self.fileDescriptor = handle.fileDescriptor
         self.chunkSize = max(1, chunkSize)
     }
 
     func start(continuation: CheckedContinuation<Void, Error>) {
-        lock.lock()
-        if completed {
-            lock.unlock()
-            continuation.resume(throwing: CancellationError())
-            return
-        }
-        self.continuation = continuation
-        lock.unlock()
+        queue.async {
+            if self.completed {
+                continuation.resume(throwing: CancellationError())
+                return
+            }
 
-        handle.writeabilityHandler = { [weak self] writableHandle in
-            self?.writeNextChunk(to: writableHandle)
+            let originalFlags = fcntl(self.fileDescriptor, F_GETFL)
+            guard originalFlags != -1 else {
+                self.completed = true
+                continuation.resume(throwing: Self.posixError(errno))
+                return
+            }
+            self.originalFlags = originalFlags
+            if fcntl(self.fileDescriptor, F_SETFL, originalFlags | O_NONBLOCK) == -1 {
+                self.completed = true
+                continuation.resume(throwing: Self.posixError(errno))
+                return
+            }
+
+            self.continuation = continuation
+            let source = DispatchSource.makeWriteSource(fileDescriptor: self.fileDescriptor, queue: self.queue)
+            self.source = source
+            source.setEventHandler { [weak self] in
+                self?.writeAvailableData()
+            }
+            source.resume()
         }
-        writeNextChunk(to: handle)
     }
 
     func cancel() {
-        complete(.failure(CancellationError()))
+        queue.async {
+            self.complete(.failure(CancellationError()))
+        }
     }
 
-    private func writeNextChunk(to handle: FileHandle) {
-        let chunk: Data
-        lock.lock()
+    private func writeAvailableData() {
         guard !completed else {
-            lock.unlock()
-            return
-        }
-        let end = min(offset + chunkSize, data.count)
-        chunk = data.subdata(in: offset..<end)
-        offset = end
-        lock.unlock()
-
-        do {
-            try handle.write(contentsOf: chunk)
-        } catch {
-            complete(.failure(error))
             return
         }
 
-        lock.lock()
-        let finished = offset >= data.count
-        lock.unlock()
-        if finished {
-            complete(.success(()))
+        while offset < data.count {
+            let length = min(chunkSize, data.count - offset)
+            let written = data.withUnsafeBytes { bytes in
+                guard let baseAddress = bytes.baseAddress else {
+                    return 0
+                }
+                return Darwin.write(fileDescriptor, baseAddress.advanced(by: offset), length)
+            }
+
+            if written > 0 {
+                offset += written
+                continue
+            }
+
+            if written == -1 {
+                switch errno {
+                case EAGAIN, EWOULDBLOCK:
+                    return
+                case EINTR:
+                    continue
+                default:
+                    complete(.failure(Self.posixError(errno)))
+                    return
+                }
+            }
+
+            complete(.failure(Self.posixError(EPIPE)))
+            return
         }
+
+        complete(.success(()))
     }
 
     private func complete(_ result: Result<Void, Error>) {
-        lock.lock()
         guard !completed else {
-            lock.unlock()
             return
         }
         completed = true
         let continuation = self.continuation
         self.continuation = nil
-        lock.unlock()
+        let source = self.source
+        self.source = nil
 
-        handle.writeabilityHandler = nil
+        if let originalFlags {
+            _ = fcntl(fileDescriptor, F_SETFL, originalFlags)
+        }
+        source?.cancel()
         continuation?.resume(with: result)
+    }
+
+    private static func posixError(_ code: CInt) -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
     }
 }
