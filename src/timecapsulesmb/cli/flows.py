@@ -4,16 +4,8 @@ import time
 from typing import Iterable
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.deploy.verify import (
-    render_managed_runtime_verification,
-)
-from timecapsulesmb.device.probe import (
-    probe_managed_runtime_conn,
-    read_remote_network_diagnostics_conn,
-    read_runtime_log_tails_conn,
-    runtime_startup_failure_debug_fields,
-)
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -44,32 +36,17 @@ def verify_managed_runtime_flow(
     heading: str,
     failure_message: str,
 ) -> bool:
-    command_context.set_stage(stage)
-    verification = probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
-    for line in render_managed_runtime_verification(verification, heading=heading):
-        print(line)
-    if not verification.ready:
-        detail = verification.detail.strip()
-        runtime_log_fields: dict[str, object] = {}
-        try:
-            runtime_log_fields = read_runtime_log_tails_conn(connection)
-            command_context.add_debug_fields(**runtime_log_fields)
-        except Exception as exc:
-            command_context.add_debug_fields(remote_runtime_log_tail_error=system_exit_message(exc))
-        startup_failure_fields = runtime_startup_failure_debug_fields(
-            runtime_log_fields,
-            verification_detail=detail,
+    try:
+        verify_managed_runtime_ready(
+            connection,
+            callbacks=command_context.to_operation_callbacks(),
+            stage=stage,
+            timeout_seconds=timeout_seconds,
+            heading=heading,
+            failure_message=failure_message,
         )
-        if startup_failure_fields:
-            command_context.add_debug_fields(**startup_failure_fields)
-            if startup_failure_fields.get("runtime_startup_failure") == "network_auto_ip_unavailable":
-                try:
-                    command_context.add_debug_fields(**read_remote_network_diagnostics_conn(connection))
-                except Exception as exc:
-                    command_context.add_debug_fields(remote_network_diagnostics_error=system_exit_message(exc))
-        if detail:
-            failure_message = f"{failure_message.rstrip()} {detail}"
-        print(failure_message)
-        command_context.fail_with_error(failure_message)
+    except DeviceError as exc:
+        print(str(exc))
+        command_context.fail_with_error(str(exc))
         return False
     return True

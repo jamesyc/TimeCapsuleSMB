@@ -4,7 +4,6 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -28,7 +27,6 @@ from timecapsulesmb.deploy.planner import (
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     FileTransfer,
     GENERATED_FLASH_CONFIG_SOURCE,
@@ -47,19 +45,20 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_green
-from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
     DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+    DeployCompletionMessages,
     DeployRuntimeConfig,
-    activation_complete_message,
+    complete_deployment_after_upload,
     deploy_artifact_failures,
+    effective_no_wait_for_deploy,
     prepare_deployment_plan,
     prepare_deploy_payload_context,
     render_flash_runtime_config,
     upload_and_verify_deployment_payload,
 )
-from timecapsulesmb.services.reboot import RebootFlowError, request_reboot_and_wait
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import load_env_config
 
 
@@ -85,6 +84,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to an AirPort storage device.")
     add_config_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot; activate the deployed runtime in place")
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Request reboot and return without waiting for SSH or runtime verification",
+    )
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     add_no_input_argument(parser)
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
@@ -151,6 +155,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         payload_family = payload_context.payload_family
         is_netbsd4 = payload_context.is_netbsd4
         startup_mode = payload_context.startup_mode
+        no_wait = effective_no_wait_for_deploy(requested=args.no_wait, no_reboot=args.no_reboot)
         command_context.update_fields(deploy_startup_mode=startup_mode)
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload.", flush=True)
@@ -167,6 +172,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 mount_wait_seconds=apple_mount_wait_seconds,
                 callbacks=command_context.to_operation_callbacks(),
                 resolver=resolve_payload_artifacts,
+                wait_after_reboot=not no_wait,
             )
         except DeviceError as exc:
             raise SystemExit(str(exc)) from exc
@@ -237,28 +243,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Deployed Samba payload to {plan.payload_dir}", flush=True)
         print("Updated /mnt/Flash boot files.", flush=True)
 
-        if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-            command_context.set_stage("activate_runtime")
-            print("Starting deployed runtime without reboot.")
-            run_remote_actions(connection, plan.activation_actions)
-            if not verify_managed_runtime_flow(
-                connection,
-                command_context,
-                stage="verify_runtime_activation",
-                timeout_seconds=200,
-                heading="Waiting for managed runtime to finish starting...",
-                failure_message="Managed runtime activation failed.",
-            ):
-                return 1
-            print(activation_complete_message(is_netbsd4=is_netbsd4))
-            print(color_green("Deploy Finished."))
-            command_context.succeed()
-            return 0
-
-        if not args.yes:
+        if plan.reboot_required and not args.yes:
             device_name = _target_family_display_name(target)
             if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-                prompt = f"This will reboot the {device_name}, then activate Samba after SSH returns. Continue?"
+                if no_wait:
+                    prompt = (
+                        f"This will request a reboot of the {device_name} and return without "
+                        "post-reboot Samba activation or verification. Continue?"
+                    )
+                else:
+                    prompt = f"This will reboot the {device_name}, then activate Samba after SSH returns. Continue?"
+            elif no_wait:
+                prompt = f"This will request a reboot of the {device_name} and return without waiting for verification. Continue?"
             else:
                 prompt = f"This will reboot the {device_name} now. Continue?"
             proceed = command_context.confirm_or_fail(
@@ -274,62 +270,37 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
                 return 0
 
-        print("Requesting reboot...", flush=True)
         try:
-            request_reboot_and_wait(
+            completion = complete_deployment_after_upload(
                 connection,
-                strategy="ssh_shutdown_then_reboot",
+                prepared_plan,
+                no_wait=no_wait,
                 callbacks=command_context.to_operation_callbacks(),
-                down_timeout_seconds=60,
-                up_timeout_seconds=240,
-                reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-                reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+                messages=DeployCompletionMessages(
+                    netbsd4_heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
+                    reboot_request_message="Requesting reboot...",
+                    reboot_runtime_wait_message="Waiting for managed runtime to finish starting...",
+                    reboot_heading="Wait for device to finish loading; it can take a few minutes for Samba to start up...",
+                ),
+                run_remote_actions_func=run_remote_actions,
+                request_reboot_func=request_reboot,
+                request_reboot_and_wait_func=request_reboot_and_wait,
             )
         except RebootFlowError as exc:
             print(str(exc))
             command_context.fail_with_error(str(exc))
             return 1
+        except DeviceError as exc:
+            print(str(exc))
+            command_context.fail_with_error(str(exc))
+            return 1
 
-        if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-            command_context.set_stage("probe_runtime")
-            decision = decide_netbsd4_post_reboot_activation(connection)
-            command_context.add_debug_fields(
-                activation_decision=decision.reason,
-                manual_activation_required=decision.run_actions,
-            )
-            print(decision.detail)
-            if decision.run_actions:
-                command_context.set_stage("post_reboot_activation")
-                print("Activating deployed runtime after reboot.")
-                run_remote_actions(connection, plan.activation_actions)
-            else:
-                print("NetBSD4 firmware autostart is enabled; waiting for managed runtime.")
-            if not verify_managed_runtime_flow(
-                connection,
-                command_context,
-                stage="verify_runtime_activation",
-                timeout_seconds=200,
-                heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
-                failure_message="NetBSD4 activation failed.",
-            ):
-                return 1
-            print(activation_complete_message(is_netbsd4=is_netbsd4))
-            print(color_green("Deploy Finished."))
-            command_context.succeed()
-            return 0
-
-        print("Waiting for managed runtime to finish starting...", flush=True)
-        if verify_managed_runtime_flow(
-            connection,
-            command_context,
-            stage="verify_runtime_reboot",
-            timeout_seconds=240,
-            heading="Wait for device to finish loading; it can take a few minutes for Samba to start up...",
-            failure_message="Managed runtime did not become ready after reboot.",
-        ):
-            print(color_green("Deploy Finished."))
-            command_context.succeed()
-            return 0
-
-        return 1
+        if completion.message:
+            print(completion.message)
+        if completion.reboot_requested and not completion.waited:
+            print("Reboot requested; not waiting for the device to go down or come back.")
+            print("Post-reboot runtime verification skipped.")
+        print(color_green("Deploy Finished."))
+        command_context.succeed()
+        return 0
     return 1

@@ -57,6 +57,7 @@ from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+    DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
@@ -107,7 +108,15 @@ from timecapsulesmb.device.probe import (
     wait_for_ssh_state_conn,
 )
 from timecapsulesmb.device.storage import MaStVolume, PayloadHome, mounted_mast_volumes_conn
-from timecapsulesmb.services.activation import decide_manual_activation, decide_netbsd4_post_reboot_activation
+from timecapsulesmb.services.activation import ActivationDecision, decide_manual_activation, decide_netbsd4_post_reboot_activation
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.deploy import (
+    DeployArtifactPaths,
+    DeployCompletionMessages,
+    DeployPayloadContext,
+    PreparedDeployPlan,
+    complete_deployment_after_upload,
+)
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
@@ -160,6 +169,58 @@ class DeployModuleTests(unittest.TestCase):
             "12345678-1234-1234-1234-123456789012",
             builtin,
             "hfs",
+        )
+
+    def _prepared_deploy_plan(
+        self,
+        *,
+        startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
+        payload_family: str = "netbsd6_samba4",
+        is_netbsd4: bool = False,
+        wait_after_reboot: bool = True,
+    ) -> PreparedDeployPlan:
+        payload_home = self._payload_home()
+        plan = build_deployment_plan(
+            "root@10.0.0.2",
+            payload_home,
+            Path("bin/smbd"),
+            Path("bin/mdns"),
+            Path("bin/nbns"),
+            startup_mode=startup_mode,
+            wait_after_reboot=wait_after_reboot,
+        )
+        return PreparedDeployPlan(
+            payload_context=DeployPayloadContext(
+                compatibility=mock.Mock(),
+                payload_family=payload_family,
+                is_netbsd4=is_netbsd4,
+                startup_mode=startup_mode,
+            ),
+            artifacts=DeployArtifactPaths(
+                smbd=Path("bin/smbd"),
+                mdns_advertiser=Path("bin/mdns"),
+                nbns_advertiser=Path("bin/nbns"),
+            ),
+            payload_home=payload_home,
+            plan=plan,
+        )
+
+    def _operation_callbacks(self):
+        stages: list[str] = []
+        logs: list[str] = []
+        debug_fields: dict[str, object] = {}
+        finish_fields: dict[str, object] = {}
+        return (
+            OperationCallbacks(
+                set_stage=stages.append,
+                log=logs.append,
+                add_debug_fields=debug_fields.update,
+                update_fields=finish_fields.update,
+            ),
+            stages,
+            logs,
+            debug_fields,
+            finish_fields,
         )
 
     def _extract_shell_function(self, source: str, name: str) -> str:
@@ -7516,6 +7577,135 @@ fi
         self.assertTrue(decision.verify_runtime)
         self.assertEqual(decision.reason, "firmware_autostart_enabled")
         self.assertIs(decision.autostart, autostart)
+
+    def test_complete_deployment_activate_now_runs_actions_and_verifies_runtime(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW)
+        callbacks, stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        run_actions = mock.Mock()
+        verify_runtime = mock.Mock()
+        request_reboot_func = mock.Mock()
+        request_reboot_and_wait_func = mock.Mock()
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=False,
+            callbacks=callbacks,
+            run_remote_actions_func=run_actions,
+            request_reboot_func=request_reboot_func,
+            request_reboot_and_wait_func=request_reboot_and_wait_func,
+            verify_runtime_func=verify_runtime,
+        )
+
+        run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
+        request_reboot_func.assert_not_called()
+        request_reboot_and_wait_func.assert_not_called()
+        verify_runtime.assert_called_once()
+        self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_activation")
+        self.assertEqual(stages, ["activate_runtime"])
+        self.assertIn("Starting deployed runtime without reboot.", logs)
+        self.assertFalse(result.reboot_requested)
+        self.assertFalse(result.rebooted)
+        self.assertTrue(result.verified)
+
+    def test_complete_deployment_no_wait_requests_reboot_without_verifying_runtime(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            payload_family="netbsd4be_samba4",
+            is_netbsd4=True,
+            wait_after_reboot=False,
+        )
+        callbacks, _stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        request_reboot_func = mock.Mock()
+        request_reboot_and_wait_func = mock.Mock()
+        verify_runtime = mock.Mock()
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=True,
+            callbacks=callbacks,
+            messages=DeployCompletionMessages(reboot_request_message="Requesting reboot..."),
+            request_reboot_func=request_reboot_func,
+            request_reboot_and_wait_func=request_reboot_and_wait_func,
+            verify_runtime_func=verify_runtime,
+        )
+
+        request_reboot_func.assert_called_once_with(
+            connection,
+            strategy="ssh_shutdown_then_reboot",
+            callbacks=callbacks,
+            raise_on_request_error=True,
+        )
+        request_reboot_and_wait_func.assert_not_called()
+        verify_runtime.assert_not_called()
+        self.assertIn("Requesting reboot...", logs)
+        self.assertTrue(result.reboot_requested)
+        self.assertFalse(result.waited)
+        self.assertFalse(result.verified)
+
+    def test_complete_deployment_netbsd4_runs_activation_after_reboot_when_autostart_missing(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            payload_family="netbsd4be_samba4",
+            is_netbsd4=True,
+        )
+        callbacks, stages, logs, debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        run_actions = mock.Mock()
+        verify_runtime = mock.Mock()
+        request_reboot_and_wait_func = mock.Mock()
+        activation_decision = ActivationDecision(
+            run_actions=True,
+            verify_runtime=True,
+            reason="firmware_autostart_missing",
+            detail="/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local",
+        )
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=False,
+            callbacks=callbacks,
+            run_remote_actions_func=run_actions,
+            request_reboot_and_wait_func=request_reboot_and_wait_func,
+            decide_post_reboot_activation=mock.Mock(return_value=activation_decision),
+            verify_runtime_func=verify_runtime,
+        )
+
+        request_reboot_and_wait_func.assert_called_once()
+        run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
+        verify_runtime.assert_called_once()
+        self.assertEqual(stages, ["probe_runtime", "post_reboot_activation"])
+        self.assertEqual(debug_fields["activation_decision"], "firmware_autostart_missing")
+        self.assertTrue(debug_fields["manual_activation_required"])
+        self.assertIn("Activating deployed runtime after reboot.", logs)
+        self.assertTrue(result.rebooted)
+        self.assertTrue(result.verified)
+
+    def test_complete_deployment_netbsd6_reboot_waits_for_runtime(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(startup_mode=DEPLOY_STARTUP_REBOOT_THEN_VERIFY)
+        callbacks, stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        verify_runtime = mock.Mock()
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=False,
+            callbacks=callbacks,
+            messages=DeployCompletionMessages(reboot_runtime_wait_message="Waiting for managed runtime..."),
+            request_reboot_and_wait_func=mock.Mock(),
+            verify_runtime_func=verify_runtime,
+        )
+
+        verify_runtime.assert_called_once()
+        self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_reboot")
+        self.assertIn("Waiting for managed runtime...", logs)
+        self.assertEqual(stages, [])
+        self.assertTrue(result.verified)
 
     def test_probe_managed_runtime_polls_both_probes_and_rechecks_mdns_after_settle(self) -> None:
         smbd_ready = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))

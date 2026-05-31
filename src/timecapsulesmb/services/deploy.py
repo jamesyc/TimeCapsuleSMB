@@ -53,8 +53,11 @@ from timecapsulesmb.device.storage import (
     verify_payload_home_conn,
 )
 from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import ManagedTargetState
+from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -117,6 +120,33 @@ class DeployRuntimeConfig:
     any_protocol: bool | None = None
     ata_idle_seconds: str | int | None = None
     ata_standby: str | int | None = None
+
+
+@dataclass(frozen=True)
+class DeployCompletionMessages:
+    activate_now_message: str = "Starting deployed runtime without reboot."
+    activate_now_heading: str = "Waiting for managed runtime to finish starting..."
+    activate_now_failure: str = "Managed runtime activation failed."
+    post_reboot_activation_message: str = "Activating deployed runtime after reboot."
+    netbsd4_autostart_message: str = "NetBSD4 firmware autostart is enabled; waiting for managed runtime."
+    netbsd4_heading: str = "Waiting for managed runtime to finish starting..."
+    netbsd4_failure: str = "NetBSD4 activation failed."
+    reboot_request_message: str | None = None
+    reboot_runtime_wait_message: str | None = None
+    reboot_heading: str = "Waiting for managed runtime to finish starting..."
+    reboot_failure: str = "Managed runtime did not become ready after reboot."
+
+
+@dataclass(frozen=True)
+class DeployCompletionResult:
+    payload_dir: str
+    payload_family: str
+    is_netbsd4: bool
+    rebooted: bool
+    reboot_requested: bool
+    waited: bool
+    verified: bool
+    message: str | None = None
 
 
 def _best_effort_debug_summary(render, value: object) -> object | None:
@@ -485,6 +515,174 @@ def upload_and_verify_deployment_payload(
         post_sync=True,
         verify_payload_home=verify_payload_home,
         on_verified=on_verified,
+    )
+
+
+def _run_activation_actions_and_verify(
+    connection: SshConnection,
+    activation_actions: list[RemoteAction],
+    *,
+    callbacks: OperationCallbacks,
+    activation_message: str,
+    activation_stage: str,
+    verification_stage: str,
+    verification_timeout_seconds: int,
+    verification_heading: str,
+    failure_message: str,
+    run_remote_actions_func=run_remote_actions,
+    verify_runtime_func=verify_managed_runtime_ready,
+) -> None:
+    callbacks.stage(activation_stage)
+    callbacks.message(activation_message)
+    run_remote_actions_func(connection, activation_actions)
+    verify_runtime_func(
+        connection,
+        callbacks=callbacks,
+        stage=verification_stage,
+        timeout_seconds=verification_timeout_seconds,
+        heading=verification_heading,
+        failure_message=failure_message,
+    )
+
+
+def complete_deployment_after_upload(
+    connection: SshConnection,
+    prepared_plan: PreparedDeployPlan,
+    *,
+    no_wait: bool,
+    callbacks: OperationCallbacks | None = None,
+    messages: DeployCompletionMessages | None = None,
+    run_remote_actions_func=run_remote_actions,
+    request_reboot_func=request_reboot,
+    request_reboot_and_wait_func=request_reboot_and_wait,
+    decide_post_reboot_activation=decide_netbsd4_post_reboot_activation,
+    verify_runtime_func=verify_managed_runtime_ready,
+) -> DeployCompletionResult:
+    callbacks = callbacks or OperationCallbacks()
+    messages = messages or DeployCompletionMessages()
+    plan = prepared_plan.plan
+    payload_context = prepared_plan.payload_context
+    payload_family = payload_context.payload_family
+    is_netbsd4 = payload_context.is_netbsd4
+    startup_mode = payload_context.startup_mode
+
+    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
+        _run_activation_actions_and_verify(
+            connection,
+            plan.activation_actions,
+            callbacks=callbacks,
+            activation_message=messages.activate_now_message,
+            activation_stage="activate_runtime",
+            verification_stage="verify_runtime_activation",
+            verification_timeout_seconds=200,
+            verification_heading=messages.activate_now_heading,
+            failure_message=messages.activate_now_failure,
+            run_remote_actions_func=run_remote_actions_func,
+            verify_runtime_func=verify_runtime_func,
+        )
+        return DeployCompletionResult(
+            payload_dir=plan.payload_dir,
+            payload_family=payload_family,
+            is_netbsd4=is_netbsd4,
+            rebooted=False,
+            reboot_requested=False,
+            waited=False,
+            verified=True,
+            message=activation_complete_message(is_netbsd4=is_netbsd4),
+        )
+
+    if no_wait:
+        if messages.reboot_request_message:
+            callbacks.message(messages.reboot_request_message)
+        request_reboot_func(
+            connection,
+            strategy="ssh_shutdown_then_reboot",
+            callbacks=callbacks,
+            raise_on_request_error=True,
+        )
+        return DeployCompletionResult(
+            payload_dir=plan.payload_dir,
+            payload_family=payload_family,
+            is_netbsd4=is_netbsd4,
+            rebooted=False,
+            reboot_requested=True,
+            waited=False,
+            verified=False,
+        )
+
+    if messages.reboot_request_message:
+        callbacks.message(messages.reboot_request_message)
+    request_reboot_and_wait_func(
+        connection,
+        strategy="ssh_shutdown_then_reboot",
+        callbacks=callbacks,
+        down_timeout_seconds=60,
+        up_timeout_seconds=240,
+        reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
+        reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+    )
+
+    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        callbacks.stage("probe_runtime")
+        decision = decide_post_reboot_activation(connection)
+        callbacks.debug(
+            activation_decision=decision.reason,
+            manual_activation_required=decision.run_actions,
+        )
+        callbacks.message(decision.detail)
+        if decision.run_actions:
+            _run_activation_actions_and_verify(
+                connection,
+                plan.activation_actions,
+                callbacks=callbacks,
+                activation_message=messages.post_reboot_activation_message,
+                activation_stage="post_reboot_activation",
+                verification_stage="verify_runtime_activation",
+                verification_timeout_seconds=200,
+                verification_heading=messages.netbsd4_heading,
+                failure_message=messages.netbsd4_failure,
+                run_remote_actions_func=run_remote_actions_func,
+                verify_runtime_func=verify_runtime_func,
+            )
+        else:
+            callbacks.message(messages.netbsd4_autostart_message)
+            verify_runtime_func(
+                connection,
+                callbacks=callbacks,
+                stage="verify_runtime_activation",
+                timeout_seconds=200,
+                heading=messages.netbsd4_heading,
+                failure_message=messages.netbsd4_failure,
+            )
+        return DeployCompletionResult(
+            payload_dir=plan.payload_dir,
+            payload_family=payload_family,
+            is_netbsd4=True,
+            rebooted=True,
+            reboot_requested=True,
+            waited=True,
+            verified=True,
+            message=activation_complete_message(is_netbsd4=is_netbsd4),
+        )
+
+    if messages.reboot_runtime_wait_message:
+        callbacks.message(messages.reboot_runtime_wait_message)
+    verify_runtime_func(
+        connection,
+        callbacks=callbacks,
+        stage="verify_runtime_reboot",
+        timeout_seconds=240,
+        heading=messages.reboot_heading,
+        failure_message=messages.reboot_failure,
+    )
+    return DeployCompletionResult(
+        payload_dir=plan.payload_dir,
+        payload_family=payload_family,
+        is_netbsd4=is_netbsd4,
+        rebooted=True,
+        reboot_requested=True,
+        waited=True,
+        verified=True,
     )
 
 

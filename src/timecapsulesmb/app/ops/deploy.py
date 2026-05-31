@@ -11,7 +11,6 @@ from timecapsulesmb.core.config import (
     airport_family_display_name_from_identity,
     parse_bool,
 )
-from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -27,20 +26,15 @@ from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
-    DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     DeploymentStartupMode,
     FileTransfer,
     build_deployment_plan,
-)
-from timecapsulesmb.deploy.verify import (
-    render_managed_runtime_verification,
 )
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     probe_managed_runtime_conn,
     read_remote_network_diagnostics_conn,
     read_runtime_log_tails_conn,
-    runtime_startup_failure_debug_fields,
 )
 from timecapsulesmb.device.compat import payload_family_description
 from timecapsulesmb.device.storage import (
@@ -62,10 +56,9 @@ from timecapsulesmb.services.app import (
     optional_bool_param,
 )
 from timecapsulesmb.services.deploy import (
-    DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-    DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+    DeployCompletionMessages,
     DeployRuntimeConfig,
-    activation_complete_message,
+    complete_deployment_after_upload,
     deploy_artifact_failures,
     deploy_upload_stage,
     effective_no_wait_for_deploy,
@@ -76,7 +69,7 @@ from timecapsulesmb.services.deploy import (
     upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
-from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
+from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -151,6 +144,41 @@ def confirmation_presentation_for_startup_mode(
         risk="reboot",
         summary="Deployment with reboot request",
         presentation_id="deploy.reboot",
+    )
+
+
+def _deploy_completion_payload(result) -> object:
+    return deploy_result_payload(
+        payload_dir=result.payload_dir,
+        netbsd4=result.is_netbsd4,
+        rebooted=result.rebooted,
+        reboot_requested=result.reboot_requested,
+        waited=result.waited,
+        verified=result.verified,
+        message=result.message,
+        payload_family=result.payload_family,
+    )
+
+
+def _verify_runtime_for_service(
+    connection: SshConnection,
+    *,
+    callbacks,
+    stage: str,
+    timeout_seconds: int,
+    heading: str,
+    failure_message: str,
+) -> object:
+    return verify_managed_runtime_ready(
+        connection,
+        callbacks=callbacks,
+        stage=stage,
+        timeout_seconds=timeout_seconds,
+        heading=heading,
+        failure_message=failure_message,
+        probe_runtime=probe_managed_runtime_conn,
+        read_runtime_logs=read_runtime_log_tails_conn,
+        read_network_diagnostics=read_remote_network_diagnostics_conn,
     )
 
 
@@ -327,130 +355,23 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except DeviceError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
 
-    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        run_activation_actions_and_verify(
-            context,
-            connection,
-            plan.activation_actions,
-            activation_message="Starting deployed runtime without reboot.",
-            activation_stage="activate_runtime",
-            verification_stage="verify_runtime_activation",
-            verification_timeout_seconds=200,
-            failure_message="Managed runtime activation failed.",
-        )
-        return OperationResult(True, deploy_result_payload(
-            payload_dir=plan.payload_dir,
-            netbsd4=is_netbsd4,
-            rebooted=False,
-            reboot_requested=False,
-            waited=False,
-            verified=True,
-            message=activation_complete_message(is_netbsd4=is_netbsd4),
-            payload_family=payload_family,
-        ))
-
-    if no_wait:
-        try:
-            request_reboot(
-                connection,
-                strategy="ssh_shutdown_then_reboot",
-                callbacks=context.to_operation_callbacks(),
-                raise_on_request_error=True,
-            )
-        except RebootFlowError as exc:
-            raise AppOperationError(str(exc), code="remote_error") from exc
-        return OperationResult(True, deploy_result_payload(
-            payload_dir=plan.payload_dir,
-            reboot_requested=True,
-            waited=False,
-            verified=False,
-            payload_family=payload_family,
-        ))
-
     try:
-        request_reboot_and_wait(
+        completion = complete_deployment_after_upload(
             connection,
-            strategy="ssh_shutdown_then_reboot",
+            prepared_plan,
+            no_wait=no_wait,
             callbacks=context.to_operation_callbacks(),
-            down_timeout_seconds=60,
-            up_timeout_seconds=240,
-            reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-            reboot_up_timeout_message=DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+            messages=DeployCompletionMessages(),
+            run_remote_actions_func=run_remote_actions,
+            request_reboot_func=request_reboot,
+            request_reboot_and_wait_func=request_reboot_and_wait,
+            verify_runtime_func=_verify_runtime_for_service,
         )
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
-
-    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-        context.stage("probe_runtime")
-        decision = decide_netbsd4_post_reboot_activation(connection)
-        context.add_debug_fields(
-            activation_decision=decision.reason,
-            manual_activation_required=decision.run_actions,
-        )
-        context.log(decision.detail)
-        if decision.run_actions:
-            run_activation_actions_and_verify(
-                context,
-                connection,
-                plan.activation_actions,
-                activation_message="Activating deployed runtime after reboot.",
-                activation_stage="post_reboot_activation",
-                verification_stage="verify_runtime_activation",
-                verification_timeout_seconds=200,
-                failure_message="NetBSD4 activation failed.",
-            )
-        else:
-            context.log("NetBSD4 firmware autostart is enabled; waiting for managed runtime.")
-            verify_runtime(
-                context,
-                connection,
-                stage="verify_runtime_activation",
-                timeout_seconds=200,
-                failure_message="NetBSD4 activation failed.",
-            )
-        return OperationResult(True, deploy_result_payload(
-            payload_dir=plan.payload_dir,
-            netbsd4=True,
-            rebooted=True,
-            reboot_requested=True,
-            waited=True,
-            verified=True,
-            message=activation_complete_message(is_netbsd4=is_netbsd4),
-            payload_family=payload_family,
-        ))
-
-    verify_runtime(context, connection, stage="verify_runtime_reboot", timeout_seconds=240)
-    return OperationResult(True, deploy_result_payload(
-        payload_dir=plan.payload_dir,
-        rebooted=True,
-        reboot_requested=True,
-        waited=True,
-        verified=True,
-        payload_family=payload_family,
-    ))
-
-
-def run_activation_actions_and_verify(
-    context: AppOperationContext,
-    connection: SshConnection,
-    activation_actions,
-    *,
-    activation_message: str,
-    activation_stage: str,
-    verification_stage: str,
-    verification_timeout_seconds: int = 180,
-    failure_message: str = "Managed runtime activation failed.",
-) -> None:
-    context.stage(activation_stage)
-    context.log(activation_message)
-    run_remote_actions(connection, activation_actions)
-    verify_runtime(
-        context,
-        connection,
-        stage=verification_stage,
-        timeout_seconds=verification_timeout_seconds,
-        failure_message=failure_message,
-    )
+    except DeviceError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
+    return OperationResult(True, _deploy_completion_payload(completion))
 
 
 def verify_runtime(
@@ -461,32 +382,17 @@ def verify_runtime(
     timeout_seconds: int,
     failure_message: str = "Managed runtime did not become ready.",
 ) -> None:
-    context.stage(stage)
-    verification = probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
-    for line in render_managed_runtime_verification(
-        verification,
-        heading="Waiting for managed runtime to finish starting...",
-    ):
-        context.log(line)
-    if not verification.ready:
-        runtime_log_fields: dict[str, object] = {}
-        try:
-            runtime_log_fields = read_runtime_log_tails_conn(connection)
-            context.add_debug_fields(**runtime_log_fields)
-        except Exception as exc:
-            context.add_debug_fields(remote_runtime_log_tail_error=system_exit_message(exc))
-        startup_failure_fields = runtime_startup_failure_debug_fields(
-            runtime_log_fields,
-            verification_detail=verification.detail.strip(),
+    try:
+        _verify_runtime_for_service(
+            connection,
+            callbacks=context.to_operation_callbacks(),
+            stage=stage,
+            timeout_seconds=timeout_seconds,
+            heading="Waiting for managed runtime to finish starting...",
+            failure_message=failure_message,
         )
-        if startup_failure_fields:
-            context.add_debug_fields(**startup_failure_fields)
-            if startup_failure_fields.get("runtime_startup_failure") == "network_auto_ip_unavailable":
-                try:
-                    context.add_debug_fields(**read_remote_network_diagnostics_conn(connection))
-                except Exception as exc:
-                    context.add_debug_fields(remote_network_diagnostics_error=system_exit_message(exc))
+    except DeviceError as exc:
         raise AppOperationError(
-            f"{failure_message.rstrip()} {verification.detail.strip()}".strip(),
+            str(exc),
             code="remote_error",
-        )
+        ) from exc

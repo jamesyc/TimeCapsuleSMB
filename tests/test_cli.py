@@ -940,7 +940,7 @@ class CliTests(unittest.TestCase):
             )
             mocks.verify_managed_runtime = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.flows.probe_managed_runtime_conn",
+                    "timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn",
                     return_value=verify_runtime or self.managed_runtime_probe(True),
                 )
             )
@@ -4798,13 +4798,30 @@ class CliTests(unittest.TestCase):
         self.assertIn("SMBD_DEBUG_LOGGING=0\n", captured["flash_config"])
         self.assertIn("MDNS_DEBUG_LOGGING=0\n", captured["flash_config"])
 
-    def test_deploy_rejects_gui_only_no_wait_flag(self) -> None:
-        stderr = io.StringIO()
-        with redirect_stderr(stderr):
-            with self.assertRaises(SystemExit) as raised:
-                deploy.main(["--yes", "--no-wait"])
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("unrecognized arguments: --no-wait", stderr.getvalue())
+    def test_deploy_dry_run_no_wait_json_outputs_request_only_plan(self) -> None:
+        result = self.run_deploy_cli(["--dry-run", "--json", "--no-wait"], values=self.make_valid_env())
+        self.assertEqual(result.rc, 0)
+        payload = json.loads(result.text)
+        self.assertTrue(payload["reboot_required"])
+        self.assertFalse(payload["wait_after_reboot"])
+        self.assertEqual(payload["reboot_request"]["follow_up"], ["return_after_reboot_request"])
+        self.assertEqual(payload["activation_actions"], [])
+        self.assertEqual(payload["post_deploy_checks"], [])
+
+    def test_deploy_netbsd4_dry_run_no_wait_json_outputs_request_only_plan(self) -> None:
+        result = self.run_deploy_cli(
+            ["--dry-run", "--json", "--no-wait"],
+            artifacts=[("smbd-netbsd4le", True, "ok")],
+            compatibility=self.make_supported_netbsd4_compatibility(),
+        )
+        self.assertEqual(result.rc, 0)
+        payload = json.loads(result.text)
+        self.assertEqual(payload["startup_mode"], DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE)
+        self.assertTrue(payload["reboot_required"])
+        self.assertFalse(payload["wait_after_reboot"])
+        self.assertEqual(payload["reboot_request"]["follow_up"], ["return_after_reboot_request"])
+        self.assertEqual(payload["activation_actions"], [])
+        self.assertEqual(payload["post_deploy_checks"], [])
 
     def test_deploy_rejects_removed_install_nbns_flag(self) -> None:
         stderr = io.StringIO()
@@ -4892,6 +4909,65 @@ class CliTests(unittest.TestCase):
                 RunScriptAction("/mnt/Flash/rc.local"),
             ],
         )
+
+    def test_deploy_no_reboot_no_wait_treats_no_wait_as_inapplicable(self) -> None:
+        result = self.run_deploy_cli(
+            ["--no-reboot", "--no-wait"],
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            reboot_side_effect=AssertionError("deploy --no-reboot should not request a reboot"),
+        )
+
+        self.assertEqual(result.rc, 0)
+        result.mocks.remote_request_reboot.assert_not_called()
+        result.mocks.verify_managed_runtime.assert_called_once()
+        self.assertIn("Starting deployed runtime without reboot.", result.text)
+        self.assertIn("Runtime activation complete.", result.text)
+        self.assertNotIn("not waiting for the device", result.text)
+
+    def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes", "--no-wait"],
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            wait_side_effect=AssertionError("deploy --no-wait should not wait for SSH"),
+            verify_runtime=AssertionError("deploy --no-wait should not verify runtime"),
+        )
+
+        self.assertEqual(result.rc, 0)
+        result.mocks.remote_request_reboot.assert_called_once()
+        result.mocks.wait_for_ssh_state_conn.assert_not_called()
+        result.mocks.verify_managed_runtime.assert_not_called()
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
+        self.assertIn("Requesting reboot...", result.text)
+        self.assertIn("Reboot requested; not waiting for the device to go down or come back.", result.text)
+        self.assertIn("Post-reboot runtime verification skipped.", result.text)
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertTrue(finished["reboot_was_attempted"])
+        self.assertFalse(finished["device_came_back_after_reboot"])
+
+    def test_deploy_netbsd4_no_wait_requests_reboot_without_activation(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes", "--no-wait"],
+            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
+            artifacts=[("smbd-netbsd4le", True, "ok")],
+            compatibility=self.make_supported_netbsd4_compatibility(),
+            patch_actions=True,
+            patch_upload=True,
+            wait_side_effect=AssertionError("deploy --no-wait should not wait for SSH"),
+            verify_runtime=AssertionError("deploy --no-wait should not verify runtime"),
+        )
+
+        self.assertEqual(result.rc, 0)
+        result.mocks.remote_request_reboot.assert_called_once()
+        result.mocks.wait_for_ssh_state_conn.assert_not_called()
+        result.mocks.verify_managed_runtime.assert_not_called()
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
+        self.assertNotIn("Activating deployed runtime after reboot.", result.text)
+        self.assertNotIn("NetBSD4 activation complete.", result.text)
+        self.assertIn("Post-reboot runtime verification skipped.", result.text)
 
     def test_deploy_payload_verification_failure_aborts_before_reboot(self) -> None:
         result = self.run_deploy_cli(
@@ -5327,7 +5403,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock:
+                        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock:
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -7227,7 +7303,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn") as verify_mock:
+                        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn") as verify_mock:
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -7242,7 +7318,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
-                        with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
+                        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)

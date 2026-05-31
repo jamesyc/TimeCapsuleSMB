@@ -439,8 +439,8 @@ class CliFlowTests(unittest.TestCase):
     def test_verify_managed_runtime_flow_succeeds_when_runtime_ready(self) -> None:
         command_context = FakeCommandContext()
         with (
-            mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock,
-            mock.patch("timecapsulesmb.cli.flows.read_runtime_log_tails_conn") as log_tail_mock,
+            mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock,
+            mock.patch("timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn") as log_tail_mock,
         ):
             ok = verify_managed_runtime_flow(
                 self.make_connection(),
@@ -461,9 +461,9 @@ class CliFlowTests(unittest.TestCase):
         command_context = FakeCommandContext()
         output = io.StringIO()
         with (
-            mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
+            mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
             mock.patch(
-                "timecapsulesmb.cli.flows.read_runtime_log_tails_conn",
+                "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
                 return_value={
                     "remote_rc_local_log_tail": "rc log",
                     "remote_mdns_log_tail": "mdns log",
@@ -491,15 +491,15 @@ class CliFlowTests(unittest.TestCase):
         command_context = FakeCommandContext()
         output = io.StringIO()
         with (
-            mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
+            mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
             mock.patch(
-                "timecapsulesmb.cli.flows.read_runtime_log_tails_conn",
+                "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
                 return_value={
                     "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
                 },
             ),
             mock.patch(
-                "timecapsulesmb.cli.flows.read_remote_network_diagnostics_conn",
+                "timecapsulesmb.services.runtime_verification.read_remote_network_diagnostics_conn",
                 return_value={
                     "remote_network_config": {"ssh_target_host": "169.254.44.9"},
                     "remote_network_target_ip_matches": [],
@@ -527,8 +527,8 @@ class CliFlowTests(unittest.TestCase):
         command_context = FakeCommandContext()
         output = io.StringIO()
         with (
-            mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
-            mock.patch("timecapsulesmb.cli.flows.read_runtime_log_tails_conn", side_effect=RuntimeError("tail failed")),
+            mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
+            mock.patch("timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn", side_effect=RuntimeError("tail failed")),
         ):
             with redirect_stdout(output):
                 ok = verify_managed_runtime_flow(
@@ -556,7 +556,7 @@ class CliFlowTests(unittest.TestCase):
             extra_steps=(ProbeStepResult("runtime_timeout", "fail", "runtime verification timed out after 200s"),),
         )
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.flows.probe_managed_runtime_conn", return_value=result):
+        with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=result):
             with redirect_stdout(output):
                 ok = verify_managed_runtime_flow(
                     self.make_connection(),
