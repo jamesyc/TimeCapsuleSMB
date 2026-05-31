@@ -405,7 +405,7 @@
 "field.repair_xattrs_max_depth" = "Max depth";
 "field.repair_xattrs_path" = "Repair xattrs path";
 "flash.eligibility.disabled" = "Firmware boot hook analysis is disabled in this build.";
-"flash.eligibility.netbsd4_required" = "Persistent boot hook tools are only for NetBSD4 devices.";
+"flash.eligibility.netbsd4_required" = "Persistent boot hook tools are only for NetBSD4 devices. If your device should be supported, please add details to https://github.com/jamesyc/TimeCapsuleSMB/issues/160.";
 "flash.eligibility.read_only" = "This NetBSD4 device can be backed up and inspected before any write is available.";
 "flash.eligibility.write_ready" = "Modify the firmware of NetBSD 4 devices to automatically run deployed Samba payload after a restart.\nBack up and inspect firmware before planning a patch or restore write.";
 "flash.action.backup_inspect" = "Back Up and Inspect";

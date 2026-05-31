@@ -7311,7 +7311,9 @@ class CliTests(unittest.TestCase):
                         with self.assertRaises(SystemExit) as raised:
                             cli_flash.main(["--read-only"])
 
-        self.assertIn("flash is only supported for NetBSD4", str(raised.exception))
+        message = str(raised.exception)
+        self.assertIn("flash is only supported for NetBSD4", message)
+        self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues/160", message)
         read_mock.assert_not_called()
 
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:

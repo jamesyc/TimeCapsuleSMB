@@ -399,7 +399,7 @@
 "field.ata_idle_seconds" = "ATA idle 秒数";
 "field.ata_standby" = "ATA standby 秒数";
 "flash.eligibility.disabled" = "此构建已禁用固件 Boot Hook 分析。";
-"flash.eligibility.netbsd4_required" = "Persistent Boot Hook 工具仅适用于 NetBSD4 设备。";
+"flash.eligibility.netbsd4_required" = "Persistent Boot Hook 工具仅适用于 NetBSD4 设备。如果你的设备应该受支持，请在 https://github.com/jamesyc/TimeCapsuleSMB/issues/160 补充详细信息。";
 "flash.eligibility.read_only" = "此 NetBSD4 设备可先备份和检查，之后才可写入。";
 "flash.eligibility.write_ready" = "修改 NetBSD 4 设备固件，使其重启后自动运行已部署的 Samba payload。\n规划 patch 或 restore 写入前，请先备份并检查固件。";
 "field.firmware_template" = "固件 template 路径，可选";

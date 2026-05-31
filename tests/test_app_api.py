@@ -40,7 +40,11 @@ from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError, ACPIdentity
 from timecapsulesmb.services.app import AppOperationError, jsonable
-from timecapsulesmb.services.flash import STALE_BACKUP_AFTER_WRITE_MESSAGE, require_backup_fresh_for_plan
+from timecapsulesmb.services.flash import (
+    FLASH_UNSUPPORTED_DEVICE_MESSAGE,
+    STALE_BACKUP_AFTER_WRITE_MESSAGE,
+    require_backup_fresh_for_plan,
+)
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.repair_xattrs import RepairRunResult, RepairXattrsRequest
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError
@@ -454,6 +458,34 @@ class AppApiTests(unittest.TestCase):
         target = backup_mock.call_args.kwargs["target"]
         self.assertEqual(target.connection.password, "request-pw")
         self.assertFalse(config.has_file_value("TC_PASSWORD"))
+
+    def test_flash_backup_reports_unsupported_device_message_to_app(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values(
+            {"TC_HOST": "root@10.0.0.2"},
+            file_values={"TC_HOST": "root@10.0.0.2"},
+        )
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch(
+                "timecapsulesmb.app.ops.flash.require_connection_compatibility",
+                return_value=supported_compatibility("netbsd6_samba4"),
+            ):
+                with mock.patch("timecapsulesmb.app.ops.flash.backup_flash") as backup_mock:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "flash",
+                            "params": {"action": "backup", "credentials": {"password": "request-pw"}},
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "unsupported_device")
+        self.assertEqual(error["message"], FLASH_UNSUPPORTED_DEVICE_MESSAGE)
+        self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues/160", error["message"])
+        backup_mock.assert_not_called()
 
     def test_flash_plan_operation_uses_saved_backup_without_device_config(self) -> None:
         collector = CollectingSink()

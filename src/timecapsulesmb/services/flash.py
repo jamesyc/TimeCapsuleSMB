@@ -45,6 +45,11 @@ POWERCYCLE_REQUIRED_MESSAGE = (
 STALE_BACKUP_AFTER_WRITE_MESSAGE = (
     "This flash backup was used for a firmware write. Back up and inspect again before planning another flash action."
 )
+FLASH_UNSUPPORTED_DEVICE_MESSAGE = (
+    "flash is only supported for NetBSD4 AirPort storage devices. "
+    "If your device should be supported, please add details to "
+    "https://github.com/jamesyc/TimeCapsuleSMB/issues/160."
+)
 
 
 @dataclass(frozen=True)
@@ -96,7 +101,7 @@ def require_netbsd4_flash_target(
     *,
     update_fields: Callable[..., None] | None = None,
     log: Callable[[str], None] | None = None,
-    unsupported_message: str = "flash is only supported for NetBSD4 AirPort storage devices.",
+    unsupported_message: str = FLASH_UNSUPPORTED_DEVICE_MESSAGE,
 ) -> FlashTarget:
     if update_fields is not None:
         update_fields(device_family=compatibility.payload_family)

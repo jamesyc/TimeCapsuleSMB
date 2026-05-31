@@ -42,6 +42,7 @@ from timecapsulesmb.services.flash import (
     FlashAnalysisBundle,
     FlashInputs,
     FlashTarget,
+    FLASH_UNSUPPORTED_DEVICE_MESSAGE,
     apply_flash_plan_to_manifest,
     build_flash_backup_dir,
     default_flash_backup_root,
@@ -306,7 +307,7 @@ def _resolve_flash_target(
         command_context,
         command_name="flash",
         json_output=args.json,
-        unsupported_message="flash is only supported for NetBSD4 AirPort storage devices.",
+        unsupported_message=FLASH_UNSUPPORTED_DEVICE_MESSAGE,
     )
     flash_target = require_netbsd4_flash_target(
         connection,
