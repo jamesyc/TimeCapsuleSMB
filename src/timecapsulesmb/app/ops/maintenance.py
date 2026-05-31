@@ -20,7 +20,6 @@ from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_connection,
     resolve_request_target,
-    runtime_callbacks,
 )
 from timecapsulesmb.app.ops.deploy import (
     require_supported_payload,
@@ -226,7 +225,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
             request_reboot(
                 connection,
                 strategy="acp_then_ssh",
-                callbacks=runtime_callbacks(context),
+                callbacks=context.to_runtime_callbacks(),
                 raise_on_request_error=True,
             )
         except RebootFlowError as exc:
@@ -241,7 +240,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
         request_reboot_and_wait(
             connection,
             strategy="acp_then_ssh",
-            callbacks=runtime_callbacks(context),
+            callbacks=context.to_runtime_callbacks(),
             down_timeout_seconds=60,
             up_timeout_seconds=240,
             reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
@@ -385,7 +384,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     try:
         observe_reboot_cycle(
             connection,
-            callbacks=runtime_callbacks(context),
+            callbacks=context.to_runtime_callbacks(),
             reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
             reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
             down_timeout_seconds=90,

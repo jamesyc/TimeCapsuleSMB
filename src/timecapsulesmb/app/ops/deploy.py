@@ -65,7 +65,6 @@ from timecapsulesmb.device.storage import (
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_target,
-    runtime_callbacks,
 )
 from timecapsulesmb.services.app import (
     AppOperationError,
@@ -283,7 +282,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             dry_run=dry_run,
             payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
             mount_wait_seconds=mount_wait,
-            callbacks=runtime_callbacks(context),
+            callbacks=context.to_runtime_callbacks(),
             wait_for_mast_volumes=wait_for_mast_volumes_conn,
             select_payload_home=select_payload_home_with_diagnostics_conn,
         )
@@ -403,7 +402,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             request_reboot(
                 connection,
                 strategy="ssh_shutdown_then_reboot",
-                callbacks=runtime_callbacks(context),
+                callbacks=context.to_runtime_callbacks(),
                 raise_on_request_error=True,
             )
         except RebootFlowError as exc:
@@ -420,7 +419,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         request_reboot_and_wait(
             connection,
             strategy="ssh_shutdown_then_reboot",
-            callbacks=runtime_callbacks(context),
+            callbacks=context.to_runtime_callbacks(),
             down_timeout_seconds=60,
             up_timeout_seconds=240,
             reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,

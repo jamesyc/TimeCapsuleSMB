@@ -227,6 +227,14 @@ class FakeCommandContext:
     def add_debug_fields(self, **_fields: object) -> None:
         pass
 
+    def to_runtime_callbacks(self) -> service_runtime.RuntimeOperationCallbacks:
+        return service_runtime.RuntimeOperationCallbacks(
+            set_stage=self.set_stage,
+            log=print,
+            add_debug_fields=self.add_debug_fields,
+            update_fields=self.update_fields,
+        )
+
     def set_error(self, message: str) -> None:
         self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
 

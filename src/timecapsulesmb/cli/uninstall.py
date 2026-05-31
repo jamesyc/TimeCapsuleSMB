@@ -4,7 +4,6 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import runtime_callbacks
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_mount_wait_argument,
@@ -133,7 +132,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 request_reboot(
                     connection,
                     strategy="acp_then_ssh",
-                    callbacks=runtime_callbacks(command_context),
+                    callbacks=command_context.to_runtime_callbacks(),
                     raise_on_request_error=True,
                 )
             except RebootFlowError as exc:
@@ -149,7 +148,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             request_reboot_and_wait(
                 connection,
                 strategy="acp_then_ssh",
-                callbacks=runtime_callbacks(command_context),
+                callbacks=command_context.to_runtime_callbacks(),
                 down_timeout_seconds=60,
                 up_timeout_seconds=240,
                 reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.services.context import OperationContext
+from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
 from timecapsulesmb.telemetry import build_device_os_version
 
 if TYPE_CHECKING:
@@ -84,6 +85,14 @@ class AppOperationContext:
 
     def emit_result(self, *, ok: bool, payload: object | None = None) -> None:
         self.sink.result(self.operation, ok=ok, payload=payload)
+
+    def to_runtime_callbacks(self) -> RuntimeOperationCallbacks:
+        return RuntimeOperationCallbacks(
+            set_stage=self.stage,
+            log=self.log,
+            add_debug_fields=self.add_debug_fields,
+            update_fields=self.update_fields,
+        )
 
     def update_fields(self, **fields: object) -> None:
         self.diagnostics.update_fields(**fields)

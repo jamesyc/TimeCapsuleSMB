@@ -5,7 +5,6 @@ import shlex
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import runtime_callbacks
 from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, no_input_enabled
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.identity import ensure_install_id
@@ -110,7 +109,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             observe_reboot_cycle(
                 connection,
-                callbacks=runtime_callbacks(command_context),
+                callbacks=command_context.to_runtime_callbacks(),
                 reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
                 reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
                 down_timeout_seconds=90,

@@ -10,7 +10,6 @@ from timecapsulesmb.apple_firmware import (
     FirmwareTemplateCandidate,
 )
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import runtime_callbacks
 from timecapsulesmb.cli.runtime import (
     LogCallback,
     add_config_argument,
@@ -641,7 +640,7 @@ def _finish_write(
         request_reboot(
             target.connection,
             strategy="ssh",
-            callbacks=runtime_callbacks(command_context),
+            callbacks=command_context.to_runtime_callbacks(),
             progress_log=log,
             raise_on_request_error=args.no_wait,
         )
@@ -656,7 +655,7 @@ def _finish_write(
     try:
         observe_reboot_cycle(
             target.connection,
-            callbacks=runtime_callbacks(command_context),
+            callbacks=command_context.to_runtime_callbacks(),
             reboot_no_down_message="Firmware write validated, but the device did not go down after reboot request.",
             reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
             down_timeout_seconds=60,

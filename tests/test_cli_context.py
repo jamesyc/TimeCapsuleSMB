@@ -106,6 +106,21 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.error_lines, ["no stdin"])
         self.assertIn("no stdin", output.getvalue())
 
+    def test_to_runtime_callbacks_updates_command_context(self) -> None:
+        context = self.make_context()
+
+        with mock.patch("builtins.print") as print_mock:
+            callbacks = context.to_runtime_callbacks()
+            callbacks.set_stage("reboot")
+            callbacks.update_fields(reboot_was_attempted=True)
+            callbacks.add_debug_fields(reboot_request_strategy="ssh")
+            callbacks.log("reboot requested")
+
+        self.assertEqual(context.debug_stage, "reboot")
+        self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
+        self.assertEqual(context.debug_fields["reboot_request_strategy"], "ssh")
+        print_mock.assert_called_once_with("reboot requested")
+
     def test_require_compatibility_uses_probe_state_without_runtime_reexport(self) -> None:
         context = self.make_context()
         context.connection = self.make_connection()

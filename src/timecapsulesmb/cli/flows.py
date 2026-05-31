@@ -15,7 +15,6 @@ from timecapsulesmb.device.probe import (
     runtime_startup_failure_debug_fields,
 )
 from timecapsulesmb.services import runtime as runtime_service
-from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -57,15 +56,6 @@ def wait_for_device_up(
             break
         time.sleep(interval_seconds)
     return False
-
-
-def runtime_callbacks(command_context: CommandContext) -> RuntimeOperationCallbacks:
-    return RuntimeOperationCallbacks(
-        set_stage=command_context.set_stage,
-        log=print,
-        add_debug_fields=command_context.add_debug_fields,
-        update_fields=command_context.update_fields,
-    )
 
 
 def verify_managed_runtime_flow(

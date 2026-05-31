@@ -186,6 +186,14 @@ class CommandContext:
         self.result = "failure"
         self.set_error(message)
 
+    def to_runtime_callbacks(self) -> service_runtime.RuntimeOperationCallbacks:
+        return service_runtime.RuntimeOperationCallbacks(
+            set_stage=self.set_stage,
+            log=print,
+            add_debug_fields=self.add_debug_fields,
+            update_fields=self.update_fields,
+        )
+
     def update_fields(self, **fields: object) -> None:
         self.operation_context.update_fields(**fields)
 

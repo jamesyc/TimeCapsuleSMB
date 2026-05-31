@@ -7,7 +7,6 @@ from timecapsulesmb.services.app import config_path
 from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.runtime import (
     ManagedTargetState,
-    RuntimeOperationCallbacks,
     load_env_config,
     load_optional_env_config,
     resolve_env_connection,
@@ -61,13 +60,3 @@ def resolve_request_target(
     )
     context.apply_managed_target(target)
     return target
-
-
-def runtime_callbacks(context: AppOperationContext) -> RuntimeOperationCallbacks:
-    return RuntimeOperationCallbacks(
-        set_stage=context.stage,
-        log=context.log,
-        add_debug_fields=context.add_debug_fields,
-        update_fields=context.update_fields,
-    )
-

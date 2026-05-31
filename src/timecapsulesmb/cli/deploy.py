@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import runtime_callbacks, verify_managed_runtime_flow
+from timecapsulesmb.cli.flows import verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     add_no_input_argument,
@@ -353,7 +353,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             request_reboot_and_wait(
                 connection,
                 strategy="ssh_shutdown_then_reboot",
-                callbacks=runtime_callbacks(command_context),
+                callbacks=command_context.to_runtime_callbacks(),
                 down_timeout_seconds=60,
                 up_timeout_seconds=240,
                 reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,

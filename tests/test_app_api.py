@@ -275,6 +275,21 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["schema_version"], 1)
         self.assertTrue(result["request_id"])
 
+    def test_app_operation_context_builds_runtime_callbacks(self) -> None:
+        collector = CollectingSink()
+        context = AppOperationContext("deploy", collector.sink)
+        callbacks = context.to_runtime_callbacks()
+
+        callbacks.set_stage("reboot")
+        callbacks.update_fields(reboot_was_attempted=True)
+        callbacks.add_debug_fields(reboot_request_strategy="ssh")
+        callbacks.log("reboot requested")
+
+        self.assertEqual(context.current_stage, "reboot")
+        self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
+        self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "ssh")
+        self.assertEqual(collector.events_of_type("log")[0]["message"], "reboot requested")
+
     def test_jsonable_serializes_enum_values_inside_dataclasses(self) -> None:
         self.assertEqual(jsonable(SamplePayload(SampleMode.FAST)), {"mode": "fast"})
 
@@ -2711,7 +2726,6 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(collector.events_of_type("result"), [])
 
     def test_deploy_request_reboot_and_wait_records_lifecycle_fields(self) -> None:
-        from timecapsulesmb.app.ops import common as common_ops
         from timecapsulesmb.services.reboot import request_reboot_and_wait
 
         collector = CollectingSink()
@@ -2723,7 +2737,7 @@ class AppApiTests(unittest.TestCase):
         request_reboot_and_wait(
             connection,
             strategy="ssh_shutdown_then_reboot",
-            callbacks=common_ops.runtime_callbacks(context),
+            callbacks=context.to_runtime_callbacks(),
             reboot_no_down_message="device did not go down",
             reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
             down_timeout_seconds=60,
@@ -2796,7 +2810,6 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("remote_network_target_ip_matches=[]", error)
 
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
-        from timecapsulesmb.app.ops import common as common_ops
         from timecapsulesmb.services.reboot import request_reboot
 
         collector = CollectingSink()
@@ -2806,7 +2819,7 @@ class AppApiTests(unittest.TestCase):
             request_reboot(
                 connection,
                 strategy="ssh",
-                callbacks=common_ops.runtime_callbacks(context),
+                callbacks=context.to_runtime_callbacks(),
                 raise_on_request_error=True,
                 request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
             )
