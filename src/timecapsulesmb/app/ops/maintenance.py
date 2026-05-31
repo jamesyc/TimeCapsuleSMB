@@ -21,10 +21,7 @@ from timecapsulesmb.app.ops.common import (
     resolve_request_connection,
     resolve_request_target,
 )
-from timecapsulesmb.app.ops.deploy import (
-    require_supported_payload,
-    verify_runtime,
-)
+from timecapsulesmb.app.ops.deploy import verify_runtime
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
@@ -62,6 +59,7 @@ from timecapsulesmb.services.maintenance import (
     fsck_target_to_jsonable,
     select_fsck_target,
 )
+from timecapsulesmb.services.deploy import require_supported_payload
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.runtime import (

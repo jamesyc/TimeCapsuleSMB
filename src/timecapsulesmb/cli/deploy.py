@@ -9,56 +9,33 @@ from timecapsulesmb.cli.runtime import (
     add_no_input_argument,
     no_input_enabled,
     print_json,
-    require_supported_device_compatibility,
 )
 from timecapsulesmb.core.config import (
-    MANAGED_PAYLOAD_DIR_NAME,
     airport_family_display_name_from_identity,
 )
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
-from timecapsulesmb.deploy.artifacts import validate_artifacts
-from timecapsulesmb.deploy.commands import RemoteAction, StopProcessAction
-from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
-from timecapsulesmb.deploy.executor import flush_remote_filesystem_writes, run_remote_actions, upload_deployment_payload
-from timecapsulesmb.deploy.planner import (
-    BINARY_MDNS_SOURCE,
-    BINARY_NBNS_SOURCE,
-    BINARY_SMBD_SOURCE,
-    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
-    FileTransfer,
-    GENERATED_FLASH_CONFIG_SOURCE,
-    GENERATED_SMBPASSWD_SOURCE,
-    GENERATED_USERNAME_MAP_SOURCE,
-    PACKAGED_BOOT_SOURCE,
-    PACKAGED_COMMON_SH_SOURCE,
-    PACKAGED_DFREE_SH_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
-    PACKAGED_RC_LOCAL_SOURCE,
-)
-from timecapsulesmb.device.compat import payload_family_description
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.storage import (
-    verify_payload_home_conn,
-)
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_green
 from timecapsulesmb.services.deploy import (
-    DEPLOY_REBOOT_NO_DOWN_MESSAGE,
-    DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+    DeployArtifactValidationError,
     DeployCompletionMessages,
+    DeployOptions,
     DeployRuntimeConfig,
     complete_deployment_after_upload,
-    deploy_artifact_failures,
-    effective_no_wait_for_deploy,
+    deployment_plan_to_jsonable,
+    format_deployment_plan,
+    payload_family_description,
+    pre_upload_action_message,
+    prepare_deploy_preflight,
     prepare_deployment_plan,
-    prepare_deploy_payload_context,
-    render_flash_runtime_config,
+    uploaded_file_message,
     upload_and_verify_deployment_payload,
 )
-from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config
 
 
@@ -109,6 +86,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--json currently requires --dry-run")
 
     nbns_enabled = not args.no_nbns
+    deploy_options = DeployOptions(
+        dry_run=args.dry_run,
+        no_reboot=args.no_reboot,
+        no_wait=args.no_wait,
+        mount_wait_seconds=args.mount_wait,
+        allow_unsupported=args.allow_unsupported,
+    )
+    no_wait = deploy_options.effective_no_wait
     ensure_install_id()
     app_paths = resolve_app_paths(config_path=args.config)
     config = load_env_config(env_path=args.config)
@@ -134,32 +119,27 @@ def main(argv: Optional[list[str]] = None) -> int:
         target = command_context.resolve_validated_managed_target(profile="deploy", include_probe=True)
         connection = target.connection
 
-        command_context.set_stage("validate_artifacts")
         if not args.json:
             print("Validating local artifacts...", flush=True)
-        failures = deploy_artifact_failures(app_paths.distribution_root, validate=validate_artifacts)
-        if failures:
-            raise SystemExit("; ".join(failures))
-        command_context.set_stage("check_compatibility")
         if not args.json:
             print("Checking device compatibility...", flush=True)
-        compatibility, compatibility_message = require_supported_device_compatibility(
-            command_context,
-            allow_unsupported=args.allow_unsupported,
-            json_output=args.json,
-        )
         try:
-            payload_context = prepare_deploy_payload_context(connection, compatibility, no_reboot=args.no_reboot)
+            preflight = prepare_deploy_preflight(
+                connection,
+                target,
+                app_paths.distribution_root,
+                deploy_options,
+                callbacks=command_context.to_operation_callbacks(),
+            )
+        except DeployArtifactValidationError as exc:
+            raise SystemExit(str(exc)) from exc
         except DeviceError as exc:
-            raise SystemExit(f"{compatibility_message}\n{exc}") from exc
-        payload_family = payload_context.payload_family
-        is_netbsd4 = payload_context.is_netbsd4
-        startup_mode = payload_context.startup_mode
-        no_wait = effective_no_wait_for_deploy(requested=args.no_wait, no_reboot=args.no_reboot)
-        command_context.update_fields(deploy_startup_mode=startup_mode)
+            raise SystemExit(str(exc)) from exc
+        payload_context = preflight.payload_context
+        payload_family = preflight.payload_family
+        startup_mode = preflight.startup_mode
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload.", flush=True)
-        apple_mount_wait_seconds = args.mount_wait
         if not args.dry_run and not args.json:
             print("Finding payload volume...", flush=True)
         try:
@@ -168,10 +148,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 app_paths.distribution_root,
                 payload_context,
                 dry_run=args.dry_run,
-                payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
-                mount_wait_seconds=apple_mount_wait_seconds,
+                payload_dir_name=deploy_options.payload_dir_name,
+                mount_wait_seconds=deploy_options.mount_wait_seconds,
                 callbacks=command_context.to_operation_callbacks(),
-                resolver=resolve_payload_artifacts,
+                artifacts=preflight.artifacts,
                 wait_after_reboot=not no_wait,
             )
         except DeviceError as exc:
@@ -192,24 +172,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deleting old deployed files...", flush=True)
         print("Stopping existing runtime...", flush=True)
 
-        def report_pre_upload_action(action: RemoteAction, _index: int, _total: int) -> None:
-            if isinstance(action, StopProcessAction) and action.name == "nbns-advertiser":
-                print("Cleaning up previous deployment files...", flush=True)
+        def report_pre_upload_action(action, _index: int, _total: int) -> None:
+            message = pre_upload_action_message(action)
+            if message is not None:
+                print(message, flush=True)
 
-        def report_uploaded_file(transfer: FileTransfer) -> None:
-            message = None
-            if transfer.source_id == BINARY_SMBD_SOURCE:
-                message = "Uploaded smbd."
-            elif transfer.source_id == BINARY_MDNS_SOURCE and transfer.mode == "flash_atomic":
-                message = "Uploaded mdns-advertiser."
-            elif transfer.source_id == BINARY_NBNS_SOURCE:
-                message = "Uploaded nbns-advertiser."
-            elif transfer.source_id == PACKAGED_DFREE_SH_SOURCE:
-                message = "Uploaded boot files."
-            elif transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
-                message = "Uploaded runtime config."
-            elif transfer.source_id == GENERATED_USERNAME_MAP_SOURCE:
-                message = "Uploaded Samba account files."
+        def report_uploaded_file(transfer) -> None:
+            message = uploaded_file_message(transfer)
             if message is not None:
                 print(message, flush=True)
 
@@ -230,11 +199,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 on_before_post_upload_actions=lambda: print("Applying file permissions...", flush=True),
                 on_before_verify=lambda post_sync: None if post_sync else print("Verifying uploaded payload...", flush=True),
                 on_before_flush=lambda: print("Flushing payload to disk...", flush=True),
-                run_remote_actions_func=run_remote_actions,
-                render_flash_config_func=render_flash_runtime_config,
-                upload_payload_func=upload_deployment_payload,
-                verify_payload_home=verify_payload_home_conn,
-                flush_remote_writes=flush_remote_filesystem_writes,
             )
         except DeviceError as exc:
             raise SystemExit(str(exc)) from exc
@@ -282,9 +246,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     reboot_runtime_wait_message="Waiting for managed runtime to finish starting...",
                     reboot_heading="Wait for device to finish loading; it can take a few minutes for Samba to start up...",
                 ),
-                run_remote_actions_func=run_remote_actions,
-                request_reboot_func=request_reboot,
-                request_reboot_and_wait_func=request_reboot_and_wait,
             )
         except RebootFlowError as exc:
             print(str(exc))

@@ -6,15 +6,19 @@ from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 
-from timecapsulesmb.core.config import DEFAULTS, AppConfig, parse_bool, shell_quote
+from timecapsulesmb.core.config import DEFAULTS, MANAGED_PAYLOAD_DIR_NAME, AppConfig, parse_bool, shell_quote
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.auth import render_smbpasswd
 from timecapsulesmb.deploy.boot_assets import boot_asset_path
+from timecapsulesmb.deploy.dry_run import (
+    deployment_plan_to_jsonable as _deployment_plan_to_jsonable,
+    format_deployment_plan as _format_deployment_plan,
+)
 from timecapsulesmb.deploy.executor import flush_remote_filesystem_writes, run_remote_actions, upload_deployment_payload
-from timecapsulesmb.deploy.commands import RemoteAction
+from timecapsulesmb.deploy.commands import RemoteAction, StopProcessAction
 from timecapsulesmb.deploy.planner import (
     BINARY_MDNS_SOURCE,
     BINARY_NBNS_SOURCE,
@@ -31,6 +35,7 @@ from timecapsulesmb.deploy.planner import (
     FileTransfer,
 )
 from timecapsulesmb.deploy.planner import (
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -38,7 +43,12 @@ from timecapsulesmb.deploy.planner import (
     DeploymentStartupMode,
     build_deployment_plan,
 )
-from timecapsulesmb.device.compat import DeviceCompatibility, is_netbsd4_payload_family, render_compatibility_message
+from timecapsulesmb.device.compat import (
+    DeviceCompatibility,
+    is_netbsd4_payload_family,
+    payload_family_description,
+    render_compatibility_message,
+)
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
@@ -149,6 +159,88 @@ class DeployCompletionResult:
     message: str | None = None
 
 
+@dataclass(frozen=True)
+class DeployOptions:
+    dry_run: bool
+    no_reboot: bool
+    no_wait: bool
+    mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+    allow_unsupported: bool = False
+    payload_dir_name: str = MANAGED_PAYLOAD_DIR_NAME
+
+    @property
+    def effective_no_wait(self) -> bool:
+        return effective_no_wait_for_deploy(requested=self.no_wait, no_reboot=self.no_reboot)
+
+
+@dataclass(frozen=True)
+class DeployPreflight:
+    payload_context: DeployPayloadContext
+    artifacts: DeployArtifactPaths
+    plan: DeploymentPlan
+
+    @property
+    def payload_family(self) -> str:
+        return self.payload_context.payload_family
+
+    @property
+    def is_netbsd4(self) -> bool:
+        return self.payload_context.is_netbsd4
+
+    @property
+    def startup_mode(self) -> DeploymentStartupMode:
+        return self.payload_context.startup_mode
+
+    @property
+    def requires_reboot(self) -> bool:
+        return bool(self.plan.reboot_required)
+
+
+@dataclass(frozen=True)
+class DeployServiceDependencies:
+    validate_artifacts: Callable[..., object]
+    resolve_payload_artifacts: Callable[..., object]
+    build_deployment_plan: Callable[..., DeploymentPlan]
+    wait_for_mast_volumes: Callable[..., MaStDiscoveryResult]
+    select_payload_home: Callable[..., PayloadHomeSelection]
+    run_remote_actions: Callable[..., object]
+    render_flash_config: Callable[..., str]
+    render_smbpasswd: Callable[..., tuple[str, str]]
+    boot_asset_path: Callable[..., object]
+    upload_deployment_payload: Callable[..., object]
+    verify_payload_home: Callable[..., PayloadVerificationResult]
+    flush_remote_writes: Callable[..., object]
+    request_reboot: Callable[..., object]
+    request_reboot_and_wait: Callable[..., object]
+    decide_post_reboot_activation: Callable[..., object]
+    verify_runtime: Callable[..., object]
+
+
+class DeployArtifactValidationError(ValueError):
+    """Raised when local deploy artifacts fail validation."""
+
+
+def default_deploy_service_dependencies() -> DeployServiceDependencies:
+    return DeployServiceDependencies(
+        validate_artifacts=validate_artifacts,
+        resolve_payload_artifacts=resolve_payload_artifacts,
+        build_deployment_plan=build_deployment_plan,
+        wait_for_mast_volumes=storage_service.wait_for_mast_volumes_conn,
+        select_payload_home=select_payload_home_with_diagnostics_conn,
+        run_remote_actions=run_remote_actions,
+        render_flash_config=render_flash_runtime_config,
+        render_smbpasswd=render_smbpasswd,
+        boot_asset_path=boot_asset_path,
+        upload_deployment_payload=upload_deployment_payload,
+        verify_payload_home=verify_payload_home_conn,
+        flush_remote_writes=flush_remote_filesystem_writes,
+        request_reboot=request_reboot,
+        request_reboot_and_wait=request_reboot_and_wait,
+        decide_post_reboot_activation=decide_netbsd4_post_reboot_activation,
+        verify_runtime=verify_managed_runtime_ready,
+    )
+
+
 def _best_effort_debug_summary(render, value: object) -> object | None:
     try:
         return render(value)
@@ -209,17 +301,97 @@ def deploy_artifact_failures(distribution_root, *, validate=validate_artifacts) 
     return [message for _, ok, message in validate(distribution_root) if not ok]
 
 
+def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
+    return _deployment_plan_to_jsonable(plan)
+
+
+def format_deployment_plan(plan: DeploymentPlan) -> str:
+    return _format_deployment_plan(plan)
+
+
+def uploaded_file_message(transfer: FileTransfer) -> str | None:
+    if transfer.source_id == BINARY_SMBD_SOURCE:
+        return "Uploaded smbd."
+    if transfer.source_id == BINARY_MDNS_SOURCE and transfer.mode == "flash_atomic":
+        return "Uploaded mdns-advertiser."
+    if transfer.source_id == BINARY_NBNS_SOURCE:
+        return "Uploaded nbns-advertiser."
+    if transfer.source_id == PACKAGED_DFREE_SH_SOURCE:
+        return "Uploaded boot files."
+    if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
+        return "Uploaded runtime config."
+    if transfer.source_id == GENERATED_USERNAME_MAP_SOURCE:
+        return "Uploaded Samba account files."
+    return None
+
+
+def pre_upload_action_message(action: RemoteAction) -> str | None:
+    if isinstance(action, StopProcessAction) and action.name == "nbns-advertiser":
+        return "Cleaning up previous deployment files..."
+    return None
+
+
 def resolve_deploy_artifact_paths(
     distribution_root,
     payload_family: str,
     *,
-    resolver=resolve_payload_artifacts,
+    resolver=None,
+    dependencies: DeployServiceDependencies | None = None,
 ) -> DeployArtifactPaths:
+    if resolver is None:
+        resolver = (dependencies or default_deploy_service_dependencies()).resolve_payload_artifacts
     resolved_artifacts = resolver(distribution_root, payload_family)
     return DeployArtifactPaths(
         smbd=resolved_artifacts["smbd"].absolute_path,
         mdns_advertiser=resolved_artifacts["mdns-advertiser"].absolute_path,
         nbns_advertiser=resolved_artifacts["nbns-advertiser"].absolute_path,
+    )
+
+
+def prepare_deploy_preflight(
+    connection: SshConnection,
+    target: ManagedTargetState,
+    distribution_root,
+    options: DeployOptions,
+    *,
+    callbacks: OperationCallbacks | None = None,
+    dependencies: DeployServiceDependencies | None = None,
+) -> DeployPreflight:
+    callbacks = callbacks or OperationCallbacks()
+    dependencies = dependencies or default_deploy_service_dependencies()
+
+    callbacks.stage("validate_artifacts")
+    failures = deploy_artifact_failures(distribution_root, validate=dependencies.validate_artifacts)
+    if failures:
+        raise DeployArtifactValidationError("; ".join(failures))
+
+    callbacks.stage("check_compatibility")
+    compatibility = require_supported_payload(target, allow_unsupported=options.allow_unsupported)
+    payload_context = prepare_deploy_payload_context(
+        connection,
+        compatibility,
+        no_reboot=options.no_reboot,
+    )
+    callbacks.update(deploy_startup_mode=payload_context.startup_mode)
+    artifacts = resolve_deploy_artifact_paths(
+        distribution_root,
+        payload_context.payload_family,
+        dependencies=dependencies,
+    )
+    plan = dependencies.build_deployment_plan(
+        connection.host,
+        build_dry_run_payload_home(options.payload_dir_name),
+        artifacts.smbd,
+        artifacts.mdns_advertiser,
+        artifacts.nbns_advertiser,
+        startup_mode=payload_context.startup_mode,
+        apple_mount_wait_seconds=options.mount_wait_seconds,
+        wait_after_reboot=not options.effective_no_wait,
+    )
+    return DeployPreflight(
+        payload_context=payload_context,
+        artifacts=artifacts,
+        plan=plan,
     )
 
 
@@ -233,6 +405,11 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
     if not compatibility.supported and not allow_unsupported:
         raise DeviceError(render_compatibility_message(compatibility))
     if not compatibility.payload_family:
+        compatibility_message = render_compatibility_message(compatibility)
+        if compatibility_message:
+            raise DeviceError(
+                f"{compatibility_message}\nNo deployable payload is available for this detected device."
+            )
         raise DeviceError("No deployable payload is available for this detected device.")
     return compatibility
 
@@ -318,27 +495,34 @@ def prepare_deployment_plan(
     mount_wait_seconds: int,
     wait_after_reboot: bool = True,
     callbacks: OperationCallbacks | None = None,
-    resolver=resolve_payload_artifacts,
+    resolver=None,
     wait_for_mast_volumes: Callable[..., MaStDiscoveryResult] | None = None,
     select_payload_home: Callable[..., PayloadHomeSelection] | None = None,
-    build_plan=build_deployment_plan,
+    build_plan=None,
+    artifacts: DeployArtifactPaths | None = None,
+    dependencies: DeployServiceDependencies | None = None,
 ) -> PreparedDeployPlan:
-    artifacts = resolve_deploy_artifact_paths(
-        distribution_root,
-        payload_context.payload_family,
-        resolver=resolver,
-    )
+    dependencies = dependencies or default_deploy_service_dependencies()
+    if artifacts is None:
+        artifacts = resolve_deploy_artifact_paths(
+            distribution_root,
+            payload_context.payload_family,
+            resolver=resolver,
+            dependencies=dependencies,
+        )
     payload_home = select_deploy_payload_home(
         connection,
         dry_run=dry_run,
         payload_dir_name=payload_dir_name,
         mount_wait_seconds=mount_wait_seconds,
         callbacks=callbacks,
-        wait_for_mast_volumes=wait_for_mast_volumes,
-        select_payload_home=select_payload_home,
+        wait_for_mast_volumes=wait_for_mast_volumes or dependencies.wait_for_mast_volumes,
+        select_payload_home=select_payload_home or dependencies.select_payload_home,
     )
     if callbacks is not None:
         callbacks.stage("build_deployment_plan")
+    if build_plan is None:
+        build_plan = dependencies.build_deployment_plan
     plan = build_plan(
         connection.host,
         payload_home,
@@ -370,9 +554,15 @@ def _deployment_upload_sources(
     tmpdir: Path,
     boot_assets: ExitStack,
     *,
-    render_smbpasswd_func=render_smbpasswd,
-    boot_asset_path_func=boot_asset_path,
+    render_smbpasswd_func=None,
+    boot_asset_path_func=None,
+    dependencies: DeployServiceDependencies | None = None,
 ) -> Mapping[str, Path]:
+    dependencies = dependencies or default_deploy_service_dependencies()
+    if render_smbpasswd_func is None:
+        render_smbpasswd_func = dependencies.render_smbpasswd
+    if boot_asset_path_func is None:
+        boot_asset_path_func = dependencies.boot_asset_path
     generated_flash_config = tmpdir / "tcapsulesmb.conf"
     generated_smbpasswd = tmpdir / "smbpasswd"
     generated_username_map = tmpdir / "username.map"
@@ -402,9 +592,12 @@ def _verify_deployed_payload(
     *,
     wait_seconds: int,
     post_sync: bool,
-    verify_payload_home=verify_payload_home_conn,
+    verify_payload_home=None,
     on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
+    dependencies: DeployServiceDependencies | None = None,
 ) -> None:
+    if verify_payload_home is None:
+        verify_payload_home = (dependencies or default_deploy_service_dependencies()).verify_payload_home
     callbacks.stage("verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
     verification = verify_payload_home(connection, payload_home, wait_seconds=wait_seconds)
     callbacks.debug(
@@ -433,19 +626,27 @@ def upload_and_verify_deployment_payload(
     on_before_verify: Callable[[bool], None] | None = None,
     on_before_flush: Callable[[], None] | None = None,
     on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
-    run_remote_actions_func=run_remote_actions,
+    run_remote_actions_func=None,
     render_flash_config_func=None,
-    render_smbpasswd_func=render_smbpasswd,
-    boot_asset_path_func=boot_asset_path,
-    upload_payload_func=upload_deployment_payload,
-    verify_payload_home=verify_payload_home_conn,
-    flush_remote_writes=flush_remote_filesystem_writes,
+    render_smbpasswd_func=None,
+    boot_asset_path_func=None,
+    upload_payload_func=None,
+    verify_payload_home=None,
+    flush_remote_writes=None,
+    dependencies: DeployServiceDependencies | None = None,
 ) -> None:
     callbacks = callbacks or OperationCallbacks()
+    dependencies = dependencies or default_deploy_service_dependencies()
+    if run_remote_actions_func is None:
+        run_remote_actions_func = dependencies.run_remote_actions
+    if render_flash_config_func is None:
+        render_flash_config_func = dependencies.render_flash_config
+    if upload_payload_func is None:
+        upload_payload_func = dependencies.upload_deployment_payload
+    if flush_remote_writes is None:
+        flush_remote_writes = dependencies.flush_remote_writes
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
-    if render_flash_config_func is None:
-        render_flash_config_func = render_flash_runtime_config
 
     callbacks.stage("pre_upload_actions")
     run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
@@ -469,6 +670,7 @@ def upload_and_verify_deployment_payload(
             boot_assets,
             render_smbpasswd_func=render_smbpasswd_func,
             boot_asset_path_func=boot_asset_path_func,
+            dependencies=dependencies,
         )
         if initial_upload_stage is not None:
             callbacks.stage(initial_upload_stage)
@@ -500,6 +702,7 @@ def upload_and_verify_deployment_payload(
         post_sync=False,
         verify_payload_home=verify_payload_home,
         on_verified=on_verified,
+        dependencies=dependencies,
     )
     callbacks.stage("flush_payload_upload")
     if on_before_flush is not None:
@@ -515,6 +718,7 @@ def upload_and_verify_deployment_payload(
         post_sync=True,
         verify_payload_home=verify_payload_home,
         on_verified=on_verified,
+        dependencies=dependencies,
     )
 
 
@@ -529,9 +733,15 @@ def _run_activation_actions_and_verify(
     verification_timeout_seconds: int,
     verification_heading: str,
     failure_message: str,
-    run_remote_actions_func=run_remote_actions,
-    verify_runtime_func=verify_managed_runtime_ready,
+    run_remote_actions_func=None,
+    verify_runtime_func=None,
+    dependencies: DeployServiceDependencies | None = None,
 ) -> None:
+    dependencies = dependencies or default_deploy_service_dependencies()
+    if run_remote_actions_func is None:
+        run_remote_actions_func = dependencies.run_remote_actions
+    if verify_runtime_func is None:
+        verify_runtime_func = dependencies.verify_runtime
     callbacks.stage(activation_stage)
     callbacks.message(activation_message)
     run_remote_actions_func(connection, activation_actions)
@@ -552,14 +762,26 @@ def complete_deployment_after_upload(
     no_wait: bool,
     callbacks: OperationCallbacks | None = None,
     messages: DeployCompletionMessages | None = None,
-    run_remote_actions_func=run_remote_actions,
-    request_reboot_func=request_reboot,
-    request_reboot_and_wait_func=request_reboot_and_wait,
-    decide_post_reboot_activation=decide_netbsd4_post_reboot_activation,
-    verify_runtime_func=verify_managed_runtime_ready,
+    run_remote_actions_func=None,
+    request_reboot_func=None,
+    request_reboot_and_wait_func=None,
+    decide_post_reboot_activation=None,
+    verify_runtime_func=None,
+    dependencies: DeployServiceDependencies | None = None,
 ) -> DeployCompletionResult:
     callbacks = callbacks or OperationCallbacks()
     messages = messages or DeployCompletionMessages()
+    dependencies = dependencies or default_deploy_service_dependencies()
+    if run_remote_actions_func is None:
+        run_remote_actions_func = dependencies.run_remote_actions
+    if request_reboot_func is None:
+        request_reboot_func = dependencies.request_reboot
+    if request_reboot_and_wait_func is None:
+        request_reboot_and_wait_func = dependencies.request_reboot_and_wait
+    if decide_post_reboot_activation is None:
+        decide_post_reboot_activation = dependencies.decide_post_reboot_activation
+    if verify_runtime_func is None:
+        verify_runtime_func = dependencies.verify_runtime
     plan = prepared_plan.plan
     payload_context = prepared_plan.payload_context
     payload_family = payload_context.payload_family
@@ -579,6 +801,7 @@ def complete_deployment_after_upload(
             failure_message=messages.activate_now_failure,
             run_remote_actions_func=run_remote_actions_func,
             verify_runtime_func=verify_runtime_func,
+            dependencies=dependencies,
         )
         return DeployCompletionResult(
             payload_dir=plan.payload_dir,
@@ -643,6 +866,7 @@ def complete_deployment_after_upload(
                 failure_message=messages.netbsd4_failure,
                 run_remote_actions_func=run_remote_actions_func,
                 verify_runtime_func=verify_runtime_func,
+                dependencies=dependencies,
             )
         else:
             callbacks.message(messages.netbsd4_autostart_message)

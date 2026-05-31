@@ -10,7 +10,7 @@ from unittest import mock
 
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.cli.deploy import render_flash_runtime_config
+from timecapsulesmb.services.deploy import render_flash_runtime_config
 from timecapsulesmb.services.deploy import render_flash_runtime_config as render_gui_flash_runtime_config
 from timecapsulesmb.deploy.executor import upload_flash_file
 from timecapsulesmb.deploy.boot_assets import load_boot_asset_text

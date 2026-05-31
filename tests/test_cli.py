@@ -58,6 +58,7 @@ from timecapsulesmb.services import flash as flash_service
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.deploy import DEPLOY_REBOOT_NO_DOWN_MESSAGE
 from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
@@ -894,7 +895,7 @@ class CliTests(unittest.TestCase):
             )
             if command_context is not None:
                 mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context))
-            mocks.validate_artifacts = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=artifacts))
+            mocks.validate_artifacts = stack.enter_context(mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=artifacts))
             mocks.wait_for_mast_volumes_conn = stack.enter_context(
                 mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=mast_discovery)
             )
@@ -912,20 +913,34 @@ class CliTests(unittest.TestCase):
                         side_effect=select_payload_home_side_effect,
                     )
                 )
+            deploy_compatibility = compatibility or self.make_supported_compatibility()
+            deploy_probe_state = SimpleNamespace(
+                compatibility=deploy_compatibility,
+                probe_result=SimpleNamespace(error=None, airport_model=None, airport_syap=None),
+            )
+            mocks.resolve_validated_managed_target = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.cli.context.CommandContext.resolve_validated_managed_target",
+                    return_value=SimpleNamespace(
+                        connection=SshConnection("root@10.0.0.2", "pw", "-o foo"),
+                        probe_state=deploy_probe_state,
+                    ),
+                )
+            )
             mocks.require_compatibility = stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.cli.context.CommandContext.require_compatibility",
-                    return_value=compatibility or self.make_supported_compatibility(),
+                    return_value=deploy_compatibility,
                 )
             )
             if patch_actions:
-                mocks.run_remote_actions = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"))
+                mocks.run_remote_actions = stack.enter_context(mock.patch("timecapsulesmb.services.deploy.run_remote_actions"))
             if patch_upload:
                 mocks.upload_deployment_payload = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload", side_effect=upload_side_effect)
+                    mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload", side_effect=upload_side_effect)
                 )
             mocks.flush_remote_filesystem_writes = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.deploy.flush_remote_filesystem_writes")
+                mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes")
             )
             payload_verification_patch_kwargs = (
                 {"side_effect": payload_verification_side_effect}
@@ -934,7 +949,7 @@ class CliTests(unittest.TestCase):
             )
             mocks.verify_payload_home_conn = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.cli.deploy.verify_payload_home_conn",
+                    "timecapsulesmb.services.deploy.verify_payload_home_conn",
                     **payload_verification_patch_kwargs,
                 )
             )
@@ -5040,7 +5055,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 1)
         self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", result.text)
-        self.assertIn(deploy.DEPLOY_REBOOT_NO_DOWN_MESSAGE, result.text)
+        self.assertIn(DEPLOY_REBOOT_NO_DOWN_MESSAGE, result.text)
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.acp_reboot.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()

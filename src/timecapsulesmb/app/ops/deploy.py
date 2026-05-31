@@ -1,52 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.core.config import (
     DEFAULTS,
-    MANAGED_PAYLOAD_DIR_NAME,
     airport_family_display_name_from_identity,
     parse_bool,
 )
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
-from timecapsulesmb.deploy.artifacts import validate_artifacts
-from timecapsulesmb.deploy.auth import render_smbpasswd
-from timecapsulesmb.deploy.boot_assets import boot_asset_path
-from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable
-from timecapsulesmb.deploy.executor import (
-    flush_remote_filesystem_writes,
-    run_remote_actions,
-    upload_deployment_payload,
-)
-from timecapsulesmb.deploy.planner import (
-    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEPLOY_STARTUP_ACTIVATE_NOW,
-    DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
-    DeploymentStartupMode,
-    FileTransfer,
-    build_deployment_plan,
-)
-from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.probe import (
-    probe_managed_runtime_conn,
-    read_remote_network_diagnostics_conn,
-    read_runtime_log_tails_conn,
-)
-from timecapsulesmb.device.compat import payload_family_description
-from timecapsulesmb.device.storage import (
-    build_dry_run_payload_home,
-    select_payload_home_with_diagnostics_conn,
-    verify_payload_home_conn,
-    wait_for_mast_volumes_conn,
-)
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_target,
 )
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -56,21 +26,27 @@ from timecapsulesmb.services.app import (
     optional_bool_param,
 )
 from timecapsulesmb.services.deploy import (
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    DEPLOY_STARTUP_ACTIVATE_NOW,
+    DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+    DeployArtifactValidationError,
     DeployCompletionMessages,
+    DeployOptions,
     DeployRuntimeConfig,
+    DeploymentStartupMode,
     complete_deployment_after_upload,
-    deploy_artifact_failures,
+    deployment_plan_to_jsonable,
     deploy_upload_stage,
-    effective_no_wait_for_deploy,
+    payload_family_description,
+    prepare_deploy_preflight,
     prepare_deployment_plan,
-    prepare_deploy_payload_context,
-    require_supported_payload,
-    render_flash_runtime_config,
     upload_and_verify_deployment_payload,
 )
-from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
-from timecapsulesmb.transport.ssh import SshConnection
+
+if TYPE_CHECKING:
+    from timecapsulesmb.transport.ssh import SshConnection
 
 
 @dataclass(frozen=True)
@@ -176,9 +152,6 @@ def _verify_runtime_for_service(
         timeout_seconds=timeout_seconds,
         heading=heading,
         failure_message=failure_message,
-        probe_runtime=probe_managed_runtime_conn,
-        read_runtime_logs=read_runtime_log_tails_conn,
-        read_network_diagnostics=read_remote_network_diagnostics_conn,
     )
 
 
@@ -190,6 +163,14 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     allow_unsupported = bool_param(params, "allow_unsupported")
+    deploy_options = DeployOptions(
+        dry_run=dry_run,
+        no_reboot=no_reboot,
+        no_wait=no_wait,
+        mount_wait_seconds=mount_wait,
+        allow_unsupported=allow_unsupported,
+    )
+    no_wait = deploy_options.effective_no_wait
     debug_logging = optional_bool_param(params, "debug_logging")
     ata_idle_seconds = (
         int_param(params, "ata_idle_seconds", int(DEFAULTS["TC_ATA_IDLE_SECONDS"]))
@@ -218,35 +199,24 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
     )
 
-    context.stage("validate_artifacts")
-    failures = deploy_artifact_failures(app_paths.distribution_root, validate=validate_artifacts)
-    if failures:
-        raise AppOperationError("; ".join(failures), code="validation_failed")
-
-    context.stage("check_compatibility")
     try:
-        compatibility = require_supported_payload(target, allow_unsupported=allow_unsupported)
-        payload_context = prepare_deploy_payload_context(connection, compatibility, no_reboot=no_reboot)
+        preflight = prepare_deploy_preflight(
+            connection,
+            target,
+            app_paths.distribution_root,
+            deploy_options,
+            callbacks=context.to_operation_callbacks(),
+        )
+    except DeployArtifactValidationError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
         raise AppOperationError(str(exc), code="unsupported_device") from exc
-    payload_family = payload_context.payload_family
-    is_netbsd4 = payload_context.is_netbsd4
-    startup_mode = payload_context.startup_mode
-    no_wait = effective_no_wait_for_deploy(requested=no_wait, no_reboot=no_reboot)
-    context.update_fields(deploy_startup_mode=startup_mode)
+    payload_context = preflight.payload_context
+    payload_family = preflight.payload_family
+    is_netbsd4 = preflight.is_netbsd4
+    startup_mode = preflight.startup_mode
     context.log(f"Using {payload_family_description(payload_family)} payload.")
-    resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
     if not dry_run:
-        confirmation_plan = build_deployment_plan(
-            connection.host,
-            build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME),
-            resolved_artifacts["smbd"].absolute_path,
-            resolved_artifacts["mdns-advertiser"].absolute_path,
-            resolved_artifacts["nbns-advertiser"].absolute_path,
-            startup_mode=startup_mode,
-            apple_mount_wait_seconds=mount_wait,
-            wait_after_reboot=not no_wait,
-        )
         device_name = airport_family_display_name_from_identity(
             model=target.probe_state.probe_result.airport_model if target.probe_state else None,
             syap=target.probe_state.probe_result.airport_syap if target.probe_state else None,
@@ -259,7 +229,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         presentation_values = {
             "device_name": device_name,
             "netbsd4": is_netbsd4,
-            "requires_reboot": bool(confirmation_plan.reboot_required),
+            "requires_reboot": preflight.requires_reboot,
             "no_reboot": no_reboot,
             "no_wait": no_wait,
             "startup_mode": startup_mode,
@@ -278,7 +248,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                     "host": connection.host,
                     "payload_family": payload_family,
                     "netbsd4": is_netbsd4,
-                    "requires_reboot": bool(confirmation_plan.reboot_required),
+                    "requires_reboot": preflight.requires_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
                     "startup_mode": startup_mode,
@@ -293,12 +263,10 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             app_paths.distribution_root,
             payload_context,
             dry_run=dry_run,
-            payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
+            payload_dir_name=deploy_options.payload_dir_name,
             mount_wait_seconds=mount_wait,
             callbacks=context.to_operation_callbacks(),
-            resolver=resolve_payload_artifacts,
-            wait_for_mast_volumes=wait_for_mast_volumes_conn,
-            select_payload_home=select_payload_home_with_diagnostics_conn,
+            artifacts=preflight.artifacts,
             wait_after_reboot=not no_wait,
         )
     except DeviceError as exc:
@@ -313,7 +281,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
 
     current_upload_stage: str | None = None
 
-    def stage_upload(transfer: FileTransfer) -> None:
+    def stage_upload(transfer) -> None:
         nonlocal current_upload_stage
         stage = deploy_upload_stage(transfer)
         if stage == current_upload_stage:
@@ -342,13 +310,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             on_uploading=stage_upload,
             on_before_flush=lambda: context.log("Flushing deployed payload to disk..."),
             on_verified=log_payload_verification,
-            run_remote_actions_func=run_remote_actions,
-            render_flash_config_func=render_flash_runtime_config,
-            render_smbpasswd_func=render_smbpasswd,
-            boot_asset_path_func=boot_asset_path,
-            upload_payload_func=upload_deployment_payload,
-            verify_payload_home=verify_payload_home_conn,
-            flush_remote_writes=flush_remote_filesystem_writes,
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
@@ -362,9 +323,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             no_wait=no_wait,
             callbacks=context.to_operation_callbacks(),
             messages=DeployCompletionMessages(),
-            run_remote_actions_func=run_remote_actions,
-            request_reboot_func=request_reboot,
-            request_reboot_and_wait_func=request_reboot_and_wait,
             verify_runtime_func=_verify_runtime_for_service,
         )
     except RebootFlowError as exc:
