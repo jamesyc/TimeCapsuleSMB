@@ -62,9 +62,7 @@ final class AppStore: ObservableObject {
 
         deviceRegistry.$profiles
             .sink { [weak self] profiles in
-                Task { @MainActor in
-                    self?.syncSelection(profiles: profiles)
-                }
+                self?.syncSelection(profiles: profiles)
             }
             .store(in: &cancellables)
     }

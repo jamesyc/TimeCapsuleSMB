@@ -108,6 +108,28 @@ final class AppRouteTests: XCTestCase {
         XCTAssertNil(fixture.appStore.selectedProfile)
     }
 
+    func testSelectedProfileRouteSynchronizesWhenRegistryDeletesProfile() async throws {
+        let fixture = try await makeFixture()
+        let first = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let second = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+        fixture.appStore.select(first)
+
+        try await fixture.registry.delete(first)
+
+        XCTAssertEqual(fixture.appStore.route, .device(second.id))
+        XCTAssertEqual(fixture.appStore.selectedProfile?.id, second.id)
+    }
+
     func testDiagnosticsSelectedProfileFollowsDeviceRouteOnly() async throws {
         let fixture = try await makeFixture()
         let profile = try await fixture.registry.saveConfiguredDevice(

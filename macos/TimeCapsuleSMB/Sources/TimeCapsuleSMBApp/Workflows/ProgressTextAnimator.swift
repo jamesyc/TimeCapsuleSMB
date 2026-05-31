@@ -2,6 +2,7 @@ import Foundation
 
 enum ProgressTextAnimator {
     static let frameInterval: TimeInterval = 0.3
+    static let frameIntervalNanoseconds: UInt64 = UInt64(frameInterval * 1_000_000_000)
     static let frameCount = 3
 
     static func message(_ message: String?, isRunning: Bool, phase: Int) -> String? {

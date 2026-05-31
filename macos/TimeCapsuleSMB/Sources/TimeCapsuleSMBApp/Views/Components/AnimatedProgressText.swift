@@ -6,19 +6,13 @@ struct AnimatedProgressText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase = 0
 
-    private let timer = Timer.publish(
-        every: ProgressTextAnimator.frameInterval,
-        on: .main,
-        in: .common
-    ).autoconnect()
-
     var body: some View {
         Text(animatedMessage)
             .onChange(of: animationIdentity) { _, _ in
                 phase = 0
             }
-            .onReceive(timer) { _ in
-                advanceAnimation()
+            .task(id: animationIdentity) {
+                await animateWhileRunning()
             }
     }
 
@@ -34,13 +28,21 @@ struct AnimatedProgressText: View {
         isRunning && !reduceMotion
     }
 
-    private func advanceAnimation() {
+    private func animateWhileRunning() async {
+        phase = 0
         guard animationIdentity != nil else {
-            if phase != 0 {
-                phase = 0
-            }
             return
         }
-        phase = ProgressTextAnimator.nextPhase(after: phase)
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: ProgressTextAnimator.frameIntervalNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            phase = ProgressTextAnimator.nextPhase(after: phase)
+        }
     }
 }

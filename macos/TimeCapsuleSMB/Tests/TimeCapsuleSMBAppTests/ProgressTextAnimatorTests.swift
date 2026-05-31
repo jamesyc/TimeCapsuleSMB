@@ -32,5 +32,6 @@ final class ProgressTextAnimatorTests: XCTestCase {
 
     func testFrameIntervalMatchesProgressTextAnimationCadence() {
         XCTAssertEqual(ProgressTextAnimator.frameInterval, 0.3)
+        XCTAssertEqual(ProgressTextAnimator.frameIntervalNanoseconds, 300_000_000)
     }
 }
