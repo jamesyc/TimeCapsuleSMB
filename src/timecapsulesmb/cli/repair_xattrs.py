@@ -16,44 +16,12 @@ from timecapsulesmb.cli.runtime import (
 )
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.repair_xattrs import (
-    ACTION_CLEAR_ARCH_FLAG,
-    ACTION_FIX_PERMISSIONS,
-    DEFAULT_REPAIR_REPORT_LIMIT,
-    MountedSmbShare,
-    RepairCandidate,
-    RepairFinding,
-    RepairSummary,
-    XattrStatus,
-    build_repair_report,
-    classify_path,
-    default_share_path_from_config,
-    file_flags,
-    find_findings,
-    format_finding_line,
-    is_time_machine_path,
-    iter_scan_paths,
-    mounted_smb_shares,
-    parse_mounted_smb_shares,
-    path_exists,
-    path_has_hidden_component,
-    repair_candidate,
-    run_capture,
-    should_skip_path,
-    ssh_target_host,
-    validate_repair_root_under_volumes,
-    xattr_status,
-    xattrs_readable,
-)
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.repair_xattrs import (
     RepairXattrsCallbacks,
     RepairXattrsRequest,
     RepairXattrsServiceError,
     RepairRunResult,
-    render_candidate_lines,
-    render_diagnostic_lines,
-    render_summary_lines,
     run_repair as run_repair_service,
 )
 from timecapsulesmb.services.runtime import load_optional_env_config

@@ -7,6 +7,7 @@ from unittest import mock
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app import service
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.services import reachability
 
 
@@ -209,7 +210,7 @@ class ReachabilityTests(unittest.TestCase):
 
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
-                self.assertEqual(reachability.endpoint_host(raw), expected)
+                self.assertEqual(endpoint_host(raw), expected)
 
     def test_ssh_target_from_params_canonicalizes_url_and_port_inputs(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@fallback.local", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})

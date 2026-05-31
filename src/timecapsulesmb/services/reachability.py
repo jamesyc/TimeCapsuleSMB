@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig
-from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host as parsed_endpoint_host, parse_endpoint, resolve_host_ips
+from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host, parse_endpoint, resolve_host_ips
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
@@ -115,10 +115,6 @@ def add_param_hosts(candidates: list[str], value: object) -> None:
             candidates.append(endpoint_host(string_value(item)))
         return
     candidates.append(endpoint_host(string_value(value)))
-
-
-def endpoint_host(value: str) -> str:
-    return parsed_endpoint_host(value)
 
 
 def root_ssh_target(value: str) -> str:

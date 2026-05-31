@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from timecapsulesmb.deploy.artifacts import ArtifactRecord, load_artifact_manifest
+from timecapsulesmb.deploy.artifacts import load_artifact_manifest
 from timecapsulesmb.device.compat import (
     PAYLOAD_FAMILY_NETBSD4BE,
     PAYLOAD_FAMILY_NETBSD4LE,
@@ -24,7 +24,12 @@ def resolve_artifact(distribution_root: Path, name: str) -> ResolvedArtifact:
     record = manifest.get(name)
     if record is None:
         raise KeyError(f"Unknown artifact: {name}")
-    return resolved_artifact_from_record(distribution_root, record)
+    return ResolvedArtifact(
+        name=record.name,
+        repo_relative_path=record.path,
+        absolute_path=distribution_root / record.path,
+        sha256=record.sha256,
+    )
 
 
 def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> dict[str, ResolvedArtifact]:
@@ -50,12 +55,3 @@ def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> d
         raise KeyError(f"Unknown payload family: {payload_family}")
 
     return {logical_name: resolve_artifact(distribution_root, artifact_name) for logical_name, artifact_name in names.items()}
-
-
-def resolved_artifact_from_record(distribution_root: Path, record: ArtifactRecord) -> ResolvedArtifact:
-    return ResolvedArtifact(
-        name=record.name,
-        repo_relative_path=record.path,
-        absolute_path=distribution_root / record.path,
-        sha256=record.sha256,
-    )

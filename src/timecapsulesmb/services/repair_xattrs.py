@@ -47,6 +47,18 @@ class RepairXattrsCallbacks:
     update_fields: Callable[..., None] | None = None
     log: Callable[[str], None] | None = None
 
+    def stage(self, stage: str) -> None:
+        if self.set_stage is not None:
+            self.set_stage(stage)
+
+    def update(self, **fields: object) -> None:
+        if self.update_fields is not None:
+            self.update_fields(**fields)
+
+    def message(self, message: str) -> None:
+        if self.log is not None:
+            self.log(message)
+
 
 @dataclass(frozen=True)
 class RepairRunResult:
@@ -127,16 +139,6 @@ def _emit_lines(emit: Callable[[str], None], lines: list[str]) -> None:
         emit(line)
 
 
-def _call_stage(callbacks: RepairXattrsCallbacks, stage: str) -> None:
-    if callbacks.set_stage is not None:
-        callbacks.set_stage(stage)
-
-
-def _call_update(callbacks: RepairXattrsCallbacks, **fields: object) -> None:
-    if callbacks.update_fields is not None:
-        callbacks.update_fields(**fields)
-
-
 def run_repair(
     request: RepairXattrsRequest,
     config: AppConfig,
@@ -147,12 +149,10 @@ def run_repair(
     callbacks = callbacks or RepairXattrsCallbacks()
 
     def emit(message: str) -> None:
-        if callbacks.log is not None:
-            callbacks.log(message)
+        callbacks.message(message)
 
-    _call_stage(callbacks, "resolve_scan_root")
-    _call_update(
-        callbacks,
+    callbacks.stage("resolve_scan_root")
+    callbacks.update(
         dry_run=request.dry_run,
         recursive=request.recursive,
         max_depth=request.max_depth,
@@ -180,8 +180,8 @@ def run_repair(
         raise RepairXattrsServiceError(str(exc)) from exc
 
     summary = RepairSummary()
-    _call_update(callbacks, repair_root=str(root))
-    _call_stage(callbacks, "scan_findings")
+    callbacks.update(repair_root=str(root))
+    callbacks.stage("scan_findings")
     emit(f"Scanning {root}")
     try:
         findings = find_findings(
@@ -199,8 +199,7 @@ def run_repair(
         raise RepairXattrsServiceError(str(exc)) from exc
     repairs = actionable_findings(findings)
     candidates = [finding_to_candidate(finding) for finding in repairs]
-    _call_update(
-        callbacks,
+    callbacks.update(
         scanned_paths=summary.scanned,
         scanned_files=summary.scanned_files,
         scanned_dirs=summary.scanned_dirs,
@@ -216,7 +215,7 @@ def run_repair(
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
         return RepairRunResult(0, root, findings, candidates, summary)
 
-    _call_stage(callbacks, "report_findings")
+    callbacks.stage("report_findings")
     _emit_lines(emit, render_diagnostic_lines(findings, verbose=request.verbose))
     if candidates:
         _emit_lines(emit, render_candidate_lines(candidates, dry_run=request.dry_run))
@@ -233,7 +232,7 @@ def run_repair(
         report = build_repair_report(findings)
         return RepairRunResult(1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
 
-    _call_stage(callbacks, "confirm_repair")
+    callbacks.stage("confirm_repair")
     if not request.approve_repairs and confirm is None:
         message = "Running `repair-xattrs` in non-interactive mode requires `--yes` to apply repairs."
         emit(message)
@@ -244,7 +243,7 @@ def run_repair(
         report = build_repair_report(findings)
         return RepairRunResult(0, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
 
-    _call_stage(callbacks, "repair_findings")
+    callbacks.stage("repair_findings")
     failed_findings: list[RepairFinding] = []
     for finding, candidate in zip(repairs, candidates):
         emit(f"Repairing: {candidate.path}")
@@ -263,7 +262,7 @@ def run_repair(
                 emit(f"FAIL repair did not fix detected issue: {candidate.path}")
 
     unresolved = unresolved_findings_after_success(findings) + failed_findings
-    _call_update(callbacks, repaired_count=summary.repaired, repair_failed_count=summary.failed)
+    callbacks.update(repaired_count=summary.repaired, repair_failed_count=summary.failed)
     _emit_lines(emit, render_summary_lines(summary, dry_run=False))
     if unresolved:
         report = build_repair_report(findings, failed=unresolved)

@@ -60,7 +60,7 @@ from timecapsulesmb.checks.smb_config import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     FLASH_RUNTIME_CONFIG,
@@ -953,7 +953,7 @@ def _build_doctor_target(inputs: DoctorInputs) -> DoctorTarget:
         )
     return DoctorTarget(
         connection=connection,
-        host=extract_host(connection.host),
+        host=endpoint_host(connection.host),
         smb_password=inputs.config.require("TC_PASSWORD"),
         proxied_ssh=ssh_opts_use_proxy(connection.ssh_opts),
     )

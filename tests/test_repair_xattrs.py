@@ -15,7 +15,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli import repair_xattrs
+from timecapsulesmb.cli import repair_xattrs as repair_xattrs_cli
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
@@ -160,11 +160,11 @@ class RepairXattrsTests(unittest.TestCase):
         include_hidden: bool = False,
         include_time_machine: bool = False,
         include_directories: bool = False,
-        summary: repair_xattrs.RepairSummary | None = None,
+        summary: repair_xattrs_domain.RepairSummary | None = None,
     ):
-        summary = summary or repair_xattrs.RepairSummary()
+        summary = summary or repair_xattrs_domain.RepairSummary()
         with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=commands):
-            findings = repair_xattrs.find_findings(
+            findings = repair_xattrs_domain.find_findings(
                 root,
                 recursive=recursive,
                 max_depth=max_depth,
@@ -198,8 +198,94 @@ class RepairXattrsTests(unittest.TestCase):
             if recording_context:
                 mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext))
             with redirect_stdout(output):
-                rc = repair_xattrs.main(["--path", str(root), *(argv or [])])
+                rc = repair_xattrs_cli.main(["--path", str(root), *(argv or [])])
         return SimpleNamespace(rc=rc, output=output, text=output.getvalue(), commands=commands, mocks=mocks)
+
+    def test_cli_passes_parsed_options_config_and_confirm_to_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Data"
+            root.mkdir()
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST='root@10.0.0.2'\n")
+            config = self.app_config({"TC_HOST": "root@10.0.0.2"})
+            result = repair_xattrs_service.RepairRunResult(
+                returncode=0,
+                root=root,
+                findings=[],
+                candidates=[],
+                summary=repair_xattrs_domain.RepairSummary(),
+            )
+
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.load_optional_env_config", return_value=config) as load_config_mock:
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.run_repair_service", return_value=result) as run_mock:
+                        with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
+                            with redirect_stdout(io.StringIO()):
+                                rc = repair_xattrs_cli.main(
+                                    [
+                                        "--config",
+                                        str(config_path),
+                                        "--path",
+                                        str(root),
+                                        "--dry-run",
+                                        "--no-recursive",
+                                        "--max-depth",
+                                        "2",
+                                        "--include-hidden",
+                                        "--include-time-machine",
+                                        "--fix-permissions",
+                                        "--verbose",
+                                    ]
+                                )
+
+        self.assertEqual(rc, 0)
+        load_config_mock.assert_called_once_with(env_path=config_path)
+        request, passed_config = run_mock.call_args.args[:2]
+        self.assertEqual(
+            request,
+            repair_xattrs_service.RepairXattrsRequest(
+                path=root,
+                dry_run=True,
+                approve_repairs=False,
+                recursive=False,
+                max_depth=2,
+                include_hidden=True,
+                include_time_machine=True,
+                fix_permissions=True,
+                verbose=True,
+            ),
+        )
+        self.assertIs(passed_config, config)
+        self.assertIsNotNone(run_mock.call_args.kwargs["confirm"])
+        context = RecordingCommandContext.instances[-1]
+        self.assertEqual(context.stages, ["platform_check"])
+        self.assertEqual(context.fields["host_platform"], "darwin")
+        self.assertEqual(context.result, "success")
+
+    def test_cli_no_input_passes_no_confirm_callback_to_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Data"
+            root.mkdir()
+            config = self.app_config({"TC_HOST": "root@10.0.0.2"})
+            result = repair_xattrs_service.RepairRunResult(
+                returncode=0,
+                root=root,
+                findings=[],
+                candidates=[],
+                summary=repair_xattrs_domain.RepairSummary(),
+            )
+
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.load_optional_env_config", return_value=config):
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.run_repair_service", return_value=result) as run_mock:
+                        with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
+                            with redirect_stdout(io.StringIO()):
+                                rc = repair_xattrs_cli.main(["--path", str(root), "--no-input"])
+
+        self.assertEqual(rc, 0)
+        request = run_mock.call_args.args[0]
+        self.assertFalse(request.approve_repairs)
+        self.assertIsNone(run_mock.call_args.kwargs["confirm"])
 
     def test_finds_arch_file_when_xattr_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -213,7 +299,7 @@ class RepairXattrsTests(unittest.TestCase):
         summary = result.summary
         self.assertEqual([finding.path.name for finding in findings], ["broken.txt"])
         self.assertEqual(findings[0].kind, "repairable_arch_flag")
-        self.assertEqual(findings[0].actions, (repair_xattrs.ACTION_CLEAR_ARCH_FLAG,))
+        self.assertEqual(findings[0].actions, (repair_xattrs_domain.ACTION_CLEAR_ARCH_FLAG,))
         self.assertEqual(summary.scanned, 1)
         self.assertEqual(summary.repairable, 1)
 
@@ -230,7 +316,7 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual([finding.path.name for finding in findings], ["broken-dir"])
         self.assertEqual(findings[0].kind, "repairable_arch_flag")
         self.assertEqual(findings[0].path_type, "directory")
-        self.assertEqual(findings[0].actions, (repair_xattrs.ACTION_CLEAR_ARCH_FLAG,))
+        self.assertEqual(findings[0].actions, (repair_xattrs_domain.ACTION_CLEAR_ARCH_FLAG,))
         self.assertEqual(summary.scanned_dirs, 1)
 
     def test_does_not_repair_when_xattr_is_readable(self) -> None:
@@ -239,8 +325,8 @@ class RepairXattrsTests(unittest.TestCase):
             (root / "ok.txt").write_text("data")
 
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
-                summary = repair_xattrs.RepairSummary()
-                findings = repair_xattrs.find_findings(
+                summary = repair_xattrs_domain.RepairSummary()
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -271,10 +357,10 @@ class RepairXattrsTests(unittest.TestCase):
             root = Path(tmp)
             first = root / "first.txt"
             first.write_text("data")
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
 
             with mock.patch.object(Path, "iterdir", return_value=ExplodingAfterFirstIterator(first)):
-                scanner = repair_xattrs.iter_scan_paths(
+                scanner = repair_xattrs_domain.iter_scan_paths(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -299,9 +385,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="-\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -346,9 +432,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch,nodump\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -359,7 +445,7 @@ class RepairXattrsTests(unittest.TestCase):
 
         self.assertEqual([finding.path.name for finding in findings], ["broken.txt"])
         self.assertEqual(findings[0].flags, "arch,nodump")
-        self.assertEqual(findings[0].actions, (repair_xattrs.ACTION_CLEAR_ARCH_FLAG,))
+        self.assertEqual(findings[0].actions, (repair_xattrs_domain.ACTION_CLEAR_ARCH_FLAG,))
 
     def test_does_not_repair_when_stat_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -373,9 +459,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=1, stdout="", stderr="stat failed")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -526,7 +612,7 @@ class RepairXattrsTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
                 with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
                     with redirect_stdout(io.StringIO()):
-                        rc = repair_xattrs.main(["--path", str(root), "--fix-permissions", "--yes"])
+                        rc = repair_xattrs_cli.main(["--path", str(root), "--fix-permissions", "--yes"])
 
         self.assertEqual(rc, 0)
         self.assertIn(["chmod", "ugo+rw", str(file_path.resolve())], chmod_calls)
@@ -542,8 +628,8 @@ class RepairXattrsTests(unittest.TestCase):
             visible.write_text("data")
 
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
-                summary = repair_xattrs.RepairSummary()
-                findings = repair_xattrs.find_findings(
+                summary = repair_xattrs_domain.RepairSummary()
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -675,9 +761,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -704,9 +790,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -723,9 +809,9 @@ class RepairXattrsTests(unittest.TestCase):
             target = Path(tmp) / ".broken.txt"
             target.write_text("data")
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture") as run_mock:
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     target,
                     recursive=True,
                     max_depth=None,
@@ -750,9 +836,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     target,
                     recursive=True,
                     max_depth=None,
@@ -778,9 +864,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -807,9 +893,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -836,9 +922,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=False,
                     max_depth=None,
@@ -867,9 +953,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     root,
                     recursive=True,
                     max_depth=1,
@@ -893,9 +979,9 @@ class RepairXattrsTests(unittest.TestCase):
                     return mock.Mock(returncode=0, stdout="arch\n", stderr="")
                 raise AssertionError(args)
 
-            summary = repair_xattrs.RepairSummary()
+            summary = repair_xattrs_domain.RepairSummary()
             with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                findings = repair_xattrs.find_findings(
+                findings = repair_xattrs_domain.find_findings(
                     target,
                     recursive=True,
                     max_depth=None,
@@ -907,18 +993,18 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual([finding.path for finding in findings], [target.resolve()])
 
     def test_parse_mounted_smb_shares_decodes_mount_output(self) -> None:
-        shares = repair_xattrs.parse_mounted_smb_shares(
+        shares = repair_xattrs_domain.parse_mounted_smb_shares(
             "//James%20Chang@timecapsulesamba4.local/Data on /Volumes/Data (smbfs, nodev)\n"
             "//James%20Chang@AirPort._afpovertcp._tcp.local/Data on /Volumes/AfpData (afpfs, nodev)\n"
         )
 
-        self.assertEqual(shares, [repair_xattrs.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data"))])
+        self.assertEqual(shares, [repair_xattrs_domain.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data"))])
 
     def test_default_share_path_uses_env_host_when_smb_mounted(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217"}
         shares = [
-            repair_xattrs.MountedSmbShare("10.0.0.2", "Data", Path("/Volumes/WrongData")),
-            repair_xattrs.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
+            repair_xattrs_domain.MountedSmbShare("10.0.0.2", "Data", Path("/Volumes/WrongData")),
+            repair_xattrs_domain.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
         ]
         self.assertEqual(
             repair_xattrs_domain.default_share_path_from_config(
@@ -931,7 +1017,7 @@ class RepairXattrsTests(unittest.TestCase):
 
     def test_default_share_path_uses_unique_matching_smb_share_when_host_label_differs(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217"}
-        shares = [repair_xattrs.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data-1"))]
+        shares = [repair_xattrs_domain.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data-1"))]
         self.assertEqual(
             repair_xattrs_domain.default_share_path_from_config(
                 self.app_config(env),
@@ -950,8 +1036,8 @@ class RepairXattrsTests(unittest.TestCase):
     def test_default_share_path_ignores_inaccessible_smb_mountpoints(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217"}
         shares = [
-            repair_xattrs.MountedSmbShare("Time Capsule Samba 4._smb._tcp.local", "Data", Path("/Volumes/.timemachine/Data")),
-            repair_xattrs.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
+            repair_xattrs_domain.MountedSmbShare("Time Capsule Samba 4._smb._tcp.local", "Data", Path("/Volumes/.timemachine/Data")),
+            repair_xattrs_domain.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
         ]
 
         def fake_path_exists(path: Path) -> bool:
@@ -971,8 +1057,8 @@ class RepairXattrsTests(unittest.TestCase):
     def test_default_share_path_rejects_ambiguous_matching_smb_shares(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217"}
         shares = [
-            repair_xattrs.MountedSmbShare("timecapsule-a.local", "Data", Path("/Volumes/Data")),
-            repair_xattrs.MountedSmbShare("timecapsule-b.local", "Data", Path("/Volumes/Data-1")),
+            repair_xattrs_domain.MountedSmbShare("timecapsule-a.local", "Data", Path("/Volumes/Data")),
+            repair_xattrs_domain.MountedSmbShare("timecapsule-b.local", "Data", Path("/Volumes/Data-1")),
         ]
         with self.assertRaises(RuntimeError) as cm:
             repair_xattrs_domain.default_share_path_from_config(
@@ -1005,7 +1091,7 @@ class RepairXattrsTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
                 with mock.patch("timecapsulesmb.services.repair_xattrs.find_findings", return_value=[]):
                     with redirect_stdout(io.StringIO()):
-                        rc = repair_xattrs.main(["--path", str(target)])
+                        rc = repair_xattrs_cli.main(["--path", str(target)])
         self.assertEqual(rc, 0)
         self.path_guard_mock.assert_called_with(target)
 
@@ -1033,13 +1119,13 @@ class RepairXattrsTests(unittest.TestCase):
 
     def test_explicit_inaccessible_repair_path_reports_clean_error(self) -> None:
         target = Path("/Volumes/.timemachine/Data")
-        summary = repair_xattrs.RepairSummary()
+        summary = repair_xattrs_domain.RepairSummary()
 
         with mock.patch("pathlib.Path.resolve", return_value=target):
             with mock.patch("pathlib.Path.is_file", side_effect=PermissionError("permission denied")):
                 with self.assertRaises(RuntimeError) as cm:
                     list(
-                        repair_xattrs.iter_scan_paths(
+                        repair_xattrs_domain.iter_scan_paths(
                             target,
                             recursive=True,
                             max_depth=None,
@@ -1057,18 +1143,18 @@ class RepairXattrsTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
             with redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    repair_xattrs.main(["--dry-run", "--yes", "--path", "/tmp"])
+                    repair_xattrs_cli.main(["--dry-run", "--yes", "--path", "/tmp"])
 
     def test_negative_max_depth_is_rejected(self) -> None:
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
             with redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    repair_xattrs.main(["--max-depth", "-1", "--path", "/tmp"])
+                    repair_xattrs_cli.main(["--max-depth", "-1", "--path", "/tmp"])
 
     def test_non_macos_is_rejected(self) -> None:
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "linux"):
             with self.assertRaises(SystemExit) as cm:
-                repair_xattrs.main(["--path", "/tmp"])
+                repair_xattrs_cli.main(["--path", "/tmp"])
         self.assertIn("must be run on macOS", str(cm.exception))
 
     def test_missing_default_path_is_rejected(self) -> None:
@@ -1077,13 +1163,13 @@ class RepairXattrsTests(unittest.TestCase):
                 "timecapsulesmb.cli.repair_xattrs.load_optional_env_config",
                 return_value=self.app_config({"TC_HOST": "root@192.168.1.217"}),
             ):
-                with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=[]):
+                with mock.patch("timecapsulesmb.services.repair_xattrs.mounted_smb_shares", return_value=[]):
                     with self.assertRaises(SystemExit) as cm:
-                        repair_xattrs.main([])
+                        repair_xattrs_cli.main([])
         self.assertIn("Pass --path explicitly", str(cm.exception))
 
     def test_subprocess_output_decodes_invalid_xattr_bytes(self) -> None:
-        proc = repair_xattrs.run_capture([
+        proc = repair_xattrs_domain.run_capture([
             sys.executable,
             "-c",
             "import sys; sys.stdout.buffer.write(b'bad\\\\xffbytes')",

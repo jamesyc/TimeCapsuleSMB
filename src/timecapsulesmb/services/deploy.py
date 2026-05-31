@@ -81,16 +81,6 @@ class DeployPayloadContext:
     startup_mode: DeploymentStartupMode
 
 
-def _call_stage(callbacks: RuntimeOperationCallbacks | None, stage: str) -> None:
-    if callbacks is not None and callbacks.set_stage is not None:
-        callbacks.set_stage(stage)
-
-
-def _call_debug(callbacks: RuntimeOperationCallbacks | None, **fields: object) -> None:
-    if callbacks is not None and callbacks.add_debug_fields is not None:
-        callbacks.add_debug_fields(**fields)
-
-
 def _best_effort_debug_summary(render, value: object) -> object | None:
     try:
         return render(value)
@@ -206,10 +196,11 @@ def select_deploy_payload_home(
     wait_for_mast_volumes=wait_for_mast_volumes_conn,
     select_payload_home=select_payload_home_with_diagnostics_conn,
 ) -> PayloadHome:
+    callbacks = callbacks or RuntimeOperationCallbacks()
     if dry_run:
         return build_dry_run_payload_home(payload_dir_name)
 
-    _call_stage(callbacks, "read_mast")
+    callbacks.stage("read_mast")
     mast_discovery = wait_for_mast_volumes(
         connection,
         attempts=MAST_DISCOVERY_ATTEMPTS,
@@ -223,7 +214,7 @@ def select_deploy_payload_home(
     if not mast_discovery.volumes:
         debug_fields["mast_acp_output_chars"] = len(mast_discovery.raw_output)
         debug_fields["mast_acp_output"] = _mast_acp_output_debug_text(mast_discovery.raw_output)
-    _call_debug(callbacks, **debug_fields)
+    callbacks.debug(**debug_fields)
     if not mast_discovery.volumes:
         raise DeviceError(
             no_mast_volumes_message(
@@ -232,15 +223,14 @@ def select_deploy_payload_home(
             )
         )
 
-    _call_stage(callbacks, "select_payload_home")
+    callbacks.stage("select_payload_home")
     selection = select_payload_home(
         connection,
         mast_discovery.volumes,
         payload_dir_name,
         wait_seconds=mount_wait_seconds,
     )
-    _call_debug(
-        callbacks,
+    callbacks.debug(
         mast_candidate_checks=_best_effort_debug_summary(
             payload_candidate_checks_debug_summary,
             getattr(selection, "checks", ()),

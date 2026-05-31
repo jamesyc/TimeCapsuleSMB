@@ -9,7 +9,6 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    valid_existing_config_value,
     validated_value_or_empty,
 )
 from timecapsulesmb.core.config import (
@@ -128,7 +127,11 @@ def discover_default_record(
     list_devices(records)
     selected = choose_device(records)
     if selected is None:
-        existing_target = valid_existing_config_value(existing, "TC_HOST", "Device SSH target") or DEFAULTS["TC_HOST"]
+        existing_target = validated_value_or_empty(
+            "TC_HOST",
+            existing.get("TC_HOST", ""),
+            "Device SSH target",
+        ) or DEFAULTS["TC_HOST"]
         print(f"Discovery skipped. Falling back to {existing_target}.\n", flush=True)
         return None
 
@@ -156,9 +159,9 @@ def prompt_ssh_target_value(
     discovered_host: Optional[str],
     ssh_opts: str,
 ) -> str:
-    host_default = values.get("TC_HOST") or discovered_host or valid_existing_config_value(
-        existing,
+    host_default = values.get("TC_HOST") or discovered_host or validated_value_or_empty(
         "TC_HOST",
+        existing.get("TC_HOST", ""),
         "Device SSH target",
     ) or DEFAULTS["TC_HOST"]
     while True:
@@ -194,7 +197,11 @@ def _scripted_ssh_target_value(
     host_arg: str | None,
     ssh_opts: str,
 ) -> tuple[str | None, str | None]:
-    candidate = host_arg or valid_existing_config_value(existing, "TC_HOST", "Device SSH target")
+    candidate = host_arg or validated_value_or_empty(
+        "TC_HOST",
+        existing.get("TC_HOST", ""),
+        "Device SSH target",
+    )
     if not candidate:
         return None, "configure --no-input requires --host or an existing valid TC_HOST in the config file."
     validation_error = _validate_config_value("TC_HOST", "Device SSH target", candidate)

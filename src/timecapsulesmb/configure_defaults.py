@@ -23,9 +23,5 @@ def validated_value_or_empty(key: str, value: str, label: str) -> str:
     return value
 
 
-def valid_existing_config_value(existing: dict[str, str], key: str, label: str) -> str:
-    return validated_value_or_empty(key, existing.get(key, ""), label)
-
-
 def existing_config_value_or_default(existing: dict[str, str], key: str, label: str) -> str:
-    return valid_existing_config_value(existing, key, label) or DEFAULTS[key]
+    return validated_value_or_empty(key, existing.get(key, ""), label) or DEFAULTS[key]

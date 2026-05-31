@@ -15,7 +15,6 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.core.net import (  # noqa: E402
     canonical_ssh_target,
     endpoint_host,
-    extract_host,
     ipv4_literal,
     ipv6_literal,
     is_link_local_ip,
@@ -29,10 +28,6 @@ from timecapsulesmb.core.net import (  # noqa: E402
 
 
 class NetTests(unittest.TestCase):
-    def test_extract_host_removes_user_prefix(self) -> None:
-        self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")
-        self.assertEqual(extract_host("10.0.0.5"), "10.0.0.5")
-
     def test_endpoint_host_strips_supported_wrappers_users_paths_and_ports(self) -> None:
         cases = {
             "root@192.168.1.1:22": "192.168.1.1",

@@ -34,9 +34,6 @@ from timecapsulesmb.deploy.commands import (
     StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
-    ensure_volume_mounted_action,
-    install_permissions_action,
-    prepare_dirs_action,
     remote_action_to_jsonable,
     render_remote_action,
 )
@@ -7761,18 +7758,18 @@ fi
     def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
         prepare_cmd = render_remote_action(
-            prepare_dirs_action(
-                [payload_dir, f"{payload_dir}/private", f"{payload_dir}/cache"],
-                [RemoteSymlink("/root/tc netbsd4", "/mnt/Memory/samba4")],
+            PrepareDirsAction(
+                (payload_dir, f"{payload_dir}/private", f"{payload_dir}/cache"),
+                (RemoteSymlink("/root/tc netbsd4", "/mnt/Memory/samba4"),),
             )
         )
         permissions_cmd = render_remote_action(
-            install_permissions_action(
-                [
+            InstallPermissionsAction(
+                (
                     RemotePermission(f"{payload_dir}/cache", "755"),
                     RemotePermission(f"{payload_dir}/nbns-advertiser", "755"),
                     RemotePermission(f"{payload_dir}/private/smbpasswd", "600"),
-                ]
+                )
             )
         )
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4'", prepare_cmd)
@@ -7791,16 +7788,6 @@ fi
         self.assertEqual(
             render_remote_action(RunScriptAction("/mnt/Flash/Time Capsule SMB/rc.local")),
             "/bin/sh '/mnt/Flash/Time Capsule SMB/rc.local'",
-        )
-
-    def test_collection_action_factories_normalize_to_tuples(self) -> None:
-        self.assertEqual(
-            prepare_dirs_action(["/payload"], [RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4")]),
-            PrepareDirsAction(("/payload",), (RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),)),
-        )
-        self.assertEqual(
-            install_permissions_action([RemotePermission("/payload/private", "700")]),
-            InstallPermissionsAction((RemotePermission("/payload/private", "700"),)),
         )
 
     def test_remote_action_json_preserves_dry_run_shape(self) -> None:
@@ -7833,8 +7820,8 @@ fi
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        self.assertEqual(plan.post_upload_actions[0], ensure_volume_mounted_action("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
-        self.assertIn(install_permissions_action(plan.permissions), plan.post_upload_actions)
+        self.assertEqual(plan.post_upload_actions[0], EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
+        self.assertIn(InstallPermissionsAction(tuple(plan.permissions)), plan.post_upload_actions)
 
     def test_deployment_plan_guards_each_payload_write_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

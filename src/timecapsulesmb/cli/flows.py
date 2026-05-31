@@ -14,31 +14,8 @@ from timecapsulesmb.device.probe import (
     read_runtime_log_tails_conn,
     runtime_startup_failure_debug_fields,
 )
-from timecapsulesmb.services import runtime as runtime_service
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection
-
-
-def wait_for_tcp_port_state(
-    host: str,
-    port: int,
-    *,
-    expected_state: bool,
-    timeout_seconds: int = 120,
-    interval_seconds: int = 5,
-    verbose: bool = True,
-    service_name: str | None = None,
-) -> bool:
-    return runtime_service.wait_for_tcp_port_state(
-        host,
-        port,
-        expected_state=expected_state,
-        timeout_seconds=timeout_seconds,
-        interval_seconds=interval_seconds,
-        log=print if verbose else None,
-        service_name=service_name,
-        tcp_open_func=tcp_open,
-    )
 
 
 def wait_for_device_up(

@@ -42,7 +42,7 @@ final class DeviceReachabilityStore: ObservableObject {
         observer(for: profile.id).clear()
         switch coordinator.run(
             operation: "reachability",
-            params: OperationParams.reachability(profile: profile),
+            params: OperationParams.Reachability.check(profile: profile),
             context: profile.runtimeContext,
             activeDeviceID: profile.id,
             password: password,

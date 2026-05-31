@@ -94,7 +94,7 @@ final class DeviceSetupWorkflow: ObservableObject {
         observer(for: laneKey).clear()
         switch coordinator.run(
             operation: "configure",
-            params: OperationParams.configure(
+            params: OperationParams.Configure.save(
                 host: target.targetHost,
                 selectedRecord: target.selectedRecord,
                 password: password,

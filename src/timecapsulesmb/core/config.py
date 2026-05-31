@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 
-from timecapsulesmb.core.net import extract_host, ipv4_literal, ipv6_literal, is_link_local_ip, parse_endpoint
+from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, is_link_local_ip, parse_endpoint
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
 
 REPO_ROOT = package_project_root()

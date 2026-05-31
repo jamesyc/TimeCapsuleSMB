@@ -67,7 +67,7 @@ final class ActivationStore: ObservableObject {
     func planActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         let start = startRun(
             operation: "activate",
-            params: OperationParams.activateRun(dryRun: true),
+            params: OperationParams.Activation.params(dryRun: true),
             profile: profile,
             password: password
         )
@@ -91,7 +91,7 @@ final class ActivationStore: ObservableObject {
         }
         let start = startRun(
             operation: "activate",
-            params: OperationParams.activateRun(dryRun: false),
+            params: OperationParams.Activation.params(dryRun: false),
             profile: profile,
             password: password
         )

@@ -290,7 +290,7 @@ final class FlashWorkflowStore: ObservableObject {
         }
         let start = startRun(
             action: .backupAndInspect,
-            params: OperationParams.flashBackup(),
+            params: OperationParams.Flash.backup(),
             profile: profile,
             password: password
         )
@@ -323,7 +323,7 @@ final class FlashWorkflowStore: ObservableObject {
         let selection = currentFirmwareSelection
         let start = startRun(
             action: action,
-            params: OperationParams.flashPlan(
+            params: OperationParams.Flash.plan(
                 backupDir: backupDir,
                 mode: mode,
                 firmwareVersion: selection.version,
@@ -361,7 +361,7 @@ final class FlashWorkflowStore: ObservableObject {
         let action = mode == .patch ? FlashUserAction.writePatch : .writeRestore
         let start = startRun(
             action: action,
-            params: OperationParams.flashWrite(
+            params: OperationParams.Flash.write(
                 backupDir: backupDir,
                 mode: mode,
                 firmwareVersion: selection.version,

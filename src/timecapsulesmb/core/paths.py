@@ -45,14 +45,6 @@ class AppPaths:
     package_root: Path
 
     @property
-    def project_root(self) -> Path:
-        return self.distribution_root
-
-    @property
-    def env_path(self) -> Path:
-        return self.config_path
-
-    @property
     def bootstrap_path(self) -> Path:
         return self.state_dir / ".bootstrap"
 

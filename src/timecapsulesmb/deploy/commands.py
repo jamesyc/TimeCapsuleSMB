@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
-from typing import Iterable, Union
+from typing import Union
 
 from timecapsulesmb.device.processes import (
     render_pkill_wait_pkill9_by_ucomm,
@@ -77,21 +77,6 @@ RemoteAction = Union[
     RemovePathAction,
     RunScriptAction,
 ]
-
-
-def prepare_dirs_action(
-    directories: Iterable[str],
-    recreated_symlinks: Iterable[RemoteSymlink] = (),
-) -> RemoteAction:
-    return PrepareDirsAction(tuple(directories), tuple(recreated_symlinks))
-
-
-def install_permissions_action(permissions: Iterable[RemotePermission]) -> RemoteAction:
-    return InstallPermissionsAction(tuple(permissions))
-
-
-def ensure_volume_mounted_action(volume_root: str, device_path: str, wait_seconds: int) -> RemoteAction:
-    return EnsureVolumeMountedAction(volume_root, device_path, wait_seconds)
 
 
 def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:

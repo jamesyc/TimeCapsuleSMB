@@ -172,7 +172,7 @@ final class DoctorStore: ObservableObject {
         backend.clear()
         let start = run(
             operation: "doctor",
-            params: OperationParams.doctor(
+            params: OperationParams.Doctor.run(
                 skipSSH: skipSSH,
                 skipBonjour: skipBonjour,
                 skipSMB: skipSMB

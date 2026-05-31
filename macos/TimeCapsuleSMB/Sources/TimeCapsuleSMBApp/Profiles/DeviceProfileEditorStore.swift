@@ -385,7 +385,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             failSave(error)
             return
         }
-        let params = OperationParams.configure(
+        let params = OperationParams.Configure.save(
             host: draft.trimmedHost,
             password: password,
             debugLogging: draft.debugLogging,

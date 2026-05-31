@@ -12,7 +12,7 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testUninstallPlanParamsCarryNoRebootSelection() {
-        let params = OperationParams.uninstallRun(dryRun: true, noReboot: true, noWait: true, mountWait: 9)
+        let params = OperationParams.Uninstall.params(dryRun: true, noReboot: true, noWait: true, mountWait: 9)
 
         XCTAssertEqual(params["dry_run"], .bool(true))
         XCTAssertEqual(params["no_reboot"], .bool(true))
@@ -22,7 +22,7 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testDeployRunParamsCarryOptionsWithoutFrontendConsentFlags() {
-        let params = OperationParams.deployRun(
+        let params = OperationParams.Deploy.params(
             dryRun: false,
             noReboot: false,
             noWait: true,
@@ -50,7 +50,7 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testDeployPlanParamsCarryAdvancedRuntimeOverridesWhenEnabled() {
-        let params = OperationParams.deployRun(
+        let params = OperationParams.Deploy.params(
             dryRun: true,
             noReboot: false,
             noWait: false,
@@ -80,7 +80,7 @@ final class PendingConfirmationTests: XCTestCase {
             "properties": .object(["syAP": .string("119")])
         ])
 
-        let params = OperationParams.configure(
+        let params = OperationParams.Configure.save(
             host: "root@manual",
             selectedRecord: selectedRecord,
             password: "pw",
@@ -103,7 +103,7 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testConfigureParamsDefaultBareManualHostToRootUser() {
-        let params = OperationParams.configure(
+        let params = OperationParams.Configure.save(
             host: " 10.0.0.2 ",
             password: "pw",
             debugLogging: false
@@ -118,7 +118,7 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testConfigureParamsDefaultBareIPv6ManualHostToRootUser() {
-        let params = OperationParams.configure(
+        let params = OperationParams.Configure.save(
             host: " fd00::2 ",
             password: "pw",
             debugLogging: false
@@ -142,7 +142,7 @@ final class PendingConfirmationTests: XCTestCase {
         )
         let originalParams = OperationCredentialInjector.injectingPassword(
             "pw",
-            into: OperationParams.uninstallRun(dryRun: false, noReboot: true, noWait: true, mountWait: 12)
+            into: OperationParams.Uninstall.params(dryRun: false, noReboot: true, noWait: true, mountWait: 12)
         )
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: originalParams))
@@ -349,8 +349,8 @@ final class PendingConfirmationTests: XCTestCase {
     }
 
     func testMaintenanceRunParamsDoNotCarryFrontendConsentFlags() {
-        let fsck = OperationParams.fsckRun(dryRun: false, volume: "Data", noReboot: true, noWait: true, mountWait: 18)
-        let repair = OperationParams.repairXattrsRun(
+        let fsck = OperationParams.Fsck.run(dryRun: false, volume: "Data", noReboot: true, noWait: true, mountWait: 18)
+        let repair = OperationParams.RepairXattrs.params(
             dryRun: false,
             path: "/Volumes/Data",
             options: RepairXattrsOptions(

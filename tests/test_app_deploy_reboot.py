@@ -7,7 +7,6 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.integrations.acp import ACPError
 from timecapsulesmb.services import reboot as reboot_service
-from timecapsulesmb.services import runtime as runtime_service
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
 from timecapsulesmb.transport.ssh import SshConnection
@@ -42,7 +41,7 @@ class DeployRebootStrategyTests(unittest.TestCase):
             request_acp_reboot=acp,
         )
 
-        acp.assert_called_once_with("10.0.0.2", "pw", timeout=runtime_service.ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
+        acp.assert_called_once_with("10.0.0.2", "pw", timeout=reboot_service.ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
         ssh.assert_not_called()
         self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "acp_then_ssh")
         self.assertEqual(context.diagnostics.debug_fields["acp_reboot_succeeded"], True)

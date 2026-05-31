@@ -115,7 +115,7 @@ final class FsckStore: ObservableObject {
         }
         let start = startRun(
             operation: "fsck",
-            params: OperationParams.fsckList(mountWait: Double(mountWaitValue)),
+            params: OperationParams.Fsck.listVolumes(mountWait: Double(mountWaitValue)),
             profile: profile,
             password: password
         )
@@ -147,7 +147,7 @@ final class FsckStore: ObservableObject {
         }
         let start = startRun(
             operation: "fsck",
-            params: OperationParams.fsckRun(
+            params: OperationParams.Fsck.run(
                 dryRun: true,
                 volume: target.volumeParam,
                 noReboot: options.noReboot,
@@ -192,7 +192,7 @@ final class FsckStore: ObservableObject {
         }
         let start = startRun(
             operation: "fsck",
-            params: OperationParams.fsckRun(
+            params: OperationParams.Fsck.run(
                 dryRun: false,
                 volume: target.volumeParam,
                 noReboot: options.noReboot,

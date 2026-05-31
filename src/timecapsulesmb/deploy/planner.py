@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Literal
 
 from timecapsulesmb.deploy.commands import (
+    EnsureVolumeMountedAction,
+    InstallPermissionsAction,
+    PrepareDirsAction,
     RemovePathAction,
     RemoteAction,
     RemotePermission,
@@ -13,9 +16,6 @@ from timecapsulesmb.deploy.commands import (
     StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
-    ensure_volume_mounted_action,
-    install_permissions_action,
-    prepare_dirs_action,
 )
 from timecapsulesmb.device.storage import PayloadHome
 
@@ -198,7 +198,7 @@ def build_deployment_plan(
     wait_after_reboot: bool = True,
 ) -> DeploymentPlan:
     payload_dir = payload_home.payload_dir
-    ensure_payload_volume = ensure_volume_mounted_action(
+    ensure_payload_volume = EnsureVolumeMountedAction(
         payload_home.volume_root,
         payload_home.device_path,
         apple_mount_wait_seconds,
@@ -301,9 +301,9 @@ def build_deployment_plan(
             ensure_payload_volume,
             RemovePathAction(f"{private_dir}/nbns.enabled"),
             ensure_payload_volume,
-            prepare_dirs_action(remote_directories, legacy_symlinks),
+            PrepareDirsAction(tuple(remote_directories), tuple(legacy_symlinks)),
         ],
-        post_upload_actions=[ensure_payload_volume, install_permissions_action(permissions)],
+        post_upload_actions=[ensure_payload_volume, InstallPermissionsAction(tuple(permissions))],
         startup_mode=startup_mode,
         activation_actions=_deploy_activation_actions(startup_mode, wait_after_reboot=wait_after_reboot),
         reboot_required=reboot_required,

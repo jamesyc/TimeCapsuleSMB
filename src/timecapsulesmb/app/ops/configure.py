@@ -11,7 +11,7 @@ from timecapsulesmb.core.config import (
     parse_bool,
     parse_env_file,
 )
-from timecapsulesmb.core.net import canonical_ssh_target, extract_host
+from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import probe_connection_state
@@ -51,7 +51,7 @@ def selected_record_name(params: dict[str, object]) -> str:
 
 
 def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> None:
-    device_name = selected_record_name(params) or extract_host(host)
+    device_name = selected_record_name(params) or endpoint_host(host)
     require_confirmation(
         params,
         build_confirmation(

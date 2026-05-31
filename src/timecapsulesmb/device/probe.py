@@ -21,7 +21,7 @@ from timecapsulesmb.core.config import (
     MAX_DNS_LABEL_BYTES,
     MAX_NETBIOS_NAME_BYTES,
 )
-from timecapsulesmb.core.net import extract_host, is_link_local_ipv4, is_loopback_ipv4
+from timecapsulesmb.core.net import endpoint_host, is_link_local_ipv4, is_loopback_ipv4
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -1774,7 +1774,7 @@ printf 'TC_DIAG_END routes\n'
     _values, sections = _parse_remote_diagnostic_sections(proc.stdout or "")
     all_ifconfig = sections.get("ifconfig_a", "")
     candidates = _parse_ifconfig_candidates(all_ifconfig)
-    target_host = extract_host(connection.host)
+    target_host = endpoint_host(connection.host)
     target_ip_matches = tuple(
         candidate
         for candidate in candidates

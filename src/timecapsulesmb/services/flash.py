@@ -9,7 +9,7 @@ from typing import Callable
 
 from timecapsulesmb.apple_firmware import normalize_syap
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.paths import default_user_data_dir, safe_path_part
 from timecapsulesmb.device.compat import DeviceCompatibility, is_netbsd4_payload_family, payload_family_description
 from timecapsulesmb.device.errors import DeviceError
@@ -90,14 +90,6 @@ def build_flash_backup_dir(*, base_dir: Path | None, host: str, syap: str) -> Pa
     return root / f"{timestamp}-{safe_path_part(host)}-syAP{safe_path_part(syap)}"
 
 
-def flash_target_from_connection(connection: SshConnection, compatibility: DeviceCompatibility) -> FlashTarget:
-    return FlashTarget(
-        connection=connection,
-        acp_host=extract_host(connection.host),
-        compatibility=compatibility,
-    )
-
-
 def require_netbsd4_flash_target(
     connection: SshConnection,
     compatibility: DeviceCompatibility,
@@ -112,7 +104,11 @@ def require_netbsd4_flash_target(
         raise DeviceError(unsupported_message)
     if log is not None:
         log(f"Using {payload_family_description(compatibility.payload_family)} payload family for flash work.")
-    return flash_target_from_connection(connection, compatibility)
+    return FlashTarget(
+        connection=connection,
+        acp_host=endpoint_host(connection.host),
+        compatibility=compatibility,
+    )
 
 
 def dump_remote_bank(connection: SshConnection, device: str, *, log: object | None = None) -> bytes:

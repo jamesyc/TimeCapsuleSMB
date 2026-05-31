@@ -77,7 +77,7 @@ struct AppReadinessVersionCheck: Equatable {
     var url: String
 
     func params() -> [String: JSONValue] {
-        OperationParams.versionCheck(url: url)
+        OperationParams.Readiness.versionCheck(url: url)
     }
 }
 

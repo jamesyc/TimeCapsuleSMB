@@ -15,7 +15,6 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli.flows import (
     wait_for_device_up,
-    wait_for_tcp_port_state,
     verify_managed_runtime_flow,
 )
 from timecapsulesmb.device.probe import (
@@ -26,10 +25,10 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import ACP_REBOOT_REQUEST_TIMEOUT_SECONDS, SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE
 from timecapsulesmb.services.runtime import (
-    ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
-    SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
     RuntimeOperationCallbacks,
+    wait_for_tcp_port_state,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
@@ -113,15 +112,17 @@ class CliFlowTests(unittest.TestCase):
         )
 
     def test_wait_for_tcp_port_state_checks_before_sleeping(self) -> None:
-        with mock.patch("timecapsulesmb.cli.flows.tcp_open", return_value=True) as tcp_open_mock:
-            with mock.patch("timecapsulesmb.cli.flows.time.sleep") as sleep_mock:
+        with mock.patch("timecapsulesmb.services.runtime.time.sleep") as sleep_mock:
+            tcp_open_mock = mock.Mock(return_value=True)
+            with redirect_stdout(io.StringIO()):
                 ok = wait_for_tcp_port_state(
                     "10.0.0.2",
                     22,
                     expected_state=True,
                     timeout_seconds=30,
                     interval_seconds=5,
-                    verbose=False,
+                    log=print,
+                    tcp_open_func=tcp_open_mock,
                 )
 
         self.assertTrue(ok)

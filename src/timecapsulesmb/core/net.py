@@ -90,10 +90,6 @@ def canonical_ssh_target(value: str, *, default_user: str = "root") -> str:
     return f"{user}@{endpoint.host}"
 
 
-def extract_host(target: str) -> str:
-    return endpoint_host(target)
-
-
 def ipv4_literal(value: str) -> str | None:
     value = value.strip()
     try:

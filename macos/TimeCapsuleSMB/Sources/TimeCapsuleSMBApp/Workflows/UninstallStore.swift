@@ -89,7 +89,7 @@ final class UninstallStore: ObservableObject {
         }
         let start = startRun(
             operation: "uninstall",
-            params: OperationParams.uninstallRun(
+            params: OperationParams.Uninstall.params(
                 dryRun: true,
                 noReboot: options.noReboot,
                 noWait: options.noWait,
@@ -130,7 +130,7 @@ final class UninstallStore: ObservableObject {
         }
         let start = startRun(
             operation: "uninstall",
-            params: OperationParams.uninstallRun(
+            params: OperationParams.Uninstall.params(
                 dryRun: false,
                 noReboot: currentOptions.noReboot,
                 noWait: currentOptions.noWait,

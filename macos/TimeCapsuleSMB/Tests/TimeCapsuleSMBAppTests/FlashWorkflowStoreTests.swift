@@ -83,11 +83,11 @@ final class FlashWorkflowStoreTests: XCTestCase {
     }
 
     func testFlashWriteParamsDefaultRestoreToRebootAndPatchToManualPowerCycle() {
-        let restore = OperationParams.flashWrite(
+        let restore = OperationParams.Flash.write(
             backupDir: "/tmp/flash-backup",
             mode: .restore
         )
-        let patch = OperationParams.flashWrite(
+        let patch = OperationParams.Flash.write(
             backupDir: "/tmp/flash-backup",
             mode: .patch
         )

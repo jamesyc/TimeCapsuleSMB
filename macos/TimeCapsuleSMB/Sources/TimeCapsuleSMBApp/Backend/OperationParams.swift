@@ -10,208 +10,230 @@ struct RepairXattrsOptions: Equatable {
 }
 
 enum OperationParams {
-    static func discover(timeout: Double) -> [String: JSONValue] {
-        ["timeout": .number(timeout)]
+    enum Readiness {
+        static func versionCheck(url: String) -> [String: JSONValue] {
+            var params: [String: JSONValue] = [:]
+            let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedURL.isEmpty {
+                params["url"] = .string(trimmedURL)
+            }
+            return params
+        }
     }
 
-    static func versionCheck(url: String) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [:]
-        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedURL.isEmpty {
-            params["url"] = .string(trimmedURL)
+    enum Discovery {
+        static func discover(timeout: Double) -> [String: JSONValue] {
+            ["timeout": .number(timeout)]
         }
-        return params
     }
 
-    static func reachability(profile: DeviceProfile) -> [String: JSONValue] {
-        [
-            "ssh_host": .string(DeviceEndpointPolicy.rootSSHTarget(profile.host)),
-            "smb_hosts": .array(SMBAddressPolicy.reachabilityHostCandidates(for: profile).map(JSONValue.string)),
-            "tcp_timeout": .number(2),
-            "ssh_timeout": .number(8)
-        ]
+    enum Reachability {
+        static func check(profile: DeviceProfile) -> [String: JSONValue] {
+            [
+                "ssh_host": .string(DeviceEndpointPolicy.rootSSHTarget(profile.host)),
+                "smb_hosts": .array(SMBAddressPolicy.reachabilityHostCandidates(for: profile).map(JSONValue.string)),
+                "tcp_timeout": .number(2),
+                "ssh_timeout": .number(8)
+            ]
+        }
     }
 
-    static func configure(
-        host: String = "",
-        selectedRecord: JSONValue? = nil,
-        password: String,
-        debugLogging: Bool,
-        internalShareUseDiskRoot: Bool? = nil,
-        anyProtocol: Bool? = nil,
-        ataIdleSeconds: Int? = nil,
-        ataStandby: Int? = nil,
-        includeAtaStandby: Bool = false
-    ) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
-            "password": .string(password),
-            "persist_password": .bool(false),
-            "debug_logging": .bool(debugLogging)
-        ]
-        if let selectedRecord {
-            params["selected_record"] = selectedRecord
-        } else {
-            params["host"] = .string(DeviceEndpointPolicy.rootSSHTarget(host))
+    enum Configure {
+        static func save(
+            host: String = "",
+            selectedRecord: JSONValue? = nil,
+            password: String,
+            debugLogging: Bool,
+            internalShareUseDiskRoot: Bool? = nil,
+            anyProtocol: Bool? = nil,
+            ataIdleSeconds: Int? = nil,
+            ataStandby: Int? = nil,
+            includeAtaStandby: Bool = false
+        ) -> [String: JSONValue] {
+            var params: [String: JSONValue] = [
+                "password": .string(password),
+                "persist_password": .bool(false),
+                "debug_logging": .bool(debugLogging)
+            ]
+            if let selectedRecord {
+                params["selected_record"] = selectedRecord
+            } else {
+                params["host"] = .string(DeviceEndpointPolicy.rootSSHTarget(host))
+            }
+            if let internalShareUseDiskRoot {
+                params["internal_share_use_disk_root"] = .bool(internalShareUseDiskRoot)
+            }
+            if let anyProtocol {
+                params["any_protocol"] = .bool(anyProtocol)
+            }
+            if let ataIdleSeconds {
+                params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
+            }
+            if let ataStandby {
+                params["ata_standby"] = .number(Double(ataStandby))
+            } else if includeAtaStandby {
+                params["ata_standby"] = .string("")
+            }
+            return params
         }
-        if let internalShareUseDiskRoot {
-            params["internal_share_use_disk_root"] = .bool(internalShareUseDiskRoot)
+    }
+
+    enum Doctor {
+        static func run(
+            skipSSH: Bool = false,
+            skipBonjour: Bool = false,
+            skipSMB: Bool = false
+        ) -> [String: JSONValue] {
+            [
+                "skip_ssh": .bool(skipSSH),
+                "skip_bonjour": .bool(skipBonjour),
+                "skip_smb": .bool(skipSMB)
+            ]
         }
-        if let anyProtocol {
-            params["any_protocol"] = .bool(anyProtocol)
-        }
-        if let ataIdleSeconds {
+    }
+
+    enum Deploy {
+        static func params(
+            dryRun: Bool,
+            noReboot: Bool,
+            noWait: Bool,
+            nbnsEnabled: Bool,
+            internalShareUseDiskRoot: Bool = false,
+            anyProtocol: Bool = false,
+            debugLogging: Bool,
+            ataIdleSeconds: Int,
+            ataStandby: Int?,
+            mountWait: Double
+        ) -> [String: JSONValue] {
+            var params: [String: JSONValue] = [
+                "dry_run": .bool(dryRun),
+                "no_reboot": .bool(noReboot),
+                "no_wait": .bool(noWait),
+                "nbns_enabled": .bool(nbnsEnabled),
+                "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
+                "any_protocol": .bool(anyProtocol),
+                "debug_logging": .bool(debugLogging),
+                "mount_wait": .number(mountWait)
+            ]
             params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
+            if let ataStandby {
+                params["ata_standby"] = .number(Double(ataStandby))
+            } else {
+                params["ata_standby"] = .string("")
+            }
+            return params
         }
-        if let ataStandby {
-            params["ata_standby"] = .number(Double(ataStandby))
-        } else if includeAtaStandby {
-            params["ata_standby"] = .string("")
+    }
+
+    enum Activation {
+        static func params(dryRun: Bool) -> [String: JSONValue] {
+            ["dry_run": .bool(dryRun)]
         }
-        return params
     }
 
-    static func doctor(
-        skipSSH: Bool = false,
-        skipBonjour: Bool = false,
-        skipSMB: Bool = false
-    ) -> [String: JSONValue] {
-        [
-            "skip_ssh": .bool(skipSSH),
-            "skip_bonjour": .bool(skipBonjour),
-            "skip_smb": .bool(skipSMB)
-        ]
-    }
-
-    static func deployRun(
-        dryRun: Bool,
-        noReboot: Bool,
-        noWait: Bool,
-        nbnsEnabled: Bool,
-        internalShareUseDiskRoot: Bool = false,
-        anyProtocol: Bool = false,
-        debugLogging: Bool,
-        ataIdleSeconds: Int,
-        ataStandby: Int?,
-        mountWait: Double
-    ) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
-            "dry_run": .bool(dryRun),
-            "no_reboot": .bool(noReboot),
-            "no_wait": .bool(noWait),
-            "nbns_enabled": .bool(nbnsEnabled),
-            "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
-            "any_protocol": .bool(anyProtocol),
-            "debug_logging": .bool(debugLogging),
-            "mount_wait": .number(mountWait)
-        ]
-        params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
-        if let ataStandby {
-            params["ata_standby"] = .number(Double(ataStandby))
-        } else {
-            params["ata_standby"] = .string("")
+    enum Uninstall {
+        static func params(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+            [
+                "dry_run": .bool(dryRun),
+                "no_reboot": .bool(noReboot),
+                "no_wait": .bool(noWait),
+                "mount_wait": .number(mountWait)
+            ]
         }
-        return params
     }
 
-    static func uninstallRun(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
-            "dry_run": .bool(dryRun),
-            "no_reboot": .bool(noReboot),
-            "no_wait": .bool(noWait),
-            "mount_wait": .number(mountWait)
-        ]
-    }
-
-    static func activateRun(dryRun: Bool) -> [String: JSONValue] {
-        ["dry_run": .bool(dryRun)]
-    }
-
-    static func fsckList(mountWait: Double) -> [String: JSONValue] {
-        [
-            "list_volumes": .bool(true),
-            "mount_wait": .number(mountWait)
-        ]
-    }
-
-    static func fsckRun(dryRun: Bool, volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
-            "dry_run": .bool(dryRun),
-            "no_reboot": .bool(noReboot),
-            "no_wait": .bool(noWait),
-            "mount_wait": .number(mountWait),
-            "volume": .string(volume)
-        ]
-    }
-
-    static func repairXattrsRun(dryRun: Bool, path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
-            "path": .string(path),
-            "dry_run": .bool(dryRun),
-            "recursive": .bool(options.recursive),
-            "include_hidden": .bool(options.includeHidden),
-            "include_time_machine": .bool(options.includeTimeMachine),
-            "fix_permissions": .bool(options.fixPermissions),
-            "verbose": .bool(options.verbose)
-        ]
-        if let maxDepth = options.maxDepth {
-            params["max_depth"] = .number(Double(maxDepth))
+    enum Fsck {
+        static func listVolumes(mountWait: Double) -> [String: JSONValue] {
+            [
+                "list_volumes": .bool(true),
+                "mount_wait": .number(mountWait)
+            ]
         }
-        return params
-    }
 
-    static func flashBackup() -> [String: JSONValue] {
-        [
-            "action": .string("backup")
-        ]
-    }
-
-    static func flashPlan(
-        backupDir: String,
-        mode: FlashPlanMode,
-        force: Bool = false,
-        firmwareVersion: String = "",
-        firmwareTemplate: String = ""
-    ) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
-            "action": .string("plan"),
-            "backup_dir": .string(backupDir),
-            "mode": .string(mode.rawValue),
-            "force": .bool(force)
-        ]
-        appendFirmwareSelection(
-            to: &params,
-            firmwareVersion: firmwareVersion,
-            firmwareTemplate: firmwareTemplate
-        )
-        return params
-    }
-
-    static func flashWrite(
-        backupDir: String,
-        mode: FlashPlanMode,
-        force: Bool = false,
-        firmwareVersion: String = "",
-        firmwareTemplate: String = "",
-        rebootAfterWrite: Bool? = nil,
-        waitAfterReboot: Bool = true
-    ) -> [String: JSONValue] {
-        let shouldReboot = rebootAfterWrite ?? (mode == .restore)
-        var params: [String: JSONValue] = [
-            "action": .string("write"),
-            "backup_dir": .string(backupDir),
-            "mode": .string(mode.rawValue),
-            "force": .bool(force),
-            "reboot_after_write": .bool(shouldReboot)
-        ]
-        if shouldReboot {
-            params["wait_after_reboot"] = .bool(waitAfterReboot)
+        static func run(dryRun: Bool, volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+            [
+                "dry_run": .bool(dryRun),
+                "no_reboot": .bool(noReboot),
+                "no_wait": .bool(noWait),
+                "mount_wait": .number(mountWait),
+                "volume": .string(volume)
+            ]
         }
-        appendFirmwareSelection(
-            to: &params,
-            firmwareVersion: firmwareVersion,
-            firmwareTemplate: firmwareTemplate
-        )
-        return params
+    }
+
+    enum RepairXattrs {
+        static func params(dryRun: Bool, path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
+            var params: [String: JSONValue] = [
+                "path": .string(path),
+                "dry_run": .bool(dryRun),
+                "recursive": .bool(options.recursive),
+                "include_hidden": .bool(options.includeHidden),
+                "include_time_machine": .bool(options.includeTimeMachine),
+                "fix_permissions": .bool(options.fixPermissions),
+                "verbose": .bool(options.verbose)
+            ]
+            if let maxDepth = options.maxDepth {
+                params["max_depth"] = .number(Double(maxDepth))
+            }
+            return params
+        }
+    }
+
+    enum Flash {
+        static func backup() -> [String: JSONValue] {
+            [
+                "action": .string("backup")
+            ]
+        }
+
+        static func plan(
+            backupDir: String,
+            mode: FlashPlanMode,
+            force: Bool = false,
+            firmwareVersion: String = "",
+            firmwareTemplate: String = ""
+        ) -> [String: JSONValue] {
+            var params: [String: JSONValue] = [
+                "action": .string("plan"),
+                "backup_dir": .string(backupDir),
+                "mode": .string(mode.rawValue),
+                "force": .bool(force)
+            ]
+            OperationParams.appendFirmwareSelection(
+                to: &params,
+                firmwareVersion: firmwareVersion,
+                firmwareTemplate: firmwareTemplate
+            )
+            return params
+        }
+
+        static func write(
+            backupDir: String,
+            mode: FlashPlanMode,
+            force: Bool = false,
+            firmwareVersion: String = "",
+            firmwareTemplate: String = "",
+            rebootAfterWrite: Bool? = nil,
+            waitAfterReboot: Bool = true
+        ) -> [String: JSONValue] {
+            let shouldReboot = rebootAfterWrite ?? (mode == .restore)
+            var params: [String: JSONValue] = [
+                "action": .string("write"),
+                "backup_dir": .string(backupDir),
+                "mode": .string(mode.rawValue),
+                "force": .bool(force),
+                "reboot_after_write": .bool(shouldReboot)
+            ]
+            if shouldReboot {
+                params["wait_after_reboot"] = .bool(waitAfterReboot)
+            }
+            OperationParams.appendFirmwareSelection(
+                to: &params,
+                firmwareVersion: firmwareVersion,
+                firmwareTemplate: firmwareTemplate
+            )
+            return params
+        }
     }
 
     private static func appendFirmwareSelection(

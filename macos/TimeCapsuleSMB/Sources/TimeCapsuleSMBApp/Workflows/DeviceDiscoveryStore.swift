@@ -193,7 +193,7 @@ final class DeviceDiscoveryStore: ObservableObject {
         currentStage = nil
         switch coordinator.run(
             operation: "discover",
-            params: OperationParams.discover(timeout: timeout),
+            params: OperationParams.Discovery.discover(timeout: timeout),
             context: nil,
             activeDeviceID: nil,
             laneKey: .app

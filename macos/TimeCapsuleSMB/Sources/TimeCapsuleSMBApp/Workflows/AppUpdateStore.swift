@@ -77,7 +77,7 @@ final class AppUpdateStore: ObservableObject {
         error = nil
         currentStage = nil
 
-        let params = OperationParams.versionCheck(url: settings.versionCheckURL)
+        let params = OperationParams.Readiness.versionCheck(url: settings.versionCheckURL)
         switch lane.run(operation: "version-check", params: params, context: nil, activeDeviceID: nil) {
         case .started(let operation):
             operationObserver.start(operation)

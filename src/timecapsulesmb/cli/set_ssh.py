@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
+from timecapsulesmb.cli.flows import wait_for_device_up
 from timecapsulesmb.cli.runtime import (
     LogCallback,
     add_config_argument,
@@ -17,10 +17,11 @@ from timecapsulesmb.cli.runtime import (
 )
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_identity_preflight
+from timecapsulesmb.services import runtime as runtime_service
 from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
@@ -120,7 +121,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         connection = None if args.status else command_context.resolve_env_connection()
         target_host = config.require("TC_HOST") if args.status else connection.host
-        acp_host = extract_host(target_host)
+        acp_host = endpoint_host(target_host)
         password = "" if connection is None else connection.password
 
         print(f"Using configured target from {config.path}: {target_host}")
@@ -182,7 +183,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 0
 
             command_context.set_stage("wait_for_ssh_enabled")
-            if not wait_for_tcp_port_state(acp_host, 22, expected_state=True, service_name="SSH port"):
+            if not runtime_service.wait_for_tcp_port_state(
+                acp_host,
+                22,
+                expected_state=True,
+                log=print,
+                service_name="SSH port",
+            ):
                 command_context.update_fields(ssh_final_reachable=False)
                 command_context.fail_with_error("SSH did not open after enabling via ACP.")
                 return 1
@@ -244,7 +251,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         print("Device is starting reboot now, waiting for it to shut down...")
         command_context.set_stage("wait_for_ssh_down")
-        if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, service_name="SSH port"):
+        if not runtime_service.wait_for_tcp_port_state(
+            acp_host,
+            22,
+            expected_state=False,
+            log=print,
+            service_name="SSH port",
+        ):
             message = "SSH did not close after disable/reboot request; disable could not be verified."
             command_context.update_fields(
                 ssh_final_reachable=True,
@@ -268,7 +281,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.update_fields(device_recovered=True)
         print("Device successfully rebooted. Checking if SSH is still disabled...")
         command_context.set_stage("verify_ssh_disabled")
-        if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, timeout_seconds=30, service_name="SSH port"):
+        if not runtime_service.wait_for_tcp_port_state(
+            acp_host,
+            22,
+            expected_state=False,
+            timeout_seconds=30,
+            log=print,
+            service_name="SSH port",
+        ):
             command_context.update_fields(ssh_final_reachable=True, ssh_disable_persisted=False)
             message = "SSH reopened after reboot. Disable did not persist."
             print(color_red("Failed to verify SSH disable:"))

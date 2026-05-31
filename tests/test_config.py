@@ -20,7 +20,6 @@ from timecapsulesmb.core.config import (
     ConfigValidationError,
     build_mdns_device_model_txt,
     DEFAULTS,
-    extract_host,
     load_app_config,
     parse_bool,
     parse_env_file,
@@ -36,6 +35,7 @@ from timecapsulesmb.core.config import (
     validate_ssh_target,
     write_env_file,
 )
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.paths import manifest_artifact_paths, resolve_app_paths, resolve_distribution_root
 
 
@@ -122,7 +122,7 @@ class ConfigTests(unittest.TestCase):
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
                 artifact_path.write_bytes(b"payload")
             self.assertEqual(resolve_distribution_root(nested), root)
-            self.assertEqual(resolve_app_paths(nested).env_path, root / ".env")
+            self.assertEqual(resolve_app_paths(nested).config_path, root / ".env")
 
     def test_render_env_text_contains_config_keys(self) -> None:
         values = dict(DEFAULTS)
@@ -339,9 +339,9 @@ class ConfigTests(unittest.TestCase):
         rendered = render_env_text(values)
         self.assertIn(f"TC_SSH_OPTS={shlex.quote(DEFAULTS['TC_SSH_OPTS'])}", rendered)
 
-    def test_extract_host_removes_user_prefix(self) -> None:
-        self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")
-        self.assertEqual(extract_host("10.0.0.5"), "10.0.0.5")
+    def test_endpoint_host_removes_user_prefix(self) -> None:
+        self.assertEqual(endpoint_host("root@10.0.0.5"), "10.0.0.5")
+        self.assertEqual(endpoint_host("10.0.0.5"), "10.0.0.5")
 
     def test_build_mdns_device_model_txt(self) -> None:
         self.assertEqual(build_mdns_device_model_txt("TimeCapsule"), "model=TimeCapsule")

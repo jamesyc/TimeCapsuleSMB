@@ -6,10 +6,9 @@ import time
 from collections.abc import Callable
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
-from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.net import (
     canonical_ssh_target,
-    extract_host,
+    endpoint_host,
     ipv4_literal,
     is_link_local_ipv4,
     is_link_local_ipv6,
@@ -23,12 +22,8 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceProbeResult,
     probe_connection_state,
     probe_remote_interface_conn,
-    wait_for_ssh_state_conn,
 )
-from timecapsulesmb.deploy.executor import remote_request_reboot
-from timecapsulesmb.integrations.acp import ACPError, reboot as acp_reboot
 from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshError
 from timecapsulesmb.transport.local import tcp_open
 
 
@@ -46,40 +41,21 @@ class RuntimeOperationCallbacks:
     add_debug_fields: Callable[..., None] | None = None
     update_fields: Callable[..., None] | None = None
 
+    def stage(self, stage: str) -> None:
+        if self.set_stage is not None:
+            self.set_stage(stage)
 
-@dataclass(frozen=True)
-class RebootCycleResult:
-    went_down: bool
-    came_back_up: bool
+    def message(self, message: str) -> None:
+        if self.log is not None:
+            self.log(message)
 
-    @property
-    def completed(self) -> bool:
-        return self.went_down and self.came_back_up
+    def debug(self, **fields: object) -> None:
+        if self.add_debug_fields is not None:
+            self.add_debug_fields(**fields)
 
-
-ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
-SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE = "SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)"
-
-
-def _call_stage(callbacks: RuntimeOperationCallbacks, stage: str) -> None:
-    if callbacks.set_stage is not None:
-        callbacks.set_stage(stage)
-
-
-def _call_log(callbacks: RuntimeOperationCallbacks, message: str) -> None:
-    if callbacks.log is not None:
-        callbacks.log(message)
-
-
-def _call_debug(callbacks: RuntimeOperationCallbacks, **fields: object) -> None:
-    if callbacks.add_debug_fields is not None:
-        callbacks.add_debug_fields(**fields)
-
-
-def _call_update(callbacks: RuntimeOperationCallbacks, **fields: object) -> None:
-    if callbacks.update_fields is not None:
-        callbacks.update_fields(**fields)
-
+    def update(self, **fields: object) -> None:
+        if self.update_fields is not None:
+            self.update_fields(**fields)
 
 def load_env_config(
     *,
@@ -169,7 +145,7 @@ def ssh_target_link_local_resolution_error(
 ) -> str | None:
     if ssh_opts_use_proxy(ssh_opts):
         return None
-    host = extract_host(target).strip()
+    host = endpoint_host(target).strip()
     if not host or ipv4_literal(host) is not None:
         return None
     link_local_ips = tuple(ip for ip in resolve_host_ipv4s(host) if is_link_local_ipv4(ip))
@@ -244,168 +220,3 @@ def wait_for_tcp_port_state(
     if log is not None:
         log(f"{label} did not become {expected_state_string} within {timeout_seconds}s.")
     return False
-
-
-def request_runtime_reboot(
-    connection: SshConnection,
-    *,
-    strategy: str,
-    callbacks: RuntimeOperationCallbacks | None = None,
-    progress_log: Callable[[str], None] | None = None,
-    raise_on_request_error: bool = False,
-    request_reboot: Callable[[SshConnection], None] = remote_request_reboot,
-    request_acp_reboot: Callable[..., object] = acp_reboot,
-) -> None:
-    callbacks = callbacks or RuntimeOperationCallbacks()
-    _call_stage(callbacks, "reboot")
-    _call_update(callbacks, reboot_was_attempted=True)
-    _call_debug(callbacks, reboot_request_strategy=strategy)
-    if strategy == "acp_then_ssh":
-        _request_reboot_acp_then_ssh(
-            connection,
-            callbacks=callbacks,
-            progress_log=progress_log,
-            raise_on_request_error=raise_on_request_error,
-            request_reboot=request_reboot,
-            request_acp_reboot=request_acp_reboot,
-        )
-        return
-    _request_reboot_via_ssh(
-        connection,
-        callbacks=callbacks,
-        progress_log=progress_log,
-        request_reboot=request_reboot,
-        raise_on_request_error=raise_on_request_error,
-    )
-
-
-def _request_reboot_acp_then_ssh(
-    connection: SshConnection,
-    *,
-    callbacks: RuntimeOperationCallbacks,
-    progress_log: Callable[[str], None] | None,
-    raise_on_request_error: bool,
-    request_reboot: Callable[[SshConnection], None],
-    request_acp_reboot: Callable[..., object],
-) -> None:
-    _call_debug(callbacks, acp_reboot_attempted=True)
-    try:
-        request_acp_reboot(
-            extract_host(connection.host),
-            connection.password,
-            timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
-        )
-    except ACPError as exc:
-        _call_debug(
-            callbacks,
-            acp_reboot_succeeded=False,
-            acp_reboot_error=system_exit_message(exc),
-        )
-        _call_log(callbacks, "ACP reboot request failed; trying SSH reboot request.")
-        _request_reboot_via_ssh(
-            connection,
-            callbacks=callbacks,
-            progress_log=progress_log,
-            request_reboot=request_reboot,
-            raise_on_request_error=raise_on_request_error,
-        )
-        return
-
-    _call_debug(callbacks, acp_reboot_succeeded=True)
-    _call_log(callbacks, "ACP reboot requested.")
-
-
-def _request_reboot_via_ssh(
-    connection: SshConnection,
-    *,
-    callbacks: RuntimeOperationCallbacks,
-    progress_log: Callable[[str], None] | None,
-    request_reboot: Callable[[SshConnection], None],
-    progress_message: str = SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
-    raise_on_request_error: bool,
-) -> None:
-    _call_debug(callbacks, ssh_reboot_attempted=True)
-    if progress_log is not None:
-        progress_log(progress_message)
-    try:
-        request_reboot(connection)
-    except SshCommandTimeout as exc:
-        _call_debug(
-            callbacks,
-            ssh_reboot_succeeded=False,
-            ssh_reboot_timed_out=True,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise
-        _call_log(callbacks, "SSH reboot request timed out; checking whether the device is rebooting...")
-        return
-    except SshError as exc:
-        _call_debug(
-            callbacks,
-            ssh_reboot_succeeded=False,
-            ssh_reboot_error=system_exit_message(exc),
-        )
-        if raise_on_request_error:
-            raise
-        _call_log(callbacks, "SSH reboot request failed; checking whether the device is rebooting anyway...")
-        return
-
-    _call_debug(callbacks, ssh_reboot_succeeded=True)
-    _call_log(callbacks, "SSH reboot requested.")
-
-
-def request_runtime_reboot_and_observe(
-    connection: SshConnection,
-    *,
-    strategy: str,
-    callbacks: RuntimeOperationCallbacks | None = None,
-    progress_log: Callable[[str], None] | None = None,
-    raise_on_request_error: bool = False,
-    down_timeout_seconds: int,
-    up_timeout_seconds: int,
-    request_reboot: Callable[[SshConnection], None] = remote_request_reboot,
-    request_acp_reboot: Callable[..., object] = acp_reboot,
-    wait_for_ssh_state: Callable[..., bool] = wait_for_ssh_state_conn,
-) -> RebootCycleResult:
-    callbacks = callbacks or RuntimeOperationCallbacks()
-    request_runtime_reboot(
-        connection,
-        strategy=strategy,
-        callbacks=callbacks,
-        progress_log=progress_log,
-        raise_on_request_error=raise_on_request_error,
-        request_reboot=request_reboot,
-        request_acp_reboot=request_acp_reboot,
-    )
-    return observe_runtime_reboot_cycle(
-        connection,
-        callbacks=callbacks,
-        down_timeout_seconds=down_timeout_seconds,
-        up_timeout_seconds=up_timeout_seconds,
-        wait_for_ssh_state=wait_for_ssh_state,
-    )
-
-
-def observe_runtime_reboot_cycle(
-    connection: SshConnection,
-    *,
-    callbacks: RuntimeOperationCallbacks | None = None,
-    down_timeout_seconds: int,
-    up_timeout_seconds: int,
-    wait_for_ssh_state: Callable[..., bool] = wait_for_ssh_state_conn,
-) -> RebootCycleResult:
-    callbacks = callbacks or RuntimeOperationCallbacks()
-    _call_log(callbacks, "Waiting for the device to go down...")
-    _call_stage(callbacks, "wait_for_reboot_down")
-    if not wait_for_ssh_state(connection, expected_up=False, timeout_seconds=down_timeout_seconds):
-        return RebootCycleResult(went_down=False, came_back_up=False)
-
-    _call_log(callbacks, "Device went down; waiting for it to come back up...")
-    _call_stage(callbacks, "wait_for_reboot_up")
-    if not wait_for_ssh_state(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
-        return RebootCycleResult(went_down=True, came_back_up=False)
-
-    _call_update(callbacks, device_came_back_after_reboot=True)
-    _call_log(callbacks, "Device is back online.")
-    return RebootCycleResult(went_down=True, came_back_up=True)

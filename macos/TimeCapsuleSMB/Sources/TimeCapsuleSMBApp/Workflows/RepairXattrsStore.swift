@@ -101,7 +101,7 @@ final class RepairXattrsStore: ObservableObject {
         }
         let start = startRun(
             operation: "repair-xattrs",
-            params: OperationParams.repairXattrsRun(dryRun: true, path: path, options: options),
+            params: OperationParams.RepairXattrs.params(dryRun: true, path: path, options: options),
             profile: nil,
             password: nil
         )
@@ -130,7 +130,7 @@ final class RepairXattrsStore: ObservableObject {
         }
         let start = startRun(
             operation: "repair-xattrs",
-            params: OperationParams.repairXattrsRun(dryRun: false, path: path, options: scannedOptions),
+            params: OperationParams.RepairXattrs.params(dryRun: false, path: path, options: scannedOptions),
             profile: nil,
             password: nil
         )
