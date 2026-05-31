@@ -253,7 +253,10 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
+            let pid = process.processIdentifier
+            if pid > 0 {
+                kill(pid, SIGKILL)
+            }
         }
     }
 
@@ -261,7 +264,11 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         guard process.isRunning else {
             return
         }
-        kill(process.processIdentifier, SIGINT)
+        let pid = process.processIdentifier
+        guard pid > 0 else {
+            return
+        }
+        kill(pid, SIGINT)
         for _ in 0..<20 {
             if !process.isRunning {
                 return
