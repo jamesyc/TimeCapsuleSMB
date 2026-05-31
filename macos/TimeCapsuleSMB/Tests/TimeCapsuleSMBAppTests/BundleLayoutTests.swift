@@ -24,6 +24,15 @@ final class BundleLayoutTests: XCTestCase {
         XCTAssertNil(AppLaunchResourceValidation.validate())
     }
 
+    func testLaunchResourceValidationIsIndependentOfSelectedLanguage() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .simplifiedChinese)
+
+        XCTAssertEqual(L10n.string("sidebar.activity"), "活动")
+        XCTAssertNil(AppLaunchResourceValidation.validate())
+    }
+
     func testStateInventoriesAreExplicit() {
         XCTAssertEqual(BundleRuntimeMode.allCases, [.explicit, .productionBundle, .developmentCheckout])
         XCTAssertEqual(BundleRuntimeIssueSeverity.allCases, [.warning, .error])
