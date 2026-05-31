@@ -8,6 +8,7 @@ from collections.abc import Callable
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.net import (
+    canonical_ssh_target,
     extract_host,
     ipv4_literal,
     is_link_local_ipv4,
@@ -118,7 +119,11 @@ def resolve_ssh_credentials(
     allow_empty_password: bool = False,
     allow_password_prompt: bool = True,
 ) -> tuple[str, str]:
-    host = config.require("TC_HOST")
+    raw_host = config.require("TC_HOST")
+    try:
+        host = canonical_ssh_target(raw_host)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     password = config.get("TC_PASSWORD")
     if not password and not allow_empty_password:
         if not allow_password_prompt:

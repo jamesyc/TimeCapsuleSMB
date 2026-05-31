@@ -10,14 +10,10 @@ struct ToolbarIconButton: View {
 
     var body: some View {
         Button {
-            guard !disabled else {
-                return
-            }
             action()
         } label: {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(disabled ? Color.secondary.opacity(0.5) : Color.primary)
                 .frame(width: 28, height: 28)
                 .background {
                     Circle()
@@ -26,9 +22,9 @@ struct ToolbarIconButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
         .help(title)
         .accessibilityLabel(title)
-        .accessibilityValue(disabled ? L10n.string("toolbar.disabled") : "")
         .onHover { hovering in
             isHovered = hovering
         }

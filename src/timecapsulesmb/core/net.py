@@ -1,11 +1,97 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import ipaddress
 import socket
+from urllib.parse import urlparse
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    raw: str
+    user: str
+    host: str
+    port: int | None = None
+    invalid_port: str | None = None
+
+
+def parse_endpoint(value: str) -> Endpoint:
+    raw = value.strip()
+    user = ""
+    host = raw
+    port: int | None = None
+    invalid_port: str | None = None
+
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.hostname:
+        user = parsed.username or ""
+        host = parsed.hostname
+        try:
+            port = parsed.port
+        except ValueError:
+            invalid_port = parsed.netloc.rsplit(":", 1)[-1]
+        return Endpoint(raw=raw, user=user, host=normalize_endpoint_host(host), port=port, invalid_port=invalid_port)
+
+    candidate = raw.split("/", 1)[0]
+    if "@" in candidate:
+        user, candidate = candidate.rsplit("@", 1)
+
+    if candidate.startswith("[") and "]" in candidate:
+        end = candidate.index("]")
+        host = candidate[1:end]
+        suffix = candidate[end + 1:]
+        if suffix.startswith(":"):
+            port_text = suffix[1:]
+            if port_text.isdigit():
+                port = int(port_text)
+            elif port_text:
+                invalid_port = port_text
+        elif suffix:
+            invalid_port = suffix
+    elif candidate.count(":") == 1:
+        host_part, port_text = candidate.rsplit(":", 1)
+        if port_text.isdigit():
+            host = host_part
+            port = int(port_text)
+        elif port_text:
+            host = candidate
+            invalid_port = port_text
+    else:
+        host = candidate
+
+    return Endpoint(raw=raw, user=user, host=normalize_endpoint_host(host), port=port, invalid_port=invalid_port)
+
+
+def normalize_endpoint_host(value: str) -> str:
+    candidate = value.strip().strip("[]")
+    if not candidate:
+        return ""
+    literal = ipv4_literal(candidate) or ipv6_literal(candidate)
+    if literal is not None:
+        return literal
+    return candidate.rstrip(".")
+
+
+def endpoint_host(value: str) -> str:
+    return parse_endpoint(value).host
+
+
+def canonical_ssh_target(value: str, *, default_user: str = "root") -> str:
+    endpoint = parse_endpoint(value)
+    if not endpoint.host:
+        return ""
+    if endpoint.invalid_port:
+        raise ValueError(f"invalid SSH target port: {endpoint.invalid_port}")
+    if endpoint.port not in (None, 22):
+        raise ValueError(
+            f"unsupported SSH target port {endpoint.port}; set a custom SSH port in TC_SSH_OPTS instead"
+        )
+    user = endpoint.user or default_user
+    return f"{user}@{endpoint.host}"
 
 
 def extract_host(target: str) -> str:
-    return target.split("@", 1)[1] if "@" in target else target
+    return endpoint_host(target)
 
 
 def ipv4_literal(value: str) -> str | None:

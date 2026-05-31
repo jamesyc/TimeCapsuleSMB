@@ -377,10 +377,13 @@ class ConfigTests(unittest.TestCase):
 
     def test_validate_ssh_target_accepts_user_at_host_targets(self) -> None:
         self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@10.0.0.2:22", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@127.0.0.1", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@localhost", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@timecapsule.local", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@timecapsule.local:22", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("admin_user@wan.example.com", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@[fd00::2]:22", "Device SSH target"))
 
     def test_validate_ssh_target_rejects_bare_or_unsafe_targets(self) -> None:
         self.assertEqual(
@@ -393,6 +396,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             validate_ssh_target("root;reboot@10.0.0.2", "Device SSH target"),
             "Device SSH target username may contain only letters, numbers, dots, underscores, and hyphens.",
+        )
+        self.assertEqual(
+            validate_ssh_target("root@10.0.0.2:2222", "Device SSH target"),
+            "Device SSH target only supports the default SSH port 22. Set custom SSH ports in TC_SSH_OPTS.",
+        )
+        self.assertEqual(
+            validate_ssh_target("root@timecapsule.local:ssh", "Device SSH target"),
+            "Device SSH target port must be numeric.",
         )
         self.assertEqual(
             validate_ssh_target("root@169.254.44.9", "Device SSH target"),

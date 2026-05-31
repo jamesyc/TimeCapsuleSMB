@@ -31,6 +31,7 @@ from timecapsulesmb.cli.runtime import (
     read_password_source_args,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
+from timecapsulesmb.core.net import canonical_ssh_target
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
@@ -164,7 +165,7 @@ def prompt_ssh_target_value(
         candidate = prompt_valid_config_value("TC_HOST", "Device SSH target", host_default)
         resolution_error = ssh_target_link_local_resolution_error(candidate, ssh_opts)
         if resolution_error is None:
-            return candidate
+            return canonical_ssh_target(candidate)
         print(resolution_error)
         host_default = candidate
 
@@ -202,7 +203,10 @@ def _scripted_ssh_target_value(
     resolution_error = ssh_target_link_local_resolution_error(candidate, ssh_opts)
     if resolution_error is not None:
         return None, resolution_error
-    return candidate, None
+    try:
+        return canonical_ssh_target(candidate), None
+    except ValueError as exc:
+        return None, str(exc)
 
 
 def _scripted_password_value(existing: dict[str, str], args: argparse.Namespace) -> tuple[str | None, str | None]:

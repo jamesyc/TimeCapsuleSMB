@@ -6,10 +6,9 @@ import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Callable
-from urllib.parse import urlparse
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig
-from timecapsulesmb.core.net import resolve_host_ips
+from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host as parsed_endpoint_host, parse_endpoint, resolve_host_ips
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
@@ -119,42 +118,18 @@ def add_param_hosts(candidates: list[str], value: object) -> None:
 
 
 def endpoint_host(value: str) -> str:
-    candidate = value.strip()
-    if not candidate:
-        return ""
-    parsed = urlparse(candidate)
-    if parsed.scheme and parsed.hostname:
-        return normalize_host(parsed.hostname)
-
-    candidate = candidate.split("/", 1)[0]
-    if "@" in candidate:
-        candidate = candidate.rsplit("@", 1)[1]
-    if candidate.startswith("[") and "]" in candidate:
-        return normalize_host(candidate[1:candidate.index("]")])
-
-    if candidate.count(":") == 1:
-        host_part, port_part = candidate.rsplit(":", 1)
-        if port_part.isdigit():
-            candidate = host_part
-    return normalize_host(candidate)
-
-
-def normalize_host(value: str) -> str:
-    candidate = value.strip().strip("[]")
-    if not candidate:
-        return ""
-    try:
-        ipaddress.ip_address(candidate.split("%", 1)[0])
-        return candidate
-    except ValueError:
-        return candidate.rstrip(".")
+    return parsed_endpoint_host(value)
 
 
 def root_ssh_target(value: str) -> str:
-    candidate = value.strip()
-    if not candidate or "@" in candidate:
-        return candidate
-    return f"root@{candidate}"
+    try:
+        return canonical_ssh_target(value)
+    except ValueError:
+        endpoint = parse_endpoint(value)
+        if not endpoint.host:
+            return value.strip()
+        user = endpoint.user or "root"
+        return f"{user}@{endpoint.host}"
 
 
 def check_dns(hosts: Sequence[str]) -> ReachabilityCheck:

@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 
-from timecapsulesmb.core.net import extract_host, ipv4_literal, ipv6_literal, is_link_local_ip
+from timecapsulesmb.core.net import extract_host, ipv4_literal, ipv6_literal, is_link_local_ip, parse_endpoint
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
 
 REPO_ROOT = package_project_root()
@@ -339,11 +339,17 @@ def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} must not contain whitespace."
     if "@" not in value:
         return f"{field_name} must include a username, like {DEFAULT_SSH_TARGET_PLACEHOLDER}"
-    user, host = value.split("@", 1)
+    endpoint = parse_endpoint(value)
+    user = endpoint.user
+    host = endpoint.host
     if not user:
         return f"{field_name} must include a username before @."
     if not host:
         return f"{field_name} must include a host after @."
+    if endpoint.invalid_port:
+        return f"{field_name} port must be numeric."
+    if endpoint.port not in (None, 22):
+        return f"{field_name} only supports the default SSH port 22. Set custom SSH ports in TC_SSH_OPTS."
     if host.lower() == "192.168.x.x":
         return (
             f"{field_name} IP address is invalid. "

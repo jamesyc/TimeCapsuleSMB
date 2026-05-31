@@ -11,7 +11,7 @@ from timecapsulesmb.core.config import (
     parse_bool,
     parse_env_file,
 )
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.core.net import canonical_ssh_target, extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import probe_connection_state
@@ -36,10 +36,10 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 
 def configure_ssh_target(value: str) -> str:
-    host = value.strip()
-    if not host or "@" in host:
-        return host
-    return f"root@{host}"
+    try:
+        return canonical_ssh_target(value)
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
 
 
 def selected_record_name(params: dict[str, object]) -> str:

@@ -1461,6 +1461,36 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["host"], "root@10.0.0.2")
 
+    def test_configure_canonicalizes_default_ssh_port_before_probe_and_save(self) -> None:
+        collector = CollectingSink()
+        captured_connections: list[SshConnection] = []
+
+        def capture_probe(connection: SshConnection) -> ProbedDeviceState:
+            captured_connections.append(connection)
+            return probed_state()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", side_effect=capture_probe):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2:22",
+                            "password": "goodpw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured_connections[0].host, "root@10.0.0.2")
+        self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
+        self.assertEqual(collector.events_of_type("result")[0]["payload"]["host"], "root@10.0.0.2")
+
     def test_configure_can_persist_password_for_env_compatibility_when_requested(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:

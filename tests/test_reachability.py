@@ -70,6 +70,30 @@ class ReachabilityTests(unittest.TestCase):
         self.assertEqual(result.summary, "SSH reachable; SMB port reachable.")
         self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "SKIP")
 
+    def test_reachability_strips_ports_from_host_candidates(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2:22", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        tcp_calls: list[tuple[str, int]] = []
+
+        def tcp(host: str, port: int, *, timeout: float) -> str | None:
+            tcp_calls.append((host, port))
+            return None
+
+        with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
+            with mock.patch(
+                "timecapsulesmb.services.reachability.subprocess.run",
+                return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
+            ):
+                with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
+                    result = reachability.run_reachability(
+                        config,
+                        {"smb_hosts": ["capsule.local:445"]},
+                        password="",
+                    )
+
+        self.assertEqual(result.status, "reachable")
+        self.assertIn(("10.0.0.2", 22), tcp_calls)
+        self.assertIn(("capsule.local", 445), tcp_calls)
+
     def test_partial_when_ssh_port_works_but_smb_port_is_closed(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
 
