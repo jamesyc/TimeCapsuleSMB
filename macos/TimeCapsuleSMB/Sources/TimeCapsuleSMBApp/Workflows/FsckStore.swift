@@ -12,31 +12,30 @@ final class FsckStore: ObservableObject {
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
-    private let runner: MaintenanceOperationRunner
+    private let operation: MaintenanceWorkflowOperation
     private var plannedOptions: MaintenanceOptions?
     private var plannedTargetID: FsckTargetViewModel.ID?
     private var latestOptions: MaintenanceOptions?
 
     init(backend: BackendClient, coordinator: OperationCoordinator? = nil, laneKey: OperationLaneKey? = nil) {
-        self.runner = MaintenanceOperationRunner(
+        self.operation = MaintenanceWorkflowOperation(
+            name: "fsck",
             backend: backend,
             coordinator: coordinator,
-            laneKey: laneKey,
-            onEvent: { _, _ in },
-            onRunningChanged: {}
+            laneKey: laneKey
         )
-        self.runner.rebind(onEvent: { [weak self] event, operation in
-            self?.handle(event, activeOperation: operation)
+        self.operation.bind(onEvent: { [weak self] event, activeOperation in
+            self?.handle(event, activeOperation: activeOperation)
         }, onRunningChanged: { [weak self] in
             self?.objectWillChange.send()
         })
     }
 
-    var events: [BackendEvent] { runner.events }
-    var isRunning: Bool { runner.isRunning }
-    var isBusy: Bool { runner.isBusy }
-    var canCancel: Bool { runner.canCancel }
-    var pendingConfirmation: PendingConfirmation? { runner.pendingConfirmation }
+    var events: [BackendEvent] { operation.events }
+    var isRunning: Bool { operation.isRunning }
+    var isBusy: Bool { operation.isBusy }
+    var canCancel: Bool { operation.canCancel }
+    var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
 
     var selectedTarget: FsckTargetViewModel? {
         guard let selectedTargetID else {
@@ -75,21 +74,21 @@ final class FsckStore: ObservableObject {
     }
 
     func confirmPending() {
-        runner.confirmPending()
+        operation.confirmPending()
     }
 
     func cancelPendingConfirmation(options: MaintenanceOptions?) {
         latestOptions = options
-        runner.cancelPendingConfirmation()
+        operation.cancelPendingConfirmation()
         restoreStateAfterCancellation(options: options)
     }
 
     func cancel() {
-        runner.cancel()
+        operation.cancel()
     }
 
     func clear() {
-        runner.clear()
+        operation.clear()
         state = .idle
         targets = []
         selectedTargetID = nil
@@ -114,7 +113,6 @@ final class FsckStore: ObservableObject {
             return .rejected(WorkflowLocalError.mountWaitInvalid.message)
         }
         let start = startRun(
-            operation: "fsck",
             params: OperationParams.Fsck.listVolumes(mountWait: Double(mountWaitValue)),
             profile: profile,
             password: password
@@ -146,7 +144,6 @@ final class FsckStore: ObservableObject {
             return .rejected(WorkflowLocalError.fsckTargetRequired.message)
         }
         let start = startRun(
-            operation: "fsck",
             params: OperationParams.Fsck.run(
                 dryRun: true,
                 volume: target.volumeParam,
@@ -191,7 +188,6 @@ final class FsckStore: ObservableObject {
             return .rejected(WorkflowLocalError.fsckPlanNotReady.message)
         }
         let start = startRun(
-            operation: "fsck",
             params: OperationParams.Fsck.run(
                 dryRun: false,
                 volume: target.volumeParam,
@@ -217,31 +213,29 @@ final class FsckStore: ObservableObject {
     }
 
     private func startRun(
-        operation: String,
         params: [String: JSONValue],
         profile: DeviceProfile?,
         password: String?
     ) -> OperationStartResult {
-        guard !isBusy else {
-            return rejectAlreadyRunning()
-        }
-        resetRunState()
-        let start = runner.start(operation: operation, params: params, profile: profile, password: password)
-        if case .rejected(let message) = start {
-            rejectRun(message: message)
-        }
-        return start
+        operation.start(
+            params: params,
+            profile: profile,
+            password: password,
+            rejectAlreadyRunning: { rejectRun(.operationAlreadyRunning) },
+            resetRunState: resetRunState,
+            rejectRun: rejectRun(message:)
+        )
     }
 
     private func resetRunState() {
-        runner.resetForRun()
+        operation.resetForRun()
         error = nil
         currentStage = nil
         passwordInvalidProfileID = nil
     }
 
     private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
-        guard event.operation == "fsck" else {
+        guard event.operation == operation.name else {
             return
         }
 
@@ -283,7 +277,7 @@ final class FsckStore: ObservableObject {
             selectedTargetID = targets.count == 1 ? targets[0].id : nil
             state = .listReady
             error = nil
-            runner.finishObserver()
+            operation.finishObserver()
         } catch {
             failContract(error)
         }
@@ -294,7 +288,7 @@ final class FsckStore: ObservableObject {
             plan = try event.decodePayload(FsckPlanPayload.self)
             state = .planReady
             error = nil
-            runner.finishObserver()
+            operation.finishObserver()
         } catch {
             failContract(error)
         }
@@ -305,7 +299,7 @@ final class FsckStore: ObservableObject {
             result = try event.decodePayload(FsckResultPayload.self)
             state = .succeeded
             error = nil
-            runner.finishObserver()
+            operation.finishObserver()
         } catch {
             failContract(error)
         }
@@ -320,7 +314,7 @@ final class FsckStore: ObservableObject {
         if event.code == "confirmation_cancelled" {
             error = nil
             currentStage = nil
-            runner.finishObserver()
+            operation.finishObserver()
             restoreStateAfterCancellation(options: latestOptions)
             return
         }
@@ -329,7 +323,7 @@ final class FsckStore: ObservableObject {
         }
         error = BackendErrorViewModel(event: event)
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func restoreStateAfterCancellation(options: MaintenanceOptions?) {
@@ -342,47 +336,39 @@ final class FsckStore: ObservableObject {
 
     private func markStale(_ localError: WorkflowLocalError) {
         state = .planStale
-        error = BackendErrorViewModel(operation: "fsck", localError: localError)
+        error = operation.localError(localError)
     }
 
     private func applyFalseResult(_ event: BackendEvent) {
-        error = BackendErrorViewModel(
-            operation: "fsck",
-            code: "operation_failed",
-            message: event.localizedPayloadSummaryText ?? event.localizedSummary
-        )
+        error = operation.falseResultError(from: event)
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func failContract(_ decodeError: Error) {
-        error = BackendErrorViewModel(
-            operation: "fsck",
-            code: "contract_decode_failed",
-            message: decodeError.localizedDescription
-        )
+        error = operation.contractDecodeError(decodeError)
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func failLocally(_ localError: WorkflowLocalError) {
-        error = BackendErrorViewModel(operation: "fsck", localError: localError)
+        error = operation.localError(localError)
         currentStage = nil
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func rejectRun(_ localError: WorkflowLocalError) {
-        error = BackendErrorViewModel(operation: "fsck", localError: localError)
+        error = operation.localError(localError)
         currentStage = nil
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func rejectRun(message: String) {
-        error = BackendErrorViewModel(operation: "fsck", code: "operation_rejected", message: message)
+        error = operation.rejectedError(message: message)
         currentStage = nil
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 }

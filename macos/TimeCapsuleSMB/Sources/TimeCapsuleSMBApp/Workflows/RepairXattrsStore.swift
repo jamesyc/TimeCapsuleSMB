@@ -10,32 +10,31 @@ final class RepairXattrsStore: ObservableObject {
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
-    private let runner: MaintenanceOperationRunner
+    private let operation: MaintenanceWorkflowOperation
     private var scannedPath: String?
     private var scannedOptions: RepairXattrsOptions?
     private var latestPath: String?
     private var latestOptions: RepairXattrsOptions?
 
     init(backend: BackendClient, coordinator: OperationCoordinator? = nil, laneKey: OperationLaneKey? = nil) {
-        self.runner = MaintenanceOperationRunner(
+        self.operation = MaintenanceWorkflowOperation(
+            name: "repair-xattrs",
             backend: backend,
             coordinator: coordinator,
-            laneKey: laneKey,
-            onEvent: { _, _ in },
-            onRunningChanged: {}
+            laneKey: laneKey
         )
-        self.runner.rebind(onEvent: { [weak self] event, operation in
-            self?.handle(event, activeOperation: operation)
+        self.operation.bind(onEvent: { [weak self] event, activeOperation in
+            self?.handle(event, activeOperation: activeOperation)
         }, onRunningChanged: { [weak self] in
             self?.objectWillChange.send()
         })
     }
 
-    var events: [BackendEvent] { runner.events }
-    var isRunning: Bool { runner.isRunning }
-    var isBusy: Bool { runner.isBusy }
-    var canCancel: Bool { runner.canCancel }
-    var pendingConfirmation: PendingConfirmation? { runner.pendingConfirmation }
+    var events: [BackendEvent] { operation.events }
+    var isRunning: Bool { operation.isRunning }
+    var isBusy: Bool { operation.isBusy }
+    var canCancel: Bool { operation.canCancel }
+    var pendingConfirmation: PendingConfirmation? { operation.pendingConfirmation }
 
     func canScan(path: String, options: RepairXattrsOptions?) -> Bool {
         return !isBusy && !path.isEmpty && options != nil
@@ -59,22 +58,22 @@ final class RepairXattrsStore: ObservableObject {
     }
 
     func confirmPending() {
-        runner.confirmPending()
+        operation.confirmPending()
     }
 
     func cancelPendingConfirmation(path: String, options: RepairXattrsOptions?) {
         latestPath = path
         latestOptions = options
-        runner.cancelPendingConfirmation()
+        operation.cancelPendingConfirmation()
         restoreStateAfterCancellation(path: path, options: options)
     }
 
     func cancel() {
-        runner.cancel()
+        operation.cancel()
     }
 
     func clear() {
-        runner.clear()
+        operation.clear()
         state = .idle
         scan = nil
         result = nil
@@ -100,7 +99,6 @@ final class RepairXattrsStore: ObservableObject {
             return .rejected(WorkflowLocalError.repairXattrsPathRequired.message)
         }
         let start = startRun(
-            operation: "repair-xattrs",
             params: OperationParams.RepairXattrs.params(dryRun: true, path: path, options: options),
             profile: nil,
             password: nil
@@ -125,11 +123,10 @@ final class RepairXattrsStore: ObservableObject {
         }
         guard canRepair(path: path, options: options), let scannedOptions else {
             state = .scanStale
-            error = BackendErrorViewModel(operation: "repair-xattrs", localError: .repairXattrsScanStale)
+            error = operation.localError(.repairXattrsScanStale)
             return .rejected(WorkflowLocalError.repairXattrsScanStale.message)
         }
         let start = startRun(
-            operation: "repair-xattrs",
             params: OperationParams.RepairXattrs.params(dryRun: false, path: path, options: scannedOptions),
             profile: nil,
             password: nil
@@ -149,31 +146,29 @@ final class RepairXattrsStore: ObservableObject {
     }
 
     private func startRun(
-        operation: String,
         params: [String: JSONValue],
         profile: DeviceProfile?,
         password: String?
     ) -> OperationStartResult {
-        guard !isBusy else {
-            return rejectAlreadyRunning()
-        }
-        resetRunState()
-        let start = runner.start(operation: operation, params: params, profile: profile, password: password)
-        if case .rejected(let message) = start {
-            rejectRun(message: message)
-        }
-        return start
+        operation.start(
+            params: params,
+            profile: profile,
+            password: password,
+            rejectAlreadyRunning: { rejectRun(.operationAlreadyRunning) },
+            resetRunState: resetRunState,
+            rejectRun: rejectRun(message:)
+        )
     }
 
     private func resetRunState() {
-        runner.resetForRun()
+        operation.resetForRun()
         error = nil
         currentStage = nil
         passwordInvalidProfileID = nil
     }
 
     private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
-        guard event.operation == "repair-xattrs" else {
+        guard event.operation == operation.name else {
             return
         }
 
@@ -208,7 +203,7 @@ final class RepairXattrsStore: ObservableObject {
                 state = .repaired
             }
             error = nil
-            runner.finishObserver()
+            operation.finishObserver()
         } catch {
             failContract(error)
         }
@@ -223,7 +218,7 @@ final class RepairXattrsStore: ObservableObject {
         if event.code == "confirmation_cancelled" {
             error = nil
             currentStage = nil
-            runner.finishObserver()
+            operation.finishObserver()
             restoreStateAfterCancellation(path: latestPath ?? "", options: latestOptions)
             return
         }
@@ -232,7 +227,7 @@ final class RepairXattrsStore: ObservableObject {
         }
         error = BackendErrorViewModel(event: event)
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func restoreStateAfterCancellation(path: String, options: RepairXattrsOptions?) {
@@ -244,43 +239,35 @@ final class RepairXattrsStore: ObservableObject {
     }
 
     private func applyFalseResult(_ event: BackendEvent) {
-        error = BackendErrorViewModel(
-            operation: "repair-xattrs",
-            code: "operation_failed",
-            message: event.localizedPayloadSummaryText ?? event.localizedSummary
-        )
+        error = operation.falseResultError(from: event)
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func failContract(_ decodeError: Error) {
-        error = BackendErrorViewModel(
-            operation: "repair-xattrs",
-            code: "contract_decode_failed",
-            message: decodeError.localizedDescription
-        )
+        error = operation.contractDecodeError(decodeError)
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func failLocally(_ localError: WorkflowLocalError) {
-        error = BackendErrorViewModel(operation: "repair-xattrs", localError: localError)
+        error = operation.localError(localError)
         currentStage = nil
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func rejectRun(_ localError: WorkflowLocalError) {
-        error = BackendErrorViewModel(operation: "repair-xattrs", localError: localError)
+        error = operation.localError(localError)
         currentStage = nil
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 
     private func rejectRun(message: String) {
-        error = BackendErrorViewModel(operation: "repair-xattrs", code: "operation_rejected", message: message)
+        error = operation.rejectedError(message: message)
         currentStage = nil
         state = .failed
-        runner.finishObserver()
+        operation.finishObserver()
     }
 }
