@@ -10,7 +10,6 @@ from timecapsulesmb.app.contracts import (
     telemetry_preference_payload,
     version_check_payload,
 )
-from timecapsulesmb.cli.version_check import VERSION_CHECK_URL, check_client_version
 from timecapsulesmb.core.paths import artifact_manifest_resource, resolve_app_paths
 from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE
 from timecapsulesmb.install_validation import (
@@ -26,6 +25,7 @@ from timecapsulesmb.services.app import (
     config_path,
     string_param,
 )
+from timecapsulesmb.services.version_check import VERSION_CHECK_URL, check_client_version
 
 
 def capabilities_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:

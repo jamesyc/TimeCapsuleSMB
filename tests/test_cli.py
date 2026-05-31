@@ -116,7 +116,7 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourServiceInstance,
     BonjourResolvedService,
 )
-from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
+from timecapsulesmb.services.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError

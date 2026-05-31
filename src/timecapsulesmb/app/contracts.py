@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.cli.version_check import VersionCheckResult
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
 from timecapsulesmb.services.reachability import ReachabilityResult
+from timecapsulesmb.services.version_check import VersionCheckResult
 
 
 SCHEMA_VERSION = 1

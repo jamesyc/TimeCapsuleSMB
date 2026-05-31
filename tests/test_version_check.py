@@ -13,7 +13,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli.version_check import (
+from timecapsulesmb.services.version_check import (
     DEFAULT_DOWNLOAD_URL,
     DEFAULT_UNSUPPORTED_MESSAGE,
     VERSION_CHECK_CACHE_SECONDS,
@@ -270,7 +270,7 @@ class VersionCheckTests(unittest.TestCase):
     def test_unexpected_internal_exception_fails_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
-            with mock.patch("timecapsulesmb.cli.version_check.load_fresh_cached_payload", side_effect=RuntimeError("boom")):
+            with mock.patch("timecapsulesmb.services.version_check.load_fresh_cached_payload", side_effect=RuntimeError("boom")):
                 result = check_client_version(
                     local_version_code=20004,
                     cache_path=cache_path,

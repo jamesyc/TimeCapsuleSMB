@@ -24,7 +24,7 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.app import contracts, helper, service
-from timecapsulesmb.cli.version_check import VersionCheckResult
+from timecapsulesmb.services.version_check import VersionCheckResult
 from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, ConfigError, parse_env_file
@@ -3476,7 +3476,7 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(event["request_id"])
 
     def test_api_command_is_registered(self) -> None:
-        self.assertIs(cli_main.COMMANDS["api"], helper.main)
+        self.assertEqual(cli_main.COMMANDS["api"].__module__, "timecapsulesmb.cli.api")
 
 
 if __name__ == "__main__":
