@@ -106,11 +106,11 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.error_lines, ["no stdin"])
         self.assertIn("no stdin", output.getvalue())
 
-    def test_to_runtime_callbacks_updates_command_context(self) -> None:
+    def test_to_operation_callbacks_updates_command_context(self) -> None:
         context = self.make_context()
 
         with mock.patch("builtins.print") as print_mock:
-            callbacks = context.to_runtime_callbacks()
+            callbacks = context.to_operation_callbacks()
             callbacks.set_stage("reboot")
             callbacks.update_fields(reboot_was_attempted=True)
             callbacks.add_debug_fields(reboot_request_strategy="ssh")
@@ -120,6 +120,13 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
         self.assertEqual(context.debug_fields["reboot_request_strategy"], "ssh")
         print_mock.assert_called_once_with("reboot requested")
+
+    def test_to_operation_callbacks_updates_context(self) -> None:
+        context = self.make_context()
+
+        context.to_operation_callbacks().set_stage("reboot")
+
+        self.assertEqual(context.debug_stage, "reboot")
 
     def test_require_compatibility_uses_probe_state_without_runtime_reexport(self) -> None:
         context = self.make_context()
@@ -136,19 +143,27 @@ class CommandContextHelperTests(unittest.TestCase):
     def test_mount_mast_volumes_reads_then_mounts_and_records_debug(self) -> None:
         context = self.make_context()
         connection = self.make_connection()
-        read_volume = self.make_volume("dk2")
         mounted_volume = self.make_volume("dk3")
 
-        with mock.patch("timecapsulesmb.cli.context.read_mast_volumes_conn", return_value=(read_volume,)) as read_mock:
-            with mock.patch(
-                "timecapsulesmb.cli.context.mounted_mast_volumes_conn",
-                return_value=(mounted_volume,),
-            ) as mount_mock:
-                result = context.mount_mast_volumes(connection, wait_seconds=12, mount_stage="mount_hfs_volumes")
+        def mount_with_callback_debug(connection_arg, *, callbacks, wait_seconds, read_stage, mount_stage):
+            callbacks.set_stage(read_stage)
+            callbacks.add_debug_fields(mast_volume_count=1)
+            callbacks.set_stage(mount_stage)
+            callbacks.add_debug_fields(mast_mounted_volume_count=1)
+            return (mounted_volume,)
+
+        with mock.patch(
+            "timecapsulesmb.cli.context.storage_service.mount_mast_volumes_with_diagnostics",
+            side_effect=mount_with_callback_debug,
+        ) as mount_mock:
+            result = context.mount_mast_volumes(connection, wait_seconds=12, mount_stage="mount_hfs_volumes")
 
         self.assertEqual(result, (mounted_volume,))
-        read_mock.assert_called_once_with(connection)
-        mount_mock.assert_called_once_with(connection, (read_volume,), wait_seconds=12)
+        mount_mock.assert_called_once()
+        self.assertEqual(mount_mock.call_args.args, (connection,))
+        self.assertEqual(mount_mock.call_args.kwargs["wait_seconds"], 12)
+        self.assertEqual(mount_mock.call_args.kwargs["read_stage"], "read_mast")
+        self.assertEqual(mount_mock.call_args.kwargs["mount_stage"], "mount_hfs_volumes")
         self.assertEqual(context.debug_stage, "mount_hfs_volumes")
         self.assertEqual(context.debug_fields["mast_volume_count"], 1)
         self.assertEqual(context.debug_fields["mast_mounted_volume_count"], 1)
@@ -163,7 +178,15 @@ class CommandContextHelperTests(unittest.TestCase):
             (PayloadCandidateCheck(volume, True, True),),
         )
 
-        with mock.patch("timecapsulesmb.cli.context.wait_for_mast_volumes_conn", return_value=discovery) as wait_mock:
+        def wait_with_callback_debug(connection_arg, *, callbacks, attempts, delay_seconds, stage):
+            callbacks.set_stage(stage)
+            callbacks.add_debug_fields(mast_read_attempts=discovery.attempts)
+            return discovery
+
+        with mock.patch(
+            "timecapsulesmb.cli.context.storage_service.wait_for_mast_volumes_with_diagnostics",
+            side_effect=wait_with_callback_debug,
+        ) as wait_mock:
             result = context.wait_for_mast_volumes(connection, attempts=10, delay_seconds=3)
         with mock.patch(
             "timecapsulesmb.cli.context.select_payload_home_with_diagnostics_conn",
@@ -171,7 +194,10 @@ class CommandContextHelperTests(unittest.TestCase):
         ) as select_mock:
             selected = context.select_payload_home(connection, result.volumes, ".samba4", wait_seconds=7)
 
-        wait_mock.assert_called_once_with(connection, attempts=10, delay_seconds=3)
+        wait_mock.assert_called_once()
+        self.assertEqual(wait_mock.call_args.args, (connection,))
+        self.assertEqual(wait_mock.call_args.kwargs["attempts"], 10)
+        self.assertEqual(wait_mock.call_args.kwargs["delay_seconds"], 3)
         select_mock.assert_called_once_with(connection, (volume,), ".samba4", wait_seconds=7)
         self.assertEqual(selected.payload_home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
         self.assertEqual(context.debug_fields["mast_read_attempts"], 3)
@@ -184,7 +210,17 @@ class CommandContextHelperTests(unittest.TestCase):
         raw_output = "MaSt=[]"
         discovery = MaStDiscoveryResult((), 10, raw_output)
 
-        with mock.patch("timecapsulesmb.cli.context.wait_for_mast_volumes_conn", return_value=discovery):
+        def wait_with_empty_debug(connection_arg, *, callbacks, attempts, delay_seconds, stage):
+            callbacks.add_debug_fields(
+                mast_acp_output_chars=len(raw_output),
+                mast_acp_output=raw_output,
+            )
+            return discovery
+
+        with mock.patch(
+            "timecapsulesmb.cli.context.storage_service.wait_for_mast_volumes_with_diagnostics",
+            side_effect=wait_with_empty_debug,
+        ):
             result = context.wait_for_mast_volumes(connection, attempts=10, delay_seconds=3)
 
         self.assertEqual(result.volumes, ())

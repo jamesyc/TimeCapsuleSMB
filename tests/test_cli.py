@@ -57,6 +57,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.services import flash as flash_service
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services import runtime as service_runtime
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
@@ -229,8 +230,8 @@ class FakeCommandContext:
     def add_debug_fields(self, **_fields: object) -> None:
         pass
 
-    def to_runtime_callbacks(self) -> service_runtime.RuntimeOperationCallbacks:
-        return service_runtime.RuntimeOperationCallbacks(
+    def to_operation_callbacks(self) -> OperationCallbacks:
+        return OperationCallbacks(
             set_stage=self.set_stage,
             log=print,
             add_debug_fields=self.add_debug_fields,
@@ -329,8 +330,8 @@ class CliTests(unittest.TestCase):
         mounted = mounted_volumes if mounted_volumes is not None else (self._mast_volume("dk2"),)
         read = read_volumes if read_volumes is not None else mounted
         return SimpleNamespace(
-            read_mast_volumes_conn=stack.enter_context(mock.patch("timecapsulesmb.cli.context.read_mast_volumes_conn", return_value=read)),
-            mounted_mast_volumes_conn=stack.enter_context(mock.patch("timecapsulesmb.cli.context.mounted_mast_volumes_conn", return_value=mounted)),
+            read_mast_volumes_conn=stack.enter_context(mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=read)),
+            mounted_mast_volumes_conn=stack.enter_context(mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted)),
         )
 
     def managed_runtime_probe(self, ready: bool) -> ManagedRuntimeProbeResult:
@@ -895,19 +896,19 @@ class CliTests(unittest.TestCase):
                 mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context))
             mocks.validate_artifacts = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=artifacts))
             mocks.wait_for_mast_volumes_conn = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.context.wait_for_mast_volumes_conn", return_value=mast_discovery)
+                mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=mast_discovery)
             )
             if select_payload_home_side_effect is None:
                 mocks.select_payload_home_with_diagnostics_conn = stack.enter_context(
                     mock.patch(
-                        "timecapsulesmb.cli.context.select_payload_home_with_diagnostics_conn",
+                        "timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn",
                         return_value=payload_home_selection,
                     )
                 )
             else:
                 mocks.select_payload_home_with_diagnostics_conn = stack.enter_context(
                     mock.patch(
-                        "timecapsulesmb.cli.context.select_payload_home_with_diagnostics_conn",
+                        "timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn",
                         side_effect=select_payload_home_side_effect,
                     )
                 )

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.repair_xattrs import (
@@ -22,6 +22,7 @@ from timecapsulesmb.repair_xattrs import (
     unresolved_findings_after_success,
     validate_repair_root_under_volumes,
 )
+from timecapsulesmb.services.callbacks import OperationCallbacks
 
 
 class RepairXattrsServiceError(RuntimeError):
@@ -39,25 +40,6 @@ class RepairXattrsRequest:
     include_time_machine: bool = False
     fix_permissions: bool = False
     verbose: bool = False
-
-
-@dataclass(frozen=True)
-class RepairXattrsCallbacks:
-    set_stage: Callable[[str], None] | None = None
-    update_fields: Callable[..., None] | None = None
-    log: Callable[[str], None] | None = None
-
-    def stage(self, stage: str) -> None:
-        if self.set_stage is not None:
-            self.set_stage(stage)
-
-    def update(self, **fields: object) -> None:
-        if self.update_fields is not None:
-            self.update_fields(**fields)
-
-    def message(self, message: str) -> None:
-        if self.log is not None:
-            self.log(message)
 
 
 @dataclass(frozen=True)
@@ -143,10 +125,10 @@ def run_repair(
     request: RepairXattrsRequest,
     config: AppConfig,
     *,
-    callbacks: RepairXattrsCallbacks | None = None,
+    callbacks: OperationCallbacks | None = None,
     confirm: Callable[[str], bool] | None = None,
 ) -> RepairRunResult:
-    callbacks = callbacks or RepairXattrsCallbacks()
+    callbacks = callbacks or OperationCallbacks()
 
     def emit(message: str) -> None:
         callbacks.message(message)

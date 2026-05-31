@@ -12,18 +12,16 @@ from timecapsulesmb.device.compat import require_compatibility as require_device
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import probe_connection_state, probe_remote_airport_identity_conn
 from timecapsulesmb.device.storage import (
-    mast_volumes_debug_summary,
-    mounted_mast_volumes_conn,
     payload_candidate_checks_debug_summary,
-    read_mast_volumes_conn,
     select_payload_home_with_diagnostics_conn,
-    wait_for_mast_volumes_conn,
 )
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
     OperationContext,
 )
+from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.operation import (
@@ -44,17 +42,7 @@ if TYPE_CHECKING:
     from timecapsulesmb.transport.ssh import SshConnection
 
 
-MAST_ACP_OUTPUT_DEBUG_LIMIT = 8192
 OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS = 0.1
-
-
-def _mast_acp_output_debug_text(raw_output: str) -> str:
-    if not raw_output:
-        return "<empty>"
-    if len(raw_output) <= MAST_ACP_OUTPUT_DEBUG_LIMIT:
-        return raw_output
-    omitted = len(raw_output) - MAST_ACP_OUTPUT_DEBUG_LIMIT
-    return f"{raw_output[:MAST_ACP_OUTPUT_DEBUG_LIMIT]}...<truncated {omitted} chars>"
 
 
 class CommandContext:
@@ -186,8 +174,8 @@ class CommandContext:
         self.result = "failure"
         self.set_error(message)
 
-    def to_runtime_callbacks(self) -> service_runtime.RuntimeOperationCallbacks:
-        return service_runtime.RuntimeOperationCallbacks(
+    def to_operation_callbacks(self) -> OperationCallbacks:
+        return OperationCallbacks(
             set_stage=self.set_stage,
             log=print,
             add_debug_fields=self.add_debug_fields,
@@ -303,13 +291,11 @@ class CommandContext:
         stage: str = "read_mast",
     ) -> tuple[MaStVolume, ...]:
         connection = self._storage_connection(connection)
-        self.set_stage(stage)
-        volumes = read_mast_volumes_conn(connection)
-        self.add_debug_fields(
-            mast_volume_count=len(volumes),
-            mast_candidates=mast_volumes_debug_summary(volumes),
+        return storage_service.read_mast_volumes_with_diagnostics(
+            connection,
+            callbacks=self.to_operation_callbacks(),
+            stage=stage,
         )
-        return volumes
 
     def mount_mast_volumes(
         self,
@@ -320,18 +306,13 @@ class CommandContext:
         mount_stage: str = "mount_mast_volumes",
     ) -> tuple[MaStVolume, ...]:
         connection = self._storage_connection(connection)
-        mast_volumes = self.read_mast_volumes(connection, stage=read_stage)
-        self.set_stage(mount_stage)
-        mounted_volumes = mounted_mast_volumes_conn(
+        return storage_service.mount_mast_volumes_with_diagnostics(
             connection,
-            mast_volumes,
+            callbacks=self.to_operation_callbacks(),
             wait_seconds=wait_seconds,
+            read_stage=read_stage,
+            mount_stage=mount_stage,
         )
-        self.add_debug_fields(
-            mast_mounted_volume_count=len(mounted_volumes),
-            mast_mounted_candidates=mast_volumes_debug_summary(mounted_volumes),
-        )
-        return mounted_volumes
 
     def wait_for_mast_volumes(
         self,
@@ -342,23 +323,13 @@ class CommandContext:
         stage: str = "read_mast",
     ) -> MaStDiscoveryResult:
         connection = self._storage_connection(connection)
-        self.set_stage(stage)
-        mast_discovery = wait_for_mast_volumes_conn(
+        return storage_service.wait_for_mast_volumes_with_diagnostics(
             connection,
+            callbacks=self.to_operation_callbacks(),
             attempts=attempts,
             delay_seconds=delay_seconds,
+            stage=stage,
         )
-        mast_volumes = mast_discovery.volumes
-        fields: dict[str, object] = {
-            "mast_read_attempts": mast_discovery.attempts,
-            "mast_volume_count": len(mast_volumes),
-            "mast_candidates": mast_volumes_debug_summary(mast_volumes),
-        }
-        if not mast_volumes:
-            fields["mast_acp_output_chars"] = len(mast_discovery.raw_output)
-            fields["mast_acp_output"] = _mast_acp_output_debug_text(mast_discovery.raw_output)
-        self.add_debug_fields(**fields)
-        return mast_discovery
 
     def select_payload_home(
         self,

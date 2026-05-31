@@ -215,7 +215,7 @@ def _finish_validated_write(
             request_reboot_and_wait(
                 target.connection,
                 strategy=FLASH_RESTORE_REBOOT_STRATEGY,
-                callbacks=context.to_runtime_callbacks(),
+                callbacks=context.to_operation_callbacks(),
                 down_timeout_seconds=60,
                 up_timeout_seconds=240,
                 reboot_no_down_message=FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE,
@@ -235,7 +235,7 @@ def _finish_validated_write(
         request_reboot(
             target.connection,
             strategy=FLASH_RESTORE_REBOOT_STRATEGY,
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             raise_on_request_error=True,
         )
     except RebootFlowError as exc:

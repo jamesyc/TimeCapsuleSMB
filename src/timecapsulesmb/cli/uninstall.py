@@ -132,7 +132,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 request_reboot(
                     connection,
                     strategy="acp_then_ssh",
-                    callbacks=command_context.to_runtime_callbacks(),
+                    callbacks=command_context.to_operation_callbacks(),
                     raise_on_request_error=True,
                 )
             except RebootFlowError as exc:
@@ -148,7 +148,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             request_reboot_and_wait(
                 connection,
                 strategy="acp_then_ssh",
-                callbacks=command_context.to_runtime_callbacks(),
+                callbacks=command_context.to_operation_callbacks(),
                 down_timeout_seconds=60,
                 up_timeout_seconds=240,
                 reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,

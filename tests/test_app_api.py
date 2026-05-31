@@ -275,10 +275,10 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["schema_version"], 1)
         self.assertTrue(result["request_id"])
 
-    def test_app_operation_context_builds_runtime_callbacks(self) -> None:
+    def test_app_operation_context_builds_operation_callbacks(self) -> None:
         collector = CollectingSink()
         context = AppOperationContext("deploy", collector.sink)
-        callbacks = context.to_runtime_callbacks()
+        callbacks = context.to_operation_callbacks()
 
         callbacks.set_stage("reboot")
         callbacks.update_fields(reboot_was_attempted=True)
@@ -289,6 +289,14 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
         self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "ssh")
         self.assertEqual(collector.events_of_type("log")[0]["message"], "reboot requested")
+
+    def test_app_operation_context_runtime_callbacks_remain_compatible(self) -> None:
+        collector = CollectingSink()
+        context = AppOperationContext("deploy", collector.sink)
+
+        context.to_operation_callbacks().set_stage("reboot")
+
+        self.assertEqual(context.current_stage, "reboot")
 
     def test_jsonable_serializes_enum_values_inside_dataclasses(self) -> None:
         self.assertEqual(jsonable(SamplePayload(SampleMode.FAST)), {"mode": "fast"})
@@ -1679,29 +1687,30 @@ class AppApiTests(unittest.TestCase):
             confirmation_id = self.assert_confirmation(first_collector, "configure.enable_ssh_reboot")["confirmation_id"]
 
             confirmed_collector = CollectingSink()
-            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=unreachable_probed_state()) as initial_probe:
-                with mock.patch("timecapsulesmb.services.configure.probe_connection_state", return_value=probed_state()) as reprobe:
-                    with mock.patch("timecapsulesmb.services.acp_ssh.read_identity", return_value=ACPIdentity(syap=119)) as read_identity:
-                        with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
-                            with mock.patch("timecapsulesmb.services.configure.wait_for_tcp_port_state", return_value=True) as wait_for_ssh:
-                                rc = service.run_api_request(
-                                    {
-                                        "operation": "configure",
-                                        "params": {
-                                            "config": str(config_path),
-                                            "host": "root@10.0.0.2",
-                                            "password": "secret",
-                                            "confirmation_id": confirmation_id,
-                                        },
+            with mock.patch(
+                "timecapsulesmb.app.ops.configure.probe_connection_state",
+                side_effect=[unreachable_probed_state(), probed_state()],
+            ) as probe:
+                with mock.patch("timecapsulesmb.services.acp_ssh.read_identity", return_value=ACPIdentity(syap=119)) as read_identity:
+                    with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_ssh:
+                        with mock.patch("timecapsulesmb.services.configure.wait_for_tcp_port_state", return_value=True) as wait_for_ssh:
+                            rc = service.run_api_request(
+                                {
+                                    "operation": "configure",
+                                    "params": {
+                                        "config": str(config_path),
+                                        "host": "root@10.0.0.2",
+                                        "password": "secret",
+                                        "confirmation_id": confirmation_id,
                                     },
-                                    confirmed_collector.sink,
-                                )
+                                },
+                                confirmed_collector.sink,
+                            )
 
             values = parse_env_file(config_path)
 
         self.assertEqual(rc, 0)
-        initial_probe.assert_called_once()
-        reprobe.assert_called_once()
+        self.assertEqual(probe.call_count, 2)
         read_identity.assert_called_once_with("10.0.0.2", "secret", timeout=10.0)
         enable_ssh.assert_called_once()
         wait_for_ssh.assert_called_once_with(
@@ -2771,7 +2780,7 @@ class AppApiTests(unittest.TestCase):
         request_reboot_and_wait(
             connection,
             strategy="ssh_shutdown_then_reboot",
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             reboot_no_down_message="device did not go down",
             reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
             down_timeout_seconds=60,
@@ -2853,7 +2862,7 @@ class AppApiTests(unittest.TestCase):
             request_reboot(
                 connection,
                 strategy="ssh",
-                callbacks=context.to_runtime_callbacks(),
+                callbacks=context.to_operation_callbacks(),
                 raise_on_request_error=True,
                 request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot")),
             )
@@ -3013,7 +3022,7 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn") as read_mast:
+                with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn") as read_mast:
                     rc = service.run_api_request(
                         {"operation": "uninstall", "params": {}},
                         collector.sink,
@@ -3086,8 +3095,8 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=connection):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn", return_value=[]):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
+                with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
+                    with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
                         with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload"):
                             with mock.patch("timecapsulesmb.app.ops.maintenance.request_reboot", side_effect=self.fake_reboot_request) as reboot:
                                 with mock.patch("timecapsulesmb.app.ops.maintenance.request_reboot_and_wait") as wait:
@@ -3162,8 +3171,8 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn", return_value=[]):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
+                with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
+                    with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
                         with mock.patch("timecapsulesmb.app.ops.maintenance.run_ssh") as run_ssh:
                             rc = service.run_api_request(
                                 {
@@ -3188,8 +3197,8 @@ class AppApiTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
             with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection", return_value=connection):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.read_mast_volumes_conn", return_value=[]):
-                    with mock.patch("timecapsulesmb.app.ops.maintenance.mounted_mast_volumes_conn", return_value=mounted):
+                with mock.patch("timecapsulesmb.services.storage.read_mast_volumes_conn", return_value=[]):
+                    with mock.patch("timecapsulesmb.services.storage.mounted_mast_volumes_conn", return_value=mounted):
                         with mock.patch("timecapsulesmb.app.ops.maintenance.run_ssh") as run_ssh:
                             rc = service.run_api_request(
                                 {

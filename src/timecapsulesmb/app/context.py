@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.events import EventSink
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import OperationContext
-from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
 from timecapsulesmb.telemetry import build_device_os_version
 
 if TYPE_CHECKING:
@@ -74,9 +74,6 @@ class AppOperationContext:
         self.diagnostics.set_stage(stage)
         self.sink.stage(self.operation, stage)
 
-    def set_stage(self, stage: str) -> None:
-        self.stage(stage)
-
     def log(self, message: str, *, level: str = "info") -> None:
         self.sink.log(self.operation, message, level=level)
 
@@ -86,8 +83,8 @@ class AppOperationContext:
     def emit_result(self, *, ok: bool, payload: object | None = None) -> None:
         self.sink.result(self.operation, ok=ok, payload=payload)
 
-    def to_runtime_callbacks(self) -> RuntimeOperationCallbacks:
-        return RuntimeOperationCallbacks(
+    def to_operation_callbacks(self) -> OperationCallbacks:
+        return OperationCallbacks(
             set_stage=self.stage,
             log=self.log,
             add_debug_fields=self.add_debug_fields,

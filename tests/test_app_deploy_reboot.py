@@ -36,7 +36,7 @@ class DeployRebootStrategyTests(unittest.TestCase):
         reboot_service.request_reboot(
             connection,
             strategy="acp_then_ssh",
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             request_reboot_func=ssh,
             request_acp_reboot=acp,
         )
@@ -55,7 +55,7 @@ class DeployRebootStrategyTests(unittest.TestCase):
         reboot_service.request_reboot(
             connection,
             strategy="acp_then_ssh",
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             request_reboot_func=ssh,
             request_acp_reboot=mock.Mock(side_effect=ACPError("acp refused")),
         )
@@ -78,7 +78,7 @@ class DeployRebootStrategyTests(unittest.TestCase):
         reboot_service.request_reboot(
             connection,
             strategy="ssh",
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("timeout")),
             raise_on_request_error=False,
         )
@@ -97,7 +97,7 @@ class DeployRebootStrategyTests(unittest.TestCase):
             reboot_service.request_reboot(
                 connection,
                 strategy="ssh",
-                callbacks=context.to_runtime_callbacks(),
+                callbacks=context.to_operation_callbacks(),
                 request_reboot_func=mock.Mock(side_effect=SshCommandTimeout("timeout")),
                 raise_on_request_error=True,
             )
@@ -111,7 +111,7 @@ class DeployRebootStrategyTests(unittest.TestCase):
             reboot_service.request_reboot(
                 connection,
                 strategy="ssh",
-                callbacks=context.to_runtime_callbacks(),
+                callbacks=context.to_operation_callbacks(),
                 request_reboot_func=mock.Mock(side_effect=SshError("rc=255")),
                 raise_on_request_error=True,
             )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, ACPIdentity, enable_ssh, read_identity
-from timecapsulesmb.services.runtime import RuntimeOperationCallbacks
+from timecapsulesmb.services.callbacks import OperationCallbacks
 
 
 def read_identity_preflight(
@@ -9,9 +9,9 @@ def read_identity_preflight(
     password: str,
     *,
     timeout: float = 10.0,
-    callbacks: RuntimeOperationCallbacks | None = None,
+    callbacks: OperationCallbacks | None = None,
 ) -> ACPIdentity:
-    callbacks = callbacks or RuntimeOperationCallbacks()
+    callbacks = callbacks or OperationCallbacks()
     callbacks.debug(acp_identity_probe_attempted=True)
     callbacks.message(f"Reading AirPort identity through ACP on {host}...")
     callbacks.stage("acp_identity_probe")
@@ -42,9 +42,9 @@ def enable_ssh_with_identity_preflight(
     *,
     reboot_device: bool = True,
     timeout: float = 10.0,
-    callbacks: RuntimeOperationCallbacks | None = None,
+    callbacks: OperationCallbacks | None = None,
 ) -> ACPIdentity:
-    callbacks = callbacks or RuntimeOperationCallbacks()
+    callbacks = callbacks or OperationCallbacks()
     identity = read_identity_preflight(host, password, timeout=timeout, callbacks=callbacks)
     callbacks.debug(acp_ssh_enable_attempted=True)
     callbacks.message(f"Enabling SSH through ACP on {host}...")

@@ -30,13 +30,11 @@ from timecapsulesmb.cli.runtime import (
     read_password_source_args,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
-from timecapsulesmb.core.net import canonical_ssh_target
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
-from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, ssh_target_link_local_resolution_error
-from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     probe_connection_state,
@@ -166,10 +164,10 @@ def prompt_ssh_target_value(
     ) or DEFAULTS["TC_HOST"]
     while True:
         candidate = prompt_valid_config_value("TC_HOST", "Device SSH target", host_default)
-        resolution_error = ssh_target_link_local_resolution_error(candidate, ssh_opts)
-        if resolution_error is None:
-            return canonical_ssh_target(candidate)
-        print(resolution_error)
+        try:
+            return configure_service.configure_ssh_target(candidate, ssh_opts)
+        except ValueError as exc:
+            print(str(exc))
         host_default = candidate
 
 
@@ -207,11 +205,8 @@ def _scripted_ssh_target_value(
     validation_error = _validate_config_value("TC_HOST", "Device SSH target", candidate)
     if validation_error is not None:
         return None, validation_error
-    resolution_error = ssh_target_link_local_resolution_error(candidate, ssh_opts)
-    if resolution_error is not None:
-        return None, resolution_error
     try:
-        return canonical_ssh_target(candidate), None
+        return configure_service.configure_ssh_target(candidate, ssh_opts), None
     except ValueError as exc:
         return None, str(exc)
 
@@ -310,7 +305,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
-    probed_device: DeviceCompatibility | None = None
     with CommandContext(
         telemetry,
         "configure",
@@ -413,150 +407,144 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return fail_configure(scripted_error)
         else:
             prompt_host_and_password(existing, values, discovered_host, ssh_opts)
-        while True:
-            command_context.set_stage("ssh_probe")
-            if not args.json:
-                print("Checking login information...")
-            connection = SshConnection(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+
+        class ConfigureRetry(Exception):
+            pass
+
+        def apply_probe_to_context(connection: SshConnection, probed_state: ProbedDeviceState) -> None:
             command_context.connection = connection
-            probed_state = probe_connection_state(connection)
             command_context.probe_state = probed_state
-            probe_result = probed_state.probe_result
-            if not probe_result.ssh_port_reachable:
-                if args.no_enable_ssh:
-                    return fail_configure("SSH is not reachable and --no-enable-ssh was provided.")
-                if no_input_enabled(args) and not args.enable_ssh:
-                    return fail_configure(
-                        "SSH is not reachable. In non-interactive mode, use --enable-ssh --yes to enable SSH via ACP."
-                    )
-                if no_input_enabled(args) and not args.yes:
-                    return fail_configure("configure --enable-ssh in non-interactive mode requires --yes.")
-                try:
-                    probed_state = configure_service.enable_ssh_and_reprobe(
-                        connection,
-                        verbose_wait=not args.json,
-                        callbacks=RuntimeOperationCallbacks(
-                            set_stage=command_context.set_stage,
-                            add_debug_fields=command_context.add_debug_fields,
-                            update_fields=command_context.update_fields,
-                            log=progress,
-                        ),
-                    )
-                except ACPAuthError as exc:
-                    if no_input_enabled(args):
-                        message = f"Failed to enable SSH via ACP: {exc}"
-                        return fail_configure(message)
-                    print("\nThe AirPort admin password did not work.")
-                    print(str(exc))
-                    print("Please enter the SSH target and password again.\n")
-                    command_context.set_stage("prompt_host_password")
-                    prompt_host_and_password(existing, values, discovered_host, ssh_opts)
-                    continue
-                except ACPError as exc:
-                    if command_context.debug_stage == "acp_identity_probe":
-                        label = "Failed to read AirPort identity via ACP"
-                    else:
-                        label = "Failed to enable SSH via ACP"
-                    message = f"{label}: {exc}"
-                    if not args.json:
-                        print(color_red(f"{label}:"))
-                        print(str(exc))
-                    return fail_configure(message)
-                if probed_state is None:
-                    message = "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again."
-                    return fail_configure(message)
-                command_context.probe_state = probed_state
-                probe_result = probed_state.probe_result
-                if not probe_result.ssh_port_reachable:
-                    message = "SSH did not become reachable after enabling via ACP."
-                    return fail_configure(message)
-            if probe_result.ssh_authenticated:
-                command_context.add_debug_fields(ssh_final_reachable=True)
-                command_context.update_fields(ssh_final_reachable=True)
-                probed_device = probed_state.compatibility
-                command_context.compatibility = probed_device
-                if probed_device is not None and not probed_device.supported:
-                    command_context.add_debug_fields(configure_failure_reason="unsupported_device")
-                    raise SystemExit(render_compatibility_message(probed_device))
-                break
+            command_context.compatibility = probed_state.compatibility
+
+        def probe_for_context(connection: SshConnection) -> ProbedDeviceState:
+            probed_state = probe_connection_state(connection)
+            apply_probe_to_context(connection, probed_state)
+            return probed_state
+
+        def before_enable_ssh(_connection: SshConnection, _probed_state: ProbedDeviceState) -> None:
+            if args.no_enable_ssh:
+                raise configure_service.ConfigureFlowError(
+                    "SSH is not reachable and --no-enable-ssh was provided.",
+                    code="ssh_unreachable",
+                )
+            if no_input_enabled(args) and not args.enable_ssh:
+                raise configure_service.ConfigureFlowError(
+                    "SSH is not reachable. In non-interactive mode, use --enable-ssh --yes to enable SSH via ACP.",
+                    code="ssh_unreachable",
+                )
+            if no_input_enabled(args) and not args.yes:
+                raise configure_service.ConfigureFlowError(
+                    "configure --enable-ssh in non-interactive mode requires --yes.",
+                    code="ssh_unreachable",
+                )
+
+        def save_without_authentication(probed_state: ProbedDeviceState) -> bool:
             if no_input_enabled(args):
-                message = "The provided AirPort SSH target and password did not work."
-                if probe_result.ssh_port_reachable:
-                    command_context.update_fields(ssh_final_reachable=True)
-                return fail_configure(message)
+                return False
             print("\nThe provided AirPort SSH target and password did not work.")
-            if probe_result.ssh_port_reachable:
+            if probed_state.probe_result.ssh_port_reachable:
                 command_context.update_fields(ssh_final_reachable=True)
             if confirm("Save this information still?", True):
                 command_context.add_debug_fields(configure_saved_without_ssh_authentication=True)
-                break
+                return True
             print("Please enter the SSH target and password again.\n")
             command_context.add_debug_fields(configure_retry_reason="ssh_authentication_failed")
             command_context.set_stage("prompt_host_password")
             prompt_host_and_password(existing, values, discovered_host, ssh_opts)
-            continue
+            raise ConfigureRetry()
 
-        observed_syap_source = "probed"
-        observed_syap = None if probed_device is None else probed_device.exact_syap
-        if observed_syap is None:
-            observed_syap = validated_value_or_empty(
-                "TC_AIRPORT_SYAP",
-                discovered_airport_syap or "",
-                "Airport Utility syAP code",
-            ) or None
-            observed_syap_source = "discovered"
-        observed_model_source = "probed"
-        observed_model = None if probed_device is None else probed_device.exact_model
-        if observed_model is None and observed_syap is not None:
-            observed_model = infer_mdns_device_model_from_airport_syap(observed_syap)
-            observed_model_source = "derived"
-        if observed_syap is not None:
-            values["TC_AIRPORT_SYAP"] = observed_syap
+        while True:
             if not args.json:
+                print("Checking login information...")
+            try:
+                result = configure_service.run_configure_flow(
+                    configure_service.ConfigureFlowRequest(
+                        existing=existing,
+                        env_path=env_path,
+                        host=values["TC_HOST"],
+                        password=values["TC_PASSWORD"],
+                        ssh_opts=ssh_opts,
+                        configure_id=configure_id,
+                        persist_password=True,
+                        discovered_airport_syap=discovered_airport_syap,
+                        enable_ssh=True,
+                        verbose_wait=not args.json,
+                        internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
+                        any_protocol=True if args.any_protocol else None,
+                        ata_idle_seconds=args.ata_idle_seconds,
+                        ata_standby=args.ata_standby,
+                        probe=probe_for_context,
+                        write_env=lambda path, output: write_configure_env_file(path, output, persist_password=True),
+                        infer_model_from_syap=infer_mdns_device_model_from_airport_syap,
+                    ),
+                    callbacks=OperationCallbacks(
+                        set_stage=command_context.set_stage,
+                        add_debug_fields=command_context.add_debug_fields,
+                        update_fields=command_context.update_fields,
+                        log=progress,
+                    ),
+                    hooks=configure_service.ConfigureFlowHooks(
+                        after_probe=apply_probe_to_context,
+                        before_enable_ssh=before_enable_ssh,
+                        save_without_authentication=save_without_authentication,
+                    ),
+                )
+            except ConfigureRetry:
+                continue
+            except ACPAuthError as exc:
+                if no_input_enabled(args):
+                    message = f"Failed to enable SSH via ACP: {exc}"
+                    return fail_configure(message)
+                print("\nThe AirPort admin password did not work.")
+                print(str(exc))
+                print("Please enter the SSH target and password again.\n")
+                command_context.set_stage("prompt_host_password")
+                prompt_host_and_password(existing, values, discovered_host, ssh_opts)
+                continue
+            except ACPError as exc:
+                if command_context.debug_stage == "acp_identity_probe":
+                    label = "Failed to read AirPort identity via ACP"
+                else:
+                    label = "Failed to enable SSH via ACP"
+                message = f"{label}: {exc}"
+                if not args.json:
+                    print(color_red(f"{label}:"))
+                    print(str(exc))
+                return fail_configure(message)
+            except configure_service.ConfigureFlowError as exc:
+                if exc.code == "auth_failed":
+                    return fail_configure("The provided AirPort SSH target and password did not work.")
+                if exc.code == "unsupported_device":
+                    raise SystemExit(str(exc))
+                if exc.code == "ssh_enable_timeout":
+                    return fail_configure(
+                        "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again."
+                    )
+                return fail_configure(str(exc))
+            values.clear()
+            values.update(result.values)
+            command_context.connection = result.connection
+            command_context.probe_state = result.probe_state
+            command_context.compatibility = result.compatibility
+            if result.identity.syap is not None and not args.json:
                 print_automatic_value_choice(
                     "TC_AIRPORT_SYAP",
-                    ConfigureValueChoice(value=observed_syap, source=observed_syap_source),
+                    ConfigureValueChoice(value=result.identity.syap, source=result.identity.syap_source or "probed"),
                 )
-        if observed_model is not None:
-            values["TC_MDNS_DEVICE_MODEL"] = observed_model
-            if not args.json:
+            if result.identity.model is not None and not args.json:
                 print_automatic_value_choice(
                     "TC_MDNS_DEVICE_MODEL",
-                    ConfigureValueChoice(value=observed_model, source=observed_model_source),
+                    ConfigureValueChoice(value=result.identity.model, source=result.identity.model_source or "probed"),
                 )
-
-        command_context.set_stage("write_env")
-        final_values = build_configure_env_values(
-            existing,
-            host=values["TC_HOST"],
-            password=values["TC_PASSWORD"],
-            ssh_opts=ssh_opts,
-            configure_id=configure_id,
-            internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
-            any_protocol=True if args.any_protocol else None,
-            ata_idle_seconds=args.ata_idle_seconds,
-            ata_standby=args.ata_standby,
-        )
-        if observed_syap is not None:
-            final_values["TC_AIRPORT_SYAP"] = observed_syap
-        if observed_model is not None:
-            final_values["TC_MDNS_DEVICE_MODEL"] = observed_model
-        values.clear()
-        values.update(final_values)
-        write_configure_env_file(env_path, values, persist_password=True)
-        command_context.update_fields(
-            configure_id=configure_id,
-            device_syap=observed_syap,
-            device_model=observed_model,
-        )
+            break
         if args.json:
             print_json({
                 "ok": True,
                 "configure_id": configure_id,
                 "path": str(env_path),
                 "host": values.get("TC_HOST"),
-                "device_syap": observed_syap,
-                "device_model": observed_model,
+                "device_syap": result.identity.syap,
+                "device_model": result.identity.model,
             })
         else:
             print(f"\nReview the .env file configuration: wrote {env_path}")

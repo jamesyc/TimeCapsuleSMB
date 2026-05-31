@@ -640,7 +640,7 @@ def _finish_write(
         request_reboot(
             target.connection,
             strategy="ssh",
-            callbacks=command_context.to_runtime_callbacks(),
+            callbacks=command_context.to_operation_callbacks(),
             progress_log=log,
             raise_on_request_error=args.no_wait,
         )
@@ -655,7 +655,7 @@ def _finish_write(
     try:
         observe_reboot_cycle(
             target.connection,
-            callbacks=command_context.to_runtime_callbacks(),
+            callbacks=command_context.to_operation_callbacks(),
             reboot_no_down_message="Firmware write validated, but the device did not go down after reboot request.",
             reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
             down_timeout_seconds=60,

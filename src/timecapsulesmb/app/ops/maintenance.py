@@ -36,12 +36,7 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.compat import is_netbsd4_payload_family
-from timecapsulesmb.device.storage import (
-    UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER,
-    mast_volumes_debug_summary,
-    mounted_mast_volumes_conn,
-    read_mast_volumes_conn,
-)
+from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -52,6 +47,7 @@ from timecapsulesmb.services.app import (
     required_path_param,
     string_param,
 )
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.activation import decide_manual_activation
 from timecapsulesmb.services.maintenance import (
@@ -67,6 +63,7 @@ from timecapsulesmb.services.maintenance import (
     select_fsck_target,
 )
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
+from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.runtime import (
     load_env_config,
     load_optional_env_config,
@@ -76,13 +73,6 @@ from timecapsulesmb.transport.ssh import run_ssh
 
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
-
-
-def _best_effort_mast_debug_summary(volumes: object) -> object | None:
-    try:
-        return mast_volumes_debug_summary(volumes)
-    except Exception:
-        return None
 
 
 def activate_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
@@ -183,21 +173,10 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
         volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
         payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{MANAGED_PAYLOAD_DIR_NAME}"]
     else:
-        context.stage("read_mast")
-        mast_volumes = read_mast_volumes_conn(connection)
-        context.add_debug_fields(
-            mast_volume_count=len(mast_volumes),
-            mast_candidates=_best_effort_mast_debug_summary(mast_volumes),
-        )
-        context.stage("mount_mast_volumes")
-        mounted_volumes = mounted_mast_volumes_conn(
+        mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,
-            mast_volumes,
+            callbacks=context.to_operation_callbacks(),
             wait_seconds=mount_wait,
-        )
-        context.add_debug_fields(
-            mast_mounted_volume_count=len(mounted_volumes),
-            mast_mounted_candidates=_best_effort_mast_debug_summary(mounted_volumes),
         )
         volume_roots = [volume.volume_root for volume in mounted_volumes]
         payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
@@ -225,7 +204,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
             request_reboot(
                 connection,
                 strategy="acp_then_ssh",
-                callbacks=context.to_runtime_callbacks(),
+                callbacks=context.to_operation_callbacks(),
                 raise_on_request_error=True,
             )
         except RebootFlowError as exc:
@@ -240,7 +219,7 @@ def uninstall_operation(params: dict[str, object], context: AppOperationContext)
         request_reboot_and_wait(
             connection,
             strategy="acp_then_ssh",
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             down_timeout_seconds=60,
             up_timeout_seconds=240,
             reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
@@ -308,21 +287,11 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     context.stage("resolve_connection")
     connection = resolve_env_connection(config, allow_empty_password=True)
     context.connection = connection
-    context.stage("read_mast")
-    mast_volumes = read_mast_volumes_conn(connection)
-    context.add_debug_fields(
-        mast_volume_count=len(mast_volumes),
-        mast_candidates=_best_effort_mast_debug_summary(mast_volumes),
-    )
-    context.stage("mount_hfs_volumes")
-    mounted_volumes = mounted_mast_volumes_conn(
+    mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
         connection,
-        mast_volumes,
+        callbacks=context.to_operation_callbacks(),
         wait_seconds=mount_wait,
-    )
-    context.add_debug_fields(
-        mast_mounted_volume_count=len(mounted_volumes),
-        mast_mounted_candidates=_best_effort_mast_debug_summary(mounted_volumes),
+        mount_stage="mount_hfs_volumes",
     )
     targets = tuple(fsck_target_from_volume(volume) for volume in mounted_volumes)
     if list_volumes:
@@ -384,7 +353,7 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
     try:
         observe_reboot_cycle(
             connection,
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
             reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
             down_timeout_seconds=90,
@@ -451,7 +420,7 @@ def repair_xattrs_operation(params: dict[str, object], context: AppOperationCont
         result = repair_xattrs_service.run_repair(
             request,
             config,
-            callbacks=repair_xattrs_service.RepairXattrsCallbacks(
+            callbacks=OperationCallbacks(
                 set_stage=context.stage,
                 update_fields=context.update_fields,
                 log=context.log,

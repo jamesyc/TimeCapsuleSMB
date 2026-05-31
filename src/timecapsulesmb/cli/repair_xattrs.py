@@ -17,8 +17,8 @@ from timecapsulesmb.cli.runtime import (
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.app import jsonable
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.repair_xattrs import (
-    RepairXattrsCallbacks,
     RepairXattrsRequest,
     RepairXattrsServiceError,
     RepairRunResult,
@@ -51,7 +51,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
         result = run_repair_service(
             repair_request_from_args(args),
             config,
-            callbacks=RepairXattrsCallbacks(
+            callbacks=OperationCallbacks(
                 set_stage=command_context.set_stage,
                 update_fields=command_context.update_fields,
                 log=print,
@@ -85,7 +85,7 @@ def run_repair_json(args: argparse.Namespace, config: AppConfig, sink: EventSink
         result = run_repair_service(
             repair_request_from_args(args),
             config,
-            callbacks=RepairXattrsCallbacks(
+            callbacks=OperationCallbacks(
                 set_stage=lambda stage: sink.stage(operation, stage),
                 log=lambda message: sink.log(operation, message),
             ),

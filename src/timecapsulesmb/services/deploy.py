@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
+from pathlib import Path
+import tempfile
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, parse_bool, shell_quote
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
+from timecapsulesmb.deploy.auth import render_smbpasswd
+from timecapsulesmb.deploy.boot_assets import boot_asset_path
+from timecapsulesmb.deploy.executor import flush_remote_filesystem_writes, run_remote_actions, upload_deployment_payload
+from timecapsulesmb.deploy.commands import RemoteAction
 from timecapsulesmb.deploy.planner import (
     BINARY_MDNS_SOURCE,
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
+    DeploymentPlan,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
@@ -26,21 +36,25 @@ from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     DeploymentStartupMode,
+    build_deployment_plan,
 )
 from timecapsulesmb.device.compat import DeviceCompatibility, is_netbsd4_payload_family, render_compatibility_message
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
+    MaStDiscoveryResult,
     PayloadHome,
+    PayloadHomeSelection,
     PayloadVerificationResult,
     build_dry_run_payload_home,
-    mast_volumes_debug_summary,
     payload_candidate_checks_debug_summary,
     select_payload_home_with_diagnostics_conn,
-    wait_for_mast_volumes_conn,
+    verify_payload_home_conn,
 )
-from timecapsulesmb.services.runtime import ManagedTargetState, RuntimeOperationCallbacks
+from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -59,7 +73,6 @@ DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
 )
-MAST_ACP_OUTPUT_DEBUG_LIMIT = 8192
 DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_RC_LOCAL_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
@@ -81,20 +94,36 @@ class DeployPayloadContext:
     startup_mode: DeploymentStartupMode
 
 
+@dataclass(frozen=True)
+class DeployArtifactPaths:
+    smbd: Path
+    mdns_advertiser: Path
+    nbns_advertiser: Path
+
+
+@dataclass(frozen=True)
+class PreparedDeployPlan:
+    payload_context: DeployPayloadContext
+    artifacts: DeployArtifactPaths
+    payload_home: PayloadHome
+    plan: DeploymentPlan
+
+
+@dataclass(frozen=True)
+class DeployRuntimeConfig:
+    nbns_enabled: bool
+    debug_logging: bool | None = None
+    internal_share_use_disk_root: bool | None = None
+    any_protocol: bool | None = None
+    ata_idle_seconds: str | int | None = None
+    ata_standby: str | int | None = None
+
+
 def _best_effort_debug_summary(render, value: object) -> object | None:
     try:
         return render(value)
     except Exception:
         return None
-
-
-def _mast_acp_output_debug_text(raw_output: str) -> str:
-    if not raw_output:
-        return "<empty>"
-    if len(raw_output) <= MAST_ACP_OUTPUT_DEBUG_LIMIT:
-        return raw_output
-    omitted = len(raw_output) - MAST_ACP_OUTPUT_DEBUG_LIMIT
-    return f"{raw_output[:MAST_ACP_OUTPUT_DEBUG_LIMIT]}...<truncated {omitted} chars>"
 
 
 def no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
@@ -150,6 +179,20 @@ def deploy_artifact_failures(distribution_root, *, validate=validate_artifacts) 
     return [message for _, ok, message in validate(distribution_root) if not ok]
 
 
+def resolve_deploy_artifact_paths(
+    distribution_root,
+    payload_family: str,
+    *,
+    resolver=resolve_payload_artifacts,
+) -> DeployArtifactPaths:
+    resolved_artifacts = resolver(distribution_root, payload_family)
+    return DeployArtifactPaths(
+        smbd=resolved_artifacts["smbd"].absolute_path,
+        mdns_advertiser=resolved_artifacts["mdns-advertiser"].absolute_path,
+        nbns_advertiser=resolved_artifacts["nbns-advertiser"].absolute_path,
+    )
+
+
 def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: bool) -> DeviceCompatibility:
     probe_state = target.probe_state
     if probe_state is None:
@@ -192,29 +235,21 @@ def select_deploy_payload_home(
     dry_run: bool,
     payload_dir_name: str,
     mount_wait_seconds: int,
-    callbacks: RuntimeOperationCallbacks | None = None,
-    wait_for_mast_volumes=wait_for_mast_volumes_conn,
-    select_payload_home=select_payload_home_with_diagnostics_conn,
+    callbacks: OperationCallbacks | None = None,
+    wait_for_mast_volumes: Callable[..., MaStDiscoveryResult] | None = None,
+    select_payload_home: Callable[..., PayloadHomeSelection] | None = None,
 ) -> PayloadHome:
-    callbacks = callbacks or RuntimeOperationCallbacks()
+    callbacks = callbacks or OperationCallbacks()
     if dry_run:
         return build_dry_run_payload_home(payload_dir_name)
 
-    callbacks.stage("read_mast")
-    mast_discovery = wait_for_mast_volumes(
+    mast_discovery = storage_service.wait_for_mast_volumes_with_diagnostics(
         connection,
+        callbacks=callbacks,
         attempts=MAST_DISCOVERY_ATTEMPTS,
         delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+        wait_for_mast_volumes=wait_for_mast_volumes,
     )
-    debug_fields: dict[str, object] = {
-        "mast_read_attempts": mast_discovery.attempts,
-        "mast_volume_count": len(mast_discovery.volumes),
-        "mast_candidates": _best_effort_debug_summary(mast_volumes_debug_summary, mast_discovery.volumes),
-    }
-    if not mast_discovery.volumes:
-        debug_fields["mast_acp_output_chars"] = len(mast_discovery.raw_output)
-        debug_fields["mast_acp_output"] = _mast_acp_output_debug_text(mast_discovery.raw_output)
-    callbacks.debug(**debug_fields)
     if not mast_discovery.volumes:
         raise DeviceError(
             no_mast_volumes_message(
@@ -224,6 +259,8 @@ def select_deploy_payload_home(
         )
 
     callbacks.stage("select_payload_home")
+    if select_payload_home is None:
+        select_payload_home = select_payload_home_with_diagnostics_conn
     selection = select_payload_home(
         connection,
         mast_discovery.volumes,
@@ -239,6 +276,216 @@ def select_deploy_payload_home(
     if selection.payload_home is None:
         raise DeviceError(no_writable_mast_volumes_message(len(mast_discovery.volumes)))
     return selection.payload_home
+
+
+def prepare_deployment_plan(
+    connection: SshConnection,
+    distribution_root,
+    payload_context: DeployPayloadContext,
+    *,
+    dry_run: bool,
+    payload_dir_name: str,
+    mount_wait_seconds: int,
+    wait_after_reboot: bool = True,
+    callbacks: OperationCallbacks | None = None,
+    resolver=resolve_payload_artifacts,
+    wait_for_mast_volumes: Callable[..., MaStDiscoveryResult] | None = None,
+    select_payload_home: Callable[..., PayloadHomeSelection] | None = None,
+    build_plan=build_deployment_plan,
+) -> PreparedDeployPlan:
+    artifacts = resolve_deploy_artifact_paths(
+        distribution_root,
+        payload_context.payload_family,
+        resolver=resolver,
+    )
+    payload_home = select_deploy_payload_home(
+        connection,
+        dry_run=dry_run,
+        payload_dir_name=payload_dir_name,
+        mount_wait_seconds=mount_wait_seconds,
+        callbacks=callbacks,
+        wait_for_mast_volumes=wait_for_mast_volumes,
+        select_payload_home=select_payload_home,
+    )
+    if callbacks is not None:
+        callbacks.stage("build_deployment_plan")
+    plan = build_plan(
+        connection.host,
+        payload_home,
+        artifacts.smbd,
+        artifacts.mdns_advertiser,
+        artifacts.nbns_advertiser,
+        startup_mode=payload_context.startup_mode,
+        apple_mount_wait_seconds=mount_wait_seconds,
+        wait_after_reboot=wait_after_reboot,
+    )
+    if callbacks is not None:
+        callbacks.debug(
+            payload_volume_root=plan.volume_root,
+            payload_device_path=plan.device_path,
+            payload_dir=plan.payload_dir,
+        )
+    return PreparedDeployPlan(
+        payload_context=payload_context,
+        artifacts=artifacts,
+        payload_home=payload_home,
+        plan=plan,
+    )
+
+
+def _deployment_upload_sources(
+    plan: DeploymentPlan,
+    password: str,
+    flash_config_text: str,
+    tmpdir: Path,
+    boot_assets: ExitStack,
+    *,
+    render_smbpasswd_func=render_smbpasswd,
+    boot_asset_path_func=boot_asset_path,
+) -> Mapping[str, Path]:
+    generated_flash_config = tmpdir / "tcapsulesmb.conf"
+    generated_smbpasswd = tmpdir / "smbpasswd"
+    generated_username_map = tmpdir / "username.map"
+    generated_flash_config.write_text(flash_config_text)
+    smbpasswd_text, username_map_text = render_smbpasswd_func(password)
+    generated_smbpasswd.write_text(smbpasswd_text)
+    generated_username_map.write_text(username_map_text)
+    return {
+        BINARY_SMBD_SOURCE: plan.smbd_path,
+        BINARY_MDNS_SOURCE: plan.mdns_path,
+        BINARY_NBNS_SOURCE: plan.nbns_path,
+        GENERATED_SMBPASSWD_SOURCE: generated_smbpasswd,
+        GENERATED_USERNAME_MAP_SOURCE: generated_username_map,
+        GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
+        PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path_func("rc.local")),
+        PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("common.sh")),
+        PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("dfree.sh")),
+        PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path_func("boot.sh")),
+        PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path_func("manager.sh")),
+    }
+
+
+def _verify_deployed_payload(
+    callbacks: OperationCallbacks,
+    connection: SshConnection,
+    payload_home: PayloadHome,
+    *,
+    wait_seconds: int,
+    post_sync: bool,
+    verify_payload_home=verify_payload_home_conn,
+    on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
+) -> None:
+    callbacks.stage("verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
+    verification = verify_payload_home(connection, payload_home, wait_seconds=wait_seconds)
+    callbacks.debug(
+        **{"payload_post_sync_verification" if post_sync else "payload_upload_verification": verification.detail}
+    )
+    if on_verified is not None:
+        on_verified(verification, post_sync)
+    if not verification.ok:
+        raise DeviceError(payload_verification_error(payload_home, verification))
+
+
+def upload_and_verify_deployment_payload(
+    config: AppConfig,
+    connection: SshConnection,
+    prepared_plan: PreparedDeployPlan,
+    runtime_config: DeployRuntimeConfig,
+    *,
+    callbacks: OperationCallbacks | None = None,
+    initial_upload_stage: str | None = "upload_payload",
+    on_pre_upload_action_done: Callable[[RemoteAction, int, int], None] | None = None,
+    on_before_upload: Callable[[], None] | None = None,
+    on_after_upload: Callable[[], None] | None = None,
+    on_uploaded: Callable[[FileTransfer], None] | None = None,
+    on_uploading: Callable[[FileTransfer], None] | None = None,
+    on_before_post_upload_actions: Callable[[], None] | None = None,
+    on_before_verify: Callable[[bool], None] | None = None,
+    on_before_flush: Callable[[], None] | None = None,
+    on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
+    run_remote_actions_func=run_remote_actions,
+    render_flash_config_func=None,
+    render_smbpasswd_func=render_smbpasswd,
+    boot_asset_path_func=boot_asset_path,
+    upload_payload_func=upload_deployment_payload,
+    verify_payload_home=verify_payload_home_conn,
+    flush_remote_writes=flush_remote_filesystem_writes,
+) -> None:
+    callbacks = callbacks or OperationCallbacks()
+    plan = prepared_plan.plan
+    payload_home = prepared_plan.payload_home
+    if render_flash_config_func is None:
+        render_flash_config_func = render_flash_runtime_config
+
+    callbacks.stage("pre_upload_actions")
+    run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
+    callbacks.stage("prepare_deployment_files")
+    flash_config_text = render_flash_config_func(
+        config,
+        payload_home,
+        nbns_enabled=runtime_config.nbns_enabled,
+        debug_logging=runtime_config.debug_logging,
+        internal_share_use_disk_root=runtime_config.internal_share_use_disk_root,
+        any_protocol=runtime_config.any_protocol,
+        ata_idle_seconds=runtime_config.ata_idle_seconds,
+        ata_standby=runtime_config.ata_standby,
+    )
+    with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
+        upload_sources = _deployment_upload_sources(
+            plan,
+            connection.password,
+            flash_config_text,
+            Path(tmp),
+            boot_assets,
+            render_smbpasswd_func=render_smbpasswd_func,
+            boot_asset_path_func=boot_asset_path_func,
+        )
+        if initial_upload_stage is not None:
+            callbacks.stage(initial_upload_stage)
+        if on_before_upload is not None:
+            on_before_upload()
+        upload_kwargs: dict[str, object] = {
+            "connection": connection,
+            "source_resolver": upload_sources,
+        }
+        if on_uploaded is not None:
+            upload_kwargs["on_uploaded"] = on_uploaded
+        if on_uploading is not None:
+            upload_kwargs["on_uploading"] = on_uploading
+        upload_payload_func(plan, **upload_kwargs)
+        if on_after_upload is not None:
+            on_after_upload()
+
+    callbacks.stage("post_upload_actions")
+    if on_before_post_upload_actions is not None:
+        on_before_post_upload_actions()
+    run_remote_actions_func(connection, plan.post_upload_actions)
+    if on_before_verify is not None:
+        on_before_verify(False)
+    _verify_deployed_payload(
+        callbacks,
+        connection,
+        payload_home,
+        wait_seconds=plan.apple_mount_wait_seconds,
+        post_sync=False,
+        verify_payload_home=verify_payload_home,
+        on_verified=on_verified,
+    )
+    callbacks.stage("flush_payload_upload")
+    if on_before_flush is not None:
+        on_before_flush()
+    flush_remote_writes(connection)
+    if on_before_verify is not None:
+        on_before_verify(True)
+    _verify_deployed_payload(
+        callbacks,
+        connection,
+        payload_home,
+        wait_seconds=plan.apple_mount_wait_seconds,
+        post_sync=True,
+        verify_payload_home=verify_payload_home,
+        on_verified=on_verified,
+    )
 
 
 def _render_flash_config_assignment(key: str, value: str | int) -> str:

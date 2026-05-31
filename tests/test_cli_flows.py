@@ -26,10 +26,8 @@ from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.reboot import ACP_REBOOT_REQUEST_TIMEOUT_SECONDS, SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE
-from timecapsulesmb.services.runtime import (
-    RuntimeOperationCallbacks,
-    wait_for_tcp_port_state,
-)
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.runtime import wait_for_tcp_port_state
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
@@ -68,8 +66,8 @@ class FakeCommandContext:
             if value is not None:
                 self.debug_fields[key] = value
 
-    def to_runtime_callbacks(self) -> RuntimeOperationCallbacks:
-        return RuntimeOperationCallbacks(
+    def to_operation_callbacks(self) -> OperationCallbacks:
+        return OperationCallbacks(
             set_stage=self.set_stage,
             log=print,
             add_debug_fields=self.add_debug_fields,
@@ -85,7 +83,7 @@ class CliFlowTests(unittest.TestCase):
         return SshConnection("root@10.0.0.2", "pw", "-o foo")
 
     def reboot_callbacks(self, command_context: FakeCommandContext):
-        return command_context.to_runtime_callbacks()
+        return command_context.to_operation_callbacks()
 
     def request_reboot_and_wait_default(self, command_context: FakeCommandContext, **kwargs) -> None:
         request_reboot_and_wait(

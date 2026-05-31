@@ -22,7 +22,8 @@ from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_identity_preflight
 from timecapsulesmb.services import runtime as runtime_service
-from timecapsulesmb.services.runtime import RuntimeOperationCallbacks, load_env_config
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 from timecapsulesmb.transport.local import tcp_open
@@ -157,7 +158,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     acp_host,
                     password,
                     reboot_device=True,
-                    callbacks=RuntimeOperationCallbacks(
+                    callbacks=OperationCallbacks(
                         set_stage=command_context.set_stage,
                         log=print,
                         add_debug_fields=command_context.add_debug_fields,

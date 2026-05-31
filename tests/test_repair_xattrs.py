@@ -18,6 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli import repair_xattrs as repair_xattrs_cli
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 
 
@@ -522,7 +523,7 @@ class RepairXattrsTests(unittest.TestCase):
                 result = repair_xattrs_service.run_repair(
                     request,
                     self.app_config({}),
-                    callbacks=repair_xattrs_service.RepairXattrsCallbacks(
+                    callbacks=OperationCallbacks(
                         set_stage=callbacks.set_stage,
                         update_fields=callbacks.update_fields,
                         log=callbacks.log,

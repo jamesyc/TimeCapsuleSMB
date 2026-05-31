@@ -109,7 +109,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             observe_reboot_cycle(
                 connection,
-                callbacks=command_context.to_runtime_callbacks(),
+                callbacks=command_context.to_operation_callbacks(),
                 reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
                 reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
                 down_timeout_seconds=90,

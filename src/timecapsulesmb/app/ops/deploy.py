@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from contextlib import ExitStack
 from dataclasses import dataclass
-from pathlib import Path
-import tempfile
 
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
@@ -27,23 +24,12 @@ from timecapsulesmb.deploy.executor import (
     upload_deployment_payload,
 )
 from timecapsulesmb.deploy.planner import (
-    BINARY_MDNS_SOURCE,
-    BINARY_NBNS_SOURCE,
-    BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     DeploymentStartupMode,
     FileTransfer,
-    GENERATED_FLASH_CONFIG_SOURCE,
-    GENERATED_SMBPASSWD_SOURCE,
-    GENERATED_USERNAME_MAP_SOURCE,
-    PACKAGED_BOOT_SOURCE,
-    PACKAGED_COMMON_SH_SOURCE,
-    PACKAGED_DFREE_SH_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
-    PACKAGED_RC_LOCAL_SOURCE,
     build_deployment_plan,
 )
 from timecapsulesmb.deploy.verify import (
@@ -58,6 +44,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device.compat import payload_family_description
 from timecapsulesmb.device.storage import (
+    build_dry_run_payload_home,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
     wait_for_mast_volumes_conn,
@@ -77,15 +64,16 @@ from timecapsulesmb.services.app import (
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
     DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
+    DeployRuntimeConfig,
     activation_complete_message,
     deploy_artifact_failures,
     deploy_upload_stage,
     effective_no_wait_for_deploy,
-    payload_verification_error,
+    prepare_deployment_plan,
     prepare_deploy_payload_context,
     require_supported_payload,
     render_flash_runtime_config,
-    select_deploy_payload_home,
+    upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
@@ -223,12 +211,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     if not dry_run:
         confirmation_plan = build_deployment_plan(
             connection.host,
-            select_deploy_payload_home(
-                connection,
-                dry_run=True,
-                payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
-                mount_wait_seconds=mount_wait,
-            ),
+            build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME),
             resolved_artifacts["smbd"].absolute_path,
             resolved_artifacts["mdns-advertiser"].absolute_path,
             resolved_artifacts["nbns-advertiser"].absolute_path,
@@ -277,34 +260,22 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             ),
         )
     try:
-        payload_home = select_deploy_payload_home(
+        prepared_plan = prepare_deployment_plan(
             connection,
+            app_paths.distribution_root,
+            payload_context,
             dry_run=dry_run,
             payload_dir_name=MANAGED_PAYLOAD_DIR_NAME,
             mount_wait_seconds=mount_wait,
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
+            resolver=resolve_payload_artifacts,
             wait_for_mast_volumes=wait_for_mast_volumes_conn,
             select_payload_home=select_payload_home_with_diagnostics_conn,
+            wait_after_reboot=not no_wait,
         )
     except DeviceError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
-
-    context.stage("build_deployment_plan")
-    plan = build_deployment_plan(
-        connection.host,
-        payload_home,
-        resolved_artifacts["smbd"].absolute_path,
-        resolved_artifacts["mdns-advertiser"].absolute_path,
-        resolved_artifacts["nbns-advertiser"].absolute_path,
-        startup_mode=startup_mode,
-        apple_mount_wait_seconds=mount_wait,
-        wait_after_reboot=not no_wait,
-    )
-    context.add_debug_fields(
-        payload_volume_root=plan.volume_root,
-        payload_device_path=plan.device_path,
-        payload_dir=plan.payload_dir,
-    )
+    plan = prepared_plan.plan
     if dry_run:
         return OperationResult(True, deploy_plan_payload(
             deployment_plan_to_jsonable(plan),
@@ -312,68 +283,49 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             netbsd4=is_netbsd4,
         ))
 
-    context.stage("pre_upload_actions")
-    run_remote_actions(connection, plan.pre_upload_actions)
-    context.stage("prepare_deployment_files")
+    current_upload_stage: str | None = None
+
+    def stage_upload(transfer: FileTransfer) -> None:
+        nonlocal current_upload_stage
+        stage = deploy_upload_stage(transfer)
+        if stage == current_upload_stage:
+            return
+        current_upload_stage = stage
+        context.stage(stage)
+
+    def log_payload_verification(verification, _post_sync: bool) -> None:
+        context.log(verification.detail)
+
     try:
-        flash_config_text = render_flash_runtime_config(
+        upload_and_verify_deployment_payload(
             config,
-            payload_home,
-            nbns_enabled=nbns_enabled,
-            debug_logging=debug_logging,
-            internal_share_use_disk_root=internal_share_use_disk_root,
-            any_protocol=any_protocol,
-            ata_idle_seconds=ata_idle_seconds,
-            ata_standby=ata_standby,
+            connection=connection,
+            prepared_plan=prepared_plan,
+            runtime_config=DeployRuntimeConfig(
+                nbns_enabled=nbns_enabled,
+                debug_logging=debug_logging,
+                internal_share_use_disk_root=internal_share_use_disk_root,
+                any_protocol=any_protocol,
+                ata_idle_seconds=ata_idle_seconds,
+                ata_standby=ata_standby,
+            ),
+            callbacks=context.to_operation_callbacks(),
+            initial_upload_stage=None,
+            on_uploading=stage_upload,
+            on_before_flush=lambda: context.log("Flushing deployed payload to disk..."),
+            on_verified=log_payload_verification,
+            run_remote_actions_func=run_remote_actions,
+            render_flash_config_func=render_flash_runtime_config,
+            render_smbpasswd_func=render_smbpasswd,
+            boot_asset_path_func=boot_asset_path,
+            upload_payload_func=upload_deployment_payload,
+            verify_payload_home=verify_payload_home_conn,
+            flush_remote_writes=flush_remote_filesystem_writes,
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
-    with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
-        tmpdir = Path(tmp)
-        generated_flash_config = tmpdir / "tcapsulesmb.conf"
-        generated_smbpasswd = tmpdir / "smbpasswd"
-        generated_username_map = tmpdir / "username.map"
-        generated_flash_config.write_text(flash_config_text)
-        smbpasswd_text, username_map_text = render_smbpasswd(connection.password)
-        generated_smbpasswd.write_text(smbpasswd_text)
-        generated_username_map.write_text(username_map_text)
-        upload_sources = {
-            BINARY_SMBD_SOURCE: plan.smbd_path,
-            BINARY_MDNS_SOURCE: plan.mdns_path,
-            BINARY_NBNS_SOURCE: plan.nbns_path,
-            GENERATED_SMBPASSWD_SOURCE: generated_smbpasswd,
-            GENERATED_USERNAME_MAP_SOURCE: generated_username_map,
-            GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
-            PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path("rc.local")),
-            PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path("common.sh")),
-            PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
-            PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
-            PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path("manager.sh")),
-        }
-        current_upload_stage: str | None = None
-
-        def stage_upload(transfer: FileTransfer) -> None:
-            nonlocal current_upload_stage
-            stage = deploy_upload_stage(transfer)
-            if stage == current_upload_stage:
-                return
-            current_upload_stage = stage
-            context.stage(stage)
-
-        upload_deployment_payload(
-            plan,
-            connection=connection,
-            source_resolver=upload_sources,
-            on_uploading=stage_upload,
-        )
-
-    context.stage("post_upload_actions")
-    run_remote_actions(connection, plan.post_upload_actions)
-    verify_payload_upload(context, connection, payload_home, wait_seconds=mount_wait)
-    context.stage("flush_payload_upload")
-    context.log("Flushing deployed payload to disk...")
-    flush_remote_filesystem_writes(connection)
-    verify_payload_upload(context, connection, payload_home, wait_seconds=mount_wait, post_sync=True)
+    except DeviceError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
 
     if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
         run_activation_actions_and_verify(
@@ -402,7 +354,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             request_reboot(
                 connection,
                 strategy="ssh_shutdown_then_reboot",
-                callbacks=context.to_runtime_callbacks(),
+                callbacks=context.to_operation_callbacks(),
                 raise_on_request_error=True,
             )
         except RebootFlowError as exc:
@@ -419,7 +371,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         request_reboot_and_wait(
             connection,
             strategy="ssh_shutdown_then_reboot",
-            callbacks=context.to_runtime_callbacks(),
+            callbacks=context.to_operation_callbacks(),
             down_timeout_seconds=60,
             up_timeout_seconds=240,
             reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
@@ -499,24 +451,6 @@ def run_activation_actions_and_verify(
         timeout_seconds=verification_timeout_seconds,
         failure_message=failure_message,
     )
-
-
-def verify_payload_upload(
-    context: AppOperationContext,
-    connection: SshConnection,
-    payload_home,
-    *,
-    wait_seconds: int,
-    post_sync: bool = False,
-) -> None:
-    context.stage("verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
-    verification = verify_payload_home_conn(connection, payload_home, wait_seconds=wait_seconds)
-    context.log(verification.detail)
-    context.add_debug_fields(
-        **{"payload_post_sync_verification" if post_sync else "payload_upload_verification": verification.detail}
-    )
-    if not verification.ok:
-        raise AppOperationError(payload_verification_error(payload_home, verification), code="remote_error")
 
 
 def verify_runtime(
