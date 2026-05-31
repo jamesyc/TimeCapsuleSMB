@@ -118,6 +118,8 @@ enum DeviceStatusPolicy {
             switch runtimeState.state {
             case .unknown:
                 return .unchecked
+            case .notInstalled:
+                return .readyToInstall
             case .installing:
                 return .installing
             case .installedVerified:

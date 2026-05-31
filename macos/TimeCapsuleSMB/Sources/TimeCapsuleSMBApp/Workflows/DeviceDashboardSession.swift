@@ -546,6 +546,19 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 recovery: nil
             )
         case .failed:
+            if summary.runtimeNotInstalled {
+                return DeviceRuntimeStateSnapshot(
+                    state: .notInstalled,
+                    source: .doctor,
+                    stage: nil,
+                    payloadFamily: profile.runtimeState?.payloadFamily ?? profile.payloadFamily,
+                    verified: false,
+                    summary: "",
+                    errorCode: DoctorSummary.runtimeNotInstalledResultCode,
+                    errorMessage: nil,
+                    recovery: nil
+                )
+            }
             return DeviceRuntimeStateSnapshot(
                 state: .unhealthy,
                 source: .doctor,

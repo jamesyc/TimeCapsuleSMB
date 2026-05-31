@@ -642,6 +642,42 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: recovered).displayStatus, .healthy)
     }
 
+    func testFactoryDeviceCheckupStoresNotInstalledRuntimeStateWithoutFailedSidebarStatus() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(fatal: true, checks: [
+                    testDoctorCheck(
+                        status: "FAIL",
+                        message: "deployed payload config not found; please run deploy to install on your device",
+                        domain: "Runtime",
+                        code: DoctorSummary.runtimeNotInstalledResultCode
+                    )
+                ]))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+
+        session.runCheckup(profile: profile)
+
+        try await waitUntilStoreState {
+            session.doctorStore.state == .failed
+                && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .notInstalled
+        }
+        let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(checked.lastCheckup?.state, .failed)
+        XCTAssertEqual(checked.runtimeState?.source, .doctor)
+        XCTAssertEqual(checked.runtimeState?.errorCode, DoctorSummary.runtimeNotInstalledResultCode)
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: checked).displayStatus, .readyToInstall)
+    }
+
     func testInstallPlanDoesNotChangePersistedInstallState() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [

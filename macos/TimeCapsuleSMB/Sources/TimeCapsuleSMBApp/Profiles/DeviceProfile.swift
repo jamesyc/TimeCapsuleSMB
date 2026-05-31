@@ -280,6 +280,7 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
 
 enum DeviceRuntimeState: String, Codable, Equatable, CaseIterable {
     case unknown
+    case notInstalled
     case installing
     case installedUnverified
     case installedVerified
@@ -292,7 +293,7 @@ enum DeviceRuntimeState: String, Codable, Equatable, CaseIterable {
         switch self {
         case .installedUnverified, .installedVerified, .activationNeeded:
             return true
-        case .unknown, .installing, .installFailed, .installInterrupted, .unhealthy:
+        case .unknown, .notInstalled, .installing, .installFailed, .installInterrupted, .unhealthy:
             return false
         }
     }
@@ -301,7 +302,7 @@ enum DeviceRuntimeState: String, Codable, Equatable, CaseIterable {
         switch self {
         case .installFailed, .installInterrupted, .unhealthy:
             return true
-        case .unknown, .installing, .installedUnverified, .installedVerified, .activationNeeded:
+        case .unknown, .notInstalled, .installing, .installedUnverified, .installedVerified, .activationNeeded:
             return false
         }
     }
@@ -328,6 +329,8 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
         switch state {
         case .unknown:
             return L10n.string("runtime.state.unknown")
+        case .notInstalled:
+            return L10n.string("runtime.state.not_installed")
         case .installing:
             return L10n.string("install.state.deploying")
         case .installedVerified:

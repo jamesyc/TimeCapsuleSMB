@@ -99,6 +99,7 @@ TRANSIENT_MDNS_READINESS_FAILURES = {
     "mdns-advertiser process is not running",
     "mdns-advertiser is not bound to required UDP 5353 listener",
 }
+DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 
 
 def _run_doctor_retryable_check(
@@ -992,7 +993,13 @@ def _doctor_check_deployed_config(target: DoctorTarget, remote: RemoteAccess, si
         sink.debug_fields["deployed_config_present"] = config_present
 
     if not config_present:
-        sink.add(CheckResult("FAIL", "deployed payload config not found; please run deploy to install on your device"))
+        sink.add(
+            CheckResult(
+                "FAIL",
+                "deployed payload config not found; please run deploy to install on your device",
+                details={"code": DOCTOR_CODE_RUNTIME_NOT_INSTALLED},
+            )
+        )
         return StepDecision(stop=True)
 
     sink.add(CheckResult("PASS", f"deployed payload config {FLASH_RUNTIME_CONFIG} exists"))

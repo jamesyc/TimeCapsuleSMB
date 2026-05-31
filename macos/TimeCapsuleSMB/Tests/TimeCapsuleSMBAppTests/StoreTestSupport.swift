@@ -686,11 +686,15 @@ func testDoctorPayload(fatal: Bool = false, checks: [JSONValue]) -> JSONValue {
     ])
 }
 
-func testDoctorCheck(status: String, message: String, domain: String) -> JSONValue {
-    .object([
+func testDoctorCheck(status: String, message: String, domain: String, code: String? = nil) -> JSONValue {
+    var details: [String: JSONValue] = ["domain": .string(domain)]
+    if let code {
+        details["code"] = .string(code)
+    }
+    return .object([
         "status": .string(status),
         "message": .string(message),
-        "details": .object(["domain": .string(domain)])
+        "details": .object(details)
     ])
 }
 

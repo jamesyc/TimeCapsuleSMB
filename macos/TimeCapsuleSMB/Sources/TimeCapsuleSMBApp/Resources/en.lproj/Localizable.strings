@@ -18,7 +18,7 @@
 "add_device.error.password_required" = "Device password is required.";
 "add_device.host_or_ip" = "Hostname or IP address";
 "add_device.password" = "Device password";
-"add_device.progress.configuring.message" = "Verifying access and preparing this device. This can take a few seconds...";
+"add_device.progress.configuring.message" = "Verifying access and preparing this device. This can take a few minutes...";
 "add_device.progress.configuring.title" = "Connecting to Apple AirPort device";
 "add_device.progress.discovering.message" = "Browsing for nearby AirPort Bonjour services...";
 "add_device.progress.discovering.title" = "Discovering Apple AirPort devices";
@@ -286,6 +286,7 @@
 "install.warning.awaiting_confirmation" = "The backend is waiting for explicit confirmation.";
 "install.warning.plan_stale" = "Regenerate the plan before installing.";
 "runtime.state.unknown" = "Not installed.";
+"runtime.state.not_installed" = "Not installed.";
 "runtime.state.unhealthy" = "Checkup found runtime problems.";
 "diagnostics.backend_events" = "Backend Events";
 "diagnostics.copied" = "Copied diagnostics.";

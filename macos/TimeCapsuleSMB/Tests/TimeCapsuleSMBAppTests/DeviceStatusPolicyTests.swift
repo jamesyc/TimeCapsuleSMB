@@ -87,6 +87,7 @@ final class DeviceStatusPolicyTests: XCTestCase {
         XCTAssertEqual(status(try makeProfile(), .available), .unchecked)
         XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installedVerified)), .available), .healthy)
         XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installedUnverified, verified: false)), .available), .warning)
+        XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .notInstalled, source: .doctor, verified: false)), .available), .readyToInstall)
         XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installing, verified: nil)), .available), .installing)
         XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installFailed, verified: false)), .available), .failed)
         XCTAssertEqual(status(try makeProfile(runtimeState: testRuntimeState(state: .installInterrupted, verified: nil)), .available), .failed)
@@ -152,6 +153,11 @@ final class DeviceStatusPolicyTests: XCTestCase {
             passwordState: .available,
             activeOperation: nil
         ), .openSMB)
+        XCTAssertEqual(DashboardPrimaryActionPolicy.primaryAction(
+            for: try makeProfile(runtimeState: testRuntimeState(state: .notInstalled, source: .doctor, verified: false)),
+            passwordState: .available,
+            activeOperation: nil
+        ), .installSMB)
     }
 
     private func status(

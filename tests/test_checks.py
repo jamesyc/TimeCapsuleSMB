@@ -480,6 +480,7 @@ class CheckTests(unittest.TestCase):
             run.results[-1].message,
             "deployed payload config not found; please run deploy to install on your device",
         )
+        self.assertEqual(run.results[-1].details["code"], "runtime_not_installed")
         self.assertEqual(debug_fields["deployed_config_present"], False)
         run.mocks.read_deployed_version_conn.assert_not_called()
         managed_smbd.assert_not_called()

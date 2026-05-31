@@ -18,7 +18,7 @@
 "add_device.error.password_required" = "需要设备密码。";
 "add_device.host_or_ip" = "Hostname 或 IP 地址";
 "add_device.password" = "设备密码";
-"add_device.progress.configuring.message" = "正在验证访问权限并准备此设备。这可能需要几秒钟...";
+"add_device.progress.configuring.message" = "正在验证访问权限并准备此设备。这可能需要几分钟...";
 "add_device.progress.configuring.title" = "正在连接 Apple AirPort 设备";
 "add_device.progress.discovering.message" = "正在浏览附近的 AirPort Bonjour 服务...";
 "add_device.progress.discovering.title" = "正在发现 Apple AirPort 设备";
@@ -286,6 +286,7 @@
 "install.warning.awaiting_confirmation" = "后端正在等待明确确认。";
 "install.warning.plan_stale" = "安装前请重新生成计划。";
 "runtime.state.unknown" = "未安装。";
+"runtime.state.not_installed" = "未安装。";
 "runtime.state.unhealthy" = "检查发现运行时问题。";
 "diagnostics.backend_events" = "Backend Events";
 "diagnostics.copied" = "诊断信息已复制。";

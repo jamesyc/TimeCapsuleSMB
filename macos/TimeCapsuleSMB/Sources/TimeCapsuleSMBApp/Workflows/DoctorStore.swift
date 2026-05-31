@@ -37,10 +37,13 @@ struct DoctorCheckGroup: Identifiable, Equatable {
 }
 
 struct DoctorSummary: Equatable {
+    static let runtimeNotInstalledResultCode = "runtime_not_installed"
+
     let passCount: Int
     let warnCount: Int
     let failCount: Int
     let infoCount: Int
+    let runtimeNotInstalled: Bool
     let groups: [DoctorCheckGroup]
 
     init(payload: DoctorPayload) {
@@ -48,11 +51,18 @@ struct DoctorSummary: Equatable {
         self.warnCount = Self.count(status: "WARN", in: payload)
         self.failCount = Self.count(status: "FAIL", in: payload)
         self.infoCount = Self.count(status: "INFO", in: payload)
+        self.runtimeNotInstalled = Self.containsResultCode(Self.runtimeNotInstalledResultCode, in: payload)
         self.groups = Self.group(payload.results)
     }
 
     private static func count(status: String, in payload: DoctorPayload) -> Int {
         payload.counts[status] ?? payload.results.filter { $0.status == status }.count
+    }
+
+    private static func containsResultCode(_ code: String, in payload: DoctorPayload) -> Bool {
+        payload.results.contains { check in
+            check.details.stringValue(for: "code") == code
+        }
     }
 
     private static func group(_ checks: [DoctorCheckPayload]) -> [DoctorCheckGroup] {

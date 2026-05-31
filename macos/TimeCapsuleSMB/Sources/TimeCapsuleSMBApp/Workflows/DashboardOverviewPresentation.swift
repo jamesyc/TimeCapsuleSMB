@@ -439,7 +439,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             return runtimeNotInstalledRow()
         }
         switch runtimeState.state {
-        case .unknown:
+        case .unknown, .notInstalled:
             return runtimeNotInstalledRow()
         case .installing:
             return DashboardHealthRow(
