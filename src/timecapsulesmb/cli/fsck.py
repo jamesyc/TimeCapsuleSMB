@@ -8,6 +8,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, no_input_enabled
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.maintenance import (
     FSCK_REBOOT_NO_DOWN_MESSAGE,
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
@@ -54,8 +55,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if connection.password:
             command_context.start_optional_airport_identity_probe(connection)
 
-        mounted_volumes = command_context.mount_mast_volumes(
+        mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,
+            callbacks=command_context.to_operation_callbacks(),
             wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
             mount_stage="mount_hfs_volumes",
         )

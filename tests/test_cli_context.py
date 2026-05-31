@@ -17,13 +17,6 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import NonInteractivePromptError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import ProbedDeviceState, ProbeResult
-from timecapsulesmb.device.storage import (
-    MaStDiscoveryResult,
-    MaStVolume,
-    PayloadCandidateCheck,
-    PayloadHome,
-    PayloadHomeSelection,
-)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -33,17 +26,6 @@ class CommandContextHelperTests(unittest.TestCase):
 
     def make_connection(self) -> SshConnection:
         return SshConnection("root@10.0.0.2", "pw", "-o foo")
-
-    def make_volume(self, partition_device: str = "dk2") -> MaStVolume:
-        return MaStVolume(
-            "wd0",
-            partition_device,
-            f"/Volumes/{partition_device}",
-            "Data",
-            "12345678-1234-1234-1234-123456789012",
-            True,
-            "hfs",
-        )
 
     def make_supported_compatibility(self) -> DeviceCompatibility:
         return DeviceCompatibility(
@@ -139,93 +121,6 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(context.finish_fields["device_syap"], "119")
         self.assertEqual(context.finish_fields["device_model"], "TimeCapsule8,119")
         self.assertEqual(context.finish_fields["device_os_version"], "NetBSD 6.0 (evbarm)")
-
-    def test_mount_mast_volumes_reads_then_mounts_and_records_debug(self) -> None:
-        context = self.make_context()
-        connection = self.make_connection()
-        mounted_volume = self.make_volume("dk3")
-
-        def mount_with_callback_debug(connection_arg, *, callbacks, wait_seconds, read_stage, mount_stage):
-            callbacks.set_stage(read_stage)
-            callbacks.add_debug_fields(mast_volume_count=1)
-            callbacks.set_stage(mount_stage)
-            callbacks.add_debug_fields(mast_mounted_volume_count=1)
-            return (mounted_volume,)
-
-        with mock.patch(
-            "timecapsulesmb.cli.context.storage_service.mount_mast_volumes_with_diagnostics",
-            side_effect=mount_with_callback_debug,
-        ) as mount_mock:
-            result = context.mount_mast_volumes(connection, wait_seconds=12, mount_stage="mount_hfs_volumes")
-
-        self.assertEqual(result, (mounted_volume,))
-        mount_mock.assert_called_once()
-        self.assertEqual(mount_mock.call_args.args, (connection,))
-        self.assertEqual(mount_mock.call_args.kwargs["wait_seconds"], 12)
-        self.assertEqual(mount_mock.call_args.kwargs["read_stage"], "read_mast")
-        self.assertEqual(mount_mock.call_args.kwargs["mount_stage"], "mount_hfs_volumes")
-        self.assertEqual(context.debug_stage, "mount_hfs_volumes")
-        self.assertEqual(context.debug_fields["mast_volume_count"], 1)
-        self.assertEqual(context.debug_fields["mast_mounted_volume_count"], 1)
-
-    def test_wait_and_select_payload_home_record_storage_diagnostics(self) -> None:
-        context = self.make_context()
-        connection = self.make_connection()
-        volume = self.make_volume("dk2")
-        discovery = MaStDiscoveryResult((volume,), 3, "MaSt=valid")
-        selection = PayloadHomeSelection(
-            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            (PayloadCandidateCheck(volume, True, True),),
-        )
-
-        def wait_with_callback_debug(connection_arg, *, callbacks, attempts, delay_seconds, stage):
-            callbacks.set_stage(stage)
-            callbacks.add_debug_fields(mast_read_attempts=discovery.attempts)
-            return discovery
-
-        with mock.patch(
-            "timecapsulesmb.cli.context.storage_service.wait_for_mast_volumes_with_diagnostics",
-            side_effect=wait_with_callback_debug,
-        ) as wait_mock:
-            result = context.wait_for_mast_volumes(connection, attempts=10, delay_seconds=3)
-        with mock.patch(
-            "timecapsulesmb.cli.context.select_payload_home_with_diagnostics_conn",
-            return_value=selection,
-        ) as select_mock:
-            selected = context.select_payload_home(connection, result.volumes, ".samba4", wait_seconds=7)
-
-        wait_mock.assert_called_once()
-        self.assertEqual(wait_mock.call_args.args, (connection,))
-        self.assertEqual(wait_mock.call_args.kwargs["attempts"], 10)
-        self.assertEqual(wait_mock.call_args.kwargs["delay_seconds"], 3)
-        select_mock.assert_called_once_with(connection, (volume,), ".samba4", wait_seconds=7)
-        self.assertEqual(selected.payload_home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
-        self.assertEqual(context.debug_fields["mast_read_attempts"], 3)
-        self.assertIn("mast_candidate_checks", context.debug_fields)
-        self.assertNotIn("mast_acp_output", context.debug_fields)
-
-    def test_wait_for_mast_volumes_records_raw_acp_output_when_empty(self) -> None:
-        context = self.make_context()
-        connection = self.make_connection()
-        raw_output = "MaSt=[]"
-        discovery = MaStDiscoveryResult((), 10, raw_output)
-
-        def wait_with_empty_debug(connection_arg, *, callbacks, attempts, delay_seconds, stage):
-            callbacks.add_debug_fields(
-                mast_acp_output_chars=len(raw_output),
-                mast_acp_output=raw_output,
-            )
-            return discovery
-
-        with mock.patch(
-            "timecapsulesmb.cli.context.storage_service.wait_for_mast_volumes_with_diagnostics",
-            side_effect=wait_with_empty_debug,
-        ):
-            result = context.wait_for_mast_volumes(connection, attempts=10, delay_seconds=3)
-
-        self.assertEqual(result.volumes, ())
-        self.assertEqual(context.debug_fields["mast_acp_output_chars"], len(raw_output))
-        self.assertEqual(context.debug_fields["mast_acp_output"], raw_output)
 
 
 if __name__ == "__main__":

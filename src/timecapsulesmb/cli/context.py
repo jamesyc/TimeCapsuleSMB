@@ -11,17 +11,12 @@ from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import require_compatibility as require_device_compatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import probe_connection_state, probe_remote_airport_identity_conn
-from timecapsulesmb.device.storage import (
-    payload_candidate_checks_debug_summary,
-    select_payload_home_with_diagnostics_conn,
-)
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
     OperationContext,
 )
-from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.operation import (
@@ -36,7 +31,6 @@ if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.compat import DeviceCompatibility
     from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
-    from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume, PayloadHomeSelection
     from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
@@ -276,80 +270,6 @@ class CommandContext:
             print(message)
             self.fail_with_error(message)
             return None
-
-    def _storage_connection(self, connection: SshConnection | None) -> SshConnection:
-        if connection is not None:
-            return connection
-        if self.connection is None:
-            raise RuntimeError("CommandContext connection is not set.")
-        return self.connection
-
-    def read_mast_volumes(
-        self,
-        connection: SshConnection | None = None,
-        *,
-        stage: str = "read_mast",
-    ) -> tuple[MaStVolume, ...]:
-        connection = self._storage_connection(connection)
-        return storage_service.read_mast_volumes_with_diagnostics(
-            connection,
-            callbacks=self.to_operation_callbacks(),
-            stage=stage,
-        )
-
-    def mount_mast_volumes(
-        self,
-        connection: SshConnection | None = None,
-        *,
-        wait_seconds: int,
-        read_stage: str = "read_mast",
-        mount_stage: str = "mount_mast_volumes",
-    ) -> tuple[MaStVolume, ...]:
-        connection = self._storage_connection(connection)
-        return storage_service.mount_mast_volumes_with_diagnostics(
-            connection,
-            callbacks=self.to_operation_callbacks(),
-            wait_seconds=wait_seconds,
-            read_stage=read_stage,
-            mount_stage=mount_stage,
-        )
-
-    def wait_for_mast_volumes(
-        self,
-        connection: SshConnection | None = None,
-        *,
-        attempts: int,
-        delay_seconds: int,
-        stage: str = "read_mast",
-    ) -> MaStDiscoveryResult:
-        connection = self._storage_connection(connection)
-        return storage_service.wait_for_mast_volumes_with_diagnostics(
-            connection,
-            callbacks=self.to_operation_callbacks(),
-            attempts=attempts,
-            delay_seconds=delay_seconds,
-            stage=stage,
-        )
-
-    def select_payload_home(
-        self,
-        connection: SshConnection | None,
-        mast_volumes: tuple[MaStVolume, ...],
-        payload_dir_name: str,
-        *,
-        wait_seconds: int,
-        stage: str = "select_payload_home",
-    ) -> PayloadHomeSelection:
-        connection = self._storage_connection(connection)
-        self.set_stage(stage)
-        selection = select_payload_home_with_diagnostics_conn(
-            connection,
-            mast_volumes,
-            payload_dir_name,
-            wait_seconds=wait_seconds,
-        )
-        self.add_debug_fields(mast_candidate_checks=payload_candidate_checks_debug_summary(selection.checks))
-        return selection
 
     def resolve_env_connection(
         self,

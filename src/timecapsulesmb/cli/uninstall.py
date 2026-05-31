@@ -19,6 +19,7 @@ from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.maintenance import UNINSTALL_REBOOT_NO_DOWN_MESSAGE as REBOOT_NO_DOWN_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import load_env_config
@@ -72,8 +73,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
             payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{MANAGED_PAYLOAD_DIR_NAME}"]
         else:
-            mounted_volumes = command_context.mount_mast_volumes(
+            mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
                 connection,
+                callbacks=command_context.to_operation_callbacks(),
                 wait_seconds=args.mount_wait,
             )
             volume_roots = [volume.volume_root for volume in mounted_volumes]
