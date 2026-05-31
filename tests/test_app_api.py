@@ -397,7 +397,7 @@ class AppApiTests(unittest.TestCase):
         }
         bundle = SimpleNamespace(manifest=manifest)
 
-        with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
+        with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()):
             with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=object()):
                 with mock.patch("timecapsulesmb.app.ops.flash.backup_flash", return_value=bundle) as backup_mock:
                     rc = service.run_api_request(
@@ -468,7 +468,7 @@ class AppApiTests(unittest.TestCase):
         bundle = SimpleNamespace(manifest=manifest)
 
         with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, object())) as plan_mock:
-            with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", side_effect=AssertionError("plan should not load device config")):
+            with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", side_effect=AssertionError("plan should not load device config")):
                 rc = service.run_api_request(
                     {
                         "operation": "flash",
@@ -592,7 +592,7 @@ class AppApiTests(unittest.TestCase):
             def run(params: dict[str, object]) -> CollectingSink:
                 collector = CollectingSink()
                 with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
-                    with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
+                    with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()):
                         with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
                             with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup") as validate_mock:
                                 with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan") as write_mock:
@@ -682,7 +682,7 @@ class AppApiTests(unittest.TestCase):
             )
 
             with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
-                with mock.patch("timecapsulesmb.app.ops.flash._load_flash_config", return_value=object()):
+                with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()):
                     with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
                         with mock.patch("timecapsulesmb.app.ops.flash.validate_live_target_matches_backup"):
                             with mock.patch("timecapsulesmb.app.ops.flash.write_flash_plan"):

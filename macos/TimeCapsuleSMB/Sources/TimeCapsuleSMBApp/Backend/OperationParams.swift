@@ -10,10 +10,6 @@ struct RepairXattrsOptions: Equatable {
 }
 
 enum OperationParams {
-    private static func rootSSHTarget(_ host: String) -> String {
-        DeviceEndpointPolicy.rootSSHTarget(host)
-    }
-
     static func discover(timeout: Double) -> [String: JSONValue] {
         ["timeout": .number(timeout)]
     }
@@ -29,7 +25,7 @@ enum OperationParams {
 
     static func reachability(profile: DeviceProfile) -> [String: JSONValue] {
         [
-            "ssh_host": .string(rootSSHTarget(profile.host)),
+            "ssh_host": .string(DeviceEndpointPolicy.rootSSHTarget(profile.host)),
             "smb_hosts": .array(SMBAddressPolicy.reachabilityHostCandidates(for: profile).map(JSONValue.string)),
             "tcp_timeout": .number(2),
             "ssh_timeout": .number(8)
@@ -55,7 +51,7 @@ enum OperationParams {
         if let selectedRecord {
             params["selected_record"] = selectedRecord
         } else {
-            params["host"] = .string(rootSSHTarget(host))
+            params["host"] = .string(DeviceEndpointPolicy.rootSSHTarget(host))
         }
         if let internalShareUseDiskRoot {
             params["internal_share_use_disk_root"] = .bool(internalShareUseDiskRoot)
@@ -98,32 +94,6 @@ enum OperationParams {
         ataStandby: Int?,
         mountWait: Double
     ) -> [String: JSONValue] {
-        deployParams(
-            dryRun: dryRun,
-            noReboot: noReboot,
-            noWait: noWait,
-            nbnsEnabled: nbnsEnabled,
-            internalShareUseDiskRoot: internalShareUseDiskRoot,
-            anyProtocol: anyProtocol,
-            debugLogging: debugLogging,
-            ataIdleSeconds: ataIdleSeconds,
-            ataStandby: ataStandby,
-            mountWait: mountWait
-        )
-    }
-
-    private static func deployParams(
-        dryRun: Bool,
-        noReboot: Bool,
-        noWait: Bool,
-        nbnsEnabled: Bool,
-        internalShareUseDiskRoot: Bool,
-        anyProtocol: Bool,
-        debugLogging: Bool,
-        ataIdleSeconds: Int,
-        ataStandby: Int?,
-        mountWait: Double
-    ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
             "dry_run": .bool(dryRun),
             "no_reboot": .bool(noReboot),
@@ -144,10 +114,6 @@ enum OperationParams {
     }
 
     static func uninstallRun(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        uninstallParams(dryRun: dryRun, noReboot: noReboot, noWait: noWait, mountWait: mountWait)
-    }
-
-    private static func uninstallParams(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
         [
             "dry_run": .bool(dryRun),
             "no_reboot": .bool(noReboot),
@@ -157,10 +123,6 @@ enum OperationParams {
     }
 
     static func activateRun(dryRun: Bool) -> [String: JSONValue] {
-        activateParams(dryRun: dryRun)
-    }
-
-    private static func activateParams(dryRun: Bool) -> [String: JSONValue] {
         ["dry_run": .bool(dryRun)]
     }
 

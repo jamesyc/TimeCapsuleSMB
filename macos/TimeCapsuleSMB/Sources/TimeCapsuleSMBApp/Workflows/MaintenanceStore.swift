@@ -278,110 +278,83 @@ final class MaintenanceStore: ObservableObject {
 
     @discardableResult
     func planActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard begin(workflow: .activate) else {
-            let start = activationStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = activationStore.planActivation(password: password, profile: profile)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .activate,
+            rejectAlreadyRunning: { activationStore.rejectAlreadyRunning() },
+            start: { activationStore.planActivation(password: password, profile: profile) }
+        )
     }
 
     @discardableResult
     func runActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard begin(workflow: .activate) else {
-            let start = activationStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = activationStore.runActivation(password: password, profile: profile)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .activate,
+            rejectAlreadyRunning: { activationStore.rejectAlreadyRunning() },
+            start: { activationStore.runActivation(password: password, profile: profile) }
+        )
     }
 
     @discardableResult
     func planUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard begin(workflow: .uninstall) else {
-            let start = uninstallStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = uninstallStore.planUninstall(options: currentOptions, password: password, profile: profile)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .uninstall,
+            rejectAlreadyRunning: { uninstallStore.rejectAlreadyRunning() },
+            start: { uninstallStore.planUninstall(options: currentOptions, password: password, profile: profile) }
+        )
     }
 
     @discardableResult
     func runUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard begin(workflow: .uninstall) else {
-            let start = uninstallStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = uninstallStore.runUninstall(options: currentOptions, password: password, profile: profile)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .uninstall,
+            rejectAlreadyRunning: { uninstallStore.rejectAlreadyRunning() },
+            start: { uninstallStore.runUninstall(options: currentOptions, password: password, profile: profile) }
+        )
     }
 
     @discardableResult
     func refreshFsckTargets(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard begin(workflow: .fsck) else {
-            let start = fsckStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = fsckStore.refreshTargets(mountWaitValue: mountWaitValue, password: password, profile: profile)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .fsck,
+            rejectAlreadyRunning: { fsckStore.rejectAlreadyRunning() },
+            start: { fsckStore.refreshTargets(mountWaitValue: mountWaitValue, password: password, profile: profile) }
+        )
     }
 
     @discardableResult
     func planFsck(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard begin(workflow: .fsck) else {
-            let start = fsckStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = fsckStore.planFsck(options: currentOptions, password: password, profile: profile)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .fsck,
+            rejectAlreadyRunning: { fsckStore.rejectAlreadyRunning() },
+            start: { fsckStore.planFsck(options: currentOptions, password: password, profile: profile) }
+        )
     }
 
     @discardableResult
     func runFsck(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard begin(workflow: .fsck) else {
-            let start = fsckStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = fsckStore.runFsck(options: currentOptions, password: password, profile: profile)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .fsck,
+            rejectAlreadyRunning: { fsckStore.rejectAlreadyRunning() },
+            start: { fsckStore.runFsck(options: currentOptions, password: password, profile: profile) }
+        )
     }
 
     @discardableResult
     func scanRepairXattrs() -> OperationStartResult {
-        guard begin(workflow: .repairXattrs) else {
-            let start = repairXattrsStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = repairXattrsStore.scanRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .repairXattrs,
+            rejectAlreadyRunning: { repairXattrsStore.rejectAlreadyRunning() },
+            start: { repairXattrsStore.scanRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions) }
+        )
     }
 
     @discardableResult
     func runRepairXattrs() -> OperationStartResult {
-        guard begin(workflow: .repairXattrs) else {
-            let start = repairXattrsStore.rejectAlreadyRunning()
-            syncFromWorkflowStores()
-            return start
-        }
-        let start = repairXattrsStore.runRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions)
-        syncFromWorkflowStores()
-        return start
+        startMaintenanceWorkflow(
+            .repairXattrs,
+            rejectAlreadyRunning: { repairXattrsStore.rejectAlreadyRunning() },
+            start: { repairXattrsStore.runRepairXattrs(path: trimmedRepairPath, options: currentRepairOptions) }
+        )
     }
 
     func clear() {
@@ -399,6 +372,16 @@ final class MaintenanceStore: ObservableObject {
     private func begin(workflow: MaintenanceWorkflow) -> Bool {
         selectedWorkflow = workflow
         return !isBusy
+    }
+
+    private func startMaintenanceWorkflow(
+        _ workflow: MaintenanceWorkflow,
+        rejectAlreadyRunning: () -> OperationStartResult,
+        start: () -> OperationStartResult
+    ) -> OperationStartResult {
+        let result = begin(workflow: workflow) ? start() : rejectAlreadyRunning()
+        syncFromWorkflowStores()
+        return result
     }
 
     private var workflowStores: [any MaintenanceWorkflowStore] {

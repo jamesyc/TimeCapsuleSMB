@@ -66,10 +66,6 @@ def _optional_path_param(params: dict[str, object], name: str) -> Path | None:
     return Path(str(value)).expanduser()
 
 
-def _firmware_template_param(params: dict[str, object]) -> Path | None:
-    return _optional_path_param(params, "firmware_template")
-
-
 def _firmware_version_param(params: dict[str, object]) -> str | None:
     value = string_param(params, "firmware_version").strip()
     return value or None
@@ -101,10 +97,6 @@ def _write_reboot_policy(params: dict[str, object], plan_operation: str) -> tupl
     return reboot_after_write, wait_after_reboot
 
 
-def _load_flash_config(params: dict[str, object], context: AppOperationContext) -> AppConfig:
-    return load_request_config(params, context)
-
-
 def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> FlashTarget:
     target = resolve_request_target(config, context, profile="flash", include_probe=False)
     context.stage("check_compatibility")
@@ -124,7 +116,7 @@ def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> Fl
 
 
 def _backup_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    config = _load_flash_config(params, context)
+    config = load_request_config(params, context)
     target = _resolve_flash_target(config, context)
     backup_dir = _optional_path_param(params, "backup_dir")
     context.update_fields(backup_dir=str(backup_dir) if backup_dir is not None else None)
@@ -147,7 +139,7 @@ def _plan_operation(params: dict[str, object], context: AppOperationContext) -> 
     plan_operation = _plan_operation_param(params)
     force = bool_param(params, "force")
     backup_dir = required_path_param(params, "backup_dir")
-    firmware_template = _firmware_template_param(params)
+    firmware_template = _optional_path_param(params, "firmware_template")
     firmware_version = _firmware_version_param(params)
     context.update_fields(
         flash_mode=plan_operation,
@@ -255,7 +247,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
     reboot_after_write, wait_after_reboot = _write_reboot_policy(params, plan_operation)
     force = bool_param(params, "force")
     backup_dir = required_path_param(params, "backup_dir")
-    firmware_template = _firmware_template_param(params)
+    firmware_template = _optional_path_param(params, "firmware_template")
     firmware_version = _firmware_version_param(params)
     context.update_fields(
         flash_mode=plan_operation,
@@ -291,7 +283,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
         )
         return OperationResult(True, flash_write_payload(bundle.manifest))
 
-    config = _load_flash_config(params, context)
+    config = load_request_config(params, context)
     target = _resolve_flash_target(config, context)
     bank = None if plan.target_bank is None else plan.target_bank.name
     context.update_fields(target_bank=bank)
