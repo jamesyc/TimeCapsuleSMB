@@ -19,14 +19,50 @@ def _imports(path: Path) -> set[str]:
     return modules
 
 
-def test_app_layer_does_not_import_cli_layer() -> None:
-    offenders: list[str] = []
-    for path in (SRC_ROOT / "app").rglob("*.py"):
-        for module in _imports(path):
-            if module == "timecapsulesmb.cli" or module.startswith("timecapsulesmb.cli."):
-                offenders.append(f"{path.relative_to(REPO_ROOT)} imports {module}")
+def _matches_prefix(module: str, prefixes: tuple[str, ...]) -> bool:
+    return any(module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes)
 
-    assert offenders == []
+
+def _import_violations(root: Path, forbidden_prefixes: tuple[str, ...]) -> list[str]:
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        for module in _imports(path):
+            if _matches_prefix(module, forbidden_prefixes):
+                offenders.append(f"{path.relative_to(REPO_ROOT)} imports {module}")
+    return sorted(offenders)
+
+
+def test_app_layer_does_not_import_cli_layer() -> None:
+    assert _import_violations(
+        SRC_ROOT / "app",
+        ("timecapsulesmb.cli",),
+    ) == []
+
+
+def test_services_layer_does_not_import_adapters() -> None:
+    assert _import_violations(
+        SRC_ROOT / "services",
+        (
+            "timecapsulesmb.app",
+            "timecapsulesmb.cli",
+        ),
+    ) == []
+
+
+def test_domain_layers_do_not_import_adapters() -> None:
+    offenders: list[str] = []
+    for package in ("core", "device", "deploy"):
+        offenders.extend(
+            _import_violations(
+                SRC_ROOT / package,
+                (
+                    "timecapsulesmb.app",
+                    "timecapsulesmb.cli",
+                ),
+            )
+        )
+
+    assert sorted(offenders) == []
 
 
 def test_deploy_adapters_do_not_import_low_level_deploy_dependencies() -> None:
