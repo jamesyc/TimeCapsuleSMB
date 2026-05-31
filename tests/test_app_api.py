@@ -300,6 +300,7 @@ class AppApiTests(unittest.TestCase):
         collector.sink.stage("deploy", "upload_payload")
         collector.sink.stage("uninstall", "uninstall_payload")
         collector.sink.stage("deploy", "reboot")
+        collector.sink.stage("fsck", "list_fsck_volumes")
 
         stages = collector.events_of_type("stage")
         self.assertEqual(stages[0]["risk"], "local_read")
@@ -308,6 +309,9 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(stages[2]["risk"], "destructive")
         self.assertEqual(stages[3]["risk"], "reboot")
         self.assertIn("description", stages[3])
+        self.assertEqual(stages[4]["risk"], "remote_read")
+        self.assertTrue(stages[4]["cancellable"])
+        self.assertIn("description", stages[4])
 
     def test_contract_builders_keep_stable_representative_shapes(self) -> None:
         deploy_plan = contracts.deploy_plan_payload(

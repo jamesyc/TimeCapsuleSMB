@@ -163,7 +163,7 @@ tc_smbd_fruit_model() {
 tc_generate_smb_conf_from_share_rows() {
     payload_dir=$1
     runtime_share_rows=$2
-    tc_ensure_runtime_identity
+    tc_ensure_runtime_identity || return 1
     if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
         tc_log "smb.conf generation failed: TC_SMB_BIND_INTERFACES is empty"
         return 1

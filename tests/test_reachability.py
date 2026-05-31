@@ -198,6 +198,106 @@ class ReachabilityTests(unittest.TestCase):
         self.assertEqual(ping.call_args.args[0][0], "/sbin/ping6")
         self.assertIn("fd00::2", ping.call_args.args[0])
 
+    def test_endpoint_host_normalizes_urls_ports_ipv6_and_trailing_dots(self) -> None:
+        cases = {
+            "smb://Capsule.local.:445/Data": "capsule.local",
+            "root@Capsule.local.:22": "Capsule.local",
+            "root@[fd00::2]:22": "fd00::2",
+            "[fe80::1%bridge0]:445": "fe80::1",
+            "10.000.000.002:445": "10.0.0.2",
+        }
+
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(reachability.endpoint_host(raw), expected)
+
+    def test_ssh_target_from_params_canonicalizes_url_and_port_inputs(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@fallback.local", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+
+        self.assertEqual(
+            reachability.ssh_target_from_params(config, {"ssh_host": "ssh://admin@Capsule.local.:22"}),
+            "admin@capsule.local",
+        )
+        self.assertEqual(
+            reachability.ssh_target_from_params(config, {"host": "Capsule.local:2222"}),
+            "root@Capsule.local",
+        )
+        self.assertEqual(
+            reachability.ssh_target_from_params(config, {"host": "root@[fd00::2]:22"}),
+            "root@fd00::2",
+        )
+
+    def test_smb_hosts_from_params_dedupes_case_and_ignores_empty_items(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@Capsule.local.", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+
+        hosts = reachability.smb_hosts_from_params(
+            config,
+            {"smb_hosts": ["capsule.local", "", None], "smb_host": "smb://CAPSULE.local:445/Data"},
+            ssh_host="Capsule.local",
+        )
+
+        self.assertEqual(hosts, ["capsule.local"])
+
+    def test_negative_timeout_params_fall_back_to_defaults(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+
+        with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
+            with mock.patch(
+                "timecapsulesmb.services.reachability.subprocess.run",
+                return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
+            ) as ping:
+                with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None) as tcp:
+                    reachability.run_reachability(
+                        config,
+                        {"tcp_timeout": -1, "ssh_timeout": -1},
+                        password="",
+                    )
+
+        self.assertEqual(ping.call_args.kwargs["timeout"], 3.0)
+        self.assertEqual(tcp.call_args.kwargs["timeout"], 2.0)
+
+    def test_ssh_auth_requires_ok_token_even_when_rc_is_zero(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        port_check = reachability.ReachabilityCheck("ssh_port", "PASS", "ok", host="10.0.0.2")
+
+        with mock.patch(
+            "timecapsulesmb.services.reachability.run_ssh",
+            return_value=subprocess.CompletedProcess(["ssh"], 0, stdout="login banner only", stderr=""),
+        ):
+            result = reachability.check_ssh_auth(
+                "root@10.0.0.2",
+                config,
+                password="pw",
+                port_check=port_check,
+                timeout=8,
+            )
+
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.detail, "login banner only")
+
+    def test_ssh_auth_accepts_ok_token_after_login_noise(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        port_check = reachability.ReachabilityCheck("ssh_port", "PASS", "ok", host="10.0.0.2")
+
+        with mock.patch(
+            "timecapsulesmb.services.reachability.run_ssh",
+            return_value=subprocess.CompletedProcess(
+                ["ssh"],
+                0,
+                stdout=f"Last login: today\n{reachability.REACHABILITY_OK_TOKEN}\n",
+                stderr="",
+            ),
+        ):
+            result = reachability.check_ssh_auth(
+                "root@10.0.0.2",
+                config,
+                password="pw",
+                port_check=port_check,
+                timeout=8,
+            )
+
+        self.assertEqual(result.status, "PASS")
+
     def test_app_operation_emits_stages_checks_and_payload(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})

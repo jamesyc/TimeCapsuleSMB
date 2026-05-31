@@ -110,6 +110,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("fsck", "resolve_connection"): StagePolicy(REMOTE_READ, True, "Resolve the configured SSH connection."),
     ("fsck", "read_mast"): StagePolicy(REMOTE_READ, True, "Read mounted HFS volume metadata from MaSt."),
     ("fsck", "mount_hfs_volumes"): StagePolicy(REMOTE_WRITE, False, "Mount HFS volumes before fsck."),
+    ("fsck", "list_fsck_volumes"): StagePolicy(REMOTE_READ, True, "List mounted HFS volumes available for fsck."),
     ("fsck", "select_fsck_volume"): StagePolicy(REMOTE_READ, True, "Select the HFS volume to repair."),
     ("fsck", "run_fsck"): StagePolicy(DESTRUCTIVE, False, "Unmount the selected disk and run fsck_hfs."),
     ("fsck", "wait_for_reboot_down"): StagePolicy(REBOOT, True, "Wait for SSH to go down after fsck reboot."),

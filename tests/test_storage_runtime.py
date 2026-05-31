@@ -4277,6 +4277,53 @@ MaSt = (
         )
         self.assertNotIn(f"cp:{payload}/smbd:{memory}/samba4/sbin/smbd\n", proc.stdout)
 
+    def test_common_generate_smb_conf_propagates_identity_failure_in_conditional_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "Data" / ".samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "smb-conf-identity-failure.sh"
+            share_rows = f"Data\t{volumes}/Data\tdk2\t1\t12345678-1234-1234-1234-123456789012"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    TC_SMB_BIND_INTERFACES="192.168.1.2/24"
+                    SMB_NETBIOS_NAME=TimeCapsule
+                    SMB_SERVER_STRING=TimeCapsule
+                    tc_ensure_runtime_identity() {{
+                        echo identity-failed
+                        return 1
+                    }}
+                    if ! tc_generate_smb_conf_from_share_rows {payload} {shlex.quote(share_rows)}; then
+                        echo status=failed
+                    else
+                        echo status=unexpected-success
+                    fi
+                    if [ -f "$TC_SMBD_CONF" ]; then
+                        echo conf=present
+                    else
+                        echo conf=absent
+                    fi
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("identity-failed\n", proc.stdout)
+        self.assertIn("status=failed\n", proc.stdout)
+        self.assertIn("conf=absent\n", proc.stdout)
+
     def test_common_smb_bind_probe_rejects_invalid_cidr_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
