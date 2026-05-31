@@ -47,7 +47,7 @@ def normalize_volume_selector(selector: str) -> str:
     return selector
 
 
-def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None, *, prompt: bool = True) -> FsckTarget:
+def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None) -> FsckTarget:
     if not targets:
         raise RuntimeError(NO_MOUNTED_HFS_VOLUMES_MESSAGE)
     if selector:
@@ -58,17 +58,7 @@ def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None, *,
         raise RuntimeError(f"HFS volume not found: {selector}")
     if len(targets) == 1:
         return targets[0]
-    if not prompt:
-        raise RuntimeError(MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE)
-
-    print(format_fsck_targets(targets))
-    while True:
-        answer = input("Select a volume to fsck by number: ").strip()
-        if answer.isdigit():
-            index = int(answer)
-            if 1 <= index <= len(targets):
-                return targets[index - 1]
-        print("Please enter a valid volume number.")
+    raise RuntimeError(MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE)
 
 
 def fsck_target_to_jsonable(target: FsckTarget) -> dict[str, object]:

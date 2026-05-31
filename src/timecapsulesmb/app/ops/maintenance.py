@@ -306,7 +306,6 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         target = select_fsck_target(
             targets,
             string_param(params, "volume") or None,
-            prompt=False,
         )
     except RuntimeError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc

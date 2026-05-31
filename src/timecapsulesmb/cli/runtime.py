@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -42,6 +43,10 @@ def add_no_input_argument(parser: argparse.ArgumentParser) -> None:
 
 def no_input_enabled(args: argparse.Namespace | object) -> bool:
     return bool(getattr(args, "no_input", False))
+
+
+def prompt_device_password(prompt: str) -> str:
+    return getpass.getpass(prompt)
 
 
 def add_password_source_arguments(parser: argparse.ArgumentParser) -> None:

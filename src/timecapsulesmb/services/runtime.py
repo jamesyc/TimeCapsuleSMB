@@ -26,6 +26,8 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 from timecapsulesmb.transport.local import tcp_open
 
+PasswordProvider = Callable[[str], str]
+
 
 @dataclass(frozen=True)
 class ManagedTargetState:
@@ -71,6 +73,7 @@ def resolve_ssh_credentials(
     *,
     allow_empty_password: bool = False,
     allow_password_prompt: bool = True,
+    password_provider: PasswordProvider | None = None,
 ) -> tuple[str, str]:
     raw_host = config.require("TC_HOST")
     try:
@@ -79,10 +82,9 @@ def resolve_ssh_credentials(
         raise ConfigError(str(exc)) from exc
     password = config.get("TC_PASSWORD")
     if not password and not allow_empty_password:
-        if not allow_password_prompt:
+        if not allow_password_prompt or password_provider is None:
             raise ConfigError("TC_PASSWORD is required when --no-input is used.")
-        import getpass
-        password = getpass.getpass("Device root password: ")
+        password = password_provider("Device root password: ")
     return host, password
 
 
@@ -92,6 +94,7 @@ def resolve_env_connection(
     required_keys: tuple[str, ...] = (),
     allow_empty_password: bool = False,
     allow_password_prompt: bool = True,
+    password_provider: PasswordProvider | None = None,
 ) -> SshConnection:
     for key in required_keys:
         config.require(key)
@@ -99,6 +102,7 @@ def resolve_env_connection(
         config,
         allow_empty_password=allow_empty_password,
         allow_password_prompt=allow_password_prompt,
+        password_provider=password_provider,
     )
     return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
 
@@ -145,6 +149,7 @@ def resolve_validated_managed_target(
     profile: str,
     include_probe: bool = False,
     allow_password_prompt: bool = True,
+    password_provider: PasswordProvider | None = None,
 ) -> ManagedTargetState:
     require_valid_app_config(config, profile=profile, command_name=command_name)
     resolution_error = ssh_target_link_local_resolution_error(
@@ -154,7 +159,11 @@ def resolve_validated_managed_target(
     )
     if resolution_error is not None:
         raise ConfigError(resolution_error)
-    connection = resolve_env_connection(config, allow_password_prompt=allow_password_prompt)
+    connection = resolve_env_connection(
+        config,
+        allow_password_prompt=allow_password_prompt,
+        password_provider=password_provider,
+    )
     if profile == "flash":
         return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
     probe_state = probe_connection_state(connection) if include_probe else None

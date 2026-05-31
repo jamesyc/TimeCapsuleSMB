@@ -284,6 +284,7 @@ class CommandContext:
             required_keys=required_keys,
             allow_empty_password=allow_empty_password,
             allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
+            password_provider=cli_runtime.prompt_device_password,
         )
         return self.connection
 
@@ -329,6 +330,7 @@ class CommandContext:
             profile=profile,
             include_probe=include_probe,
             allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
+            password_provider=cli_runtime.prompt_device_password,
         )
         return self._apply_managed_target_state(target)
 

@@ -13,13 +13,26 @@ from timecapsulesmb.services.maintenance import (
     FSCK_REBOOT_NO_DOWN_MESSAGE,
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     build_remote_fsck_script,
+    format_fsck_targets,
     fsck_target_from_volume,
+    FsckTarget,
     select_fsck_target,
 )
 from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle
 from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
+
+
+def prompt_fsck_target(targets: tuple[FsckTarget, ...]) -> FsckTarget:
+    print(format_fsck_targets(targets))
+    while True:
+        answer = input("Select a volume to fsck by number: ").strip()
+        if answer.isdigit():
+            index = int(answer)
+            if 1 <= index <= len(targets):
+                return targets[index - 1]
+        print("Please enter a valid volume number.")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -62,12 +75,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             mount_stage="mount_hfs_volumes",
         )
         command_context.set_stage("select_fsck_volume")
+        targets = tuple(fsck_target_from_volume(volume) for volume in mounted_volumes)
         try:
-            target = select_fsck_target(
-                tuple(fsck_target_from_volume(volume) for volume in mounted_volumes),
-                args.volume,
-                prompt=not args.yes and not no_input_enabled(args),
-            )
+            if not args.volume and len(targets) > 1 and not args.yes and not no_input_enabled(args):
+                target = prompt_fsck_target(targets)
+            else:
+                target = select_fsck_target(targets, args.volume)
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
         command_context.update_fields(fsck_device=target.device, fsck_mountpoint=target.mountpoint)
