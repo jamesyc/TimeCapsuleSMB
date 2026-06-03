@@ -68,7 +68,12 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import (
+    SshConnection,
+    local_scp_path,
+    local_scp_supports_legacy_option,
+    scp_upload_transport,
+)
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
@@ -648,6 +653,15 @@ def upload_and_verify_deployment_payload(
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
 
+    def update_scp_upload_telemetry() -> None:
+        scp_path = local_scp_path()
+        callbacks.update(
+            local_scp_path=scp_path or "not_found",
+            local_scp_legacy_option_supported=local_scp_supports_legacy_option(),
+            remote_scp_available=connection.remote_has_scp if connection.remote_has_scp is not None else "unknown",
+            upload_transport=scp_upload_transport(connection),
+        )
+
     callbacks.stage("pre_upload_actions")
     run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
     callbacks.stage("prepare_deployment_files")
@@ -674,6 +688,7 @@ def upload_and_verify_deployment_payload(
         )
         if initial_upload_stage is not None:
             callbacks.stage(initial_upload_stage)
+        update_scp_upload_telemetry()
         if on_before_upload is not None:
             on_before_upload()
         upload_kwargs: dict[str, object] = {
@@ -684,7 +699,10 @@ def upload_and_verify_deployment_payload(
             upload_kwargs["on_uploaded"] = on_uploaded
         if on_uploading is not None:
             upload_kwargs["on_uploading"] = on_uploading
-        upload_payload_func(plan, **upload_kwargs)
+        try:
+            upload_payload_func(plan, **upload_kwargs)
+        finally:
+            update_scp_upload_telemetry()
         if on_after_upload is not None:
             on_after_upload()
 

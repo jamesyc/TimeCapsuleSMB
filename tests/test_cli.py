@@ -5078,6 +5078,29 @@ class CliTests(unittest.TestCase):
         self.assertIn("stage=upload_payload", finished["error"])
         self.assertIn("RuntimeError: scp failed", finished["error"])
 
+    def test_deploy_finished_telemetry_includes_scp_upload_transport(self) -> None:
+        def fake_scp_upload_transport(connection):
+            connection.remote_has_scp = True
+            return "scp_legacy_default"
+
+        with mock.patch("timecapsulesmb.services.deploy.scp_upload_transport", side_effect=fake_scp_upload_transport):
+            with mock.patch("timecapsulesmb.services.deploy.local_scp_path", return_value="/usr/bin/scp"):
+                with mock.patch("timecapsulesmb.services.deploy.local_scp_supports_legacy_option", return_value=False):
+                    result = self.run_deploy_cli(
+                        ["--yes"],
+                        patch_actions=True,
+                        patch_upload=True,
+                        verify_runtime=self.managed_runtime_probe(True),
+                        wait_side_effect=[True, True],
+                    )
+
+        self.assertEqual(result.rc, 0)
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertEqual(finished["local_scp_path"], "/usr/bin/scp")
+        self.assertEqual(finished["local_scp_legacy_option_supported"], False)
+        self.assertEqual(finished["remote_scp_available"], True)
+        self.assertEqual(finished["upload_transport"], "scp_legacy_default")
+
     def test_deploy_netbsd4_dry_run_json_outputs_activation_plan(self) -> None:
         result = self.run_deploy_cli(
             ["--dry-run", "--json"],

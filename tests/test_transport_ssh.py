@@ -29,9 +29,13 @@ class DecodeTrapBytes(bytes):
 class SSHTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
+        ssh_transport.local_scp_path.cache_clear()
+        ssh_transport.local_scp_supports_legacy_option.cache_clear()
 
     def tearDown(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
+        ssh_transport.local_scp_path.cache_clear()
+        ssh_transport.local_scp_supports_legacy_option.cache_clear()
 
     def missing_pexpect_import(self, name: str, *args: object, **kwargs: object) -> object:
         if name == "pexpect":
@@ -712,6 +716,75 @@ class SSHTransportTests(unittest.TestCase):
 
         cmd = spawn_mock.call_args.args[0]
         self.assertEqual(cmd[-1], "root@[fdbb:5737:6e53:9bf7:82ea:96ff:fee6:5868]:/tmp/test-upload")
+
+    def test_local_scp_supports_legacy_option_when_option_is_accepted(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/scp"):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh.subprocess.run",
+                return_value=subprocess.CompletedProcess(["scp", "-O"], 1, stdout="", stderr="usage: scp [-346ABCOpqRrsTv]\n"),
+            ) as run_mock:
+                self.assertTrue(ssh_transport.local_scp_supports_legacy_option())
+                self.assertTrue(ssh_transport.local_scp_supports_legacy_option())
+
+        run_mock.assert_called_once_with(
+            ["/usr/bin/scp", "-O"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+
+    def test_local_scp_rejects_legacy_option_when_option_is_illegal(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/usr/bin/scp"):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh.subprocess.run",
+                return_value=subprocess.CompletedProcess(["scp", "-O"], 1, stdout="", stderr="scp: illegal option -- O\n"),
+            ):
+                self.assertFalse(ssh_transport.local_scp_supports_legacy_option())
+
+    def test_scp_upload_transport_reports_pending_without_remote_probe(self) -> None:
+        connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.transport.ssh.probe_remote_scp_available", side_effect=AssertionError("should not probe")):
+            self.assertEqual(ssh_transport.scp_upload_transport(connection), "remote_scp_probe_pending")
+        self.assertIsNone(connection.remote_has_scp)
+
+    def test_run_scp_includes_legacy_option_when_local_scp_supports_it(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=True)
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh.local_scp_path", return_value="scp"):
+                    with mock.patch("timecapsulesmb.transport.ssh.local_scp_supports_legacy_option", return_value=True):
+                        with mock.patch("timecapsulesmb.transport.ssh._verify_remote_size"):
+                            with mock.patch(
+                                "timecapsulesmb.transport.ssh._spawn_with_password",
+                                return_value=(0, ""),
+                            ) as spawn_mock:
+                                ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+
+        cmd = spawn_mock.call_args.args[0]
+        self.assertEqual(cmd[:2], ["scp", "-O"])
+
+    def test_run_scp_omits_legacy_option_when_local_scp_rejects_it(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=True)
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh.local_scp_path", return_value="scp"):
+                    with mock.patch("timecapsulesmb.transport.ssh.local_scp_supports_legacy_option", return_value=False):
+                        with mock.patch("timecapsulesmb.transport.ssh._verify_remote_size"):
+                            with mock.patch(
+                                "timecapsulesmb.transport.ssh._spawn_with_password",
+                                return_value=(0, ""),
+                            ) as spawn_mock:
+                                ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+
+        cmd = spawn_mock.call_args.args[0]
+        self.assertEqual(cmd[0], "scp")
+        self.assertNotIn("-O", cmd)
 
     def test_run_scp_cat_fallback_timeout_reports_remote_destination(self) -> None:
         with NamedTemporaryFile() as tmp:

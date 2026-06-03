@@ -395,6 +395,41 @@ def ensure_remote_scp_capability(connection: SshConnection) -> bool:
     return connection.remote_has_scp
 
 
+@lru_cache(maxsize=None)
+def local_scp_path() -> str | None:
+    return find_command("scp")
+
+
+@lru_cache(maxsize=None)
+def local_scp_supports_legacy_option() -> bool:
+    scp = local_scp_path()
+    if scp is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [scp, "-O"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+    return "illegal option" not in output and "unknown option" not in output and "invalid option" not in output
+
+
+def scp_upload_transport(connection: SshConnection) -> str:
+    if connection.remote_has_scp is None:
+        return "remote_scp_probe_pending"
+    if not connection.remote_has_scp:
+        return "ssh_cat_fallback"
+    if local_scp_supports_legacy_option():
+        return "scp_legacy_option"
+    return "scp_legacy_default"
+
+
 def _scp_remote_target(connection_host: str, dest: str) -> str:
     user_prefix = ""
     host = connection_host
@@ -433,7 +468,15 @@ def _verify_remote_size(connection: SshConnection, src: Path, dest: str, *, time
 
 def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
     if ensure_remote_scp_capability(connection):
-        cmd = ["scp", "-O", *_normalize_ssh_tokens(connection.ssh_opts), str(src), _scp_remote_target(connection.host, dest)]
+        scp = local_scp_path() or "scp"
+        legacy_option = ["-O"] if local_scp_supports_legacy_option() else []
+        cmd = [
+            scp,
+            *legacy_option,
+            *_normalize_ssh_tokens(connection.ssh_opts),
+            str(src),
+            _scp_remote_target(connection.host, dest),
+        ]
         rc = 1
         stdout = ""
         for attempt in range(3):
