@@ -2635,6 +2635,144 @@ MaSt = (
         )
         self.assertIn("manager smbd recovery: smbd config reload failed; restarting", log_text)
 
+    def test_manager_resets_ram_runtime_and_retries_staging_on_next_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("NBNS_ENABLED=1\n")
+            stale_file = memory / "samba4/stale-runtime-file"
+            stale_file.parent.mkdir(parents=True)
+            stale_file.write_text("stale\n")
+            events = tmp_path / "events"
+            stage_count = tmp_path / "stage-count"
+            sleep_count = tmp_path / "sleep-count"
+            smbd_state = tmp_path / "smbd-state"
+            nbns_state = tmp_path / "nbns-state"
+            smbd_state.write_text("running\n")
+            nbns_state.write_text("running\n")
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_find_payload_nbns() {{ return 1; }}
+                    tc_stage_runtime() {{
+                        count=$(/bin/cat {shlex.quote(str(stage_count))} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{shlex.quote(str(stage_count))}
+                        echo "stage:$count" >>{shlex.quote(str(events))}
+                        if [ "$count" -eq 1 ]; then
+                            return 1
+                        fi
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        {{
+                            echo '#!/bin/sh'
+                            echo "printf 'running\\\\n' >{shlex.quote(str(smbd_state))}"
+                            echo "printf 'launched\\\\n' >>{shlex.quote(str(events))}"
+                            echo 'exit 0'
+                        }} >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        : >"$RAM_PRIVATE/smbpasswd"
+                        : >"$RAM_PRIVATE/username.map"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ] ;;
+                            nbns-advertiser) [ "$(/bin/cat {shlex.quote(str(nbns_state))})" = "running" ] ;;
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ]; }}
+                    wait_for_process() {{
+                        case "$1" in
+                            smbd) [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ] ;;
+                            *) return 0 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    tc_nbns_bound_udp_137() {{ [ "$(/bin/cat {shlex.quote(str(nbns_state))})" = "running" ]; }}
+                    stop_runtime_process_by_ucomm() {{
+                        echo "stop $1" >>{shlex.quote(str(events))}
+                        case "$1" in
+                            smbd) printf 'stopped\\n' >{shlex.quote(str(smbd_state))} ;;
+                            nbns-advertiser) printf 'stopped\\n' >{shlex.quote(str(nbns_state))} ;;
+                        esac
+                    }}
+                    tc_manager_reconcile_nbns() {{
+                        echo nbns-reconcile >>{shlex.quote(str(events))}
+                        printf 'running\\n' >{shlex.quote(str(nbns_state))}
+                        return 0
+                    }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(sleep_count))}
+                                echo "sleep:$count" >>{shlex.quote(str(events))}
+                                if [ "$count" -eq 1 ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status samba=$manager_samba_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            stage_count_text = stage_count.read_text().strip()
+            sleep_count_text = sleep_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0 samba=ok\n", proc.stdout)
+        self.assertEqual(stage_count_text, "2")
+        self.assertEqual(sleep_count_text, "2")
+        self.assertFalse(stale_file.exists())
+        self.assertIn(
+            "stage:1\nstop smbd\nstop nbns-advertiser\nnbns-reconcile\nstop mdns-advertiser\nsleep:1\nstage:2\n",
+            events_text,
+        )
+        self.assertIn("launched\n", events_text)
+        self.assertIn("manager Samba runtime file staging failed status=1; resetting RAM runtime before next manager pass", log_text)
+        self.assertIn("manager Samba staging recovery: RAM runtime reset complete", log_text)
+        self.assertIn("manager Samba runtime file staging will retry on next manager pass after RAM runtime reset", log_text)
+        self.assertIn("manager Samba runtime file staging complete", log_text)
+
     def test_manager_smbd_apply_failure_logs_runtime_reason_without_ip_defer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4276,6 +4414,153 @@ MaSt = (
             rf"mv:{memory}/samba4/sbin/smbd\.tmp\.[0-9]+:{memory}/samba4/sbin/smbd",
         )
         self.assertNotIn(f"cp:{payload}/smbd:{memory}/samba4/sbin/smbd\n", proc.stdout)
+
+    def test_common_stage_runtime_logs_executable_copy_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("payload smbd\n")
+            (payload / "smbd").chmod(0o755)
+            (payload / "private/smbpasswd").write_text("admin:x\n")
+            (payload / "private/username.map").write_text("admin = root\n")
+            script = tmp_path / "stage-runtime-copy-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    cp() {{
+                        case "$1" in
+                            {payload}/smbd) return 7 ;;
+                        esac
+                        /bin/cp "$1" "$2"
+                    }}
+                    if tc_stage_runtime {payload} {payload}/smbd ""; then
+                        echo unexpected-success
+                    else
+                        echo "status=$?"
+                    fi
+                    /bin/cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=7\n", proc.stdout)
+        self.assertIn(
+            f"Samba runtime staging failed: copy executable failed: {payload}/smbd -> {memory}/samba4/sbin/smbd.tmp.",
+            proc.stdout,
+        )
+        self.assertIn("status=7", proc.stdout)
+        self.assertIn("runtime storage diagnostic:", proc.stdout)
+        self.assertEqual(list((memory / "samba4/sbin").glob("smbd.tmp.*")), [])
+
+    def test_common_stage_runtime_logs_private_copy_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("payload smbd\n")
+            (payload / "smbd").chmod(0o755)
+            (payload / "private/smbpasswd").write_text("admin:x\n")
+            (payload / "private/username.map").write_text("admin = root\n")
+            script = tmp_path / "stage-runtime-private-copy-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    cp() {{
+                        case "$1" in
+                            {payload}/private/username.map) return 8 ;;
+                        esac
+                        /bin/cp "$1" "$2"
+                    }}
+                    if tc_stage_runtime {payload} {payload}/smbd ""; then
+                        echo unexpected-success
+                    else
+                        echo "status=$?"
+                    fi
+                    /bin/cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=8\n", proc.stdout)
+        self.assertIn(
+            f"Samba runtime staging failed: copy private file failed: {payload}/private/username.map ->",
+            proc.stdout,
+        )
+        self.assertIn("status=8", proc.stdout)
+        self.assertIn("runtime storage diagnostic:", proc.stdout)
+
+    def test_common_stage_runtime_logs_private_chmod_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("payload smbd\n")
+            (payload / "smbd").chmod(0o755)
+            (payload / "private/smbpasswd").write_text("admin:x\n")
+            (payload / "private/username.map").write_text("admin = root\n")
+            script = tmp_path / "stage-runtime-private-chmod-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    chmod() {{
+                        case "$*" in
+                            600*) return 9 ;;
+                        esac
+                        /bin/chmod "$@"
+                    }}
+                    if tc_stage_runtime {payload} {payload}/smbd ""; then
+                        echo unexpected-success
+                    else
+                        echo "status=$?"
+                    fi
+                    /bin/cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=9\n", proc.stdout)
+        self.assertIn(
+            f"Samba runtime staging failed: chmod private files failed: {memory}/samba4/private/smbpasswd {memory}/samba4/private/username.map status=9",
+            proc.stdout,
+        )
+        self.assertIn("runtime storage diagnostic:", proc.stdout)
 
     def test_common_generate_smb_conf_propagates_identity_failure_in_conditional_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

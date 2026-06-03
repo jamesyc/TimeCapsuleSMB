@@ -95,26 +95,63 @@ tc_prepare_runtime_log_file() {
     tc_trim_log_file_if_needed "$log_path" "$max_bytes"
 }
 
+tc_log_runtime_storage_diagnostic() {
+    diagnostic_path=${1:-$RAM_ROOT}
+    diagnostic_output=$(/bin/df -k "$diagnostic_path" 2>/dev/null || /bin/df -k /mnt/Memory 2>/dev/null || true)
+
+    if [ -z "$diagnostic_output" ]; then
+        tc_log "runtime storage diagnostic: df unavailable for $diagnostic_path"
+        return 0
+    fi
+
+    while IFS= read -r diagnostic_line || [ -n "$diagnostic_line" ]; do
+        [ -n "$diagnostic_line" ] || continue
+        tc_log "runtime storage diagnostic: $diagnostic_line"
+    done <<EOF
+$diagnostic_output
+EOF
+}
+
 tc_stage_runtime_executable() {
     executable_src=$1
     executable_dest=$2
     executable_tmp="$executable_dest.tmp.$$"
 
+    if [ ! -x "$executable_src" ]; then
+        tc_log "Samba runtime staging failed: source executable is missing or not executable: $executable_src"
+        return 1
+    fi
+
     rm -f "$executable_tmp" >/dev/null 2>&1 || true
     # Copy through a same-directory temporary file so a failed copy cannot
     # truncate the executable path that a running daemon may still need.
-    cp "$executable_src" "$executable_tmp" || {
+    if cp "$executable_src" "$executable_tmp"; then
+        :
+    else
+        executable_status=$?
+        tc_log "Samba runtime staging failed: copy executable failed: $executable_src -> $executable_tmp status=$executable_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
         rm -f "$executable_tmp" >/dev/null 2>&1 || true
-        return 1
-    }
-    chmod 755 "$executable_tmp" || {
+        return "$executable_status"
+    fi
+    if chmod 755 "$executable_tmp"; then
+        :
+    else
+        executable_status=$?
+        tc_log "Samba runtime staging failed: chmod executable temp failed: $executable_tmp status=$executable_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
         rm -f "$executable_tmp" >/dev/null 2>&1 || true
-        return 1
-    }
-    mv "$executable_tmp" "$executable_dest" || {
+        return "$executable_status"
+    fi
+    if mv "$executable_tmp" "$executable_dest"; then
+        :
+    else
+        executable_status=$?
+        tc_log "Samba runtime staging failed: rename executable temp failed: $executable_tmp -> $executable_dest status=$executable_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
         rm -f "$executable_tmp" >/dev/null 2>&1 || true
-        return 1
-    }
+        return "$executable_status"
+    fi
 }
 
 tc_stage_runtime() {
@@ -126,12 +163,26 @@ tc_stage_runtime() {
 
     for required_file in smbpasswd username.map; do
         if [ ! -f "$payload_dir/private/$required_file" ]; then
-            tc_log "required Samba private file missing: $payload_dir/private/$required_file"
+            tc_log "Samba runtime staging failed: required private file missing: $payload_dir/private/$required_file"
             return 1
         fi
-        cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file" || return 1
+        if cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file"; then
+            :
+        else
+            private_status=$?
+            tc_log "Samba runtime staging failed: copy private file failed: $payload_dir/private/$required_file -> $RAM_PRIVATE/$required_file status=$private_status"
+            tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+            return "$private_status"
+        fi
     done
-    chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map" || return 1
+    if chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map"; then
+        :
+    else
+        private_status=$?
+        tc_log "Samba runtime staging failed: chmod private files failed: $RAM_PRIVATE/smbpasswd $RAM_PRIVATE/username.map status=$private_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+        return "$private_status"
+    fi
     tc_log "staged Samba auth files into RAM private directory"
 
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then

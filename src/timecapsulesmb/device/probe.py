@@ -1823,6 +1823,58 @@ done
     return proc.stdout.strip()
 
 
+def read_runtime_ram_diagnostics_conn(connection: SshConnection) -> str:
+    script = rf'''
+RUNTIME_RAM_ROOT={RUNTIME_RAM_ROOT}
+RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
+RUNTIME_RAM_ETC="$RUNTIME_RAM_ROOT/etc"
+RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
+RUNTIME_RAM_VAR="$RUNTIME_RAM_ROOT/var"
+
+echo "df /mnt/Memory:"
+/bin/df -k /mnt/Memory 2>&1 || true
+echo "runtime paths:"
+for runtime_path in \
+    "$RUNTIME_RAM_ROOT" \
+    "$RUNTIME_RAM_SBIN" \
+    "$RUNTIME_RAM_ETC" \
+    "$RUNTIME_RAM_PRIVATE" \
+    "$RUNTIME_RAM_VAR" \
+    "$RUNTIME_RAM_SBIN/smbd" \
+    $RUNTIME_RAM_SBIN/smbd.tmp.* \
+    "$RUNTIME_RAM_SBIN/nbns-advertiser" \
+    "$RUNTIME_RAM_PRIVATE/smbpasswd" \
+    "$RUNTIME_RAM_PRIVATE/username.map" \
+    "$RUNTIME_RAM_ETC/smb.conf"
+do
+    case "$runtime_path" in
+        *"*"*) continue ;;
+    esac
+    if [ -e "$runtime_path" ]; then
+        /bin/ls -ldn "$runtime_path" 2>&1 || true
+    else
+        echo "missing $runtime_path"
+    fi
+done
+'''
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    parts = []
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    if stdout:
+        parts.append(stdout)
+    if stderr:
+        parts.append(f"stderr: {stderr}")
+    if proc.returncode != 0:
+        parts.append(f"(exit {proc.returncode})")
+    return _limit_remote_log_tail("\n".join(parts) if parts else "(empty)")
+
+
 def probe_paths_absent_conn(
     connection: SshConnection,
     paths: Iterable[str],

@@ -815,6 +815,79 @@ tc_manager_samba_runtime_files_missing() {
     return 1
 }
 
+tc_manager_backup_log_for_runtime_reset() {
+    TC_MANAGER_RESET_LOG_BACKUP=
+
+    if [ ! -f "$TC_LOG_FILE" ]; then
+        return 0
+    fi
+
+    TC_MANAGER_RESET_LOG_BACKUP="$RAM_ROOT.manager.log.$$"
+    rm -f "$TC_MANAGER_RESET_LOG_BACKUP" >/dev/null 2>&1 || true
+    if cp "$TC_LOG_FILE" "$TC_MANAGER_RESET_LOG_BACKUP" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    TC_MANAGER_RESET_LOG_BACKUP=
+    return 0
+}
+
+tc_manager_restore_log_after_runtime_reset() {
+    if [ -z "${TC_MANAGER_RESET_LOG_BACKUP:-}" ]; then
+        return 0
+    fi
+    if [ ! -f "$TC_MANAGER_RESET_LOG_BACKUP" ]; then
+        TC_MANAGER_RESET_LOG_BACKUP=
+        return 0
+    fi
+
+    tc_ensure_parent_dir "$TC_LOG_FILE"
+    cp "$TC_MANAGER_RESET_LOG_BACKUP" "$TC_LOG_FILE" >/dev/null 2>&1 || true
+    rm -f "$TC_MANAGER_RESET_LOG_BACKUP" >/dev/null 2>&1 || true
+    TC_MANAGER_RESET_LOG_BACKUP=
+}
+
+tc_manager_reset_samba_runtime_after_stage_failure() {
+    reset_status=0
+
+    tc_log "manager Samba staging recovery: resetting RAM runtime after staging failure"
+    if runtime_process_present_by_ucomm smbd; then
+        tc_log "manager Samba staging recovery: stopping smbd before RAM runtime reset"
+        stop_runtime_process_by_ucomm "smbd" smbd || reset_status=1
+    fi
+    if tc_nbns_enabled && runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
+        tc_log "manager Samba staging recovery: stopping nbns responder before RAM runtime reset"
+        stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || reset_status=1
+    fi
+
+    if [ "$reset_status" -ne 0 ]; then
+        tc_log "manager Samba staging recovery: process cleanup failed; refusing to delete $RAM_ROOT"
+        return 1
+    fi
+
+    # manager.log lives under RAM_ROOT, so preserve it around the reset long
+    # enough for doctor to report the staging failure that triggered recovery.
+    tc_manager_backup_log_for_runtime_reset
+    rm -rf "$RAM_ROOT" || reset_status=1
+    tc_prepare_ram_root || reset_status=1
+    tc_manager_restore_log_after_runtime_reset
+
+    if [ "$reset_status" -ne 0 ]; then
+        tc_log "manager Samba staging recovery: RAM runtime reset failed"
+        return 1
+    fi
+
+    TC_MANAGER_RUNTIME_STAGED=0
+    TC_MANAGER_LAST_BINARY_SIGNATURE=
+    TC_MANAGER_LAST_CONFIG_SIGNATURE=
+    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
+    TC_MANAGER_SMBD_RESTART_REQUIRED=0
+    TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+    TC_MANAGER_SMBD_APPLY_FAILURE=
+    tc_manager_materialize_adisk_state || return 1
+    tc_log "manager Samba staging recovery: RAM runtime reset complete"
+}
+
 tc_manager_stage_samba_runtime_files_if_needed() {
     if ! tc_manager_select_samba_sources; then
         return 1
@@ -838,7 +911,17 @@ tc_manager_stage_samba_runtime_files_if_needed() {
     fi
 
     tc_log "manager Samba runtime file staging required"
-    tc_stage_runtime "$manager_payload_dir" "$manager_smbd_src" "$manager_nbns_src" || return 1
+    if tc_stage_runtime "$manager_payload_dir" "$manager_smbd_src" "$manager_nbns_src"; then
+        :
+    else
+        stage_status=$?
+        tc_log "manager Samba runtime file staging failed status=$stage_status; resetting RAM runtime before next manager pass"
+        if ! tc_manager_reset_samba_runtime_after_stage_failure; then
+            return "$stage_status"
+        fi
+        tc_log "manager Samba runtime file staging will retry on next manager pass after RAM runtime reset"
+        return "$stage_status"
+    fi
     TC_MANAGER_LAST_BINARY_SIGNATURE=$fresh_binary_signature
     TC_MANAGER_RUNTIME_STAGED=1
     tc_log "manager Samba runtime file staging complete"

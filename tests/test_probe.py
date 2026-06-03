@@ -19,6 +19,7 @@ from timecapsulesmb.device.probe import (
     read_deployed_version_conn,
     probe_remote_interface_conn,
     read_remote_network_diagnostics_conn,
+    read_runtime_ram_diagnostics_conn,
     read_runtime_payload_dir_conn,
     read_runtime_log_tails_conn,
     runtime_ram_root_present_conn,
@@ -217,6 +218,23 @@ class ProbeTests(unittest.TestCase):
         self.assertIn('capture_fstat_for_ucomm "$ps_out" "$proc_name"', args[1])
         self.assertIn("for proc_name in smbd nbns-advertiser", args[1])
         self.assertIn("/internet/p", args[1])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def test_read_runtime_ram_diagnostics_conn_reports_stage_paths_and_tmp_files(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        stdout = "df /mnt/Memory:\nFilesystem 1K-blocks Used Avail Capacity Mounted on\nruntime paths:\nmissing /mnt/Memory/samba4/sbin/smbd\n"
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=stdout, stderr="")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = read_runtime_ram_diagnostics_conn(connection)
+
+        self.assertEqual(result, stdout.strip())
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertIn("/bin/df -k /mnt/Memory", args[1])
+        self.assertIn("$RUNTIME_RAM_SBIN/smbd.tmp.*", args[1])
+        self.assertIn("$RUNTIME_RAM_PRIVATE/smbpasswd", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
 

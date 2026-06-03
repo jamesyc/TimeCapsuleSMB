@@ -1609,6 +1609,7 @@ class CheckTests(unittest.TestCase):
             "remote_rc_local_log_tail": "rc log",
             "remote_mdns_log_tail": "mdns log",
         })
+        ram_diagnostics_mock = mock.Mock(return_value="df /mnt/Memory:\nruntime paths:\nmissing /mnt/Memory/samba4/sbin/smbd")
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             smb_port=mock.Mock(status="PASS", message="445 ok"),
@@ -1618,13 +1619,18 @@ class CheckTests(unittest.TestCase):
             mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
-            extra_patches={"timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": log_tail_mock},
+            extra_patches={
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": log_tail_mock,
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": ram_diagnostics_mock,
+            },
         )
         self.assertTrue(run.fatal)
         self.assertTrue(any("managed mDNS takeover is not active" in result.message for result in run.results))
         self.assertEqual(debug_fields["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(debug_fields["remote_mdns_log_tail"], "mdns log")
+        self.assertEqual(debug_fields["remote_runtime_ram_diagnostics"], ram_diagnostics_mock.return_value)
         log_tail_mock.assert_called_once()
+        ram_diagnostics_mock.assert_called_once()
 
     def test_run_doctor_checks_adds_mast_probe_for_xattr_parent_missing(self) -> None:
         debug_fields: dict[str, object] = {}

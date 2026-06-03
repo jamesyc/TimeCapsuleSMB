@@ -4,7 +4,11 @@ from collections.abc import Iterable
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.doctor_state import DoctorSink, DoctorTarget, RemoteAccess
-from timecapsulesmb.device.probe import read_remote_service_socket_diagnostics_conn, read_runtime_log_tails_conn
+from timecapsulesmb.device.probe import (
+    read_remote_service_socket_diagnostics_conn,
+    read_runtime_log_tails_conn,
+    read_runtime_ram_diagnostics_conn,
+)
 from timecapsulesmb.device.storage import mast_probe_debug_summary, probe_mast_diagnostics_conn
 from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 
@@ -81,3 +85,7 @@ def _doctor_add_mast_probe_on_disk_failure(target: DoctorTarget, remote: RemoteA
 def _doctor_add_fatal_runtime_log_tails(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
     if sink.fatal() and sink.debug_fields is not None and remote.remote_checks_enabled:
         sink.debug_fields.update(read_runtime_log_tails_conn(target.connection))
+        try:
+            sink.debug_fields["remote_runtime_ram_diagnostics"] = read_runtime_ram_diagnostics_conn(target.connection)
+        except Exception as e:
+            sink.debug_fields["remote_runtime_ram_diagnostics_error"] = f"{type(e).__name__}: {e}"
