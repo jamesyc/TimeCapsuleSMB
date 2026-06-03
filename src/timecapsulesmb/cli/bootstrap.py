@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,9 @@ REQUIREMENTS = REPO_ROOT / "requirements.txt"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 MACOS_SSHPASS_FORMULA = "sshpass"
 REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
+MIN_BOOTSTRAP_PYTHON = (3, 9)
+MIN_MACOS_AUTO_HOST_TOOL_INSTALL = (14, 0)
+PYTHON_VERSION_PROBE = "import sys; print('%d.%d.%d' % sys.version_info[:3])"
 MACOS_HOST_TOOL_PACKAGES = {
     "sshpass": MACOS_SSHPASS_FORMULA,
     "smbclient": "samba",
@@ -36,6 +40,12 @@ COMMAND_OUTPUT_ERROR_LIMIT = 8192
 
 class BootstrapError(Exception):
     pass
+
+
+class BootstrapPreflightError(BootstrapError):
+    def __init__(self, message: str, fields: dict[str, object]) -> None:
+        self.fields = fields
+        super().__init__(message)
 
 
 class BootstrapCommandError(Exception):
@@ -97,6 +107,146 @@ def current_platform_label() -> str:
     if sys.platform.startswith("linux"):
         return "Linux"
     return sys.platform
+
+
+def _format_version_tuple(version: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _parse_version_prefix(value: str) -> tuple[int, ...] | None:
+    parts: list[int] = []
+    for raw_part in value.strip().split("."):
+        digits = ""
+        for char in raw_part:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts) if parts else None
+
+
+def _version_at_least(version: tuple[int, ...], minimum: tuple[int, ...]) -> bool:
+    width = max(len(version), len(minimum))
+    padded_version = version + (0,) * (width - len(version))
+    padded_minimum = minimum + (0,) * (width - len(minimum))
+    return padded_version >= padded_minimum
+
+
+def detect_selected_python_version(python: str) -> str:
+    try:
+        proc = subprocess.run(
+            [python, "-c", PYTHON_VERSION_PROBE],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise BootstrapError(f"Selected Python could not be run: {python}: {exc}") from exc
+
+    if proc.returncode != 0:
+        message = f"Selected Python could not report its version: {python} (exit code {proc.returncode})"
+        output = _format_command_output("stderr", proc.stderr or "")
+        if output is None:
+            output = _format_command_output("stdout", proc.stdout or "")
+        if output is not None:
+            message = f"{message}\n\n{output}"
+        raise BootstrapError(message)
+
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        raise BootstrapError(f"Selected Python did not print a version: {python}")
+    return lines[-1]
+
+
+def validate_selected_python(python: str) -> str:
+    version = detect_selected_python_version(python)
+    parsed = _parse_version_prefix(version)
+    minimum = _format_version_tuple(MIN_BOOTSTRAP_PYTHON)
+    if parsed is None:
+        raise BootstrapError(f"Selected Python printed an unreadable version: {python}: {version}")
+    if not _version_at_least(parsed, MIN_BOOTSTRAP_PYTHON):
+        raise BootstrapError(
+            f"TimeCapsuleSMB bootstrap requires Python {minimum} or newer. "
+            f"Selected Python {python} is {version}. "
+            f"Rerun './tcapsule bootstrap --python /path/to/python{minimum}' with a newer Python."
+        )
+    print(f"Selected Python: {python} ({version})", flush=True)
+    return version
+
+
+def detect_macos_product_version() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["sw_vers", "-productVersion"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        version = proc.stdout.strip()
+        if version:
+            return version
+    return platform.mac_ver()[0] or None
+
+
+def _required_host_tool_paths() -> dict[str, str | None]:
+    return {tool: find_command(tool) for tool in REQUIRED_HOST_TOOLS}
+
+
+def _missing_tools_from_paths(paths: dict[str, str | None]) -> list[str]:
+    return [tool for tool in REQUIRED_HOST_TOOLS if paths.get(tool) is None]
+
+
+def _print_host_tool_status(paths: dict[str, str | None]) -> None:
+    for tool in REQUIRED_HOST_TOOLS:
+        path = paths.get(tool)
+        if path:
+            print(f"Found {tool}: {path}", flush=True)
+        else:
+            print(f"Missing {tool}", flush=True)
+
+
+def check_macos_host_tool_install_support(platform_label: str) -> dict[str, object]:
+    if platform_label != "macOS":
+        return {}
+
+    macos_version = detect_macos_product_version()
+    parsed = _parse_version_prefix(macos_version) if macos_version else None
+    auto_install_supported = parsed is not None and _version_at_least(parsed, MIN_MACOS_AUTO_HOST_TOOL_INSTALL)
+    paths = _required_host_tool_paths()
+    missing_tools = _missing_tools_from_paths(paths)
+    fields: dict[str, object] = {
+        "host_os_version": macos_version or "unknown",
+        "macos_auto_host_tool_install_supported": auto_install_supported,
+        "missing_host_tools": _format_tools(missing_tools),
+        "smbclient_path": paths.get("smbclient"),
+        "sshpass_path": paths.get("sshpass"),
+    }
+    if auto_install_supported:
+        return fields
+
+    print(f"Detected macOS version: {macos_version or 'unknown'}", flush=True)
+    _print_host_tool_status(paths)
+    if not missing_tools:
+        return fields
+
+    minimum = _format_version_tuple(MIN_MACOS_AUTO_HOST_TOOL_INSTALL)
+    message = (
+        f"Automatic TimeCapsuleSMB host-tool install requires macOS {minimum} or newer. "
+        f"Manually install the missing host tools ({_format_tools(missing_tools)}), "
+        "then rerun './tcapsule bootstrap'."
+    )
+    print(color_red(message), flush=True)
+    print(color_red("Required host tools: smbclient and sshpass"), flush=True)
+    raise BootstrapPreflightError(message, fields)
 
 
 def ensure_venv(python: str) -> Path:
@@ -298,6 +448,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             platform_label = current_platform_label()
             command_context.update_fields(host_platform_label=platform_label)
             print(f"Detected host platform: {platform_label}", flush=True)
+            command_context.set_stage("check_python")
+            selected_python_version = validate_selected_python(args.python)
+            command_context.update_fields(
+                selected_python=args.python,
+                selected_python_version=selected_python_version,
+            )
+            command_context.set_stage("check_host_support")
+            command_context.update_fields(**check_macos_host_tool_install_support(platform_label))
             command_context.set_stage("ensure_venv")
             venv_python = ensure_venv(args.python)
             command_context.update_fields(venv_python=str(venv_python))
@@ -316,6 +474,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.fail_with_error(message)
             return e.returncode or 1
         except BootstrapError as e:
+            if isinstance(e, BootstrapPreflightError):
+                command_context.update_fields(**e.fields)
             print(str(e), file=sys.stderr)
             command_context.fail_with_error(str(e))
             return 1
