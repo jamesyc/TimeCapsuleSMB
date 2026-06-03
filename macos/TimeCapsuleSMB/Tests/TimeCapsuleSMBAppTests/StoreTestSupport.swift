@@ -410,7 +410,8 @@ func recoveryValue(
     suggestedOperation: String = "doctor",
     actionIDs: [String] = [],
     message: String? = nil,
-    localizationKey: String? = nil
+    localizationKey: String? = nil,
+    localizationValues: [String: String] = [:]
 ) -> JSONValue {
     var values: [String: JSONValue] = [
         "title": .string(title),
@@ -422,6 +423,9 @@ func recoveryValue(
     ]
     if let localizationKey {
         values["localization_key"] = .string(localizationKey)
+    }
+    if !localizationValues.isEmpty {
+        values["localization_values"] = .object(localizationValues.mapValues(JSONValue.string))
     }
     return .object(values)
 }

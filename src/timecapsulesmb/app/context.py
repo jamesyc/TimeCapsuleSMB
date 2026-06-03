@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.events import EventSink
+from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import OperationContext
 from timecapsulesmb.telemetry import build_device_os_version
@@ -96,6 +97,16 @@ class AppOperationContext:
 
     def add_debug_fields(self, **fields: object) -> None:
         self.diagnostics.add_debug_fields(**fields)
+
+    def known_airport_display_name(self) -> str | None:
+        model = self.finish_fields.get("device_model")
+        syap = self.finish_fields.get("device_syap")
+        if not isinstance(model, str) and not isinstance(syap, str):
+            return None
+        return airport_exact_display_name_from_identity(
+            model=model if isinstance(model, str) else None,
+            syap=syap if isinstance(syap, str) else None,
+        )
 
     def set_error(self, message: str) -> None:
         self.error = message

@@ -10,6 +10,7 @@ from timecapsulesmb.app.stage_policy import stage_policy
 
 
 SENSITIVE_KEY_PARTS = ("password", "secret", "token", "key")
+REDACTION_KEY_ALLOWLIST = {"localization_key"}
 REDACTED = "<redacted>"
 
 
@@ -17,7 +18,8 @@ def redact(value: object) -> object:
     if isinstance(value, dict):
         redacted: dict[str, object] = {}
         for key, item in value.items():
-            if any(part in str(key).lower() for part in SENSITIVE_KEY_PARTS):
+            key_text = str(key).lower()
+            if key_text not in REDACTION_KEY_ALLOWLIST and any(part in key_text for part in SENSITIVE_KEY_PARTS):
                 redacted[str(key)] = REDACTED
             else:
                 redacted[str(key)] = redact(item)

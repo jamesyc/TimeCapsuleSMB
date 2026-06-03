@@ -116,6 +116,75 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(chinese.steps.count, 4)
     }
 
+    func testRecoveryGuidancePresentationLocalizesSlowDeviceSshTimeoutDetails() throws {
+        let recovery = try recoveryValue(
+            title: "Device is responding very slowly",
+            actions: [
+                "Reboot the device.",
+                "Wait for SSH to come back.",
+                "Retry the operation."
+            ],
+            actionIDs: ["run_checkup"],
+            message: "The AirPort Extreme 6th generation is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry.",
+            localizationKey: "remote_error.ssh_timeout_slow_device",
+            localizationValues: ["device_name": "AirPort Extreme 6th generation"]
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "remote_error",
+            message: "Timed out waiting for ssh command to finish.",
+            recovery: recovery
+        )
+
+        L10n.apply(language: .english)
+        let english = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(english.title, "Device is responding very slowly")
+        XCTAssertEqual(
+            english.detail,
+            "The AirPort Extreme 6th generation is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry."
+        )
+        XCTAssertEqual(english.steps, [
+            "Reboot the device.",
+            "Wait for SSH to come back.",
+            "Retry the operation."
+        ])
+
+        L10n.apply(language: .simplifiedChinese)
+        let chinese = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(chinese.title, "设备响应非常慢")
+        XCTAssertEqual(chinese.detail, "AirPort Extreme 6th generation 响应非常慢。请重启设备。然后等待 SSH 恢复，再重试。")
+        XCTAssertEqual(chinese.steps, [
+            "重启设备。",
+            "等待 SSH 恢复。",
+            "重试此操作。"
+        ])
+    }
+
+    func testRecoveryGuidancePresentationFallsBackWhenLocalizedPlaceholderValueIsMissing() throws {
+        let fallbackMessage = "The device is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry."
+        let recovery = try recoveryValue(
+            title: "Device is responding very slowly",
+            actions: [
+                "Reboot the device.",
+                "Wait for SSH to come back.",
+                "Retry the operation."
+            ],
+            message: fallbackMessage,
+            localizationKey: "remote_error.ssh_timeout_slow_device"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "remote_error",
+            message: "Timed out waiting for ssh command to finish.",
+            recovery: recovery
+        )
+
+        L10n.apply(language: .simplifiedChinese)
+        let chinese = RecoveryGuidancePresentation(error: error)
+
+        XCTAssertEqual(chinese.detail, fallbackMessage)
+    }
+
     func testRecoveryGuidancePresentationSuppressesDuplicateMessage() throws {
         let recovery = try recoveryValue(
             title: "No HFS volumes found",

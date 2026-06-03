@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime as cli_runtime
+from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import require_compatibility as require_device_compatibility
@@ -25,7 +26,12 @@ from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_args,
 )
-from timecapsulesmb.transport.errors import TransportError
+from timecapsulesmb.transport.errors import (
+    format_ssh_timeout_slow_device_error,
+    is_ssh_timeout_error,
+    ssh_timeout_slow_device_message,
+    TransportError,
+)
 
 if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
@@ -134,11 +140,22 @@ class CommandContext:
                 self.set_error("Cancelled by user")
         elif isinstance(exc, (TransportError, ConfigError, DeviceError)):
             message = str(exc)
+            display_message = message
+            telemetry_message = message
+            if isinstance(exc, TransportError) and is_ssh_timeout_error(exc):
+                device_name = self.known_airport_display_name()
+                slow_message = ssh_timeout_slow_device_message(device_name)
+                telemetry_message = format_ssh_timeout_slow_device_error(exc, device_name=device_name)
+                display_message = telemetry_message.replace(
+                    slow_message,
+                    color_red(slow_message),
+                    1,
+                )
             self.result = "failure"
-            if message and not self.error_lines:
-                self.set_error(message)
+            if telemetry_message and not self.error_lines:
+                self.set_error(telemetry_message)
             self.finish(result=self.result, **self.finish_fields)
-            raise SystemExit(message) from exc
+            raise SystemExit(display_message) from exc
         elif exc_type is SystemExit:
             message = system_exit_message(exc)
             if message and message not in {"0", "None"}:
@@ -226,6 +243,17 @@ class CommandContext:
         self.harvest_optional_airport_identity_probe(timeout_seconds=timeout_seconds)
         model = self.finish_fields.get("device_model")
         syap = self.finish_fields.get("device_syap")
+        return airport_exact_display_name_from_identity(
+            model=model if isinstance(model, str) else None,
+            syap=syap if isinstance(syap, str) else None,
+        )
+
+    def known_airport_display_name(self) -> str | None:
+        self.harvest_optional_airport_identity_probe(timeout_seconds=0.0)
+        model = self.finish_fields.get("device_model")
+        syap = self.finish_fields.get("device_syap")
+        if not isinstance(model, str) and not isinstance(syap, str):
+            return None
         return airport_exact_display_name_from_identity(
             model=model if isinstance(model, str) else None,
             syap=syap if isinstance(syap, str) else None,

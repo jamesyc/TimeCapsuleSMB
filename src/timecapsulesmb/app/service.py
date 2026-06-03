@@ -8,7 +8,7 @@ from timecapsulesmb.app.events import EventSink, redact
 from timecapsulesmb.app.ops import OPERATIONS, TELEMETRY_OPERATIONS
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
 from timecapsulesmb.app.requests import parse_api_request
-from timecapsulesmb.app.recovery import recovery_for
+from timecapsulesmb.app.recovery import recovery_for, ssh_timeout_slow_device_recovery
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.paths import resolve_app_paths
@@ -23,7 +23,7 @@ from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_params,
 )
-from timecapsulesmb.transport.errors import TransportError
+from timecapsulesmb.transport.errors import is_ssh_timeout_error, TransportError
 
 
 def run_api_request(request: dict[str, object], sink: EventSink) -> int:
@@ -106,11 +106,17 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         )
         return 1
     except TransportError as exc:
+        device_name = context.known_airport_display_name()
+        recovery = (
+            ssh_timeout_slow_device_recovery(device_name=device_name)
+            if is_ssh_timeout_error(exc)
+            else recovery_for(operation, "remote_error", stage=context.current_stage)
+        )
         sink.error(
             operation,
             str(exc),
             code="remote_error",
-            recovery=recovery_for(operation, "remote_error", stage=context.current_stage),
+            recovery=recovery,
         )
         _finish_api_telemetry(
             telemetry_session,

@@ -1019,6 +1019,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
     let suggestedOperation: String?
     let docsAnchor: String?
     let localizationKey: String?
+    let localizationValues: [String: String]
 
     enum CodingKeys: String, CodingKey {
         case title
@@ -1029,6 +1030,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         case suggestedOperation = "suggested_operation"
         case docsAnchor = "docs_anchor"
         case localizationKey = "localization_key"
+        case localizationValues = "localization_values"
     }
 
     init(
@@ -1039,7 +1041,8 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         retryable: Bool,
         suggestedOperation: String?,
         docsAnchor: String?,
-        localizationKey: String? = nil
+        localizationKey: String? = nil,
+        localizationValues: [String: String] = [:]
     ) {
         self.title = title
         self.message = message
@@ -1049,6 +1052,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         self.suggestedOperation = suggestedOperation
         self.docsAnchor = docsAnchor
         self.localizationKey = localizationKey
+        self.localizationValues = localizationValues
     }
 
     init(_ snapshot: DeviceRecoverySnapshot) {
@@ -1074,6 +1078,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         self.suggestedOperation = try container.decodeIfPresent(String.self, forKey: .suggestedOperation)
         self.docsAnchor = try container.decodeIfPresent(String.self, forKey: .docsAnchor)
         self.localizationKey = try container.decodeIfPresent(String.self, forKey: .localizationKey)
+        self.localizationValues = try container.decodeIfPresent([String: String].self, forKey: .localizationValues) ?? [:]
     }
 }
 

@@ -47,7 +47,7 @@ from timecapsulesmb.services.flash import (
 )
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.repair_xattrs import RepairRunResult, RepairXattrsRequest
-from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError
+from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError, ssh_timeout_slow_device_message
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -258,6 +258,7 @@ class AppApiTests(unittest.TestCase):
                     "TC_PASSWORD": "secret",
                     "api_key": "secret",
                     "ssh_private_key": "secret",
+                    "localization_key": "remote_error.ssh_timeout_slow_device",
                 },
             },
         })
@@ -268,6 +269,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(data["payload"]["nested"]["TC_PASSWORD"], "<redacted>")
         self.assertEqual(data["payload"]["nested"]["api_key"], "<redacted>")
         self.assertEqual(data["payload"]["nested"]["ssh_private_key"], "<redacted>")
+        self.assertEqual(data["payload"]["nested"]["localization_key"], "remote_error.ssh_timeout_slow_device")
 
     def test_result_event_preserves_falsey_payloads(self) -> None:
         collector = CollectingSink()
@@ -957,6 +959,33 @@ class AppApiTests(unittest.TestCase):
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], code)
                 self.assertIn("recovery", error)
+
+    def test_dispatcher_maps_ssh_timeout_to_slow_device_recovery_without_rewriting_telemetry(self) -> None:
+        collector = CollectingSink()
+        timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/.manager.sh.tmp'"
+
+        def fail(_params, context):
+            context.stage("upload_boot_files")
+            context.update_fields(device_model="TimeCapsule6,113", device_syap="113")
+            raise SshCommandTimeout(timeout)
+
+        with mock.patch.dict(service.OPERATIONS, {"deploy": fail}):
+            rc = service.run_api_request({"operation": "deploy", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["message"], timeout)
+        self.assertEqual(error["recovery"]["title"], "Device is responding very slowly")
+        expected_message = ssh_timeout_slow_device_message("Time Capsule 3rd generation")
+        self.assertEqual(error["recovery"]["message"], expected_message)
+        self.assertEqual(error["recovery"]["localization_key"], "remote_error.ssh_timeout_slow_device")
+        self.assertEqual(error["recovery"]["localization_values"], {"device_name": "Time Capsule 3rd generation"})
+        self.assertEqual(error["recovery"]["action_ids"], ["run_checkup"])
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn(timeout, telemetry_error)
+        self.assertIn("stage=upload_boot_files", telemetry_error)
+        self._telemetry_urlopen.assert_not_called()
 
     def test_dispatcher_includes_traceback_for_unexpected_errors(self) -> None:
         collector = CollectingSink()

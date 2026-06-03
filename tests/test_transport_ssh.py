@@ -13,6 +13,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.transport import errors as transport_errors
 from timecapsulesmb.transport import ssh as ssh_transport
 
 
@@ -36,6 +37,24 @@ class SSHTransportTests(unittest.TestCase):
         ssh_transport._ssh_option_supported.cache_clear()
         ssh_transport.local_scp_path.cache_clear()
         ssh_transport.local_scp_supports_legacy_option.cache_clear()
+
+    def test_is_ssh_timeout_error_matches_direct_timeout(self) -> None:
+        error = ssh_transport.SshCommandTimeout("Timed out waiting for ssh command to finish: sync")
+
+        self.assertTrue(transport_errors.is_ssh_timeout_error(error))
+
+    def test_is_ssh_timeout_error_matches_wrapped_scp_timeout(self) -> None:
+        try:
+            try:
+                raise ssh_transport.SshCommandTimeout("Timed out copying manager.sh")
+            except ssh_transport.SshCommandTimeout as exc:
+                raise ssh_transport.ScpError(str(exc)) from exc
+        except ssh_transport.ScpError as error:
+            self.assertTrue(transport_errors.is_ssh_timeout_error(error))
+
+    def test_is_ssh_timeout_error_ignores_other_transport_errors(self) -> None:
+        self.assertFalse(transport_errors.is_ssh_timeout_error(ssh_transport.SshError("permission denied")))
+        self.assertFalse(transport_errors.is_ssh_timeout_error(ssh_transport.ScpError("copy failed")))
 
     def missing_pexpect_import(self, name: str, *args: object, **kwargs: object) -> object:
         if name == "pexpect":

@@ -54,9 +54,10 @@ private enum BackendRecoveryLocalization {
             )
         }
         let keyPrefix = "backend.recovery.\(localizationKey)"
+        let localizedMessage = localizedStringIfPresent("\(keyPrefix).message")
         return LocalizedBackendRecovery(
             title: localizedStringIfPresent("\(keyPrefix).title") ?? recovery.title,
-            message: localizedStringIfPresent("\(keyPrefix).message") ?? recovery.message,
+            message: formatted(localizedMessage, values: recovery.localizationValues) ?? recovery.message,
             actions: localizedActions(keyPrefix: keyPrefix, fallback: recovery.actions)
         )
     }
@@ -70,6 +71,19 @@ private enum BackendRecoveryLocalization {
     private static func localizedStringIfPresent(_ key: String) -> String? {
         let value = L10n.string(key)
         return value == key ? nil : value
+    }
+
+    private static func formatted(_ template: String?, values: [String: String]) -> String? {
+        guard let template else {
+            return nil
+        }
+        guard template.contains("%@") else {
+            return template
+        }
+        guard let deviceName = values["device_name"] else {
+            return nil
+        }
+        return String(format: template, locale: L10n.currentLanguage.locale, deviceName)
     }
 }
 

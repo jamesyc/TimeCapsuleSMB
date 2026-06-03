@@ -110,6 +110,7 @@ from timecapsulesmb.deploy.planner import (
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.flash_payloads import find_apple_firmware_match
 from timecapsulesmb.flash import FlashAnalysisError, PATCHED_LOGIN_SCRIPT, STOCK_LOGIN_NETBSD4_DUMMY, sha256_hex
+from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
@@ -914,17 +915,35 @@ class CliTests(unittest.TestCase):
                     )
                 )
             deploy_compatibility = compatibility or self.make_supported_compatibility()
-            deploy_probe_state = SimpleNamespace(
-                compatibility=deploy_compatibility,
-                probe_result=SimpleNamespace(error=None, airport_model=None, airport_syap=None),
+            deploy_probe_result = ProbeResult(
+                ssh_port_reachable=True,
+                ssh_authenticated=True,
+                error=None,
+                os_name=deploy_compatibility.os_name,
+                os_release=deploy_compatibility.os_release,
+                arch=deploy_compatibility.arch,
+                elf_endianness=deploy_compatibility.elf_endianness,
+                airport_model=config_values.get("TC_MDNS_DEVICE_MODEL"),
+                airport_syap=config_values.get("TC_AIRPORT_SYAP"),
             )
+            deploy_probe_state = ProbedDeviceState(
+                probe_result=deploy_probe_result,
+                compatibility=deploy_compatibility,
+            )
+            deploy_target = SimpleNamespace(
+                connection=SshConnection("root@10.0.0.2", "pw", "-o foo"),
+                interface_probe=None,
+                probe_state=deploy_probe_state,
+            )
+
+            def fake_resolve_validated_managed_target(command_context, *, profile, include_probe):
+                return command_context._apply_managed_target_state(deploy_target)
+
             mocks.resolve_validated_managed_target = stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.cli.context.CommandContext.resolve_validated_managed_target",
-                    return_value=SimpleNamespace(
-                        connection=SshConnection("root@10.0.0.2", "pw", "-o foo"),
-                        probe_state=deploy_probe_state,
-                    ),
+                    autospec=True,
+                    side_effect=fake_resolve_validated_managed_target,
                 )
             )
             mocks.require_compatibility = stack.enter_context(
@@ -4851,7 +4870,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_upload_source_resolver_contains_flash_config_and_no_legacy_generated_files(self) -> None:
         captured: dict[str, object] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             captured["host"] = connection.host
             captured["source_ids"] = set(source_resolver)
             captured["smbpasswd"] = source_resolver[GENERATED_SMBPASSWD_SOURCE].read_text()
@@ -4898,7 +4917,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_no_nbns_writes_disabled_flash_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -4916,7 +4935,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_debug_logging_arg_writes_enabled_flash_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -4934,7 +4953,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_leaves_debug_logging_disabled_without_arg(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver, on_uploaded=None):
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -5210,6 +5229,53 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["result"], "failure")
         self.assertIn("stage=upload_payload", finished["error"])
         self.assertIn("RuntimeError: scp failed", finished["error"])
+
+    def test_deploy_ssh_timeout_shows_red_slow_device_guidance_and_keeps_telemetry_detail(self) -> None:
+        timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/.manager.sh.tmp'"
+
+        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if on_uploading is not None:
+                on_uploading(plan.uploads[7])
+            raise SshCommandTimeout(timeout)
+
+        result = self.run_deploy_cli(
+            ["--yes"],
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=timeout_upload,
+            raises=SystemExit,
+        )
+
+        slow_message = ssh_timeout_slow_device_message("Time Capsule 5th generation")
+        self.assertIn(f"{ANSI_RED}{slow_message}{ANSI_RESET}", str(result.exception))
+        self.assertIn(timeout, str(result.exception))
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn(slow_message, finished["error"])
+        self.assertIn(timeout, finished["error"])
+        self.assertIn("stage=upload_boot_files", finished["error"])
+        self.assertNotIn(ANSI_RED, finished["error"])
+
+    def test_deploy_ssh_timeout_uses_airport_extreme_device_name(self) -> None:
+        timeout = "Timed out waiting for ssh command to finish: runtime probe"
+
+        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if on_uploading is not None:
+                on_uploading(plan.uploads[0])
+            raise SshCommandTimeout(timeout)
+
+        result = self.run_deploy_cli(
+            ["--yes"],
+            values=self.make_valid_env(TC_AIRPORT_SYAP="120", TC_MDNS_DEVICE_MODEL="AirPort7,120"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=timeout_upload,
+            raises=SystemExit,
+        )
+
+        slow_message = ssh_timeout_slow_device_message("AirPort Extreme 6th generation")
+        self.assertIn(f"{ANSI_RED}{slow_message}{ANSI_RESET}", str(result.exception))
+        self.assertIn(timeout, str(result.exception))
 
     def test_deploy_finished_telemetry_includes_scp_upload_transport(self) -> None:
         def fake_scp_upload_transport(connection):

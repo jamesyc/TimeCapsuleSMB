@@ -26,6 +26,7 @@ from timecapsulesmb.services.deploy import (
     DeployOptions,
     DeployRuntimeConfig,
     complete_deployment_after_upload,
+    deploy_upload_stage,
     deployment_plan_to_jsonable,
     format_deployment_plan,
     payload_family_description,
@@ -182,6 +183,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             if message is not None:
                 print(message, flush=True)
 
+        current_upload_stage: str | None = None
+
+        def stage_upload(transfer) -> None:
+            nonlocal current_upload_stage
+            stage = deploy_upload_stage(transfer)
+            if stage == current_upload_stage:
+                return
+            current_upload_stage = stage
+            command_context.set_stage(stage)
+
         try:
             upload_and_verify_deployment_payload(
                 config,
@@ -195,6 +206,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 on_pre_upload_action_done=report_pre_upload_action,
                 on_before_upload=lambda: print("Uploading deployment payload...", flush=True),
                 on_after_upload=lambda: print("Upload phase complete.", flush=True),
+                on_uploading=stage_upload,
                 on_uploaded=report_uploaded_file,
                 on_before_post_upload_actions=lambda: print("Applying file permissions...", flush=True),
                 on_before_verify=lambda post_sync: None if post_sync else print("Verifying uploaded payload...", flush=True),

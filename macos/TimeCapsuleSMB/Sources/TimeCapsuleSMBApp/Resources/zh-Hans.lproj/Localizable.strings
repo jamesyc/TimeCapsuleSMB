@@ -682,6 +682,11 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "如果设备可通过新的 IP 访问，请更新 TC_HOST 或重新运行配置。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "在 NetBSD 4 设备上，SSH 可用后请运行 tcapsule activate；部署尚未走到重启后激活 Samba 的步骤。";
+"backend.recovery.remote_error.ssh_timeout_slow_device.title" = "设备响应非常慢";
+"backend.recovery.remote_error.ssh_timeout_slow_device.message" = "%@ 响应非常慢。请重启设备。然后等待 SSH 恢复，再重试。";
+"backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "重启设备。";
+"backend.recovery.remote_error.ssh_timeout_slow_device.action.2" = "等待 SSH 恢复。";
+"backend.recovery.remote_error.ssh_timeout_slow_device.action.3" = "重试此操作。";
 "screen.readiness" = "Readiness";
 "sidebar.add_airport_device" = "添加设备";
 "sidebar.all_airport_devices" = "所有设备";

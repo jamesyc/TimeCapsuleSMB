@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from timecapsulesmb.transport.errors import SSH_TIMEOUT_SLOW_DEVICE_MESSAGE
+from timecapsulesmb.transport.errors import ssh_timeout_slow_device_message
+
 
 @dataclass(frozen=True)
 class RecoveryInfo:
@@ -13,6 +16,7 @@ class RecoveryInfo:
     action_ids: tuple[str, ...] = ()
     docs_anchor: str | None = None
     localization_key: str | None = None
+    localization_values: dict[str, str] | None = None
 
     def to_jsonable(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -27,6 +31,8 @@ class RecoveryInfo:
             payload["docs_anchor"] = self.docs_anchor
         if self.localization_key:
             payload["localization_key"] = self.localization_key
+        if self.localization_values:
+            payload["localization_values"] = dict(self.localization_values)
         return payload
 
 
@@ -346,6 +352,21 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
 }
 
 
+_SSH_TIMEOUT_SLOW_DEVICE_RECOVERY = RecoveryInfo(
+    "Device is responding very slowly",
+    SSH_TIMEOUT_SLOW_DEVICE_MESSAGE,
+    (
+        "Reboot the device.",
+        "Wait for SSH to come back.",
+        "Retry the operation.",
+    ),
+    retryable=True,
+    suggested_operation="doctor",
+    action_ids=("run_checkup",),
+    localization_key="remote_error.ssh_timeout_slow_device",
+)
+
+
 def recovery_for(
     operation: str,
     code: str,
@@ -358,3 +379,12 @@ def recovery_for(
             return policy.to_jsonable()
     policy = _OPERATION_CODE_RECOVERY.get((operation, code)) or _DEFAULTS.get(code) or _DEFAULTS["operation_failed"]
     return policy.to_jsonable()
+
+
+def ssh_timeout_slow_device_recovery(*, device_name: str | None = None) -> dict[str, object]:
+    recovery = _SSH_TIMEOUT_SLOW_DEVICE_RECOVERY.to_jsonable()
+    recovery["message"] = ssh_timeout_slow_device_message(device_name)
+    recovery["localization_values"] = {
+        "device_name": (device_name or "").strip() or "device",
+    }
+    return recovery
