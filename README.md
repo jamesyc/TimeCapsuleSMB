@@ -28,8 +28,8 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 
 For the typical guided setup, you need only:
 
-- a Mac or Linux machine on the same local network as the Time Capsule
-- the Time Capsule password
+- A macOS 14+ or Linux machine on the same local network as the Time Capsule
+- The password for the Time Capsule
 - Python 3.9+
 - `smbclient` installed locally for `doctor`
 - `homebrew` installed for macOS users
