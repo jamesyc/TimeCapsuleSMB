@@ -32,7 +32,7 @@ For the typical guided setup, you need only:
 - The password for the Time Capsule
 - Python 3.9+
 - `smbclient` installed locally for `doctor`
-- `homebrew` installed for macOS users
+- Homebrew installed for macOS users
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
@@ -68,7 +68,7 @@ Run:
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs the Python dependencies needed for discovery, deployment, and verification, and sets up the local `tcapsule` command into that virtualenv.
 
-If `smbclient` or `sshpass` is missing, `bootstrap` will try to install it with Homebrew on macOS or the detected package manager on Linux. On macOS, Homebrew is required for those host tool installs. NetBSD 4 devices need `sshpass` because their firmware does not provide a usable remote `scp`.
+If `smbclient` or `sshpass` is missing, `bootstrap` will try to install it with Homebrew on macOS 14+ or the detected package manager on Linux. Older macOS versions can continue only when `smbclient` and `sshpass` are already installed manually. NetBSD 4 devices need `sshpass` because their firmware does not provide a usable remote `scp`.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 
