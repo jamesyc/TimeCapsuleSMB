@@ -1,0 +1,355 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
+from timecapsulesmb.app.contracts import flash_backup_payload, flash_plan_payload, flash_write_payload
+from timecapsulesmb.app.ops.common import (
+    load_request_config,
+    resolve_request_target,
+)
+from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.flash import FlashAnalysisError
+from timecapsulesmb.services.app import (
+    AppOperationError,
+    OperationResult,
+    bool_param,
+    optional_bool_param,
+    required_path_param,
+    string_param,
+)
+from timecapsulesmb.services.flash import (
+    WRITE_OPERATIONS,
+    FlashTarget,
+    backup_flash,
+    plan_flash_from_backup,
+    record_post_write_action,
+    record_write_outcome,
+    require_netbsd4_flash_target,
+    validate_live_target_matches_backup,
+    write_flash_plan,
+)
+from timecapsulesmb.services.runtime import (
+    require_connection_compatibility,
+)
+from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.transport.errors import TransportError
+
+
+FLASH_ACTIONS = {"backup", "plan", "write"}
+PLAN_OPERATIONS = {"patch", "restore", "check_apple", "download_only"}
+FLASH_RESTORE_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
+FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE = (
+    "Firmware restore write validated, but the device did not go down after reboot request."
+)
+FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after firmware restore reboot."
+
+
+def flash_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    action = string_param(params, "action", "backup").strip() or "backup"
+    if action not in FLASH_ACTIONS:
+        raise AppOperationError(f"Unsupported flash action: {action}", code="validation_failed")
+    context.update_fields(flash_action=action)
+    if action == "backup":
+        return _backup_operation(params, context)
+    if action == "plan":
+        return _plan_operation(params, context)
+    return _write_operation(params, context)
+
+
+def _optional_path_param(params: dict[str, object], name: str) -> Path | None:
+    value = params.get(name)
+    if value in (None, ""):
+        return None
+    return Path(str(value)).expanduser()
+
+
+def _firmware_version_param(params: dict[str, object]) -> str | None:
+    value = string_param(params, "firmware_version").strip()
+    return value or None
+
+
+def _plan_operation_param(params: dict[str, object]) -> str:
+    plan_operation = string_param(params, "mode", "patch").strip() or "patch"
+    if plan_operation not in PLAN_OPERATIONS:
+        raise AppOperationError(f"Unsupported flash plan mode: {plan_operation}", code="validation_failed")
+    return plan_operation
+
+
+def _write_operation_param(params: dict[str, object]) -> str:
+    plan_operation = _plan_operation_param(params)
+    if plan_operation not in WRITE_OPERATIONS:
+        raise AppOperationError(f"Flash mode {plan_operation} does not write firmware", code="validation_failed")
+    return plan_operation
+
+
+def _write_reboot_policy(params: dict[str, object], plan_operation: str) -> tuple[bool, bool]:
+    explicit_reboot = optional_bool_param(params, "reboot_after_write")
+    reboot_after_write = explicit_reboot if explicit_reboot is not None else plan_operation == "restore"
+    if plan_operation == "patch" and reboot_after_write:
+        raise AppOperationError(
+            "Flash patch cannot request reboot; power cycle manually after the validated write",
+            code="validation_failed",
+        )
+    wait_after_reboot = bool_param(params, "wait_after_reboot", True) if reboot_after_write else False
+    return reboot_after_write, wait_after_reboot
+
+
+def _resolve_flash_target(config: AppConfig, context: AppOperationContext) -> FlashTarget:
+    target = resolve_request_target(config, context, profile="flash", include_probe=False)
+    context.stage("check_compatibility")
+    try:
+        compatibility = require_connection_compatibility(target.connection)
+    except DeviceError as exc:
+        raise AppOperationError(str(exc), code="unsupported_device") from exc
+    try:
+        return require_netbsd4_flash_target(
+            target.connection,
+            compatibility,
+            update_fields=context.update_fields,
+            log=context.log,
+        )
+    except DeviceError as exc:
+        raise AppOperationError(str(exc), code="unsupported_device") from exc
+
+
+def _backup_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    config = load_request_config(params, context)
+    target = _resolve_flash_target(config, context)
+    backup_dir = _optional_path_param(params, "backup_dir")
+    context.update_fields(backup_dir=str(backup_dir) if backup_dir is not None else None)
+    try:
+        bundle = backup_flash(
+            target=target,
+            backup_dir=backup_dir,
+            operation="read_only",
+            log=context.log,
+            stage=context.stage,
+        )
+    except FlashAnalysisError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
+    except TransportError as exc:
+        raise AppOperationError(f"SSH flash read failed: {exc}", code="remote_error") from exc
+    return OperationResult(True, flash_backup_payload(bundle.manifest))
+
+
+def _plan_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    plan_operation = _plan_operation_param(params)
+    force = bool_param(params, "force")
+    backup_dir = required_path_param(params, "backup_dir")
+    firmware_template = _optional_path_param(params, "firmware_template")
+    firmware_version = _firmware_version_param(params)
+    context.update_fields(
+        flash_mode=plan_operation,
+        force=force,
+        backup_dir=str(backup_dir),
+        firmware_template=str(firmware_template) if firmware_template is not None else None,
+        firmware_version=firmware_version,
+    )
+    try:
+        context.stage("inspect_backup")
+        context.stage("plan_flash")
+        bundle, _plan = plan_flash_from_backup(
+            backup_dir=backup_dir,
+            operation=plan_operation,
+            force=force,
+            firmware_template=firmware_template,
+            firmware_version=firmware_version,
+        )
+    except FlashAnalysisError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
+    return OperationResult(True, flash_plan_payload(bundle.manifest))
+
+
+def _confirmation_message(target: FlashTarget, mode: str, bank: str | None, *, reboot_after_write: bool) -> str:
+    if mode == "patch":
+        return (
+            f"Patch the primary firmware bank boot hook on {target.acp_host} "
+            "and acknowledge that manual power cycle is required after a successful write?"
+        )
+    bank_text = f" {bank}" if bank else ""
+    if reboot_after_write:
+        return f"Restore Apple stock firmware to the active{bank_text} bank on {target.acp_host} and reboot after validation?"
+    return f"Restore Apple stock firmware to the active{bank_text} bank on {target.acp_host}?"
+
+
+def _finish_validated_write(
+    *,
+    context: AppOperationContext,
+    target: FlashTarget,
+    bundle,
+    plan_operation: str,
+    reboot_after_write: bool,
+    wait_after_reboot: bool,
+) -> None:
+    if plan_operation == "patch":
+        record_post_write_action(
+            bundle=bundle,
+            post_write_action="manual_power_cycle",
+            reboot_requested=False,
+            rebooted=False,
+            waited_after_reboot=False,
+        )
+        return
+    if not reboot_after_write:
+        record_post_write_action(
+            bundle=bundle,
+            post_write_action="manual_reboot",
+            reboot_requested=False,
+            rebooted=False,
+            waited_after_reboot=False,
+        )
+        return
+
+    record_post_write_action(
+        bundle=bundle,
+        post_write_action="ssh_reboot",
+        reboot_requested=True,
+        rebooted=False,
+        waited_after_reboot=wait_after_reboot,
+    )
+    if wait_after_reboot:
+        try:
+            request_reboot_and_wait(
+                target.connection,
+                strategy=FLASH_RESTORE_REBOOT_STRATEGY,
+                callbacks=context.to_operation_callbacks(),
+                down_timeout_seconds=60,
+                up_timeout_seconds=240,
+                reboot_no_down_message=FLASH_RESTORE_REBOOT_NO_DOWN_MESSAGE,
+                reboot_up_timeout_message=FLASH_RESTORE_REBOOT_UP_TIMEOUT_MESSAGE,
+            )
+        except RebootFlowError as exc:
+            raise AppOperationError(str(exc), code="remote_error") from exc
+        record_post_write_action(
+            bundle=bundle,
+            post_write_action="ssh_reboot",
+            reboot_requested=True,
+            rebooted=True,
+            waited_after_reboot=True,
+        )
+        return
+    try:
+        request_reboot(
+            target.connection,
+            strategy=FLASH_RESTORE_REBOOT_STRATEGY,
+            callbacks=context.to_operation_callbacks(),
+            raise_on_request_error=True,
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
+
+
+def _write_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    plan_operation = _write_operation_param(params)
+    reboot_after_write, wait_after_reboot = _write_reboot_policy(params, plan_operation)
+    force = bool_param(params, "force")
+    backup_dir = required_path_param(params, "backup_dir")
+    firmware_template = _optional_path_param(params, "firmware_template")
+    firmware_version = _firmware_version_param(params)
+    context.update_fields(
+        flash_mode=plan_operation,
+        force=force,
+        backup_dir=str(backup_dir),
+        firmware_template=str(firmware_template) if firmware_template is not None else None,
+        firmware_version=firmware_version,
+        reboot_after_write=reboot_after_write,
+        wait_after_reboot=wait_after_reboot,
+    )
+
+    try:
+        context.stage("inspect_backup")
+        context.stage("plan_flash")
+        bundle, plan = plan_flash_from_backup(
+            backup_dir=backup_dir,
+            operation=plan_operation,
+            force=force,
+            firmware_template=firmware_template,
+            firmware_version=firmware_version,
+        )
+    except FlashAnalysisError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
+    if plan is None:
+        raise AppOperationError("Flash write has no plan", code="validation_failed")
+    if plan.already_satisfied:
+        record_write_outcome(
+            bundle=bundle,
+            plan=plan,
+            status="not_needed",
+            write_validated=False,
+            write_may_have_modified_device=False,
+        )
+        return OperationResult(True, flash_write_payload(bundle.manifest))
+
+    config = load_request_config(params, context)
+    target = _resolve_flash_target(config, context)
+    bank = None if plan.target_bank is None else plan.target_bank.name
+    context.update_fields(target_bank=bank)
+    context.stage("confirm_write")
+    require_confirmation(
+        params,
+        build_confirmation(
+            operation="flash",
+            params=params,
+            title="Confirm firmware flash write",
+            message=_confirmation_message(
+                target,
+                plan_operation,
+                bank,
+                reboot_after_write=reboot_after_write,
+            ),
+            action_title="Write Firmware",
+            risk="destructive",
+            summary=f"Flash {plan_operation} firmware write",
+            context={
+                "host": target.acp_host,
+                "backup_dir": str(bundle.backup_dir),
+                "mode": plan_operation,
+                "target_bank": bank,
+                "target_sha256": None if plan.target_bank is None else plan.target_bank.sha256,
+                "reboot_after_write": reboot_after_write,
+                "wait_after_reboot": wait_after_reboot,
+            },
+            presentation_id=f"flash.{plan_operation}_write",
+            presentation_values={
+                "host": target.acp_host,
+                "backup_dir": str(bundle.backup_dir),
+                "mode": plan_operation,
+                "target_bank": bank,
+                "reboot_after_write": reboot_after_write,
+                "wait_after_reboot": wait_after_reboot,
+            },
+        ),
+    )
+
+    try:
+        context.stage("pre_write_validation")
+        validate_live_target_matches_backup(
+            connection=target.connection,
+            plan=plan,
+            log=context.log,
+        )
+        context.stage("write_primary_bank" if plan_operation == "patch" else "write_active_bank")
+        context.log("Sending ACP flash command...")
+        write_flash_plan(
+            target=target,
+            bundle=bundle,
+            plan=plan,
+            log=context.log,
+        )
+        context.stage("post_write_validation")
+    except FlashAnalysisError as exc:
+        raise AppOperationError(str(exc), code="operation_failed") from exc
+    except TransportError as exc:
+        raise AppOperationError(f"SSH post-write validation failed: {exc}", code="remote_error") from exc
+    _finish_validated_write(
+        context=context,
+        target=target,
+        bundle=bundle,
+        plan_operation=plan_operation,
+        reboot_after_write=reboot_after_write,
+        wait_after_reboot=wait_after_reboot,
+    )
+    return OperationResult(True, flash_write_payload(bundle.manifest))

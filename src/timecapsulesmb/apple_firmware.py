@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
-from timecapsulesmb.core.paths import default_user_data_dir
+from timecapsulesmb.core.paths import default_user_data_dir, safe_path_part
 from timecapsulesmb.flash import FlashAnalysisError, sha256_hex
 
 
@@ -31,11 +31,6 @@ class FirmwareTemplateCandidate:
     version: str | None
     expected_size: int | None = None
     from_cache: bool = False
-
-
-def _safe_path_part(value: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
-    return safe.strip("-.") or "device"
 
 
 def default_firmware_template_cache_root() -> Path:
@@ -110,8 +105,8 @@ def firmware_template_cache_path(*, cache_dir: Path, product_id: str, version: s
     parsed_name = Path(urlparse(url).path).name or "firmware.basebinary"
     if not parsed_name.endswith(".basebinary"):
         parsed_name = f"{parsed_name}.basebinary"
-    filename = f"{_safe_path_part(version)}-{suffix}-{_safe_path_part(parsed_name)}"
-    return cache_dir / _safe_path_part(product_id) / filename
+    filename = f"{safe_path_part(version)}-{suffix}-{safe_path_part(parsed_name)}"
+    return cache_dir / safe_path_part(product_id) / filename
 
 
 def read_cached_or_download_template(entry: dict[str, object], *, cache_dir: Path) -> FirmwareTemplateCandidate:

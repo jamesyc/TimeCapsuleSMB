@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+import shlex
+import sys
+
+from timecapsulesmb.app.context import AppOperationContext
+from timecapsulesmb.app.contracts import (
+    activation_plan_payload,
+    activation_result_payload,
+    fsck_plan_payload,
+    fsck_result_payload,
+    fsck_volume_list_payload,
+    repair_xattrs_payload,
+    uninstall_plan_payload,
+    uninstall_result_payload,
+)
+from timecapsulesmb.services.credentials import overlay_request_credentials
+from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
+from timecapsulesmb.app.ops.common import (
+    load_request_config,
+    resolve_request_connection,
+    resolve_request_target,
+)
+from timecapsulesmb.app.ops.deploy import verify_runtime
+from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
+from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
+from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
+from timecapsulesmb.deploy.executor import remote_uninstall_payload, run_remote_actions
+from timecapsulesmb.deploy.planner import (
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    build_runtime_activation_plan,
+    build_uninstall_plan,
+)
+from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
+from timecapsulesmb.device.compat import is_netbsd4_payload_family
+from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
+from timecapsulesmb.services.app import (
+    AppOperationError,
+    OperationResult,
+    bool_param,
+    config_path,
+    int_param,
+    optional_int_param,
+    required_path_param,
+    string_param,
+)
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.activation import decide_manual_activation
+from timecapsulesmb.services.maintenance import (
+    FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
+    FSCK_REBOOT_NO_DOWN_MESSAGE,
+    UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
+    build_remote_fsck_script,
+    format_fsck_plan,
+    format_fsck_targets,
+    fsck_plan_to_jsonable,
+    fsck_target_from_volume,
+    fsck_target_to_jsonable,
+    select_fsck_target,
+)
+from timecapsulesmb.services.deploy import require_supported_payload
+from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
+from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.services.runtime import (
+    load_env_config,
+    load_optional_env_config,
+    resolve_env_connection,
+)
+from timecapsulesmb.transport.ssh import run_ssh
+
+
+REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+
+
+def activate_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    operation = "activate"
+    dry_run = bool_param(params, "dry_run")
+    context.stage("build_activation_plan")
+    plan = build_runtime_activation_plan()
+    if dry_run:
+        return OperationResult(True, activation_plan_payload(activation_plan_to_jsonable(plan)))
+
+    config = load_request_config(params, context)
+    confirmation_connection = resolve_request_connection(config, context, allow_empty_password=True)
+    require_confirmation(
+        params,
+        build_confirmation(
+            operation=operation,
+            params=params,
+            title="Confirm NetBSD4 activation",
+            message="Activate the deployed NetBSD4 payload and restart managed services?",
+            action_title="Activate",
+            risk="destructive",
+            summary="NetBSD4 service activation",
+            context={
+                "host": confirmation_connection.host,
+                "netbsd4": True,
+            },
+            presentation_id="activate.netbsd4",
+            presentation_values={"netbsd4": True},
+        ),
+    )
+
+    target = resolve_request_target(config, context, profile="activate", include_probe=True)
+    compatibility = require_supported_payload(target, allow_unsupported=False)
+    if not is_netbsd4_payload_family(compatibility.payload_family):
+        raise AppOperationError(
+            "activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
+            code="unsupported_device",
+        )
+    connection = target.connection
+    context.stage("probe_runtime")
+    decision = decide_manual_activation(connection)
+    context.add_debug_fields(
+        activation_decision=decision.reason,
+        manual_activation_required=decision.run_actions,
+    )
+    context.log(decision.detail)
+    if not decision.run_actions:
+        return OperationResult(True, activation_result_payload(already_active=True))
+
+    context.stage("run_activation")
+    run_remote_actions(connection, plan.actions)
+    verify_runtime(context, connection, stage="verify_runtime_activation", timeout_seconds=200)
+    return OperationResult(True, activation_result_payload(
+        already_active=False,
+        message=f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}",
+    ))
+
+
+def uninstall_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    operation = "uninstall"
+    dry_run = bool_param(params, "dry_run")
+    no_reboot = bool_param(params, "no_reboot")
+    no_wait = bool_param(params, "no_wait")
+    mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
+    config = load_request_config(params, context)
+    connection = resolve_request_connection(config, context, allow_empty_password=True)
+    if not dry_run:
+        presentation_id = "uninstall.no_reboot" if no_reboot else "uninstall.reboot"
+        presentation_values = {
+            "requires_reboot": not no_reboot,
+            "no_reboot": no_reboot,
+            "no_wait": no_wait,
+        }
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Confirm uninstall",
+                message=(
+                    "Remove managed TimeCapsuleSMB files from the device"
+                    + (" and reboot it?" if not no_reboot else "?")
+                ),
+                action_title="Uninstall",
+                risk="destructive" if not no_reboot else "remote_write",
+                summary="Uninstall managed payload" + (" with reboot" if not no_reboot else " without reboot"),
+                context={
+                    "host": connection.host,
+                    "requires_reboot": not no_reboot,
+                    "no_reboot": no_reboot,
+                    "no_wait": no_wait,
+                },
+                presentation_id=presentation_id,
+                presentation_values=presentation_values,
+            ),
+        )
+    if dry_run:
+        volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
+        payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{MANAGED_PAYLOAD_DIR_NAME}"]
+    else:
+        mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
+            connection,
+            callbacks=context.to_operation_callbacks(),
+            wait_seconds=mount_wait,
+        )
+        volume_roots = [volume.volume_root for volume in mounted_volumes]
+        payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
+    context.stage("build_uninstall_plan")
+    plan = build_uninstall_plan(
+        connection.host,
+        volume_roots,
+        payload_dirs,
+        reboot_after_uninstall=not no_reboot,
+        wait_after_reboot=not no_wait,
+    )
+    if dry_run:
+        return OperationResult(True, uninstall_plan_payload(uninstall_plan_to_jsonable(plan)))
+    context.stage("uninstall_payload")
+    remote_uninstall_payload(connection, plan)
+    if no_reboot:
+        return OperationResult(True, uninstall_result_payload(
+            rebooted=False,
+            verified=False,
+            reboot_requested=False,
+            waited=False,
+        ))
+    if no_wait:
+        try:
+            request_reboot(
+                connection,
+                strategy="acp_then_ssh",
+                callbacks=context.to_operation_callbacks(),
+                raise_on_request_error=True,
+            )
+        except RebootFlowError as exc:
+            raise AppOperationError(str(exc), code="remote_error") from exc
+        return OperationResult(True, uninstall_result_payload(
+            rebooted=False,
+            verified=False,
+            reboot_requested=True,
+            waited=False,
+        ))
+    try:
+        request_reboot_and_wait(
+            connection,
+            strategy="acp_then_ssh",
+            callbacks=context.to_operation_callbacks(),
+            down_timeout_seconds=60,
+            up_timeout_seconds=240,
+            reboot_no_down_message=UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
+            reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
+    context.stage("verify_post_uninstall")
+    verification = verify_post_uninstall(connection, plan)
+    for line in render_post_uninstall_verification(verification):
+        context.log(line)
+    if not verification:
+        raise AppOperationError("Managed TimeCapsuleSMB files are still present after reboot.", code="remote_error")
+    return OperationResult(True, uninstall_result_payload(
+        rebooted=True,
+        verified=True,
+        reboot_requested=True,
+        waited=True,
+    ))
+
+
+def fsck_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    operation = "fsck"
+    dry_run = bool_param(params, "dry_run")
+    list_volumes = bool_param(params, "list_volumes")
+    no_reboot = bool_param(params, "no_reboot")
+    no_wait = bool_param(params, "no_wait")
+    mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
+    if dry_run and list_volumes:
+        raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code="validation_failed")
+    if not dry_run and not list_volumes:
+        presentation_id = "fsck.no_reboot" if no_reboot else "fsck.reboot"
+        volume = string_param(params, "volume")
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Confirm fsck",
+                message=(
+                    "Run fsck on the selected HFS volume"
+                    + (" and reboot the device?" if not no_reboot else "?")
+                ),
+                action_title="Run fsck",
+                risk="destructive" if not no_reboot else "remote_write",
+                summary="Filesystem check and repair",
+                context={
+                    "volume": volume,
+                    "requires_reboot": not no_reboot,
+                    "no_reboot": no_reboot,
+                    "no_wait": no_wait,
+                },
+                presentation_id=presentation_id,
+                presentation_values={
+                    "volume": volume,
+                    "requires_reboot": not no_reboot,
+                    "no_reboot": no_reboot,
+                    "no_wait": no_wait,
+                },
+            ),
+        )
+    context.stage("load_config")
+    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
+    context.config = config
+    context.stage("resolve_connection")
+    connection = resolve_env_connection(config, allow_empty_password=True)
+    context.connection = connection
+    mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
+        connection,
+        callbacks=context.to_operation_callbacks(),
+        wait_seconds=mount_wait,
+        mount_stage="mount_hfs_volumes",
+    )
+    targets = tuple(fsck_target_from_volume(volume) for volume in mounted_volumes)
+    if list_volumes:
+        context.stage("list_fsck_volumes")
+        context.log(format_fsck_targets(targets))
+        return OperationResult(True, fsck_volume_list_payload({
+            "targets": [fsck_target_to_jsonable(target) for target in targets],
+        }))
+
+    context.stage("select_fsck_volume")
+    try:
+        target = select_fsck_target(
+            targets,
+            string_param(params, "volume") or None,
+        )
+    except RuntimeError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
+    context.update_fields(fsck_device=target.device, fsck_mountpoint=target.mountpoint)
+    if dry_run:
+        context.log(format_fsck_plan(target, reboot=not no_reboot, wait=not no_wait))
+        return OperationResult(True, fsck_plan_payload(fsck_plan_to_jsonable(
+            target,
+            reboot=not no_reboot,
+            wait=not no_wait,
+        )))
+
+    context.stage("run_fsck")
+    script = build_remote_fsck_script(target.device, target.mountpoint, reboot=not no_reboot)
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
+    )
+    if proc.stdout:
+        for line in proc.stdout.splitlines():
+            context.log(line)
+    context.update_fields(returncode=proc.returncode)
+    if proc.returncode != 0:
+        context.set_error(f"Disk repair exited with fsck status {proc.returncode}")
+    if no_reboot:
+        return OperationResult(proc.returncode == 0, fsck_result_payload(
+            device=target.device,
+            mountpoint=target.mountpoint,
+            returncode=proc.returncode,
+            reboot_requested=False,
+            waited=False,
+            verified=False,
+        ))
+    if no_wait:
+        return OperationResult(True, fsck_result_payload(
+            device=target.device,
+            mountpoint=target.mountpoint,
+            reboot_requested=True,
+            waited=False,
+            verified=False,
+        ))
+    try:
+        observe_reboot_cycle(
+            connection,
+            callbacks=context.to_operation_callbacks(),
+            reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
+            reboot_up_timeout_message=REBOOT_UP_TIMEOUT_MESSAGE,
+            down_timeout_seconds=90,
+            up_timeout_seconds=420,
+        )
+    except RebootFlowError as exc:
+        raise AppOperationError(str(exc), code="remote_error") from exc
+    return OperationResult(True, fsck_result_payload(
+        device=target.device,
+        mountpoint=target.mountpoint,
+        reboot_requested=True,
+        waited=True,
+        verified=True,
+    ))
+
+
+def repair_xattrs_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    operation = "repair-xattrs"
+    context.stage("validate_params")
+    dry_run = bool_param(params, "dry_run")
+    path = required_path_param(params, "path")
+    recursive = bool_param(params, "recursive", True)
+    max_depth = optional_int_param(params, "max_depth")
+    include_hidden = bool_param(params, "include_hidden")
+    include_time_machine = bool_param(params, "include_time_machine")
+    fix_permissions = bool_param(params, "fix_permissions")
+    verbose = bool_param(params, "verbose")
+    if not dry_run:
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Confirm xattr repair",
+                message=f"Repair known-safe macOS metadata issues under {path}?",
+                action_title="Repair xattrs",
+                risk="local_write",
+                summary="Repair local mounted-share metadata",
+                context={"path": str(path)},
+                presentation_id="repair_xattrs",
+                presentation_values={"path": str(path)},
+            ),
+        )
+    context.stage("platform_check")
+    if sys.platform != "darwin":
+        raise AppOperationError(
+            "repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.",
+            code="validation_failed",
+        )
+    config = load_optional_env_config(env_path=config_path(params))
+    context.config = config
+    request = repair_xattrs_service.RepairXattrsRequest(
+        path=path,
+        dry_run=dry_run,
+        approve_repairs=not dry_run,
+        recursive=recursive,
+        max_depth=max_depth,
+        include_hidden=include_hidden,
+        include_time_machine=include_time_machine,
+        fix_permissions=fix_permissions,
+        verbose=verbose,
+    )
+    try:
+        result = repair_xattrs_service.run_repair(
+            request,
+            config,
+            callbacks=OperationCallbacks(
+                set_stage=context.stage,
+                update_fields=context.update_fields,
+                log=context.log,
+            ),
+        )
+    except repair_xattrs_service.RepairXattrsServiceError as exc:
+        raise AppOperationError(str(exc) or "repair-xattrs failed", code="validation_failed") from exc
+    return OperationResult(result.returncode == 0, repair_xattrs_payload(result.to_payload_fields()))

@@ -21,14 +21,14 @@ from timecapsulesmb.cli.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
     CommandContext,
-    render_command_debug_lines,
 )
-from timecapsulesmb.cli.runtime import ManagedTargetState
+from timecapsulesmb.services.context import render_operation_debug_lines
 from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
+from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 from timecapsulesmb.telemetry.debug import render_debug_mapping
 from timecapsulesmb.transport.ssh import SshConnection, SshError
@@ -42,7 +42,7 @@ def telemetry_client_from_values(
 
 
 class TelemetryTests(unittest.TestCase):
-    def test_emit_builds_schema_v3_payload_without_stale_config_identity(self) -> None:
+    def test_emit_builds_schema_v4_payload_without_stale_config_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
@@ -59,8 +59,10 @@ class TelemetryTests(unittest.TestCase):
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
                     client.emit("deploy_started")
         payload = dispatch_mock.call_args.args[0]
-        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["schema_version"], 4)
         self.assertEqual(payload["event"], "deploy_started")
+        self.assertEqual(payload["operation"], "deploy")
+        self.assertEqual(payload["phase"], "started")
         self.assertEqual(payload["install_id"], "test-install")
         self.assertEqual(payload["configure_id"], "config-id")
         self.assertNotIn("device_model", payload)
@@ -153,8 +155,52 @@ class TelemetryTests(unittest.TestCase):
         finished_payload = send_mock.call_args.args[0]
         self.assertIn("command_id", started_payload)
         self.assertEqual(started_payload["command_id"], finished_payload["command_id"])
+        self.assertEqual(started_payload["operation_id"], finished_payload["operation_id"])
+        self.assertEqual(started_payload["operation"], "deploy")
+        self.assertEqual(started_payload["phase"], "started")
+        self.assertEqual(started_payload["entrypoint"], "cli")
+        self.assertEqual(started_payload["client"], "terminal")
         self.assertEqual(finished_payload["event"], "deploy_finished")
+        self.assertEqual(finished_payload["phase"], "finished")
         self.assertEqual(finished_payload["result"], "success")
+
+    def test_command_context_records_normalized_options_and_details(self) -> None:
+        telemetry = mock.Mock()
+        args = SimpleNamespace(dry_run=False, no_reboot=False, no_wait=True, volume="Data", password="secret")
+
+        command = CommandContext(telemetry, "fsck", "fsck_started", "fsck_finished", args=args)
+        command.update_fields(
+            fsck_device="/dev/dk2",
+            fsck_mountpoint="/Volumes/Data",
+            reboot_was_attempted=True,
+            device_came_back_after_reboot=False,
+        )
+        command.finish(result="success")
+
+        started_kwargs = telemetry.emit.call_args_list[0].kwargs
+        finished_kwargs = telemetry.emit.call_args_list[1].kwargs
+        self.assertEqual(started_kwargs["options"], {
+            "dry_run": False,
+            "no_reboot": False,
+            "no_wait": True,
+        })
+        self.assertNotIn("password", started_kwargs["options"])
+        self.assertEqual(finished_kwargs["details"]["volume"], "Data")
+        self.assertEqual(finished_kwargs["details"]["fsck_device"], "/dev/dk2")
+        self.assertEqual(finished_kwargs["details"]["fsck_mountpoint"], "/Volumes/Data")
+        self.assertTrue(finished_kwargs["details"]["reboot_requested"])
+        self.assertFalse(finished_kwargs["details"]["verified"])
+
+    def test_operation_telemetry_renames_reserved_legacy_fields(self) -> None:
+        telemetry = mock.Mock()
+
+        command = CommandContext(telemetry, "flash", "flash_started", "flash_finished")
+        command.update_fields(operation="read")
+        command.finish(result="success")
+
+        finished_kwargs = telemetry.emit.call_args_list[1].kwargs
+        self.assertEqual(finished_kwargs["operation"], "flash")
+        self.assertEqual(finished_kwargs["legacy_operation"], "read")
 
     def test_command_context_ignores_started_telemetry_exception(self) -> None:
         telemetry = mock.Mock()
@@ -227,11 +273,11 @@ class TelemetryTests(unittest.TestCase):
             config=config,
         )
         with mock.patch(
-            "timecapsulesmb.cli.context.runtime.resolve_env_connection",
+            "timecapsulesmb.cli.context.service_runtime.resolve_env_connection",
             return_value=connection,
         ) as resolve_mock:
             with mock.patch(
-                "timecapsulesmb.cli.context.runtime.inspect_managed_connection",
+                "timecapsulesmb.cli.context.service_runtime.inspect_managed_connection",
                 return_value=target,
             ) as inspect_mock:
                 result = context.inspect_managed_connection(iface="bridge0", include_probe=True)
@@ -491,7 +537,7 @@ class TelemetryTests(unittest.TestCase):
                 client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
-                        with mock.patch("timecapsulesmb.cli.context.render_command_debug_lines", side_effect=RuntimeError("debug boom")):
+                        with mock.patch("timecapsulesmb.services.context.render_operation_debug_lines", side_effect=RuntimeError("debug boom")):
                             with self.assertRaises(RuntimeError) as raised:
                                 with CommandContext(client, "deploy", "deploy_started", "deploy_finished"):
                                     raise RuntimeError("upload failed")
@@ -643,7 +689,7 @@ class TelemetryTests(unittest.TestCase):
 
         self.assertEqual(lines, ["selected_net_iface=bridge0"])
 
-    def test_render_command_debug_lines_combines_context_sources(self) -> None:
+    def test_render_operation_debug_lines_combines_context_sources(self) -> None:
         state = ProbedDeviceState(
             probe_result=ProbeResult(
                 ssh_port_reachable=True,
@@ -656,8 +702,8 @@ class TelemetryTests(unittest.TestCase):
             ),
             compatibility=None,
         )
-        lines = render_command_debug_lines(
-            command_name="configure",
+        lines = render_operation_debug_lines(
+            operation_name="configure",
             stage="ssh_probe",
             connection=SshConnection("root@192.168.1.217", "secret", "-o ProxyJump=bastion"),
             values={
@@ -697,9 +743,9 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn("reboot_was_attempted=true", lines)
         self.assertNotIn("device_model=TimeCapsule8,119", lines)
 
-    def test_render_command_debug_lines_uses_values_when_connection_is_missing(self) -> None:
-        lines = render_command_debug_lines(
-            command_name="doctor",
+    def test_render_operation_debug_lines_uses_values_when_connection_is_missing(self) -> None:
+        lines = render_operation_debug_lines(
+            operation_name="doctor",
             stage=None,
             connection=None,
             values={"TC_HOST": "root@10.0.0.1", "TC_SSH_OPTS": "-o ConnectTimeout=5"},
@@ -712,11 +758,11 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("host=root@10.0.0.1", lines)
         self.assertIn("ssh_opts=-o ConnectTimeout=5", lines)
 
-    def test_render_command_debug_lines_includes_env_path_when_config_is_available(self) -> None:
+    def test_render_operation_debug_lines_includes_env_path_when_config_is_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
-            lines = render_command_debug_lines(
-                command_name="deploy",
+            lines = render_operation_debug_lines(
+                operation_name="deploy",
                 stage="validate_config",
                 connection=None,
                 values={},

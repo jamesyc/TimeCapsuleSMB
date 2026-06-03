@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 import sys
 
@@ -19,11 +20,11 @@ from timecapsulesmb.core.config import (
     ConfigValidationError,
     build_mdns_device_model_txt,
     DEFAULTS,
-    extract_host,
     load_app_config,
     parse_bool,
     parse_env_file,
     parse_env_value,
+    preserved_env_file_values,
     require_valid_app_config,
     render_env_text,
     validate_app_config,
@@ -34,6 +35,7 @@ from timecapsulesmb.core.config import (
     validate_ssh_target,
     write_env_file,
 )
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.paths import manifest_artifact_paths, resolve_app_paths, resolve_distribution_root
 
 
@@ -120,7 +122,7 @@ class ConfigTests(unittest.TestCase):
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
                 artifact_path.write_bytes(b"payload")
             self.assertEqual(resolve_distribution_root(nested), root)
-            self.assertEqual(resolve_app_paths(nested).env_path, root / ".env")
+            self.assertEqual(resolve_app_paths(nested).config_path, root / ".env")
 
     def test_render_env_text_contains_config_keys(self) -> None:
         values = dict(DEFAULTS)
@@ -139,9 +141,45 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
+        self.assertIn("TC_DEBUG_LOGGING=false", rendered)
         self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
         self.assertIn("TC_ATA_STANDBY=''", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
+
+    def test_render_env_text_preserves_custom_settings_but_omits_deprecated_keys(self) -> None:
+        values = dict(DEFAULTS)
+        values.update({
+            "TC_PASSWORD": "secret",
+            "TC_CUSTOM_SETTING": "kept value",
+            "CUSTOM_FLAG": "",
+            "TC_SAMBA_USER": "admin",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "old-name",
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(render_env_text(values))
+            reparsed = parse_env_file(path)
+
+        self.assertEqual(reparsed["TC_CUSTOM_SETTING"], "kept value")
+        self.assertEqual(reparsed["CUSTOM_FLAG"], "")
+        self.assertNotIn("TC_SAMBA_USER", reparsed)
+        self.assertNotIn("TC_PAYLOAD_DIR_NAME", reparsed)
+        self.assertNotIn("TC_MDNS_INSTANCE_NAME", reparsed)
+
+    def test_preserved_env_file_values_filters_deprecated_runtime_keys(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_CUSTOM_SETTING": "kept",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "NET_IPV4_HINT": "10.0.0.2",
+        }
+
+        preserved = preserved_env_file_values(values)
+
+        self.assertEqual(preserved, {"TC_HOST": "root@10.0.0.2", "TC_CUSTOM_SETTING": "kept"})
 
     def test_env_example_does_not_include_runtime_derived_settings(self) -> None:
         values = parse_env_file(REPO_ROOT / ".env.example")
@@ -235,6 +273,19 @@ class ConfigTests(unittest.TestCase):
             reparsed = parse_env_file(path)
         self.assertEqual(reparsed["TC_CONFIGURE_ID"], "12345678-1234-1234-1234-123456789012")
 
+    def test_write_env_file_is_atomic_when_replace_fails(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.5"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("TC_HOST='root@10.0.0.2'\n")
+            with mock.patch("timecapsulesmb.core.config.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    write_env_file(path, values)
+
+            self.assertEqual(parse_env_file(path)["TC_HOST"], "root@10.0.0.2")
+            self.assertEqual(list(Path(tmp).glob(".env.*.tmp")), [])
+
     def test_parse_env_value_falls_back_for_unbalanced_quotes(self) -> None:
         self.assertEqual(parse_env_value("'unterminated"), "unterminated")
 
@@ -288,9 +339,9 @@ class ConfigTests(unittest.TestCase):
         rendered = render_env_text(values)
         self.assertIn(f"TC_SSH_OPTS={shlex.quote(DEFAULTS['TC_SSH_OPTS'])}", rendered)
 
-    def test_extract_host_removes_user_prefix(self) -> None:
-        self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")
-        self.assertEqual(extract_host("10.0.0.5"), "10.0.0.5")
+    def test_endpoint_host_removes_user_prefix(self) -> None:
+        self.assertEqual(endpoint_host("root@10.0.0.5"), "10.0.0.5")
+        self.assertEqual(endpoint_host("10.0.0.5"), "10.0.0.5")
 
     def test_build_mdns_device_model_txt(self) -> None:
         self.assertEqual(build_mdns_device_model_txt("TimeCapsule"), "model=TimeCapsule")
@@ -326,10 +377,13 @@ class ConfigTests(unittest.TestCase):
 
     def test_validate_ssh_target_accepts_user_at_host_targets(self) -> None:
         self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@10.0.0.2:22", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@127.0.0.1", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@localhost", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@timecapsule.local", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@timecapsule.local:22", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("admin_user@wan.example.com", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@[fd00::2]:22", "Device SSH target"))
 
     def test_validate_ssh_target_rejects_bare_or_unsafe_targets(self) -> None:
         self.assertEqual(
@@ -342,6 +396,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             validate_ssh_target("root;reboot@10.0.0.2", "Device SSH target"),
             "Device SSH target username may contain only letters, numbers, dots, underscores, and hyphens.",
+        )
+        self.assertEqual(
+            validate_ssh_target("root@10.0.0.2:2222", "Device SSH target"),
+            "Device SSH target only supports the default SSH port 22. Set custom SSH ports in TC_SSH_OPTS.",
+        )
+        self.assertEqual(
+            validate_ssh_target("root@timecapsule.local:ssh", "Device SSH target"),
+            "Device SSH target port must be numeric.",
         )
         self.assertEqual(
             validate_ssh_target("root@169.254.44.9", "Device SSH target"),
@@ -382,7 +444,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "invalid_value")
         self.assertEqual(errors[0].key, "TC_ANY_PROTOCOL")
         values["TC_ANY_PROTOCOL"] = "false"
+        values["TC_DEBUG_LOGGING"] = "not-bool"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_DEBUG_LOGGING")
+        values["TC_DEBUG_LOGGING"] = "false"
         values["TC_ATA_IDLE_SECONDS"] = "-1"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_ATA_IDLE_SECONDS")
+        values["TC_ATA_IDLE_SECONDS"] = ""
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].kind, "invalid_value")
@@ -399,13 +472,24 @@ class ConfigTests(unittest.TestCase):
         values["TC_PAYLOAD_DIR_NAME"] = "/bad"
         values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = "not-bool"
         values["TC_ANY_PROTOCOL"] = "not-bool"
+        values["TC_DEBUG_LOGGING"] = "not-bool"
         values["TC_ATA_IDLE_SECONDS"] = "bad"
         values["TC_ATA_STANDBY"] = "bad"
         config = AppConfig.from_values(values, file_values=values)
 
         self.assertEqual(validate_app_config(config, profile="flash"), [])
 
-    def test_flash_profile_requires_password(self) -> None:
+    def test_flash_profile_accepts_request_scoped_password(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        file_values = dict(values)
+        file_values.pop("TC_PASSWORD", None)
+        config = AppConfig.from_values(values, file_values=file_values)
+
+        self.assertEqual(validate_app_config(config, profile="flash"), [])
+
+    def test_flash_profile_still_requires_effective_password(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"
         file_values = dict(values)
@@ -413,6 +497,28 @@ class ConfigTests(unittest.TestCase):
         config = AppConfig.from_values(values, file_values=file_values)
 
         errors = validate_app_config(config, profile="flash")
+
+        self.assertEqual(errors[0].kind, "missing_key")
+        self.assertEqual(errors[0].key, "TC_PASSWORD")
+
+    def test_doctor_profile_accepts_request_scoped_password(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        file_values = dict(values)
+        file_values.pop("TC_PASSWORD", None)
+        config = AppConfig.from_values(values, file_values=file_values)
+
+        self.assertEqual(validate_app_config(config, profile="doctor"), [])
+
+    def test_doctor_profile_still_requires_effective_password(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        file_values = dict(values)
+        file_values.pop("TC_PASSWORD", None)
+        config = AppConfig.from_values(values, file_values=file_values)
+
+        errors = validate_app_config(config, profile="doctor")
 
         self.assertEqual(errors[0].kind, "missing_key")
         self.assertEqual(errors[0].key, "TC_PASSWORD")

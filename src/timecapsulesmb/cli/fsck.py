@@ -2,73 +2,30 @@ from __future__ import annotations
 
 import argparse
 import shlex
-from dataclasses import dataclass
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import observe_reboot_cycle
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
-from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
+from timecapsulesmb.cli.runtime import add_config_argument, add_no_input_argument, no_input_enabled
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
-from timecapsulesmb.device.processes import (
-    render_direct_pkill9_by_ucomm,
-    render_direct_pkill9_manager,
-    render_direct_pkill9_watchdog,
-)
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.device.storage import MaStVolume
+from timecapsulesmb.services import storage as storage_service
+from timecapsulesmb.services.maintenance import (
+    FSCK_REBOOT_NO_DOWN_MESSAGE,
+    FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
+    build_remote_fsck_script,
+    format_fsck_targets,
+    fsck_target_from_volume,
+    FsckTarget,
+    select_fsck_target,
+)
+from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle
+from timecapsulesmb.services.runtime import load_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
 
 
-FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
-FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
-NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
-MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE = "multiple mounted HFS volumes found; specify --volume to select one"
-
-
-@dataclass(frozen=True)
-class FsckTarget:
-    device: str
-    mountpoint: str
-    name: str
-    builtin: bool
-
-
-def _target_from_volume(volume: MaStVolume) -> FsckTarget:
-    return FsckTarget(
-        device=volume.device_path,
-        mountpoint=volume.volume_root,
-        name=volume.name,
-        builtin=volume.builtin,
-    )
-
-
-def _normalize_volume_selector(selector: str) -> str:
-    selector = selector.strip()
-    if selector.startswith("/dev/"):
-        return selector.removeprefix("/dev/")
-    return selector
-
-
-def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None, *, prompt: bool = True) -> FsckTarget:
-    if not targets:
-        raise RuntimeError(NO_MOUNTED_HFS_VOLUMES_MESSAGE)
-    if selector:
-        selected_device = _normalize_volume_selector(selector)
-        for target in targets:
-            if target.device == selector or target.device.removeprefix("/dev/") == selected_device:
-                return target
-        raise RuntimeError(f"HFS volume not found: {selector}")
-    if len(targets) == 1:
-        return targets[0]
-    if not prompt:
-        raise RuntimeError(MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE)
-
-    print("Mounted HFS volumes:")
-    for index, target in enumerate(targets, start=1):
-        kind = "internal" if target.builtin else "external"
-        print(f"  {index}. {target.device} on {target.mountpoint} ({target.name}, {kind})")
+def prompt_fsck_target(targets: tuple[FsckTarget, ...]) -> FsckTarget:
+    print(format_fsck_targets(targets))
     while True:
         answer = input("Select a volume to fsck by number: ").strip()
         if answer.isdigit():
@@ -78,33 +35,11 @@ def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None, *,
         print("Please enter a valid volume number.")
 
 
-def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
-    lines = [
-        render_direct_pkill9_manager(),
-        render_direct_pkill9_watchdog(),
-        render_direct_pkill9_by_ucomm("smbd"),
-        render_direct_pkill9_by_ucomm("afpserver"),
-        render_direct_pkill9_by_ucomm("wcifsnd"),
-        render_direct_pkill9_by_ucomm("wcifsfs"),
-        "sleep 2",
-        f"/sbin/umount -f {shlex.quote(mountpoint)} >/dev/null 2>&1 || true",
-        f"echo '--- fsck_hfs {device} ---'",
-        f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1 || true",
-    ]
-    if reboot:
-        lines.extend(
-            [
-                "echo '--- reboot ---'",
-                DETACHED_SHUTDOWN_REBOOT_COMMAND,
-            ]
-        )
-    return "\n".join(lines)
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run fsck_hfs on a mounted HFS volume and reboot by default.")
     add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before running fsck")
+    add_no_input_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Run fsck only; do not reboot afterward")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for SSH to go down and come back after reboot")
     parser.add_argument("--volume", help="HFS volume device to repair, for example dk2 or /dev/dk2")
@@ -122,23 +57,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.set_stage("validate_config")
         command_context.require_valid_config(profile="fsck")
+        if no_input_enabled(args) and not args.yes:
+            command_context.set_stage("noninteractive_confirmation")
+            message = "Running `fsck` in non-interactive mode requires `--yes` to approve disk repair."
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
         if connection.password:
             command_context.start_optional_airport_identity_probe(connection)
 
-        mounted_volumes = command_context.mount_mast_volumes(
+        mounted_volumes = storage_service.mount_mast_volumes_with_diagnostics(
             connection,
+            callbacks=command_context.to_operation_callbacks(),
             wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
             mount_stage="mount_hfs_volumes",
         )
         command_context.set_stage("select_fsck_volume")
+        targets = tuple(fsck_target_from_volume(volume) for volume in mounted_volumes)
         try:
-            target = select_fsck_target(
-                tuple(_target_from_volume(volume) for volume in mounted_volumes),
-                args.volume,
-                prompt=not args.yes,
-            )
+            if not args.volume and len(targets) > 1 and not args.yes and not no_input_enabled(args):
+                target = prompt_fsck_target(targets)
+            else:
+                target = select_fsck_target(targets, args.volume)
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
         command_context.update_fields(fsck_device=target.device, fsck_mountpoint=target.mountpoint)
@@ -152,6 +94,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?",
                 default=True,
                 noninteractive_message="Running `fsck` requires confirmation when stdin is not interactive. Use `fsck --yes` in a non-interactive environment.",
+                allow_prompt=not no_input_enabled(args),
             )
             if proceed is None:
                 return 1
@@ -178,13 +121,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
-        if not observe_reboot_cycle(
-            connection,
-            command_context,
-            reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
-            down_timeout_seconds=90,
-            up_timeout_seconds=420,
-        ):
+        try:
+            observe_reboot_cycle(
+                connection,
+                callbacks=command_context.to_operation_callbacks(),
+                reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
+                reboot_up_timeout_message="Timed out waiting for SSH after reboot.",
+                down_timeout_seconds=90,
+                up_timeout_seconds=420,
+            )
+        except RebootFlowError as exc:
+            print(str(exc))
+            command_context.fail_with_error(str(exc))
             return 1
 
         command_context.succeed()

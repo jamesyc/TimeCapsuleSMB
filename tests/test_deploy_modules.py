@@ -34,9 +34,6 @@ from timecapsulesmb.deploy.commands import (
     StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
-    ensure_volume_mounted_action,
-    install_permissions_action,
-    prepare_dirs_action,
     remote_action_to_jsonable,
     render_remote_action,
 )
@@ -60,6 +57,7 @@ from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+    DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
@@ -81,10 +79,8 @@ from timecapsulesmb.deploy.boot_assets import (
 )
 from timecapsulesmb.deploy.verify import (
     VerificationResult,
-    managed_runtime_ready,
     render_managed_runtime_verification,
     render_post_uninstall_verification,
-    verify_managed_runtime,
     verify_post_uninstall,
 )
 from timecapsulesmb.core.config import AppConfig
@@ -94,21 +90,17 @@ from timecapsulesmb.device.processes import (
     render_watchdog_process_present,
 )
 from timecapsulesmb.device.probe import (
-    ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
-    ManagedSmbdProbeResult,
-    RUNTIME_ACTIVATION_STATE_NOT_READY,
-    RUNTIME_ACTIVATION_STATE_READY,
-    RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
+    ProbeStepResult,
+    ReadinessProbeResult,
     SMBD_STATUS_HELPERS,
-    RuntimeStartupScriptsProbeResult,
+    RcLocalAutostartProbeResult,
     derive_runtime_naming_identity,
     extract_airport_identity_from_acp_output,
     extract_airport_identity_from_text,
     probe_remote_runtime_naming_identity_conn,
     probe_device_conn,
-    probe_runtime_activation_state_conn,
-    probe_runtime_startup_scripts_conn,
+    probe_netbsd4_rc_local_autostart_conn,
     probe_managed_runtime_conn,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
@@ -116,7 +108,28 @@ from timecapsulesmb.device.probe import (
     wait_for_ssh_state_conn,
 )
 from timecapsulesmb.device.storage import MaStVolume, PayloadHome, mounted_mast_volumes_conn
+from timecapsulesmb.services.activation import ActivationDecision, decide_manual_activation, decide_netbsd4_post_reboot_activation
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.deploy import (
+    DeployArtifactPaths,
+    DeployCompletionMessages,
+    DeployPayloadContext,
+    PreparedDeployPlan,
+    complete_deployment_after_upload,
+)
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+
+
+def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
+    steps = []
+    for index, line in enumerate(lines):
+        if line.startswith("PASS:"):
+            steps.append(ProbeStepResult(f"test_{index}", "pass", line.removeprefix("PASS:")))
+        elif line.startswith("FAIL:"):
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line.removeprefix("FAIL:")))
+        else:
+            steps.append(ProbeStepResult(f"test_{index}", "fail", line))
+    return ReadinessProbeResult(ready=ready, detail=detail, steps=tuple(steps))
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -156,6 +169,58 @@ class DeployModuleTests(unittest.TestCase):
             "12345678-1234-1234-1234-123456789012",
             builtin,
             "hfs",
+        )
+
+    def _prepared_deploy_plan(
+        self,
+        *,
+        startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
+        payload_family: str = "netbsd6_samba4",
+        is_netbsd4: bool = False,
+        wait_after_reboot: bool = True,
+    ) -> PreparedDeployPlan:
+        payload_home = self._payload_home()
+        plan = build_deployment_plan(
+            "root@10.0.0.2",
+            payload_home,
+            Path("bin/smbd"),
+            Path("bin/mdns"),
+            Path("bin/nbns"),
+            startup_mode=startup_mode,
+            wait_after_reboot=wait_after_reboot,
+        )
+        return PreparedDeployPlan(
+            payload_context=DeployPayloadContext(
+                compatibility=mock.Mock(),
+                payload_family=payload_family,
+                is_netbsd4=is_netbsd4,
+                startup_mode=startup_mode,
+            ),
+            artifacts=DeployArtifactPaths(
+                smbd=Path("bin/smbd"),
+                mdns_advertiser=Path("bin/mdns"),
+                nbns_advertiser=Path("bin/nbns"),
+            ),
+            payload_home=payload_home,
+            plan=plan,
+        )
+
+    def _operation_callbacks(self):
+        stages: list[str] = []
+        logs: list[str] = []
+        debug_fields: dict[str, object] = {}
+        finish_fields: dict[str, object] = {}
+        return (
+            OperationCallbacks(
+                set_stage=stages.append,
+                log=logs.append,
+                add_debug_fields=debug_fields.update,
+                update_fields=finish_fields.update,
+            ),
+            stages,
+            logs,
+            debug_fields,
+            finish_fields,
         )
 
     def _extract_shell_function(self, source: str, name: str) -> str:
@@ -6659,15 +6724,15 @@ int main(void) {{
         internal = self._mast_volume("dk2", name="Internal", builtin=True)
         external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", side_effect=[True, False]) as mount_mock:
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[True, False]) as mount_mock:
             mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=17)
 
         self.assertEqual(mounted, (internal,))
         self.assertEqual(
             mount_mock.call_args_list,
             [
-                mock.call(connection, internal, wait_seconds=17),
-                mock.call(connection, external, wait_seconds=17),
+                mock.call(connection, internal.volume_root, internal.device_path, wait_seconds=17),
+                mock.call(connection, external.volume_root, external.device_path, wait_seconds=17),
             ],
         )
 
@@ -6676,7 +6741,7 @@ int main(void) {{
         internal = self._mast_volume("dk2", name="Internal", builtin=True)
         external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=False):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=False):
             mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=30)
 
         self.assertEqual(mounted, ())
@@ -6723,11 +6788,13 @@ int main(void) {{
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
                 with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+                    uploading = []
                     uploaded = []
                     upload_deployment_payload(
                         plan,
                         connection=connection,
                         source_resolver=source_resolver,
+                        on_uploading=uploading.append,
                         on_uploaded=uploaded.append,
                     )
         self.assertEqual(scp_mock.call_count, 12)
@@ -6775,6 +6842,7 @@ int main(void) {{
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
         self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
         self.assertEqual(ssh_mock.call_count, 14)
+        self.assertEqual(uploading, plan.uploads)
         self.assertEqual(uploaded, plan.uploads)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
@@ -6832,19 +6900,15 @@ int main(void) {{
         self.assertIn("mv -f /mnt/Flash/.mdns-advertiser.tmp /mnt/Flash/mdns-advertiser", ssh_commands[1])
         self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
 
-    def test_verify_managed_runtime_passes_when_runtime_probe_succeeds(self) -> None:
-        result = ManagedRuntimeProbeResult(
+    def test_render_managed_runtime_verification_passes_when_runtime_probe_succeeds(self) -> None:
+        verification = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
-            smbd=ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
-            lines=("PASS:managed smbd ready", "PASS:managed mDNS takeover active"),
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
-        with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
 
-        self.assertIs(verification, result)
-        self.assertTrue(managed_runtime_ready(verification))
+        self.assertTrue(verification.ready)
         self.assertEqual(
             render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
             [
@@ -6854,19 +6918,15 @@ int main(void) {{
             ],
         )
 
-    def test_verify_managed_runtime_fails_when_runtime_probe_fails(self) -> None:
-        result = ManagedRuntimeProbeResult(
+    def test_render_managed_runtime_verification_fails_when_runtime_probe_fails(self) -> None:
+        verification = ManagedRuntimeProbeResult(
             ready=False,
             detail="managed runtime is not ready",
-            smbd=ManagedSmbdProbeResult(False, "managed smbd is not ready", ("FAIL:managed smbd is not ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
-            lines=("FAIL:managed smbd is not ready", "PASS:managed mDNS takeover active"),
+            smbd=readiness_result(False, "managed smbd is not ready", ("FAIL:managed smbd is not ready",)),
+            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
-        with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
 
-        self.assertIs(verification, result)
-        self.assertFalse(managed_runtime_ready(verification))
+        self.assertFalse(verification.ready)
         self.assertEqual(
             render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
             [
@@ -6977,36 +7037,6 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("manager=0", result.stdout)
-        self.assertIn("self=1", result.stdout)
-
-    def test_probe_status_helpers_detect_runtime_startup_scripts(self) -> None:
-        script = (
-            SMBD_STATUS_HELPERS
-            + r'''
-rc_local="101 1 S 0:00.00 sh /bin/sh /mnt/Flash/rc.local"
-boot="102 1 S 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
-start_samba="103 1 S 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
-zombie_boot="104 1 Z 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
-self_match=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/boot.sh
-11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/rc.local'
-EOF
-)
-runtime_startup_script_present "$rc_local"; echo "rc-local=$?"
-runtime_startup_script_present "$boot"; echo "boot=$?"
-runtime_startup_script_present "$start_samba"; echo "start-samba=$?"
-runtime_startup_script_present "$zombie_boot"; echo "zombie=$?"
-runtime_startup_script_present "$self_match"; echo "self=$?"
-'''
-        )
-
-        result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("rc-local=0", result.stdout)
-        self.assertIn("boot=0", result.stdout)
-        self.assertIn("start-samba=1", result.stdout)
-        self.assertIn("zombie=1", result.stdout)
         self.assertIn("self=1", result.stdout)
 
     def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_manager(self) -> None:
@@ -7377,126 +7407,310 @@ fi
         self.assertEqual(result.detail, "managed smbd readiness probe timed out")
         self.assertEqual(result.lines, ("FAIL:managed smbd readiness probe timed out",))
 
-    def test_probe_managed_mdns_takeover_single_shot_checks_process_binding_and_apple_responder(self) -> None:
+    def test_probe_managed_mdns_takeover_uses_timed_subprobes(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0, stdout=""),
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            ],
         ) as run_ssh_mock:
-            self.assertTrue(probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45).ready)
-        remote_command = run_ssh_mock.call_args.args[1]
-        self.assertIn("capture_ps_out()", remote_command)
-        self.assertIn("mdns_process_present()", remote_command)
-        self.assertIn("apple_mdns_present()", remote_command)
-        self.assertIn('capture_fstat_for_ucomm "$ps_out" mdns-advertiser', remote_command)
-        self.assertIn('/usr/bin/fstat -p "$1"', remote_command)
-        self.assertIn("mdns_bound_5353()", remote_command)
-        self.assertIn("--print-mdns-socket-families", remote_command)
-        self.assertNotIn("--check-auto-ip", remote_command)
-        self.assertNotIn('out="$(fstat 2>&1)"', remote_command)
-        self.assertNotIn("max_attempts", remote_command)
-        self.assertNotIn("sleep 5", remote_command)
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
 
-    def test_probe_managed_mdns_takeover_returns_detail_when_not_ready(self) -> None:
+        self.assertTrue(result.ready)
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list], [8, 12, 24, 16])
+        remote_commands = [call.args[1] for call in run_ssh_mock.call_args_list]
+        self.assertIn("[ ! -e \"$RUNTIME_MDNS_BIN\" ]", remote_commands[0])
+        self.assertIn("ps axww", remote_commands[1])
+        self.assertIn("--print-mdns-socket-families", remote_commands[2])
+        self.assertIn("/usr/bin/fstat -p 123", remote_commands[3])
+        self.assertIn("PASS:mdns-advertiser bound to required UDP 5353 listeners", result.lines)
+        self.assertIn("PASS:Apple mDNSResponder is stopped", result.lines)
+
+    def test_probe_managed_mdns_takeover_retries_binary_probe_timeout_with_min_timeout(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout="FAIL:Apple mDNSResponder is still running\n"),
+            side_effect=[
+                SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            ],
+        ) as run_ssh_mock:
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=1)
+
+        self.assertTrue(result.ready)
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]], [5, 5])
+        self.assertNotIn("FAIL:mdns-advertiser binary probe timed out after 5s", result.lines)
+
+    def test_probe_managed_mdns_takeover_reports_binary_timeout_after_retry(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=[
+                SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
+            ],
+        ) as run_ssh_mock:
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=1)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "mdns-advertiser binary probe timed out after 5s")
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list], [5, 5])
+        self.assertIn("FAIL:mdns-advertiser binary probe timed out after 5s", result.lines)
+
+    def test_probe_managed_mdns_takeover_reports_apple_responder_conflict(self) -> None:
+        ps_out = (
+            "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+            "124 1 S 0:00 mDNSResponder /usr/sbin/mDNSResponder\n"
+        )
+        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            ],
         ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "Apple mDNSResponder is still running")
 
-    def test_probe_managed_mdns_takeover_returns_detail_when_probe_times_out(self) -> None:
+    def test_probe_managed_mdns_takeover_reports_socket_family_timeout(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: runtime probe"),
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: socket families"),
+            ],
         ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
         self.assertFalse(result.ready)
-        self.assertEqual(result.detail, "managed mDNS takeover probe timed out")
-        self.assertEqual(result.lines, ("FAIL:managed mDNS takeover probe timed out",))
+        self.assertEqual(result.detail, "mdns-advertiser socket family probe timed out after 24s")
+        self.assertIn("FAIL:mdns-advertiser socket family probe timed out after 24s", result.lines)
 
-    def test_probe_runtime_startup_scripts_checks_rc_local_and_start_samba(self) -> None:
+    def test_probe_managed_mdns_takeover_reports_process_table_timeout(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0, stdout="PASS:managed runtime startup script is running\n"),
-        ) as run_ssh_mock:
-            result = probe_runtime_startup_scripts_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=7)
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
+            ],
+        ):
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "mDNS process table probe timed out after 12s")
+        self.assertIn("FAIL:mDNS process table probe timed out after 12s", result.lines)
 
-        self.assertTrue(result.running)
-        self.assertEqual(result.detail, "managed runtime startup script is running")
-        remote_command = run_ssh_mock.call_args.args[1]
-        self.assertIn("runtime_startup_script_present", remote_command)
-        self.assertIn("capture_ps_out", remote_command)
-        self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], 7)
+    def test_probe_managed_mdns_takeover_reports_fstat_timeout(self) -> None:
+        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=[
+                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
+                SshCommandTimeout("Timed out waiting for ssh command to finish: fstat"),
+            ],
+        ):
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "mdns-advertiser fstat probe timed out after 16s")
+        self.assertIn("FAIL:mdns-advertiser fstat probe timed out after 16s", result.lines)
 
-    def test_probe_runtime_activation_state_detects_startup_before_running_rc_local(self) -> None:
-        startup_running = RuntimeStartupScriptsProbeResult(
-            running=True,
-            detail="managed runtime startup script is running",
-            lines=("PASS:managed runtime startup script is running",),
-        )
-        with mock.patch("timecapsulesmb.device.probe.probe_runtime_startup_scripts_conn", return_value=startup_running):
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_conn") as runtime_mock:
-                result = probe_runtime_activation_state_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+    def test_probe_netbsd4_rc_local_autostart_detects_login_marker(self) -> None:
+        connection = SshConnection("host", "pw", "-o foo")
+        login = b"#!/bin/sh\nif [ -x /mnt/Flash/rc.local ]; then /mnt/Flash/rc.local; fi\n"
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_capture_bytes", return_value=login) as run_mock:
+            result = probe_netbsd4_rc_local_autostart_conn(connection, timeout_seconds=7)
 
-        self.assertEqual(result.state, RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING)
-        self.assertIs(result.startup_scripts, startup_running)
-        runtime_mock.assert_not_called()
+        self.assertTrue(result.enabled)
+        self.assertEqual(result.login_size, len(login))
+        self.assertEqual(result.detail, "/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local")
+        run_mock.assert_called_once()
+        self.assertEqual(run_mock.call_args.args[:2], (connection, "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null"))
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 7)
 
-    def test_probe_runtime_activation_state_reports_ready_runtime(self) -> None:
-        startup_absent = RuntimeStartupScriptsProbeResult(
-            running=False,
-            detail="managed runtime startup script is not running",
-            lines=("FAIL:managed runtime startup script is not running",),
-        )
+    def test_probe_netbsd4_rc_local_autostart_reports_missing_marker(self) -> None:
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_capture_bytes", return_value=b"#!/bin/sh\nexit 0\n"):
+            result = probe_netbsd4_rc_local_autostart_conn(SshConnection("host", "pw", "-o foo"))
+
+        self.assertFalse(result.enabled)
+        self.assertEqual(result.detail, "/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local")
+
+    def test_decide_manual_activation_skips_ready_runtime(self) -> None:
         runtime_ready = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
-            smbd=ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
         )
-        with mock.patch("timecapsulesmb.device.probe.probe_runtime_startup_scripts_conn", return_value=startup_absent):
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_conn", return_value=runtime_ready):
-                result = probe_runtime_activation_state_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+        with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime_ready) as runtime_mock:
+            decision = decide_manual_activation(SshConnection("host", "pw", "-o foo"), runtime_probe_timeout_seconds=9)
 
-        self.assertEqual(result.state, RUNTIME_ACTIVATION_STATE_READY)
-        self.assertIs(result.runtime, runtime_ready)
-        self.assertIs(result.startup_scripts, startup_absent)
+        self.assertFalse(decision.run_actions)
+        self.assertFalse(decision.verify_runtime)
+        self.assertEqual(decision.reason, "runtime_already_ready")
+        self.assertIs(decision.runtime, runtime_ready)
+        runtime_mock.assert_called_once_with(SshConnection("host", "pw", "-o foo"), timeout_seconds=9)
 
-    def test_probe_runtime_activation_state_checks_startup_again_after_runtime_probe(self) -> None:
-        startup_absent = RuntimeStartupScriptsProbeResult(
-            running=False,
-            detail="managed runtime startup script is not running",
-            lines=("FAIL:managed runtime startup script is not running",),
+    def test_decide_netbsd4_post_reboot_activation_uses_live_login_autostart(self) -> None:
+        autostart = RcLocalAutostartProbeResult(
+            enabled=True,
+            detail="/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local",
+            login_size=128,
         )
-        startup_running = RuntimeStartupScriptsProbeResult(
-            running=True,
-            detail="managed runtime startup script is running",
-            lines=("PASS:managed runtime startup script is running",),
-        )
-        runtime_not_ready = ManagedRuntimeProbeResult(
-            ready=False,
-            detail="runtime verification timed out after 20s",
-            smbd=ManagedSmbdProbeResult(False, "managed smbd not ready", ("FAIL:managed smbd not ready",)),
-            mdns=ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",)),
-        )
-        with mock.patch(
-            "timecapsulesmb.device.probe.probe_runtime_startup_scripts_conn",
-            side_effect=[startup_absent, startup_running],
-        ) as startup_mock:
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_conn", return_value=runtime_not_ready) as runtime_mock:
-                result = probe_runtime_activation_state_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+        with mock.patch("timecapsulesmb.services.activation.probe_netbsd4_rc_local_autostart_conn", return_value=autostart):
+            decision = decide_netbsd4_post_reboot_activation(SshConnection("host", "pw", "-o foo"))
 
-        self.assertEqual(result.state, RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING)
-        self.assertIs(result.runtime, runtime_not_ready)
-        self.assertIs(result.startup_scripts, startup_running)
-        self.assertEqual(startup_mock.call_count, 2)
-        runtime_mock.assert_called_once_with(SshConnection("host", "pw", "-o foo"), timeout_seconds=20)
+        self.assertFalse(decision.run_actions)
+        self.assertTrue(decision.verify_runtime)
+        self.assertEqual(decision.reason, "firmware_autostart_enabled")
+        self.assertIs(decision.autostart, autostart)
+
+    def test_complete_deployment_activate_now_runs_actions_and_verifies_runtime(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW)
+        callbacks, stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        run_actions = mock.Mock()
+        verify_runtime = mock.Mock()
+        request_reboot_func = mock.Mock()
+        request_reboot_and_wait_func = mock.Mock()
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=False,
+            callbacks=callbacks,
+            run_remote_actions_func=run_actions,
+            request_reboot_func=request_reboot_func,
+            request_reboot_and_wait_func=request_reboot_and_wait_func,
+            verify_runtime_func=verify_runtime,
+        )
+
+        run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
+        request_reboot_func.assert_not_called()
+        request_reboot_and_wait_func.assert_not_called()
+        verify_runtime.assert_called_once()
+        self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_activation")
+        self.assertEqual(stages, ["activate_runtime"])
+        self.assertIn("Starting deployed runtime without reboot.", logs)
+        self.assertFalse(result.reboot_requested)
+        self.assertFalse(result.rebooted)
+        self.assertTrue(result.verified)
+
+    def test_complete_deployment_no_wait_requests_reboot_without_verifying_runtime(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            payload_family="netbsd4be_samba4",
+            is_netbsd4=True,
+            wait_after_reboot=False,
+        )
+        callbacks, _stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        request_reboot_func = mock.Mock()
+        request_reboot_and_wait_func = mock.Mock()
+        verify_runtime = mock.Mock()
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=True,
+            callbacks=callbacks,
+            messages=DeployCompletionMessages(reboot_request_message="Requesting reboot..."),
+            request_reboot_func=request_reboot_func,
+            request_reboot_and_wait_func=request_reboot_and_wait_func,
+            verify_runtime_func=verify_runtime,
+        )
+
+        request_reboot_func.assert_called_once_with(
+            connection,
+            strategy="ssh_shutdown_then_reboot",
+            callbacks=callbacks,
+            raise_on_request_error=True,
+        )
+        request_reboot_and_wait_func.assert_not_called()
+        verify_runtime.assert_not_called()
+        self.assertIn("Requesting reboot...", logs)
+        self.assertTrue(result.reboot_requested)
+        self.assertFalse(result.waited)
+        self.assertFalse(result.verified)
+
+    def test_complete_deployment_netbsd4_runs_activation_after_reboot_when_autostart_missing(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            payload_family="netbsd4be_samba4",
+            is_netbsd4=True,
+        )
+        callbacks, stages, logs, debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        run_actions = mock.Mock()
+        verify_runtime = mock.Mock()
+        request_reboot_and_wait_func = mock.Mock()
+        activation_decision = ActivationDecision(
+            run_actions=True,
+            verify_runtime=True,
+            reason="firmware_autostart_missing",
+            detail="/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local",
+        )
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=False,
+            callbacks=callbacks,
+            run_remote_actions_func=run_actions,
+            request_reboot_and_wait_func=request_reboot_and_wait_func,
+            decide_post_reboot_activation=mock.Mock(return_value=activation_decision),
+            verify_runtime_func=verify_runtime,
+        )
+
+        request_reboot_and_wait_func.assert_called_once()
+        run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
+        verify_runtime.assert_called_once()
+        self.assertEqual(stages, ["probe_runtime", "post_reboot_activation"])
+        self.assertEqual(debug_fields["activation_decision"], "firmware_autostart_missing")
+        self.assertTrue(debug_fields["manual_activation_required"])
+        self.assertIn("Activating deployed runtime after reboot.", logs)
+        self.assertTrue(result.rebooted)
+        self.assertTrue(result.verified)
+
+    def test_complete_deployment_netbsd6_reboot_waits_for_runtime(self) -> None:
+        prepared_plan = self._prepared_deploy_plan(startup_mode=DEPLOY_STARTUP_REBOOT_THEN_VERIFY)
+        callbacks, stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        verify_runtime = mock.Mock()
+
+        result = complete_deployment_after_upload(
+            connection,
+            prepared_plan,
+            no_wait=False,
+            callbacks=callbacks,
+            messages=DeployCompletionMessages(reboot_runtime_wait_message="Waiting for managed runtime..."),
+            request_reboot_and_wait_func=mock.Mock(),
+            verify_runtime_func=verify_runtime,
+        )
+
+        verify_runtime.assert_called_once()
+        self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_reboot")
+        self.assertIn("Waiting for managed runtime...", logs)
+        self.assertEqual(stages, [])
+        self.assertTrue(result.verified)
 
     def test_probe_managed_runtime_polls_both_probes_and_rechecks_mdns_after_settle(self) -> None:
-        smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
-        mdns_not_ready = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",))
-        mdns_ready = ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
+        smbd_ready = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns_not_ready = readiness_result(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",))
+        mdns_ready = readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.2, 1.3, 1.4, 5.1, 5.2, 5.3, 10.5, 10.6, 10.7])
         with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", side_effect=[smbd_ready, smbd_ready]) as smbd_mock:
@@ -7511,9 +7725,9 @@ fi
         self.assertIn(mock.call(3.0), sleep_mock.call_args_list)
 
     def test_probe_managed_runtime_continues_polling_after_single_probe_timeout(self) -> None:
-        smbd_timeout = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
-        smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
-        mdns_ready = ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
+        smbd_timeout = readiness_result(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        smbd_ready = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns_ready = readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
         with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", side_effect=[smbd_timeout, smbd_ready]) as smbd_mock:
@@ -7532,8 +7746,8 @@ fi
         self.assertEqual(mdns_mock.call_count, 2)
 
     def test_probe_managed_runtime_reports_readable_timeout(self) -> None:
-        smbd_timeout = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
-        mdns_timeout = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
+        smbd_timeout = readiness_result(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        mdns_timeout = readiness_result(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.1, 0.2, 0.3, 1.1])
         with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", return_value=smbd_timeout):
@@ -7598,10 +7812,12 @@ fi
         )
 
         text = format_deployment_plan(plan)
-        self.assertIn("Remote actions (runtime activation):", text)
+        self.assertIn("Remote actions (post-reboot runtime start if firmware autostart is missing):", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("mode: reboot_then_activate", text)
-        self.assertIn("follow-up: run /mnt/Flash/rc.local after SSH returns", text)
+        self.assertIn("probe /etc/rc.d/LOGIN for /mnt/Flash/rc.local", text)
+        self.assertIn("if present: wait for managed runtime", text)
+        self.assertIn("if missing: run /mnt/Flash/rc.local, then wait for managed runtime", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("smbd is bound to required TCP 445 sockets", text)
         self.assertIn("managed mDNS takeover becomes ready", text)
@@ -7628,16 +7844,45 @@ fi
             ],
         )
         self.assertEqual([check.id for check in plan.post_deploy_checks], [
+            "managed_runtime_smbd_binary_present",
             "managed_runtime_smb_conf_present",
+            "active_smb_conf_passdb_ram",
+            "active_smb_conf_username_map_ram",
+            "active_smb_conf_xattr_tdb_persistent",
+            "managed_share_volumes_mounted",
+            "managed_runtime_manager_process",
             "managed_smbd_parent_process",
             "managed_smbd_bound_445",
             "managed_mdns_takeover_ready",
+            "managed_mdns_settle_healthy",
         ])
         text = format_deployment_plan(plan)
         self.assertIn("mode: activate_now", text)
         self.assertIn("Reboot:\n  no", text)
         self.assertIn("follow-up: run /mnt/Flash/rc.local without rebooting", text)
         self.assertIn("managed runtime smb.conf is present", text)
+
+    def test_reboot_then_activate_no_wait_plan_skips_post_reboot_activation_and_checks(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan(
+            "root@10.0.0.2",
+            paths,
+            Path("bin/smbd"),
+            Path("bin/mdns"),
+            Path("bin/nbns"),
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+            wait_after_reboot=False,
+        )
+
+        self.assertTrue(plan.reboot_required)
+        self.assertFalse(plan.wait_after_reboot)
+        self.assertEqual(plan.activation_actions, [])
+        self.assertEqual(plan.post_deploy_checks, [])
+        text = format_deployment_plan(plan)
+        self.assertNotIn("Remote actions (runtime activation):", text)
+        self.assertIn("action: request reboot and return without post-reboot activation or verification", text)
+        self.assertIn("follow-up: return immediately after reboot request", text)
+        self.assertIn("Post-deploy checks:\n  none", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
@@ -7703,18 +7948,18 @@ fi
     def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
         prepare_cmd = render_remote_action(
-            prepare_dirs_action(
-                [payload_dir, f"{payload_dir}/private", f"{payload_dir}/cache"],
-                [RemoteSymlink("/root/tc netbsd4", "/mnt/Memory/samba4")],
+            PrepareDirsAction(
+                (payload_dir, f"{payload_dir}/private", f"{payload_dir}/cache"),
+                (RemoteSymlink("/root/tc netbsd4", "/mnt/Memory/samba4"),),
             )
         )
         permissions_cmd = render_remote_action(
-            install_permissions_action(
-                [
+            InstallPermissionsAction(
+                (
                     RemotePermission(f"{payload_dir}/cache", "755"),
                     RemotePermission(f"{payload_dir}/nbns-advertiser", "755"),
                     RemotePermission(f"{payload_dir}/private/smbpasswd", "600"),
-                ]
+                )
             )
         )
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4'", prepare_cmd)
@@ -7733,16 +7978,6 @@ fi
         self.assertEqual(
             render_remote_action(RunScriptAction("/mnt/Flash/Time Capsule SMB/rc.local")),
             "/bin/sh '/mnt/Flash/Time Capsule SMB/rc.local'",
-        )
-
-    def test_collection_action_factories_normalize_to_tuples(self) -> None:
-        self.assertEqual(
-            prepare_dirs_action(["/payload"], [RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4")]),
-            PrepareDirsAction(("/payload",), (RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),)),
-        )
-        self.assertEqual(
-            install_permissions_action([RemotePermission("/payload/private", "700")]),
-            InstallPermissionsAction((RemotePermission("/payload/private", "700"),)),
         )
 
     def test_remote_action_json_preserves_dry_run_shape(self) -> None:
@@ -7775,8 +8010,8 @@ fi
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        self.assertEqual(plan.post_upload_actions[0], ensure_volume_mounted_action("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
-        self.assertIn(install_permissions_action(plan.permissions), plan.post_upload_actions)
+        self.assertEqual(plan.post_upload_actions[0], EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
+        self.assertIn(InstallPermissionsAction(tuple(plan.permissions)), plan.post_upload_actions)
 
     def test_deployment_plan_guards_each_payload_write_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

@@ -13,7 +13,7 @@
 #   make venv                    - create local virtualenv at .venv
 #   make install                 - install Python dependencies into .venv
 #   make test                    - run C compile checks and Python pytest suite
-#   make test-parallel           - run C compile checks and module-parallel test runner
+#   make test-parallel           - run C compile checks and pytest-xdist suite
 #   make coverage                - run Python tests with coverage and show missing lines
 #   make coverage-html           - write an HTML coverage report to htmlcov/
 #   make test-c                  - compile-check mdns/nbns helper sources
@@ -42,7 +42,7 @@ test: install test-c
 	$(PY) -m pytest
 
 test-parallel: install test-c
-	PYTHONPATH=src $(PY) -m tests.run_parallel --jobs auto --verbose
+	$(PY) -m pytest -n auto --dist loadfile
 
 coverage: install
 	$(PY) -m coverage run -m pytest

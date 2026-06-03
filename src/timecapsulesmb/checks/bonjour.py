@@ -6,7 +6,7 @@ from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.core.net import extract_host, ipv4_literal, ipv6_literal, resolve_host_ips
+from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.discovery.bonjour import (
     BonjourIPFamily,
     BonjourDiscoverySnapshot,
@@ -67,7 +67,7 @@ def build_bonjour_expected_identity(
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
 ) -> BonjourExpectedIdentity:
     target_ip = None
-    candidate_ip = extract_host(config.get("TC_HOST")).strip()
+    candidate_ip = endpoint_host(config.get("TC_HOST")).strip()
     if candidate_ip:
         target_ip = ipv4_literal(candidate_ip) or ipv6_literal(candidate_ip)
     return BonjourExpectedIdentity(

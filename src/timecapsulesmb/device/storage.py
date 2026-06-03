@@ -454,20 +454,6 @@ def ensure_volume_root_mounted_conn(
     return proc.returncode == 0
 
 
-def ensure_mast_volume_mounted_conn(
-    connection: SshConnection,
-    volume: MaStVolume,
-    *,
-    wait_seconds: int,
-) -> bool:
-    return ensure_volume_root_mounted_conn(
-        connection,
-        volume.volume_root,
-        volume.device_path,
-        wait_seconds=wait_seconds,
-    )
-
-
 def verify_payload_home_conn(
     connection: SshConnection,
     payload_home: PayloadHome,
@@ -506,7 +492,12 @@ def mounted_mast_volumes_conn(
 ) -> tuple[MaStVolume, ...]:
     mounted: list[MaStVolume] = []
     for volume in volumes:
-        if ensure_mast_volume_mounted_conn(connection, volume, wait_seconds=wait_seconds):
+        if ensure_volume_root_mounted_conn(
+            connection,
+            volume.volume_root,
+            volume.device_path,
+            wait_seconds=wait_seconds,
+        ):
             mounted.append(volume)
     return tuple(mounted)
 
@@ -566,7 +557,12 @@ def select_payload_home_with_diagnostics_conn(
 ) -> PayloadHomeSelection:
     checks: list[PayloadCandidateCheck] = []
     for volume in ordered_payload_candidate_volumes(volumes):
-        mounted = ensure_mast_volume_mounted_conn(connection, volume, wait_seconds=wait_seconds)
+        mounted = ensure_volume_root_mounted_conn(
+            connection,
+            volume.volume_root,
+            volume.device_path,
+            wait_seconds=wait_seconds,
+        )
         writable = volume_root_is_writable_conn(connection, volume.volume_root) if mounted else None
         checks.append(PayloadCandidateCheck(volume, mounted, writable))
         if mounted and writable:

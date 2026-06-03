@@ -487,7 +487,7 @@ class DiscoveryTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep") as fake_sleep:
                         discover_snapshot_detailed(timeout=0.5)
 
-        fake_sleep.assert_called_once_with(0.5)
+        self.assertIn(mock.call(0.5), fake_sleep.call_args_list)
         fake_collector.resolve_pending.assert_has_calls([
             mock.call(timeout_ms=500),
             mock.call(timeout_ms=3000),

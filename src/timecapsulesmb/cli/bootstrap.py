@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_optional_env_config
+from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import find_command
 
@@ -16,8 +17,6 @@ from timecapsulesmb.transport.local import find_command
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
-ANSI_RED = "\033[31m"
-ANSI_RESET = "\033[0m"
 HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 MACOS_SSHPASS_FORMULA = "sshpass"
 REQUIRED_HOST_TOOLS = ("sshpass", "smbclient")
@@ -32,14 +31,64 @@ LINUX_HOST_TOOL_PACKAGES = {
     "zypper": {"sshpass": "sshpass", "smbclient": "samba-client"},
     "pacman": {"sshpass": "sshpass", "smbclient": "smbclient"},
 }
+COMMAND_OUTPUT_ERROR_LIMIT = 8192
 
 
 class BootstrapError(Exception):
     pass
 
 
+class BootstrapCommandError(Exception):
+    def __init__(self, cmd: list[str], returncode: int, stdout: str, stderr: str) -> None:
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        super().__init__(f"Command failed with exit code {returncode}: {cmd}")
+
+
 def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+        sys.stdout.flush()
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+        sys.stderr.flush()
+    if proc.returncode != 0:
+        raise BootstrapCommandError(cmd, proc.returncode, proc.stdout or "", proc.stderr or "")
+
+
+def _truncate_command_output(text: str, limit: int = COMMAND_OUTPUT_ERROR_LIMIT) -> str:
+    if len(text) <= limit:
+        return text.rstrip()
+    omitted = len(text) - limit
+    return f"{text[:limit].rstrip()}\n...<truncated {omitted} chars>"
+
+
+def _format_command_output(label: str, text: str) -> str | None:
+    formatted = _truncate_command_output(text)
+    if not formatted:
+        return None
+    return f"{label}:\n{formatted}"
+
+
+def _format_command_error(exc: BootstrapCommandError) -> str:
+    message = f"Command failed with exit code {exc.returncode}: {exc.cmd}"
+    output = _format_command_output("stderr", exc.stderr)
+    if output is None:
+        output = _format_command_output("stdout", exc.stdout)
+    if output is not None:
+        message = f"{message}\n\n{output}"
+    return message
 
 
 def current_platform_label() -> str:
@@ -48,10 +97,6 @@ def current_platform_label() -> str:
     if sys.platform.startswith("linux"):
         return "Linux"
     return sys.platform
-
-
-def red(text: str) -> str:
-    return f"{ANSI_RED}{text}{ANSI_RESET}"
 
 
 def ensure_venv(python: str) -> Path:
@@ -101,6 +146,11 @@ def _macos_manual_install_command(missing_tools: list[str]) -> str:
     return f"brew install {' '.join(packages)}"
 
 
+def _format_macos_host_tool_packages(missing_tools: list[str]) -> str:
+    packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
+    return ", ".join(packages)
+
+
 def _linux_install_plan(missing_tools: list[str]) -> tuple[list[list[str]], str] | None:
     for manager, packages_by_tool in LINUX_HOST_TOOL_PACKAGES.items():
         executable = find_command(manager)
@@ -128,9 +178,9 @@ def _linux_install_plan(missing_tools: list[str]) -> tuple[list[list[str]], str]
 
 
 def _raise_host_tool_install_error(message: str, manual_command: str | None = None) -> None:
-    print(red(message), flush=True)
+    print(color_red(message), flush=True)
     if manual_command:
-        print(red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+        print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
         print(manual_command, flush=True)
     raise BootstrapError(message)
 
@@ -138,10 +188,21 @@ def _raise_host_tool_install_error(message: str, manual_command: str | None = No
 def _install_macos_host_tools(missing_tools: list[str]) -> None:
     brew = find_command("brew")
     if brew is None:
-        print(red(f"Homebrew is required to install missing host tools: {_format_tools(missing_tools)}"), flush=True)
-        print(red("Install Homebrew, then rerun './tcapsule bootstrap':"), flush=True)
+        print(
+            color_red(
+                "Install Homebrew so bootstrap can install missing host tools automatically, "
+                f"or install these macOS packages manually: {_format_macos_host_tool_packages(missing_tools)}. "
+                "Then rerun './tcapsule bootstrap'."
+            ),
+            flush=True,
+        )
+        print(color_red(f"Missing host tools: {_format_tools(missing_tools)}"), flush=True)
+        print(color_red("Homebrew install command:"), flush=True)
         print(HOMEBREW_INSTALL_COMMAND, flush=True)
-        raise BootstrapError("Homebrew is required to install missing host tools on macOS.")
+        raise BootstrapError(
+            "Install Homebrew or manually install the missing macOS host tool packages: "
+            f"{_format_macos_host_tool_packages(missing_tools)}"
+        )
 
     packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
     print(f"Installing missing host tools via Homebrew: {_format_tools(missing_tools)}", flush=True)
@@ -177,11 +238,18 @@ def install_required_host_tools() -> None:
                 f"Automatic host tool installation is not implemented for {platform_label}.",
                 f"Install {_format_tools(missing_tools)} with your OS package manager.",
             )
+    except BootstrapCommandError as exc:
+        message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
+        print(color_red(message), flush=True)
+        if manual_command:
+            print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+            print(manual_command, flush=True)
+        raise BootstrapError(f"{message}\n\n{_format_command_error(exc)}") from exc
     except subprocess.CalledProcessError as exc:
         message = f"Failed to install missing host tools automatically: {_format_tools(missing_tools)} (exit code {exc.returncode})"
-        print(red(message), flush=True)
+        print(color_red(message), flush=True)
         if manual_command:
-            print(red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
+            print(color_red("Install the missing tools manually, then rerun './tcapsule bootstrap':"), flush=True)
             print(manual_command, flush=True)
         raise BootstrapError(message) from exc
 
@@ -237,6 +305,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             install_python_requirements(venv_python)
             command_context.set_stage("install_host_tools")
             install_required_host_tools()
+        except BootstrapCommandError as e:
+            message = _format_command_error(e)
+            print(message, file=sys.stderr)
+            command_context.fail_with_error(message)
+            return e.returncode or 1
         except subprocess.CalledProcessError as e:
             message = f"Command failed with exit code {e.returncode}: {e.cmd}"
             print(message, file=sys.stderr)

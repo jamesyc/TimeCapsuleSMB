@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from timecapsulesmb.deploy.planner import UninstallPlan
 from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
-    probe_managed_runtime_conn,
     probe_paths_absent_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -20,18 +19,6 @@ class VerificationResult:
         return self.ok
 
 
-def verify_managed_runtime(
-    connection: SshConnection,
-    *,
-    timeout_seconds: int = 180,
-) -> ManagedRuntimeProbeResult:
-    return probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
-
-
-def managed_runtime_ready(result: ManagedRuntimeProbeResult) -> bool:
-    return result.ready
-
-
 def render_managed_runtime_verification(
     result: ManagedRuntimeProbeResult,
     *,
@@ -40,13 +27,13 @@ def render_managed_runtime_verification(
     lines: list[str] = []
     if heading:
         lines.append(heading)
-    for line in result.lines:
-        if line.startswith("PASS:"):
-            lines.append(f"  ok: {line.removeprefix('PASS:')}")
-        elif line.startswith("FAIL:"):
-            lines.append(f"  failed: {line.removeprefix('FAIL:')}")
-        elif line:
-            lines.append(f"  {line}")
+    for step in result.steps:
+        if step.status == "pass":
+            lines.append(f"  ok: {step.detail}")
+        elif step.status == "skip":
+            lines.append(f"  skipped: {step.detail}")
+        elif step.detail:
+            lines.append(f"  failed: {step.detail}")
     return lines
 
 

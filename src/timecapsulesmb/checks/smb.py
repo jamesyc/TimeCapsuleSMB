@@ -32,6 +32,25 @@ class SmbClientTarget:
 SmbClientTargetInput = Union[str, SmbClientTarget]
 
 
+def parse_smbclient_disk_shares(stdout: str) -> list[str]:
+    shares: list[str] = []
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            parts = line.split("|", 2)
+            if len(parts) >= 2 and parts[0] == "Disk":
+                share_name = parts[1].strip()
+            else:
+                continue
+        else:
+            share_name = line
+        if share_name and share_name != "IPC$" and share_name not in shares:
+            shares.append(share_name)
+    return shares
+
+
 def _normalize_smb_client_target(target: SmbClientTargetInput) -> SmbClientTarget:
     if isinstance(target, SmbClientTarget):
         return target
@@ -113,6 +132,53 @@ def _smbclient_attempts_failure_summary(attempts: list[dict[str, object]]) -> st
     return "; ".join(_smbclient_attempt_failure_summary(index, attempt) for index, attempt in enumerate(attempts, start=1))
 
 
+def _smbclient_attempt_retryable(attempt: dict[str, object]) -> bool:
+    if attempt.get("outcome") == "timeout":
+        return True
+    if attempt.get("outcome") != "error":
+        return False
+
+    retryable_fragments = (
+        "NT_STATUS_IO_TIMEOUT",
+        "NT_STATUS_CONNECTION_REFUSED",
+        "NT_STATUS_CONNECTION_DISCONNECTED",
+        "NT_STATUS_NETWORK_UNREACHABLE",
+        "Connection refused",
+        "Connection reset by peer",
+        "Operation timed out",
+    )
+    for key in ("failure", "stderr_tail", "stdout_tail"):
+        value = attempt.get(key)
+        if isinstance(value, str) and any(fragment in value for fragment in retryable_fragments):
+            return True
+    return False
+
+
+def authenticated_smb_listing_attempts(result: CheckResult) -> list[dict[str, object]]:
+    attempts = result.details.get("attempts")
+    if not isinstance(attempts, list):
+        return []
+    return [attempt for attempt in attempts if isinstance(attempt, dict)]
+
+
+def authenticated_smb_listing_retryable(result: CheckResult) -> bool:
+    if result.status == "PASS":
+        return False
+    attempts = authenticated_smb_listing_attempts(result)
+    return bool(attempts) and all(_smbclient_attempt_retryable(attempt) for attempt in attempts)
+
+
+def authenticated_smb_listing_with_attempts(result: CheckResult, attempts: list[dict[str, object]]) -> CheckResult:
+    if not attempts:
+        return result
+    details = dict(result.details)
+    details["attempts"] = attempts
+    if result.status == "PASS":
+        return CheckResult(result.status, result.message, details)
+    failure_msg = _smbclient_attempts_failure_summary(attempts)
+    return CheckResult(result.status, f"authenticated SMB listing failed after {len(attempts)} attempt(s): {failure_msg}", details)
+
+
 def _redacted_smbclient_command(args: list[str]) -> str:
     redacted: list[str] = []
     redact_next = False
@@ -184,10 +250,11 @@ def check_authenticated_smb_listing(
     if not command_exists("smbclient"):
         return CheckResult("FAIL", "missing local tool smbclient")
     if isinstance(server, list):
+        servers = server if isinstance(server, list) else [server]
         return try_authenticated_smb_listing(
             username,
             password,
-            server,
+            servers,
             expected_share_name=expected_share_name,
             port=port,
             timeout=timeout,
@@ -221,13 +288,15 @@ def check_authenticated_smb_listing(
     if stderr_tail is not None:
         attempt["stderr_tail"] = stderr_tail
     if proc.returncode == 0:
+        disk_shares = parse_smbclient_disk_shares(proc.stdout)
+        attempt["disk_shares"] = disk_shares
         if expected_share_name is not None and expected_share_name not in proc.stdout:
             attempt["outcome"] = "missing_expected_share"
             attempt["expected_share"] = expected_share_name
             return CheckResult(
                 "FAIL",
                 f"authenticated SMB listing did not include expected share {expected_share_name!r} on {target.display}",
-                {"attempts": [attempt]},
+                {"attempts": [attempt], "disk_shares": disk_shares},
             )
         attempt["outcome"] = "pass"
         if expected_share_name is not None:
@@ -239,6 +308,7 @@ def check_authenticated_smb_listing(
             {
                 "server": target.server,
                 "ip_address": target.ip_address,
+                "disk_shares": disk_shares,
                 "attempts": [attempt],
             },
         )
@@ -265,8 +335,8 @@ def try_authenticated_smb_listing(
         return CheckResult("WARN", "SMB listing verification skipped: smbclient not found")
 
     attempts: list[dict[str, object]] = []
-    for server_input in servers:
-        target = _normalize_smb_client_target(server_input)
+    targets = [_normalize_smb_client_target(server_input) for server_input in servers]
+    for target in targets:
         command = _redacted_smbclient_command(_smbclient_listing_args(target, username, password, port=port))
         try:
             start = time.monotonic()
@@ -291,6 +361,8 @@ def try_authenticated_smb_listing(
         if stderr_tail is not None:
             attempt["stderr_tail"] = stderr_tail
         if proc.returncode == 0:
+            disk_shares = parse_smbclient_disk_shares(proc.stdout)
+            attempt["disk_shares"] = disk_shares
             if expected_share_name is not None and expected_share_name not in proc.stdout:
                 attempt["outcome"] = "missing_expected_share"
                 attempt["expected_share"] = expected_share_name
@@ -307,6 +379,7 @@ def try_authenticated_smb_listing(
                 {
                     "server": target.server,
                     "ip_address": target.ip_address,
+                    "disk_shares": disk_shares,
                     "attempts": attempts,
                 },
             )
@@ -314,6 +387,7 @@ def try_authenticated_smb_listing(
         raw_failure = _smbclient_failure_line(proc)
         attempt["failure"] = raw_failure
         attempts.append(attempt)
+
     failure_msg = _smbclient_attempts_failure_summary(attempts)
     return CheckResult("FAIL", f"authenticated SMB listing failed after {len(attempts)} attempt(s): {failure_msg}", {"attempts": attempts})
 

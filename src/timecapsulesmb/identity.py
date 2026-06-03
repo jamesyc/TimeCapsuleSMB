@@ -64,3 +64,11 @@ def ensure_install_id(path: Path | None = None) -> str:
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
     resolved_path.write_text(render_bootstrap_text(install_id, telemetry_enabled=identity.telemetry_enabled))
     return install_id
+
+
+def set_telemetry_enabled(enabled: bool, path: Path | None = None) -> InstallIdentity:
+    resolved_path = path or default_bootstrap_path()
+    install_id = ensure_install_id(resolved_path)
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_path.write_text(render_bootstrap_text(install_id, telemetry_enabled=enabled))
+    return load_install_identity(resolved_path)

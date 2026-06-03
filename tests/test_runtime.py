@@ -15,11 +15,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli.runtime import (
     json_text,
-    resolve_env_connection,
-    ssh_target_link_local_resolution_error,
     write_json_file,
 )
-from timecapsulesmb.core.config import AppConfig, DEFAULTS
+from timecapsulesmb.core.config import AppConfig, ConfigError, DEFAULTS
+from timecapsulesmb.services.runtime import resolve_env_connection, ssh_target_link_local_resolution_error
 
 
 class RuntimeTests(unittest.TestCase):
@@ -40,6 +39,23 @@ class RuntimeTests(unittest.TestCase):
         connection = resolve_env_connection(config)
 
         self.assertEqual(connection.ssh_opts, "-o ProxyJump=bastion")
+
+    def test_resolve_env_connection_uses_password_provider_when_password_missing(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2"})
+        provider = mock.Mock(return_value="prompted-pw")
+
+        connection = resolve_env_connection(config, password_provider=provider)
+
+        provider.assert_called_once_with("Device root password: ")
+        self.assertEqual(connection.password, "prompted-pw")
+
+    def test_resolve_env_connection_does_not_prompt_without_provider(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2"})
+
+        with self.assertRaises(ConfigError) as ctx:
+            resolve_env_connection(config)
+
+        self.assertIn("TC_PASSWORD is required", str(ctx.exception))
 
     def test_ssh_target_link_local_resolution_error_rejects_resolved_hostname(self) -> None:
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]

@@ -13,7 +13,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.core.net import (  # noqa: E402
-    extract_host,
+    canonical_ssh_target,
+    endpoint_host,
     ipv4_literal,
     ipv6_literal,
     is_link_local_ip,
@@ -27,9 +28,31 @@ from timecapsulesmb.core.net import (  # noqa: E402
 
 
 class NetTests(unittest.TestCase):
-    def test_extract_host_removes_user_prefix(self) -> None:
-        self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")
-        self.assertEqual(extract_host("10.0.0.5"), "10.0.0.5")
+    def test_endpoint_host_strips_supported_wrappers_users_paths_and_ports(self) -> None:
+        cases = {
+            "root@192.168.1.1:22": "192.168.1.1",
+            "airport.local:445": "airport.local",
+            "root@airport.local:22": "airport.local",
+            "smb://admin@airport.local:445/share": "airport.local",
+            "root@[fd00::2]:22": "fd00::2",
+            "[fd00::2]:445": "fd00::2",
+            "fd00::2": "fd00::2",
+            " capsule.local. ": "capsule.local",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(endpoint_host(raw), expected)
+
+    def test_canonical_ssh_target_adds_root_and_strips_default_port(self) -> None:
+        self.assertEqual(canonical_ssh_target("10.0.0.2:22"), "root@10.0.0.2")
+        self.assertEqual(canonical_ssh_target("admin@capsule.local:22"), "admin@capsule.local")
+        self.assertEqual(canonical_ssh_target("root@[fd00::2]:22"), "root@fd00::2")
+
+    def test_canonical_ssh_target_rejects_non_default_or_invalid_ports(self) -> None:
+        with self.assertRaises(ValueError):
+            canonical_ssh_target("root@10.0.0.2:2222")
+        with self.assertRaises(ValueError):
+            canonical_ssh_target("root@capsule.local:ssh")
 
     def test_ipv4_literal_accepts_zero_padded_ipv4_and_rejects_non_ipv4(self) -> None:
         self.assertEqual(ipv4_literal("010.000.001.007"), "10.0.1.7")

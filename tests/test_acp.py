@@ -140,6 +140,16 @@ class ACPTests(unittest.TestCase):
 
         self.assertEqual(value, 0x3000)
 
+    def test_read_identity_reads_syap_property(self) -> None:
+        body = acp._compose_property_element("syAP", 119)
+        response = acp._compose_header(command=acp.COMMAND_GETPROP, payload=body) + body
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            identity = acp.read_identity("10.0.0.2", "pw")
+
+        self.assertEqual(identity.syap, 119)
+        self.assertIn(b"syAP", fake_socket.sent)
+
     def test_get_property_int_rejects_bad_sized_reply_body_checksum(self) -> None:
         body = acp._compose_property_element("dbug", 0x3000)
         corrupted = bytearray(body)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import TypeVar
 
 from timecapsulesmb.checks.bonjour import (
     BonjourServiceTarget,
@@ -43,6 +45,9 @@ from timecapsulesmb.checks.nbns import check_nbns_name_resolution
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
     SmbClientTargetInput,
+    authenticated_smb_listing_attempts,
+    authenticated_smb_listing_retryable,
+    authenticated_smb_listing_with_attempts,
     check_authenticated_smb_listing,
     check_authenticated_smb_file_ops_detailed,
 )
@@ -55,14 +60,17 @@ from timecapsulesmb.checks.smb_config import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
+    FLASH_RUNTIME_CONFIG,
     ProbedDeviceState,
+    ReadinessProbeResult,
     RemoteInterfaceProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
+    flash_runtime_config_present_conn,
     nbns_flash_config_enabled_conn,
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
@@ -77,6 +85,90 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward
+
+
+T = TypeVar("T")
+
+
+DOCTOR_TRANSIENT_RETRY_DELAYS = (10, 15)
+TRANSIENT_SMBD_READINESS_FAILURES = {
+    "managed smbd parent process is not running",
+    "smbd is not bound to required TCP 445 sockets",
+}
+TRANSIENT_MDNS_READINESS_FAILURES = {
+    "mdns-advertiser process is not running",
+    "mdns-advertiser is not bound to required UDP 5353 listener",
+}
+DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
+
+
+def _run_doctor_retryable_check(
+    run_attempt: Callable[[], T],
+    should_retry: Callable[[T], bool],
+    *,
+    retry_delays: tuple[int, ...] = DOCTOR_TRANSIENT_RETRY_DELAYS,
+    before_retry: Callable[[T, int], None] | None = None,
+) -> T:
+    result = run_attempt()
+    for retry_delay in retry_delays:
+        if not should_retry(result):
+            break
+        if before_retry is not None:
+            before_retry(result, retry_delay)
+        time.sleep(retry_delay)
+        result = run_attempt()
+    return result
+
+
+def _readiness_failure_details(probe: ReadinessProbeResult) -> list[str]:
+    details: list[str] = []
+    steps = getattr(probe, "steps", ())
+    if isinstance(steps, (list, tuple)):
+        for step in steps:
+            if getattr(step, "status", None) in {"fail", "timeout"}:
+                detail = getattr(step, "detail", None)
+                if isinstance(detail, str) and detail:
+                    details.append(detail)
+    if details:
+        return details
+
+    lines = getattr(probe, "lines", ())
+    if not isinstance(lines, (list, tuple)):
+        return []
+    return [line.removeprefix("FAIL:") for line in lines if isinstance(line, str) and line.startswith("FAIL:")]
+
+
+def _readiness_probe_retryable(probe: ReadinessProbeResult, retryable_failures: set[str]) -> bool:
+    if probe.ready:
+        return False
+    failure_details = _readiness_failure_details(probe)
+    return bool(failure_details) and all(detail in retryable_failures for detail in failure_details)
+
+
+def _authenticated_smb_listing_with_doctor_retries(
+    username: str,
+    password: str,
+    server: SmbClientTargetInput | list[SmbClientTargetInput],
+    *,
+    port: int | None = None,
+) -> CheckResult:
+    attempts: list[dict[str, object]] = []
+
+    def run_attempt() -> CheckResult:
+        result = check_authenticated_smb_listing(username, password, server, port=port)
+        attempts.extend(authenticated_smb_listing_attempts(result))
+        return authenticated_smb_listing_with_attempts(result, attempts)
+
+    def mark_retry_delay(result: CheckResult, retry_delay: int) -> None:
+        for attempt in authenticated_smb_listing_attempts(result):
+            if "next_retry_delay_sec" not in attempt:
+                attempt["next_retry_delay_sec"] = retry_delay
+
+    return _run_doctor_retryable_check(
+        run_attempt,
+        authenticated_smb_listing_retryable,
+        before_retry=mark_retry_delay,
+    )
 
 
 def _add_probe_line_results(
@@ -511,11 +603,46 @@ def _add_bonjour_results(
     )
 
 
-def _doctor_share_name(active_smb_conf: str | None) -> str:
-    active_share_names = parse_active_share_names(active_smb_conf or "")
+def _listing_disk_shares(listing_result: CheckResult) -> list[str]:
+    value = listing_result.details.get("disk_shares")
+    if not isinstance(value, list):
+        return []
+    shares: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item and item not in shares:
+            shares.append(item)
+    return shares
+
+
+def _select_smb_file_ops_share(
+    listing_result: CheckResult,
+    active_share_names: list[str],
+    active_smb_conf_reason: str,
+    add_result: Callable[[CheckResult], None],
+) -> str | None:
+    disk_shares = _listing_disk_shares(listing_result)
     if active_share_names:
-        return active_share_names[0]
-    raise RuntimeError("could not determine active Samba share name")
+        for active_share_name in active_share_names:
+            if active_share_name in disk_shares:
+                add_result(CheckResult("PASS", f"authenticated SMB listing includes active share {active_share_name!r}"))
+                return active_share_name
+        expected = ", ".join(active_share_names)
+        listed = ", ".join(disk_shares) if disk_shares else "none"
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"authenticated SMB listing did not include any active Samba share; expected one of: {expected}; listed disk shares: {listed}",
+            )
+        )
+        return None
+
+    if not disk_shares:
+        add_result(CheckResult("FAIL", "authenticated SMB listing worked, but no disk shares were advertised"))
+        return None
+
+    reason = active_smb_conf_reason or "active smb.conf did not list share names"
+    add_result(CheckResult("INFO", f"active Samba share comparison skipped; {reason}"))
+    return disk_shares[0]
 
 
 def _nbns_family_targets(network_plan: NetworkCheckPlan | None) -> tuple[NetworkFamilyPlan, ...]:
@@ -656,7 +783,8 @@ def _add_tunneled_authenticated_smb_results(
     *,
     host: str,
     smb_password: str,
-    share_name: str,
+    active_share_names: list[str],
+    active_smb_conf_reason: str,
     remote_port: int,
     debug_prefix: str,
     debug_fields: dict[str, object] | None,
@@ -665,7 +793,7 @@ def _add_tunneled_authenticated_smb_results(
     local_port = find_free_local_port()
     if debug_fields is not None:
         debug_fields[f"{debug_prefix}_listing_servers"] = ["127.0.0.1"]
-        debug_fields[f"{debug_prefix}_listing_expected_share"] = share_name
+        debug_fields[f"{debug_prefix}_listing_active_shares"] = active_share_names
     try:
         with ssh_local_forward(
             connection,
@@ -673,17 +801,24 @@ def _add_tunneled_authenticated_smb_results(
             remote_host=host,
             remote_port=remote_port,
         ):
-            listing_result = check_authenticated_smb_listing(
+            listing_result = _authenticated_smb_listing_with_doctor_retries(
                 DEFAULT_SAMBA_AUTH_USER,
                 smb_password,
                 "127.0.0.1",
-                expected_share_name=share_name,
                 port=local_port,
             )
             if debug_fields is not None and listing_result.details.get("attempts"):
                 debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
             add_result(listing_result)
             if listing_result.status != "PASS":
+                return False
+            share_name = _select_smb_file_ops_share(
+                listing_result,
+                active_share_names,
+                active_smb_conf_reason,
+                add_result,
+            )
+            if share_name is None:
                 return False
 
             file_ops_ok = True
@@ -713,21 +848,19 @@ def _add_authenticated_smb_results(
     smb_password: str,
     proxied_ssh: bool,
     active_smb_conf: str | None,
+    active_smb_conf_reason: str,
     network_plan: NetworkCheckPlan | None,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
-    try:
-        share_name = _doctor_share_name(active_smb_conf)
-    except RuntimeError as exc:
-        add_result(CheckResult("FAIL", str(exc)))
-        return
+    active_share_names = parse_active_share_names(active_smb_conf or "")
     if proxied_ssh:
         _add_tunneled_authenticated_smb_results(
             connection,
             host=host,
             smb_password=smb_password,
-            share_name=share_name,
+            active_share_names=active_share_names,
+            active_smb_conf_reason=active_smb_conf_reason,
             remote_port=445,
             debug_prefix="authenticated_smb",
             debug_fields=debug_fields,
@@ -738,12 +871,11 @@ def _add_authenticated_smb_results(
     smb_servers = _doctor_smb_client_targets(config, bonjour_target, runtime_naming_identity, network_plan)
     if debug_fields is not None:
         debug_fields["authenticated_smb_listing_servers"] = [_smb_client_target_debug(target) for target in smb_servers]
-        debug_fields["authenticated_smb_listing_expected_share"] = share_name
-    listing_result = check_authenticated_smb_listing(
+        debug_fields["authenticated_smb_listing_active_shares"] = active_share_names
+    listing_result = _authenticated_smb_listing_with_doctor_retries(
         DEFAULT_SAMBA_AUTH_USER,
         smb_password,
         smb_servers,
-        expected_share_name=share_name,
         port=445,
     )
     if debug_fields is not None and listing_result.details.get("attempts"):
@@ -761,7 +893,8 @@ def _add_authenticated_smb_results(
                 connection,
                 host=host,
                 smb_password=smb_password,
-                share_name=share_name,
+                active_share_names=active_share_names,
+                active_smb_conf_reason=active_smb_conf_reason,
                 remote_port=445,
                 debug_prefix="authenticated_smb_tunnel",
                 debug_fields=debug_fields,
@@ -771,6 +904,14 @@ def _add_authenticated_smb_results(
         add_result(listing_result)
         return
     add_result(listing_result)
+    share_name = _select_smb_file_ops_share(
+        listing_result,
+        active_share_names,
+        active_smb_conf_reason,
+        add_result,
+    )
+    if share_name is None:
+        return
 
     smb_server = listing_result.details.get("server")
     if not isinstance(smb_server, str) or not smb_server:
@@ -812,7 +953,7 @@ def _build_doctor_target(inputs: DoctorInputs) -> DoctorTarget:
         )
     return DoctorTarget(
         connection=connection,
-        host=extract_host(connection.host),
+        host=endpoint_host(connection.host),
         smb_password=inputs.config.require("TC_PASSWORD"),
         proxied_ssh=ssh_opts_use_proxy(connection.ssh_opts),
     )
@@ -836,6 +977,33 @@ def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: 
         remote_checks_enabled=ssh_ok,
         active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
     )
+
+
+def _doctor_check_deployed_config(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
+    if not remote.remote_checks_enabled:
+        return StepDecision()
+
+    try:
+        config_present = flash_runtime_config_present_conn(target.connection)
+    except Exception as e:
+        sink.add(CheckResult("FAIL", f"deployed payload config probe failed; reboot the device and rerun doctor: {e}"))
+        return StepDecision(stop=True)
+
+    if sink.debug_fields is not None:
+        sink.debug_fields["deployed_config_present"] = config_present
+
+    if not config_present:
+        sink.add(
+            CheckResult(
+                "FAIL",
+                "deployed payload config not found; please run deploy to install on your device",
+                details={"code": DOCTOR_CODE_RUNTIME_NOT_INSTALLED},
+            )
+        )
+        return StepDecision(stop=True)
+
+    sink.add(CheckResult("PASS", f"deployed payload config {FLASH_RUNTIME_CONFIG} exists"))
+    return StepDecision()
 
 
 def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
@@ -951,7 +1119,10 @@ def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink:
     if not remote.remote_checks_enabled:
         return
 
-    smbd_probe = probe_managed_smbd_conn(target.connection)
+    smbd_probe = _run_doctor_retryable_check(
+        lambda: probe_managed_smbd_conn(target.connection),
+        lambda probe: _readiness_probe_retryable(probe, TRANSIENT_SMBD_READINESS_FAILURES),
+    )
     smbd_probe_lines = getattr(smbd_probe, "lines", ())
     if not isinstance(smbd_probe_lines, (list, tuple)):
         smbd_probe_lines = ()
@@ -968,7 +1139,10 @@ def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink:
     if not remote.remote_checks_enabled:
         return
 
-    mdns_probe = probe_managed_mdns_takeover_conn(target.connection)
+    mdns_probe = _run_doctor_retryable_check(
+        lambda: probe_managed_mdns_takeover_conn(target.connection),
+        lambda probe: _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES),
+    )
     mdns_probe_lines = getattr(mdns_probe, "lines", ())
     if not isinstance(mdns_probe_lines, (list, tuple)):
         mdns_probe_lines = ()
@@ -1083,23 +1257,6 @@ def _doctor_check_direct_smb_port(target: DoctorTarget, remote: RemoteAccess, ne
         _add_remote_service_socket_debug(target, remote, sink)
 
 
-def _doctor_check_bonjour(
-    inputs: DoctorInputs,
-    target: DoctorTarget,
-    naming: RuntimeNamingState,
-    network_plan: NetworkPlanState,
-    sink: DoctorSink,
-) -> DoctorBonjourResult:
-    return _add_bonjour_results(
-        inputs.config,
-        naming.identity,
-        proxied_ssh=target.proxied_ssh,
-        skip_bonjour=inputs.options.skip_bonjour,
-        network_plan=network_plan.plan,
-        add_result=sink.add,
-    )
-
-
 def _doctor_add_bonjour_naming_info(bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
     if bonjour_result.instance is not None:
         sink.add(CheckResult("INFO", f"advertised Bonjour instance: {bonjour_result.instance}"))
@@ -1111,10 +1268,6 @@ def _doctor_add_bonjour_naming_info(bonjour_result: DoctorBonjourResult, sink: D
         sink.add(CheckResult("INFO", f"advertised Bonjour host label: {bonjour_host_label}"))
     else:
         sink.add(CheckResult("INFO", f"advertised Bonjour host label: unavailable ({bonjour_result.reason})"))
-
-
-def _doctor_add_active_smb_conf_info(smb_config: SmbConfigState, sink: DoctorSink) -> None:
-    _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
 
 
 def _doctor_check_nbns(
@@ -1162,6 +1315,7 @@ def _doctor_check_authenticated_smb(
         smb_password=target.smb_password,
         proxied_ssh=target.proxied_ssh,
         active_smb_conf=smb_config.text,
+        active_smb_conf_reason=smb_config.reason,
         network_plan=network_plan.plan,
         debug_fields=sink.debug_fields,
         add_result=sink.add,

@@ -119,7 +119,7 @@ By default, `tcapsule deploy` reboots after deployment and then waits for the de
 .venv/bin/tcapsule deploy --yes
 ```
 
-There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them. `--no-reboot` uploads the files, stops the old watchdog plus `wcifsfs`, and starts the deployed runtime immediately by running `/mnt/Flash/rc.local`.
+There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them. `--no-reboot` uploads the files, stops the manager process and `wcifsfs`, and starts the deployed runtime immediately by running `/mnt/Flash/rc.local`.
 
 If you want a machine-readable deployment plan without changing the device, use:
 
@@ -146,7 +146,7 @@ Advanced NetBSD 4 users can back up the firmware with:
 .venv/bin/tcapsule flash
 ```
 
-The command is read-only by default. On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the selected active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. If both banks pass the active-bank checks, use `--active-bank primary` or `--active-bank secondary` to choose explicitly.
+The command is read-only by default. On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the selected active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. Patch mode normally requires exactly one safely selected active bank; `--force` is available only for patch mode and bypasses the backup/active-candidate preflight to target the primary bank.
 
 Patch mode cannot send a reboot or poweroff command after a successful write. After `tcapsule flash --patch` reports success, a user needs to manually
 unplug the device to reboot, and then wait a few minutes for the device to boot to run `tcapsule doctor`. Restore mode can request a software reboot with `tcapsule flash --restore --reboot`; after that, use `tcapsule flash --check-apple` to verify the active bank matches Apple stock firmware.
@@ -195,7 +195,7 @@ Run:
 .venv/bin/tcapsule uninstall
 ```
 
-This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader script. If you delete the 6 non-Apple files we put in `/mnt/Flash`, and delete the `.samba4` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition.
+This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader scripts. If you delete the 7 payload files in `/mnt/Flash`, delete the `.samba4` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition.
 
 By default `uninstall` asks before rebooting the Time Capsule. If you want to skip the reboot confirmation prompt, use:
 
@@ -260,7 +260,8 @@ That is the reason the repository contains both:
 and boot files such as:
 
 - [src/timecapsulesmb/assets/boot/samba4/rc.local](src/timecapsulesmb/assets/boot/samba4/rc.local)
-- [src/timecapsulesmb/assets/boot/samba4/start-samba.sh](src/timecapsulesmb/assets/boot/samba4/start-samba.sh)
+- [src/timecapsulesmb/assets/boot/samba4/boot.sh](src/timecapsulesmb/assets/boot/samba4/boot.sh)
+- [src/timecapsulesmb/assets/boot/samba4/manager.sh](src/timecapsulesmb/assets/boot/samba4/manager.sh)
 
 There are other constraints the Time Capsule places on us:  
 - The NetBSD 6 source code does not support earmv4 builds, so we need to build from NetBSD 7.

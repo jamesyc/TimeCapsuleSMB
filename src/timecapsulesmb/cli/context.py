@@ -1,122 +1,42 @@
 from __future__ import annotations
 
-import time
 import threading
 import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from timecapsulesmb.cli import runtime
+from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import require_compatibility as require_device_compatibility
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import probe_connection_state, probe_remote_airport_identity_conn
-from timecapsulesmb.device.storage import (
-    mast_volumes_debug_summary,
-    mounted_mast_volumes_conn,
-    payload_candidate_checks_debug_summary,
-    read_mast_volumes_conn,
-    select_payload_home_with_diagnostics_conn,
-    wait_for_mast_volumes_conn,
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.context import (
+    COMMAND_FIELD_BLACKLIST,
+    COMMAND_VALUE_BLACKLIST,
+    OperationContext,
 )
+from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.telemetry import build_device_os_version
-from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
+from timecapsulesmb.telemetry.operation import (
+    OperationTelemetrySession,
+    client_from_environment,
+    telemetry_details_from_payload,
+    telemetry_options_from_args,
+)
 from timecapsulesmb.transport.errors import TransportError
 
 if TYPE_CHECKING:
-    from timecapsulesmb.cli.runtime import ManagedTargetState
     from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.compat import DeviceCompatibility
     from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
-    from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume, PayloadHomeSelection
+    from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
 
 
-COMMAND_VALUE_BLACKLIST = {
-    "TC_PASSWORD",
-    # Removed naming keys may still exist in old .env files. They are
-    # intentionally ignored and should not appear as command inputs.
-    "TC_SAMBA_USER",
-    "TC_PAYLOAD_DIR_NAME",
-    "TC_MDNS_HOST_LABEL",
-    "TC_MDNS_INSTANCE_NAME",
-    "TC_NETBIOS_NAME",
-    # These are already first-class telemetry fields.
-    "TC_CONFIGURE_ID",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
-}
-COMMAND_FIELD_BLACKLIST = {
-    # These are already first-class telemetry fields.
-    "configure_id",
-    "device_model",
-    "device_syap",
-    "device_os_version",
-    "device_family",
-    "nbns_enabled",
-    "reboot_was_attempted",
-    "device_came_back_after_reboot",
-}
-MAST_ACP_OUTPUT_DEBUG_LIMIT = 8192
 OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS = 0.1
-
-
-def _mast_acp_output_debug_text(raw_output: str) -> str:
-    if not raw_output:
-        return "<empty>"
-    if len(raw_output) <= MAST_ACP_OUTPUT_DEBUG_LIMIT:
-        return raw_output
-    omitted = len(raw_output) - MAST_ACP_OUTPUT_DEBUG_LIMIT
-    return f"{raw_output[:MAST_ACP_OUTPUT_DEBUG_LIMIT]}...<truncated {omitted} chars>"
-
-
-def _render_connection_debug_lines(connection: SshConnection | None, values: Mapping[str, str] | None) -> list[str]:
-    host = None
-    ssh_opts = None
-    if connection is not None:
-        host = connection.host
-        ssh_opts = connection.ssh_opts
-    elif values is not None:
-        host = values.get("TC_HOST") or None
-        ssh_opts = values.get("TC_SSH_OPTS") or None
-    lines: list[str] = []
-    if host:
-        lines.append(f"host={host}")
-    if ssh_opts:
-        lines.append(f"ssh_opts={ssh_opts}")
-    return lines
-
-
-def render_command_debug_lines(
-    *,
-    command_name: str,
-    stage: str | None,
-    connection: SshConnection | None,
-    values: Mapping[str, str] | None,
-    preflight_error: str | None,
-    finish_fields: Mapping[str, object],
-    probe_state: ProbedDeviceState | None,
-    debug_fields: Mapping[str, object],
-    config: AppConfig | None = None,
-) -> list[str]:
-    debug_values = config.values if config is not None else values
-    lines = ["Debug context:", f"command={command_name}"]
-    if stage:
-        lines.append(f"stage={stage}")
-    if config is not None:
-        lines.append(f"env_path={config.path}")
-    lines.extend(_render_connection_debug_lines(connection, debug_values))
-    if debug_values is not None:
-        lines.extend(render_debug_mapping(debug_values, blacklist=COMMAND_VALUE_BLACKLIST))
-    if preflight_error:
-        lines.append(f"preflight_error={preflight_error}")
-    lines.extend(render_debug_mapping(finish_fields, blacklist=COMMAND_FIELD_BLACKLIST))
-    if probe_state is not None:
-        lines.extend(render_debug_mapping(debug_summary(probe_state), blacklist=COMMAND_FIELD_BLACKLIST))
-    lines.extend(render_debug_mapping(debug_fields, blacklist=COMMAND_FIELD_BLACKLIST))
-    return lines
 
 
 class CommandContext:
@@ -134,29 +54,78 @@ class CommandContext:
     ) -> None:
         self.telemetry = telemetry
         self.command_name = command_name
-        self.values = values
-        self.config = config
+        self.operation_context = OperationContext(command_name, values=values, config=config)
         self.args = args
         self.finished_event = finished_event
-        self.start_time = time.monotonic()
         self.finished = False
         self.command_id = str(uuid.uuid4())
         self.result = "failure"
-        self.finish_fields: dict[str, object] = {}
-        self.error_lines: list[str] = []
-        self.preflight_error: str | None = None
-        self.debug_stage: str | None = None
-        self.debug_fields: dict[str, object] = {}
-        self.connection: SshConnection | None = None
         self.interface_probe: RemoteInterfaceProbeResult | None = None
-        self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
         self._optional_airport_identity_thread: threading.Thread | None = None
         self._optional_airport_identity: tuple[str | None, str | None] | None = None
-        self._emit_telemetry(started_event, command_id=self.command_id, **fields)
+        self.telemetry_session = OperationTelemetrySession(
+            telemetry,
+            command_name,
+            entrypoint="cli",
+            client=client_from_environment(entrypoint="cli"),
+            started_event=started_event,
+            finished_event=finished_event,
+            operation_id=self.command_id,
+            options=telemetry_options_from_args(args),
+        )
+        self.telemetry_session.start(**fields)
 
     def __enter__(self) -> "CommandContext":
         return self
+
+    @property
+    def values(self) -> Mapping[str, str] | None:
+        return self.operation_context.values
+
+    @property
+    def config(self) -> AppConfig | None:
+        return self.operation_context.config
+
+    @property
+    def finish_fields(self) -> dict[str, object]:
+        return self.operation_context.finish_fields
+
+    @property
+    def error_lines(self) -> list[str]:
+        return self.operation_context.error_lines
+
+    @property
+    def preflight_error(self) -> str | None:
+        return self.operation_context.preflight_error
+
+    @preflight_error.setter
+    def preflight_error(self, value: str | None) -> None:
+        self.operation_context.preflight_error = value
+
+    @property
+    def debug_stage(self) -> str | None:
+        return self.operation_context.debug_stage
+
+    @property
+    def debug_fields(self) -> dict[str, object]:
+        return self.operation_context.debug_fields
+
+    @property
+    def connection(self) -> SshConnection | None:
+        return self.operation_context.connection
+
+    @connection.setter
+    def connection(self, value: SshConnection | None) -> None:
+        self.operation_context.connection = value
+
+    @property
+    def probe_state(self) -> ProbedDeviceState | None:
+        return self.operation_context.probe_state
+
+    @probe_state.setter
+    def probe_state(self, value: ProbedDeviceState | None) -> None:
+        self.operation_context.probe_state = value
 
     def __exit__(self, exc_type: object, exc: object, _tb: object) -> bool:
         if exc_type is KeyboardInterrupt and self.result != "cancelled":
@@ -199,10 +168,16 @@ class CommandContext:
         self.result = "failure"
         self.set_error(message)
 
+    def to_operation_callbacks(self) -> OperationCallbacks:
+        return OperationCallbacks(
+            set_stage=self.set_stage,
+            log=print,
+            add_debug_fields=self.add_debug_fields,
+            update_fields=self.update_fields,
+        )
+
     def update_fields(self, **fields: object) -> None:
-        for key, value in fields.items():
-            if value is not None:
-                self.finish_fields[key] = value
+        self.operation_context.update_fields(**fields)
 
     def _update_device_identity_fields(self, *, model: str | None, syap: str | None) -> None:
         self.update_fields(device_model=model, device_syap=syap)
@@ -257,40 +232,16 @@ class CommandContext:
         )
 
     def set_stage(self, stage: str) -> None:
-        self.debug_stage = stage
+        self.operation_context.set_stage(stage)
 
     def add_debug_fields(self, **fields: object) -> None:
-        for key, value in fields.items():
-            if value is not None:
-                self.debug_fields[key] = debug_summary(value)
+        self.operation_context.add_debug_fields(**fields)
 
     def set_error(self, message: str) -> None:
-        self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
+        self.operation_context.set_error(message)
 
     def build_error(self) -> str | None:
-        if not self.error_lines:
-            return None
-        return "\n".join([
-            *self.error_lines,
-            "",
-            *render_command_debug_lines(
-                command_name=self.command_name,
-                stage=self.debug_stage,
-                connection=self.connection,
-                values=self.values,
-                preflight_error=self.preflight_error,
-                finish_fields=self.finish_fields,
-                probe_state=self.probe_state,
-                debug_fields=self.debug_fields,
-                config=self.config,
-            ),
-        ])
-
-    def _emit_telemetry(self, event: str, **fields: object) -> None:
-        try:
-            self.telemetry.emit(event, **fields)
-        except Exception:
-            pass
+        return self.operation_context.build_error()
 
     def confirm_or_fail(
         self,
@@ -300,111 +251,25 @@ class CommandContext:
         noninteractive_message: str,
         eof_default: bool | None = None,
         interrupt_default: bool | None = None,
+        allow_prompt: bool = True,
     ) -> bool | None:
+        if not allow_prompt:
+            print(noninteractive_message)
+            self.fail_with_error(noninteractive_message)
+            return None
         try:
-            return runtime.confirm(
+            return cli_runtime.confirm(
                 prompt_text,
                 default=default,
                 eof_default=eof_default,
                 interrupt_default=interrupt_default,
                 noninteractive_message=noninteractive_message,
             )
-        except runtime.NonInteractivePromptError as exc:
+        except cli_runtime.NonInteractivePromptError as exc:
             message = str(exc)
             print(message)
             self.fail_with_error(message)
             return None
-
-    def _storage_connection(self, connection: SshConnection | None) -> SshConnection:
-        if connection is not None:
-            return connection
-        if self.connection is None:
-            raise RuntimeError("CommandContext connection is not set.")
-        return self.connection
-
-    def read_mast_volumes(
-        self,
-        connection: SshConnection | None = None,
-        *,
-        stage: str = "read_mast",
-    ) -> tuple[MaStVolume, ...]:
-        connection = self._storage_connection(connection)
-        self.set_stage(stage)
-        volumes = read_mast_volumes_conn(connection)
-        self.add_debug_fields(
-            mast_volume_count=len(volumes),
-            mast_candidates=mast_volumes_debug_summary(volumes),
-        )
-        return volumes
-
-    def mount_mast_volumes(
-        self,
-        connection: SshConnection | None = None,
-        *,
-        wait_seconds: int,
-        read_stage: str = "read_mast",
-        mount_stage: str = "mount_mast_volumes",
-    ) -> tuple[MaStVolume, ...]:
-        connection = self._storage_connection(connection)
-        mast_volumes = self.read_mast_volumes(connection, stage=read_stage)
-        self.set_stage(mount_stage)
-        mounted_volumes = mounted_mast_volumes_conn(
-            connection,
-            mast_volumes,
-            wait_seconds=wait_seconds,
-        )
-        self.add_debug_fields(
-            mast_mounted_volume_count=len(mounted_volumes),
-            mast_mounted_candidates=mast_volumes_debug_summary(mounted_volumes),
-        )
-        return mounted_volumes
-
-    def wait_for_mast_volumes(
-        self,
-        connection: SshConnection | None = None,
-        *,
-        attempts: int,
-        delay_seconds: int,
-        stage: str = "read_mast",
-    ) -> MaStDiscoveryResult:
-        connection = self._storage_connection(connection)
-        self.set_stage(stage)
-        mast_discovery = wait_for_mast_volumes_conn(
-            connection,
-            attempts=attempts,
-            delay_seconds=delay_seconds,
-        )
-        mast_volumes = mast_discovery.volumes
-        fields: dict[str, object] = {
-            "mast_read_attempts": mast_discovery.attempts,
-            "mast_volume_count": len(mast_volumes),
-            "mast_candidates": mast_volumes_debug_summary(mast_volumes),
-        }
-        if not mast_volumes:
-            fields["mast_acp_output_chars"] = len(mast_discovery.raw_output)
-            fields["mast_acp_output"] = _mast_acp_output_debug_text(mast_discovery.raw_output)
-        self.add_debug_fields(**fields)
-        return mast_discovery
-
-    def select_payload_home(
-        self,
-        connection: SshConnection | None,
-        mast_volumes: tuple[MaStVolume, ...],
-        payload_dir_name: str,
-        *,
-        wait_seconds: int,
-        stage: str = "select_payload_home",
-    ) -> PayloadHomeSelection:
-        connection = self._storage_connection(connection)
-        self.set_stage(stage)
-        selection = select_payload_home_with_diagnostics_conn(
-            connection,
-            mast_volumes,
-            payload_dir_name,
-            wait_seconds=wait_seconds,
-        )
-        self.add_debug_fields(mast_candidate_checks=payload_candidate_checks_debug_summary(selection.checks))
-        return selection
 
     def resolve_env_connection(
         self,
@@ -414,10 +279,12 @@ class CommandContext:
     ) -> SshConnection:
         if self.config is None:
             raise RuntimeError("CommandContext config is not set.")
-        self.connection = runtime.resolve_env_connection(
+        self.connection = service_runtime.resolve_env_connection(
             self.config,
             required_keys=required_keys,
             allow_empty_password=allow_empty_password,
+            allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
+            password_provider=cli_runtime.prompt_device_password,
         )
         return self.connection
 
@@ -451,17 +318,19 @@ class CommandContext:
 
     def inspect_managed_connection(self, *, iface: str, include_probe: bool = False) -> ManagedTargetState:
         connection = self.connection if self.connection is not None else self.resolve_env_connection()
-        target = runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
+        target = service_runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
         return self._apply_managed_target_state(target)
 
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.config is None:
             raise RuntimeError("CommandContext config is not set.")
-        target = runtime.resolve_validated_managed_target(
+        target = service_runtime.resolve_validated_managed_target(
             self.config,
             command_name=self.command_name,
             profile=profile,
             include_probe=include_probe,
+            allow_password_prompt=not cli_runtime.no_input_enabled(self.args),
+            password_provider=cli_runtime.prompt_device_password,
         )
         return self._apply_managed_target_state(target)
 
@@ -490,19 +359,26 @@ class CommandContext:
         self.harvest_optional_airport_identity_probe(timeout_seconds=OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS)
         emit_fields = dict(self.finish_fields)
         emit_fields.update(fields)
-        duration_sec = round(time.monotonic() - self.start_time, 3)
         try:
             error = None if result == "success" else self.build_error()
         except Exception as exc:
             error = f"{self.command_name} failed, and debug context rendering also failed: {type(exc).__name__}: {exc}"
         if result != "success" and error is None:
             error = f"{self.command_name} failed without additional details."
-        self._emit_telemetry(
-            self.finished_event,
-            synchronous=True,
-            command_id=self.command_id,
+        if self.args is None:
+            params: Mapping[str, object] = {}
+        elif isinstance(self.args, Mapping):
+            params = self.args
+        else:
+            try:
+                params = vars(self.args)
+            except TypeError:
+                params = {}
+        details = telemetry_details_from_payload(self.command_name, params, emit_fields)
+        self.telemetry_session.finish(
             result=result,
-            duration_sec=duration_sec,
             error=error,
+            stage=self.debug_stage,
+            details=details,
             **emit_fields,
         )

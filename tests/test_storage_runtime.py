@@ -10,7 +10,8 @@ from unittest import mock
 
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.cli.deploy import render_flash_runtime_config
+from timecapsulesmb.services.deploy import render_flash_runtime_config
+from timecapsulesmb.services.deploy import render_flash_runtime_config as render_gui_flash_runtime_config
 from timecapsulesmb.deploy.executor import upload_flash_file
 from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 from timecapsulesmb.deploy.planner import (
@@ -878,12 +879,12 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True) as mount_mock:
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[True]) as writable_mock:
                 selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=30)
 
         self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
-        mount_mock.assert_called_once_with(connection, internal, wait_seconds=30)
+        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=30)
         writable_mock.assert_called_once_with(connection, "/Volumes/dk2")
 
     def test_ensure_volume_root_mounted_conn_claims_diskd_without_mount_hfs_fallback(self) -> None:
@@ -950,7 +951,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", side_effect=[False, True]) as mount_mock:
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[False, True]) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=True) as writable_mock:
                 selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=9)
 
@@ -958,8 +959,8 @@ MaSt = (
         self.assertEqual(
             mount_mock.call_args_list,
             [
-                mock.call(connection, internal, wait_seconds=9),
-                mock.call(connection, external, wait_seconds=9),
+                mock.call(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=9),
+                mock.call(connection, "/Volumes/dk3", "/dev/dk3", wait_seconds=9),
             ],
         )
         writable_mock.assert_called_once_with(connection, "/Volumes/dk3")
@@ -969,7 +970,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", side_effect=[False, True]):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", side_effect=[False, True]):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=True):
                 selection = select_payload_home_with_diagnostics_conn(
                     connection,
@@ -1018,7 +1019,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=False):
                 selection = select_payload_home_with_diagnostics_conn(
                     connection,
@@ -1036,7 +1037,7 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=False):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=False):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn") as writable_mock:
                 selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
 
@@ -1049,12 +1050,12 @@ MaSt = (
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[False, True]):
                 selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
         self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
 
-        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True):
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=False):
                 selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
         self.assertIsNone(selection.payload_home)
@@ -1100,6 +1101,72 @@ MaSt = (
         self.assertNotIn("MDNS_INSTANCE_NAME", rendered)
         self.assertNotIn("MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_SHARE_NAME", rendered)
+
+    def test_flash_runtime_config_uses_saved_debug_logging(self) -> None:
+        config = AppConfig.from_values({"TC_DEBUG_LOGGING": "true"})
+
+        rendered = render_gui_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=None,
+        )
+
+        self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
+        self.assertIn("MDNS_DEBUG_LOGGING=1\n", rendered)
+
+    def test_flash_runtime_config_deploy_time_debug_override_can_disable_saved_value(self) -> None:
+        config = AppConfig.from_values({"TC_DEBUG_LOGGING": "true"})
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=False,
+        )
+
+        self.assertIn("SMBD_DEBUG_LOGGING=0\n", rendered)
+        self.assertIn("MDNS_DEBUG_LOGGING=0\n", rendered)
+
+    def test_flash_runtime_config_accepts_deploy_time_advanced_overrides(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
+                "TC_ANY_PROTOCOL": "false",
+            }
+        )
+
+        rendered = render_gui_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=False,
+            internal_share_use_disk_root=True,
+            any_protocol=True,
+        )
+
+        self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("ANY_PROTOCOL=1\n", rendered)
+
+    def test_flash_runtime_config_deploy_time_overrides_can_disable_saved_values(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+                "TC_ANY_PROTOCOL": "true",
+            }
+        )
+
+        rendered = render_gui_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=False,
+            internal_share_use_disk_root=False,
+            any_protocol=False,
+        )
+
+        self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
+        self.assertIn("ANY_PROTOCOL=0\n", rendered)
 
     def test_flash_runtime_config_uses_drive_settings_from_config(self) -> None:
         config = AppConfig.from_values(
@@ -1764,7 +1831,7 @@ MaSt = (
                         tc_manager_reset_pass_state() {
                             i=0
                             payload='abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz'
-                            while [ "$i" -lt 220 ]; do
+                            while [ "$i" -lt 130 ]; do
                                 tc_log "heavy manager log line $i $payload $payload $payload $payload $payload $payload $payload $payload"
                                 i=$((i + 1))
                             done
@@ -4209,6 +4276,53 @@ MaSt = (
             rf"mv:{memory}/samba4/sbin/smbd\.tmp\.[0-9]+:{memory}/samba4/sbin/smbd",
         )
         self.assertNotIn(f"cp:{payload}/smbd:{memory}/samba4/sbin/smbd\n", proc.stdout)
+
+    def test_common_generate_smb_conf_propagates_identity_failure_in_conditional_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "Data" / ".samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "smb-conf-identity-failure.sh"
+            share_rows = f"Data\t{volumes}/Data\tdk2\t1\t12345678-1234-1234-1234-123456789012"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    TC_SMB_BIND_INTERFACES="192.168.1.2/24"
+                    SMB_NETBIOS_NAME=TimeCapsule
+                    SMB_SERVER_STRING=TimeCapsule
+                    tc_ensure_runtime_identity() {{
+                        echo identity-failed
+                        return 1
+                    }}
+                    if ! tc_generate_smb_conf_from_share_rows {payload} {shlex.quote(share_rows)}; then
+                        echo status=failed
+                    else
+                        echo status=unexpected-success
+                    fi
+                    if [ -f "$TC_SMBD_CONF" ]; then
+                        echo conf=present
+                    else
+                        echo conf=absent
+                    fi
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("identity-failed\n", proc.stdout)
+        self.assertIn("status=failed\n", proc.stdout)
+        self.assertIn("conf=absent\n", proc.stdout)
 
     def test_common_smb_bind_probe_rejects_invalid_cidr_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

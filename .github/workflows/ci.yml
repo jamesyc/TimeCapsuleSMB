@@ -45,3 +45,66 @@ jobs:
 
       - name: Run full test suite
         run: python -m pytest
+
+  swift-test:
+    name: Swift Tests (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show tool versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Run Swift tests
+        run: swift test --package-path macos/TimeCapsuleSMB
+
+  package-app:
+    name: Package App (macOS native)
+    runs-on: macos-latest
+    needs:
+      - swift-test
+    env:
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore package cache
+        uses: actions/cache@v4
+        with:
+          path: macos/TimeCapsuleSMB/.build/package-app
+          key: package-app-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/Package.swift', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg', 'pyproject.toml', 'requirements.txt', 'src/**', 'bin/**') }}
+          restore-keys: |
+            package-app-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install native packaging tools
+        run: |
+          brew install samba
+          brew tap hudochenkov/sshpass
+          brew install sshpass
+
+          smbclient="$(brew --prefix samba)/bin/smbclient"
+          sshpass="$(brew --prefix sshpass)/bin/sshpass"
+
+          test -x "$smbclient"
+          test -x "$sshpass"
+          file "$smbclient" "$sshpass"
+          lipo -archs "$smbclient"
+          lipo -archs "$sshpass"
+
+          {
+            echo "TCAPSULE_PACKAGE_SMBCLIENT=$smbclient"
+            echo "TCAPSULE_PACKAGE_SSHPASS=$sshpass"
+          } >> "$GITHUB_ENV"
+
+      - name: Package and validate native app
+        run: |
+          python3 macos/TimeCapsuleSMB/tools/package_app.py \
+            --configuration release \
+            --arch native \
+            --full-validation

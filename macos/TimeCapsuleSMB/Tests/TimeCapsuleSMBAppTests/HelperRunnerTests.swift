@@ -1,0 +1,310 @@
+import Foundation
+import XCTest
+@testable import TimeCapsuleSMBApp
+
+final class HelperRunnerTests: XCTestCase {
+    func testRunnerStreamsEventsFromHelper() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            input=$(cat)
+            case "$input" in
+              *'"request_id":"request-1"'*) ;;
+              *) exit 2 ;;
+            esac
+            echo '{"schema_version":1,"request_id":"req","type":"stage","operation":"capabilities","stage":"start"}'
+            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"capabilities","ok":true,"payload":{"ok":true}}'
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "capabilities", params: [:], requestID: "request-1") {
+            await recorder.append($0)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(events.map(\.type), ["stage", "result"])
+        XCTAssertEqual(events.last?.ok, true)
+    }
+
+    func testRunnerWaitsForEventDeliveryBeforeReturning() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"capabilities","ok":true,"payload":{"ok":true}}'
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "capabilities", params: [:], requestID: "request-1") { event in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await recorder.append(event)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(events.map(\.type), ["result"])
+    }
+
+    func testRunnerSynthesizesErrorWhenHelperHasNoTerminalEvent() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            echo '{"type":"log","operation":"doctor","level":"info","message":"working"}'
+            echo 'stderr detail' >&2
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
+            await recorder.append($0)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(events.last?.type, "error")
+        XCTAssertEqual(events.last?.code, "missing_terminal_event")
+        XCTAssertEqual(events.last?.message, L10n.string("helper.error.missing_terminal_event"))
+        XCTAssertEqual(events.last?.debug, .object(["stderr": .string("stderr detail\n")]))
+    }
+
+    func testRunnerDrainsLargeStderrWhileHelperIsRunning() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            i=0
+            while [ "$i" -lt 2000 ]; do
+                printf '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\\n' >&2
+                i=$((i + 1))
+            done
+            cat >/dev/null
+            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"doctor","ok":true,"payload":{"ok":true}}'
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
+            await recorder.append($0)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr.count, 64 * 1024)
+        XCTAssertEqual(events.last?.type, "result")
+        XCTAssertEqual(events.last?.ok, true)
+    }
+
+    func testRunnerWritesLargeRequestPayloadWithoutCorruption() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            exec python3 -c '
+            import json, sys
+            request = json.load(sys.stdin)
+            payload = request["params"]["payload"]
+            print(json.dumps({
+                "schema_version": 1,
+                "request_id": request["request_id"],
+                "type": "result",
+                "operation": request["operation"],
+                "ok": True,
+                "payload": {
+                    "length": len(payload),
+                    "prefix": payload[:16],
+                    "suffix": payload[-16:]
+                }
+            }), flush=True)
+            '
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+        let largePayload = String(repeating: "abcdef0123456789", count: 8192)
+
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: ["payload": .string(largePayload)], requestID: "request-1") {
+            await recorder.append($0)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(events.last?.type, "result")
+        XCTAssertEqual(events.last?.ok, true)
+        guard case .object(let payload)? = events.last?.payload else {
+            return XCTFail("Expected structured payload")
+        }
+        XCTAssertEqual(payload["length"], .number(Double(largePayload.count)))
+        XCTAssertEqual(payload["prefix"], .string(String(largePayload.prefix(16))))
+        XCTAssertEqual(payload["suffix"], .string(String(largePayload.suffix(16))))
+    }
+
+    func testRunnerDecodesTruncatedUTF8StderrWithReplacementCharacter() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            printf '\\303\\251' >&2
+            """
+        )
+        let runner = HelperRunner(
+            locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default),
+            stderrLimit: 1
+        )
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
+            await recorder.append($0)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "\u{FFFD}")
+        XCTAssertEqual(events.last?.code, "missing_terminal_event")
+    }
+
+    func testRunnerReportsMissingHelper() async {
+        let locator = HelperLocator(environment: [:], currentDirectory: URL(fileURLWithPath: NSTemporaryDirectory()), bundle: .main, fileManager: .default)
+        let runner = HelperRunner(locator: locator)
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: "/missing/tcapsule", operation: "capabilities", params: [:], requestID: "request-1") {
+            await recorder.append($0)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 1)
+        XCTAssertEqual(events.last?.type, "error")
+        XCTAssertEqual(events.last?.code, "helper_not_found")
+    }
+
+    func testRunnerCancelsLongRunningHelper() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            while true; do
+                sleep 1
+            done
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let task = Task {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
+                await recorder.append($0)
+            }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        let result = await task.value
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 130)
+        XCTAssertEqual(events.last?.type, "error")
+        XCTAssertEqual(events.last?.code, "cancelled")
+        XCTAssertEqual(events.last?.message, L10n.string("helper.error.cancelled"))
+    }
+
+    func testRunnerLetsHelperEmitTerminalEventBeforeCancelledFallback() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            exec python3 -c '
+            import json, signal, time
+            def handler(signum, frame):
+                print(json.dumps({"schema_version": 1, "request_id": "req", "type": "error", "operation": "doctor", "code": "cancelled", "message": "cancelled by helper"}), flush=True)
+                raise SystemExit(130)
+            signal.signal(signal.SIGINT, handler)
+            print(json.dumps({"schema_version": 1, "request_id": "req", "type": "stage", "operation": "doctor", "stage": "ready"}), flush=True)
+            while True:
+                time.sleep(1)
+            '
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let task = Task {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: [:], requestID: "request-1") {
+                await recorder.append($0)
+            }
+        }
+        for _ in 0..<200 {
+            if await recorder.events.contains(where: { $0.type == "stage" && $0.stage == "ready" }) {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let sawReady = await recorder.events.contains(where: { $0.type == "stage" && $0.stage == "ready" })
+        XCTAssertTrue(sawReady)
+        task.cancel()
+        let result = await task.value
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 130)
+        XCTAssertEqual(events.compactMap(\.code), ["cancelled"])
+        XCTAssertEqual(events.last?.message, "cancelled by helper")
+    }
+
+    func testRunnerCancelsBlockedRequestWrite() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            sleep 10
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+        let largePayload = String(repeating: "x", count: 8 * 1024 * 1024)
+
+        let task = Task {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: ["payload": .string(largePayload)], requestID: "request-1") {
+                await recorder.append($0)
+            }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        let result = await task.value
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 130)
+        XCTAssertEqual(events.last?.type, "error")
+        XCTAssertEqual(events.last?.code, "cancelled")
+    }
+
+    private func makeHelper(in directory: URL, body: String) throws -> URL {
+        let helper = directory.appendingPathComponent("tcapsule")
+        try "#!/bin/sh\n\(body)\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        return helper
+    }
+}
+
+private actor EventRecorder {
+    private var storage: [BackendEvent] = []
+
+    var events: [BackendEvent] {
+        storage
+    }
+
+    func append(_ event: BackendEvent) {
+        storage.append(event)
+    }
+}

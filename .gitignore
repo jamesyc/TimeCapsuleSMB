@@ -17,6 +17,13 @@ dist/
 *.egg-info/
 *.egg
 
+# Swift / macOS GUI build outputs
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
 # Local dependencies and AirPyrt env
 .deps/
 .airpyrt-venv/

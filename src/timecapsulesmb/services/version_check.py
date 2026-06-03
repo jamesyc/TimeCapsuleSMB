@@ -23,7 +23,9 @@ MAX_VERSION_RESPONSE_BYTES = 64 * 1024
 
 @dataclass(frozen=True)
 class VersionMetadata:
+    current_version: int
     min_supported_version: int
+    latest_tag: str | None
     download_url: str
     message: str
 
@@ -34,6 +36,11 @@ class VersionCheckResult:
     checked_url: str = VERSION_CHECK_URL
     message: str = DEFAULT_UNSUPPORTED_MESSAGE
     download_url: str = DEFAULT_DOWNLOAD_URL
+    local_version_code: int = CLI_VERSION_CODE
+    current_version: int | None = None
+    min_supported_version: int | None = None
+    latest_tag: str | None = None
+    source: str = "unavailable"
 
 
 UrlOpen = Callable[..., Any]
@@ -62,8 +69,13 @@ def parse_version_metadata(payload: object) -> VersionMetadata | None:
     message = payload.get("message")
     if not isinstance(message, str) or not message.strip():
         message = DEFAULT_UNSUPPORTED_MESSAGE
+    latest_tag = payload.get("latest_tag")
+    if not isinstance(latest_tag, str) or not latest_tag.strip():
+        latest_tag = None
     return VersionMetadata(
+        current_version=current_version,
         min_supported_version=min_supported_version,
+        latest_tag=latest_tag.strip() if latest_tag else None,
         download_url=download_url.strip(),
         message=message.strip(),
     )
@@ -157,7 +169,7 @@ def check_client_version(
             opener=opener,
         )
     except Exception:
-        return VersionCheckResult(should_block=False, checked_url=url)
+        return VersionCheckResult(should_block=False, checked_url=url, local_version_code=local_version_code)
 
 
 def _check_client_version(
@@ -173,12 +185,20 @@ def _check_client_version(
     cached_payload = load_fresh_cached_payload(cache_path=cache_path, now=timestamp)
     cached_metadata = parse_version_metadata(cached_payload)
     if cached_metadata is not None and local_version_code >= cached_metadata.min_supported_version:
-        return VersionCheckResult(should_block=False, checked_url=url)
+        return VersionCheckResult(
+            should_block=False,
+            checked_url=url,
+            local_version_code=local_version_code,
+            current_version=cached_metadata.current_version,
+            min_supported_version=cached_metadata.min_supported_version,
+            latest_tag=cached_metadata.latest_tag,
+            source="cache",
+        )
 
     fetched_payload = fetch_version_payload(url=url, timeout=timeout, opener=opener)
     fetched_metadata = parse_version_metadata(fetched_payload)
     if fetched_metadata is None:
-        return VersionCheckResult(should_block=False, checked_url=url)
+        return VersionCheckResult(should_block=False, checked_url=url, local_version_code=local_version_code)
 
     save_cached_payload(fetched_payload, cache_path=cache_path, now=timestamp)
     if local_version_code < fetched_metadata.min_supported_version:
@@ -187,8 +207,21 @@ def _check_client_version(
             checked_url=url,
             message=fetched_metadata.message,
             download_url=fetched_metadata.download_url,
+            local_version_code=local_version_code,
+            current_version=fetched_metadata.current_version,
+            min_supported_version=fetched_metadata.min_supported_version,
+            latest_tag=fetched_metadata.latest_tag,
+            source="network",
         )
-    return VersionCheckResult(should_block=False, checked_url=url)
+    return VersionCheckResult(
+        should_block=False,
+        checked_url=url,
+        local_version_code=local_version_code,
+        current_version=fetched_metadata.current_version,
+        min_supported_version=fetched_metadata.min_supported_version,
+        latest_tag=fetched_metadata.latest_tag,
+        source="network",
+    )
 
 
 def render_version_block_message(result: VersionCheckResult) -> str:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 import platform
+import re
 from importlib import resources
 from pathlib import Path
 
@@ -44,14 +45,6 @@ class AppPaths:
     package_root: Path
 
     @property
-    def project_root(self) -> Path:
-        return self.distribution_root
-
-    @property
-    def env_path(self) -> Path:
-        return self.config_path
-
-    @property
     def bootstrap_path(self) -> Path:
         return self.state_dir / ".bootstrap"
 
@@ -87,6 +80,11 @@ def manifest_artifact_paths() -> tuple[str, ...]:
 
 def _resolve_user_path(path: Path | str) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def safe_path_part(value: str, *, default: str = "device") -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
+    return safe.strip("-.") or default
 
 
 def _has_source_checkout_markers(path: Path) -> bool:

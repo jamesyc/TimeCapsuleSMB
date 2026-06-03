@@ -5,202 +5,99 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from timecapsulesmb.app.contracts import repair_xattrs_payload
+from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt, load_optional_env_config
+from timecapsulesmb.cli.runtime import (
+    add_config_argument,
+    add_no_input_argument,
+    confirm as confirm_prompt,
+    no_input_enabled,
+)
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.repair_xattrs import (
-    ACTION_CLEAR_ARCH_FLAG,
-    ACTION_FIX_PERMISSIONS,
-    DEFAULT_REPAIR_REPORT_LIMIT,
-    MountedSmbShare,
-    RepairCandidate,
-    RepairFinding,
-    RepairSummary,
-    XattrStatus,
-    actionable_findings,
-    build_repair_report,
-    classify_path,
-    default_share_path_from_config,
-    file_flags,
-    find_findings,
-    finding_to_candidate,
-    format_finding_line,
-    is_time_machine_path,
-    iter_scan_paths,
-    mounted_smb_shares,
-    parse_mounted_smb_shares,
-    path_exists,
-    path_has_hidden_component,
-    repair_candidate,
-    run_capture,
-    should_skip_path,
-    ssh_target_host,
-    unresolved_findings_after_success,
-    validate_repair_root_under_volumes,
-    xattr_status,
-    xattrs_readable,
+from timecapsulesmb.services.app import jsonable
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.repair_xattrs import (
+    RepairXattrsRequest,
+    RepairXattrsServiceError,
+    RepairRunResult,
+    run_repair as run_repair_service,
 )
+from timecapsulesmb.services.runtime import load_optional_env_config
 from timecapsulesmb.telemetry import TelemetryClient
-
-
-def print_candidates(candidates: list[RepairCandidate], *, dry_run: bool) -> None:
-    verb = "Would repair" if dry_run else "Repairable"
-    for candidate in candidates:
-        actions = ", ".join(candidate.actions) or "none"
-        flags = f", flags: {candidate.flags}" if candidate.flags else ""
-        print(f"{verb}: {candidate.path} ({candidate.path_type}, actions: {actions}{flags})")
-
-
-def print_diagnostics(findings: list[RepairFinding], *, verbose: bool) -> None:
-    for finding in findings:
-        if finding.repairable:
-            continue
-        if finding.xattr_error or verbose:
-            detail = f"{finding.kind}: {finding.path} ({finding.path_type})"
-            if finding.flags:
-                detail += f" flags={finding.flags}"
-            if finding.xattr_error:
-                detail += f" xattr_error={finding.xattr_error}"
-            print(f"WARN {detail}")
-
-
-def print_summary(summary: RepairSummary, *, dry_run: bool) -> None:
-    print("")
-    print("Summary:")
-    print(f"  scanned paths: {summary.scanned}")
-    print(f"  scanned files: {summary.scanned_files}")
-    print(f"  scanned directories: {summary.scanned_dirs}")
-    print(f"  skipped: {summary.skipped}")
-    print(f"  unreadable xattrs: {summary.unreadable}")
-    print(f"  not repairable: {summary.not_repairable}")
-    print(f"  repairable: {summary.repairable}")
-    print(f"  permission repairs: {summary.permission_repairable}")
-    if not dry_run:
-        print(f"  repaired: {summary.repaired}")
-        print(f"  failed: {summary.failed}")
 
 
 def confirm(prompt_text: str) -> bool:
     return confirm_prompt(prompt_text, default=False, eof_default=False, interrupt_default=False)
 
 
-def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
-    command_context.set_stage("resolve_scan_root")
-    command_context.update_fields(
+def repair_request_from_args(args: argparse.Namespace) -> RepairXattrsRequest:
+    return RepairXattrsRequest(
+        path=args.path,
         dry_run=args.dry_run,
+        approve_repairs=args.yes,
         recursive=args.recursive,
         max_depth=args.max_depth,
         include_hidden=args.include_hidden,
         include_time_machine=args.include_time_machine,
         fix_permissions=args.fix_permissions,
-        explicit_path=args.path is not None,
+        verbose=args.verbose,
     )
-    if args.path is None:
-        try:
-            root = default_share_path_from_config(
-                config,
-                shares=mounted_smb_shares(),
-                path_exists_func=path_exists,
-            )
-        except RuntimeError as exc:
-            raise SystemExit(str(exc)) from exc
-    else:
-        root = args.path
-    if root is None:
-        raise SystemExit("Could not determine mounted share path. Pass --path explicitly.")
-    try:
-        root = validate_repair_root_under_volumes(root)
-    except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
 
-    summary = RepairSummary()
-    command_context.update_fields(repair_root=str(root))
-    command_context.set_stage("scan_findings")
-    print(f"Scanning {root}")
+
+def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
     try:
-        findings = find_findings(
-            root,
-            recursive=args.recursive,
-            max_depth=args.max_depth,
-            include_hidden=args.include_hidden,
-            include_time_machine=args.include_time_machine,
-            include_directories=True,
-            include_root_directory=True,
-            fix_permissions=args.fix_permissions,
-            summary=summary,
+        result = run_repair_service(
+            repair_request_from_args(args),
+            config,
+            callbacks=OperationCallbacks(
+                set_stage=command_context.set_stage,
+                update_fields=command_context.update_fields,
+                log=print,
+            ),
+            confirm=None if no_input_enabled(args) else confirm,
         )
-    except RuntimeError as exc:
+    except RepairXattrsServiceError as exc:
         raise SystemExit(str(exc)) from exc
-    repairs = actionable_findings(findings)
-    candidates = [finding_to_candidate(finding) for finding in repairs]
-    command_context.update_fields(
-        scanned_paths=summary.scanned,
-        scanned_files=summary.scanned_files,
-        scanned_dirs=summary.scanned_dirs,
-        skipped_paths=summary.skipped,
-        unreadable_xattrs=summary.unreadable,
-        finding_count=len(findings),
-        repairable_count=len(candidates),
-        permission_repairable=summary.permission_repairable,
-    )
+    apply_result_to_command_context(result, command_context)
+    return result.returncode
 
-    if not findings:
-        print("No repairable files found.")
-        print_summary(summary, dry_run=True)
+
+def apply_result_to_command_context(result: RepairRunResult, command_context: CommandContext) -> None:
+    if result.telemetry_result == "success":
         command_context.succeed()
-        return 0
+    elif result.error:
+        command_context.fail_with_error(result.error)
+    else:
+        command_context.fail()
 
-    command_context.set_stage("report_findings")
-    print_diagnostics(findings, verbose=args.verbose)
-    if candidates:
-        print_candidates(candidates, dry_run=args.dry_run)
 
-    if args.dry_run:
-        print_summary(summary, dry_run=True)
-        print("No changes made.")
-        command_context.fail_with_error(build_repair_report(findings))
-        return 0
+def _repair_result_payload(result: RepairRunResult) -> dict[str, object]:
+    fields = result.to_payload_fields()
+    fields["stats"] = jsonable(result.summary)
+    return repair_xattrs_payload(fields)
 
-    if not candidates:
-        print("No known-safe repairs are available for the detected issues.")
-        print_summary(summary, dry_run=True)
-        command_context.fail_with_error(build_repair_report(findings))
+
+def run_repair_json(args: argparse.Namespace, config: AppConfig, sink: EventSink) -> int:
+    operation = "repair-xattrs"
+    try:
+        result = run_repair_service(
+            repair_request_from_args(args),
+            config,
+            callbacks=OperationCallbacks(
+                set_stage=lambda stage: sink.stage(operation, stage),
+                log=lambda message: sink.log(operation, message),
+            ),
+        )
+    except RepairXattrsServiceError as exc:
+        message = str(exc) or "repair-xattrs failed"
+        sink.error(operation, message, code="operation_failed")
+        sink.result(operation, ok=False, payload={"error": message})
         return 1
-
-    command_context.set_stage("confirm_repair")
-    if not args.yes and not confirm(f"Repair {len(candidates)} paths with known-safe fixes?"):
-        print("No changes made.")
-        print_summary(summary, dry_run=True)
-        command_context.fail_with_error(build_repair_report(findings))
-        return 0
-
-    command_context.set_stage("repair_findings")
-    failed_findings: list[RepairFinding] = []
-    for finding, candidate in zip(repairs, candidates):
-        print(f"Repairing: {candidate.path}")
-        if repair_candidate(candidate):
-            summary.repaired += 1
-            if ACTION_CLEAR_ARCH_FLAG in candidate.actions:
-                print(f"PASS xattr now readable: {candidate.path}")
-            if ACTION_FIX_PERMISSIONS in candidate.actions:
-                print(f"PASS permissions repaired: {candidate.path}")
-        else:
-            summary.failed += 1
-            failed_findings.append(finding)
-            if ACTION_CLEAR_ARCH_FLAG in candidate.actions:
-                print(f"FAIL repair did not make xattr readable: {candidate.path}")
-            else:
-                print(f"FAIL repair did not fix detected issue: {candidate.path}")
-
-    unresolved = unresolved_findings_after_success(findings) + failed_findings
-    command_context.update_fields(repaired_count=summary.repaired, repair_failed_count=summary.failed)
-    print_summary(summary, dry_run=False)
-    if unresolved:
-        command_context.fail_with_error(build_repair_report(findings, failed=unresolved))
-        return 1
-    command_context.succeed()
-    return 0
+    payload = _repair_result_payload(result)
+    sink.result(operation, ok=result.returncode == 0, payload=payload)
+    return result.returncode
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -209,6 +106,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--path", type=Path, default=None, help="Mounted SMB share path or subdirectory to scan. Defaults to the mounted SMB share matching .env.")
     parser.add_argument("--dry-run", action="store_true", help="Only scan and report files; do not prompt or repair")
     parser.add_argument("--yes", action="store_true", help="Repair without prompting")
+    add_no_input_argument(parser)
     parser.add_argument("--recursive", dest="recursive", action="store_true", default=True, help="Scan recursively (default)")
     parser.add_argument("--no-recursive", dest="recursive", action="store_false", help="Only scan the top-level directory")
     parser.add_argument("--max-depth", type=int, default=None, help="Maximum directory depth to scan when recursive")
@@ -216,15 +114,30 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--include-time-machine", action="store_true", help="Include Time Machine and bundle-like paths normally skipped")
     parser.add_argument("--fix-permissions", action="store_true", help="Also repair missing write permissions on scanned files/directories")
     parser.add_argument("--verbose", action="store_true", help="Print detailed diagnostics for detected issues")
+    parser.add_argument("--json", action="store_true", help="Emit app-event NDJSON instead of human-readable output")
     args = parser.parse_args(argv)
 
     if args.dry_run and args.yes:
         parser.error("--dry-run and --yes are mutually exclusive")
+    if args.json and not args.dry_run and not args.yes:
+        parser.error("--json repair requires --yes when not using --dry-run")
     if args.max_depth is not None and args.max_depth < 0:
         parser.error("--max-depth must be non-negative")
 
     ensure_install_id()
     config = load_optional_env_config(env_path=args.config)
+    if args.json:
+        sink = EventSink(lambda event: print(event.to_json_line(), end=""))
+        operation = "repair-xattrs"
+        sink.stage(operation, "platform_check")
+        if sys.platform != "darwin":
+            message = "repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share."
+            sink.error(operation, message, code="validation_failed")
+            sink.result(operation, ok=False, payload={"error": message})
+            return 1
+        sink.stage(operation, "validate_params")
+        return run_repair_json(args, config, sink)
+
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", config=config, args=args) as command_context:
         command_context.set_stage("platform_check")

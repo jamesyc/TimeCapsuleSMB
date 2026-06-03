@@ -395,10 +395,6 @@ tc_prepare_mdns_identity() {
     return 0
 }
 
-tc_mdns_debug_logging_enabled() {
-    [ "${MDNS_DEBUG_LOGGING:-0}" = "1" ]
-}
-
 tc_mdns_auto_ip_available() {
     tc_probe_mdns_socket_families >/dev/null 2>&1
 }

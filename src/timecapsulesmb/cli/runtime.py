@@ -1,40 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
-from dataclasses import dataclass
+import os
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from timecapsulesmb.core.config import (
-    DEFAULTS,
-    AppConfig,
-    ConfigError,
-    load_app_config,
-    require_valid_app_config,
-)
-from timecapsulesmb.core.net import (
-    extract_host,
-    ipv4_literal,
-    is_link_local_ipv4,
-    is_link_local_ipv6,
-    resolve_host_ipv4s,
-    resolve_host_ipv6s,
-)
-from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     is_netbsd4_payload_family,
     render_compatibility_message,
 )
-from timecapsulesmb.device.probe import (
-    ProbedDeviceState,
-    RemoteInterfaceProbeResult,
-    probe_connection_state,
-    probe_remote_interface_conn,
-    read_interface_ipv4_addrs_conn,
-)
-from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
+from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 
 
 LogCallback = Optional[Callable[[str], None]]
@@ -42,13 +22,6 @@ LogCallback = Optional[Callable[[str], None]]
 
 class NonInteractivePromptError(RuntimeError):
     """Raised when a required confirmation cannot be read from stdin."""
-
-
-@dataclass(frozen=True)
-class ManagedTargetState:
-    connection: SshConnection
-    interface_probe: RemoteInterfaceProbeResult | None
-    probe_state: ProbedDeviceState | None
 
 
 def add_config_argument(parser: argparse.ArgumentParser) -> None:
@@ -60,8 +33,84 @@ def add_config_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def config_path_from_args(args: argparse.Namespace) -> Path | None:
-    return getattr(args, "config", None)
+def add_no_input_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-input",
+        action="store_true",
+        help="Do not prompt; fail if required input or confirmation is missing",
+    )
+
+
+def no_input_enabled(args: argparse.Namespace | object) -> bool:
+    return bool(getattr(args, "no_input", False))
+
+
+def prompt_device_password(prompt: str) -> str:
+    return getpass.getpass(prompt)
+
+
+def add_password_source_arguments(parser: argparse.ArgumentParser) -> None:
+    password_group = parser.add_mutually_exclusive_group()
+    password_group.add_argument(
+        "--password-env",
+        metavar="NAME",
+        help="Read the device password from environment variable NAME",
+    )
+    password_group.add_argument(
+        "--password-file",
+        type=Path,
+        metavar="PATH",
+        help="Read the device password from PATH",
+    )
+    password_group.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read the device password from stdin",
+    )
+
+
+def read_password_source_args(args: argparse.Namespace) -> str | None:
+    env_name = getattr(args, "password_env", None)
+    if env_name:
+        if env_name not in os.environ:
+            raise ConfigError(f"Password environment variable is not set: {env_name}")
+        return os.environ[env_name]
+
+    password_file = getattr(args, "password_file", None)
+    if password_file is not None:
+        try:
+            return Path(password_file).read_text(encoding="utf-8").rstrip("\r\n")
+        except OSError as exc:
+            raise ConfigError(f"Failed to read password file {password_file}: {exc}") from exc
+
+    if getattr(args, "password_stdin", False):
+        return sys.stdin.read().rstrip("\r\n")
+
+    return None
+
+
+def non_negative_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return parsed
+
+
+def add_mount_wait_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--mount-wait",
+        type=non_negative_int_arg,
+        default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+        metavar="SECONDS",
+        help=f"Seconds for diskd.useVolume mount guards to wait before their manual fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
+    )
+
+
+def add_no_wait_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--no-wait", action="store_true", help="Do not wait for the device to go down and come back after reboot")
 
 
 def json_text(data: object) -> str:
@@ -123,110 +172,6 @@ def confirm(
         if answer in {"n", "no"}:
             return False
         print("Please answer 'y' or 'n'.")
-
-
-def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | None = None) -> AppConfig:
-    resolved_path = resolve_app_paths(config_path=env_path).config_path
-    return load_app_config(resolved_path, defaults=defaults)
-
-
-def load_optional_env_config(
-    *,
-    env_path: Path | None = None,
-    defaults: dict[str, str] | None = None,
-) -> AppConfig:
-    try:
-        resolved_path = resolve_app_paths(config_path=env_path).config_path
-    except Exception:
-        return AppConfig.missing(path=env_path or Path.cwd() / ".env")
-    if not resolved_path.exists():
-        return AppConfig.missing(path=resolved_path)
-    try:
-        return load_app_config(resolved_path, defaults=defaults)
-    except OSError:
-        return AppConfig.missing(path=resolved_path)
-
-
-def resolve_ssh_credentials(
-    config: AppConfig,
-    *,
-    allow_empty_password: bool = False,
-) -> tuple[str, str]:
-    host = config.require("TC_HOST")
-    password = config.get("TC_PASSWORD")
-    if not password and not allow_empty_password:
-        import getpass
-        password = getpass.getpass("Device root password: ")
-    return host, password
-
-
-def resolve_env_connection(
-    config: AppConfig,
-    *,
-    required_keys: tuple[str, ...] = (),
-    allow_empty_password: bool = False,
-) -> SshConnection:
-    for key in required_keys:
-        config.require(key)
-    host, password = resolve_ssh_credentials(config, allow_empty_password=allow_empty_password)
-    return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
-
-
-def inspect_managed_connection(
-    connection: SshConnection,
-    iface: str,
-    *,
-    include_probe: bool = False,
-) -> ManagedTargetState:
-    interface_probe = probe_remote_interface_conn(connection, iface)
-    probe_state = probe_connection_state(connection) if include_probe else None
-    return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
-
-
-def ssh_target_link_local_resolution_error(
-    target: str,
-    ssh_opts: str,
-    *,
-    field_name: str = "Device SSH target",
-) -> str | None:
-    if ssh_opts_use_proxy(ssh_opts):
-        return None
-    host = extract_host(target).strip()
-    if not host or ipv4_literal(host) is not None:
-        return None
-    link_local_ips = tuple(ip for ip in resolve_host_ipv4s(host) if is_link_local_ipv4(ip))
-    link_local_ipv6s = tuple(ip for ip in resolve_host_ipv6s(host) if is_link_local_ipv6(ip))
-    link_local_hosts = link_local_ips + link_local_ipv6s
-    if not link_local_hosts:
-        return None
-    noun = "address" if len(link_local_hosts) == 1 else "addresses"
-    return (
-        f"{field_name} host {host} resolves to link-local {noun} "
-        f"{', '.join(link_local_hosts)}. Use the device's LAN IP or a hostname that resolves "
-        "to its LAN IP; link-local addresses are only suitable for temporary SSH recovery."
-    )
-
-
-def resolve_validated_managed_target(
-    config: AppConfig,
-    *,
-    command_name: str,
-    profile: str,
-    include_probe: bool = False,
-) -> ManagedTargetState:
-    require_valid_app_config(config, profile=profile, command_name=command_name)
-    resolution_error = ssh_target_link_local_resolution_error(
-        config.require("TC_HOST"),
-        config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]),
-        field_name="TC_HOST",
-    )
-    if resolution_error is not None:
-        raise ConfigError(resolution_error)
-    connection = resolve_env_connection(config)
-    if profile == "flash":
-        return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
-    probe_state = probe_connection_state(connection) if include_probe else None
-    return ManagedTargetState(connection=connection, interface_probe=None, probe_state=probe_state)
 
 
 def require_supported_device_compatibility(

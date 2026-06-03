@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "timecapsulesmb"
-version = "2.1.7"
+version = "2.2.0-beta3"
 description = "Deploy modern Samba to Apple AirPort Time Capsules."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -14,6 +14,13 @@ dependencies = [
   "pycryptodome>=3.20.0,<4",
   "zopfli>=0.2.3.post1",
   "zeroconf>=0.132.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "coverage>=7.6.0",
+  "pytest>=8.4.0,<9",
+  "pytest-xdist>=3.6.1,<4",
 ]
 
 [project.scripts]

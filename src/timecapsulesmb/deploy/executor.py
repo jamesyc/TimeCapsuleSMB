@@ -93,11 +93,14 @@ def upload_deployment_payload(
     *,
     connection: SshConnection,
     source_resolver: Mapping[str, Path],
+    on_uploading: Callable[[FileTransfer], None] | None = None,
     on_uploaded: Callable[[FileTransfer], None] | None = None,
 ) -> None:
     planned_modes = {permission.path: permission.mode for permission in plan.permissions}
     for transfer in plan.uploads:
         source = _resolve_transfer_source(source_resolver, transfer)
+        if on_uploading is not None:
+            on_uploading(transfer)
         _ensure_payload_volume_before_transfer(connection, plan, transfer)
         if transfer.mode in {"scp", "generated"}:
             _scp_transfer(connection, source, transfer)

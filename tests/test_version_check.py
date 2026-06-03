@@ -13,7 +13,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli.version_check import (
+from timecapsulesmb.services.version_check import (
     DEFAULT_DOWNLOAD_URL,
     DEFAULT_UNSUPPORTED_MESSAGE,
     VERSION_CHECK_CACHE_SECONDS,
@@ -81,6 +81,10 @@ class VersionCheckTests(unittest.TestCase):
             )
 
             self.assertFalse(result.should_block)
+            self.assertEqual(result.source, "network")
+            self.assertEqual(result.current_version, 20004)
+            self.assertEqual(result.min_supported_version, 20004)
+            self.assertEqual(result.latest_tag, "v2.0.4")
             self.assertEqual(len(calls), 1)
             request, timeout = calls[0]
             self.assertEqual(request.full_url, VERSION_CHECK_URL)
@@ -114,6 +118,9 @@ class VersionCheckTests(unittest.TestCase):
             self.assertTrue(result.should_block)
             self.assertEqual(result.message, message)
             self.assertEqual(result.download_url, download_url)
+            self.assertEqual(result.source, "network")
+            self.assertEqual(result.current_version, 20005)
+            self.assertEqual(result.min_supported_version, 20005)
             self.assertEqual(len(calls), 1)
 
     def test_invalid_or_unreachable_version_metadata_fails_open(self) -> None:
@@ -198,6 +205,8 @@ class VersionCheckTests(unittest.TestCase):
             )
 
             self.assertFalse(result.should_block)
+            self.assertEqual(result.source, "cache")
+            self.assertEqual(result.current_version, 20004)
             self.assertEqual(calls, [])
 
     def test_stale_cache_fetches_remote_metadata(self) -> None:
@@ -261,7 +270,7 @@ class VersionCheckTests(unittest.TestCase):
     def test_unexpected_internal_exception_fails_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
-            with mock.patch("timecapsulesmb.cli.version_check.load_fresh_cached_payload", side_effect=RuntimeError("boom")):
+            with mock.patch("timecapsulesmb.services.version_check.load_fresh_cached_payload", side_effect=RuntimeError("boom")):
                 result = check_client_version(
                     local_version_code=20004,
                     cache_path=cache_path,

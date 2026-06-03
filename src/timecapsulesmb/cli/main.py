@@ -4,12 +4,13 @@ import argparse
 import sys
 from typing import Optional
 
-from . import activate, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
+from . import activate, api, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
 from timecapsulesmb.core.paths import DistributionRootError
-from .version_check import check_client_version, render_version_block_message
+from timecapsulesmb.services.version_check import check_client_version, render_version_block_message
 
 
 COMMANDS = {
+    "api": api.main,
     "bootstrap": bootstrap.main,
     "activate": activate.main,
     "configure": configure.main,
@@ -36,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if "-h" not in args.args and "--help" not in args.args:
+    if args.command != "api" and "-h" not in args.args and "--help" not in args.args:
         try:
             version_check = check_client_version()
             if version_check.should_block:
