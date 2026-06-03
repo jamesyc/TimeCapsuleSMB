@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "current_version": 20203,
+  "current_version": 20129,
   "min_supported_version": 20121,
-  "latest_tag": "v2.2.0-beta3",
+  "latest_tag": "v2.1.8",
   "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
   "message": "This version is no longer supported. Please update before continuing. Version v2.0.7 and earlier use Samba 4.8 and have known security issues."
 }

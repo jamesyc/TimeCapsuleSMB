@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Update this version info for each release, including beta releases.
-CLI_VERSION = "2.2.0-beta3"
-RELEASE_TAG = "v2.2.0-beta3"
-CLI_VERSION_CODE = 20203
+CLI_VERSION = "2.1.8"
+RELEASE_TAG = "v2.1.8"
+CLI_VERSION_CODE = 20129
 SAMBA_VERSION = "4.24.1"
