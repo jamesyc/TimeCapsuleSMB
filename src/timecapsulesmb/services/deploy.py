@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+import time
 import tempfile
 
 from timecapsulesmb.core.config import DEFAULTS, MANAGED_PAYLOAD_DIR_NAME, AppConfig, parse_bool, shell_quote
@@ -328,6 +330,35 @@ def uploaded_file_message(transfer: FileTransfer) -> str | None:
     if transfer.source_id == GENERATED_USERNAME_MAP_SOURCE:
         return "Uploaded Samba account files."
     return None
+
+
+def _upload_destination_kind(transfer: FileTransfer, plan: DeploymentPlan) -> str:
+    destination = transfer.destination.rstrip("/")
+    if destination == plan.payload_dir.rstrip("/") or destination.startswith(f"{plan.payload_dir.rstrip('/')}/"):
+        return "payload"
+    if destination == "/mnt/Flash" or destination.startswith("/mnt/Flash/"):
+        return "flash"
+    if destination == "/mnt/Memory" or destination.startswith("/mnt/Memory/"):
+        return "memory"
+    return "other"
+
+
+def _upload_payload_kwargs_for_func(upload_payload_func: Callable[..., object], kwargs: dict[str, object]) -> dict[str, object]:
+    signature_target = upload_payload_func
+    side_effect = getattr(upload_payload_func, "side_effect", None)
+    if callable(side_effect):
+        signature_target = side_effect
+    try:
+        signature = inspect.signature(signature_target)
+    except (TypeError, ValueError):
+        return kwargs
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+        return kwargs
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters
+    }
 
 
 def pre_upload_action_message(action: RemoteAction) -> str | None:
@@ -691,17 +722,67 @@ def upload_and_verify_deployment_payload(
         update_scp_upload_telemetry()
         if on_before_upload is not None:
             on_before_upload()
+        upload_batch_started = time.monotonic()
+        upload_batch_result = "success"
+        active_upload: FileTransfer | None = None
+        upload_starts: dict[str, float] = {}
+
+        def record_uploading(transfer: FileTransfer) -> None:
+            nonlocal active_upload
+            active_upload = transfer
+            upload_starts[transfer.source_id] = time.monotonic()
+            if on_uploading is not None:
+                on_uploading(transfer)
+
+        def record_uploaded(transfer: FileTransfer) -> None:
+            nonlocal active_upload
+            started = upload_starts.pop(transfer.source_id, None)
+            source = upload_sources.get(transfer.source_id)
+            callbacks.measurement(
+                "upload",
+                source_id=transfer.source_id,
+                mode=transfer.mode,
+                destination_kind=_upload_destination_kind(transfer, plan),
+                timeout_sec=transfer.timeout_seconds,
+                bytes=source.stat().st_size if source is not None and source.exists() else None,
+                duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
+                result="success",
+            )
+            if active_upload == transfer:
+                active_upload = None
+            if on_uploaded is not None:
+                on_uploaded(transfer)
+
         upload_kwargs: dict[str, object] = {
             "connection": connection,
             "source_resolver": upload_sources,
+            "on_uploaded": record_uploaded,
+            "on_uploading": record_uploading,
         }
-        if on_uploaded is not None:
-            upload_kwargs["on_uploaded"] = on_uploaded
-        if on_uploading is not None:
-            upload_kwargs["on_uploading"] = on_uploading
         try:
-            upload_payload_func(plan, **upload_kwargs)
+            upload_payload_func(plan, **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs))
+        except Exception as exc:
+            upload_batch_result = "failure"
+            if active_upload is not None:
+                started = upload_starts.get(active_upload.source_id)
+                callbacks.measurement(
+                    "upload",
+                    source_id=active_upload.source_id,
+                    mode=active_upload.mode,
+                    destination_kind=_upload_destination_kind(active_upload, plan),
+                    timeout_sec=active_upload.timeout_seconds,
+                    duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
+                    result="failure",
+                    error_type=type(exc).__name__,
+                )
+            raise
         finally:
+            callbacks.measurement(
+                "upload_batch",
+                file_count=len(plan.uploads),
+                duration_sec=round(time.monotonic() - upload_batch_started, 3),
+                result=upload_batch_result,
+            )
             update_scp_upload_telemetry()
         if on_after_upload is not None:
             on_after_upload()

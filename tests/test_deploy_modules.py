@@ -107,15 +107,17 @@ from timecapsulesmb.device.probe import (
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
 )
-from timecapsulesmb.device.storage import MaStVolume, PayloadHome, mounted_mast_volumes_conn
+from timecapsulesmb.device.storage import MaStVolume, PayloadHome, PayloadVerificationResult, mounted_mast_volumes_conn
 from timecapsulesmb.services.activation import ActivationDecision, decide_manual_activation, decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
     DeployArtifactPaths,
     DeployCompletionMessages,
     DeployPayloadContext,
+    DeployRuntimeConfig,
     PreparedDeployPlan,
     complete_deployment_after_upload,
+    upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
@@ -6863,6 +6865,38 @@ int main(void) {{
         self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.dfree.sh.tmp", "/mnt/Flash/.tcapsulesmb.conf.tmp"])
         self.assertEqual(ssh_mock.call_count, 4)
         mount_mock.assert_not_called()
+
+    def test_upload_and_verify_deployment_payload_records_upload_measurements(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        connection = SshConnection("host", "pw", "-o foo")
+        measurements: list[tuple[str, dict[str, object]]] = []
+
+        def fake_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            for transfer in plan.uploads[:2]:
+                if on_uploading is not None:
+                    on_uploading(transfer)
+                if on_uploaded is not None:
+                    on_uploaded(transfer)
+
+        upload_and_verify_deployment_payload(
+            AppConfig.from_values({}),
+            connection,
+            prepared_plan,
+            DeployRuntimeConfig(nbns_enabled=True),
+            callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
+            run_remote_actions_func=mock.Mock(),
+            upload_payload_func=fake_upload,
+            flush_remote_writes=mock.Mock(),
+            verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+        )
+
+        upload_measurements = [fields for kind, fields in measurements if kind == "upload"]
+        batch_measurements = [fields for kind, fields in measurements if kind == "upload_batch"]
+        self.assertEqual([fields["source_id"] for fields in upload_measurements], [BINARY_SMBD_SOURCE, BINARY_MDNS_SOURCE])
+        self.assertEqual(upload_measurements[0]["destination_kind"], "payload")
+        self.assertEqual(upload_measurements[0]["result"], "success")
+        self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
+        self.assertEqual(batch_measurements[0]["result"], "success")
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

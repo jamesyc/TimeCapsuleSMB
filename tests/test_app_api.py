@@ -289,11 +289,16 @@ class AppApiTests(unittest.TestCase):
         callbacks.set_stage("reboot")
         callbacks.update_fields(reboot_was_attempted=True)
         callbacks.add_debug_fields(reboot_request_strategy="ssh")
+        callbacks.measurement("reboot_request", strategy="ssh_shutdown_then_reboot")
         callbacks.log("reboot requested")
 
         self.assertEqual(context.current_stage, "reboot")
         self.assertEqual(context.finish_fields["reboot_was_attempted"], True)
         self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "ssh")
+        self.assertEqual(
+            context.execution_telemetry(result="success")["measurements"]["reboot_request"][0]["strategy"],
+            "ssh_shutdown_then_reboot",
+        )
         self.assertEqual(collector.events_of_type("log")[0]["message"], "reboot requested")
 
     def test_app_operation_context_runtime_callbacks_remain_compatible(self) -> None:
@@ -2857,6 +2862,9 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(context.diagnostics.debug_fields["reboot_request_strategy"], "ssh_shutdown_then_reboot")
         self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_attempted"], True)
         self.assertEqual(context.diagnostics.debug_fields["ssh_reboot_succeeded"], True)
+        execution = context.execution_telemetry(result="success")
+        self.assertEqual(execution["measurements"]["reboot_request"][0]["strategy"], "ssh_shutdown_then_reboot")
+        self.assertEqual(execution["measurements"]["reboot_cycle"][0]["result"], "success")
 
     def test_deploy_verify_runtime_failure_adds_runtime_logs_to_error_context(self) -> None:
         from timecapsulesmb.app.ops import deploy as deploy_ops

@@ -235,6 +235,7 @@ def _finish_api_telemetry(
         stage=context.current_stage,
         risk=risk or context.current_risk,
         details=details,
+        execution=context.execution_telemetry(result=result),
         **context.finish_fields,
     )
 

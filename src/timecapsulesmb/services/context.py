@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
+from timecapsulesmb.telemetry.execution import ExecutionTelemetryRecorder
 
 if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
@@ -105,6 +106,7 @@ class OperationContext:
         self.debug_fields: dict[str, object] = {}
         self.connection: SshConnection | None = None
         self.probe_state: ProbedDeviceState | None = None
+        self.execution = ExecutionTelemetryRecorder()
 
     def update_fields(self, **fields: object) -> None:
         for key, value in fields.items():
@@ -113,6 +115,13 @@ class OperationContext:
 
     def set_stage(self, stage: str) -> None:
         self.debug_stage = stage
+        self.execution.set_stage(stage)
+
+    def record_execution_measurement(self, kind: str, **fields: object) -> None:
+        self.execution.record_measurement(kind, **fields)
+
+    def execution_telemetry(self, *, result: str) -> dict[str, object]:
+        return self.execution.to_jsonable(result=result)
 
     def add_debug_fields(self, **fields: object) -> None:
         for key, value in fields.items():

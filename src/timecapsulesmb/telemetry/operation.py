@@ -137,7 +137,7 @@ class OperationTelemetrySession:
                 client=self.client,
                 options=options if isinstance(options, dict) else None,
                 details=details if isinstance(details, dict) else None,
-                # Retain the old field during schema v4 rollout for existing dashboards/queries.
+                # Retain the old field for existing dashboards/queries.
                 command_id=self.operation_id,
                 **emit_fields,
             )

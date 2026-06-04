@@ -42,7 +42,7 @@ def telemetry_client_from_values(
 
 
 class TelemetryTests(unittest.TestCase):
-    def test_emit_builds_schema_v4_payload_without_stale_config_identity(self) -> None:
+    def test_emit_builds_schema_v5_payload_without_stale_config_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
@@ -59,7 +59,7 @@ class TelemetryTests(unittest.TestCase):
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
                     client.emit("deploy_started")
         payload = dispatch_mock.call_args.args[0]
-        self.assertEqual(payload["schema_version"], 4)
+        self.assertEqual(payload["schema_version"], 5)
         self.assertEqual(payload["event"], "deploy_started")
         self.assertEqual(payload["operation"], "deploy")
         self.assertEqual(payload["phase"], "started")
@@ -163,6 +163,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(finished_payload["event"], "deploy_finished")
         self.assertEqual(finished_payload["phase"], "finished")
         self.assertEqual(finished_payload["result"], "success")
+        self.assertIn("execution", finished_payload)
+        self.assertEqual(finished_payload["execution"]["version"], 1)
 
     def test_command_context_records_normalized_options_and_details(self) -> None:
         telemetry = mock.Mock()
@@ -190,6 +192,34 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(finished_kwargs["details"]["fsck_mountpoint"], "/Volumes/Data")
         self.assertTrue(finished_kwargs["details"]["reboot_requested"])
         self.assertFalse(finished_kwargs["details"]["verified"])
+        self.assertEqual(finished_kwargs["execution"]["version"], 1)
+
+    def test_command_context_records_execution_stages_and_measurements(self) -> None:
+        telemetry = mock.Mock()
+
+        command = CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished")
+        command.set_stage("resolve_managed_target")
+        command.set_stage("verify_runtime_activation")
+        command.record_execution_measurement(
+            "runtime_verification",
+            stage="verify_runtime_activation",
+            timeout_sec=200,
+            ready=False,
+            password="secret",
+        )
+        command.finish(result="failure")
+
+        finished_kwargs = telemetry.emit.call_args_list[1].kwargs
+        execution = finished_kwargs["execution"]
+        self.assertEqual(execution["version"], 1)
+        self.assertEqual(
+            [stage["name"] for stage in execution["stages"]],
+            ["resolve_managed_target", "verify_runtime_activation"],
+        )
+        self.assertEqual(execution["stages"][-1]["result"], "failure")
+        self.assertEqual(execution["stage_totals"]["verify_runtime_activation"]["count"], 1)
+        self.assertEqual(execution["measurements"]["runtime_verification"][0]["timeout_sec"], 200)
+        self.assertNotIn("password", execution["measurements"]["runtime_verification"][0])
 
     def test_operation_telemetry_renames_reserved_legacy_fields(self) -> None:
         telemetry = mock.Mock()

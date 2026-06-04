@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -143,23 +144,39 @@ def _request_reboot(
     callbacks.stage("reboot")
     callbacks.update(reboot_was_attempted=True)
     callbacks.debug(reboot_request_strategy=strategy)
-    if strategy == "acp_then_ssh":
-        _request_reboot_acp_then_ssh(
+    started = time.monotonic()
+    result = "success"
+    error_type: str | None = None
+    try:
+        if strategy == "acp_then_ssh":
+            _request_reboot_acp_then_ssh(
+                connection,
+                callbacks=callbacks,
+                progress_log=progress_log,
+                raise_on_request_error=raise_on_request_error,
+                request_reboot=request_reboot,
+                request_acp_reboot=request_acp_reboot,
+            )
+            return
+        _request_reboot_via_ssh(
             connection,
             callbacks=callbacks,
             progress_log=progress_log,
-            raise_on_request_error=raise_on_request_error,
             request_reboot=request_reboot,
-            request_acp_reboot=request_acp_reboot,
+            raise_on_request_error=raise_on_request_error,
         )
-        return
-    _request_reboot_via_ssh(
-        connection,
-        callbacks=callbacks,
-        progress_log=progress_log,
-        request_reboot=request_reboot,
-        raise_on_request_error=raise_on_request_error,
-    )
+    except Exception as exc:
+        result = "failure"
+        error_type = type(exc).__name__
+        raise
+    finally:
+        callbacks.measurement(
+            "reboot_request",
+            strategy=strategy,
+            duration_sec=round(time.monotonic() - started, 3),
+            result=result,
+            error_type=error_type,
+        )
 
 
 def _request_reboot_acp_then_ssh(
@@ -276,18 +293,53 @@ def _observe_reboot_cycle(
     wait_for_ssh_state: Callable[..., bool] = wait_for_ssh_state_conn,
 ) -> RebootCycleResult:
     callbacks = callbacks or OperationCallbacks()
+    cycle_started = time.monotonic()
     callbacks.message("Waiting for the device to go down...")
     callbacks.stage("wait_for_reboot_down")
+    down_started = time.monotonic()
     if not wait_for_ssh_state(connection, expected_up=False, timeout_seconds=down_timeout_seconds):
+        callbacks.measurement(
+            "reboot_cycle",
+            down_timeout_sec=down_timeout_seconds,
+            up_timeout_sec=up_timeout_seconds,
+            down_wait_duration_sec=round(time.monotonic() - down_started, 3),
+            total_wait_duration_sec=round(time.monotonic() - cycle_started, 3),
+            went_down=False,
+            came_back_up=False,
+            result="did_not_go_down",
+        )
         return RebootCycleResult(went_down=False, came_back_up=False)
 
     callbacks.message("Device went down; waiting for it to come back up...")
     callbacks.stage("wait_for_reboot_up")
+    up_started = time.monotonic()
     if not wait_for_ssh_state(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
+        callbacks.measurement(
+            "reboot_cycle",
+            down_timeout_sec=down_timeout_seconds,
+            up_timeout_sec=up_timeout_seconds,
+            down_wait_duration_sec=round(up_started - down_started, 3),
+            up_wait_duration_sec=round(time.monotonic() - up_started, 3),
+            total_wait_duration_sec=round(time.monotonic() - cycle_started, 3),
+            went_down=True,
+            came_back_up=False,
+            result="did_not_come_back_up",
+        )
         return RebootCycleResult(went_down=True, came_back_up=False)
 
     callbacks.update(device_came_back_after_reboot=True)
     callbacks.message("Device is back online.")
+    callbacks.measurement(
+        "reboot_cycle",
+        down_timeout_sec=down_timeout_seconds,
+        up_timeout_sec=up_timeout_seconds,
+        down_wait_duration_sec=round(up_started - down_started, 3),
+        up_wait_duration_sec=round(time.monotonic() - up_started, 3),
+        total_wait_duration_sec=round(time.monotonic() - cycle_started, 3),
+        went_down=True,
+        came_back_up=True,
+        result="success",
+    )
     return RebootCycleResult(went_down=True, came_back_up=True)
 
 

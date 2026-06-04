@@ -90,6 +90,7 @@ class AppOperationContext:
             log=self.log,
             add_debug_fields=self.add_debug_fields,
             update_fields=self.update_fields,
+            record_execution_measurement=self.record_execution_measurement,
         )
 
     def update_fields(self, **fields: object) -> None:
@@ -97,6 +98,12 @@ class AppOperationContext:
 
     def add_debug_fields(self, **fields: object) -> None:
         self.diagnostics.add_debug_fields(**fields)
+
+    def record_execution_measurement(self, kind: str, **fields: object) -> None:
+        self.diagnostics.record_execution_measurement(kind, **fields)
+
+    def execution_telemetry(self, *, result: str) -> dict[str, object]:
+        return self.diagnostics.execution_telemetry(result=result)
 
     def known_airport_display_name(self) -> str | None:
         model = self.finish_fields.get("device_model")

@@ -191,6 +191,7 @@ class CommandContext:
             log=print,
             add_debug_fields=self.add_debug_fields,
             update_fields=self.update_fields,
+            record_execution_measurement=self.record_execution_measurement,
         )
 
     def update_fields(self, **fields: object) -> None:
@@ -264,6 +265,9 @@ class CommandContext:
 
     def add_debug_fields(self, **fields: object) -> None:
         self.operation_context.add_debug_fields(**fields)
+
+    def record_execution_measurement(self, kind: str, **fields: object) -> None:
+        self.operation_context.record_execution_measurement(kind, **fields)
 
     def set_error(self, message: str) -> None:
         self.operation_context.set_error(message)
@@ -408,5 +412,6 @@ class CommandContext:
             error=error,
             stage=self.debug_stage,
             details=details,
+            execution=self.operation_context.execution_telemetry(result=result),
             **emit_fields,
         )
