@@ -1708,7 +1708,7 @@ class CliTests(unittest.TestCase):
                         bootstrap.install_required_host_tools()
         text = output.getvalue()
         self.assertIn("Install Homebrew", text)
-        self.assertIn("or install these macOS packages manually: sshpass, samba", text)
+        self.assertIn("or manually install the missing tools on macOS: sshpass, smbclient", text)
         self.assertIn("Then rerun './tcapsule bootstrap'.", text)
         self.assertIn("Missing host tools: sshpass, smbclient", text)
         self.assertIn("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh", text)

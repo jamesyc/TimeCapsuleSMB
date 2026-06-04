@@ -296,11 +296,6 @@ def _macos_manual_install_command(missing_tools: list[str]) -> str:
     return f"brew install {' '.join(packages)}"
 
 
-def _format_macos_host_tool_packages(missing_tools: list[str]) -> str:
-    packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
-    return ", ".join(packages)
-
-
 def _linux_install_plan(missing_tools: list[str]) -> tuple[list[list[str]], str] | None:
     for manager, packages_by_tool in LINUX_HOST_TOOL_PACKAGES.items():
         executable = find_command(manager)
@@ -341,7 +336,7 @@ def _install_macos_host_tools(missing_tools: list[str]) -> None:
         print(
             color_red(
                 "Install Homebrew so bootstrap can install missing host tools automatically, "
-                f"or install these macOS packages manually: {_format_macos_host_tool_packages(missing_tools)}. "
+                f"or manually install the missing tools on macOS: {_format_tools(missing_tools)}. "
                 "Then rerun './tcapsule bootstrap'."
             ),
             flush=True,
@@ -350,8 +345,8 @@ def _install_macos_host_tools(missing_tools: list[str]) -> None:
         print(color_red("Homebrew install command:"), flush=True)
         print(HOMEBREW_INSTALL_COMMAND, flush=True)
         raise BootstrapError(
-            "Install Homebrew or manually install the missing macOS host tool packages: "
-            f"{_format_macos_host_tool_packages(missing_tools)}"
+            "Install Homebrew or manually install the missing tools on macOS: "
+            f"{_format_tools(missing_tools)}"
         )
 
     packages = [MACOS_HOST_TOOL_PACKAGES[tool] for tool in missing_tools]
