@@ -9,6 +9,12 @@ import zlib
 
 ACP_PORT = 5009
 ACP_VERSION = 0x00030001
+# Older TimeCapsule6,106 ACPd replies have been observed using 0x00030000.
+SUPPORTED_ACP_RESPONSE_VERSIONS = frozenset((
+    0x00000001,
+    0x00030000,
+    ACP_VERSION,
+))
 ACP_MAGIC = b"acpp"
 ACP_STATIC_KEY = bytes.fromhex("5b6faf5d9d5b0e1351f2da1de7e8d673")
 
@@ -165,7 +171,7 @@ def _parse_header(data: bytes) -> ACPMessageHeader:
     magic, version, header_checksum, body_checksum, body_size, flags, _unused, command, error_code, key = HEADER.unpack(data)
     if magic != ACP_MAGIC:
         raise ACPProtocolError("ACP response had invalid magic")
-    if version not in (0x00000001, ACP_VERSION):
+    if version not in SUPPORTED_ACP_RESPONSE_VERSIONS:
         raise ACPProtocolError(f"ACP response had unsupported version {version:#x}")
 
     tmp_header = HEADER.pack(magic, version, 0, body_checksum, body_size, flags, _unused, command, error_code, key)

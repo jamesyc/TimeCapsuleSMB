@@ -50,6 +50,48 @@ def successful_setprop_response() -> bytes:
     )
 
 
+def response_with_header_version(response: bytes, version: int) -> bytes:
+    header = response[:acp.HEADER.size]
+    body = response[acp.HEADER.size:]
+    (
+        magic,
+        _old_version,
+        _old_checksum,
+        body_checksum,
+        body_size,
+        flags,
+        unused,
+        command,
+        error_code,
+        key,
+    ) = acp.HEADER.unpack(header)
+    checksum_input = acp.HEADER.pack(
+        magic,
+        version,
+        0,
+        body_checksum,
+        body_size,
+        flags,
+        unused,
+        command,
+        error_code,
+        key,
+    )
+    rewritten_header = acp.HEADER.pack(
+        magic,
+        version,
+        acp._adler32_i32(checksum_input),
+        body_checksum,
+        body_size,
+        flags,
+        unused,
+        command,
+        error_code,
+        key,
+    )
+    return rewritten_header + body
+
+
 class ACPTests(unittest.TestCase):
     def test_header_key_matches_legacy_acp_algorithm(self) -> None:
         self.assertEqual(
@@ -150,6 +192,19 @@ class ACPTests(unittest.TestCase):
         self.assertEqual(identity.syap, 119)
         self.assertIn(b"syAP", fake_socket.sent)
 
+    def test_read_identity_accepts_older_acp_3_0_response_version(self) -> None:
+        body = acp._compose_property_element("syAP", 106)
+        response = response_with_header_version(
+            acp._compose_header(command=acp.COMMAND_GETPROP, payload=body) + body,
+            0x00030000,
+        )
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            identity = acp.read_identity("10.0.0.2", "pw")
+
+        self.assertEqual(identity.syap, 106)
+        self.assertIn(b"syAP", fake_socket.sent)
+
     def test_get_property_int_rejects_bad_sized_reply_body_checksum(self) -> None:
         body = acp._compose_property_element("dbug", 0x3000)
         corrupted = bytearray(body)
@@ -167,6 +222,16 @@ class ACPTests(unittest.TestCase):
         header[8] ^= 0x01
         with self.assertRaises(acp.ACPProtocolError):
             acp._parse_header(bytes(header))
+
+    def test_unsupported_response_version_is_protocol_error(self) -> None:
+        response = response_with_header_version(
+            acp._compose_header(command=acp.COMMAND_SETPROP),
+            0x00030002,
+        )
+        with self.assertRaises(acp.ACPProtocolError) as raised:
+            acp._parse_header(response[:acp.HEADER.size])
+
+        self.assertIn("unsupported version 0x30002", str(raised.exception))
 
     def test_disable_ssh_over_ssh_retries_and_reboots_on_success(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyJump=bastion")
