@@ -65,6 +65,11 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     BonjourServiceInstance,
 )
+from timecapsulesmb.discovery.native_dns_sd import (
+    NativeDnsSdBrowseResult,
+    NativeDnsSdDiscoveryDiagnostics,
+    NativeDnsSdResolveResult,
+)
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
@@ -406,6 +411,7 @@ class CheckTests(unittest.TestCase):
                 ),
             )
         )
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.native_dns_sd_available", return_value=False))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=DEFAULT_ACTIVE_SMB_CONF)))
 
     def tearDown(self) -> None:
@@ -908,6 +914,9 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(wrong_smb, None)),
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(
+                    side_effect=AssertionError("native dns-sd fallback should not run for concrete zeroconf IP mismatches")
+                ),
                 "timecapsulesmb.checks.doctor_debug.browse_native_dns_sd": mock.Mock(return_value=None),
                 "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
             },
@@ -966,6 +975,418 @@ class CheckTests(unittest.TestCase):
             "Bonjour IPv4: expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
             messages,
         )
+
+    def test_run_doctor_checks_uses_native_dns_sd_fallback_when_zeroconf_misses_expected_smb_on_macos(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        resolve_error = CheckResult(
+            "FAIL",
+            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+        )
+        native_smb_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        native_airport_instance = BonjourServiceInstance("_airport._tcp.local.", "Home", "Home._airport._tcp.local.")
+        native_smb_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_smb._tcp.local.",
+            port=445,
+            ipv4=["10.0.0.2"],
+            fullname="Home._smb._tcp.local.",
+        )
+        native_airport_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_airport._tcp.local.",
+            port=5009,
+            ipv4=["10.0.0.2"],
+            fullname="Home._airport._tcp.local.",
+        )
+        native_debug = NativeDnsSdDiscoveryDiagnostics(
+            timeout_sec=6.0,
+            elapsed_sec=1.0,
+            status="ok",
+            service_types=["_smb._tcp.local.", "_airport._tcp.local."],
+            ip_version="V4Only",
+            instance_count=2,
+            resolved_count=2,
+            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
+        )
+        zeroconf_debug = BonjourDiscoveryDiagnostics(
+            service=None,
+            service_types=["_airport._tcp.local.", "_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.0,
+            ip_version="V4Only",
+            instance_count=0,
+            resolved_count=0,
+            pending_count=0,
+            service_added_count=0,
+            service_updated_count=0,
+            resolve_attempt_count=0,
+            resolve_success_count=0,
+            resolve_error_count=0,
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([], []), None, zeroconf_debug)
+                ),
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
+                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
+                    return_value=(
+                        BonjourDiscoverySnapshot(
+                            [native_smb_instance, native_airport_instance],
+                            [native_smb_record, native_airport_record],
+                        ),
+                        native_debug,
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn(
+            "Bonjour IPv4: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
+            messages,
+        )
+        self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Home'", messages)
+        self.assertIn("Bonjour IPv4: Bonjour services for 'Home' advertise consistent host target home.local", messages)
+        self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
+        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
+        self.assertNotIn("Bonjour IPv4: no discovered _smb._tcp instance matched expected device instance 'Home'", messages)
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd"})
+        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
+        self.assertIn("bonjour_zeroconf", debug_fields)
+
+    def test_run_doctor_checks_uses_native_dns_sd_targeted_resolve_when_native_browse_misses_expected_smb(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        resolve_error = CheckResult(
+            "FAIL",
+            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+        )
+        native_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_smb._tcp.local.",
+            port=445,
+            ipv4=["10.0.0.2"],
+            fullname="Home._smb._tcp.local.",
+        )
+        native_debug = NativeDnsSdDiscoveryDiagnostics(
+            timeout_sec=6.0,
+            elapsed_sec=1.0,
+            status="ok",
+            service_types=["_smb._tcp.local."],
+            ip_version="V4Only",
+            instance_count=0,
+            resolved_count=0,
+            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
+        )
+        native_resolve = NativeDnsSdResolveResult(
+            service_type="_smb._tcp",
+            name="Home",
+            fullname="Home._smb._tcp.local.",
+            hostname="home.local",
+            port=445,
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
+                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([], []), native_debug)
+                ),
+                "timecapsulesmb.checks.doctor_steps.resolve_native_dns_sd_service_instance": mock.Mock(
+                    return_value=(native_record, native_resolve)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn(
+            "Bonjour IPv4: native macOS dns-sd browse did not observe expected _smb._tcp instance 'Home'; targeted resolve succeeded",
+            messages,
+        )
+        self.assertIn("Bonjour IPv4: native macOS dns-sd resolved expected _smb._tcp instance 'Home' by targeted query", messages)
+        self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
+        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd"})
+        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
+        self.assertEqual(native_debug.resolves, [native_resolve])
+
+    def test_run_doctor_checks_uses_native_dns_sd_fallback_for_ip_only_bonjour_when_runtime_name_probe_fails(self) -> None:
+        native_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        native_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_smb._tcp.local.",
+            port=445,
+            ipv4=["10.0.0.2"],
+            fullname="Home._smb._tcp.local.",
+        )
+        native_debug = NativeDnsSdDiscoveryDiagnostics(
+            timeout_sec=6.0,
+            elapsed_sec=1.0,
+            status="ok",
+            service_types=["_smb._tcp.local."],
+            ip_version="V4Only",
+            instance_count=1,
+            resolved_count=1,
+            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn": mock.Mock(side_effect=RuntimeError("probe failed")),
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
+                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([native_instance], [native_record]), native_debug)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn("runtime naming identity probe skipped: probe failed", messages)
+        self.assertIn(
+            "Bonjour IPv4: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
+            messages,
+        )
+        self.assertIn("Bonjour IPv4: discovered _smb._tcp service matching target IP 10.0.0.2", messages)
+        self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
+        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd"})
+        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
+
+    def test_run_doctor_checks_can_use_native_dns_sd_for_one_bonjour_family_while_zeroconf_passes_another(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        snapshot_v4 = BonjourDiscoverySnapshot(
+            [instance],
+            [
+                BonjourResolvedService(
+                    "Home",
+                    "home.local",
+                    "_smb._tcp.local.",
+                    port=445,
+                    ipv4=["10.0.0.2"],
+                    fullname="Home._smb._tcp.local.",
+                )
+            ],
+        )
+        native_v6_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_smb._tcp.local.",
+            port=445,
+            ipv6=["fd00::2"],
+            fullname="Home._smb._tcp.local.",
+        )
+        native_v6_debug = NativeDnsSdDiscoveryDiagnostics(
+            timeout_sec=6.0,
+            elapsed_sec=1.0,
+            status="ok",
+            service_types=["_smb._tcp.local."],
+            ip_version="V6Only",
+            instance_count=1,
+            resolved_count=1,
+            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
+        )
+        resolve_error = CheckResult(
+            "FAIL",
+            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+        )
+        discover_mock = mock.Mock(
+            side_effect=[
+                (snapshot_v4, None, None),
+                (BonjourDiscoverySnapshot([], []), None, None),
+            ]
+        )
+        native_discover_mock = mock.Mock(return_value=(BonjourDiscoverySnapshot([instance], [native_v6_record]), native_v6_debug))
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
+                        mdns_families=("ipv4", "ipv6"),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9", "fd00::9")),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": discover_mock,
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
+                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": native_discover_mock,
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(discover_mock.call_count, 2)
+        native_discover_mock.assert_called_once()
+        self.assertEqual(native_discover_mock.call_args.kwargs["family"], "ipv6")
+        self.assertEqual(native_discover_mock.call_args.kwargs["target_ip"], "fd00::2")
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Home'", messages)
+        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
+        self.assertIn(
+            "Bonjour IPv6: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
+            messages,
+        )
+        self.assertIn("Bonjour IPv6: discovered _smb._tcp instance 'Home'", messages)
+        self.assertIn("Bonjour IPv6: resolved Bonjour host home.local to fd00::2 from service record", messages)
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "zeroconf", "ipv6": "native_dns_sd"})
+        self.assertIs(debug_fields["bonjour_native_fallback"], native_v6_debug)
+
+    def test_run_doctor_checks_keeps_zeroconf_failure_when_native_dns_sd_fallback_resolves_wrong_ip(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        resolve_error = CheckResult(
+            "FAIL",
+            "expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+        )
+        native_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        native_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_smb._tcp.local.",
+            port=445,
+            ipv4=["10.0.0.99"],
+            fullname="Home._smb._tcp.local.",
+        )
+        native_debug = NativeDnsSdDiscoveryDiagnostics(
+            timeout_sec=6.0,
+            elapsed_sec=1.0,
+            status="ok",
+            service_types=["_smb._tcp.local."],
+            ip_version="V4Only",
+            instance_count=1,
+            resolved_count=1,
+            browses=[NativeDnsSdBrowseResult("_smb._tcp")],
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([], []), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
+                "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot([native_instance], [native_record]), native_debug)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: no discovered _smb._tcp instance matched expected device instance 'Home'", messages)
+        self.assertIn(
+            "Bonjour IPv4: expected _smb._tcp instance 'Home' was not discovered and could not be resolved by targeted query",
+            messages,
+        )
+        self.assertNotIn(
+            "Bonjour IPv4: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
+            messages,
+        )
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "zeroconf"})
+        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
 
     def test_run_doctor_checks_uses_ip_only_bonjour_fallback_when_runtime_name_probe_fails(self) -> None:
         run = self.run_doctor_with_mocks(

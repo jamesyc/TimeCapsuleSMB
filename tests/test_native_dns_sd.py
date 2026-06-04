@@ -11,7 +11,11 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
+from timecapsulesmb.discovery.native_dns_sd import (
+    browse_native_dns_sd,
+    discover_native_dns_sd_snapshot_detailed,
+    resolve_native_dns_sd_service_instance,
+)
 
 
 class FakeDnsSdProc:
@@ -83,6 +87,164 @@ Timestamp     A/R    Flags  if Domain               Service Type         Instanc
         self.assertEqual(browse.events[0].action, "Add")
         self.assertEqual(browse.events[0].interface_index, 14)
         self.assertEqual(browse.events[0].name, "Time Capsule")
+
+    def test_resolve_native_dns_sd_service_instance_parses_target_and_addresses(self) -> None:
+        lookup_proc = FakeDnsSdProc(
+            """
+Lookup Time Capsule._smb._tcp.local
+DATE: ---Thu 30 Apr 2026---
+10:20:07.456  Time Capsule._smb._tcp.local. can be reached at time-capsule.local.:445 (interface 14)
+"""
+        )
+        address_proc = FakeDnsSdProc(
+            """
+DATE: ---Thu 30 Apr 2026---
+Timestamp     A/R    Flags if Hostname                               Address                                      TTL
+10:20:07.789  Add        2 14 time-capsule.local.                    10.0.0.2                                     120
+"""
+        )
+
+        with mock.patch("timecapsulesmb.discovery.native_dns_sd.subprocess.Popen", side_effect=[lookup_proc, address_proc]) as popen_mock:
+            record, diagnostics = resolve_native_dns_sd_service_instance(
+                "_smb._tcp.local.",
+                "Time Capsule",
+                timeout_sec=0,
+                family="ipv4",
+            )
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.name, "Time Capsule")
+        self.assertEqual(record.hostname, "time-capsule.local")
+        self.assertEqual(record.service_type, "_smb._tcp.local.")
+        self.assertEqual(record.port, 445)
+        self.assertEqual(record.ipv4, ["10.0.0.2"])
+        self.assertEqual(record.fullname, "Time Capsule._smb._tcp.local.")
+        self.assertEqual(diagnostics.interface_index, 14)
+        self.assertEqual(diagnostics.addresses[0].addresses, ["10.0.0.2"])
+        self.assertEqual(
+            [call.args[0] for call in popen_mock.call_args_list],
+            [
+                ["dns-sd", "-L", "Time Capsule", "_smb._tcp", "local"],
+                ["dns-sd", "-G", "v4", "time-capsule.local"],
+            ],
+        )
+
+    def test_resolve_native_dns_sd_service_instance_reports_lookup_miss_without_address_lookup(self) -> None:
+        lookup_proc = FakeDnsSdProc(
+            """
+Lookup Time Capsule._smb._tcp.local
+DATE: ---Thu 30 Apr 2026---
+"""
+        )
+
+        with mock.patch("timecapsulesmb.discovery.native_dns_sd.subprocess.Popen", return_value=lookup_proc) as popen_mock:
+            record, diagnostics = resolve_native_dns_sd_service_instance(
+                "_smb._tcp.local.",
+                "Time Capsule",
+                timeout_sec=0,
+                family="ipv4",
+            )
+
+        self.assertIsNone(record)
+        self.assertEqual(diagnostics.error, "dns-sd lookup did not resolve a service target")
+        self.assertEqual(diagnostics.hostname, "")
+        self.assertEqual(diagnostics.port, 0)
+        self.assertEqual(len(diagnostics.addresses), 0)
+        popen_mock.assert_called_once()
+
+    def test_resolve_native_dns_sd_service_instance_keeps_service_record_when_address_lookup_fails(self) -> None:
+        lookup_proc = FakeDnsSdProc(
+            """
+10:20:07.456  Time Capsule._smb._tcp.local. can be reached at time-capsule.local.:445 (interface 14)
+"""
+        )
+
+        with mock.patch(
+            "timecapsulesmb.discovery.native_dns_sd.subprocess.Popen",
+            side_effect=[lookup_proc, OSError("dns-sd unavailable")],
+        ):
+            record, diagnostics = resolve_native_dns_sd_service_instance(
+                "_smb._tcp.local.",
+                "Time Capsule",
+                timeout_sec=0,
+                family="ipv4",
+            )
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.hostname, "time-capsule.local")
+        self.assertEqual(record.port, 445)
+        self.assertEqual(record.ipv4, [])
+        self.assertEqual(diagnostics.addresses[0].family, "v4")
+        self.assertIn("OSError", diagnostics.addresses[0].error)
+
+    def test_discover_native_dns_sd_snapshot_builds_bonjour_records_from_browse_and_lookup(self) -> None:
+        browse_proc = FakeDnsSdProc(
+            """
+Browsing for _smb._tcp.local
+10:20:07.456  Add        3  14 local.               _smb._tcp.           Time Capsule
+"""
+        )
+        lookup_proc = FakeDnsSdProc(
+            """
+10:20:07.457  Time Capsule._smb._tcp.local. can be reached at time-capsule.local.:445 (interface 14)
+"""
+        )
+        address_proc = FakeDnsSdProc("10:20:07.789  Add        2 14 time-capsule.local. 10.0.0.2 120\n")
+
+        with mock.patch("timecapsulesmb.discovery.native_dns_sd.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.discovery.native_dns_sd.subprocess.Popen", side_effect=[browse_proc, lookup_proc, address_proc]):
+                result = discover_native_dns_sd_snapshot_detailed(
+                    "_smb",
+                    timeout_sec=0,
+                    family="ipv4",
+                    platform_name="Darwin",
+                )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        snapshot, diagnostics = result
+        self.assertEqual(len(snapshot.instances), 1)
+        self.assertEqual(snapshot.instances[0].fullname, "Time Capsule._smb._tcp.local.")
+        self.assertEqual(len(snapshot.resolved), 1)
+        self.assertEqual(snapshot.resolved[0].hostname, "time-capsule.local")
+        self.assertEqual(snapshot.resolved[0].ipv4, ["10.0.0.2"])
+        self.assertEqual(diagnostics.instance_count, 1)
+        self.assertEqual(diagnostics.resolved_count, 1)
+        self.assertEqual(len(diagnostics.resolves), 1)
+
+    def test_discover_native_dns_sd_snapshot_deduplicates_duplicate_browse_events(self) -> None:
+        browse_proc = FakeDnsSdProc(
+            """
+Browsing for _smb._tcp.local
+10:20:07.456  Add        3  14 local.               _smb._tcp.           Time Capsule
+10:20:07.457  Add        2  15 local.               _smb._tcp.           Time Capsule
+"""
+        )
+        lookup_proc = FakeDnsSdProc(
+            """
+10:20:07.458  Time Capsule._smb._tcp.local. can be reached at time-capsule.local.:445 (interface 14)
+"""
+        )
+        address_proc = FakeDnsSdProc("10:20:07.789  Add        2 14 time-capsule.local. 10.0.0.2 120\n")
+
+        with mock.patch("timecapsulesmb.discovery.native_dns_sd.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.discovery.native_dns_sd.subprocess.Popen", side_effect=[browse_proc, lookup_proc, address_proc]) as popen_mock:
+                result = discover_native_dns_sd_snapshot_detailed(
+                    "_smb",
+                    timeout_sec=0,
+                    family="ipv4",
+                    platform_name="Darwin",
+                )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        snapshot, diagnostics = result
+        self.assertEqual(len(snapshot.instances), 1)
+        self.assertEqual(len(snapshot.resolved), 1)
+        self.assertEqual(len(diagnostics.resolves), 1)
+        self.assertEqual(len(popen_mock.call_args_list), 3)
 
 
 if __name__ == "__main__":

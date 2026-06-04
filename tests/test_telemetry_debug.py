@@ -24,8 +24,11 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
 )
 from timecapsulesmb.discovery.native_dns_sd import (
+    NativeDnsSdAddressResult,
     NativeDnsSdBrowseResult,
+    NativeDnsSdDiscoveryDiagnostics,
     NativeDnsSdDiagnostics,
+    NativeDnsSdResolveResult,
     NativeDnsSdServiceEvent,
 )
 from timecapsulesmb.telemetry.debug import (
@@ -202,6 +205,38 @@ class TelemetryDebugTests(unittest.TestCase):
         self.assertEqual(summary["browses"][0]["parse_error_count"], 2)
         self.assertEqual(len(summary["browses"][0]["events"]), 50)
         self.assertEqual(summary["browses"][0]["events"][0]["name"], "Device 0")
+
+    def test_debug_summary_for_native_dns_sd_discovery_diagnostics_keeps_resolution_details(self) -> None:
+        diagnostics = NativeDnsSdDiscoveryDiagnostics(
+            timeout_sec=6.0,
+            elapsed_sec=1.5,
+            status="ok",
+            service_types=["_smb._tcp.local."],
+            ip_version="V4Only",
+            instance_count=1,
+            resolved_count=1,
+            browses=[NativeDnsSdBrowseResult(service_type="_smb._tcp")],
+            resolves=[
+                NativeDnsSdResolveResult(
+                    service_type="_smb._tcp",
+                    name="Home",
+                    fullname="Home._smb._tcp.local.",
+                    hostname="home.local",
+                    port=445,
+                    interface_index=14,
+                    addresses=[NativeDnsSdAddressResult("home.local", "v4", ["10.0.0.2"])],
+                )
+            ],
+        )
+
+        summary = debug_summary(diagnostics)
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["ip_version"], "V4Only")
+        self.assertEqual(summary["instance_count"], 1)
+        self.assertEqual(summary["resolved_count"], 1)
+        self.assertEqual(summary["resolves"][0]["hostname"], "home.local")
+        self.assertEqual(summary["resolves"][0]["addresses"][0]["addresses"], ["10.0.0.2"])
 
     def test_probe_debug_summary_suppresses_first_class_telemetry_fields(self) -> None:
         state = ProbedDeviceState(

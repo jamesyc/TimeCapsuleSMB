@@ -186,18 +186,22 @@ def _native_dns_sd_context_from_debug(
         lines.append(f"INFO native dns-sd diagnostic error: {native_error}")
 
     native_dns_sd = _mapping_value(debug_fields, "bonjour_native_dns_sd")
+    native_label = "native dns-sd"
+    if native_dns_sd is None:
+        native_dns_sd = _mapping_value(debug_fields, "bonjour_native_fallback")
+        native_label = "native dns-sd fallback"
     summary = _debug_summary_fields(native_dns_sd, ("status", "timeout_sec", "elapsed_sec"))
     if summary:
-        lines.append(f"INFO native dns-sd diagnostics: {summary}")
+        lines.append(f"INFO {native_label} diagnostics: {summary}")
         names = _native_dns_sd_smb_names(native_dns_sd)
         if names:
             names_text = ", ".join(repr(name) for name in names)
-            lines.append(f"INFO native dns-sd observed _smb._tcp instances: {names_text}")
+            lines.append(f"INFO {native_label} observed _smb._tcp instances: {names_text}")
         else:
-            lines.append("INFO native dns-sd observed 0 _smb._tcp Add events")
+            lines.append(f"INFO {native_label} observed 0 _smb._tcp Add events")
         if expected_instance is not None:
             matched = "yes" if expected_instance in names else "no"
-            lines.append(f"INFO native dns-sd observed expected _smb._tcp instance: {matched}")
+            lines.append(f"INFO {native_label} observed expected _smb._tcp instance: {matched}")
     return lines
 
 

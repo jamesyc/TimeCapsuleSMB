@@ -43,6 +43,8 @@ def _add_bonjour_debug_fields(
     bonjour_debug_needed: bool,
     bonjour_expected_debug: dict[str, str | None] | None,
     bonjour_zeroconf_debug: object | None,
+    bonjour_native_fallback_debug: object | None = None,
+    bonjour_backend_debug: dict[str, str] | None = None,
 ) -> None:
     if not bonjour_debug_needed or debug_fields is None:
         return
@@ -50,6 +52,12 @@ def _add_bonjour_debug_fields(
         debug_fields["bonjour_expected"] = bonjour_expected_debug
     if bonjour_zeroconf_debug is not None:
         debug_fields["bonjour_zeroconf"] = bonjour_zeroconf_debug
+    if bonjour_native_fallback_debug is not None:
+        debug_fields["bonjour_native_fallback"] = bonjour_native_fallback_debug
+    if bonjour_backend_debug:
+        debug_fields["bonjour_backend"] = bonjour_backend_debug
+    if bonjour_native_fallback_debug is not None:
+        return
     try:
         native_dns_sd = browse_native_dns_sd()
     except Exception as e:

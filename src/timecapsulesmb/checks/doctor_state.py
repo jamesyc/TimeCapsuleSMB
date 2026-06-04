@@ -21,6 +21,8 @@ class DoctorBonjourResult:
     debug_needed: bool
     expected_debug: dict[str, str | None] | None
     zeroconf_debug: object | None
+    native_fallback_debug: object | None = None
+    backend_debug: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)

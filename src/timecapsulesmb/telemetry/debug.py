@@ -16,8 +16,11 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourServiceInstance,
 )
 from timecapsulesmb.discovery.native_dns_sd import (
+    NativeDnsSdAddressResult,
     NativeDnsSdBrowseResult,
+    NativeDnsSdDiscoveryDiagnostics,
     NativeDnsSdDiagnostics,
+    NativeDnsSdResolveResult,
     NativeDnsSdServiceEvent,
 )
 
@@ -226,6 +229,42 @@ def _(value: NativeDnsSdBrowseResult) -> dict[str, object]:
 
 
 @debug_summary.register
+def _(value: NativeDnsSdAddressResult) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "hostname": _truncate_debug_text(value.hostname),
+        "family": value.family,
+        "addresses": list(value.addresses),
+        "exit_code": value.exit_code,
+        "terminated_after_timeout": value.terminated_after_timeout,
+    }
+    if value.stderr:
+        summary["stderr"] = _truncate_debug_text(value.stderr, MAX_DEBUG_ERROR_TEXT)
+    if value.error:
+        summary["error"] = _truncate_debug_text(value.error, MAX_DEBUG_ERROR_TEXT)
+    return summary
+
+
+@debug_summary.register
+def _(value: NativeDnsSdResolveResult) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "service_type": value.service_type,
+        "name": _truncate_debug_text(value.name),
+        "fullname": _truncate_debug_text(value.fullname),
+        "hostname": _truncate_debug_text(value.hostname),
+        "port": value.port,
+        "interface_index": value.interface_index,
+        "exit_code": value.exit_code,
+        "terminated_after_timeout": value.terminated_after_timeout,
+        "addresses": [debug_summary(address) for address in _debug_limited(value.addresses)],
+    }
+    if value.stderr:
+        summary["stderr"] = _truncate_debug_text(value.stderr, MAX_DEBUG_ERROR_TEXT)
+    if value.error:
+        summary["error"] = _truncate_debug_text(value.error, MAX_DEBUG_ERROR_TEXT)
+    return summary
+
+
+@debug_summary.register
 def _(value: NativeDnsSdDiagnostics) -> dict[str, object]:
     return {
         "status": value.status,
@@ -233,6 +272,24 @@ def _(value: NativeDnsSdDiagnostics) -> dict[str, object]:
         "elapsed_sec": value.elapsed_sec,
         "browses": [debug_summary(browse) for browse in value.browses],
     }
+
+
+@debug_summary.register
+def _(value: NativeDnsSdDiscoveryDiagnostics) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "status": value.status,
+        "timeout_sec": value.timeout_sec,
+        "elapsed_sec": value.elapsed_sec,
+        "service_types": list(value.service_types),
+        "ip_version": value.ip_version,
+        "instance_count": value.instance_count,
+        "resolved_count": value.resolved_count,
+        "browses": [debug_summary(browse) for browse in value.browses],
+        "resolves": [debug_summary(resolve) for resolve in _debug_limited(value.resolves)],
+    }
+    if value.error:
+        summary["error"] = _truncate_debug_text(value.error, MAX_DEBUG_ERROR_TEXT)
+    return summary
 
 
 @debug_summary.register
