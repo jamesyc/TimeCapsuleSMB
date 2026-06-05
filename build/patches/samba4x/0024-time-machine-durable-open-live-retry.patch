@@ -1,0 +1,114 @@
+diff --git a/source3/smbd/smbXsrv_open.c b/source3/smbd/smbXsrv_open.c
+index c33508f..1f8e29b 100644
+--- a/source3/smbd/smbXsrv_open.c
++++ b/source3/smbd/smbXsrv_open.c
+@@ -1273,7 +1273,68 @@ static void smb2srv_open_recreate_fn(
+ 
+ 	state->status = smbXsrv_open_global_verify_record(
+ 		key, oldval, state->op, &state->op->global);
+-	if (!NT_STATUS_EQUAL(state->status, NT_STATUS_REMOTE_DISCONNECT)) {
++	if (NT_STATUS_EQUAL(state->status, NT_STATUS_OBJECTID_EXISTS)) {
++		/*
++		 * Time Machine can reconnect quickly enough that the new SMB2
++		 * durable-open recreate reaches this path before the old smbd
++		 * has marked the open record disconnected. Treat only the same
++		 * durable open as transiently busy; do not hand out a second
++		 * live handle, and keep mismatched reconnect attempts as hard
++		 * failures below.
++		 */
++		global = state->op->global;
++
++		if (state->lease_key != NULL &&
++		    !GUID_equal(&global->client_guid, state->client_guid))
++		{
++			DBG_NOTICE("client guid: %s != %s in %s\n",
++				   GUID_buf_string(&global->client_guid, &buf1),
++				   GUID_buf_string(state->client_guid, &buf2),
++				   tdb_data_dbg(key));
++			goto not_found;
++		}
++
++		/*
++		 * If the provided create_guid is NULL, this means that
++		 * the reconnect request was a v1 request. In that case
++		 * we should skip the create GUID verification, since
++		 * it is valid to v1-reconnect a v2-opened handle.
++		 */
++		if ((state->create_guid != NULL) &&
++		    !GUID_equal(&global->create_guid, state->create_guid)) {
++			DBG_NOTICE("%s != %s in %s\n",
++				   GUID_buf_string(&global->create_guid, &buf1),
++				   GUID_buf_string(state->create_guid, &buf2),
++				   tdb_data_dbg(key));
++			goto not_found;
++		}
++
++		if (!security_token_is_sid(
++			    state->current_token, &global->open_owner)) {
++			struct dom_sid_buf buf;
++			DBG_NOTICE("global owner %s not in our token in %s\n",
++				   dom_sid_str_buf(&global->open_owner, &buf),
++				   tdb_data_dbg(key));
++			state->status = NT_STATUS_ACCESS_DENIED;
++			return;
++		}
++
++		if (!global->durable) {
++			DBG_NOTICE("%"PRIu64"/%"PRIu64" not durable in %s\n",
++				   global->open_persistent_id,
++				   global->open_volatile_id,
++				   tdb_data_dbg(key));
++			goto not_found;
++		}
++
++		DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
++			   "open %s is still attached to a live smbd; "
++			   "treating matching durable reconnect as transiently "
++			   "unavailable\n",
++			   tdb_data_dbg(key));
++		state->status = NT_STATUS_FILE_NOT_AVAILABLE;
++		return;
++	} else if (!NT_STATUS_EQUAL(state->status, NT_STATUS_REMOTE_DISCONNECT)) {
+ 		DBG_WARNING("smbXsrv_open_global_verify_record for %s "
+ 			    "failed: %s\n",
+ 			    tdb_data_dbg(key),
+@@ -1367,6 +1428,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+ 	TDB_DATA key = smbXsrv_open_global_id_to_key(
+ 		persistent_id & UINT32_MAX, &key_buf);
+ 	int ret, local_id;
++	bool retried_live_open = false;
+ 	NTSTATUS status;
+ 
+ 	if (session_info == NULL) {
+@@ -1414,6 +1476,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+ 
+ 	state.op->idle_time = now;
+ 	state.op->status = NT_STATUS_FILE_CLOSED;
++retry_live_open:
+ 
+ 	status = dbwrap_do_locked(
+ 		table->global.db_ctx, key, smb2srv_open_recreate_fn, &state);
+@@ -1424,6 +1487,23 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+ 		goto fail;
+ 	}
+ 
++	if (NT_STATUS_EQUAL(state.status, NT_STATUS_FILE_NOT_AVAILABLE) &&
++	    !retried_live_open)
++	{
++		retried_live_open = true;
++		DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
++			   "waiting 100ms for %s to be marked disconnected\n",
++			   tdb_data_dbg(key));
++		/*
++		 * Do not sleep while the TDB record is locked: the old smbd
++		 * needs the same record lock in order to store the disconnected
++		 * durable-open state that makes recreate safe.
++		 */
++		TALLOC_FREE(state.op->global);
++		smb_msleep(100);
++		goto retry_live_open;
++	}
++
+ 	if (!NT_STATUS_IS_OK(state.status)) {
+ 		status = state.status;
+ 		DBG_DEBUG("smb2srv_open_recreate_fn for %s failed: %s\n",

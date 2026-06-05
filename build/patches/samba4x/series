@@ -71,6 +71,10 @@
 # Time Machine durable handles on HFS sparsebundle bands should not treat
 # allocation-block count drift as file identity loss after reconnect.
 0019-time-machine-durable-st-ex-blocks.patch|allow durable reconnect across HFS allocation-block drift
+# Time Machine can retry SMB2 durable opens before the old smbd has marked the
+# open disconnected; retry once outside the open-global TDB lock instead of
+# reporting the durable handle as permanently missing.
+0024-time-machine-durable-open-live-retry.patch|retry transient live durable-open reconnect races
 # Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
 # interface enumeration through libreplace's ioctl-based fallback.
 0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD
