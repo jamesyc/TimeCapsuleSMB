@@ -301,6 +301,10 @@ def _(value: ProbedDeviceState) -> dict[str, object]:
     }
     if probe.error:
         summary["probe_error"] = probe.error
+    elf_endianness_detail = getattr(probe, "elf_endianness_detail", None)
+    if isinstance(elf_endianness_detail, str) and elf_endianness_detail:
+        summary["probe_elf_endianness"] = probe.elf_endianness
+        summary["probe_elf_endianness_detail"] = elf_endianness_detail
     compatibility = value.compatibility
     if compatibility is not None and not compatibility.supported:
         summary["probe_supported"] = compatibility.supported

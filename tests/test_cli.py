@@ -2362,6 +2362,31 @@ class CliTests(unittest.TestCase):
         self.assertIn("probe_supported=false", error)
         self.assertIn("probe_reason_code=", error)
 
+    def test_configure_telemetry_records_elf_endianness_probe_detail(self) -> None:
+        probe_result = ProbeResult(
+            ssh_port_reachable=True,
+            ssh_authenticated=True,
+            error=None,
+            os_name="NetBSD",
+            os_release="6.0",
+            arch="evbarm",
+            elf_endianness="unknown",
+            elf_endianness_detail="sed=unknown,rc=0,stdout=sed_b5=; raw=unknown,rc=0,stdout=raw_compare=nomatch",
+        )
+
+        self.run_configure_cli(
+            ensure_install_id=True,
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(probe_result),
+            raises=SystemExit,
+        )
+
+        error = self.configure_finished_error()
+        self.assertIn("probe_reason_code=unsupported_netbsd6_endianness", error)
+        self.assertIn("probe_elf_endianness=unknown", error)
+        self.assertIn("probe_elf_endianness_detail=sed=unknown", error)
+        self.assertIn("raw_compare=nomatch", error)
+
     def test_configure_telemetry_does_not_record_runtime_interface_selection(self) -> None:
         self.run_configure_cli(
             ensure_install_id=True,

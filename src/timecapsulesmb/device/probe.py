@@ -462,12 +462,19 @@ class ProbeResult:
     elf_endianness: str
     airport_model: str | None = None
     airport_syap: str | None = None
+    elf_endianness_detail: str | None = None
 
 
 @dataclass(frozen=True)
 class ProbedDeviceState:
     probe_result: ProbeResult
     compatibility: DeviceCompatibility | None
+
+
+@dataclass(frozen=True)
+class ElfEndiannessProbeResult:
+    endianness: str
+    detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -597,7 +604,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
 
     try:
         os_name, os_release, arch = _probe_remote_os_info_conn(connection)
-        elf_endianness = _probe_remote_elf_endianness_conn(connection)
+        elf_endianness_probe = _probe_remote_elf_endianness_result_conn(connection)
         airport_identity = probe_remote_airport_identity_conn(connection)
     except (TransportError, DeviceError) as exc:
         return ProbeResult(
@@ -617,9 +624,10 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         os_name=os_name,
         os_release=os_release,
         arch=arch,
-        elf_endianness=elf_endianness,
+        elf_endianness=elf_endianness_probe.endianness,
         airport_model=airport_identity.model,
         airport_syap=airport_identity.syap,
+        elf_endianness_detail=elf_endianness_probe.detail,
     )
 
 
@@ -660,24 +668,74 @@ def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str
 
 
 def _probe_remote_elf_endianness_conn(connection: SshConnection, path: str = "/bin/sh") -> str:
+    return _probe_remote_elf_endianness_result_conn(connection, path).endianness
+
+
+def _probe_remote_elf_endianness_result_conn(connection: SshConnection, path: str = "/bin/sh") -> ElfEndiannessProbeResult:
     script = rf"""
 path={shlex.quote(path)}
 if [ ! -f "$path" ]; then
-  exit 1
+  printf 'path_missing=%s\n' "$path"
+  echo unknown
+  exit 0
 fi
 b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/sed -n l 2>/dev/null)
 case "$b5" in
   "\\001$") echo little ;;
   "\\002$") echo big ;;
-  *) echo unknown ;;
+  *) printf 'sed_b5=%s\n' "$b5"; echo unknown ;;
 esac
 """
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    endianness = (proc.stdout or "").strip().splitlines()
+    value = _endianness_probe_value(proc.stdout)
+    if value != "unknown":
+        return ElfEndiannessProbeResult(value)
+
+    sed_detail = _elf_endianness_probe_detail("sed", proc, value)
+    raw_script = rf"""
+path={shlex.quote(path)}
+if [ ! -f "$path" ]; then
+  printf 'path_missing=%s\n' "$path"
+  echo unknown
+  exit 0
+fi
+b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null)
+one=$(printf '\001')
+two=$(printf '\002')
+case "$b5" in
+  "$one") echo little ;;
+  "$two") echo big ;;
+  *) printf 'raw_compare=nomatch\n'; echo unknown ;;
+esac
+"""
+    raw_proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(raw_script)}", check=False)
+    raw_value = _endianness_probe_value(raw_proc.stdout)
+    return ElfEndiannessProbeResult(
+        raw_value,
+        f"{sed_detail}; {_elf_endianness_probe_detail('raw', raw_proc, raw_value)}",
+    )
+
+
+def _endianness_probe_value(stdout: str | None) -> str:
+    endianness = (stdout or "").strip().splitlines()
     value = endianness[-1].strip() if endianness else ""
     if value in {"little", "big", "unknown"}:
         return value
     return "unknown"
+
+
+def _elf_endianness_probe_detail(method: str, proc: subprocess.CompletedProcess[str], value: str) -> str:
+    return f"{method}={value},rc={proc.returncode},stdout={_summarize_elf_endianness_stdout(proc.stdout)}"
+
+
+def _summarize_elf_endianness_stdout(stdout: str | None, *, limit: int = 240) -> str:
+    text = (stdout or "").strip()
+    if not text:
+        return "<empty>"
+    escaped = text.encode("unicode_escape", errors="backslashreplace").decode("ascii")
+    if len(escaped) <= limit:
+        return escaped
+    return escaped[: limit - 3] + "..."
 
 
 def extract_airport_identity_from_text(text: str) -> AirportIdentityProbeResult:

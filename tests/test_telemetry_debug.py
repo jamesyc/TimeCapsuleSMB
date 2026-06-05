@@ -302,6 +302,44 @@ class TelemetryDebugTests(unittest.TestCase):
             },
         )
 
+    def test_probe_debug_summary_includes_elf_endianness_detail_when_present(self) -> None:
+        state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_port_reachable=True,
+                ssh_authenticated=True,
+                error=None,
+                os_name="NetBSD",
+                os_release="6.0",
+                arch="evbarm",
+                elf_endianness="unknown",
+                elf_endianness_detail="sed=unknown,rc=0,stdout=sed_b5=; raw=unknown,rc=0,stdout=raw_compare=nomatch",
+            ),
+            compatibility=DeviceCompatibility(
+                os_name="NetBSD",
+                os_release="6.0",
+                arch="evbarm",
+                elf_endianness="unknown",
+                payload_family=None,
+                device_generation="unknown",
+                supported=False,
+                reason_code="unsupported_netbsd6_endianness",
+            ),
+        )
+
+        self.assertEqual(
+            debug_summary(state),
+            {
+                "probe_ssh_port_reachable": True,
+                "probe_ssh_authenticated": True,
+                "probe_elf_endianness": "unknown",
+                "probe_elf_endianness_detail": (
+                    "sed=unknown,rc=0,stdout=sed_b5=; raw=unknown,rc=0,stdout=raw_compare=nomatch"
+                ),
+                "probe_supported": False,
+                "probe_reason_code": "unsupported_netbsd6_endianness",
+            },
+        )
+
     def test_render_debug_mapping_applies_supplied_blacklist(self) -> None:
         lines = render_debug_mapping(
             {

@@ -376,6 +376,38 @@ TC_DIAG_END routes
         self.assertNotIn("/usr/bin/tr", remote_cmd)
         self.assertNotIn("/usr/bin/od", remote_cmd)
 
+    def test_probe_remote_elf_endianness_retries_raw_compare_when_sed_unknown(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        sed_proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="sed_b5=\nunknown\n")
+        raw_proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="little\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[sed_proc, raw_proc]) as run_ssh_mock:
+            result = probe._probe_remote_elf_endianness_result_conn(connection)
+
+        self.assertEqual(result.endianness, "little")
+        self.assertIsNotNone(result.detail)
+        self.assertIn("sed=unknown", result.detail or "")
+        self.assertIn("raw=little", result.detail or "")
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        sed_cmd = run_ssh_mock.call_args_list[0].args[1]
+        raw_cmd = run_ssh_mock.call_args_list[1].args[1]
+        self.assertIn("/usr/bin/sed -n l", sed_cmd)
+        self.assertIn("printf", raw_cmd)
+        self.assertNotIn("/usr/bin/sed -n l", raw_cmd)
+
+    def test_probe_remote_elf_endianness_keeps_detail_when_both_methods_unknown(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        sed_proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="sed_b5=unexpected\nunknown\n")
+        raw_proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="raw_compare=nomatch\nunknown\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[sed_proc, raw_proc]):
+            result = probe._probe_remote_elf_endianness_result_conn(connection)
+
+        self.assertEqual(result.endianness, "unknown")
+        self.assertIsNotNone(result.detail)
+        self.assertIn("sed_b5=unexpected", result.detail or "")
+        self.assertIn("raw_compare=nomatch", result.detail or "")
+
     def test_extract_airport_identity_from_text_finds_airport_extreme_model(self) -> None:
         result = probe.extract_airport_identity_from_text("prefix\x00psyAM\x00pAirPort7,120\x00suffix")
         self.assertEqual(result.model, "AirPort7,120")
