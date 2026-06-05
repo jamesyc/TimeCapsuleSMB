@@ -468,6 +468,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         persist_password=True,
                         discovered_airport_syap=discovered_airport_syap,
                         enable_ssh=True,
+                        ssh_enable_preflight="acp_port",
                         verbose_wait=not args.json,
                         internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
                         any_protocol=True if args.any_protocol else None,

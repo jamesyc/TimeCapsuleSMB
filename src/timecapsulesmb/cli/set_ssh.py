@@ -20,7 +20,7 @@ from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.services.acp_ssh import enable_ssh_with_identity_preflight
+from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services import runtime as runtime_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import load_env_config
@@ -154,7 +154,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.update_fields(set_ssh_action=action.value)
             print("SSH not reachable. Attempting to enable via ACP...")
             try:
-                enable_ssh_with_identity_preflight(
+                enable_ssh_with_port_preflight(
                     acp_host,
                     password,
                     reboot_device=True,
