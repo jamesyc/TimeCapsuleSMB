@@ -367,9 +367,10 @@ TC_DIAG_END routes
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="\\001$\nlittle\n")
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = probe._probe_remote_elf_endianness_conn(connection)
+            result = probe._probe_remote_elf_endianness_result_conn(connection)
 
-        self.assertEqual(result, "little")
+        self.assertEqual(result.endianness, "little")
+        self.assertIsNone(result.detail)
         remote_cmd = run_ssh_mock.call_args.args[1]
         self.assertIn("/bin/dd", remote_cmd)
         self.assertIn("/usr/bin/sed -n l", remote_cmd)

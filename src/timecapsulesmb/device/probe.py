@@ -667,10 +667,6 @@ def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str
     return lines[-3], lines[-2], lines[-1]
 
 
-def _probe_remote_elf_endianness_conn(connection: SshConnection, path: str = "/bin/sh") -> str:
-    return _probe_remote_elf_endianness_result_conn(connection, path).endianness
-
-
 def _probe_remote_elf_endianness_result_conn(connection: SshConnection, path: str = "/bin/sh") -> ElfEndiannessProbeResult:
     script = rf"""
 path={shlex.quote(path)}
