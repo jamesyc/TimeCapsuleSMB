@@ -196,6 +196,7 @@ When filing an issue, please include:
 
 Run:
 ```
+mkdir -p /tmp/tm-debug
 log stream --style compact --level debug --predicate '
   process IN {"backupd","backupd-helper","diskimagesiod","diskarbitrationd","NetAuthSysAgent"} OR
   process == "kernel" OR
