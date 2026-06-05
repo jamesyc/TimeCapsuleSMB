@@ -751,7 +751,7 @@ class SSHTransportTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
             check=False,
-            timeout=5,
+            timeout=25,
         )
 
     def test_local_scp_rejects_legacy_option_when_option_is_illegal(self) -> None:

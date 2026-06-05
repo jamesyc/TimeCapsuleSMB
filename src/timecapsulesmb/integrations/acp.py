@@ -337,7 +337,7 @@ def set_property_int(
     name: str,
     value: int,
     *,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
 ) -> None:
     payload = _compose_property_element(name, value)
     sock = _send_message(host, password, COMMAND_SETPROP, payload, timeout=timeout)
@@ -357,7 +357,7 @@ def get_property_int(
     password: str,
     name: str,
     *,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
 ) -> int:
     payload = _compose_property_element(name, None)
     sock = _send_message(host, password, COMMAND_GETPROP, payload, flags=4, timeout=timeout)
@@ -389,7 +389,7 @@ def read_identity(
     host: str,
     password: str,
     *,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
 ) -> ACPIdentity:
     return ACPIdentity(syap=get_property_int(host, password, "syAP", timeout=timeout))
 
@@ -423,7 +423,7 @@ def set_dbug(
     *,
     log: LogCallback | None = None,
     verbose: bool = False,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
 ) -> None:
     logger = _resolve_log(log, verbose)
     value = int(value_hex, 0) if isinstance(value_hex, str) else value_hex
@@ -437,7 +437,7 @@ def reboot(
     *,
     log: LogCallback | None = None,
     verbose: bool = False,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
 ) -> None:
     logger = _resolve_log(log, verbose)
     _emit(logger, f"Sending ACP reboot request to {host}")
@@ -451,7 +451,7 @@ def enable_ssh(
     reboot_device: bool = True,
     log: LogCallback | None = None,
     verbose: bool = False,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
 ) -> None:
     logger = _resolve_log(log, verbose)
     set_dbug(host, password, DBUG_SSH_VALUE, log=logger, timeout=timeout)

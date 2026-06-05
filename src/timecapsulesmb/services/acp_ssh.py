@@ -8,7 +8,7 @@ def read_identity_preflight(
     host: str,
     password: str,
     *,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
     callbacks: OperationCallbacks | None = None,
 ) -> ACPIdentity:
     callbacks = callbacks or OperationCallbacks()
@@ -41,7 +41,7 @@ def enable_ssh_with_identity_preflight(
     password: str,
     *,
     reboot_device: bool = True,
-    timeout: float = 10.0,
+    timeout: float = 25.0,
     callbacks: OperationCallbacks | None = None,
 ) -> ACPIdentity:
     callbacks = callbacks or OperationCallbacks()

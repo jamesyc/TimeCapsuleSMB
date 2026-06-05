@@ -14,7 +14,7 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
-ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
+ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 25
 SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE = "SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)"
 
 

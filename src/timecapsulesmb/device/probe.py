@@ -31,14 +31,14 @@ RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
 RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
 RUNTIME_NBNS_BIN = f"{RUNTIME_RAM_ROOT}/sbin/nbns-advertiser"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
-REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
+REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 30
 REMOTE_LOG_TAIL_LINES = 80
 
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
-REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
-REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
-MDNS_BINARY_PROBE_TIMEOUT_SECONDS = 8
-MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS = 5
+REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 30
+REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 30
+MDNS_BINARY_PROBE_TIMEOUT_SECONDS = 30
+MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS = 30
 MDNS_BINARY_PROBE_ATTEMPTS = 2
 MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS = 12
 MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS = 24
@@ -1420,7 +1420,7 @@ def _capability_family_tokens(value: str) -> tuple[str, ...]:
     return tuple(tokens)
 
 
-def probe_remote_network_capabilities_conn(connection: SshConnection, *, timeout_seconds: int = 10) -> RemoteNetworkCapabilitiesProbeResult:
+def probe_remote_network_capabilities_conn(connection: SshConnection, *, timeout_seconds: int = 25) -> RemoteNetworkCapabilitiesProbeResult:
     script = rf'''
 RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
 RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
@@ -1952,7 +1952,7 @@ def wait_for_ssh_state_conn(
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         try:
-            proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=10)
+            proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=30)
             is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
         except TransportError:
             is_up = False

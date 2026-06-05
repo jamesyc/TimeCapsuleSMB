@@ -48,7 +48,7 @@ def run_reachability(
     smb_hosts = smb_hosts_from_params(config, params, ssh_host=ssh_host)
     ping_hosts = unique_hosts([ssh_host, *smb_hosts])
     tcp_timeout = non_negative_float(params.get("tcp_timeout"), default=2.0)
-    ssh_timeout = non_negative_int(params.get("ssh_timeout"), default=8)
+    ssh_timeout = non_negative_int(params.get("ssh_timeout"), default=25)
 
     if not ssh_host and not smb_hosts:
         check = ReachabilityCheck(

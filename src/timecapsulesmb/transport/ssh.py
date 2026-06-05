@@ -412,7 +412,7 @@ def local_scp_supports_legacy_option() -> bool:
             stderr=subprocess.PIPE,
             text=True,
             check=False,
-            timeout=5,
+            timeout=25,
         )
     except (OSError, subprocess.SubprocessError):
         return False

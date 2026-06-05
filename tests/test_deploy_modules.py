@@ -91,6 +91,11 @@ from timecapsulesmb.device.processes import (
 )
 from timecapsulesmb.device.probe import (
     ElfEndiannessProbeResult,
+    MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS,
+    MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
+    MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
+    MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
+    MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
     ManagedRuntimeProbeResult,
     ProbeStepResult,
     ReadinessProbeResult,
@@ -7460,7 +7465,15 @@ fi
             result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=60)
 
         self.assertTrue(result.ready)
-        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list], [8, 12, 24, 16])
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in run_ssh_mock.call_args_list],
+            [
+                MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
+                MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
+                MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
+                MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
+            ],
+        )
         remote_commands = [call.args[1] for call in run_ssh_mock.call_args_list]
         self.assertIn("[ ! -e \"$RUNTIME_MDNS_BIN\" ]", remote_commands[0])
         self.assertIn("ps axww", remote_commands[1])
@@ -7485,8 +7498,14 @@ fi
             result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=1)
 
         self.assertTrue(result.ready)
-        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]], [5, 5])
-        self.assertNotIn("FAIL:mdns-advertiser binary probe timed out after 5s", result.lines)
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]],
+            [MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS, MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS],
+        )
+        self.assertNotIn(
+            f"FAIL:mdns-advertiser binary probe timed out after {MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS}s",
+            result.lines,
+        )
 
     def test_probe_managed_mdns_takeover_reports_binary_timeout_after_retry(self) -> None:
         with mock.patch(
@@ -7499,9 +7518,18 @@ fi
             result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=1)
 
         self.assertFalse(result.ready)
-        self.assertEqual(result.detail, "mdns-advertiser binary probe timed out after 5s")
-        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list], [5, 5])
-        self.assertIn("FAIL:mdns-advertiser binary probe timed out after 5s", result.lines)
+        self.assertEqual(
+            result.detail,
+            f"mdns-advertiser binary probe timed out after {MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS}s",
+        )
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in run_ssh_mock.call_args_list],
+            [MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS, MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS],
+        )
+        self.assertIn(
+            f"FAIL:mdns-advertiser binary probe timed out after {MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS}s",
+            result.lines,
+        )
 
     def test_probe_managed_mdns_takeover_reports_apple_responder_conflict(self) -> None:
         ps_out = (
@@ -8168,13 +8196,13 @@ fi
         connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
             self.assertTrue(wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=1))
-        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=10)
+        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=30)
 
     def test_wait_for_ssh_state_treats_probe_failure_as_down(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshError("timeout")) as run_ssh_mock:
             self.assertTrue(wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=1))
-        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=10)
+        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=30)
 
     def test_wait_for_ssh_state_retries_until_up(self) -> None:
         fail = mock.Mock(returncode=255, stdout="")

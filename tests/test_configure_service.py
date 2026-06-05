@@ -106,8 +106,8 @@ class ConfigureServiceTests(unittest.TestCase):
                         result = enable_ssh_and_reprobe(connection, timeout_seconds=12, callbacks=callbacks)
 
         self.assertIs(result, probe_state)
-        read_identity.assert_called_once_with("10.0.0.2", "pw", timeout=10.0)
-        enable_ssh.assert_called_once_with("10.0.0.2", "pw", reboot_device=True, log=callbacks.log, timeout=10.0)
+        read_identity.assert_called_once_with("10.0.0.2", "pw", timeout=25.0)
+        enable_ssh.assert_called_once_with("10.0.0.2", "pw", reboot_device=True, log=callbacks.log, timeout=25.0)
         wait.assert_called_once_with(
             "10.0.0.2",
             22,

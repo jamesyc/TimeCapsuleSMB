@@ -1777,7 +1777,7 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(probe.call_count, 2)
-        read_identity.assert_called_once_with("10.0.0.2", "secret", timeout=10.0)
+        read_identity.assert_called_once_with("10.0.0.2", "secret", timeout=25.0)
         enable_ssh.assert_called_once()
         wait_for_ssh.assert_called_once_with(
             "10.0.0.2",

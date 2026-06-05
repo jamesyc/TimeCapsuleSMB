@@ -110,7 +110,7 @@ class ACPTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket) as create_mock:
             acp.set_dbug("10.0.0.2", "pw", "0x3000")
 
-        create_mock.assert_called_once_with(("10.0.0.2", acp.ACP_PORT), timeout=10.0)
+        create_mock.assert_called_once_with(("10.0.0.2", acp.ACP_PORT), timeout=25.0)
         self.assertIn(b"dbug", fake_socket.sent)
         self.assertIn(b"\x00\x00\x30\x00", fake_socket.sent)
         self.assertTrue(fake_socket.closed)
@@ -160,7 +160,7 @@ class ACPTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.integrations.acp.reboot") as reboot_mock:
                 acp.enable_ssh("10.0.0.2", "pw", reboot_device=False)
 
-        set_dbug_mock.assert_called_once_with("10.0.0.2", "pw", acp.DBUG_SSH_VALUE, log=None, timeout=10.0)
+        set_dbug_mock.assert_called_once_with("10.0.0.2", "pw", acp.DBUG_SSH_VALUE, log=None, timeout=25.0)
         reboot_mock.assert_not_called()
 
     def test_nonzero_acp_response_is_auth_error(self) -> None:
