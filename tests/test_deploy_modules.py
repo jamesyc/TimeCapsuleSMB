@@ -121,7 +121,7 @@ from timecapsulesmb.services.deploy import (
     DeployCompletionMessages,
     DeployPayloadContext,
     DeployRuntimeConfig,
-    POST_REBOOT_ACTIVATION_SETTLE_SECONDS,
+    POST_REBOOT_SETTLE_SECONDS,
     PreparedDeployPlan,
     complete_deployment_after_upload,
     upload_and_verify_deployment_payload,
@@ -7733,7 +7733,7 @@ fi
         settle_calls: list[int] = []
 
         def decide_after_settle(_connection: SshConnection) -> ActivationDecision:
-            self.assertEqual(settle_calls, [POST_REBOOT_ACTIVATION_SETTLE_SECONDS])
+            self.assertEqual(settle_calls, [POST_REBOOT_SETTLE_SECONDS])
             return activation_decision
 
         with mock.patch(
@@ -7752,7 +7752,7 @@ fi
             )
 
         request_reboot_and_wait_func.assert_called_once()
-        sleep_mock.assert_called_once_with(POST_REBOOT_ACTIVATION_SETTLE_SECONDS)
+        sleep_mock.assert_called_once_with(POST_REBOOT_SETTLE_SECONDS)
         run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
         verify_runtime.assert_called_once()
         self.assertEqual(stages, ["probe_runtime", "post_reboot_activation"])
@@ -7768,11 +7768,17 @@ fi
         callbacks, stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         verify_runtime = mock.Mock()
+        settle_calls: list[int] = []
+
+        def verify_after_settle(*args, **kwargs) -> None:
+            self.assertEqual(settle_calls, [POST_REBOOT_SETTLE_SECONDS])
+
+        verify_runtime.side_effect = verify_after_settle
 
         with mock.patch(
             "timecapsulesmb.services.deploy.time.sleep",
-            side_effect=AssertionError("netbsd6 reboot verification should not settle for activation"),
-        ):
+            side_effect=lambda seconds: settle_calls.append(seconds),
+        ) as sleep_mock:
             result = complete_deployment_after_upload(
                 connection,
                 prepared_plan,
@@ -7783,8 +7789,10 @@ fi
                 verify_runtime_func=verify_runtime,
             )
 
+        sleep_mock.assert_called_once_with(POST_REBOOT_SETTLE_SECONDS)
         verify_runtime.assert_called_once()
         self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_reboot")
+        self.assertIn("Waiting 10s for the device to settle after SSH returned.", logs)
         self.assertIn("Waiting for managed runtime...", logs)
         self.assertEqual(stages, [])
         self.assertTrue(result.verified)
