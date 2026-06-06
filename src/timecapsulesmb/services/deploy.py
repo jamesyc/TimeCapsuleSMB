@@ -93,6 +93,7 @@ DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
 )
+POST_REBOOT_ACTIVATION_SETTLE_SECONDS = 10
 DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_RC_LOCAL_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
@@ -945,6 +946,11 @@ def complete_deployment_after_upload(
     )
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        # NetBSD 4 can accept SSH before boot-time services have settled.
+        callbacks.message(
+            f"Waiting {POST_REBOOT_ACTIVATION_SETTLE_SECONDS}s for the device to settle after SSH returned."
+        )
+        time.sleep(POST_REBOOT_ACTIVATION_SETTLE_SECONDS)
         callbacks.stage("probe_runtime")
         decision = decide_post_reboot_activation(connection)
         callbacks.debug(

@@ -121,6 +121,7 @@ from timecapsulesmb.services.deploy import (
     DeployCompletionMessages,
     DeployPayloadContext,
     DeployRuntimeConfig,
+    POST_REBOOT_ACTIVATION_SETTLE_SECONDS,
     PreparedDeployPlan,
     complete_deployment_after_upload,
     upload_and_verify_deployment_payload,
@@ -7729,24 +7730,35 @@ fi
             reason="firmware_autostart_missing",
             detail="/etc/rc.d/LOGIN does not invoke /mnt/Flash/rc.local",
         )
+        settle_calls: list[int] = []
 
-        result = complete_deployment_after_upload(
-            connection,
-            prepared_plan,
-            no_wait=False,
-            callbacks=callbacks,
-            run_remote_actions_func=run_actions,
-            request_reboot_and_wait_func=request_reboot_and_wait_func,
-            decide_post_reboot_activation=mock.Mock(return_value=activation_decision),
-            verify_runtime_func=verify_runtime,
-        )
+        def decide_after_settle(_connection: SshConnection) -> ActivationDecision:
+            self.assertEqual(settle_calls, [POST_REBOOT_ACTIVATION_SETTLE_SECONDS])
+            return activation_decision
+
+        with mock.patch(
+            "timecapsulesmb.services.deploy.time.sleep",
+            side_effect=lambda seconds: settle_calls.append(seconds),
+        ) as sleep_mock:
+            result = complete_deployment_after_upload(
+                connection,
+                prepared_plan,
+                no_wait=False,
+                callbacks=callbacks,
+                run_remote_actions_func=run_actions,
+                request_reboot_and_wait_func=request_reboot_and_wait_func,
+                decide_post_reboot_activation=mock.Mock(side_effect=decide_after_settle),
+                verify_runtime_func=verify_runtime,
+            )
 
         request_reboot_and_wait_func.assert_called_once()
+        sleep_mock.assert_called_once_with(POST_REBOOT_ACTIVATION_SETTLE_SECONDS)
         run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
         verify_runtime.assert_called_once()
         self.assertEqual(stages, ["probe_runtime", "post_reboot_activation"])
         self.assertEqual(debug_fields["activation_decision"], "firmware_autostart_missing")
         self.assertTrue(debug_fields["manual_activation_required"])
+        self.assertIn("Waiting 10s for the device to settle after SSH returned.", logs)
         self.assertIn("Activating deployed runtime after reboot.", logs)
         self.assertTrue(result.rebooted)
         self.assertTrue(result.verified)
@@ -7757,15 +7769,19 @@ fi
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         verify_runtime = mock.Mock()
 
-        result = complete_deployment_after_upload(
-            connection,
-            prepared_plan,
-            no_wait=False,
-            callbacks=callbacks,
-            messages=DeployCompletionMessages(reboot_runtime_wait_message="Waiting for managed runtime..."),
-            request_reboot_and_wait_func=mock.Mock(),
-            verify_runtime_func=verify_runtime,
-        )
+        with mock.patch(
+            "timecapsulesmb.services.deploy.time.sleep",
+            side_effect=AssertionError("netbsd6 reboot verification should not settle for activation"),
+        ):
+            result = complete_deployment_after_upload(
+                connection,
+                prepared_plan,
+                no_wait=False,
+                callbacks=callbacks,
+                messages=DeployCompletionMessages(reboot_runtime_wait_message="Waiting for managed runtime..."),
+                request_reboot_and_wait_func=mock.Mock(),
+                verify_runtime_func=verify_runtime,
+            )
 
         verify_runtime.assert_called_once()
         self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_reboot")
