@@ -166,9 +166,9 @@ enum MaintenanceActionPolicy {
     static func actions(for workflow: MaintenanceWorkflow) -> [MaintenanceUserAction] {
         switch workflow {
         case .activate:
-            return [.planActivation, .runActivation]
+            return [.runActivation]
         case .uninstall:
-            return [.planUninstall, .runUninstall]
+            return [.runUninstall]
         case .fsck:
             return [.findVolumes, .planFsck, .runFsck]
         case .repairXattrs:
@@ -181,12 +181,10 @@ enum MaintenanceActionPolicy {
         switch workflow {
         case .activate:
             return enabled([
-                (.planActivation, store.canPlanActivation),
                 (.runActivation, store.canRunActivation)
             ])
         case .uninstall:
             return enabled([
-                (.planUninstall, store.canPlanUninstall),
                 (.runUninstall, store.canRunUninstall)
             ])
         case .fsck:

@@ -37,7 +37,7 @@ final class ActivationStore: ObservableObject {
     }
 
     var canRun: Bool {
-        !isBusy && plan != nil && state == .planReady
+        !isBusy
     }
 
     func confirmPending() {
@@ -82,10 +82,6 @@ final class ActivationStore: ObservableObject {
     func runActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard !isBusy else {
             return rejectAlreadyRunning()
-        }
-        guard canRun else {
-            failLocally(.activationPlanRequired)
-            return .rejected(WorkflowLocalError.activationPlanRequired.message)
         }
         let start = startRun(
             params: OperationParams.Activation.params(dryRun: false),

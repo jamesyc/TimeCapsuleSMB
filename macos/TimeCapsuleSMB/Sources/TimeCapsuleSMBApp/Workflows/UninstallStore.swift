@@ -39,7 +39,7 @@ final class UninstallStore: ObservableObject {
     }
 
     func canRun(options: MaintenanceOptions?) -> Bool {
-        return !isBusy && plan != nil && state == .planReady && options == plannedOptions
+        return !isBusy && options != nil
     }
 
     func markPlanStaleIfNeeded(options: MaintenanceOptions?) {
@@ -116,16 +116,11 @@ final class UninstallStore: ObservableObject {
         guard !isBusy else {
             return rejectAlreadyRunning()
         }
-        guard let currentOptions = options,
-              let plannedOptions,
-              currentOptions == plannedOptions,
-              plan != nil else {
-            markStale(.uninstallPlanStale)
-            return .rejected(WorkflowLocalError.uninstallPlanStale.message)
+        guard let currentOptions = options else {
+            failLocally(.mountWaitInvalid)
+            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
         }
-        guard state == .planReady else {
-            return .rejected(WorkflowLocalError.uninstallPlanNotReady.message)
-        }
+        let hasFreshPlan = plan != nil && currentOptions == plannedOptions
         let start = startRun(
             params: OperationParams.Uninstall.params(
                 dryRun: false,
@@ -140,7 +135,11 @@ final class UninstallStore: ObservableObject {
             return start
         }
         state = .running
+        if !hasFreshPlan {
+            plan = nil
+        }
         result = nil
+        plannedOptions = currentOptions
         return start
     }
 

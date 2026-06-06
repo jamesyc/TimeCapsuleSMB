@@ -699,15 +699,15 @@ final class DashboardPresentationTests: XCTestCase {
         let error = BackendErrorViewModel(operation: "deploy", code: "operation_failed", message: "failed")
 
         let cases: [(DeployWorkflowState, DeployPlanPayload?, DeployResultPayload?, BackendErrorViewModel?, [InstallUserAction])] = [
-            (.idle, nil, nil, nil, [.createPlan, .installUpdate]),
-            (.planning, nil, nil, nil, [.createPlan, .installUpdate]),
-            (.planReady, plan, nil, nil, [.regeneratePlan, .installUpdate]),
-            (.planStale, plan, nil, nil, [.regeneratePlan, .installUpdate]),
-            (.planFailed, nil, nil, error, [.createPlan, .installUpdate]),
-            (.deploying, plan, nil, nil, [.regeneratePlan, .installUpdate]),
-            (.awaitingConfirmation, plan, nil, nil, [.regeneratePlan, .installUpdate]),
+            (.idle, nil, nil, nil, [.installUpdate]),
+            (.planning, nil, nil, nil, [.installUpdate]),
+            (.planReady, plan, nil, nil, [.installUpdate]),
+            (.planStale, plan, nil, nil, [.installUpdate]),
+            (.planFailed, nil, nil, error, [.installUpdate]),
+            (.deploying, plan, nil, nil, [.installUpdate]),
+            (.awaitingConfirmation, plan, nil, nil, [.installUpdate]),
             (.deployed, plan, result, nil, []),
-            (.deployFailed, plan, nil, error, [.regeneratePlan, .installUpdate])
+            (.deployFailed, plan, nil, error, [.installUpdate])
         ]
 
         for testCase in cases {
@@ -842,7 +842,7 @@ final class DashboardPresentationTests: XCTestCase {
             profile: profile
         )
         XCTAssertEqual(planReady.stateTitle, "Plan Ready")
-        XCTAssertEqual(planReady.actions, [.regeneratePlan, .installUpdate])
+        XCTAssertEqual(planReady.actions, [.installUpdate])
         XCTAssertNil(planReady.completion)
 
         let deployFailed = InstallWorkflowPresentation(
@@ -855,7 +855,7 @@ final class DashboardPresentationTests: XCTestCase {
             profile: profile
         )
         XCTAssertEqual(deployFailed.stateTitle, "Deploy Failed")
-        XCTAssertEqual(deployFailed.actions, [.regeneratePlan, .installUpdate])
+        XCTAssertEqual(deployFailed.actions, [.installUpdate])
         XCTAssertNotNil(deployFailed.timeline)
         XCTAssertNil(deployFailed.completion)
     }
@@ -947,13 +947,11 @@ final class DashboardPresentationTests: XCTestCase {
     }
 
     func testMaintenanceActionPolicyUsesStableWorkflowActionGroups() {
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .activate), [.planActivation, .runActivation])
-        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .uninstall), [.planUninstall, .runUninstall])
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .activate), [.runActivation])
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .uninstall), [.runUninstall])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .fsck), [.findVolumes, .planFsck, .runFsck])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .repairXattrs), [.scanMetadata, .repairMetadata])
-        XCTAssertEqual(MaintenanceUserAction.planActivation.title, "Plan Activate")
         XCTAssertEqual(MaintenanceUserAction.runActivation.title, "Activate")
-        XCTAssertFalse(MaintenanceUserAction.planActivation.isCommitAction)
         XCTAssertTrue(MaintenanceUserAction.runActivation.isCommitAction)
     }
 
@@ -997,15 +995,13 @@ final class DashboardPresentationTests: XCTestCase {
 
         var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
-        XCTAssertEqual(presentation.detail.actions, [.planActivation, .runActivation])
-        XCTAssertTrue(presentation.detail.isEnabled(.planActivation))
-        XCTAssertFalse(presentation.detail.isEnabled(.runActivation))
+        XCTAssertEqual(presentation.detail.actions, [.runActivation])
+        XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
 
         store.selectedWorkflow = .uninstall
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
-        XCTAssertEqual(presentation.detail.actions, [.planUninstall, .runUninstall])
-        XCTAssertTrue(presentation.detail.isEnabled(.planUninstall))
-        XCTAssertFalse(presentation.detail.isEnabled(.runUninstall))
+        XCTAssertEqual(presentation.detail.actions, [.runUninstall])
+        XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
 
         store.selectedWorkflow = .fsck
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
@@ -1049,8 +1045,7 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
         var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
-        XCTAssertEqual(presentation.detail.actions, [.planActivation, .runActivation])
-        XCTAssertTrue(presentation.detail.isEnabled(.planActivation))
+        XCTAssertEqual(presentation.detail.actions, [.runActivation])
         XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
         XCTAssertEqual(presentation.detail.plan?.title, "Activation Plan")
         XCTAssertEqual(presentation.detail.plan?.rows.first, PresentationRow(label: "Device", value: profile.title))
@@ -1065,8 +1060,7 @@ final class DashboardPresentationTests: XCTestCase {
         try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .uninstall)
-        XCTAssertEqual(presentation.detail.actions, [.planUninstall, .runUninstall])
-        XCTAssertTrue(presentation.detail.isEnabled(.planUninstall))
+        XCTAssertEqual(presentation.detail.actions, [.runUninstall])
         XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
         XCTAssertEqual(presentation.detail.plan?.warnings, ["Uninstall removes installed files from this device."])
 
