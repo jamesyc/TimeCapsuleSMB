@@ -76,7 +76,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case .runCheckup:
             runCheckup(profile: profile)
         case .installSMB:
-            runInstallPlan(profile: profile)
+            runInstall(profile: profile)
         case .viewCheckup:
             selectedTab = .checkup
         case .openSMB:
@@ -91,7 +91,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case .runCheckup:
             runCheckup(profile: profile)
         case .installUpdate:
-            runInstallPlan(profile: profile)
+            runInstall(profile: profile)
         case .openFinder:
             openSMBAddress(for: profile)
         case .replacePassword:
@@ -109,7 +109,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     func performInstallAction(_ action: InstallUserAction, profile: DeviceProfile, showDiagnostics: () -> Void) {
         switch action {
         case .createPlan, .regeneratePlan, .reinstall:
-            runInstallPlan(profile: profile)
+            runInstall(profile: profile)
         case .installUpdate:
             runInstall(profile: profile)
         case .openFinder:
@@ -128,7 +128,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case .runCheckup:
             runCheckup(profile: profile)
         case .installUpdate:
-            runInstallPlan(profile: profile)
+            runInstall(profile: profile)
         case .startSMB:
             selectedTab = .maintenance
             maintenanceStore.selectedWorkflow = .activate
@@ -277,7 +277,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             runCheckup(profile: profile)
             return true
         case .installSMB:
-            runInstallPlan(profile: profile)
+            runInstall(profile: profile)
             return true
         case .startSMB:
             selectedTab = .maintenance
@@ -341,7 +341,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             runCheckup(profile: profile)
             return true
         case "deploy":
-            runInstallPlan(profile: profile)
+            runInstall(profile: profile)
             return true
         case "activate":
             selectedTab = .maintenance

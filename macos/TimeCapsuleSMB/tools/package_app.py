@@ -419,31 +419,48 @@ def read_cache_manifest(entry: Path) -> dict[str, object] | None:
 
 
 def cache_manifest_inputs_current(entry: Path) -> bool:
+    return cache_manifest_inputs_miss_reason(entry) is None
+
+
+def cache_manifest_inputs_miss_reason(entry: Path) -> str | None:
     manifest = read_cache_manifest(entry)
     if manifest is None:
-        return False
+        return "cache manifest is missing"
     inputs = manifest.get("inputs")
     if not isinstance(inputs, list):
-        return False
+        return "cache manifest inputs are invalid"
     for record in inputs:
         if not isinstance(record, dict):
-            return False
+            return "cache manifest input record is invalid"
         path_value = record.get("path")
         sha256_value = record.get("sha256")
         if not isinstance(path_value, str) or not isinstance(sha256_value, str):
-            return False
+            return "cache manifest input record is incomplete"
         path = Path(path_value)
-        if not path.is_file() or sha256_file(path) != sha256_value:
-            return False
-    return True
+        if not path.is_file():
+            return f"cached input is missing: {path}"
+        current_sha256 = sha256_file(path)
+        if current_sha256 != sha256_value:
+            return f"cached input changed: {path}"
+    return None
 
 
 def cache_manifest_output_current(entry: Path, output_root: Path) -> bool:
+    return cache_manifest_output_miss_reason(entry, output_root) is None
+
+
+def cache_manifest_output_miss_reason(entry: Path, output_root: Path) -> str | None:
     manifest = read_cache_manifest(entry)
     if manifest is None:
-        return False
+        return "cache manifest is missing"
     expected = manifest.get("output_tree_sha256")
-    return isinstance(expected, str) and output_root.is_dir() and sha256_tree(output_root) == expected
+    if not isinstance(expected, str):
+        return "cache manifest output hash is invalid"
+    if not output_root.is_dir():
+        return f"cached output directory is missing: {output_root}"
+    if sha256_tree(output_root) != expected:
+        return f"cached output tree changed: {output_root}"
+    return None
 
 
 def download_file(url: str, destination: Path) -> None:
@@ -1271,15 +1288,22 @@ def native_tools_cache_entry(
 
 
 def native_tools_cache_is_complete(entry: Path) -> bool:
+    return native_tools_cache_miss_reason(entry) is None
+
+
+def native_tools_cache_miss_reason(entry: Path) -> str | None:
     tools_bin = entry / "Contents" / "Resources" / "Tools" / "bin"
     frameworks = entry / "Contents" / "Frameworks"
     contents = entry / "Contents"
-    return (
-        cache_is_complete(entry, tools_bin)
-        and frameworks.is_dir()
-        and cache_manifest_inputs_current(entry)
-        and cache_manifest_output_current(entry, contents)
-    )
+    if not cache_is_complete(entry, tools_bin):
+        return "cache entry is incomplete or missing bundled tools"
+    if not frameworks.is_dir():
+        return f"cached Frameworks directory is missing: {frameworks}"
+    if reason := cache_manifest_inputs_miss_reason(entry):
+        return reason
+    if reason := cache_manifest_output_miss_reason(entry, contents):
+        return reason
+    return None
 
 
 def write_native_tools_manifest(
@@ -1303,9 +1327,11 @@ def write_native_tools_manifest(
 def prepared_native_tools_layer(architectures: tuple[str, ...]) -> Path:
     sources = resolve_tool_sources(architectures)
     entry = native_tools_cache_entry(architectures, sources)
-    if native_tools_cache_is_complete(entry):
+    miss_reason = native_tools_cache_miss_reason(entry)
+    if miss_reason is None:
         print("Using cached native tool layer.", file=sys.stderr)
         return entry
+    print(f"Rebuilding native tool layer: {miss_reason}", file=sys.stderr)
 
     cache_root = entry.parent
     cache_root.mkdir(parents=True, exist_ok=True)

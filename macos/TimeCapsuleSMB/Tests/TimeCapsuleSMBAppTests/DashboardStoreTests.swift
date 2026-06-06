@@ -45,7 +45,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
             ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -66,7 +66,7 @@ final class DashboardStoreTests: XCTestCase {
         session.performPrimaryAction(.installSMB, profile: profile)
         try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
         XCTAssertEqual(session.selectedTab, .install)
 
         session.performPrimaryAction(.viewCheckup, profile: profile)
@@ -727,9 +727,6 @@ final class DashboardStoreTests: XCTestCase {
     func testSuccessfulUninstallClearsInstalledSnapshot() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
-            ]),
-            .init(events: [
                 BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
             ], pauseBeforeEvents: true)
         ])
@@ -754,8 +751,6 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: installed)
 
-        session.performMaintenanceAction(.planUninstall, profile: installed) {}
-        try await waitUntilStoreState { session.maintenanceStore.uninstallState == .planReady }
         session.performMaintenanceAction(.runUninstall, profile: installed) {}
 
         try await waitUntilStoreState {
@@ -771,15 +766,11 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastDeployState)
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.runtimeState)
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastCheckup)
-        XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(true))
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(false))
     }
 
     func testActivationInvalidatesCheckupWhenRunStarts() async throws {
         let fixture = try await makeFixture(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
-            ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ], pauseBeforeEvents: true)
@@ -803,10 +794,6 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: checked)
 
-        session.performMaintenanceAction(.planActivation, profile: checked) {}
-        try await waitUntilStoreState { session.maintenanceStore.activateState == .planReady }
-        XCTAssertNotNil(fixture.registry.profile(id: checked.id)?.lastCheckup)
-
         session.performMaintenanceAction(.runActivation, profile: checked) {}
 
         try await waitUntilStoreState {
@@ -815,8 +802,7 @@ final class DashboardStoreTests: XCTestCase {
         }
         fixture.runner.finishAll()
         try await waitUntilStoreState { session.maintenanceStore.activateState == .succeeded }
-        XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(true))
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(false))
     }
 
     func testCheckupSnapshotUsesStartedProfileWhenSelectionChanges() async throws {
@@ -1033,7 +1019,7 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
             ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -1064,7 +1050,7 @@ final class DashboardStoreTests: XCTestCase {
         ))
         try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[1].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(session.selectedTab, .install)
     }
@@ -1132,6 +1118,9 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
                 ]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
             ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -1163,7 +1152,7 @@ final class DashboardStoreTests: XCTestCase {
         }
         try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
         XCTAssertEqual(session.selectedTab, .install)
 
         session.performInstallAction(.viewDiagnostics, profile: profile) {

@@ -376,7 +376,7 @@ struct InstallWorkflowPresentation: Equatable {
         case .idle:
             if persistedCompletion == nil {
                 self.statusMessage = L10n.string("install.state.idle")
-                self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+                self.actions = Self.deployActions()
             } else {
                 self.statusMessage = L10n.string("install.state.deployed")
                 self.actions = []
@@ -384,27 +384,27 @@ struct InstallWorkflowPresentation: Equatable {
             self.notices = []
         case .planning:
             self.statusMessage = L10n.string("install.state.planning")
-            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+            self.actions = Self.deployActions()
             self.notices = []
         case .planReady:
             self.statusMessage = L10n.string("install.state.plan_ready")
-            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+            self.actions = Self.deployActions()
             self.notices = []
         case .planStale:
             self.statusMessage = L10n.string("install.state.plan_stale")
-            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+            self.actions = Self.deployActions()
             self.notices = [L10n.string("install.warning.plan_stale")]
         case .planFailed:
             self.statusMessage = effectiveError?.message ?? L10n.string("install.state.plan_failed")
-            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+            self.actions = Self.deployActions()
             self.notices = []
         case .deploying:
             self.statusMessage = L10n.string("install.state.deploying")
-            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+            self.actions = Self.deployActions()
             self.notices = []
         case .awaitingConfirmation:
             self.statusMessage = L10n.string("install.state.awaiting_confirmation")
-            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+            self.actions = Self.deployActions()
             self.notices = [L10n.string("install.warning.awaiting_confirmation")]
         case .deployed:
             self.statusMessage = L10n.string("install.state.deployed")
@@ -412,7 +412,7 @@ struct InstallWorkflowPresentation: Equatable {
             self.notices = []
         case .deployFailed:
             self.statusMessage = effectiveError?.message ?? L10n.string("install.state.deploy_failed")
-            self.actions = Self.planAndDeployActions(state: effectiveState, plan: plan)
+            self.actions = Self.deployActions()
             self.notices = []
         }
     }
@@ -445,14 +445,8 @@ struct InstallWorkflowPresentation: Equatable {
         return deployState
     }
 
-    private static func planAndDeployActions(state: DeployWorkflowState, plan: DeployPlanPayload?) -> [InstallUserAction] {
-        let planAction: InstallUserAction
-        if plan != nil || state == .planStale || state == .deployFailed {
-            planAction = .regeneratePlan
-        } else {
-            planAction = .createPlan
-        }
-        return [planAction, .installUpdate]
+    private static func deployActions() -> [InstallUserAction] {
+        [.installUpdate]
     }
 
     private static func timeline(

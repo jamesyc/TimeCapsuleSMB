@@ -206,7 +206,7 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     var canDeploy: Bool {
-        !isBusy && state == .planReady && plan != nil && currentOptions == plannedOptions
+        !isBusy && hasValidOptions
     }
 
     @discardableResult
@@ -260,14 +260,12 @@ final class DeployWorkflowStore: ObservableObject {
 
     @discardableResult
     func runDeploy(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard let options = plannedOptions, plan != nil, currentOptions == options else {
-            state = .planStale
-            error = BackendErrorViewModel(operation: "deploy", localError: .deployPlanStale)
-            return .rejected(WorkflowLocalError.deployPlanStale.message)
+        guard let options = currentOptions else {
+            let localError = deployOptionsValidationError ?? .deployOptionsInvalid
+            failLocally(state: .deployFailed, localError: localError)
+            return .rejected(localError.message)
         }
-        guard state == .planReady else {
-            return .rejected(WorkflowLocalError.deployPlanNotReady.message)
-        }
+        let hasFreshPlan = plan != nil && plannedOptions == options
         guard !isBusy else {
             rejectRun(state: .deployFailed, localError: .operationAlreadyRunning)
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
@@ -300,9 +298,13 @@ final class DeployWorkflowStore: ObservableObject {
         }
         operationObserver.start(operation)
         state = .deploying
+        if !hasFreshPlan {
+            plan = nil
+        }
         result = nil
         error = nil
         currentStage = nil
+        plannedOptions = options
         passwordInvalidProfileID = nil
         process(backend.events)
         return start
