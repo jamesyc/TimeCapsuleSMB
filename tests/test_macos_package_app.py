@@ -636,6 +636,7 @@ def test_copy_tools_requires_each_architecture_when_requested(monkeypatch: pytes
 def test_copy_native_tools_layer_reuses_cached_vendored_layer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     package_app = load_package_app_module()
     monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
@@ -671,9 +672,12 @@ def test_copy_native_tools_layer_reuses_cached_vendored_layer(
     first_app = tmp_path / "First.app"
     second_app = tmp_path / "Second.app"
     package_app.copy_native_tools_layer(first_app, ("arm64",))
+    capsys.readouterr()
     package_app.copy_native_tools_layer(second_app, ("arm64",))
+    captured = capsys.readouterr()
 
     assert len(vendor_calls) == 1
+    assert "Using cached native tool layer." in captured.err
     assert (second_app / "Contents" / "Resources" / "Tools" / "bin" / "smbclient").is_file()
     assert (second_app / "Contents" / "Frameworks" / "libnative.dylib").is_file()
 
@@ -681,6 +685,7 @@ def test_copy_native_tools_layer_reuses_cached_vendored_layer(
 def test_copy_native_tools_layer_rebuilds_when_vendored_input_changes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     package_app = load_package_app_module()
     monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
@@ -714,15 +719,20 @@ def test_copy_native_tools_layer_rebuilds_when_vendored_input_changes(
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
 
     package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
+    capsys.readouterr()
     dependency.write_text("changed", encoding="utf-8")
     package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
+    captured = capsys.readouterr()
 
     assert len(vendor_calls) == 2
+    assert "Rebuilding native tool layer: cached input changed:" in captured.err
+    assert str(dependency) in captured.err
 
 
 def test_copy_native_tools_layer_rebuilds_when_cached_output_changes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     package_app = load_package_app_module()
     monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
@@ -756,11 +766,15 @@ def test_copy_native_tools_layer_rebuilds_when_cached_output_changes(
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: None)
 
     package_app.copy_native_tools_layer(tmp_path / "First.app", ("arm64",))
+    capsys.readouterr()
     cache_entry = next((tmp_path / ".build" / "package-app" / "native-tools").iterdir())
     (cache_entry / "Contents" / "Frameworks" / "libnative.dylib").write_text("corrupt", encoding="utf-8")
     package_app.copy_native_tools_layer(tmp_path / "Second.app", ("arm64",))
+    captured = capsys.readouterr()
 
     assert len(vendor_calls) == 2
+    assert "Rebuilding native tool layer: cached output tree changed:" in captured.err
+    assert str(cache_entry / "Contents") in captured.err
 
 
 def test_vendor_macho_dependencies_rewrites_loader_path_to_matching_source_copy(
