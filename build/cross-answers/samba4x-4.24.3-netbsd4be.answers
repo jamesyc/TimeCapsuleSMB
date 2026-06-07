@@ -1,12 +1,15 @@
-# Samba 4.24.1 NetBSD 6/7 Time Capsule cross-configure answers.
-# Generated with build/generate-samba4x-cross-answers*.sh from a matching live target.
+# Samba 4.24.3 NetBSD 4 big-endian Time Capsule cross-configure answers.
+# Reused from the previously validated NetBSD 4 BE target answers because
+# these probe results describe the target libc/kernel behavior, not Samba
+# source-version state. The BE device is not currently available to refresh
+# this file with live probes.
 # Normal Samba4X builds consume this file offline and must not require device SSH.
 Checking uname sysname type: "NetBSD"
 Checking uname machine type: "evbarm"
-Checking uname release type: "6.0"
-Checking uname version type: "NetBSD 6.0"
-rpath library support: (127, "")
--Wl,--version-script support: (127, "")
+Checking uname release type: "4.0"
+Checking uname version type: "NetBSD 4.0"
+rpath library support: (2, "")
+-Wl,--version-script support: (2, "")
 Checking getconf LFS_CFLAGS: (127, "")
 Checking for large file support without additional flags: OK
 Checking correct behavior of strtoll: NO
@@ -27,7 +30,7 @@ Checking if can we convert from UTF8 to UCS-2LE: (255, "")
 Checking whether setreuid is available: "OK"
 Checking whether fcntl locking is available: OK
 Checking for the maximum value of the 'time_t' type: NO
-Checking whether the realpath function allows a NULL argument: OK
+Checking whether the realpath function allows a NULL argument: NO
 Checking for ftruncate extend: OK
 Checking for readlink breakage: NO
 getcwd takes a NULL argument: OK

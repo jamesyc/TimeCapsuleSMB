@@ -30,6 +30,11 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     if [ -d "$SAMBA4X_SRC_DIR/.git" ]; then
         printf 'Refreshing existing git checkout at %s\n' "$SAMBA4X_SRC_DIR"
         git -C "$SAMBA4X_SRC_DIR" fetch --depth 1 origin "$SAMBA4X_GIT_REF"
+        # The downloader applies the appliance patch series in-place, so a
+        # previously prepared Samba tree is expected to be dirty. Reset before
+        # switching refs; otherwise git refuses the checkout and leaves the
+        # build lane pinned to the old source.
+        git -C "$SAMBA4X_SRC_DIR" reset --hard HEAD
         git -C "$SAMBA4X_SRC_DIR" checkout -B "$SAMBA4X_GIT_REF" "FETCH_HEAD"
         git -C "$SAMBA4X_SRC_DIR" reset --hard "FETCH_HEAD"
     elif [ -d "$SAMBA4X_SRC_DIR" ]; then

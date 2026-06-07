@@ -1,5 +1,7 @@
-# Samba 4.24.1 NetBSD 4 big-endian Time Capsule cross-configure answers.
-# Generated with build/generate-samba4x-cross-answers*.sh from a matching live target.
+# Samba 4.24.3 NetBSD 4 little-endian Time Capsule cross-configure answers.
+# Reused from the previously validated NetBSD 4 LE target answers because
+# these probe results describe the target libc/kernel behavior, not Samba
+# source-version state.
 # Normal Samba4X builds consume this file offline and must not require device SSH.
 Checking uname sysname type: "NetBSD"
 Checking uname machine type: "evbarm"

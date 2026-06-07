@@ -155,7 +155,7 @@ This is normal for **NetBSD 4 devices** (older Gen 1-4 Time Capsules). The firmw
 
 #### Is this secure?
 
-It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.24.1 currently.
+It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.24.3 currently.
 
 #### What files are added to the Time Capsule?
 
