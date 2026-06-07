@@ -37,6 +37,7 @@ OPTION_KEYS = frozenset({
     "persist_password",
     "recursive",
     "reboot_after_write",
+    "smb_browse_compatibility",
     "skip_bonjour",
     "skip_smb",
     "skip_ssh",

@@ -483,6 +483,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         let defaultSettings = DeviceProfileSettings(
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,
+            smbBrowseCompatibility: true,
             anyProtocol: true,
             debugLogging: true,
             mountWaitSeconds: 45,
@@ -502,6 +503,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.savedProfile?.settings, defaultSettings)
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(600))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .number(900))
@@ -523,6 +525,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         editedExisting.settings = DeviceProfileSettings(
             nbnsEnabled: false,
             internalShareUseDiskRoot: false,
+            smbBrowseCompatibility: false,
             anyProtocol: false,
             debugLogging: false,
             mountWaitSeconds: 99,
@@ -534,6 +537,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         appSettings.defaultDeviceSettings = DeviceProfileSettings(
             nbnsEnabled: true,
             internalShareUseDiskRoot: true,
+            smbBrowseCompatibility: true,
             anyProtocol: true,
             debugLogging: true,
             mountWaitSeconds: 1,
@@ -551,6 +555,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.savedProfile?.settings, editedExisting.settings)
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(111))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .string(""))

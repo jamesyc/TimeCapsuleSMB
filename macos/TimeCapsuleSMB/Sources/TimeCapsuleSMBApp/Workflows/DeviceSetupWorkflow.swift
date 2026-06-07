@@ -100,6 +100,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 password: password,
                 debugLogging: settings.debugLogging,
                 internalShareUseDiskRoot: settings.internalShareUseDiskRoot,
+                smbBrowseCompatibility: settings.smbBrowseCompatibility,
                 anyProtocol: settings.anyProtocol,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,

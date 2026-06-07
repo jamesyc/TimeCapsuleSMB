@@ -6,6 +6,7 @@ struct DeployOptions: Equatable {
     let noReboot: Bool
     let noWait: Bool
     let internalShareUseDiskRoot: Bool
+    let smbBrowseCompatibility: Bool
     let anyProtocol: Bool
     let debugLogging: Bool
     let ataIdleSeconds: Int
@@ -17,6 +18,7 @@ struct DeployOptions: Equatable {
         noReboot: Bool,
         noWait: Bool,
         internalShareUseDiskRoot: Bool,
+        smbBrowseCompatibility: Bool,
         anyProtocol: Bool,
         debugLogging: Bool,
         ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
@@ -27,6 +29,7 @@ struct DeployOptions: Equatable {
         self.noReboot = noReboot
         self.noWait = noWait
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
         self.debugLogging = debugLogging
         self.ataIdleSeconds = ataIdleSeconds
@@ -109,6 +112,9 @@ final class DeployWorkflowStore: ObservableObject {
         }
     }
     @Published var internalShareUseDiskRoot = false {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var smbBrowseCompatibility = false {
         didSet { reconcilePlanFreshness() }
     }
     @Published var anyProtocol = false {
@@ -229,6 +235,7 @@ final class DeployWorkflowStore: ObservableObject {
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
+                smbBrowseCompatibility: options.smbBrowseCompatibility,
                 anyProtocol: options.anyProtocol,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
@@ -279,6 +286,7 @@ final class DeployWorkflowStore: ObservableObject {
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
+                smbBrowseCompatibility: options.smbBrowseCompatibility,
                 anyProtocol: options.anyProtocol,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
@@ -337,6 +345,7 @@ final class DeployWorkflowStore: ObservableObject {
             noReboot: rebootOptions.noReboot,
             noWait: rebootOptions.noWait,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
+            smbBrowseCompatibility: smbBrowseCompatibility,
             anyProtocol: anyProtocol,
             debugLogging: debugLogging,
             ataIdleSeconds: ataIdleSecondsValue,

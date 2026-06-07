@@ -126,6 +126,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.displayName = "Media Capsule"
         store.draft.nbnsEnabled = false
         store.draft.internalShareUseDiskRoot = true
+        store.draft.smbBrowseCompatibility = true
         store.draft.anyProtocol = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "45"
@@ -141,6 +142,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(saved.settings, DeviceProfileSettings(
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,
+            smbBrowseCompatibility: true,
             anyProtocol: true,
             debugLogging: true,
             mountWaitSeconds: 45,
@@ -391,6 +393,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.host = "10.0.0.9"
         store.draft.nbnsEnabled = false
         store.draft.internalShareUseDiskRoot = true
+        store.draft.smbBrowseCompatibility = true
         store.draft.anyProtocol = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "60"
@@ -413,6 +416,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["password"], .string("pw"))
         XCTAssertEqual(call.params["persist_password"], .bool(false))
         XCTAssertEqual(call.params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(call.params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(call.params["any_protocol"], .bool(true))
         XCTAssertEqual(call.params["debug_logging"], .bool(true))
         XCTAssertEqual(call.params["ata_idle_seconds"], .number(0))
@@ -429,6 +433,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(saved.settings, DeviceProfileSettings(
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,
+            smbBrowseCompatibility: true,
             anyProtocol: true,
             debugLogging: true,
             mountWaitSeconds: 60,

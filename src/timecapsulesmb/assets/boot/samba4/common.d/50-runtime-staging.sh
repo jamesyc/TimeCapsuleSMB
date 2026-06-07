@@ -224,6 +224,7 @@ tc_generate_smb_conf_from_share_rows() {
     smbd_max_log_size=$(tc_smbd_max_log_size)
     smbd_log_level_line=
     smbd_protocol_lines=
+    smbd_restrict_anonymous=2
     smbd_fruit_model=$(tc_smbd_fruit_model)
     smbd_conf_tmp="$TC_SMBD_CONF.tmp.$$"
 
@@ -242,6 +243,11 @@ tc_generate_smb_conf_from_share_rows() {
     max protocol = SMB3
 "
     fi
+    if [ "$SMB_BROWSE_COMPATIBILITY" = "1" ]; then
+        # Some SMB clients require anonymous browse enumeration even when shares
+        # still require authenticated user sessions.
+        smbd_restrict_anonymous=0
+    fi
 
     rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
     {
@@ -256,7 +262,7 @@ tc_generate_smb_conf_from_share_rows() {
     server string = $SMB_SERVER_STRING
     security = user
     map to guest = Never
-    restrict anonymous = 2
+    restrict anonymous = $smbd_restrict_anonymous
     guest account = nobody
     null passwords = no
     ea support = yes

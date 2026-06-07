@@ -45,6 +45,7 @@ enum OperationParams {
             password: String,
             debugLogging: Bool,
             internalShareUseDiskRoot: Bool? = nil,
+            smbBrowseCompatibility: Bool? = nil,
             anyProtocol: Bool? = nil,
             ataIdleSeconds: Int? = nil,
             ataStandby: Int? = nil,
@@ -62,6 +63,9 @@ enum OperationParams {
             }
             if let internalShareUseDiskRoot {
                 params["internal_share_use_disk_root"] = .bool(internalShareUseDiskRoot)
+            }
+            if let smbBrowseCompatibility {
+                params["smb_browse_compatibility"] = .bool(smbBrowseCompatibility)
             }
             if let anyProtocol {
                 params["any_protocol"] = .bool(anyProtocol)
@@ -99,6 +103,7 @@ enum OperationParams {
             noWait: Bool,
             nbnsEnabled: Bool,
             internalShareUseDiskRoot: Bool = false,
+            smbBrowseCompatibility: Bool = false,
             anyProtocol: Bool = false,
             debugLogging: Bool,
             ataIdleSeconds: Int,
@@ -111,6 +116,7 @@ enum OperationParams {
                 "no_wait": .bool(noWait),
                 "nbns_enabled": .bool(nbnsEnabled),
                 "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
+                "smb_browse_compatibility": .bool(smbBrowseCompatibility),
                 "any_protocol": .bool(anyProtocol),
                 "debug_logging": .bool(debugLogging),
                 "mount_wait": .number(mountWait)

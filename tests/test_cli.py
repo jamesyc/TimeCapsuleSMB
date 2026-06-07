@@ -1871,6 +1871,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", rendered_env)
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
+        self.assertEqual(fake_values["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
@@ -1940,6 +1941,17 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "true")
+
+    def test_configure_hidden_smb_browse_compatibility_arg_writes_true(self) -> None:
+        result = self.run_configure_cli(
+            ["--smb-browse-compatibility"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_SMB_BROWSE_COMPATIBILITY"], "true")
 
     def test_configure_hidden_any_protocol_arg_writes_true(self) -> None:
         result = self.run_configure_cli(
@@ -4996,6 +5008,23 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", captured["flash_config"])
         self.assertIn("MDNS_DEBUG_LOGGING=1\n", captured["flash_config"])
+
+    def test_deploy_uses_configured_smb_browse_compatibility(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-reboot"],
+            values=self.make_valid_env(TC_SMB_BROWSE_COMPATIBILITY="true"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", captured["flash_config"])
 
     def test_deploy_leaves_debug_logging_disabled_without_arg(self) -> None:
         captured: dict[str, str] = {}

@@ -45,6 +45,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["mount_wait"], .number(45))
         XCTAssertEqual(params["no_wait"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
+        XCTAssertEqual(params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(params["any_protocol"], .bool(false))
         XCTAssertNil(params["credentials"])
     }
@@ -56,6 +57,7 @@ final class PendingConfirmationTests: XCTestCase {
             noWait: false,
             nbnsEnabled: true,
             internalShareUseDiskRoot: true,
+            smbBrowseCompatibility: true,
             anyProtocol: true,
             debugLogging: false,
             ataIdleSeconds: 0,
@@ -65,6 +67,7 @@ final class PendingConfirmationTests: XCTestCase {
 
         XCTAssertEqual(params["dry_run"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
@@ -86,6 +89,7 @@ final class PendingConfirmationTests: XCTestCase {
             password: "pw",
             debugLogging: true,
             internalShareUseDiskRoot: false,
+            smbBrowseCompatibility: true,
             anyProtocol: true,
             ataIdleSeconds: 0,
             ataStandby: nil,
@@ -97,6 +101,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["password"], .string("pw"))
         XCTAssertEqual(params["debug_logging"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
+        XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
@@ -114,6 +119,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["persist_password"], .bool(false))
         XCTAssertEqual(params["debug_logging"], .bool(false))
         XCTAssertNil(params["internal_share_use_disk_root"])
+        XCTAssertNil(params["smb_browse_compatibility"])
         XCTAssertNil(params["any_protocol"])
     }
 

@@ -1068,6 +1068,7 @@ MaSt = (
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
                 "TC_AIRPORT_SYAP": "106",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+                "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_ANY_PROTOCOL": "true",
             }
         )
@@ -1091,6 +1092,7 @@ MaSt = (
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", rendered)
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", rendered)
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
@@ -1132,6 +1134,7 @@ MaSt = (
         config = AppConfig.from_values(
             {
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
+                "TC_SMB_BROWSE_COMPATIBILITY": "false",
                 "TC_ANY_PROTOCOL": "false",
             }
         )
@@ -1142,16 +1145,19 @@ MaSt = (
             nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=True,
+            smb_browse_compatibility=True,
             any_protocol=True,
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
 
     def test_flash_runtime_config_deploy_time_overrides_can_disable_saved_values(self) -> None:
         config = AppConfig.from_values(
             {
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+                "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_ANY_PROTOCOL": "true",
             }
         )
@@ -1162,10 +1168,12 @@ MaSt = (
             nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=False,
+            smb_browse_compatibility=False,
             any_protocol=False,
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
+        self.assertIn("SMB_BROWSE_COMPATIBILITY=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
 
     def test_flash_runtime_config_uses_drive_settings_from_config(self) -> None:
@@ -4774,6 +4782,7 @@ MaSt = (
         self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
         self.assertIn("max log size = 128", proc.stdout)
         self.assertIn("fruit:model = TimeCapsule6,106", proc.stdout)
+        self.assertIn("restrict anonymous = 2", proc.stdout)
         self.assertIn("min protocol = SMB2", proc.stdout)
         self.assertIn("max protocol = SMB3", proc.stdout)
         self.assertIn(
@@ -4827,6 +4836,42 @@ MaSt = (
         self.assertNotIn("max protocol =", proc.stdout)
         self.assertIn("dos charset = ASCII\n    server multi channel support = no", proc.stdout)
         self.assertNotIn("dos charset = ASCII\n\n    server multi channel support = no", proc.stdout)
+
+    def test_common_generate_smb_conf_uses_browse_compatibility_restrict_anonymous(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-browse-compatibility.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    SMB_BROWSE_COMPATIBILITY=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    share_rows=$(cat <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
+                    cat "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("restrict anonymous = 0", proc.stdout)
+        self.assertIn("map to guest = Never", proc.stdout)
+        self.assertIn("null passwords = no", proc.stdout)
 
     def test_common_generate_smb_conf_derives_fruit_model_from_acp_syap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

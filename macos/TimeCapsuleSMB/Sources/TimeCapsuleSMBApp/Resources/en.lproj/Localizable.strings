@@ -839,6 +839,7 @@
 "toggle.enable_debug_logging" = "Enable Debug Logging";
 "toggle.enable_nbns" = "Enable NBNS";
 "toggle.internal_share_use_disk_root" = "Internal Share Uses Disk Root";
+"toggle.smb_browse_compatibility" = "Allow SMB Share Browsing";
 "toggle.any_protocol" = "Allow Any SMB Protocol";
 "toggle.force_debug_logging" = "Force Debug Logging";
 "toggle.no_reboot" = "No Reboot";

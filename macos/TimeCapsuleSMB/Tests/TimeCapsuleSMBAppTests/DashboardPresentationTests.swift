@@ -592,6 +592,7 @@ final class DashboardPresentationTests: XCTestCase {
             noReboot: false,
             noWait: true,
             internalShareUseDiskRoot: false,
+            smbBrowseCompatibility: false,
             anyProtocol: false,
             debugLogging: false,
             mountWait: 30

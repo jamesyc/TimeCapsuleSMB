@@ -318,6 +318,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     func applyProfileSettings(_ settings: DeviceProfileSettings) {
         deployStore.nbnsEnabled = settings.nbnsEnabled
         deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
+        deployStore.smbBrowseCompatibility = settings.smbBrowseCompatibility
         deployStore.anyProtocol = settings.anyProtocol
         deployStore.debugLogging = settings.debugLogging
         deployStore.ataIdleSeconds = String(settings.ataIdleSeconds)

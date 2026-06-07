@@ -20,6 +20,7 @@ from timecapsulesmb.services.configure import (
     ConfigureFlowError,
     ConfigureFlowHooks,
     ConfigureFlowRequest,
+    build_configure_env_values,
     enable_ssh_and_reprobe,
     run_configure_flow,
 )
@@ -28,6 +29,26 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ConfigureServiceTests(unittest.TestCase):
+    def test_build_configure_env_values_handles_smb_browse_compatibility(self) -> None:
+        preserved = build_configure_env_values(
+            {"TC_SMB_BROWSE_COMPATIBILITY": "true"},
+            host="root@10.0.0.2",
+            password="pw",
+            ssh_opts="-o foo",
+            configure_id="config-id",
+        )
+        enabled = build_configure_env_values(
+            {},
+            host="root@10.0.0.2",
+            password="pw",
+            ssh_opts="-o foo",
+            configure_id="config-id",
+            smb_browse_compatibility=True,
+        )
+
+        self.assertEqual(preserved["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+        self.assertEqual(enabled["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+
     def make_connection(self) -> SshConnection:
         return SshConnection("root@10.0.0.2", "pw", "-o foo")
 
@@ -278,6 +299,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(result.identity.syap, "119")
         self.assertEqual(result.identity.model, "TimeCapsule8,119")
         self.assertEqual(written["TC_HOST"], "root@10.0.0.2")
+        self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertNotIn("TC_PASSWORD", written)
         self.assertEqual(stages, ["ssh_probe", "write_env"])
         self.assertIn({"ssh_final_reachable": True}, debug_fields)
