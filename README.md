@@ -5,16 +5,18 @@ Apple AirPort Time Capsules only support AFP and SMB1. Apple is removing AFP sup
 **NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5-15.7.7) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
 Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder.
 
-This project is fully working for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below.
+This project has 2 parts:
+- a fork of Samba 4, modified to work on the Apple Time Capsule
+- the installers for the Samba binary, via python or macOS GUI app. 
 
-## Expectations
+This is fully working for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below.
 
-If the setup completes successfully, your Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
+The Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />
 
 The `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
-NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices need a manual `activate` after every reboot.** If you do not run the `activate` command after a reboot, then Samba will not start automatically on an older Time Capsule.
+NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices need a manual `activate` after every reboot**, unless you flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot. If you do not run the `activate` command after a reboot or flash the boot hook, then Samba will not start automatically on an older Time Capsule.
 
 The current authentication model accepts any user as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
@@ -26,17 +28,32 @@ The working binaries are saved in this repository under [bin/](bin), and the nor
 
 Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else. 
 
-For the typical guided setup, you need only:
-
+You will need:  
 - A macOS 14+ or Linux machine on the same local network as the Time Capsule
 - The password for the Time Capsule
+
+For the python setup, you need:  
 - Python 3.9+
 - `smbclient` installed locally for `doctor`
 - Homebrew installed for macOS users
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
-## Quick Start
+## Quick Start (macOS app)
+
+1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
+2. Unzip the app and run it. You might need to disable Gatekeeper to run the app.
+3. Click "Add Device" on the left sidebar, and select your device. 
+4. Enter your device password, and click "Save Device".
+5. Wait for the app to enable SSH for your Time Capsule. If it fails, close the app, reopen the app, and try again.
+6. Click the added device in the left sidebar, and then click on the "Install/Update" tab.
+   <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />
+7. Click "Install/Update" to deploy to the device.
+   <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />
+8. (Optional) Go to the Checkup tab and run a Checkup.
+9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section, and install the firmware patch to allow the device to automatically start Samba after reboots. 
+
+## Quick Start (with python)
 
 Download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
 
