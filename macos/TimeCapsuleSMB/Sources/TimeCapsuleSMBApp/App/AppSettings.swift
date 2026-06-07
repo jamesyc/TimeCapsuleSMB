@@ -264,11 +264,12 @@ final class AppSettingsStore: ObservableObject {
         }
     }
 
-    func save(_ nextSettings: AppSettings) async throws {
+    func save(_ nextSettings: AppSettings, willPublish: ((AppSettings) -> Void)? = nil) async throws {
         state = .saving
         error = nil
         do {
             try await repository.save(nextSettings)
+            willPublish?(nextSettings)
             settings = nextSettings
             state = .loaded
         } catch {

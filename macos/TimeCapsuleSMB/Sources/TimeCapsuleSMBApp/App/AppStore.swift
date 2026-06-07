@@ -151,8 +151,9 @@ final class AppStore: ObservableObject {
 
     func saveAppSettings(_ settings: AppSettings) async throws {
         let previousSettings = appSettingsStore.settings
-        try await appSettingsStore.save(settings)
-        applyAppSettings(settings)
+        try await appSettingsStore.save(settings) { [weak self] settings in
+            self?.applyAppSettings(settings)
+        }
         if previousSettings.telemetryEnabled != settings.telemetryEnabled {
             syncTelemetryPreference(settings.telemetryEnabled)
         }

@@ -274,7 +274,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertIn("--cross-compile", args)
             self.assertEqual(self.cross_execute_args(args), [])
             cross_answers = self.cross_answer_arg(args)
-            self.assertTrue(cross_answers.endswith("/samba4x-4.24.1-netbsd7.answers"))
+            self.assertTrue(cross_answers.endswith("/samba4x-4.24.3-netbsd7.answers"))
             self.assertFalse(cross_exec_capture.exists())
 
     def test_generation_helper_starts_from_fresh_seed_and_ignores_stale_answers(self) -> None:
@@ -310,12 +310,12 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             args = self.configure_args(capture)
             cross_answers = self.cross_answer_arg(args)
-            self.assertTrue(cross_answers.endswith("/generated-samba4x-4.24.1-netbsd4be.answers"))
+            self.assertTrue(cross_answers.endswith("/generated-samba4x-4.24.3-netbsd4be.answers"))
             self.assertEqual(len(self.cross_execute_args(args)), 1)
             seed = seed_capture.read_text()
             self.assertIn('Checking uname sysname type: "NetBSD"', seed)
             self.assertNotIn("CARRIED-FORWARD", seed)
-            generated = output_dir / "samba4x-4.24.1-netbsd4be.answers"
+            generated = output_dir / "samba4x-4.24.3-netbsd4be.answers"
             generated_text = generated.read_text()
             self.assertIn("Checking whether the realpath function allows a NULL argument: NO", generated_text)
             self.assertNotIn("CARRIED-FORWARD", generated_text)
@@ -346,13 +346,13 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             args = self.configure_args(capture)
             self.cross_answer_arg(args)
             self.assertEqual(len(self.cross_execute_args(args)), 1)
-            self.assertTrue((output_dir / "samba4x-4.24.1-netbsd7.answers").exists())
+            self.assertTrue((output_dir / "samba4x-4.24.3-netbsd7.answers").exists())
 
     def test_lane_wrappers_select_their_default_cross_answer_files(self) -> None:
         cases = (
-            ("samba4x.sh", "netbsd7", "samba4x-4.24.1-netbsd7.answers"),
-            ("samba4xoldle.sh", "netbsd4le", "samba4x-4.24.1-netbsd4le.answers"),
-            ("samba4xoldbe.sh", "netbsd4be", "samba4x-4.24.1-netbsd4be.answers"),
+            ("samba4x.sh", "netbsd7", "samba4x-4.24.3-netbsd7.answers"),
+            ("samba4xoldle.sh", "netbsd4le", "samba4x-4.24.3-netbsd4le.answers"),
+            ("samba4xoldbe.sh", "netbsd4be", "samba4x-4.24.3-netbsd4be.answers"),
         )
         for wrapper, lane, expected in cases:
             with self.subTest(wrapper=wrapper):
@@ -455,7 +455,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             result = self.run_wrapper("generate-samba4x-cross-answers-oldbe.sh", env)
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            generated = output_dir / "samba4x-4.24.1-netbsd4be.answers"
+            generated = output_dir / "samba4x-4.24.3-netbsd4be.answers"
             realpath_lines = [
                 line
                 for line in generated.read_text().splitlines()
@@ -491,7 +491,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 "disagrees with independent realpath(path, NULL) probe",
                 Path(env["SAMBA4X_NETBSD4BE_LOG"]).read_text(),
             )
-            self.assertFalse((output_dir / "samba4x-4.24.1-netbsd4be.answers").exists())
+            self.assertFalse((output_dir / "samba4x-4.24.3-netbsd4be.answers").exists())
 
 
 if __name__ == "__main__":

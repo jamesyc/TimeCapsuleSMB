@@ -24,6 +24,7 @@ struct AppSettingsView: View {
                         }
                         .labelsHidden()
                         .frame(width: 220, alignment: .leading)
+                        .id("language-\(savedLanguageIdentity)")
                     }
                     SettingsFormRow(title: L10n.string("app_settings.appearance")) {
                         Picker("", selection: $editor.draft.appearance) {
@@ -34,6 +35,7 @@ struct AppSettingsView: View {
                         }
                         .labelsHidden()
                         .frame(width: 220, alignment: .leading)
+                        .id("appearance-\(savedLanguageIdentity)")
                     }
                 }
 
@@ -124,6 +126,10 @@ struct AppSettingsView: View {
             Text(L10n.string("app_settings.subtitle"))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var savedLanguageIdentity: String {
+        appSettingsStore.settings.language.id
     }
 
     private var actionBar: some View {

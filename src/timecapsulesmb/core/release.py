@@ -4,4 +4,4 @@ from __future__ import annotations
 CLI_VERSION = "2.2.0-beta4"
 RELEASE_TAG = "v2.2.0-beta4"
 CLI_VERSION_CODE = 20204
-SAMBA_VERSION = "4.24.1"
+SAMBA_VERSION = "4.24.3"
