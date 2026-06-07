@@ -46,10 +46,10 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 3. Click "Add Device" on the left sidebar, and select your device. 
 4. Enter your device password, and click "Save Device".
 5. Wait for the app to enable SSH for your Time Capsule. If it fails, close the app, reopen the app, and try again.
-6. Click the added device in the left sidebar, and then click on the "Install/Update" tab.
-   <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />
-7. Click "Install/Update" to deploy to the device.
-   <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />
+6. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
+   <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />  
+7. Click "Install/Update" to deploy to the device.  
+   <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />  
 8. (Optional) Go to the Checkup tab and run a Checkup.
 9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section, and install the firmware patch to allow the device to automatically start Samba after reboots. 
 
