@@ -25,7 +25,8 @@ private struct OperationStageLocalization {
 
 enum OperationTimelineBuilder {
     private static let activateStageLocalizations: [String: OperationStageLocalization] = [
-        "probe_runtime": .init(titleKey: "timeline.activate.title.probe_runtime", detailKey: "timeline.activate.detail.probe_runtime")
+        "probe_runtime": .init(titleKey: "timeline.activate.title.probe_runtime", detailKey: "timeline.activate.detail.probe_runtime"),
+        "post_activation_settle": .init(titleKey: "timeline.activate.title.post_activation_settle", detailKey: "timeline.activate.detail.post_activation_settle")
     ]
 
     private static let deployStageLocalizations: [String: OperationStageLocalization] = [
@@ -54,6 +55,8 @@ enum OperationTimelineBuilder {
         "wait_for_reboot_up": .init(titleKey: "timeline.deploy.title.wait_for_reboot_up", detailKey: "timeline.deploy.detail.wait_for_reboot_up"),
         "probe_runtime": .init(titleKey: "timeline.deploy.title.probe_runtime", detailKey: "timeline.deploy.detail.probe_runtime"),
         "activate_runtime": .init(titleKey: "timeline.deploy.title.activate_runtime", detailKey: "timeline.deploy.detail.activate_runtime"),
+        "post_reboot_boot_settle": .init(titleKey: "timeline.deploy.title.post_reboot_boot_settle", detailKey: "timeline.deploy.detail.post_reboot_boot_settle"),
+        "post_activation_settle": .init(titleKey: "timeline.deploy.title.post_activation_settle", detailKey: "timeline.deploy.detail.post_activation_settle"),
         "post_reboot_activation": .init(titleKey: "timeline.deploy.title.post_reboot_activation", detailKey: "timeline.deploy.detail.post_reboot_activation"),
         "verify_runtime_activation": .init(titleKey: "timeline.deploy.title.verify_runtime_activation", detailKey: "timeline.deploy.detail.verify_runtime_activation"),
         "verify_runtime_reboot": .init(titleKey: "timeline.deploy.title.verify_runtime_reboot", detailKey: "timeline.deploy.detail.verify_runtime_reboot")

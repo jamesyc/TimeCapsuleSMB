@@ -59,6 +59,7 @@ from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_NO_DOWN_MESSAGE
+from timecapsulesmb.services.runtime_verification import ACTIVATION_SETTLE_MESSAGE, ACTIVATION_SETTLE_SECONDS
 from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
@@ -1005,6 +1006,7 @@ class CliTests(unittest.TestCase):
                 mocks.wait_for_ssh_state_conn = stack.enter_context(
                     mock.patch("timecapsulesmb.services.reboot.wait_for_ssh_state_conn", side_effect=wait_side_effect)
                 )
+            mocks.runtime_wait_sleep = stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
             if input_side_effect is not None:
                 mocks.input = stack.enter_context(mock.patch("builtins.input", side_effect=input_side_effect))
             if raises is None:
@@ -5689,8 +5691,9 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(True)) as verify_mock:
-                            with redirect_stdout(output):
-                                rc = activate.main(["--yes"])
+                            with mock.patch("timecapsulesmb.services.runtime_verification.sleep") as sleep_mock:
+                                with redirect_stdout(output):
+                                    rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
         actions_mock.assert_called_once()
         self.assertEqual(
@@ -5705,7 +5708,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(actions_mock.call_args.kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
         self.assertEqual(verify_mock.call_args.kwargs["timeout_seconds"], 200)
+        sleep_mock.assert_called_once_with(ACTIVATION_SETTLE_SECONDS)
         self.assertIn("without file transfer", output.getvalue())
+        self.assertIn(ACTIVATION_SETTLE_MESSAGE, output.getvalue())
 
     def test_main_registers_flash_command(self) -> None:
         self.assertIs(cli_main_module.COMMANDS["flash"], cli_flash.main)
@@ -7606,9 +7611,11 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
                         with mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)):
-                            with redirect_stdout(output):
-                                rc = activate.main(["--yes"])
+                            with mock.patch("timecapsulesmb.services.runtime_verification.sleep") as sleep_mock:
+                                with redirect_stdout(output):
+                                    rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)
+        sleep_mock.assert_called_once_with(ACTIVATION_SETTLE_SECONDS)
         self.assertIn("NetBSD4 activation failed.", output.getvalue())
 
     def test_activate_dry_run_json_outputs_activation_plan(self) -> None:

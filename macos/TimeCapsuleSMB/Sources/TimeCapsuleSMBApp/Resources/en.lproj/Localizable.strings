@@ -387,6 +387,8 @@
 "backend.summary.reachability.ssh_only" = "SSH reachable, SMB port closed.";
 "backend.summary.reachability.unreachable" = "Could not reach SSH or SMB.";
 "backend.summary.repair_xattrs_found" = "Found %d metadata issue(s), %d repairable.";
+"backend.summary.waiting_device_activate" = "Waiting a few seconds for device to activate...";
+"backend.summary.waiting_device_boot" = "Waiting a few seconds for device to boot...";
 "backend.summary.telemetry_disabled" = "Telemetry is disabled.";
 "backend.summary.telemetry_enabled" = "Telemetry is enabled.";
 "backend.summary.uninstall_completed" = "Uninstall completed.";
@@ -744,10 +746,13 @@
 "timeline.deploy.detail.flush_payload_upload" = "Flushing payload writes to disk.";
 "timeline.deploy.detail.load_config" = "Reading the saved device configuration.";
 "timeline.deploy.detail.post_reboot_activation" = "Starting SMB after SSH returns.";
+"timeline.deploy.detail.post_reboot_boot_settle" = "Waiting briefly after SSH returns before probing boot-time services.";
+"timeline.deploy.detail.post_activation_settle" = "Waiting briefly after activation before probing runtime readiness.";
 "timeline.deploy.detail.post_upload_actions" = "Installing flash hooks and applying file modes.";
 "timeline.deploy.detail.pre_upload_actions" = "Stopping managed services and removing stale deployment files.";
 "timeline.deploy.detail.prepare_deployment_files" = "Generating runtime config and Samba account files.";
 "timeline.activate.detail.probe_runtime" = "Checking whether TimeCapsuleSMB is already running before activating it.";
+"timeline.activate.detail.post_activation_settle" = "Waiting briefly after activation before probing runtime readiness.";
 "timeline.deploy.detail.probe_runtime" = "Checking whether the device will start TimeCapsuleSMB automatically.";
 "timeline.deploy.detail.read_mast" = "Looking for mounted HFS payload volumes.";
 "timeline.deploy.detail.reboot" = "Sending the SSH reboot request.";
@@ -773,10 +778,13 @@
 "timeline.deploy.title.flush_payload_upload" = "Flush to Disk";
 "timeline.deploy.title.load_config" = "Read Configuration";
 "timeline.deploy.title.post_reboot_activation" = "Start SMB After Reboot";
+"timeline.deploy.title.post_reboot_boot_settle" = "Let Device Finish Booting";
+"timeline.deploy.title.post_activation_settle" = "Let Runtime Settle";
 "timeline.deploy.title.post_upload_actions" = "Apply File Permissions";
 "timeline.deploy.title.pre_upload_actions" = "Stop Existing Runtime";
 "timeline.deploy.title.prepare_deployment_files" = "Build Runtime Config";
 "timeline.activate.title.probe_runtime" = "Check Existing Runtime";
+"timeline.activate.title.post_activation_settle" = "Let Runtime Settle";
 "timeline.deploy.title.probe_runtime" = "Check Boot Startup";
 "timeline.deploy.title.read_mast" = "Find Payload Volume";
 "timeline.deploy.title.reboot" = "Request Reboot";

@@ -5,7 +5,7 @@ import subprocess
 import time
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
@@ -37,18 +37,13 @@ REMOTE_LOG_TAIL_LINES = 80
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 30
 REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 30
+SMBD_READINESS_PROBE_TIMEOUT_SECONDS = 30
 MDNS_BINARY_PROBE_TIMEOUT_SECONDS = 30
-MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS = 30
 MDNS_BINARY_PROBE_ATTEMPTS = 2
-MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS = 12
-MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS = 24
-MDNS_FSTAT_PROBE_TIMEOUT_SECONDS = 16
-MDNS_READINESS_PROBE_TIMEOUT_SECONDS = (
-    MDNS_BINARY_PROBE_TIMEOUT_SECONDS
-    + MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS
-    + MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS
-    + MDNS_FSTAT_PROBE_TIMEOUT_SECONDS
-)
+MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS = 30
+MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS = 30
+MDNS_FSTAT_PROBE_TIMEOUT_SECONDS = 30
+RUNTIME_READINESS_FINAL_ATTEMPTS = 2
 NETBSD4_LOGIN_RC_LOCAL_MARKER = b"/mnt/Flash/rc.local"
 NETBSD4_LOGIN_PATH = "/etc/rc.d/LOGIN"
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
@@ -507,6 +502,7 @@ class RemoteInterfaceCandidate:
 
 
 ProbeStepStatus = Literal["pass", "fail", "timeout", "skip"]
+RuntimeProbeAttemptPhase = Literal["soft_window", "final_check"]
 
 
 @dataclass(frozen=True)
@@ -549,12 +545,29 @@ class RemoteNetworkCapabilitiesProbeResult:
 
 
 @dataclass(frozen=True)
+class RuntimeProbeAttemptSummary:
+    index: int
+    phase: RuntimeProbeAttemptPhase
+    duration_seconds: float
+    ready: bool
+    smbd_ready: bool
+    mdns_ready: bool
+    detail: str
+    final_blocker_step: str | None = None
+    final_blocker_status: ProbeStepStatus | None = None
+    final_blocker_detail: str | None = None
+
+
+@dataclass(frozen=True)
 class ManagedRuntimeProbeResult:
     ready: bool
     detail: str
     smbd: ReadinessProbeResult
     mdns: ReadinessProbeResult
     extra_steps: tuple[ProbeStepResult, ...] = ()
+    attempts: tuple[RuntimeProbeAttemptSummary, ...] = ()
+    soft_timeout_seconds: int | None = None
+    final_attempts_allowed: int = 0
 
     @property
     def steps(self) -> tuple[ProbeStepResult, ...]:
@@ -1126,18 +1139,6 @@ def _readiness_result_from_steps(
     )
 
 
-def _remaining_probe_timeout(
-    deadline: float,
-    default_timeout_seconds: int,
-    *,
-    minimum_timeout_seconds: int = 1,
-) -> int:
-    remaining = int(deadline - time.monotonic())
-    if remaining <= 0:
-        return minimum_timeout_seconds
-    return max(minimum_timeout_seconds, min(default_timeout_seconds, remaining))
-
-
 def _run_timed_probe_step(
     connection: SshConnection,
     *,
@@ -1217,7 +1218,11 @@ def _mdns_bound_required_5353(fstat_out: str, families: tuple[str, ...]) -> bool
     return bool(families) and all(_fstat_has_udp_port(fstat_out, "mdns-advertiser", family, 5353) for family in families)
 
 
-def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ReadinessProbeResult:
+def probe_managed_smbd_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = SMBD_READINESS_PROBE_TIMEOUT_SECONDS,
+) -> ReadinessProbeResult:
     script = rf'''
 {SMBD_STATUS_HELPERS}
 if [ ! -x /usr/bin/fstat ]; then
@@ -1251,10 +1256,12 @@ exit "$status"
 def probe_managed_mdns_takeover_conn(
     connection: SshConnection,
     *,
-    timeout_seconds: int = MDNS_READINESS_PROBE_TIMEOUT_SECONDS,
+    binary_timeout_seconds: int = MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
+    process_timeout_seconds: int = MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
+    socket_families_timeout_seconds: int = MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
+    fstat_timeout_seconds: int = MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
 ) -> ReadinessProbeResult:
     steps: list[ProbeStepResult] = []
-    deadline = time.monotonic() + timeout_seconds
 
     binary_script = r'''
 RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
@@ -1273,11 +1280,7 @@ echo "$RUNTIME_MDNS_BIN"
         step_id="mdns_binary_probe",
         timeout_detail="mdns-advertiser binary probe",
         script=binary_script,
-        timeout_seconds=_remaining_probe_timeout(
-            deadline,
-            MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
-            minimum_timeout_seconds=MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS,
-        ),
+        timeout_seconds=binary_timeout_seconds,
     )
     for _attempt in range(1, MDNS_BINARY_PROBE_ATTEMPTS):
         if binary_step.status != "timeout":
@@ -1287,11 +1290,7 @@ echo "$RUNTIME_MDNS_BIN"
             step_id="mdns_binary_probe",
             timeout_detail="mdns-advertiser binary probe",
             script=binary_script,
-            timeout_seconds=_remaining_probe_timeout(
-                deadline,
-                MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
-                minimum_timeout_seconds=MDNS_BINARY_PROBE_MIN_TIMEOUT_SECONDS,
-            ),
+            timeout_seconds=binary_timeout_seconds,
         )
     if binary_step.status == "timeout":
         steps.append(binary_step)
@@ -1314,7 +1313,7 @@ echo "$RUNTIME_MDNS_BIN"
         step_id="mdns_process_table_probe",
         timeout_detail="mDNS process table probe",
         script=PS_CAPTURE_COMMAND,
-        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS),
+        timeout_seconds=process_timeout_seconds,
     )
     if ps_step.status == "timeout":
         steps.append(ps_step)
@@ -1335,7 +1334,7 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
         step_id="mdns_socket_families_probe",
         timeout_detail="mdns-advertiser socket family probe",
         script=families_script,
-        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS),
+        timeout_seconds=socket_families_timeout_seconds,
     )
     if families_step.status == "timeout":
         steps.append(families_step)
@@ -1383,7 +1382,7 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
         step_id="mdns_fstat_probe",
         timeout_detail="mdns-advertiser fstat probe",
         script=fstat_script,
-        timeout_seconds=_remaining_probe_timeout(deadline, MDNS_FSTAT_PROBE_TIMEOUT_SECONDS),
+        timeout_seconds=fstat_timeout_seconds,
     )
     if fstat_step.status == "timeout":
         steps.append(fstat_step)
@@ -1509,6 +1508,151 @@ def probe_netbsd4_rc_local_autostart_conn(
     return RcLocalAutostartProbeResult(enabled=enabled, detail=detail, login_size=len(login))
 
 
+def _managed_runtime_detail(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> str:
+    details = tuple(detail for detail in (smbd.detail, mdns.detail) if detail)
+    return "; ".join(details) if details else "managed runtime not ready"
+
+
+def _runtime_final_blocker(result: ManagedRuntimeProbeResult) -> ProbeStepResult | None:
+    failed_steps = [
+        step
+        for step in result.steps
+        if step.status in {"fail", "timeout"} and step.id != "runtime_timeout"
+    ]
+    return failed_steps[-1] if failed_steps else None
+
+
+def _runtime_attempt_summary(
+    *,
+    index: int,
+    phase: RuntimeProbeAttemptPhase,
+    duration_seconds: float,
+    result: ManagedRuntimeProbeResult,
+) -> RuntimeProbeAttemptSummary:
+    final_blocker = _runtime_final_blocker(result)
+    return RuntimeProbeAttemptSummary(
+        index=index,
+        phase=phase,
+        duration_seconds=round(duration_seconds, 3),
+        ready=result.ready,
+        smbd_ready=result.smbd.ready,
+        mdns_ready=result.mdns.ready,
+        detail=result.detail,
+        final_blocker_step=None if final_blocker is None else final_blocker.id,
+        final_blocker_status=None if final_blocker is None else final_blocker.status,
+        final_blocker_detail=None if final_blocker is None else final_blocker.detail,
+    )
+
+
+def _runtime_result_with_attempts(
+    result: ManagedRuntimeProbeResult,
+    *,
+    attempts: list[RuntimeProbeAttemptSummary],
+    soft_timeout_seconds: int,
+    final_attempts_allowed: int,
+) -> ManagedRuntimeProbeResult:
+    return replace(
+        result,
+        attempts=tuple(attempts),
+        soft_timeout_seconds=soft_timeout_seconds,
+        final_attempts_allowed=final_attempts_allowed,
+    )
+
+
+def probe_managed_runtime_once_conn(
+    connection: SshConnection,
+    *,
+    smbd_timeout_seconds: int = SMBD_READINESS_PROBE_TIMEOUT_SECONDS,
+    smbd_mdns_stagger_seconds: float = 1.0,
+    mdns_settle_seconds: float = 3.0,
+) -> ManagedRuntimeProbeResult:
+    smbd = probe_managed_smbd_conn(connection, timeout_seconds=smbd_timeout_seconds)
+    if not smbd.ready and smbd_mdns_stagger_seconds > 0:
+        time.sleep(smbd_mdns_stagger_seconds)
+    mdns = probe_managed_mdns_takeover_conn(connection)
+
+    if smbd.ready and mdns.ready:
+        time.sleep(mdns_settle_seconds)
+        settled_mdns = probe_managed_mdns_takeover_conn(connection)
+        if settled_mdns.ready:
+            return ManagedRuntimeProbeResult(
+                ready=True,
+                detail="managed runtime is ready",
+                smbd=smbd,
+                mdns=settled_mdns,
+                extra_steps=(
+                    ProbeStepResult(
+                        id="mdns_settle",
+                        status="pass",
+                        detail="mdns-advertiser remained healthy after settle delay",
+                    ),
+                ),
+            )
+        mdns = ReadinessProbeResult(
+            ready=False,
+            detail=f"{settled_mdns.detail}; mdns-advertiser did not survive settle delay",
+            steps=settled_mdns.steps + (
+                ProbeStepResult(
+                    id="mdns_settle",
+                    status="fail",
+                    detail="mdns-advertiser did not remain healthy after settle delay",
+                ),
+            ),
+        )
+
+    return ManagedRuntimeProbeResult(
+        ready=False,
+        detail=_managed_runtime_detail(smbd, mdns),
+        smbd=smbd,
+        mdns=mdns,
+    )
+
+
+def _run_runtime_probe_attempt(
+    connection: SshConnection,
+    *,
+    index: int,
+    phase: RuntimeProbeAttemptPhase,
+    smbd_mdns_stagger_seconds: float,
+    mdns_settle_seconds: float,
+) -> tuple[ManagedRuntimeProbeResult, RuntimeProbeAttemptSummary]:
+    started = time.monotonic()
+    result = probe_managed_runtime_once_conn(
+        connection,
+        smbd_mdns_stagger_seconds=smbd_mdns_stagger_seconds,
+        mdns_settle_seconds=mdns_settle_seconds,
+    )
+    duration_seconds = time.monotonic() - started
+    return (
+        result,
+        _runtime_attempt_summary(
+            index=index,
+            phase=phase,
+            duration_seconds=duration_seconds,
+            result=result,
+        ),
+    )
+
+
+def _sleep_until_next_runtime_attempt(
+    *,
+    attempt_duration_seconds: float,
+    poll_interval_seconds: float,
+    deadline: float,
+) -> None:
+    sleep_for = max(0.0, poll_interval_seconds - attempt_duration_seconds)
+    remaining = deadline - time.monotonic()
+    if sleep_for <= 0 or remaining <= 0:
+        return
+    time.sleep(min(sleep_for, remaining))
+
+
+def _runtime_timeout_detail(timeout_seconds: int, final_attempts_allowed: int) -> str:
+    if final_attempts_allowed == 1:
+        return f"runtime verification timed out after {timeout_seconds}s plus 1 final check"
+    return f"runtime verification timed out after {timeout_seconds}s plus {final_attempts_allowed} final checks"
+
+
 def probe_managed_runtime_conn(
     connection: SshConnection,
     *,
@@ -1516,76 +1660,80 @@ def probe_managed_runtime_conn(
     poll_interval_seconds: float = 5.0,
     smbd_mdns_stagger_seconds: float = 1.0,
     mdns_settle_seconds: float = 3.0,
+    final_attempts: int = RUNTIME_READINESS_FINAL_ATTEMPTS,
 ) -> ManagedRuntimeProbeResult:
+    final_attempts = max(0, final_attempts)
     deadline = time.monotonic() + timeout_seconds
-    last_smbd = ReadinessProbeResult(ready=False, detail="managed smbd not ready")
-    last_mdns = ReadinessProbeResult(ready=False, detail="managed mDNS takeover not active")
-    smbd_ready = False
-    mdns_ready = False
+    attempts: list[RuntimeProbeAttemptSummary] = []
+    last_result: ManagedRuntimeProbeResult | None = None
 
     while time.monotonic() < deadline:
-        iteration_start = time.monotonic()
-        probe_timeout = max(1, min(20, int(deadline - iteration_start)))
-        if not smbd_ready:
-            last_smbd = probe_managed_smbd_conn(connection, timeout_seconds=probe_timeout)
-            smbd_ready = last_smbd.ready
-        
-        if not mdns_ready:
-            if not smbd_ready:
-                time.sleep(smbd_mdns_stagger_seconds)
-            probe_timeout = max(1, min(MDNS_READINESS_PROBE_TIMEOUT_SECONDS, int(deadline - time.monotonic())))
-            last_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=probe_timeout)
-            mdns_ready = last_mdns.ready
-
-        if smbd_ready and mdns_ready:
-            time.sleep(mdns_settle_seconds)
-            probe_timeout = max(1, min(MDNS_READINESS_PROBE_TIMEOUT_SECONDS, int(deadline - time.monotonic())))
-            settled_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=probe_timeout)
-            if settled_mdns.ready:
-                return ManagedRuntimeProbeResult(
-                    ready=True,
-                    detail="managed runtime is ready",
-                    smbd=last_smbd,
-                    mdns=settled_mdns,
-                    extra_steps=(
-                        ProbeStepResult(
-                            id="mdns_settle",
-                            status="pass",
-                            detail="mdns-advertiser remained healthy after settle delay",
-                        ),
-                    ),
-                )
-            last_mdns = ReadinessProbeResult(
-                ready=False,
-                detail=f"{settled_mdns.detail}; mdns-advertiser did not survive settle delay",
-                steps=settled_mdns.steps + (
-                    ProbeStepResult(
-                        id="mdns_settle",
-                        status="fail",
-                        detail="mdns-advertiser did not remain healthy after settle delay",
-                    ),
-                ),
+        result, summary = _run_runtime_probe_attempt(
+            connection,
+            index=len(attempts) + 1,
+            phase="soft_window",
+            smbd_mdns_stagger_seconds=smbd_mdns_stagger_seconds,
+            mdns_settle_seconds=mdns_settle_seconds,
+        )
+        attempts.append(summary)
+        last_result = result
+        if result.ready:
+            return _runtime_result_with_attempts(
+                result,
+                attempts=attempts,
+                soft_timeout_seconds=timeout_seconds,
+                final_attempts_allowed=final_attempts,
             )
-            mdns_ready = False
+        _sleep_until_next_runtime_attempt(
+            attempt_duration_seconds=summary.duration_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            deadline=deadline,
+        )
 
-        elapsed = time.monotonic() - iteration_start
-        sleep_for = max(0.0, poll_interval_seconds - elapsed)
-        if sleep_for > 0:
-            time.sleep(sleep_for)
+    for _ in range(final_attempts):
+        result, summary = _run_runtime_probe_attempt(
+            connection,
+            index=len(attempts) + 1,
+            phase="final_check",
+            smbd_mdns_stagger_seconds=smbd_mdns_stagger_seconds,
+            mdns_settle_seconds=mdns_settle_seconds,
+        )
+        attempts.append(summary)
+        last_result = result
+        if result.ready:
+            return _runtime_result_with_attempts(
+                result,
+                attempts=attempts,
+                soft_timeout_seconds=timeout_seconds,
+                final_attempts_allowed=final_attempts,
+            )
 
-    timeout_detail = f"runtime verification timed out after {timeout_seconds}s"
-    return ManagedRuntimeProbeResult(
-        ready=False,
-        detail=f"{timeout_detail}; {last_smbd.detail}; {last_mdns.detail}",
-        smbd=last_smbd,
-        mdns=last_mdns,
-        extra_steps=(
-            ProbeStepResult(
-                id="runtime_timeout",
-                status="fail",
-                detail=timeout_detail,
+    if last_result is None:
+        last_result = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="managed runtime not ready",
+            smbd=ReadinessProbeResult(ready=False, detail="managed smbd not ready"),
+            mdns=ReadinessProbeResult(ready=False, detail="managed mDNS takeover not active"),
+        )
+
+    timeout_detail = _runtime_timeout_detail(timeout_seconds, final_attempts)
+    return _runtime_result_with_attempts(
+        replace(
+            last_result,
+            ready=False,
+            detail=f"{timeout_detail}; {last_result.detail}",
+            extra_steps=last_result.extra_steps
+            + (
+                ProbeStepResult(
+                    id="runtime_timeout",
+                    status="fail",
+                    detail=timeout_detail,
+                ),
             ),
         ),
+        attempts=attempts,
+        soft_timeout_seconds=timeout_seconds,
+        final_attempts_allowed=final_attempts,
     )
 
 

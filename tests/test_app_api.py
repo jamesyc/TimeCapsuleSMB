@@ -186,6 +186,7 @@ class AppApiTests(unittest.TestCase):
         self._telemetry_urlopen = self._exit_stack.enter_context(
             mock.patch("timecapsulesmb.telemetry.urllib.request.urlopen", side_effect=AssertionError("tests must not send telemetry"))
         )
+        self._runtime_wait_sleep = self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
 
     def tearDown(self) -> None:
         self._exit_stack.close()
