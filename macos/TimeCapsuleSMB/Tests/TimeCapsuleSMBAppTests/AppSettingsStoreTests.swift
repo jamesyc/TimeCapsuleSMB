@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -252,6 +253,38 @@ final class AppSettingsStoreTests: XCTestCase {
         try await appStore.saveAppSettings(helperSettings)
 
         XCTAssertEqual(appStore.backend.helperPath, "/tmp/tcapsule-helper")
+    }
+
+    func testSavingSettingsAppliesLanguageBeforePublishingSettings() async throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+        let temp = try TemporaryDirectory()
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: StoreTestRunner(responses: [])))
+        let settingsStore = AppSettingsStore(settingsURL: temp.url.appendingPathComponent("settings.json"))
+        await settingsStore.load()
+        let appStore = AppStore(
+            appReadinessStore: AppReadinessStore(backend: coordinator.appLane.backend),
+            appSettingsStore: settingsStore,
+            deviceRegistry: DeviceRegistryStore(applicationSupportURL: temp.url),
+            operationCoordinator: coordinator,
+            passwordStore: InMemoryPasswordStore()
+        )
+        var appearanceTitleAtPublication: String?
+        var cancellables: Set<AnyCancellable> = []
+        settingsStore.$settings
+            .sink { settings in
+                if settings.language == .simplifiedChinese {
+                    appearanceTitleAtPublication = AppAppearance.dark.title
+                }
+            }
+            .store(in: &cancellables)
+
+        var settings = AppSettings.default
+        settings.language = .simplifiedChinese
+        try await appStore.saveAppSettings(settings)
+
+        XCTAssertEqual(appearanceTitleAtPublication, "深色")
     }
 
     private func telemetryPayload(enabled: Bool) -> JSONValue {
