@@ -270,7 +270,7 @@
 "install.plan.title.standard" = "Install / Update SMB";
 "install.advanced_options.no_wait_note" = "No Wait is a power-user option: it requests reboot and returns immediately without post-reboot activation or verification.";
 "install.progress.deploying.message" = "Uploading and applying the managed SMB runtime. This can take a few minutes...";
-"install.progress.deploying.title" = "Installing / Updating SMB";
+"install.progress.deploying.title" = "Installing / Updating";
 "install.state.awaiting_confirmation" = "Review the confirmation dialog before continuing.";
 "install.state.deploy_failed" = "Install / Update failed.";
 "install.state.deploy_interrupted" = "Deploy was interrupted before it completed.";

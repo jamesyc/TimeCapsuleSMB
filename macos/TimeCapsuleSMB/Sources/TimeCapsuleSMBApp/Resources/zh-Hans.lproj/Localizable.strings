@@ -270,7 +270,7 @@
 "install.plan.title.standard" = "安装 / 更新 SMB";
 "install.advanced_options.no_wait_note" = "No Wait 是高级用户选项：它会请求重启并立即返回，不进行重启后的启动或验证。";
 "install.progress.deploying.message" = "正在上传并应用 managed SMB Runtime。这可能需要几分钟...";
-"install.progress.deploying.title" = "正在安装 / 更新 SMB";
+"install.progress.deploying.title" = "正在安装 / 更新";
 "install.state.awaiting_confirmation" = "继续前请查看确认对话框。";
 "install.state.deploy_failed" = "安装 / 更新失败。";
 "install.state.deploy_interrupted" = "部署在完成前被中断。";

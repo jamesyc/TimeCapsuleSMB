@@ -921,7 +921,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let deploying = InstallProgressPresentation(state: .deploying, currentStage: stage)
 
-        XCTAssertEqual(deploying?.title, "Installing / Updating SMB")
+        XCTAssertEqual(deploying?.title, "Installing / Updating")
         XCTAssertEqual(deploying?.message, "Uploading and applying the managed SMB runtime. This can take a few minutes...")
         XCTAssertEqual(deploying?.detail, "Uploading managed SMB payload files.")
         for state in DeployWorkflowState.allCases where state != .deploying {
