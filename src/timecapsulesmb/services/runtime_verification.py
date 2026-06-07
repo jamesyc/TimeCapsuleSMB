@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from time import sleep
 
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
@@ -15,6 +16,37 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.ssh import SshConnection
+
+
+BOOT_SETTLE_STAGE = "post_reboot_boot_settle"
+BOOT_SETTLE_SECONDS = 20
+BOOT_SETTLE_MESSAGE = "Waiting a few seconds for device to boot..."
+
+ACTIVATION_SETTLE_STAGE = "post_activation_settle"
+ACTIVATION_SETTLE_SECONDS = 20
+ACTIVATION_SETTLE_MESSAGE = "Waiting a few seconds for device to activate..."
+
+
+def wait_for_boot_settle(
+    callbacks: OperationCallbacks,
+    *,
+    sleep_func: Callable[[float], None] | None = None,
+) -> None:
+    sleep_func = sleep_func or sleep
+    callbacks.stage(BOOT_SETTLE_STAGE)
+    callbacks.message(BOOT_SETTLE_MESSAGE)
+    sleep_func(BOOT_SETTLE_SECONDS)
+
+
+def wait_for_activation_settle(
+    callbacks: OperationCallbacks,
+    *,
+    sleep_func: Callable[[float], None] | None = None,
+) -> None:
+    sleep_func = sleep_func or sleep
+    callbacks.stage(ACTIVATION_SETTLE_STAGE)
+    callbacks.message(ACTIVATION_SETTLE_MESSAGE)
+    sleep_func(ACTIVATION_SETTLE_SECONDS)
 
 
 def verify_managed_runtime_ready(
@@ -107,6 +139,10 @@ def _runtime_verification_measurement(
         if step.status in {"fail", "timeout"} and step.id != "runtime_timeout"
     ]
     final_blocker = failed_steps[-1] if failed_steps else None
+    attempts = verification.attempts
+    soft_window_attempts = tuple(attempt for attempt in attempts if attempt.phase == "soft_window")
+    final_check_attempts = tuple(attempt for attempt in attempts if attempt.phase == "final_check")
+    last_attempt = attempts[-1] if attempts else None
     measurement: dict[str, object] = {
         "stage": stage,
         "timeout_sec": timeout_seconds,
@@ -120,7 +156,27 @@ def _runtime_verification_measurement(
         "fail_step_count": status_counts["fail"],
         "timeout_step_count": status_counts["timeout"],
         "skip_step_count": status_counts["skip"],
+        "attempt_count": len(attempts),
+        "soft_window_attempt_count": len(soft_window_attempts),
+        "final_check_attempt_count": len(final_check_attempts),
+        "final_check_attempts_allowed": verification.final_attempts_allowed,
     }
+    if verification.soft_timeout_seconds is not None:
+        measurement["soft_timeout_sec"] = verification.soft_timeout_seconds
+    if last_attempt is not None:
+        measurement.update(
+            last_attempt_phase=last_attempt.phase,
+            last_attempt_duration_sec=last_attempt.duration_seconds,
+            last_attempt_ready=last_attempt.ready,
+            last_attempt_smbd_ready=last_attempt.smbd_ready,
+            last_attempt_mdns_ready=last_attempt.mdns_ready,
+        )
+        if last_attempt.final_blocker_step is not None:
+            measurement.update(
+                last_attempt_blocker_step=last_attempt.final_blocker_step,
+                last_attempt_blocker_status=last_attempt.final_blocker_status,
+                last_attempt_blocker_detail=last_attempt.final_blocker_detail,
+            )
     if final_blocker is not None:
         measurement.update(
             final_blocker_step=final_blocker.id,

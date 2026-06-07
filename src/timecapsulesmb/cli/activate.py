@@ -19,6 +19,7 @@ from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_runtime_activation_plan
 from timecapsulesmb.services.activation import decide_manual_activation
 from timecapsulesmb.services.runtime import load_env_config
+from timecapsulesmb.services.runtime_verification import wait_for_activation_settle
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
@@ -116,6 +117,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("run_activation")
         print("Activating NetBSD4 payload without file transfer.")
         run_remote_actions(connection, plan.actions)
+        wait_for_activation_settle(command_context.to_operation_callbacks())
         if not verify_managed_runtime_flow(
             connection,
             command_context,

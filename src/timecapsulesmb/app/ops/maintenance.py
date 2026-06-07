@@ -67,6 +67,7 @@ from timecapsulesmb.services.runtime import (
     load_optional_env_config,
     resolve_env_connection,
 )
+from timecapsulesmb.services.runtime_verification import wait_for_activation_settle
 from timecapsulesmb.transport.ssh import run_ssh
 
 
@@ -122,6 +123,7 @@ def activate_operation(params: dict[str, object], context: AppOperationContext) 
 
     context.stage("run_activation")
     run_remote_actions(connection, plan.actions)
+    wait_for_activation_settle(context.to_operation_callbacks())
     verify_runtime(context, connection, stage="verify_runtime_activation", timeout_seconds=200)
     return OperationResult(True, activation_result_payload(
         already_active=False,

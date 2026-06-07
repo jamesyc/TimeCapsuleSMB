@@ -387,6 +387,8 @@
 "backend.summary.reachability.ssh_only" = "SSH 可达，SMB 端口已关闭。";
 "backend.summary.reachability.unreachable" = "无法访问 SSH 或 SMB。";
 "backend.summary.repair_xattrs_found" = "发现 %d 个元数据问题，其中 %d 个可修复。";
+"backend.summary.waiting_device_activate" = "正在等待设备完成激活...";
+"backend.summary.waiting_device_boot" = "正在等待设备完成启动...";
 "backend.summary.telemetry_disabled" = "遥测已禁用。";
 "backend.summary.telemetry_enabled" = "遥测已启用。";
 "backend.summary.uninstall_completed" = "卸载已完成。";
@@ -744,10 +746,13 @@
 "timeline.deploy.detail.flush_payload_upload" = "正在将 payload 写入刷新到磁盘。";
 "timeline.deploy.detail.load_config" = "正在读取已保存的设备配置。";
 "timeline.deploy.detail.post_reboot_activation" = "SSH 恢复后正在启动 SMB。";
+"timeline.deploy.detail.post_reboot_boot_settle" = "SSH 恢复后先短暂等待，再探测启动服务。";
+"timeline.deploy.detail.post_activation_settle" = "激活后先短暂等待，再探测运行时就绪状态。";
 "timeline.deploy.detail.post_upload_actions" = "正在安装 flash hooks 并应用文件权限。";
 "timeline.deploy.detail.pre_upload_actions" = "正在停止托管服务并移除旧部署文件。";
 "timeline.deploy.detail.prepare_deployment_files" = "正在生成运行时配置和 Samba 账号文件。";
 "timeline.activate.detail.probe_runtime" = "正在检查 TimeCapsuleSMB 是否已在运行，然后再激活。";
+"timeline.activate.detail.post_activation_settle" = "激活后先短暂等待，再探测运行时就绪状态。";
 "timeline.deploy.detail.probe_runtime" = "正在检查设备是否会自动启动 TimeCapsuleSMB。";
 "timeline.deploy.detail.read_mast" = "正在查找已挂载的 HFS payload 卷。";
 "timeline.deploy.detail.reboot" = "正在发送 SSH 重启请求。";
@@ -773,10 +778,13 @@
 "timeline.deploy.title.flush_payload_upload" = "刷新到磁盘";
 "timeline.deploy.title.load_config" = "读取配置";
 "timeline.deploy.title.post_reboot_activation" = "重启后启动 SMB";
+"timeline.deploy.title.post_reboot_boot_settle" = "等待设备完成启动";
+"timeline.deploy.title.post_activation_settle" = "等待 Runtime 稳定";
 "timeline.deploy.title.post_upload_actions" = "应用文件权限";
 "timeline.deploy.title.pre_upload_actions" = "停止现有运行时";
 "timeline.deploy.title.prepare_deployment_files" = "生成运行时配置";
 "timeline.activate.title.probe_runtime" = "检查现有运行状态";
+"timeline.activate.title.post_activation_settle" = "等待 Runtime 稳定";
 "timeline.deploy.title.probe_runtime" = "检查启动配置";
 "timeline.deploy.title.read_mast" = "查找 Payload 卷";
 "timeline.deploy.title.reboot" = "请求重启";

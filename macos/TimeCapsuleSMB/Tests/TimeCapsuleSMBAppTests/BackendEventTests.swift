@@ -102,6 +102,31 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.localizedSummary, "诊断检查通过。")
     }
 
+    func testBackendSummaryLocalizationCoversRuntimeWaitMessages() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let boot = BackendEvent(
+            type: "result",
+            operation: "deploy",
+            ok: true,
+            payload: .object(["summary": .string("Waiting a few seconds for device to boot...")])
+        )
+        let activate = BackendEvent(
+            type: "result",
+            operation: "activate",
+            ok: true,
+            payload: .object(["summary": .string("Waiting a few seconds for device to activate...")])
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(boot.localizedPayloadSummaryText, "Waiting a few seconds for device to boot...")
+        XCTAssertEqual(activate.localizedPayloadSummaryText, "Waiting a few seconds for device to activate...")
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(boot.localizedPayloadSummaryText, "正在等待设备完成启动...")
+        XCTAssertEqual(activate.localizedPayloadSummaryText, "正在等待设备完成激活...")
+    }
+
     func testBackendEventLocalizesStructuredResultSummaries() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

@@ -67,6 +67,10 @@ enum BackendSummaryLocalization {
             return L10n.string("backend.summary.doctor_checks_passed")
         case "doctor found one or more fatal problems.":
             return L10n.string("backend.summary.doctor_found_fatal")
+        case "waiting a few seconds for device to boot...":
+            return L10n.string("backend.summary.waiting_device_boot")
+        case "waiting a few seconds for device to activate...":
+            return L10n.string("backend.summary.waiting_device_activate")
         case "operation exited.":
             return L10n.string("backend.summary.operation_exited")
         case "ssh reachable; smb port reachable.":

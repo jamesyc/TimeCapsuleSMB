@@ -69,7 +69,11 @@ from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activa
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import ManagedTargetState
-from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
+from timecapsulesmb.services.runtime_verification import (
+    verify_managed_runtime_ready,
+    wait_for_activation_settle,
+    wait_for_boot_settle,
+)
 from timecapsulesmb.transport.ssh import (
     SshConnection,
     local_scp_path,
@@ -93,7 +97,6 @@ DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
 )
-POST_REBOOT_SETTLE_SECONDS = 10
 DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_RC_LOCAL_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
@@ -845,6 +848,7 @@ def _run_activation_actions_and_verify(
     callbacks.stage(activation_stage)
     callbacks.message(activation_message)
     run_remote_actions_func(connection, activation_actions)
+    wait_for_activation_settle(callbacks)
     verify_runtime_func(
         connection,
         callbacks=callbacks,
@@ -853,12 +857,6 @@ def _run_activation_actions_and_verify(
         heading=verification_heading,
         failure_message=failure_message,
     )
-
-
-def _wait_for_post_reboot_settle(callbacks: OperationCallbacks) -> None:
-    # NetBSD can accept SSH before boot-time services have settled.
-    callbacks.message(f"Waiting {POST_REBOOT_SETTLE_SECONDS}s for the device to settle after SSH returned.")
-    time.sleep(POST_REBOOT_SETTLE_SECONDS)
 
 
 def complete_deployment_after_upload(
@@ -952,7 +950,7 @@ def complete_deployment_after_upload(
     )
 
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-        _wait_for_post_reboot_settle(callbacks)
+        wait_for_boot_settle(callbacks)
         callbacks.stage("probe_runtime")
         decision = decide_post_reboot_activation(connection)
         callbacks.debug(
@@ -996,7 +994,7 @@ def complete_deployment_after_upload(
             message=activation_complete_message(is_netbsd4=is_netbsd4),
         )
 
-    _wait_for_post_reboot_settle(callbacks)
+    wait_for_boot_settle(callbacks)
     if messages.reboot_runtime_wait_message:
         callbacks.message(messages.reboot_runtime_wait_message)
     verify_runtime_func(
