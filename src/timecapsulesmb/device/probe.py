@@ -75,6 +75,28 @@ runtime_smbd_binary_present() {{
     [ -x "$RUNTIME_RAM_SBIN/smbd" ]
 }}
 
+describe_runtime_smbd_version() {{
+    if ! runtime_smbd_binary_present; then
+        echo "FAIL:device Samba version unavailable (managed runtime smbd binary missing)"
+        return 1
+    fi
+
+    smbd_version_output=$("$RUNTIME_RAM_SBIN/smbd" --version 2>&1)
+    smbd_version_status=$?
+    smbd_version=$(printf '%s\n' "$smbd_version_output" | /usr/bin/sed -n 's/^Version[[:space:]][[:space:]]*//p' | /usr/bin/sed -n '1p')
+    if [ "$smbd_version_status" -eq 0 ] && [ -n "$smbd_version" ]; then
+        echo "PASS:device Samba version: $smbd_version"
+        return 0
+    fi
+
+    smbd_version_detail=$(printf '%s\n' "$smbd_version_output" | /usr/bin/sed -n '1p')
+    if [ -z "$smbd_version_detail" ]; then
+        smbd_version_detail="exit code $smbd_version_status"
+    fi
+    echo "FAIL:device Samba version unavailable ($smbd_version_detail)"
+    return 1
+}}
+
 read_smb_conf_value() {{
     key=$1
     if ! runtime_smb_conf_present; then
@@ -362,6 +384,9 @@ describe_managed_smbd_status() {{
         echo "PASS:smbd bound to required TCP 445 sockets"
     else
         echo "FAIL:smbd is not bound to required TCP 445 sockets"
+        status=1
+    fi
+    if ! describe_runtime_smbd_version; then
         status=1
     fi
     return "$status"

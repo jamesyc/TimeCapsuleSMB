@@ -7100,7 +7100,7 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
             payload_private = volume_root / ".samba4" / "private"
             for path in (ram_root / "sbin", ram_root / "private", ram_root / "etc", ram_root / "var", data_root, external_data_root, payload_private):
                 path.mkdir(parents=True, exist_ok=True)
-            (ram_root / "sbin" / "smbd").write_text("smbd")
+            (ram_root / "sbin" / "smbd").write_text("#!/bin/sh\necho 'Version 4.24.3'\n")
             (ram_root / "sbin" / "smbd").chmod(0o755)
             (ram_root / "private" / "smbpasswd").write_text("smbpasswd")
             (ram_root / "private" / "username.map").write_text("username map")
@@ -7143,6 +7143,7 @@ printf 'status=%s\\n' "$?"
         self.assertIn("PASS:all managed share volumes are mounted", result.stdout)
         self.assertIn("PASS:manager is running for managed runtime", result.stdout)
         self.assertIn("PASS:smbd bound to required TCP 445 sockets", result.stdout)
+        self.assertIn("PASS:device Samba version: 4.24.3", result.stdout)
         self.assertIn("status=0", result.stdout)
 
     def test_smbd_status_helper_requires_configured_tcp_445_families(self) -> None:
@@ -7412,12 +7413,66 @@ fi
         self.assertIn("FAIL:mdns-advertiser is not bound to required UDP 5353 listener", result.stdout)
         self.assertIn("status=1", result.stdout)
 
+    def test_smbd_status_helper_reports_device_samba_version_from_runtime_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_root = Path(tmpdir)
+            smbd_bin = runtime_root / "sbin" / "smbd"
+            smbd_bin.parent.mkdir()
+            smbd_bin.write_text("#!/bin/sh\necho 'Version 4.24.3'\n")
+            smbd_bin.chmod(0o755)
+            script = f"""
+RUNTIME_RAM_ROOT={shlex.quote(str(runtime_root))}
+{SMBD_STATUS_HELPERS}
+describe_runtime_smbd_version
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "PASS:device Samba version: 4.24.3")
+
+    def test_smbd_status_helper_fails_when_runtime_samba_version_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = f"""
+RUNTIME_RAM_ROOT={shlex.quote(tmpdir)}
+{SMBD_STATUS_HELPERS}
+describe_runtime_smbd_version
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "FAIL:device Samba version unavailable (managed runtime smbd binary missing)",
+        )
+
+    def test_smbd_status_helper_reports_device_samba_version_after_smbd_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = f"""
+RUNTIME_RAM_ROOT={shlex.quote(tmpdir)}
+{SMBD_STATUS_HELPERS}
+describe_managed_smbd_status "" ""
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        lines = result.stdout.strip().splitlines()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("FAIL:smbd is not bound to required TCP 445 sockets", lines)
+        self.assertEqual(lines[-1], "FAIL:device Samba version unavailable (managed runtime smbd binary missing)")
+        self.assertLess(
+            lines.index("FAIL:smbd is not bound to required TCP 445 sockets"),
+            lines.index("FAIL:device Samba version unavailable (managed runtime smbd binary missing)"),
+        )
+
     def test_probe_managed_smbd_reports_runtime_invariant_failures(self) -> None:
         stdout = "\n".join(
             [
                 "FAIL:managed runtime smbd binary missing",
                 "FAIL:active smb.conf passdb backend is not staged in RAM",
                 "FAIL:one or more managed share volumes are not mounted",
+                "FAIL:device Samba version unavailable (managed runtime smbd binary missing)",
             ]
         )
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=1, stdout=stdout)):
@@ -7426,7 +7481,9 @@ fi
         self.assertFalse(result.ready)
         self.assertEqual(
             result.detail,
-            "managed runtime smbd binary missing; active smb.conf passdb backend is not staged in RAM; one or more managed share volumes are not mounted",
+            "managed runtime smbd binary missing; active smb.conf passdb backend is not staged in RAM; "
+            "one or more managed share volumes are not mounted; "
+            "device Samba version unavailable (managed runtime smbd binary missing)",
         )
         self.assertEqual(
             result.lines,
@@ -7434,8 +7491,45 @@ fi
                 "FAIL:managed runtime smbd binary missing",
                 "FAIL:active smb.conf passdb backend is not staged in RAM",
                 "FAIL:one or more managed share volumes are not mounted",
+                "FAIL:device Samba version unavailable (managed runtime smbd binary missing)",
             ),
         )
+
+    def test_probe_managed_smbd_reports_device_samba_version_pass(self) -> None:
+        stdout = "\n".join(
+            [
+                "PASS:managed runtime smbd binary present",
+                "PASS:managed runtime smb.conf present",
+                "PASS:device Samba version: 4.24.3",
+            ]
+        )
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=0, stdout=stdout)) as run_ssh_mock:
+            result = probe_managed_smbd_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+
+        self.assertTrue(result.ready)
+        self.assertIn("PASS:device Samba version: 4.24.3", result.lines)
+        remote_cmd = run_ssh_mock.call_args.args[1]
+        self.assertIn('"$RUNTIME_RAM_SBIN/smbd" --version', remote_cmd)
+        self.assertIn("/usr/bin/sed -n", remote_cmd)
+        self.assertIn("s/^Version[[:space:]][[:space:]]*//p", remote_cmd)
+        self.assertNotIn("/usr/bin/awk", remote_cmd)
+        self.assertNotIn("/usr/bin/cut", remote_cmd)
+        self.assertNotIn("/usr/bin/grep", remote_cmd)
+
+    def test_probe_managed_smbd_fails_when_device_samba_version_fails(self) -> None:
+        stdout = "\n".join(
+            [
+                "PASS:managed runtime smbd binary present",
+                "PASS:managed runtime smb.conf present",
+                "FAIL:device Samba version unavailable (exit code 1)",
+            ]
+        )
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=1, stdout=stdout)):
+            result = probe_managed_smbd_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "device Samba version unavailable (exit code 1)")
+        self.assertIn("FAIL:device Samba version unavailable (exit code 1)", result.lines)
 
     def test_probe_managed_smbd_returns_detail_when_not_ready(self) -> None:
         with mock.patch(

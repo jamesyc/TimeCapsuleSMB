@@ -471,6 +471,51 @@ class CheckTests(unittest.TestCase):
             )
         )
 
+    def test_run_doctor_checks_reports_device_samba_version_pass_after_smbd_check(self) -> None:
+        smbd_probe = mock.Mock(
+            ready=True,
+            detail="managed smbd ready",
+            lines=(
+                "PASS:managed runtime smbd binary present",
+                "PASS:smbd bound to required TCP 445 sockets",
+                "PASS:device Samba version: 4.24.3",
+            ),
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smbd_probe=smbd_probe,
+            skip_bonjour=True,
+            skip_smb=True,
+        )
+
+        version_result = next(result for result in run.results if result.message == "device Samba version: 4.24.3")
+        smbd_result = next(result for result in run.results if result.message == "smbd bound to required TCP 445 sockets")
+        self.assertEqual(version_result.status, "PASS")
+        self.assertEqual(version_result.details, {})
+        self.assertLess(run.results.index(smbd_result), run.results.index(version_result))
+
+    def test_run_doctor_checks_reports_device_samba_version_failure(self) -> None:
+        smbd_probe = mock.Mock(
+            ready=False,
+            detail="device Samba version unavailable (exit code 1)",
+            lines=(
+                "PASS:managed runtime smbd binary present",
+                "PASS:smbd bound to required TCP 445 sockets",
+                "FAIL:device Samba version unavailable (exit code 1)",
+            ),
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smbd_probe=smbd_probe,
+            skip_bonjour=True,
+            skip_smb=True,
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertTrue(
+            any(result.status == "FAIL" and result.message == "device Samba version unavailable (exit code 1)" for result in run.results)
+        )
+
     def test_run_doctor_checks_stops_when_deployed_config_is_missing(self) -> None:
         debug_fields: dict[str, object] = {}
         managed_smbd = mock.Mock()
