@@ -343,6 +343,7 @@ struct AppSettingsDraft: Equatable {
     var defaultBonjourTimeoutSeconds: String
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
+    var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
@@ -361,6 +362,7 @@ struct AppSettingsDraft: Equatable {
         defaultBonjourTimeoutSeconds = Self.formatDouble(settings.defaultBonjourTimeoutSeconds)
         nbnsEnabled = settings.defaultDeviceSettings.nbnsEnabled
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
+        smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
         anyProtocol = settings.defaultDeviceSettings.anyProtocol
         debugLogging = settings.defaultDeviceSettings.debugLogging
         mountWaitSeconds = String(settings.defaultDeviceSettings.mountWaitSeconds)
@@ -406,6 +408,7 @@ struct AppSettingsDraft: Equatable {
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: nbnsEnabled,
                 internalShareUseDiskRoot: internalShareUseDiskRoot,
+                smbBrowseCompatibility: smbBrowseCompatibility,
                 anyProtocol: anyProtocol,
                 debugLogging: debugLogging,
                 mountWaitSeconds: mountWait,

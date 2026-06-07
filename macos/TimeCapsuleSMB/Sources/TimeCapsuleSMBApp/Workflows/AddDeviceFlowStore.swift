@@ -71,6 +71,7 @@ final class AddDeviceFlowStore: ObservableObject {
     @Published var bonjourTimeout = "6"
     @Published var password = ""
     @Published var debugLogging = false
+    @Published var smbBrowseCompatibility = AppSettings.default.defaultDeviceSettings.smbBrowseCompatibility
     @Published private(set) var state: AddDeviceFlowState = .idle
     @Published var selectedDeviceID: DiscoveredDevice.ID?
     @Published private(set) var savedProfile: DeviceProfile?
@@ -219,7 +220,9 @@ final class AddDeviceFlowStore: ObservableObject {
 
         let existing = target.matchingProfile(in: registry)
         let profileID = existing?.id ?? UUID().uuidString.lowercased()
-        let configureSettings = existing?.settings ?? defaultDeviceSettings
+        var newProfileSettings = defaultDeviceSettings
+        newProfileSettings.smbBrowseCompatibility = smbBrowseCompatibility
+        let configureSettings = existing?.settings ?? newProfileSettings
         error = nil
         currentStage = nil
         savedProfile = nil
@@ -229,7 +232,7 @@ final class AddDeviceFlowStore: ObservableObject {
             existingProfile: existing,
             preferredID: profileID,
             settings: configureSettings,
-            newProfileSettings: defaultDeviceSettings
+            newProfileSettings: newProfileSettings
         )
         applySetupState(setupWorkflow.state)
     }
@@ -276,6 +279,9 @@ final class AddDeviceFlowStore: ObservableObject {
         defaultDeviceSettings = settings.defaultDeviceSettings
         if debugLogging == appliedDefaultDeviceSettings.debugLogging {
             debugLogging = settings.defaultDeviceSettings.debugLogging
+        }
+        if smbBrowseCompatibility == appliedDefaultDeviceSettings.smbBrowseCompatibility {
+            smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
         }
         appliedDefaultDeviceSettings = settings.defaultDeviceSettings
     }

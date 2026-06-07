@@ -36,6 +36,7 @@ enum DevicePasswordState: String, Codable, CaseIterable, Equatable {
 struct DeviceProfileSettings: Codable, Equatable {
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
+    var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
@@ -45,6 +46,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     static let `default` = DeviceProfileSettings(
         nbnsEnabled: true,
         internalShareUseDiskRoot: false,
+        smbBrowseCompatibility: false,
         anyProtocol: false,
         debugLogging: false,
         mountWaitSeconds: 30,
@@ -55,6 +57,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     init(
         nbnsEnabled: Bool,
         internalShareUseDiskRoot: Bool = false,
+        smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
         debugLogging: Bool,
         mountWaitSeconds: Int,
@@ -63,6 +66,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     ) {
         self.nbnsEnabled = nbnsEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
@@ -73,6 +77,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case nbnsEnabled
         case internalShareUseDiskRoot
+        case smbBrowseCompatibility
         case anyProtocol
         case debugLogging
         case mountWaitSeconds
@@ -84,6 +89,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         nbnsEnabled = try container.decodeIfPresent(Bool.self, forKey: .nbnsEnabled) ?? Self.default.nbnsEnabled
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
+        smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
         mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds

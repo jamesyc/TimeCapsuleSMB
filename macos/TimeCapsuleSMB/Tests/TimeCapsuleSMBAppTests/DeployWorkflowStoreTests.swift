@@ -42,6 +42,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.noWait = true
         store.nbnsEnabled = false
         store.internalShareUseDiskRoot = true
+        store.smbBrowseCompatibility = true
         store.anyProtocol = true
         store.debugLogging = true
         store.ataIdleSeconds = "0"
@@ -60,6 +61,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["nbns_enabled"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["ata_idle_seconds"], .number(0))
@@ -234,6 +236,16 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .planReady)
         XCTAssertTrue(store.canDeploy)
+
+        store.smbBrowseCompatibility = true
+
+        XCTAssertEqual(store.state, .planStale)
+        XCTAssertTrue(store.canDeploy)
+
+        store.smbBrowseCompatibility = false
+
+        XCTAssertEqual(store.state, .planReady)
+        XCTAssertTrue(store.canDeploy)
     }
 
     func testOptionChangeWhilePlanningMakesReturnedPlanStaleAndAllowsRegeneration() async throws {
@@ -283,6 +295,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         try await waitUntilStoreState { store.state == .planReady }
 
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(false))
+        XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(false))
     }
 
@@ -299,6 +312,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
         store.mountWait = "30"
         store.internalShareUseDiskRoot = true
+        store.smbBrowseCompatibility = true
         store.anyProtocol = true
 
         store.runPlan(password: "pw")
@@ -313,6 +327,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].params["dry_run"], .bool(false))
         XCTAssertEqual(runner.calls[1].params["mount_wait"], .number(30))
         XCTAssertEqual(runner.calls[1].params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(runner.calls[1].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(runner.calls[1].params["any_protocol"], .bool(true))
         XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
     }

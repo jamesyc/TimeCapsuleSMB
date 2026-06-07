@@ -119,6 +119,8 @@ struct AddDeviceView: View {
                     }
             }
 
+            Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $store.smbBrowseCompatibility)
+
             HStack {
                 Button {
                     store.runConfigure()

@@ -77,6 +77,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var host: String
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
+    var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
@@ -88,6 +89,7 @@ struct DeviceProfileEditorDraft: Equatable {
         host: String,
         nbnsEnabled: Bool,
         internalShareUseDiskRoot: Bool = false,
+        smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
         debugLogging: Bool,
         mountWaitSeconds: String,
@@ -98,6 +100,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.host = host
         self.nbnsEnabled = nbnsEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
@@ -111,6 +114,7 @@ struct DeviceProfileEditorDraft: Equatable {
             host: profile.host,
             nbnsEnabled: profile.settings.nbnsEnabled,
             internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
+            smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
             anyProtocol: profile.settings.anyProtocol,
             debugLogging: profile.settings.debugLogging,
             mountWaitSeconds: String(profile.settings.mountWaitSeconds),
@@ -161,6 +165,7 @@ struct DeviceProfileEditorDraft: Equatable {
         let settings = DeviceProfileSettings(
             nbnsEnabled: nbnsEnabled,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
+            smbBrowseCompatibility: smbBrowseCompatibility,
             anyProtocol: anyProtocol,
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait,
@@ -390,6 +395,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             password: password,
             debugLogging: draft.debugLogging,
             internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
+            smbBrowseCompatibility: draft.smbBrowseCompatibility,
             anyProtocol: draft.anyProtocol,
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,

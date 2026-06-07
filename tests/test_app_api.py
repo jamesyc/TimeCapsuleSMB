@@ -1656,6 +1656,29 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
 
+    def test_configure_smb_browse_compatibility_param_writes_true(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "goodpw",
+                            "smb_browse_compatibility": True,
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+
     def test_configure_ata_params_write_drive_timer_settings(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -2540,6 +2563,7 @@ class AppApiTests(unittest.TestCase):
             "dry_run": False,
             "no_reboot": True,
             "internal_share_use_disk_root": False,
+            "smb_browse_compatibility": True,
             "any_protocol": False,
             "debug_logging": False,
             "ata_idle_seconds": 0,
@@ -2593,6 +2617,7 @@ class AppApiTests(unittest.TestCase):
         verify_runtime.assert_called_once()
         render_runtime.assert_called_once()
         self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["smb_browse_compatibility"], True)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
         self.assertEqual(render_runtime.call_args.kwargs["ata_idle_seconds"], 0)

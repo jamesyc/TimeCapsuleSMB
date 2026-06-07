@@ -138,6 +138,7 @@ class DeployRuntimeConfig:
     nbns_enabled: bool
     debug_logging: bool | None = None
     internal_share_use_disk_root: bool | None = None
+    smb_browse_compatibility: bool | None = None
     any_protocol: bool | None = None
     ata_idle_seconds: str | int | None = None
     ata_standby: str | int | None = None
@@ -706,6 +707,7 @@ def upload_and_verify_deployment_payload(
         nbns_enabled=runtime_config.nbns_enabled,
         debug_logging=runtime_config.debug_logging,
         internal_share_use_disk_root=runtime_config.internal_share_use_disk_root,
+        smb_browse_compatibility=runtime_config.smb_browse_compatibility,
         any_protocol=runtime_config.any_protocol,
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
@@ -1053,12 +1055,17 @@ def render_flash_runtime_config(
     nbns_enabled: bool,
     debug_logging: bool | None = None,
     internal_share_use_disk_root: bool | None = None,
+    smb_browse_compatibility: bool | None = None,
     any_protocol: bool | None = None,
     ata_idle_seconds: str | int | None = None,
     ata_standby: str | int | None = None,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
+    smb_browse_compatibility_default = config.get(
+        "TC_SMB_BROWSE_COMPATIBILITY",
+        DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"],
+    )
     any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
     configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
     runtime_ata_idle_seconds = (
@@ -1081,6 +1088,11 @@ def render_flash_runtime_config(
         if any_protocol is None
         else any_protocol
     )
+    effective_smb_browse_compatibility = (
+        parse_bool(smb_browse_compatibility_default)
+        if smb_browse_compatibility is None
+        else smb_browse_compatibility
+    )
     effective_debug_logging = parse_bool(configured_debug_logging) if debug_logging is None else debug_logging
 
     values: list[tuple[str, str | int]] = [
@@ -1088,6 +1100,7 @@ def render_flash_runtime_config(
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
+        ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),
         ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
