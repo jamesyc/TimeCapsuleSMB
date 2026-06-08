@@ -44,8 +44,8 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
 2. Unzip the app and run it. You might need to disable Gatekeeper to run the app.
 3. Click "Add Device" on the left sidebar, and select your device. 
-4. Enter your device password, and click "Save Device".
-5. Wait for the app to enable SSH for your Time Capsule. If it fails, close the app, reopen the app, and try again.
+4. Enter your device password, and click "Save Device". Make sure Local Network permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app)
+5. Wait for the app to enable SSH for your Time Capsule. If it fails, close the app, reopen the app, and try again. 
 6. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
    <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />  
 7. Click "Install/Update" to deploy to the device.  
