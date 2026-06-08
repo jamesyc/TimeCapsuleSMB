@@ -469,7 +469,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                         persist_password=True,
                         discovered_airport_syap=discovered_airport_syap,
                         enable_ssh=True,
-                        ssh_enable_preflight="acp_port",
                         verbose_wait=not args.json,
                         internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
                         smb_browse_compatibility=True if args.smb_browse_compatibility else None,
@@ -505,10 +504,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 prompt_host_and_password(existing, values, discovered_host, ssh_opts)
                 continue
             except ACPError as exc:
-                if command_context.debug_stage == "acp_identity_probe":
-                    label = "Failed to read AirPort identity via ACP"
-                else:
-                    label = "Failed to enable SSH via ACP"
+                label = "Failed to enable SSH via ACP"
                 message = f"{label}: {exc}"
                 if not args.json:
                     print(color_red(f"{label}:"))

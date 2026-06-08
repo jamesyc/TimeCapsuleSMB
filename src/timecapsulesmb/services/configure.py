@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Mapping
 
 from timecapsulesmb.configure_defaults import existing_config_value_or_default, validated_value_or_empty
 from timecapsulesmb.core.config import (
@@ -19,7 +19,7 @@ from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import ProbedDeviceState, probe_connection_state
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
-from timecapsulesmb.services.acp_ssh import enable_ssh_with_identity_preflight, enable_ssh_with_port_preflight
+from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error, wait_for_tcp_port_state
 from timecapsulesmb.transport.ssh import SshConnection
@@ -29,9 +29,6 @@ class ConfigureFlowError(Exception):
     def __init__(self, message: str, *, code: str = "configure_failed") -> None:
         super().__init__(message)
         self.code = code
-
-
-SshEnablePreflight = Literal["identity", "acp_port"]
 
 
 @dataclass(frozen=True)
@@ -53,7 +50,6 @@ class ConfigureFlowRequest:
     persist_password: bool
     discovered_airport_syap: str | None = None
     enable_ssh: bool = True
-    ssh_enable_preflight: SshEnablePreflight = "identity"
     ssh_wait_timeout: int = 180
     verbose_wait: bool = True
     internal_share_use_disk_root: bool | None = None
@@ -107,7 +103,6 @@ def enable_ssh_and_reprobe(
     connection: SshConnection,
     *,
     timeout_seconds: int = 180,
-    ssh_enable_preflight: SshEnablePreflight = "identity",
     verbose_wait: bool = True,
     callbacks: OperationCallbacks | None = None,
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
@@ -122,22 +117,12 @@ def enable_ssh_and_reprobe(
     )
     callbacks.message("\nSSH is not reachable. Attempting to enable SSH on the device...")
     try:
-        if ssh_enable_preflight == "identity":
-            enable_ssh_with_identity_preflight(
-                host,
-                connection.password,
-                reboot_device=True,
-                callbacks=callbacks,
-            )
-        elif ssh_enable_preflight == "acp_port":
-            enable_ssh_with_port_preflight(
-                host,
-                connection.password,
-                reboot_device=True,
-                callbacks=callbacks,
-            )
-        else:
-            raise ValueError(f"unsupported SSH enable preflight: {ssh_enable_preflight}")
+        enable_ssh_with_port_preflight(
+            host,
+            connection.password,
+            reboot_device=True,
+            callbacks=callbacks,
+        )
     except ACPAuthError:
         callbacks.debug(
             configure_acp_enable_succeeded=False,
@@ -237,7 +222,6 @@ def run_configure_flow(
         probed_state = enable_ssh_and_reprobe(
             connection,
             timeout_seconds=request.ssh_wait_timeout,
-            ssh_enable_preflight=request.ssh_enable_preflight,
             verbose_wait=request.verbose_wait,
             callbacks=callbacks,
             probe=probe_connection,

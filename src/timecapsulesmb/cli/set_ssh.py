@@ -167,10 +167,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             except Exception as e:
                 error_text = str(e)
-                if command_context.debug_stage == "acp_identity_probe":
-                    label = "Failed to read AirPort identity via ACP"
-                else:
-                    label = "Failed to enable SSH via ACP"
+                label = "Failed to enable SSH via ACP"
                 message = f"{label}: {error_text}"
                 print(color_red(f"{label}:"))
                 print("\n".join(error_text.splitlines()))

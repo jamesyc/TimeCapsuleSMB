@@ -161,15 +161,13 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     except ACPAuthError as exc:
         raise AppOperationError("The AirPort admin password did not work.", code="auth_failed", debug=str(exc)) from exc
     except ACPConnectionError as exc:
-        if context.current_stage == "acp_identity_probe":
+        if context.current_stage == "acp_port_probe":
             raise AppOperationError(
                 f"No AirPort ACP service responded at this address: {exc}",
                 code="remote_error",
             ) from exc
         raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
     except ACPError as exc:
-        if context.current_stage == "acp_identity_probe":
-            raise AppOperationError(f"Failed to read AirPort identity via ACP: {exc}", code="remote_error") from exc
         raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
 
     context.connection = result.connection

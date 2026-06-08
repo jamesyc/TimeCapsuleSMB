@@ -69,11 +69,6 @@ class ACPFlashResult:
     reply_body: bytes
 
 
-@dataclass(frozen=True)
-class ACPIdentity:
-    syap: int | None = None
-
-
 def _resolve_log(log: LogCallback | None, verbose: bool) -> LogCallback | None:
     if log is not None:
         return log
@@ -383,15 +378,6 @@ def get_property_int(
         raise ACPPropertyError(f"ACP property {name} was not returned")
     finally:
         sock.close()
-
-
-def read_identity(
-    host: str,
-    password: str,
-    *,
-    timeout: float = 25.0,
-) -> ACPIdentity:
-    return ACPIdentity(syap=get_property_int(host, password, "syAP", timeout=timeout))
 
 
 def flash_firmware_bank(
