@@ -606,6 +606,275 @@ Current `.bootstrap` values include:
 - `INSTALL_ID`
 - optional `TELEMETRY=false`
 
+## CLI Command Reference
+
+The CLI entrypoint is `tcapsule COMMAND [ARGS...]`. In a normal checkout the first command is usually run through the repo-local launcher:
+
+```bash
+./tcapsule bootstrap
+```
+
+After bootstrap, use the virtualenv command:
+
+```bash
+.venv/bin/tcapsule <command>
+```
+
+The top-level command dispatcher supports:
+- `activate`
+- `api`
+- `bootstrap`
+- `configure`
+- `deploy`
+- `discover`
+- `doctor`
+- `flash`
+- `fsck`
+- `paths`
+- `repair-xattrs`
+- `set-ssh`
+- `uninstall`
+- `validate-install`
+
+Shared command behavior:
+- all commands except `api` perform the client version check before running, unless the invocation is only asking for `-h` or `--help`
+- commands that read the device config accept `--config PATH`, which overrides `TCAPSULE_CONFIG` and the repo-local `.env`
+- commands that can prompt usually accept `--no-input`; in that mode they fail instead of asking for missing input or confirmation
+- commands that can make destructive or rebooting changes use `--yes` to skip confirmation in interactive and non-interactive runs
+- commands with `--json` do not all use the same output shape; most command JSON is a single final object, while `repair-xattrs --json` emits app-event NDJSON
+- for commands where JSON describes a plan, `--json` is intentionally restricted to `--dry-run`
+
+### `bootstrap`
+
+`tcapsule bootstrap` prepares the local host. It validates the selected Python, creates or reuses `.venv`, installs `requirements.txt`, installs the repo into the virtualenv, and verifies required host tools. If `smbclient` or `sshpass` is missing, it attempts host-tool installation through Homebrew on supported macOS versions or through the detected Linux package manager.
+
+Arguments:
+- `--python PYTHON`: Python interpreter used to create or update `.venv`; defaults to the Python running the command. The selected interpreter must be Python 3.9 or newer.
+
+This command does not read `.env` for device credentials, but it does create or preserve the local install identity in `.bootstrap`.
+
+### `paths`
+
+`tcapsule paths` resolves the local TimeCapsuleSMB paths and prints the distribution root, config path, state dir, package root, artifact manifest, and deployable artifacts with basic validity status. It is useful when debugging an install that may have been moved, wrapped, or invoked from a different working directory.
+
+Arguments:
+- `--config PATH`: resolve paths as though this config file were selected
+- `--json`: emit the same path and artifact data as JSON
+
+### `validate-install`
+
+`tcapsule validate-install` checks the repo-only install without touching the device. It validates the local distribution root, state/config path resolution, packaged files, and artifact metadata expected by the app and CLI.
+
+Arguments:
+- `--config PATH`: validate using the selected config path for local path resolution
+- `--json`: emit `{ "ok": ..., "checks": ... }` and return nonzero if validation fails
+
+### `discover`
+
+`tcapsule discover` browses Bonjour/mDNS for Apple AirPort storage services and prints both raw browse instances and resolved service records. Discovery uses Python zeroconf, not native `dns-sd`, so it remains usable on Linux and in non-macOS diagnostics.
+
+Arguments:
+- `--config PATH`: load optional config for telemetry context only; discovery itself does not require `.env`
+- `--timeout SECONDS`: Bonjour browse timeout; default is `6`
+- `--json`: emit discovered instances and resolved records as JSON
+- `--select`: after printing records, prompt for a device number and print only the selected display host
+
+### `configure`
+
+`tcapsule configure` creates or updates `.env`. In interactive mode it attempts AirPort Bonjour discovery, prompts for the SSH target and device password, checks SSH reachability, enables SSH through ACP when needed, probes the device, derives identity/config defaults, and writes the managed config. The same password is stored as `TC_PASSWORD` and later used for generated Samba auth.
+
+Arguments:
+- `--config PATH`: write/read this config path instead of the default `.env`
+- `--no-input`: do not prompt; requires enough arguments or existing config to proceed
+- `--password-env NAME`: read the device password from environment variable `NAME`
+- `--password-file PATH`: read the device password from a file, stripping trailing newlines
+- `--password-stdin`: read the device password from stdin, stripping trailing newlines
+- `--host HOST`: set the device SSH target, for example `root@192.168.1.10`; custom SSH ports are rejected here and should be placed in `TC_SSH_OPTS`
+- `--skip-discovery`: skip Bonjour discovery and use the supplied or saved SSH target
+- `--yes`: approve ACP SSH enablement when SSH is closed
+- `--enable-ssh`: enable SSH via ACP if SSH is closed
+- `--no-enable-ssh`: fail instead of enabling SSH via ACP if SSH is closed
+- `--json`: emit a machine-readable result; requires `--no-input`
+
+Hidden advanced arguments:
+- `--internal-share-use-disk-root`: writes `TC_INTERNAL_SHARE_USE_DISK_ROOT=true`; internal disks use the disk root instead of the safer `ShareRoot`
+- `--smb-browse-compatibility`: writes `TC_SMB_BROWSE_COMPATIBILITY=true`; enables the browsing compatibility mode in generated Samba config
+- `--any-protocol`: writes `TC_ANY_PROTOCOL=true`; relaxes Samba protocol selection for compatibility testing
+- `--netatalk`: writes `TC_FRUIT_METADATA_NETATALK=true`; selects Netatalk-compatible fruit metadata behavior
+- `--ata-idle-seconds SECONDS`: writes `TC_ATA_IDLE_SECONDS`; must be a non-negative integer, with `0` disabling the ATA idle timer
+- `--ata-standby SECONDS`: writes `TC_ATA_STANDBY`; must be a non-negative integer, with `0` disabling standby and a blank saved value leaving standby unchanged
+
+Non-interactive examples:
+
+```bash
+TC_PASS='airport-password' .venv/bin/tcapsule configure --no-input --host root@192.168.1.10 --password-env TC_PASS --enable-ssh --yes
+printf '%s\n' 'airport-password' | .venv/bin/tcapsule configure --no-input --host root@192.168.1.10 --password-stdin --json
+```
+
+### `set-ssh`
+
+`tcapsule set-ssh` is an advanced helper for toggling the firmware SSH debug flag. It uses the configured target from `.env`. If no explicit mode is selected, it preserves the older behavior: enable SSH when closed, or ask whether to disable it when already open.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--enable`: enable SSH via ACP if port 22 is closed; no-op if already open
+- `--disable`: remove the `dbug` property over SSH and reboot; no-op if SSH is already closed
+- `--status`: only report whether SSH port 22 is reachable; cannot be combined with `--no-wait`
+- `--yes`: skip the legacy prompt when SSH is already enabled and no explicit mode was selected
+- `--no-input`: fail instead of prompting in legacy mode
+- `--no-wait`: after enabling or disabling, return without waiting for the port/reboot verification
+
+Use `configure` for normal first-time setup. Use `set-ssh` only when you intentionally want to manage SSH separately from the main config flow.
+
+### `deploy`
+
+`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs Samba auth files, applies permissions, and reboots by default. On NetBSD 4 devices, a deploy reboot is followed by activation after SSH returns.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--no-reboot`: upload files, stop the current runtime, and activate the new runtime in place without rebooting
+- `--no-wait`: request reboot and return without waiting for SSH or runtime verification
+- `--yes`: do not prompt before reboot
+- `--no-input`: fail instead of prompting; non-dry-run rebooting deploys require `--yes` unless `--no-reboot` is used
+- `--dry-run`: build and print the deployment plan without changing the device
+- `--json`: emit the dry-run deployment plan as JSON; requires `--dry-run`
+- `--allow-unsupported`: continue when the detected device compatibility check is unsupported
+- `--no-nbns`: write `NBNS_ENABLED=0` so the bundled NBNS responder is disabled on the next boot
+- `--mount-wait SECONDS`: per-attempt wait for deployment-time `diskd.useVolume` mount guards; default is `30`
+
+Hidden advanced argument:
+- `--debug-logging`: writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to flash config; this increases runtime logging and disables the normal managed log size cap
+
+Useful plan modes:
+
+```bash
+.venv/bin/tcapsule deploy --dry-run
+.venv/bin/tcapsule deploy --dry-run --json
+```
+
+### `activate`
+
+`tcapsule activate` manually starts an already-deployed NetBSD 4 payload without uploading files again. It is intentionally conservative: if the managed runtime already appears active, or a managed startup script is already running, it skips re-running `/mnt/Flash/rc.local`.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--yes`: do not prompt before restarting deployed Samba services
+- `--no-input`: fail instead of prompting; non-dry-run activation requires `--yes`
+- `--dry-run`: print the activation actions without changing the device
+- `--json`: emit the dry-run activation plan as JSON; requires `--dry-run`
+
+This command is only supported for NetBSD 4 AirPort storage devices. NetBSD 6 devices should use `deploy` for persistent installs and normal updates.
+
+### `flash`
+
+`tcapsule flash` is the NetBSD 4 firmware-bank helper. By default it is read-only: it backs up and analyzes both flash banks, saves a manifest, and prints the firmware state. Write modes are explicit. `--patch` installs the persistent TimeCapsuleSMB boot hook into the primary bank, while `--restore` writes Apple stock firmware to the active bank selected from the analysis and Apple firmware template.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--read-only`: dump and back up firmware banks without patch planning; this is also the default when no mode is provided
+- `--patch`: build and write the TimeCapsuleSMB LOGIN hook patch to the primary bank
+- `--restore`: restore the active bank from Apple stock firmware
+- `--check-apple`: check whether the active bank matches Apple stock firmware
+- `--download-only`: download and validate Apple firmware without writing
+- `--yes`: do not prompt before `--patch` or `--restore` writes; only valid for write modes
+- `--no-input`: fail instead of prompting; write modes require `--yes`
+- `--reboot`: after a validated `--restore` write, request a software reboot
+- `--no-wait`: with `--restore --reboot`, return after the reboot request without waiting for the device
+- `--json`: emit flash analysis and plan JSON; only valid for read-only modes, not `--patch` or `--restore`
+- `--backup-dir PATH`: save this run's flash backup under the selected directory instead of the default backup root
+- `--force`: with `--patch`, bypass backup/active-candidate preflight and target the primary bank
+- `--firmware-template PATH`: use a local Apple `.basebinary` firmware template instead of auto-selecting from Apple's catalog
+- `--firmware-version VERSION`: select an Apple firmware version, for example `7.8.1`
+
+Hidden unsupported argument:
+- `--poweroff`: currently rejected with an error; patch mode requires a manual power cycle after a validated write
+
+Important mode restrictions:
+- `flash --patch --reboot` is rejected; patch mode cannot request a software reboot
+- `--reboot` is only valid with `--restore`
+- `--no-wait` is only valid with `--restore --reboot`
+- `--json` is only valid for read-only flash modes
+- patch mode requires `zopfli` gzip support on the host
+
+### `doctor`
+
+`tcapsule doctor` runs non-destructive local and remote diagnostics. It validates config and local tools, checks artifact presence and checksums, probes SSH/network/runtime state, checks Bonjour and NBNS visibility, runs authenticated SMB listing and CRUD checks, and verifies that Samba xattr state points at persistent storage.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--skip-ssh`: skip SSH reachability and remote checks
+- `--skip-bonjour`: skip Bonjour browse/resolve checks
+- `--skip-smb`: skip authenticated SMB listing and file-operation checks
+- `--json`: emit one structured final doctor payload
+
+`doctor` is the preferred post-deploy and post-reboot verification command. It does not deploy, reboot, or change the device.
+
+### `fsck`
+
+`tcapsule fsck` runs remote `fsck_hfs` against a mounted HFS volume. It mounts/wakes the Apple volumes, selects or prompts for a volume, stops file sharing through the generated remote script, unmounts the selected disk, runs `fsck_hfs`, and reboots by default.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--yes`: do not prompt before disk repair
+- `--no-input`: fail instead of prompting; repair requires `--yes`
+- `--no-reboot`: run `fsck_hfs` only and do not reboot afterward
+- `--no-wait`: when rebooting, do not wait for SSH to go down and come back
+- `--volume VOLUME`: select the HFS volume device, for example `dk2` or `/dev/dk2`; if omitted and multiple mounted volumes exist, interactive mode prompts
+
+Use this only when the disk needs repair before deploy or when doctor/troubleshooting points at filesystem problems.
+
+### `repair-xattrs`
+
+`tcapsule repair-xattrs` is a macOS-side mounted-share repair helper. It scans files on a local SMB mount for broken extended-attribute metadata where `xattr -l` fails and the macOS `arch` flag is present, then repairs by clearing that flag. It is a targeted cleanup tool, not a general metadata migration.
+
+Arguments:
+- `--config PATH`: use a non-default config when auto-detecting the mounted share
+- `--path PATH`: mounted SMB share path or subdirectory to scan; if omitted, the command tries to find the mounted SMB share matching `.env`
+- `--dry-run`: scan and report only; do not prompt or repair
+- `--yes`: repair without prompting
+- `--no-input`: do not prompt; use with `--dry-run` or `--yes`
+- `--recursive`: scan recursively; enabled by default
+- `--no-recursive`: scan only the top-level directory
+- `--max-depth DEPTH`: maximum recursive directory depth; must be non-negative
+- `--include-hidden`: include hidden dot paths that are normally skipped
+- `--include-time-machine`: include Time Machine and bundle-like paths that are normally skipped
+- `--fix-permissions`: also repair missing write permissions on scanned files and directories
+- `--verbose`: print detailed diagnostics for detected issues
+- `--json`: emit app-event NDJSON; when not using `--dry-run`, this requires `--yes`
+
+Argument restrictions:
+- `--dry-run` and `--yes` are mutually exclusive
+- `--max-depth` must be non-negative
+- the command must run on macOS because it depends on local `xattr` and `chflags`
+
+### `uninstall`
+
+`tcapsule uninstall` removes managed TimeCapsuleSMB files from the configured device. It stops the manager, removes the payload directories from mounted HFS volumes, removes flash hooks and runtime state, and reboots by default so Apple services and the root filesystem return to their clean state. After a waited reboot it verifies that managed files are gone.
+
+Arguments:
+- `--config PATH`: use a non-default config
+- `--mount-wait SECONDS`: wait for `diskd.useVolume` mount guards before manual fallback; default is `30`
+- `--no-wait`: request reboot and return without waiting for post-uninstall verification
+- `--yes`: do not prompt before reboot
+- `--no-input`: fail instead of prompting; non-dry-run rebooting uninstalls require `--yes` unless `--no-reboot` is used
+- `--no-reboot`: remove files but do not reboot the device
+- `--dry-run`: print the uninstall plan without changing the device
+- `--json`: emit the dry-run uninstall plan as JSON; requires `--dry-run`
+
+`uninstall` does not re-enable Apple AFP or SMB settings; it only removes TimeCapsuleSMB-managed files and runtime state.
+
+### `api`
+
+`tcapsule api` is the structured backend used by the macOS app. It reads one JSON object from stdin, runs the requested operation, and writes app-event NDJSON to stdout. The request must be a JSON object with:
+- `operation`: required operation name
+- `params`: optional JSON object; defaults to `{}`
+- `request_id`: optional request identifier echoed on emitted events
+
+Arguments:
+- `--pretty-error`: also write request parsing errors to stderr for local debugging
+
+Known app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `repair-xattrs`, `set-telemetry`, `uninstall`, `validate-install`, and `version-check`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
+
 ## Local Test Coverage
 
 Fresh clones install `coverage.py` through `requirements.txt` during `./tcapsule bootstrap` or `make install`.
@@ -654,7 +923,7 @@ Workflow details:
 ## Host-Side Architecture
 
 Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `activate`, `doctor`, `fsck`, `repair-xattrs`, `uninstall`, and the app-facing `api` helper
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `flash`, `activate`, `doctor`, `fsck`, `repair-xattrs`, `uninstall`, and the app-facing `api` helper
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
