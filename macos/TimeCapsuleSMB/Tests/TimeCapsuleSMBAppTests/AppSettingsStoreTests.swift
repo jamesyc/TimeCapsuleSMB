@@ -27,6 +27,7 @@ final class AppSettingsStoreTests: XCTestCase {
                 internalShareUseDiskRoot: true,
                 smbBrowseCompatibility: true,
                 anyProtocol: true,
+                fruitMetadataNetatalk: true,
                 debugLogging: true,
                 mountWaitSeconds: 45,
                 ataIdleSeconds: 600,
@@ -205,6 +206,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "timeline.state.pending": "等待中",
             "toggle.enable_debug_logging": "启用调试日志",
             "toggle.smb_browse_compatibility": "允许浏览 SMB 共享",
+            "toggle.use_netatalk_metadata": "使用 Netatalk 存储元数据",
             "value.never": "从未",
             "workflow.state.deploying": "正在部署"
         ]

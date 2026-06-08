@@ -8,6 +8,7 @@ struct DeployOptions: Equatable {
     let internalShareUseDiskRoot: Bool
     let smbBrowseCompatibility: Bool
     let anyProtocol: Bool
+    let fruitMetadataNetatalk: Bool
     let debugLogging: Bool
     let ataIdleSeconds: Int
     let ataStandby: Int?
@@ -20,6 +21,7 @@ struct DeployOptions: Equatable {
         internalShareUseDiskRoot: Bool,
         smbBrowseCompatibility: Bool,
         anyProtocol: Bool,
+        fruitMetadataNetatalk: Bool = false,
         debugLogging: Bool,
         ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
         ataStandby: Int? = DeviceProfileSettings.default.ataStandby,
@@ -31,6 +33,7 @@ struct DeployOptions: Equatable {
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
+        self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.ataIdleSeconds = ataIdleSeconds
         self.ataStandby = ataStandby
@@ -118,6 +121,9 @@ final class DeployWorkflowStore: ObservableObject {
         didSet { reconcilePlanFreshness() }
     }
     @Published var anyProtocol = false {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var fruitMetadataNetatalk = false {
         didSet { reconcilePlanFreshness() }
     }
     @Published var debugLogging = false {
@@ -237,6 +243,7 @@ final class DeployWorkflowStore: ObservableObject {
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 anyProtocol: options.anyProtocol,
+                fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
@@ -288,6 +295,7 @@ final class DeployWorkflowStore: ObservableObject {
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 anyProtocol: options.anyProtocol,
+                fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
@@ -347,6 +355,7 @@ final class DeployWorkflowStore: ObservableObject {
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             smbBrowseCompatibility: smbBrowseCompatibility,
             anyProtocol: anyProtocol,
+            fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,
             ataIdleSeconds: ataIdleSecondsValue,
             ataStandby: ataStandbyValue,

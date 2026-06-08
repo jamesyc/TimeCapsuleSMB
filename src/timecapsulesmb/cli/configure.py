@@ -283,6 +283,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smb-browse-compatibility", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--netatalk", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -473,6 +474,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
                         smb_browse_compatibility=True if args.smb_browse_compatibility else None,
                         any_protocol=True if args.any_protocol else None,
+                        fruit_metadata_netatalk=True if args.netatalk else None,
                         ata_idle_seconds=args.ata_idle_seconds,
                         ata_standby=args.ata_standby,
                         probe=probe_for_context,

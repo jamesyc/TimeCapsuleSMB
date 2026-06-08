@@ -104,6 +104,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.internalShareUseDiskRoot, false)
         XCTAssertEqual(settings.smbBrowseCompatibility, false)
         XCTAssertEqual(settings.anyProtocol, false)
+        XCTAssertEqual(settings.fruitMetadataNetatalk, false)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
         XCTAssertEqual(settings.ataIdleSeconds, 300)
@@ -115,6 +116,7 @@ final class DeviceProfileTests: XCTestCase {
         {
           "nbnsEnabled": true,
           "smbBrowseCompatibility": true,
+          "fruitMetadataNetatalk": true,
           "debugLogging": false,
           "mountWaitSeconds": 45
         }
@@ -123,6 +125,7 @@ final class DeviceProfileTests: XCTestCase {
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
         XCTAssertEqual(settings.smbBrowseCompatibility, true)
+        XCTAssertEqual(settings.fruitMetadataNetatalk, true)
     }
 
     func testProfileSettingsDecodeLegacyStringAtaValues() throws {

@@ -29,9 +29,12 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ConfigureServiceTests(unittest.TestCase):
-    def test_build_configure_env_values_handles_smb_browse_compatibility(self) -> None:
+    def test_build_configure_env_values_handles_advanced_metadata_settings(self) -> None:
         preserved = build_configure_env_values(
-            {"TC_SMB_BROWSE_COMPATIBILITY": "true"},
+            {
+                "TC_SMB_BROWSE_COMPATIBILITY": "true",
+                "TC_FRUIT_METADATA_NETATALK": "true",
+            },
             host="root@10.0.0.2",
             password="pw",
             ssh_opts="-o foo",
@@ -44,10 +47,13 @@ class ConfigureServiceTests(unittest.TestCase):
             ssh_opts="-o foo",
             configure_id="config-id",
             smb_browse_compatibility=True,
+            fruit_metadata_netatalk=True,
         )
 
         self.assertEqual(preserved["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+        self.assertEqual(preserved["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(enabled["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+        self.assertEqual(enabled["TC_FRUIT_METADATA_NETATALK"], "true")
 
     def make_connection(self) -> SshConnection:
         return SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -261,6 +267,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(result.identity.model, "TimeCapsule8,119")
         self.assertEqual(written["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
+        self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "false")
         self.assertNotIn("TC_PASSWORD", written)
         self.assertEqual(stages, ["ssh_probe", "write_env"])
         self.assertIn({"ssh_final_reachable": True}, debug_fields)

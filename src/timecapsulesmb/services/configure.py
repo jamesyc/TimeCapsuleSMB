@@ -55,6 +55,7 @@ class ConfigureFlowRequest:
     internal_share_use_disk_root: bool | None = None
     smb_browse_compatibility: bool | None = None
     any_protocol: bool | None = None
+    fruit_metadata_netatalk: bool | None = None
     debug_logging: bool | None = None
     ata_idle_seconds: object | None = None
     ata_standby: object | None = None
@@ -201,6 +202,7 @@ def run_configure_flow(
         internal_share_use_disk_root=request.internal_share_use_disk_root,
         smb_browse_compatibility=request.smb_browse_compatibility,
         any_protocol=request.any_protocol,
+        fruit_metadata_netatalk=request.fruit_metadata_netatalk,
         debug_logging=request.debug_logging,
         ata_idle_seconds=request.ata_idle_seconds,
         ata_standby=request.ata_standby,
@@ -316,6 +318,7 @@ def build_configure_env_values(
     internal_share_use_disk_root: bool | None = None,
     smb_browse_compatibility: bool | None = None,
     any_protocol: bool | None = None,
+    fruit_metadata_netatalk: bool | None = None,
     debug_logging: bool | None = None,
     ata_idle_seconds: object | None = None,
     ata_standby: object | None = None,
@@ -339,6 +342,11 @@ def build_configure_env_values(
             parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
             if any_protocol is None
             else any_protocol
+        ) else "false",
+        "TC_FRUIT_METADATA_NETATALK": "true" if (
+            parse_bool(existing.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"]))
+            if fruit_metadata_netatalk is None
+            else fruit_metadata_netatalk
         ) else "false",
         "TC_DEBUG_LOGGING": "true" if (
             parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"]))

@@ -47,6 +47,7 @@ enum OperationParams {
             internalShareUseDiskRoot: Bool? = nil,
             smbBrowseCompatibility: Bool? = nil,
             anyProtocol: Bool? = nil,
+            fruitMetadataNetatalk: Bool? = nil,
             ataIdleSeconds: Int? = nil,
             ataStandby: Int? = nil,
             includeAtaStandby: Bool = false
@@ -69,6 +70,9 @@ enum OperationParams {
             }
             if let anyProtocol {
                 params["any_protocol"] = .bool(anyProtocol)
+            }
+            if let fruitMetadataNetatalk {
+                params["fruit_metadata_netatalk"] = .bool(fruitMetadataNetatalk)
             }
             if let ataIdleSeconds {
                 params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
@@ -105,6 +109,7 @@ enum OperationParams {
             internalShareUseDiskRoot: Bool = false,
             smbBrowseCompatibility: Bool = false,
             anyProtocol: Bool = false,
+            fruitMetadataNetatalk: Bool = false,
             debugLogging: Bool,
             ataIdleSeconds: Int,
             ataStandby: Int?,
@@ -118,6 +123,7 @@ enum OperationParams {
                 "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
                 "smb_browse_compatibility": .bool(smbBrowseCompatibility),
                 "any_protocol": .bool(anyProtocol),
+                "fruit_metadata_netatalk": .bool(fruitMetadataNetatalk),
                 "debug_logging": .bool(debugLogging),
                 "mount_wait": .number(mountWait)
             ]

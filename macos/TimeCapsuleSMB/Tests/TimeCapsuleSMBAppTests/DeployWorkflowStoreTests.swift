@@ -44,6 +44,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.internalShareUseDiskRoot = true
         store.smbBrowseCompatibility = true
         store.anyProtocol = true
+        store.fruitMetadataNetatalk = true
         store.debugLogging = true
         store.ataIdleSeconds = "0"
         store.ataStandby = "0"
@@ -63,6 +64,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(runner.calls[0].params["ata_standby"], .number(0))
@@ -246,6 +248,16 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .planReady)
         XCTAssertTrue(store.canDeploy)
+
+        store.fruitMetadataNetatalk = true
+
+        XCTAssertEqual(store.state, .planStale)
+        XCTAssertTrue(store.canDeploy)
+
+        store.fruitMetadataNetatalk = false
+
+        XCTAssertEqual(store.state, .planReady)
+        XCTAssertTrue(store.canDeploy)
     }
 
     func testOptionChangeWhilePlanningMakesReturnedPlanStaleAndAllowsRegeneration() async throws {
@@ -314,6 +326,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.internalShareUseDiskRoot = true
         store.smbBrowseCompatibility = true
         store.anyProtocol = true
+        store.fruitMetadataNetatalk = true
 
         store.runPlan(password: "pw")
         try await waitUntilStoreState { store.state == .planReady }
@@ -329,6 +342,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(runner.calls[1].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(runner.calls[1].params["any_protocol"], .bool(true))
+        XCTAssertEqual(runner.calls[1].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
     }
 

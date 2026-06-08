@@ -248,6 +248,10 @@ tc_generate_smb_conf_from_share_rows() {
         # still require authenticated user sessions.
         smbd_restrict_anonymous=0
     fi
+    smbd_fruit_metadata=stream
+    if [ "$FRUIT_METADATA_NETATALK" = "1" ]; then
+        smbd_fruit_metadata=netatalk
+    fi
 
     rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
     {
@@ -312,7 +316,7 @@ EOF
     acl_xattr:ignore system acls = yes
     streams_xattr:max xattrs per stream = 2
     fruit:resource = file
-    fruit:metadata = stream
+    fruit:metadata = $smbd_fruit_metadata
     fruit:encoding = native
     fruit:time machine = yes
     fruit:posix_rename = yes

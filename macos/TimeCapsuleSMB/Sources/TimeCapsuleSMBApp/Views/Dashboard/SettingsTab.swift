@@ -155,7 +155,7 @@ private struct DeviceProfileAdvancedSettingsView: View {
                     }
                     GridRow {
                         Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
-                        EmptyView()
+                        Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $store.draft.fruitMetadataNetatalk)
                     }
                 }
             }

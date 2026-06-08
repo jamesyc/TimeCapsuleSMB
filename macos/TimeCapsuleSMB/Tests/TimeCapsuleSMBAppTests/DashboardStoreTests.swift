@@ -318,6 +318,7 @@ final class DashboardStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             anyProtocol: true,
+            fruitMetadataNetatalk: true,
             debugLogging: true,
             mountWaitSeconds: 45,
             ataIdleSeconds: 0,
@@ -331,6 +332,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
+        XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
         XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
         XCTAssertEqual(session.deployStore.ataStandby, "0")
@@ -365,6 +367,7 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.internalShareUseDiskRoot = true
         session.profileEditorStore.draft.smbBrowseCompatibility = true
         session.profileEditorStore.draft.anyProtocol = true
+        session.profileEditorStore.draft.fruitMetadataNetatalk = true
         session.profileEditorStore.draft.debugLogging = true
         session.profileEditorStore.draft.mountWaitSeconds = "64"
         session.profileEditorStore.draft.ataIdleSeconds = "0"
@@ -377,6 +380,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
+        XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
         XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
         XCTAssertEqual(session.deployStore.ataStandby, "0")

@@ -320,6 +320,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
         deployStore.smbBrowseCompatibility = settings.smbBrowseCompatibility
         deployStore.anyProtocol = settings.anyProtocol
+        deployStore.fruitMetadataNetatalk = settings.fruitMetadataNetatalk
         deployStore.debugLogging = settings.debugLogging
         deployStore.ataIdleSeconds = String(settings.ataIdleSeconds)
         deployStore.ataStandby = settings.ataStandby.map { String($0) } ?? ""

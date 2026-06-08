@@ -128,6 +128,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.internalShareUseDiskRoot = true
         store.draft.smbBrowseCompatibility = true
         store.draft.anyProtocol = true
+        store.draft.fruitMetadataNetatalk = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "45"
         store.draft.ataIdleSeconds = "0"
@@ -144,6 +145,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             anyProtocol: true,
+            fruitMetadataNetatalk: true,
             debugLogging: true,
             mountWaitSeconds: 45,
             ataIdleSeconds: 0,
@@ -395,6 +397,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.internalShareUseDiskRoot = true
         store.draft.smbBrowseCompatibility = true
         store.draft.anyProtocol = true
+        store.draft.fruitMetadataNetatalk = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "60"
         store.draft.ataIdleSeconds = "0"
@@ -418,6 +421,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(call.params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(call.params["any_protocol"], .bool(true))
+        XCTAssertEqual(call.params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(call.params["debug_logging"], .bool(true))
         XCTAssertEqual(call.params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(call.params["ata_standby"], .number(0))
@@ -435,6 +439,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             anyProtocol: true,
+            fruitMetadataNetatalk: true,
             debugLogging: true,
             mountWaitSeconds: 60,
             ataIdleSeconds: 0,

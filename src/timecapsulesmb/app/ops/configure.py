@@ -130,6 +130,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     "any_protocol",
                     parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
                 ),
+                fruit_metadata_netatalk=bool_param(
+                    params,
+                    "fruit_metadata_netatalk",
+                    parse_bool(existing.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"])),
+                ),
                 debug_logging=bool_param(
                     params,
                     "debug_logging",

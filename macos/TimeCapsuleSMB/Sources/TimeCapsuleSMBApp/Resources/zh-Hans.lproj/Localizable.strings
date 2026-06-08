@@ -841,6 +841,7 @@
 "toggle.internal_share_use_disk_root" = "内部共享使用磁盘根目录";
 "toggle.smb_browse_compatibility" = "允许浏览 SMB 共享";
 "toggle.any_protocol" = "允许任意 SMB 协议";
+"toggle.use_netatalk_metadata" = "使用 Netatalk 存储元数据";
 "toggle.force_debug_logging" = "强制调试日志";
 "toggle.no_reboot" = "不重启";
 "toggle.no_wait" = "不等待";

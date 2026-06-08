@@ -47,6 +47,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(params["any_protocol"], .bool(false))
+        XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(false))
         XCTAssertNil(params["credentials"])
     }
 
@@ -59,6 +60,7 @@ final class PendingConfirmationTests: XCTestCase {
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             anyProtocol: true,
+            fruitMetadataNetatalk: true,
             debugLogging: false,
             ataIdleSeconds: 0,
             ataStandby: nil,
@@ -69,6 +71,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
+        XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
@@ -91,6 +94,7 @@ final class PendingConfirmationTests: XCTestCase {
             internalShareUseDiskRoot: false,
             smbBrowseCompatibility: true,
             anyProtocol: true,
+            fruitMetadataNetatalk: true,
             ataIdleSeconds: 0,
             ataStandby: nil,
             includeAtaStandby: true
@@ -103,6 +107,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
+        XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
     }
@@ -121,6 +126,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertNil(params["internal_share_use_disk_root"])
         XCTAssertNil(params["smb_browse_compatibility"])
         XCTAssertNil(params["any_protocol"])
+        XCTAssertNil(params["fruit_metadata_netatalk"])
     }
 
     func testConfigureParamsDefaultBareIPv6ManualHostToRootUser() {

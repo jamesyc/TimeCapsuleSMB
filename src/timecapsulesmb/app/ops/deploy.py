@@ -203,6 +203,11 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         "any_protocol",
         parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
     )
+    fruit_metadata_netatalk = bool_param(
+        params,
+        "fruit_metadata_netatalk",
+        parse_bool(config.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"])),
+    )
 
     try:
         preflight = prepare_deploy_preflight(
@@ -308,6 +313,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 internal_share_use_disk_root=internal_share_use_disk_root,
                 smb_browse_compatibility=smb_browse_compatibility,
                 any_protocol=any_protocol,
+                fruit_metadata_netatalk=fruit_metadata_netatalk,
                 ata_idle_seconds=ata_idle_seconds,
                 ata_standby=ata_standby,
             ),

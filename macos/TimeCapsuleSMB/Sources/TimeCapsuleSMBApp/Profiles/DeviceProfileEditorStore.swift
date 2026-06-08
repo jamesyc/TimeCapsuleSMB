@@ -79,6 +79,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var internalShareUseDiskRoot: Bool
     var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
+    var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
     var ataIdleSeconds: String
@@ -91,6 +92,7 @@ struct DeviceProfileEditorDraft: Equatable {
         internalShareUseDiskRoot: Bool = false,
         smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
+        fruitMetadataNetatalk: Bool = false,
         debugLogging: Bool,
         mountWaitSeconds: String,
         ataIdleSeconds: String = String(DeviceProfileSettings.default.ataIdleSeconds),
@@ -102,6 +104,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
+        self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
         self.ataIdleSeconds = ataIdleSeconds
@@ -116,6 +119,7 @@ struct DeviceProfileEditorDraft: Equatable {
             internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
             smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
             anyProtocol: profile.settings.anyProtocol,
+            fruitMetadataNetatalk: profile.settings.fruitMetadataNetatalk,
             debugLogging: profile.settings.debugLogging,
             mountWaitSeconds: String(profile.settings.mountWaitSeconds),
             ataIdleSeconds: String(profile.settings.ataIdleSeconds),
@@ -167,6 +171,7 @@ struct DeviceProfileEditorDraft: Equatable {
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             smbBrowseCompatibility: smbBrowseCompatibility,
             anyProtocol: anyProtocol,
+            fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait,
             ataIdleSeconds: ataIdle,
@@ -397,6 +402,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
             smbBrowseCompatibility: draft.smbBrowseCompatibility,
             anyProtocol: draft.anyProtocol,
+            fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,
             includeAtaStandby: true

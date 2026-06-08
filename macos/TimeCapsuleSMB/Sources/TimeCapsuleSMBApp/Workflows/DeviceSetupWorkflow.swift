@@ -102,6 +102,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 internalShareUseDiskRoot: settings.internalShareUseDiskRoot,
                 smbBrowseCompatibility: settings.smbBrowseCompatibility,
                 anyProtocol: settings.anyProtocol,
+                fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,
                 includeAtaStandby: true

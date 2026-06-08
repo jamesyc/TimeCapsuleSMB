@@ -474,7 +474,7 @@ Current rendered Samba config characteristics:
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - `fruit:resource = file`
 - `fruit:veto_appledouble = yes`
-- `fruit:metadata = stream`
+- `fruit:metadata = stream` by default, or `fruit:metadata = netatalk` when Netatalk metadata mode is enabled
 - `fruit:time machine = yes`
 - `fruit:posix_rename = yes`
 - `acl_xattr:ignore system acls = yes`

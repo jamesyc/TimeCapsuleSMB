@@ -24,6 +24,7 @@ OPTION_KEYS = frozenset({
     "enable_ssh",
     "fix_permissions",
     "force",
+    "fruit_metadata_netatalk",
     "include_hidden",
     "include_time_machine",
     "internal_share_use_disk_root",

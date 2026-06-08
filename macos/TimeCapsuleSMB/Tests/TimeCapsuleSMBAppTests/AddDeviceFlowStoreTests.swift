@@ -485,6 +485,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             anyProtocol: true,
+            fruitMetadataNetatalk: true,
             debugLogging: true,
             mountWaitSeconds: 45,
             ataIdleSeconds: 600,
@@ -505,6 +506,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(600))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .number(900))
     }
@@ -527,6 +529,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             internalShareUseDiskRoot: false,
             smbBrowseCompatibility: false,
             anyProtocol: false,
+            fruitMetadataNetatalk: false,
             debugLogging: false,
             mountWaitSeconds: 99,
             ataIdleSeconds: 111,
@@ -539,6 +542,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             anyProtocol: true,
+            fruitMetadataNetatalk: true,
             debugLogging: true,
             mountWaitSeconds: 1,
             ataIdleSeconds: 2,
@@ -557,6 +561,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(111))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .string(""))
     }

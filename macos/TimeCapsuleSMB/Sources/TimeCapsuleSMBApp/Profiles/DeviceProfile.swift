@@ -38,6 +38,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     var internalShareUseDiskRoot: Bool
     var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
+    var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
     var ataIdleSeconds: Int
@@ -48,6 +49,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         internalShareUseDiskRoot: false,
         smbBrowseCompatibility: false,
         anyProtocol: false,
+        fruitMetadataNetatalk: false,
         debugLogging: false,
         mountWaitSeconds: 30,
         ataIdleSeconds: 300,
@@ -59,6 +61,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         internalShareUseDiskRoot: Bool = false,
         smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
+        fruitMetadataNetatalk: Bool = false,
         debugLogging: Bool,
         mountWaitSeconds: Int,
         ataIdleSeconds: Int = 300,
@@ -68,6 +71,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
+        self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
         self.ataIdleSeconds = ataIdleSeconds
@@ -79,6 +83,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         case internalShareUseDiskRoot
         case smbBrowseCompatibility
         case anyProtocol
+        case fruitMetadataNetatalk
         case debugLogging
         case mountWaitSeconds
         case ataIdleSeconds
@@ -91,6 +96,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
+        fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
         mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds
         ataIdleSeconds = Self.decodeNonNegativeInteger(

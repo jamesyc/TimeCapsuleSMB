@@ -346,6 +346,7 @@ struct AppSettingsDraft: Equatable {
     var internalShareUseDiskRoot: Bool
     var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
+    var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
     var ataIdleSeconds: String
@@ -365,6 +366,7 @@ struct AppSettingsDraft: Equatable {
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
         smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
         anyProtocol = settings.defaultDeviceSettings.anyProtocol
+        fruitMetadataNetatalk = settings.defaultDeviceSettings.fruitMetadataNetatalk
         debugLogging = settings.defaultDeviceSettings.debugLogging
         mountWaitSeconds = String(settings.defaultDeviceSettings.mountWaitSeconds)
         ataIdleSeconds = String(settings.defaultDeviceSettings.ataIdleSeconds)
@@ -411,6 +413,7 @@ struct AppSettingsDraft: Equatable {
                 internalShareUseDiskRoot: internalShareUseDiskRoot,
                 smbBrowseCompatibility: smbBrowseCompatibility,
                 anyProtocol: anyProtocol,
+                fruitMetadataNetatalk: fruitMetadataNetatalk,
                 debugLogging: debugLogging,
                 mountWaitSeconds: mountWait,
                 ataIdleSeconds: ataIdle,
