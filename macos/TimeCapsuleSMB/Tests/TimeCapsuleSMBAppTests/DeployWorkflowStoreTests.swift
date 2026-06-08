@@ -249,12 +249,12 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .planReady)
         XCTAssertTrue(store.canDeploy)
 
-        store.fruitMetadataNetatalk = true
+        store.fruitMetadataNetatalk = false
 
         XCTAssertEqual(store.state, .planStale)
         XCTAssertTrue(store.canDeploy)
 
-        store.fruitMetadataNetatalk = false
+        store.fruitMetadataNetatalk = true
 
         XCTAssertEqual(store.state, .planReady)
         XCTAssertTrue(store.canDeploy)

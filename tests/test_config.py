@@ -142,7 +142,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
         self.assertIn("TC_SMB_BROWSE_COMPATIBILITY=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
-        self.assertIn("TC_FRUIT_METADATA_NETATALK=false", rendered)
+        self.assertIn("TC_FRUIT_METADATA_NETATALK=true", rendered)
         self.assertIn("TC_DEBUG_LOGGING=false", rendered)
         self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
         self.assertIn("TC_ATA_STANDBY=''", rendered)

@@ -109,7 +109,7 @@ enum OperationParams {
             internalShareUseDiskRoot: Bool = false,
             smbBrowseCompatibility: Bool = false,
             anyProtocol: Bool = false,
-            fruitMetadataNetatalk: Bool = false,
+            fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
             debugLogging: Bool,
             ataIdleSeconds: Int,
             ataStandby: Int?,

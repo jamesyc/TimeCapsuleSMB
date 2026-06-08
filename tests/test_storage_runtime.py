@@ -4790,7 +4790,7 @@ MaSt = (
         self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
         self.assertIn("max log size = 128", proc.stdout)
         self.assertIn("fruit:model = TimeCapsule6,106", proc.stdout)
-        self.assertIn("fruit:metadata = stream", proc.stdout)
+        self.assertIn("fruit:metadata = netatalk", proc.stdout)
         self.assertIn("restrict anonymous = 2", proc.stdout)
         self.assertIn("min protocol = SMB2", proc.stdout)
         self.assertIn("max protocol = SMB3", proc.stdout)
@@ -4916,6 +4916,41 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("fruit:metadata = netatalk", proc.stdout)
         self.assertNotIn("fruit:metadata = stream", proc.stdout)
+
+    def test_common_generate_smb_conf_uses_stream_metadata_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-stream-metadata.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    FRUIT_METADATA_NETATALK=0
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    share_rows=$(cat <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
+                    cat "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("fruit:metadata = stream", proc.stdout)
+        self.assertNotIn("fruit:metadata = netatalk", proc.stdout)
 
     def test_common_generate_smb_conf_derives_fruit_model_from_acp_syap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

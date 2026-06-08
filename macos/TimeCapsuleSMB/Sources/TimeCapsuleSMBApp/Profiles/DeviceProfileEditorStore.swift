@@ -92,7 +92,7 @@ struct DeviceProfileEditorDraft: Equatable {
         internalShareUseDiskRoot: Bool = false,
         smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
-        fruitMetadataNetatalk: Bool = false,
+        fruitMetadataNetatalk: Bool = true,
         debugLogging: Bool,
         mountWaitSeconds: String,
         ataIdleSeconds: String = String(DeviceProfileSettings.default.ataIdleSeconds),

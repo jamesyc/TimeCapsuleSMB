@@ -21,7 +21,7 @@ struct DeployOptions: Equatable {
         internalShareUseDiskRoot: Bool,
         smbBrowseCompatibility: Bool,
         anyProtocol: Bool,
-        fruitMetadataNetatalk: Bool = false,
+        fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
         debugLogging: Bool,
         ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
         ataStandby: Int? = DeviceProfileSettings.default.ataStandby,
@@ -123,7 +123,7 @@ final class DeployWorkflowStore: ObservableObject {
     @Published var anyProtocol = false {
         didSet { reconcilePlanFreshness() }
     }
-    @Published var fruitMetadataNetatalk = false {
+    @Published var fruitMetadataNetatalk = DeviceProfileSettings.default.fruitMetadataNetatalk {
         didSet { reconcilePlanFreshness() }
     }
     @Published var debugLogging = false {

@@ -16,6 +16,8 @@ from timecapsulesmb.repair_xattrs import (
     default_share_path_from_config,
     find_findings,
     finding_to_candidate,
+    format_xattr_names,
+    metadata_io_guidance_lines,
     mounted_smb_shares,
     path_exists,
     repair_candidate,
@@ -89,8 +91,14 @@ def render_diagnostic_lines(findings: list[RepairFinding], *, verbose: bool) -> 
             detail = f"{finding.kind}: {finding.path} ({finding.path_type})"
             if finding.flags:
                 detail += f" flags={finding.flags}"
+            if finding.xattr_failed_attribute:
+                detail += f" xattr_failed_attribute={finding.xattr_failed_attribute}"
+            if finding.xattr_names:
+                detail += f" xattr_names={format_xattr_names(finding.xattr_names)}"
             if finding.xattr_error:
                 detail += f" xattr_error={finding.xattr_error}"
+            if finding.file_data_error:
+                detail += f" file_data_error={finding.file_data_error}"
             lines.append(f"WARN {detail}")
     return lines
 
@@ -204,6 +212,8 @@ def run_repair(
 
     if request.dry_run:
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
+        if not candidates:
+            _emit_lines(emit, metadata_io_guidance_lines(findings))
         emit("No changes made.")
         report = build_repair_report(findings)
         return RepairRunResult(0, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
@@ -211,6 +221,7 @@ def run_repair(
     if not candidates:
         emit("No known-safe repairs are available for the detected issues.")
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
+        _emit_lines(emit, metadata_io_guidance_lines(findings))
         report = build_repair_report(findings)
         return RepairRunResult(1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
 

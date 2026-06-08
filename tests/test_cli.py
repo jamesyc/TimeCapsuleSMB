@@ -1873,7 +1873,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(fake_values["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
-        self.assertEqual(fake_values["TC_FRUIT_METADATA_NETATALK"], "false")
+        self.assertEqual(fake_values["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])

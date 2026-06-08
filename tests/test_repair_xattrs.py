@@ -398,10 +398,86 @@ class RepairXattrsTests(unittest.TestCase):
                 )
 
         self.assertEqual([finding.path.name for finding in findings], ["bad-but-not-arch.txt"])
-        self.assertEqual(findings[0].kind, "unreadable_no_arch_flag")
+        self.assertEqual(findings[0].kind, "xattr_list_failed_no_arch")
         self.assertEqual(findings[0].actions, ())
         self.assertEqual(summary.scanned, 1)
         self.assertEqual(summary.not_repairable, 1)
+
+    def test_classifies_no_arch_xattr_list_io_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "iphone-photo.jpg").write_text("data")
+
+            result = self.find_findings_with_commands(
+                root,
+                FakeXattrCommands(
+                    xattr_stderr="xattr: [Errno 5] Input/output error: 'iphone-photo.jpg'",
+                    stat_stdout="-\n",
+                ),
+            )
+
+        self.assertEqual([finding.path.name for finding in result.findings], ["iphone-photo.jpg"])
+        self.assertEqual(result.findings[0].kind, "xattr_list_io_error_no_arch")
+        self.assertEqual(result.findings[0].actions, ())
+
+    def test_classifies_no_arch_xattr_value_io_error_with_attribute_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "iphone-photo.jpg"
+            target.write_text("data")
+
+            def fake_run(args: list[str]):
+                if args[:2] == ["xattr", "-l"]:
+                    return mock.Mock(returncode=1, stdout="", stderr="xattr: [Errno 5] Input/output error")
+                if args[0] == "xattr" and len(args) == 2:
+                    return mock.Mock(returncode=0, stdout="com.apple.FinderInfo\ncom.apple.ResourceFork\n", stderr="")
+                if args[:3] == ["xattr", "-p", "-x"]:
+                    return mock.Mock(
+                        returncode=1,
+                        stdout="",
+                        stderr=f"xattr: [Errno 5] Input/output error: '{args[3]}'",
+                    )
+                if args[0] == "stat":
+                    return mock.Mock(returncode=0, stdout="-\n", stderr="")
+                raise AssertionError(args)
+
+            summary = repair_xattrs_domain.RepairSummary()
+            with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
+                findings = repair_xattrs_domain.find_findings(
+                    root,
+                    recursive=True,
+                    max_depth=None,
+                    include_hidden=False,
+                    include_time_machine=False,
+                    summary=summary,
+                )
+
+        self.assertEqual([finding.path for finding in findings], [target.resolve()])
+        self.assertEqual(findings[0].kind, "xattr_value_io_error_no_arch")
+        self.assertEqual(findings[0].xattr_names, ("com.apple.FinderInfo", "com.apple.ResourceFork"))
+        self.assertEqual(findings[0].xattr_failed_attribute, "com.apple.FinderInfo")
+        self.assertIn("com.apple.FinderInfo", findings[0].xattr_error or "")
+
+    def test_file_data_read_failure_overrides_xattr_only_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bad-data.jpg").write_text("data")
+            data_status = repair_xattrs_domain.FileDataStatus(
+                readable=False,
+                error="[Errno 5] Input/output error",
+            )
+
+            with mock.patch("timecapsulesmb.repair_xattrs.file_data_status", return_value=data_status):
+                result = self.find_findings_with_commands(
+                    root,
+                    FakeXattrCommands(
+                        xattr_stderr="xattr: [Errno 5] Input/output error",
+                        stat_stdout="-\n",
+                    ),
+                )
+
+        self.assertEqual(result.findings[0].kind, "file_data_io_error")
+        self.assertEqual(result.findings[0].file_data_error, "[Errno 5] Input/output error")
 
     def test_unreadable_without_arch_is_reported_not_repairable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -416,9 +492,29 @@ class RepairXattrsTests(unittest.TestCase):
             )
 
         self.assertEqual(result.rc, 0)
-        self.assertIn("WARN unreadable_no_arch_flag", result.text)
+        self.assertIn("WARN xattr_list_failed_no_arch", result.text)
         self.assertEqual(RecordingCommandContext.instances[-1].result, "failure")
-        self.assertIn("unreadable_no_arch_flag", RecordingCommandContext.instances[-1].error or "")
+        self.assertIn("xattr_list_failed_no_arch", RecordingCommandContext.instances[-1].error or "")
+
+    def test_no_candidate_io_error_guides_toward_netatalk_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "iphone-photo.jpg").write_text("data")
+
+            result = self.run_repair_cli(
+                root,
+                commands=FakeXattrCommands(
+                    xattr_stderr="xattr: [Errno 5] Input/output error: 'iphone-photo.jpg'",
+                    stat_stdout="-\n",
+                ),
+                recording_context=True,
+            )
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn("No known-safe repairs are available", result.text)
+        self.assertIn("Enable Netatalk metadata", result.text)
+        self.assertIn("will not clear all xattrs automatically", result.text)
+        self.assertIn("Enable Netatalk metadata", RecordingCommandContext.instances[-1].error or "")
 
     def test_repairs_when_arch_is_one_of_multiple_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

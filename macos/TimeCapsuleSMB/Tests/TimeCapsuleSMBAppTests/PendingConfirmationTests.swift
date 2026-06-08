@@ -47,7 +47,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(params["any_protocol"], .bool(false))
-        XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(false))
+        XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertNil(params["credentials"])
     }
 

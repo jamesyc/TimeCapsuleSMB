@@ -42,6 +42,21 @@ class XattrStatus:
 
 
 @dataclass(frozen=True)
+class XattrProbe:
+    status: XattrStatus
+    name_status: XattrStatus | None = None
+    names: tuple[str, ...] = ()
+    failed_attribute: str | None = None
+    failed_attribute_status: XattrStatus | None = None
+
+
+@dataclass(frozen=True)
+class FileDataStatus:
+    readable: bool | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class RepairCandidate:
     path: Path
     flags: str
@@ -57,6 +72,9 @@ class RepairFinding:
     kind: str
     flags: str | None = None
     xattr_error: str | None = None
+    xattr_names: tuple[str, ...] = ()
+    xattr_failed_attribute: str | None = None
+    file_data_error: str | None = None
     actions: tuple[str, ...] = ()
 
     @property
@@ -297,12 +315,88 @@ def xattr_status(path: Path) -> XattrStatus:
     return XattrStatus(readable=proc.returncode == 0, stdout=proc.stdout, stderr=proc.stderr)
 
 
+def xattr_name_status(path: Path) -> XattrStatus:
+    proc = run_capture(["xattr", str(path)])
+    return XattrStatus(readable=proc.returncode == 0, stdout=proc.stdout, stderr=proc.stderr)
+
+
+def xattr_value_status(path: Path, name: str) -> XattrStatus:
+    proc = run_capture(["xattr", "-p", "-x", name, str(path)])
+    return XattrStatus(readable=proc.returncode == 0, stdout=proc.stdout, stderr=proc.stderr)
+
+
+def parse_xattr_names(stdout: str) -> tuple[str, ...]:
+    return tuple(line.strip() for line in stdout.splitlines() if line.strip())
+
+
+def xattr_probe(path: Path) -> XattrProbe:
+    status = xattr_status(path)
+    if status.readable:
+        return XattrProbe(status=status)
+
+    name_status = xattr_name_status(path)
+    if not name_status.readable:
+        return XattrProbe(status=status, name_status=name_status)
+
+    names = parse_xattr_names(name_status.stdout)
+    for name in names:
+        value_status = xattr_value_status(path, name)
+        if not value_status.readable:
+            return XattrProbe(
+                status=status,
+                name_status=name_status,
+                names=names,
+                failed_attribute=name,
+                failed_attribute_status=value_status,
+            )
+    return XattrProbe(status=status, name_status=name_status, names=names)
+
+
 def xattrs_readable(path: Path) -> bool:
     return xattr_status(path).readable
 
 
 def xattr_error_text(status: XattrStatus) -> str:
     return (status.stderr or status.stdout or "xattr unreadable").strip()
+
+
+def xattr_probe_error_text(probe: XattrProbe) -> str:
+    if probe.failed_attribute and probe.failed_attribute_status:
+        return f"{probe.failed_attribute}: {xattr_error_text(probe.failed_attribute_status)}"
+    if probe.name_status is not None and not probe.name_status.readable:
+        return xattr_error_text(probe.name_status)
+    return xattr_error_text(probe.status)
+
+
+def is_io_error_text(text: str | None) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return "errno 5" in lowered or "input/output error" in lowered or " eio" in lowered
+
+
+def no_arch_xattr_failure_kind(probe: XattrProbe) -> str:
+    error_kind = "io_error" if is_io_error_text(xattr_probe_error_text(probe)) else "failed"
+    if probe.name_status is not None and not probe.name_status.readable:
+        return f"xattr_list_{error_kind}_no_arch"
+    if probe.failed_attribute_status is not None:
+        return f"xattr_value_{error_kind}_no_arch"
+    return f"xattr_display_{error_kind}_no_arch"
+
+
+def file_data_status(path: Path, path_type: str) -> FileDataStatus:
+    if path_type != "file":
+        return FileDataStatus(readable=None)
+    try:
+        with path.open("rb") as handle:
+            handle.read(1)
+    except OSError as exc:
+        return FileDataStatus(readable=False, error=str(exc))
+    return FileDataStatus(readable=True)
+
+
+def file_data_failure_kind(status: FileDataStatus) -> str:
+    return "file_data_io_error" if is_io_error_text(status.error) else "file_data_read_failed"
 
 
 def desired_permission_action(path: Path, path_type: str, *, fix_permissions: bool) -> tuple[str, ...]:
@@ -320,29 +414,41 @@ def desired_permission_action(path: Path, path_type: str, *, fix_permissions: bo
 
 def classify_path(path: Path, path_type: str, *, fix_permissions: bool = False) -> RepairFinding:
     permission_actions = desired_permission_action(path, path_type, fix_permissions=fix_permissions)
-    status = xattr_status(path)
-    if status.readable:
+    probe = xattr_probe(path)
+    if probe.status.readable:
         if permission_actions:
             return RepairFinding(path=path, path_type=path_type, kind="permission_repair", actions=permission_actions)
         return RepairFinding(path=path, path_type=path_type, kind="ok")
 
     flags = file_flags(path)
     if not flags:
+        data_status = file_data_status(path, path_type)
         return RepairFinding(
             path=path,
             path_type=path_type,
-            kind="xattr_failed_stat_failed",
-            xattr_error=xattr_error_text(status),
+            kind=file_data_failure_kind(data_status) if data_status.readable is False else "xattr_failed_stat_failed",
+            xattr_error=xattr_probe_error_text(probe),
+            xattr_names=probe.names,
+            xattr_failed_attribute=probe.failed_attribute,
+            file_data_error=data_status.error,
             actions=permission_actions,
         )
     flag_set = {flag.strip() for flag in flags.split(",")}
     if "arch" not in flag_set:
+        data_status = file_data_status(path, path_type)
         return RepairFinding(
             path=path,
             path_type=path_type,
-            kind="unreadable_no_arch_flag",
+            kind=(
+                file_data_failure_kind(data_status)
+                if data_status.readable is False
+                else no_arch_xattr_failure_kind(probe)
+            ),
             flags=flags,
-            xattr_error=xattr_error_text(status),
+            xattr_error=xattr_probe_error_text(probe),
+            xattr_names=probe.names,
+            xattr_failed_attribute=probe.failed_attribute,
+            file_data_error=data_status.error,
             actions=permission_actions,
         )
     return RepairFinding(
@@ -350,7 +456,9 @@ def classify_path(path: Path, path_type: str, *, fix_permissions: bool = False) 
         path_type=path_type,
         kind="repairable_arch_flag",
         flags=flags,
-        xattr_error=xattr_error_text(status),
+        xattr_error=xattr_probe_error_text(probe),
+        xattr_names=probe.names,
+        xattr_failed_attribute=probe.failed_attribute,
         actions=(ACTION_CLEAR_ARCH_FLAG,) + permission_actions,
     )
 
@@ -422,6 +530,8 @@ def repair_candidate(candidate: RepairCandidate) -> bool:
             return False
     if ACTION_FIX_PERMISSIONS in candidate.actions and not apply_permission_repair(candidate.path, candidate.path_type):
         return False
+    if candidate.xattr_error and not xattrs_readable(candidate.path):
+        return False
     return True
 
 
@@ -448,9 +558,52 @@ def format_finding_line(finding: RepairFinding) -> str:
     parts = [f"{finding.kind}: {finding.path}", f"type={finding.path_type}", f"actions={actions}"]
     if finding.flags:
         parts.append(f"flags={finding.flags}")
+    if finding.xattr_failed_attribute:
+        parts.append(f"xattr_failed_attribute={finding.xattr_failed_attribute}")
+    if finding.xattr_names:
+        parts.append(f"xattr_names={format_xattr_names(finding.xattr_names)}")
     if finding.xattr_error:
         parts.append(f"xattr_error={finding.xattr_error}")
+    if finding.file_data_error:
+        parts.append(f"file_data_error={finding.file_data_error}")
     return " ".join(parts)
+
+
+def format_xattr_names(names: tuple[str, ...], *, limit: int = 6) -> str:
+    selected = list(names[:limit])
+    if len(names) > limit:
+        selected.append(f"...+{len(names) - limit}")
+    return ",".join(selected)
+
+
+APPLE_METADATA_GUIDANCE_KINDS = {
+    "xattr_list_io_error_no_arch",
+    "xattr_value_io_error_no_arch",
+    "xattr_display_io_error_no_arch",
+}
+
+
+def finding_suggests_apple_metadata_io(finding: RepairFinding) -> bool:
+    return finding.kind in APPLE_METADATA_GUIDANCE_KINDS
+
+
+def metadata_io_guidance_lines(findings: list[RepairFinding]) -> list[str]:
+    if not any(finding_suggests_apple_metadata_io(finding) for finding in findings):
+        return []
+    return [
+        (
+            "Detected xattr I/O errors without the arch flag; this commonly matches Apple SMB/Fruit metadata "
+            "stream state rather than the known arch-flag repair case."
+        ),
+        (
+            "Enable Netatalk metadata for the device profile, redeploy, then test with newly copied "
+            "iPhone/iPad Photos files."
+        ),
+        (
+            "Existing damaged files may need to be re-copied or cleaned with an explicit metadata-removal "
+            "workflow after validation; repair-xattrs will not clear all xattrs automatically."
+        ),
+    ]
 
 
 def build_repair_report(
@@ -472,4 +625,5 @@ def build_repair_report(
     remaining = len(selected) - limit
     if remaining > 0:
         lines.append(f"... and {remaining} more")
+    lines.extend(metadata_io_guidance_lines(findings))
     return "\n".join(lines)

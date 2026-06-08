@@ -63,7 +63,7 @@ DEFAULTS = {
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
     "TC_SMB_BROWSE_COMPATIBILITY": "false",
     "TC_ANY_PROTOCOL": "false",
-    "TC_FRUIT_METADATA_NETATALK": "false",
+    "TC_FRUIT_METADATA_NETATALK": "true",
     "TC_DEBUG_LOGGING": "false",
     "TC_ATA_IDLE_SECONDS": "300",
     "TC_ATA_STANDBY": "",

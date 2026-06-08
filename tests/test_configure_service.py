@@ -267,7 +267,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(result.identity.model, "TimeCapsule8,119")
         self.assertEqual(written["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
-        self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "false")
+        self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertNotIn("TC_PASSWORD", written)
         self.assertEqual(stages, ["ssh_probe", "write_env"])
         self.assertIn({"ssh_final_reachable": True}, debug_fields)

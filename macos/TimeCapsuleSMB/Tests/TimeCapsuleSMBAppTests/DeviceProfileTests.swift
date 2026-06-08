@@ -104,7 +104,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.internalShareUseDiskRoot, false)
         XCTAssertEqual(settings.smbBrowseCompatibility, false)
         XCTAssertEqual(settings.anyProtocol, false)
-        XCTAssertEqual(settings.fruitMetadataNetatalk, false)
+        XCTAssertEqual(settings.fruitMetadataNetatalk, true)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
         XCTAssertEqual(settings.ataIdleSeconds, 300)
