@@ -68,6 +68,11 @@
 # set, not EINVAL. This is a real macOS interoperability fix, not a NetBSD shim,
 # and likely applies to future Samba versions that still use xattr_tdb here.
 0018-xattr-tdb-missing-row-empty-xattrs.patch|xattr_tdb missing rows behave like empty xattrs
+# macOS/iOS Photos writes many assetsd metadata streams. Once xattr_tdb's
+# stream-name list exceeds Samba's initial 1024-byte listxattr buffer, return
+# the normal -1/ERANGE retry signal instead of a positive required length that
+# callers mistake for bytes written into the too-small buffer.
+0027-xattr-tdb-listattr-erange.patch|xattr_tdb retries oversized xattr name lists
 # Time Machine durable handles on HFS sparsebundle bands should not treat
 # allocation-block count drift as file identity loss after reconnect.
 0019-time-machine-durable-st-ex-blocks.patch|allow durable reconnect across HFS allocation-block drift
@@ -88,3 +93,12 @@
 # setup. Relax only the appliance core directory creation so panics produce
 # disk-backed cores under logs/cores/smbd.
 0023-time-capsule-corepath-hfs-owner.patch|allow HFS-backed smbd corepath setup
+# Time Capsule HFS can report served file owner/group as 4294967295. Normalize
+# only that HFS sentinel at Samba's stat_ex boundary so ACL, stream, and
+# security descriptor paths see the forced root/wheel appliance identity.
+0025-time-capsule-hfs-stat-owner.patch|normalize HFS unknown owner in stat metadata
+# Samba's default streaminfo layer refreshes stat before appending ::$DATA.
+# The Time Capsule pathref fallback can fail that refresh even when the open
+# path has already cached valid stat metadata; keep stream enumeration alive
+# for macOS delete/share checks without hiding failures on uncached paths.
+0026-time-capsule-fstreaminfo-cached-stat.patch|use cached stat for default streaminfo fallback

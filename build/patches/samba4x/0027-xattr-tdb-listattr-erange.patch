@@ -1,0 +1,26 @@
+diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
+index 2aa15e9..68d0064 100644
+--- a/source3/lib/xattr_tdb.c
++++ b/source3/lib/xattr_tdb.c
+@@ -366,8 +366,20 @@ ssize_t xattr_tdb_listattr(struct db_context *db_ctx,
+ 
+ 	if (len > size) {
+ 		TALLOC_FREE(frame);
++		/*
++		 * listxattr/flistxattr callers may probe with size == 0 and
++		 * expect the required buffer length. For a nonzero but
++		 * undersized buffer, return -1/ERANGE so generic Samba callers
++		 * such as get_ea_names_from_fsp() retry with a larger buffer.
++		 *
++		 * Returning the positive required length here makes callers
++		 * treat that value as bytes written into their smaller buffer,
++		 * which breaks macOS/iOS assetsd metadata once the stream name
++		 * list exceeds Samba's initial 1024-byte stack buffer. See
++		 * https://github.com/jamesyc/TimeCapsuleSMB/issues/170.
++		 */
+ 		errno = ERANGE;
+-		return len;
++		return size == 0 ? len : -1;
+ 	}
+ 
+ 	len = 0;

@@ -1,0 +1,47 @@
+diff --git a/source3/lib/system.c b/source3/lib/system.c
+index 63987cb..393ba4a 100644
+--- a/source3/lib/system.c
++++ b/source3/lib/system.c
+@@ -270,3 +270,34 @@ void copy_stat_ex_timestamps(struct stat_ex *st,
+ }
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++static void tc_normalize_hfs_unknown_owner(struct stat_ex *st)
++{
++	/*
++	 * AirPort Time Capsule HFS can report absent catalog owner/group IDs
++	 * as 0xffffffff. Samba treats those values as real Unix IDs and later
++	 * tries to map them to SIDs in ACL, create-context, durable-handle, and
++	 * stream metadata paths. The appliance serves all SMB users through a
++	 * forced root/wheel identity, so normalize only this HFS sentinel before
++	 * it escapes the stat conversion boundary. See
++	 * https://github.com/jamesyc/TimeCapsuleSMB/issues/170.
++	 */
++	if (st->st_ex_uid == (uid_t)-1 ||
++	    st->st_ex_uid == (uid_t)UINT32_MAX)
++	{
++		st->st_ex_uid = 0;
++	}
++
++	if (st->st_ex_gid == (gid_t)-1 ||
++	    st->st_ex_gid == (gid_t)UINT32_MAX)
++	{
++		st->st_ex_gid = 0;
++	}
++}
++#else
++static void tc_normalize_hfs_unknown_owner(struct stat_ex *st)
++{
++	(void)st;
++}
++#endif
++
+ void init_stat_ex_from_stat (struct stat_ex *dst,
+@@ -279,6 +309,7 @@ void init_stat_ex_from_stat (struct stat_ex *dst,
+ 	dst->st_ex_nlink = src->st_nlink;
+ 	dst->st_ex_uid = src->st_uid;
+ 	dst->st_ex_gid = src->st_gid;
++	tc_normalize_hfs_unknown_owner(dst);
+ 	dst->st_ex_rdev = src->st_rdev;
+ 	dst->st_ex_size = src->st_size;
+ 	dst->st_ex_atime = get_atimespec(src);
