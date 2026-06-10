@@ -118,6 +118,7 @@ def make_inspection(
             primary_active_candidate,
             () if primary_active_candidate else ("not active",),
             None,
+            None,
         ),
         secondary=BankInspection(
             "secondary",
@@ -130,6 +131,7 @@ def make_inspection(
             () if secondary_backup_valid else ("bad secondary",),
             False,
             ("inactive",),
+            None,
             None,
         ),
         active_selection=ActiveSelectionInfo("single_candidate", ("primary",), "test"),

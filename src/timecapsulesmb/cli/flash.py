@@ -379,6 +379,7 @@ def _analyze_flash(
         cks2=inputs.cks2,
         os_release=target.compatibility.os_release,
         build_primary_patch_candidate=operation == "patch",
+        live_login=inputs.live_login,
     )
     analysis = inspection.strict_analysis
 

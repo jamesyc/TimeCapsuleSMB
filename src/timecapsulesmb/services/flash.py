@@ -319,6 +319,29 @@ def _manifest_acp_checksum(manifest: dict[str, object], name: str) -> int | None
     return None
 
 
+def _manifest_live_login_match(manifest: dict[str, object], name: str, data: bytes) -> bool | None:
+    data_sha256 = sha256_hex(data)
+    for bank in _manifest_banks(manifest):
+        if bank.get("name") != name:
+            continue
+        if bank.get("sha256") != data_sha256:
+            return None
+        value = bank.get("live_login_match")
+        return value if isinstance(value, bool) else None
+    return None
+
+
+def _refresh_manifest_inspection(manifest: dict[str, object], inspection: FlashInspection, *, operation: str) -> None:
+    payload = inspection_to_jsonable(
+        inspection,
+        write_policy="primary_bank_patch" if operation == "patch" else "active_bank_only",
+    )
+    if operation != "patch":
+        _mark_manifest_no_write(payload, "backup only; no patch candidate built")
+    for key in ("active_bank", "write_policy", "active_selection", "banks"):
+        manifest[key] = payload[key]
+
+
 def _read_backup_raw(backup_dir: Path, manifest: dict[str, object]) -> tuple[bytes, bytes]:
     try:
         primary = _manifest_file_path(manifest, backup_dir, "primary").read_bytes()
@@ -373,7 +396,12 @@ def inspect_backup(
         cks2=_manifest_acp_checksum(manifest, "secondary"),
         os_release=_backup_os_release(manifest),
         build_primary_patch_candidate=operation == "patch",
+        saved_live_login_matches={
+            "primary": _manifest_live_login_match(manifest, "primary", primary),
+            "secondary": _manifest_live_login_match(manifest, "secondary", secondary),
+        },
     )
+    _refresh_manifest_inspection(manifest, inspection, operation=operation)
     return FlashAnalysisBundle(
         inspection=inspection,
         analysis=inspection.strict_analysis,
@@ -411,6 +439,7 @@ def backup_flash(
         cks2=inputs.cks2,
         os_release=target.compatibility.os_release,
         build_primary_patch_candidate=operation == "patch",
+        live_login=inputs.live_login,
     )
     manifest = manifest_from_inspection(
         operation=operation,

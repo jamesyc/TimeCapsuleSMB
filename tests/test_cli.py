@@ -6110,6 +6110,38 @@ class CliTests(unittest.TestCase):
         self.assertIsNone(manifest["banks"][1]["patch"])
         self.assertNotIn("patch file=", output.getvalue())
 
+    def test_flash_read_only_uses_live_login_to_select_between_active_candidates(self) -> None:
+        output = io.StringIO()
+        stock_primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            with self.flash_zopfli_available():
+                patched_primary = self.make_patched_flash_bank(stock_primary)
+                with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                    with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                        with mock.patch(
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(
+                                patched_primary,
+                                secondary,
+                                live_login=PATCHED_LOGIN_SCRIPT,
+                            ),
+                        ):
+                            with redirect_stdout(output):
+                                rc = cli_flash.main(["--read-only", "--backup-dir", str(backup_dir)])
+
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(manifest["active_bank"], "primary")
+        self.assertEqual(manifest["active_selection"]["status"], "selected")
+        self.assertEqual(manifest["active_selection"]["selected_by"], "live_login")
+        self.assertEqual(manifest["active_selection"]["candidates"], ["primary"])
+        self.assertEqual(manifest["banks"][0]["live_login_match"], True)
+        self.assertEqual(manifest["banks"][1]["live_login_match"], False)
+
     def test_flash_patch_targets_primary_when_both_banks_are_active_candidates(self) -> None:
         output = io.StringIO()
         primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")

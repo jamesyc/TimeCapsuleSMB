@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import re
 import struct
+from typing import Mapping
 import zlib
 
 from timecapsulesmb.core.errors import require_python_module
@@ -171,6 +172,7 @@ class BankInspection:
     backup_failures: tuple[str, ...]
     active_candidate: bool
     active_failures: tuple[str, ...]
+    live_login_match: bool | None
     error: str | None
 
 
@@ -372,6 +374,19 @@ def _backup_validation_failures(bank: BankAnalysis) -> tuple[str, ...]:
     return tuple(failures)
 
 
+def _live_login_match(
+    analysis: BankAnalysis,
+    *,
+    live_login: bytes | None,
+    saved_live_login_match: bool | None,
+) -> bool | None:
+    if live_login is None:
+        return saved_live_login_match
+    if not live_login:
+        return None
+    return live_login in analysis.gzip_member.decompressed
+
+
 def _load_zopfli_gzip() -> object:
     return importlib.import_module("zopfli.gzip")
 
@@ -521,6 +536,8 @@ def inspect_bank(
     acp_checksum: int | None,
     os_release: str,
     build_patch_candidate: bool = False,
+    live_login: bytes | None = None,
+    saved_live_login_match: bool | None = None,
 ) -> BankInspection:
     try:
         analysis = analyze_bank(
@@ -544,12 +561,18 @@ def inspect_bank(
             backup_failures=(error,),
             active_candidate=False,
             active_failures=(error,),
+            live_login_match=None,
             error=error,
         )
     backup_failures = _backup_validation_failures(analysis)
     active_failures = backup_failures
     if not analysis.kernel_identity_match:
         active_failures = active_failures + (analysis.kernel_identity_detail,)
+    live_login_match = _live_login_match(
+        analysis,
+        live_login=live_login,
+        saved_live_login_match=saved_live_login_match,
+    )
     return BankInspection(
         name=name,
         device=device,
@@ -561,6 +584,7 @@ def inspect_bank(
         backup_failures=backup_failures,
         active_candidate=not active_failures,
         active_failures=active_failures,
+        live_login_match=live_login_match,
         error=None,
     )
 
@@ -573,7 +597,14 @@ def inspect_flash_banks(
     cks2: int | None,
     os_release: str,
     build_primary_patch_candidate: bool = False,
+    live_login: bytes | None = None,
+    saved_live_login_matches: Mapping[str, bool | None] | None = None,
 ) -> FlashInspection:
+    def saved_match(name: str) -> bool | None:
+        if saved_live_login_matches is None:
+            return None
+        return saved_live_login_matches.get(name)
+
     primary = inspect_bank(
         name="primary",
         device="/dev/rflash0.raw",
@@ -581,6 +612,8 @@ def inspect_flash_banks(
         acp_checksum=cks1,
         os_release=os_release,
         build_patch_candidate=build_primary_patch_candidate,
+        live_login=live_login,
+        saved_live_login_match=saved_match("primary"),
     )
     secondary = inspect_bank(
         name="secondary",
@@ -589,10 +622,11 @@ def inspect_flash_banks(
         acp_checksum=cks2,
         os_release=os_release,
         build_patch_candidate=False,
+        live_login=live_login,
+        saved_live_login_match=saved_match("secondary"),
     )
-    active_candidates = tuple(
-        bank.name for bank in (primary, secondary) if bank.active_candidate
-    )
+    candidate_banks = tuple(bank for bank in (primary, secondary) if bank.active_candidate)
+    active_candidates = tuple(bank.name for bank in candidate_banks)
     if len(active_candidates) == 1:
         active_selection = ActiveSelectionInfo(
             status="selected",
@@ -606,11 +640,19 @@ def inspect_flash_banks(
             selected_by=None,
         )
     else:
-        active_selection = ActiveSelectionInfo(
-            status="multiple_candidates",
-            candidates=active_candidates,
-            selected_by=None,
-        )
+        live_login_candidates = tuple(bank.name for bank in candidate_banks if bank.live_login_match is True)
+        if len(live_login_candidates) == 1:
+            active_selection = ActiveSelectionInfo(
+                status="selected",
+                candidates=live_login_candidates,
+                selected_by="live_login",
+            )
+        else:
+            active_selection = ActiveSelectionInfo(
+                status="multiple_candidates",
+                candidates=active_candidates,
+                selected_by=None,
+            )
     return FlashInspection(primary=primary, secondary=secondary, active_selection=active_selection)
 
 
@@ -731,6 +773,7 @@ def bank_inspection_to_jsonable(
             "backup_failures": list(bank.backup_failures),
             "active_candidate": bank.active_candidate,
             "active_failures": list(bank.active_failures),
+            "live_login_match": bank.live_login_match,
             "analysis_error": bank.error,
             "patch": None,
             "patch_error": None,
@@ -746,6 +789,7 @@ def bank_inspection_to_jsonable(
         "backup_failures": list(bank.backup_failures),
         "active_candidate": bank.active_candidate,
         "active_failures": list(bank.active_failures),
+        "live_login_match": bank.live_login_match,
         "analysis_error": bank.error,
     })
     return payload

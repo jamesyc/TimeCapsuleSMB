@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import struct
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -30,6 +31,7 @@ from timecapsulesmb.flash import (
     write_decision_for_bank,
 )
 from timecapsulesmb.integrations.acp import ACPAuthError
+from timecapsulesmb.flash_payloads import AcpFlashPayload
 from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
@@ -450,6 +452,162 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertIsNotNone(inspection.primary.analysis)
         assert inspection.primary.analysis is not None
         self.assertIsNotNone(inspection.primary.analysis.patch)
+
+    def test_live_login_disambiguates_multiple_active_candidates(self) -> None:
+        primary = make_bank(login=PATCHED_LOGIN_SCRIPT, release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(login=STOCK_LOGIN_NETBSD4_DUMMY, release=b"NetBSD 4.0_STABLE #0: current")
+
+        inspection = inspect_flash_banks(
+            primary_data=primary,
+            secondary_data=secondary,
+            cks1=find_footer(primary).checksum,
+            cks2=find_footer(secondary).checksum,
+            os_release="4.0_STABLE",
+            live_login=PATCHED_LOGIN_SCRIPT,
+        )
+
+        self.assertEqual(inspection.active_bank, "primary")
+        self.assertEqual(inspection.active_selection.status, "selected")
+        self.assertEqual(inspection.active_selection.candidates, ("primary",))
+        self.assertEqual(inspection.active_selection.selected_by, "live_login")
+        self.assertTrue(inspection.primary.active_candidate)
+        self.assertTrue(inspection.secondary.active_candidate)
+        self.assertTrue(inspection.primary.live_login_match)
+        self.assertFalse(inspection.secondary.live_login_match)
+        payload = inspection_to_jsonable(inspection)
+        self.assertEqual(payload["banks"][0]["live_login_match"], True)
+        self.assertEqual(payload["banks"][1]["live_login_match"], False)
+
+    def test_live_login_keeps_ambiguous_when_multiple_candidates_match(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+
+        inspection = inspect_flash_banks(
+            primary_data=primary,
+            secondary_data=secondary,
+            cks1=find_footer(primary).checksum,
+            cks2=find_footer(secondary).checksum,
+            os_release="4.0_STABLE",
+            live_login=STOCK_LOGIN_NETBSD4_DUMMY,
+        )
+
+        self.assertIsNone(inspection.active_bank)
+        self.assertEqual(inspection.active_selection.status, "multiple_candidates")
+        self.assertEqual(inspection.active_selection.candidates, ("primary", "secondary"))
+        self.assertTrue(inspection.primary.live_login_match)
+        self.assertTrue(inspection.secondary.live_login_match)
+
+    def test_plan_from_backup_reuses_saved_live_login_match_evidence(self) -> None:
+        primary = make_bank(login=PATCHED_LOGIN_SCRIPT, release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(login=STOCK_LOGIN_NETBSD4_DUMMY, release=b"NetBSD 4.0_STABLE #0: current")
+        primary_footer = find_footer(primary)
+        secondary_footer = find_footer(secondary)
+        payload = AcpFlashPayload(
+            data=b"payload",
+            expected_prefix=primary[: primary_footer.end_offset],
+            expected_login_classification="stock",
+            template_source="test",
+            template_path=Path("/tmp/template.basebinary"),
+            template_product_id="116",
+            template_version="7.8.1",
+            template_sha256="template-sha",
+            payload_sha256="payload-sha",
+            key_id="test-key",
+            inner_model=116,
+            inner_version=0x00070801,
+            inner_payload_size=primary_footer.end_offset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            flash_service.save_flash_banks(backup_dir=backup_dir, primary=primary, secondary=secondary)
+            flash_service.save_flash_manifest(backup_dir=backup_dir, manifest={
+                "operation": "read_only",
+                "backup_dir": str(backup_dir),
+                "syap": "116",
+                "os_release": "4.0_STABLE",
+                "files": {
+                    "primary": str(backup_dir / "primary.raw"),
+                    "secondary": str(backup_dir / "secondary.raw"),
+                    "manifest": str(backup_dir / "manifest.json"),
+                },
+                "banks": [
+                    {
+                        "name": "primary",
+                        "sha256": flash_module.sha256_hex(primary),
+                        "acp_checksum": f"0x{primary_footer.checksum:08x}",
+                        "live_login_match": True,
+                    },
+                    {
+                        "name": "secondary",
+                        "sha256": flash_module.sha256_hex(secondary),
+                        "acp_checksum": f"0x{secondary_footer.checksum:08x}",
+                        "live_login_match": False,
+                    },
+                ],
+            })
+
+            with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_active_bank", return_value=payload):
+                bundle, plan = flash_service.plan_flash_from_backup(
+                    backup_dir=backup_dir,
+                    operation="restore",
+                    force=False,
+                    firmware_template=None,
+                    firmware_version=None,
+                )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        assert plan.target_bank is not None
+        self.assertEqual(plan.target_bank.name, "primary")
+        self.assertEqual(bundle.manifest["active_bank"], "primary")
+        self.assertEqual(bundle.manifest["active_selection"]["selected_by"], "live_login")
+        self.assertEqual(bundle.inspection.active_selection.selected_by, "live_login")
+
+    def test_plan_from_backup_ignores_saved_live_login_match_when_raw_bank_changed(self) -> None:
+        primary = make_bank(login=PATCHED_LOGIN_SCRIPT, release=b"NetBSD 4.0_STABLE #0: current")
+        changed_primary = make_bank(login=PATCHED_LOGIN_SCRIPT, release=b"NetBSD 4.0_STABLE #0: changed")
+        secondary = make_bank(login=STOCK_LOGIN_NETBSD4_DUMMY, release=b"NetBSD 4.0_STABLE #0: current")
+        changed_primary_footer = find_footer(changed_primary)
+        secondary_footer = find_footer(secondary)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            flash_service.save_flash_banks(backup_dir=backup_dir, primary=changed_primary, secondary=secondary)
+            flash_service.save_flash_manifest(backup_dir=backup_dir, manifest={
+                "operation": "read_only",
+                "backup_dir": str(backup_dir),
+                "syap": "116",
+                "os_release": "4.0_STABLE",
+                "files": {
+                    "primary": str(backup_dir / "primary.raw"),
+                    "secondary": str(backup_dir / "secondary.raw"),
+                    "manifest": str(backup_dir / "manifest.json"),
+                },
+                "banks": [
+                    {
+                        "name": "primary",
+                        "sha256": flash_module.sha256_hex(primary),
+                        "acp_checksum": f"0x{changed_primary_footer.checksum:08x}",
+                        "live_login_match": True,
+                    },
+                    {
+                        "name": "secondary",
+                        "sha256": flash_module.sha256_hex(secondary),
+                        "acp_checksum": f"0x{secondary_footer.checksum:08x}",
+                        "live_login_match": False,
+                    },
+                ],
+            })
+
+            with self.assertRaisesRegex(FlashAnalysisError, "multiple firmware banks passed active selection checks"):
+                flash_service.plan_flash_from_backup(
+                    backup_dir=backup_dir,
+                    operation="restore",
+                    force=False,
+                    firmware_template=None,
+                    firmware_version=None,
+                )
 
     def test_inspect_flash_banks_keeps_invalid_secondary_status_without_raising(self) -> None:
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
