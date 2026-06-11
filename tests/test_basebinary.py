@@ -73,6 +73,23 @@ class BasebinaryTests(unittest.TestCase):
         self.assertEqual(parsed.header.model, 105)
         self.assertEqual(parsed.payload, payload)
 
+    def test_observed_timecapsule6_109_key_is_in_default_trial_keyring(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-timecapsule6-109-78100")
+
+        self.assertEqual(key.stored_key.hex(), "cfb15a151a3998b983a5a48aaa859e80")
+        self.assertEqual(key.derived_key.hex(), "d6ab410907278799a28787ae8fa3b9a8")
+
+    def test_default_keyring_parses_observed_timecapsule6_109_model_109_container(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-timecapsule6-109-78100")
+        payload = b"model 109 firmware payload" * 128
+        encoded = compose_basebinary(make_header(encrypted=True, model=109, version=0x07818000), payload, key=key)
+
+        parsed = parse_basebinary(encoded)
+
+        self.assertEqual(parsed.key_id, "observed-timecapsule6-109-78100")
+        self.assertEqual(parsed.header.model, 109)
+        self.assertEqual(parsed.payload, payload)
+
     def test_observed_k10a_key_is_in_default_trial_keyring(self) -> None:
         key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-k10a-78100")
 
