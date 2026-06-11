@@ -7,7 +7,7 @@ Macs running macOS 26.4.x can still use the device as a standard Samba network s
 
 This project has 2 parts:
 - a fork of Samba 4, modified to work on the Apple Time Capsule
-- the installers for the Samba binary, via python or macOS GUI app. 
+- the installers for the Samba binary, via python or the **macOS GUI app**. 
 
 This is now fully working for all Time Capsules: the Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />
