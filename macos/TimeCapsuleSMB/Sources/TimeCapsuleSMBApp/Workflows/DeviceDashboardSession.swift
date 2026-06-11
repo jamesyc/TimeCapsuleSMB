@@ -69,6 +69,26 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         appStore.dashboardSummary(for: profile)
     }
 
+    func staleEndpointNotice(for profile: DeviceProfile) -> StaleEndpointNotice? {
+        appStore.deviceDiscovery.staleEndpointNotice(for: latestProfile(for: profile))
+    }
+
+    func updateConfiguredAddressFromDiscovery(profile: DeviceProfile) {
+        let currentProfile = latestProfile(for: profile)
+        guard let notice = staleEndpointNotice(for: currentProfile) else {
+            return
+        }
+        profileEditorStore.draft.host = notice.currentHost
+        selectedTab = .settings
+        guard appStore.password(for: currentProfile) != nil else {
+            profileEditorStore.requestPasswordReplacement(error: L10n.string("password.error.required"))
+            return
+        }
+        Task { @MainActor in
+            await profileEditorStore.save(profile: currentProfile)
+        }
+    }
+
     func performPrimaryAction(_ action: DashboardPrimaryAction, profile: DeviceProfile) {
         switch action {
         case .replacePassword:
@@ -315,6 +335,10 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         selectedTab = .settings
     }
 
+    private func latestProfile(for profile: DeviceProfile) -> DeviceProfile {
+        appStore.deviceRegistry.profile(id: profile.id) ?? profile
+    }
+
     func applyProfileSettings(_ settings: DeviceProfileSettings) {
         deployStore.nbnsEnabled = settings.nbnsEnabled
         deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
@@ -395,6 +419,11 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
             .store(in: &cancellables)
         profileEditorStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        appStore.deviceDiscovery.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }

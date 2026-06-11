@@ -178,6 +178,9 @@
 "dashboard.header.last_checked_value" = "Last checked: %@";
 "dashboard.health.check_counts" = "PASS %d, WARN %d, FAIL %d";
 "dashboard.health.connection" = "Connection";
+"stale_endpoint.message" = "This profile is configured for %@, but Bonjour sees the device at %@. Update the configured address before running device operations.";
+"stale_endpoint.title" = "%@ is now at %@";
+"stale_endpoint.update_action" = "Update Configured Address";
 "dashboard.health.connection.keychain_unavailable" = "The saved password cannot be read from Keychain.";
 "dashboard.health.connection.not_refreshed" = "Connection status has not been refreshed.";
 "dashboard.health.connection.password_invalid" = "The saved password was rejected by the device.";

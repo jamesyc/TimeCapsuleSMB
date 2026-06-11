@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -532,6 +533,142 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
         XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
         XCTAssertNil(fixture.runner.calls[1].params["host"])
+    }
+
+    func testDashboardUpdateConfiguredAddressRunsConfigureWithCurrentBonjourRecord() async throws {
+        let oldRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.2"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let currentRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.80"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80"))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.deviceDiscovery.refresh()
+        try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+        for tab in DeviceDashboardTab.allCases {
+            session.selectedTab = tab
+            XCTAssertNotNil(session.staleEndpointNotice(for: profile))
+        }
+
+        session.updateConfiguredAddressFromDiscovery(profile: profile)
+
+        try await waitUntilStoreState { session.profileEditorStore.state == .saved }
+        let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(session.selectedTab, .settings)
+        XCTAssertEqual(saved.host, "root@10.0.0.80")
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
+        XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
+        XCTAssertNil(fixture.runner.calls[1].params["host"])
+        for tab in DeviceDashboardTab.allCases {
+            session.selectedTab = tab
+            XCTAssertNil(session.staleEndpointNotice(for: profile))
+            XCTAssertNil(session.staleEndpointNotice(for: saved))
+        }
+    }
+
+    func testDashboardUpdateConfiguredAddressRunsConfigureWithCurrentIPv6BonjourRecord() async throws {
+        let oldRecord = testDeviceRecord(
+            name: "IPv6 Capsule",
+            hostname: "ipv6-capsule.local.",
+            ipv4: [],
+            ipv6: ["fd00::2"],
+            fullname: "IPv6 Capsule._airport._tcp.local."
+        )
+        let currentRecord = testDeviceRecord(
+            name: "IPv6 Capsule",
+            hostname: "ipv6-capsule.local.",
+            ipv4: [],
+            ipv6: ["fd00::80"],
+            fullname: "IPv6 Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@fd00::80"))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@fd00::2"),
+            discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.deviceDiscovery.refresh()
+        try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+
+        session.updateConfiguredAddressFromDiscovery(profile: profile)
+
+        try await waitUntilStoreState { session.profileEditorStore.state == .saved }
+        let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(session.selectedTab, .settings)
+        XCTAssertEqual(saved.host, "root@fd00::80")
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
+        XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
+        XCTAssertNil(fixture.runner.calls[1].params["host"])
+        XCTAssertNil(fixture.deviceDiscovery.staleEndpointNotice(for: saved))
+    }
+
+    func testDashboardSessionPublishesWhenDiscoveryChanges() async throws {
+        let oldRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.2"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let currentRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.80"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+        var didPublish = false
+        let cancellable = session.objectWillChange.sink {
+            didPublish = true
+        }
+
+        fixture.deviceDiscovery.refresh()
+
+        try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
+        XCTAssertTrue(didPublish)
+        XCTAssertNotNil(session.staleEndpointNotice(for: profile))
+        withExtendedLifetime(cancellable) {}
     }
 
     private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> (

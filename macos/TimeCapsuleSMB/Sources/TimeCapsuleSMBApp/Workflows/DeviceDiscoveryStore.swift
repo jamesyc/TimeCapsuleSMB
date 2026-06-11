@@ -33,6 +33,14 @@ enum DeviceDiscoveryState: String, CaseIterable, Equatable {
     }
 }
 
+struct StaleEndpointNotice: Equatable {
+    let profileID: DeviceProfile.ID
+    let deviceName: String
+    let configuredHost: String
+    let currentHost: String
+    let discoveredDevice: DiscoveredDevice
+}
+
 @MainActor
 final class DeviceDiscoveryStore: ObservableObject {
     @Published private(set) var state: DeviceDiscoveryState = .idle
@@ -133,6 +141,24 @@ final class DeviceDiscoveryStore: ObservableObject {
         devices.first { device in
             matchingProfile(for: device)?.id == profile.id
         }
+    }
+
+    func staleEndpointNotice(for profile: DeviceProfile) -> StaleEndpointNotice? {
+        guard let device = currentDiscoveredDevice(for: profile),
+              let configuredHost = DeviceEndpointPolicy.hostComponent(profile.host),
+              let currentHost = DeviceEndpointPolicy.hostComponent(device.connectionTarget),
+              DeviceEndpointPolicy.addressFamily(for: configuredHost) != nil,
+              DeviceEndpointPolicy.addressFamily(for: currentHost) != nil,
+              DeviceEndpointPolicy.normalizedHostKey(profile.host) != DeviceEndpointPolicy.normalizedHostKey(device.connectionTarget) else {
+            return nil
+        }
+        return StaleEndpointNotice(
+            profileID: profile.id,
+            deviceName: profile.title,
+            configuredHost: configuredHost,
+            currentHost: currentHost,
+            discoveredDevice: device
+        )
     }
 
     func lastSeenText(for profile: DeviceProfile) -> String? {

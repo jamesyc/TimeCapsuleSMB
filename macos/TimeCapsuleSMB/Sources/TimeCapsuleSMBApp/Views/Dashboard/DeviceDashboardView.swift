@@ -1,5 +1,9 @@
 import SwiftUI
 
+private enum DeviceDashboardLayout {
+    static let actionIconSize: CGFloat = 16
+}
+
 struct DeviceDashboardView: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
@@ -21,6 +25,17 @@ struct DeviceDashboardView: View {
             .padding()
 
             Divider()
+
+            if let notice = session.staleEndpointNotice(for: profile) {
+                DashboardStaleEndpointNoticeView(
+                    notice: notice,
+                    update: {
+                        session.updateConfiguredAddressFromDiscovery(profile: profile)
+                    }
+                )
+                .padding(.horizontal)
+                .padding(.top)
+            }
 
             Group {
                 switch session.selectedTab {
@@ -95,5 +110,37 @@ struct DeviceDashboardView: View {
 
     private func diagnosticsText() -> String {
         DiagnosticsExportBuilder().build(context: appStore.diagnosticsExportContext(includeBackendEvents: true))
+    }
+}
+
+private struct DashboardStaleEndpointNoticeView: View {
+    let notice: StaleEndpointNotice
+    let update: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "network")
+                .foregroundStyle(.orange)
+                .frame(width: DeviceDashboardLayout.actionIconSize, height: DeviceDashboardLayout.actionIconSize)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n.format("stale_endpoint.title", notice.deviceName, notice.currentHost))
+                    .font(.body.weight(.medium))
+                Text(L10n.format("stale_endpoint.message", notice.configuredHost, notice.currentHost))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    update()
+                } label: {
+                    Label(L10n.string("stale_endpoint.update_action"), systemImage: "arrow.triangle.2.circlepath")
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 10)
+        .padding(.leading, 14)
+        .padding(.trailing, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }

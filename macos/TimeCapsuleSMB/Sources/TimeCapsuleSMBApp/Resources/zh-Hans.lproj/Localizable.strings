@@ -178,6 +178,9 @@
 "dashboard.header.last_checked_value" = "上次检查：%@";
 "dashboard.health.check_counts" = "PASS %d，WARN %d，FAIL %d";
 "dashboard.health.connection" = "连接";
+"stale_endpoint.message" = "此 Profile 当前配置为 %@，但 Bonjour 看到设备位于 %@。请先更新配置地址，再运行设备操作。";
+"stale_endpoint.title" = "%@ 现在位于 %@";
+"stale_endpoint.update_action" = "更新配置地址";
 "dashboard.health.connection.keychain_unavailable" = "无法从 Keychain 读取保存的密码。";
 "dashboard.health.connection.not_refreshed" = "连接状态尚未刷新。";
 "dashboard.health.connection.password_invalid" = "保存的密码被设备拒绝。";
