@@ -63,9 +63,11 @@ From the root of this repository, the normal quick start commands to run are:
 2. `.venv/bin/tcapsule configure` save a config/settings file
 3. `.venv/bin/tcapsule deploy` deploy to the Time Capsule according to the config file
 4. `.venv/bin/tcapsule doctor` check if everything is working
-5. `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
+5. `.venv/bin/tcapsule flash` to backup the flash memory, and `.venv/bin/tcapsule flash --patch` to patch it
 
 If you run into any issues:
+
+- `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
 - `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
 - `.venv/bin/tcapsule discover` to list all mDNS/Bonjour devices
 - `.venv/bin/tcapsule repair-xattrs` to repair any broken files on the disk from bad xattrs
@@ -144,29 +146,36 @@ If you want a machine-readable deployment plan without changing the device, use:
 .venv/bin/tcapsule deploy --dry-run --json
 ```
 
-## Step 4: Activate It Again If Needed
+## Step 4: Flash, or Activate It Again If Needed
 
-Run:
-
-```bash
-.venv/bin/tcapsule activate
-```
-
-This command is for older Gen 1-4 devices after a reboot. It starts Samba without copying the files again.  
-For older Gen 1-4 hardware, this is currently needed after reboot because the firmware does not persist the `/etc` boot hook needed to auto-start Samba. 
-
-Unfortunately, you need to run `activate` after *every* reboot for older devices that do not start Samba automatically.
-
-Advanced NetBSD 4 users can back up the firmware with:
+This is for older Gen 1-4 devices. Run:
 
 ```bash
 .venv/bin/tcapsule flash
 ```
 
-The command is read-only by default. On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the selected active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. Patch mode normally requires exactly one safely selected active bank; `--force` is available only for patch mode and bypasses the backup/active-candidate preflight to target the primary bank.
+To back up the flash on your device. Then run: 
+
+```bash
+.venv/bin/tcapsule flash --patch
+```
+This will then patch a small boot hook launcher (to the primary firmware bank only). It just tells the device to run the `/mnt/Flash/rc.local` file at every startup.
+
+On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the selected active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. Patch mode normally requires exactly one safely selected active bank; `--force` is available only for patch mode and bypasses the backup/active-candidate preflight to target the primary bank.
 
 Patch mode cannot send a reboot or poweroff command after a successful write. After `tcapsule flash --patch` reports success, a user needs to manually
 unplug the device to reboot, and then wait a few minutes for the device to boot to run `tcapsule doctor`. Restore mode can request a software reboot with `tcapsule flash --restore --reboot`; after that, use `tcapsule flash --check-apple` to verify the active bank matches Apple stock firmware.
+
+If you do not want to patch the device, run:
+
+```bash
+.venv/bin/tcapsule activate
+```
+
+It starts Samba without copying the files again.  
+For older Gen 1-4 hardware, this is currently needed after reboot because by default the firmware does not persist the boot hook needed to auto-start Samba. 
+
+Unfortunately, you need to run `activate` after *every* reboot for older devices that do not start Samba automatically, if you do not run `flash`.
 
 ## Step 5: Verify The Result
 
