@@ -2752,7 +2752,6 @@ class AppApiTests(unittest.TestCase):
                 "upload_nbns_advertiser",
                 "upload_boot_files",
                 "upload_runtime_config",
-                "upload_samba_accounts",
             ],
         )
 

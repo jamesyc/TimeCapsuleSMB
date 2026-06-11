@@ -193,8 +193,6 @@ tc_manager_samba_file_signature() {
 
     printf 'payload\t%s\n' "$payload_dir"
     tc_manager_file_metadata_signature "$smbd_src"
-    tc_manager_file_metadata_signature "$payload_dir/private/smbpasswd"
-    tc_manager_file_metadata_signature "$payload_dir/private/username.map"
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ]; then
         tc_manager_file_metadata_signature "$nbns_src"
     else

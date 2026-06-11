@@ -103,8 +103,6 @@ from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     GENERATED_FLASH_CONFIG_SOURCE,
-    GENERATED_SMBPASSWD_SOURCE,
-    GENERATED_USERNAME_MAP_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_MANAGER_SOURCE,
 )
@@ -4799,7 +4797,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("payload dir: resolved from MaSt at deploy time/.samba4", text)
         self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s per attempt", text)
         self.assertIn("generated flash runtime config", text)
-        self.assertIn("generated smbpasswd", text)
+        self.assertNotIn("generated smbpasswd", text)
+        self.assertNotIn("generated:username.map", text)
         self.assertNotIn("rendered:smb.conf.template", text)
         self.assertNotIn("generated adisk", text)
         self.assertNotIn("generated nbns marker", text)
@@ -4939,8 +4938,6 @@ class CliTests(unittest.TestCase):
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             captured["host"] = connection.host
             captured["source_ids"] = set(source_resolver)
-            captured["smbpasswd"] = source_resolver[GENERATED_SMBPASSWD_SOURCE].read_text()
-            captured["username_map"] = source_resolver[GENERATED_USERNAME_MAP_SOURCE].read_text()
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
@@ -4953,16 +4950,14 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(captured["host"], "root@10.0.0.2")
-        self.assertIn(GENERATED_SMBPASSWD_SOURCE, captured["source_ids"])
-        self.assertIn(GENERATED_USERNAME_MAP_SOURCE, captured["source_ids"])
+        self.assertNotIn("generated:smbpasswd", captured["source_ids"])
+        self.assertNotIn("generated:username.map", captured["source_ids"])
         self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, captured["source_ids"])
         self.assertIn(PACKAGED_BOOT_SOURCE, captured["source_ids"])
         self.assertIn(PACKAGED_MANAGER_SOURCE, captured["source_ids"])
         self.assertNotIn("rendered:smb.conf.template", captured["source_ids"])
         self.assertNotIn("generated:adisk.uuid", captured["source_ids"])
         self.assertNotIn("generated:nbns.enabled", captured["source_ids"])
-        self.assertIn("root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:", captured["smbpasswd"])
-        self.assertEqual(captured["username_map"], "!root = root\nroot = *\n")
         flash_config = str(captured["flash_config"])
         self.assertIn("TC_CONFIG_VERSION=2\n", flash_config)
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", flash_config)

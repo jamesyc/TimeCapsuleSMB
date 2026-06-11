@@ -74,7 +74,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "upload_nbns_advertiser"): StagePolicy(REMOTE_WRITE, False, "Upload nbns-advertiser."),
     ("deploy", "upload_boot_files"): StagePolicy(REMOTE_WRITE, False, "Upload boot files."),
     ("deploy", "upload_runtime_config"): StagePolicy(REMOTE_WRITE, False, "Upload runtime config."),
-    ("deploy", "upload_samba_accounts"): StagePolicy(REMOTE_WRITE, False, "Upload Samba account files."),
     ("deploy", "post_upload_actions"): StagePolicy(REMOTE_WRITE, False, "Install flash hooks and payload permissions."),
     ("deploy", "verify_payload_upload"): StagePolicy(REMOTE_READ, True, "Verify uploaded payload files."),
     ("deploy", "flush_payload_upload"): StagePolicy(REMOTE_WRITE, False, "Flush remote filesystem writes."),

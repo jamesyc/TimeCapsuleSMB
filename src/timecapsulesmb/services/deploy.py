@@ -13,7 +13,6 @@ from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
-from timecapsulesmb.deploy.auth import render_smbpasswd
 from timecapsulesmb.deploy.boot_assets import boot_asset_path
 from timecapsulesmb.deploy.dry_run import (
     deployment_plan_to_jsonable as _deployment_plan_to_jsonable,
@@ -27,8 +26,6 @@ from timecapsulesmb.deploy.planner import (
     BINARY_SMBD_SOURCE,
     DeploymentPlan,
     GENERATED_FLASH_CONFIG_SOURCE,
-    GENERATED_SMBPASSWD_SOURCE,
-    GENERATED_USERNAME_MAP_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
@@ -103,10 +100,6 @@ DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_MANAGER_SOURCE,
-})
-DEPLOY_UPLOAD_ACCOUNT_SOURCES = frozenset({
-    GENERATED_SMBPASSWD_SOURCE,
-    GENERATED_USERNAME_MAP_SOURCE,
 })
 
 
@@ -218,7 +211,6 @@ class DeployServiceDependencies:
     select_payload_home: Callable[..., PayloadHomeSelection]
     run_remote_actions: Callable[..., object]
     render_flash_config: Callable[..., str]
-    render_smbpasswd: Callable[..., tuple[str, str]]
     boot_asset_path: Callable[..., object]
     upload_deployment_payload: Callable[..., object]
     verify_payload_home: Callable[..., PayloadVerificationResult]
@@ -242,7 +234,6 @@ def default_deploy_service_dependencies() -> DeployServiceDependencies:
         select_payload_home=select_payload_home_with_diagnostics_conn,
         run_remote_actions=run_remote_actions,
         render_flash_config=render_flash_runtime_config,
-        render_smbpasswd=render_smbpasswd,
         boot_asset_path=boot_asset_path,
         upload_deployment_payload=upload_deployment_payload,
         verify_payload_home=verify_payload_home_conn,
@@ -305,8 +296,6 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
         return "upload_boot_files"
     if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
         return "upload_runtime_config"
-    if transfer.source_id in DEPLOY_UPLOAD_ACCOUNT_SOURCES:
-        return "upload_samba_accounts"
     return "upload_payload"
 
 
@@ -333,8 +322,6 @@ def uploaded_file_message(transfer: FileTransfer) -> str | None:
         return "Uploaded boot files."
     if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
         return "Uploaded runtime config."
-    if transfer.source_id == GENERATED_USERNAME_MAP_SOURCE:
-        return "Uploaded Samba account files."
     return None
 
 
@@ -591,33 +578,22 @@ def prepare_deployment_plan(
 
 def _deployment_upload_sources(
     plan: DeploymentPlan,
-    password: str,
     flash_config_text: str,
     tmpdir: Path,
     boot_assets: ExitStack,
     *,
-    render_smbpasswd_func=None,
     boot_asset_path_func=None,
     dependencies: DeployServiceDependencies | None = None,
 ) -> Mapping[str, Path]:
     dependencies = dependencies or default_deploy_service_dependencies()
-    if render_smbpasswd_func is None:
-        render_smbpasswd_func = dependencies.render_smbpasswd
     if boot_asset_path_func is None:
         boot_asset_path_func = dependencies.boot_asset_path
     generated_flash_config = tmpdir / "tcapsulesmb.conf"
-    generated_smbpasswd = tmpdir / "smbpasswd"
-    generated_username_map = tmpdir / "username.map"
     generated_flash_config.write_text(flash_config_text)
-    smbpasswd_text, username_map_text = render_smbpasswd_func(password)
-    generated_smbpasswd.write_text(smbpasswd_text)
-    generated_username_map.write_text(username_map_text)
     return {
         BINARY_SMBD_SOURCE: plan.smbd_path,
         BINARY_MDNS_SOURCE: plan.mdns_path,
         BINARY_NBNS_SOURCE: plan.nbns_path,
-        GENERATED_SMBPASSWD_SOURCE: generated_smbpasswd,
-        GENERATED_USERNAME_MAP_SOURCE: generated_username_map,
         GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
         PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path_func("rc.local")),
         PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("common.sh")),
@@ -670,7 +646,6 @@ def upload_and_verify_deployment_payload(
     on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
     run_remote_actions_func=None,
     render_flash_config_func=None,
-    render_smbpasswd_func=None,
     boot_asset_path_func=None,
     upload_payload_func=None,
     verify_payload_home=None,
@@ -717,11 +692,9 @@ def upload_and_verify_deployment_payload(
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
         upload_sources = _deployment_upload_sources(
             plan,
-            connection.password,
             flash_config_text,
             Path(tmp),
             boot_assets,
-            render_smbpasswd_func=render_smbpasswd_func,
             boot_asset_path_func=boot_asset_path_func,
             dependencies=dependencies,
         )

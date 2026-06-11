@@ -21,9 +21,9 @@ Yep. This doesn't touch anything that will permanently brick a Time Capsule. Thi
 
 #### What is the "Device Password" mode?
 
-TimeCapsuleSMB needs the device/root password during setup. That password is used to enable or access SSH and is also used to generate the managed Samba password.
+TimeCapsuleSMB needs the device/root password during setup. That password is used to enable or access SSH from the app/CLI. The managed Samba runtime reads the current AirPort device password from `syPW` on the Time Capsule at boot and generates its RAM-only Samba auth files before `smbd` starts.
 
-AirPort Utility commonly exposes this as **"With device password"** under disk sharing. This project does not validate the AirPort disk-sharing mode directly, but using the device password mode keeps the password model aligned with what `tcapsule configure` expects.
+AirPort Utility commonly exposes this as **"With device password"** under disk sharing. This project does not validate the AirPort disk-sharing mode directly, but using the device password mode keeps the password model aligned with what the managed Samba runtime reads from AirPort config.
 
 To check/change this:
 1. Open AirPort Utility on your Mac
@@ -32,7 +32,7 @@ To check/change this:
 4. Look for the "Secure Shared Disks" setting
 5. Ensure it's set to "With device password" mode
 
-The device password you enter during setup becomes the SMB password.
+The current AirPort device password is the SMB password. If you change it in AirPort Utility, reboot the device so the managed runtime regenerates the RAM auth file.
 
 #### Do I need to keep the TimeCapsuleSMB folder after setup?
 

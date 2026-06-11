@@ -45,7 +45,6 @@ enum OperationTimelineBuilder {
         "upload_nbns_advertiser": .init(titleKey: "timeline.deploy.title.upload_nbns_advertiser", detailKey: "timeline.deploy.detail.upload_nbns_advertiser"),
         "upload_boot_files": .init(titleKey: "timeline.deploy.title.upload_boot_files", detailKey: "timeline.deploy.detail.upload_boot_files"),
         "upload_runtime_config": .init(titleKey: "timeline.deploy.title.upload_runtime_config", detailKey: "timeline.deploy.detail.upload_runtime_config"),
-        "upload_samba_accounts": .init(titleKey: "timeline.deploy.title.upload_samba_accounts", detailKey: "timeline.deploy.detail.upload_samba_accounts"),
         "post_upload_actions": .init(titleKey: "timeline.deploy.title.post_upload_actions", detailKey: "timeline.deploy.detail.post_upload_actions"),
         "verify_payload_upload": .init(titleKey: "timeline.deploy.title.verify_payload_upload", detailKey: "timeline.deploy.detail.verify_payload_upload"),
         "flush_payload_upload": .init(titleKey: "timeline.deploy.title.flush_payload_upload", detailKey: "timeline.deploy.detail.flush_payload_upload"),

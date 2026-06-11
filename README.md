@@ -17,7 +17,7 @@ The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time 
 
 NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot. If you do not run the `activate` command after a reboot or flash the boot hook, then Samba will not start automatically on an older Time Capsule!
 
-The current authentication model accepts any user as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
+The current authentication model accepts any user as the username, and the Samba password is the current Time Capsule device password. At boot, the device reads its live AirPort `syPW` value and generates the Samba password file in RAM, so a device-password change is picked up after reboot. Guest access is disabled.
 
 AirPort Extreme devices are not officially supported. Unofficially, they work fine. Note that this is installed to the hard drive, so it will not work for an Airport Extreme without a hard drive (as there is not enough space to store the binaries on the flash memory).   
 
@@ -113,12 +113,12 @@ At the start of `configure`, the tool first tries to discover your Time Capsule 
 
 `configure` also checks whether SSH is reachable. If SSH is closed, it enables SSH using the built-in Python 3 ACP client, reboots the device, waits for SSH to come up, and then continues the normal probing flow. If the password is wrong, it asks again instead of writing a broken `.env` file.
 
-The password you enter here also becomes the password used for the SMB login as well. In other words, after setup, you normally connect with:
+The password you enter here is stored locally as `TC_PASSWORD` so the tool can keep using SSH and ACP. The managed Samba runtime reads the current device password on the Time Capsule at boot. In other words, after setup, you normally connect with:
 
 - username: `admin` (or any other password)
 - password: the same Time Capsule password you entered during configuration
 
-Samba does not magically use Apple’s internal password backend; unfortunately, using Apple's password system is not possible. Running `configure` deliberately reuses the same password value so that the user experience is simpler and less confusing.
+Samba does not use Apple’s internal password backend directly. The boot script reads the AirPort `syPW` setting, asks `mdns-advertiser` to generate the NT hash, and writes the RAM-only Samba auth files before `smbd` starts.
 
 ## Step 3: Deploy It
 
@@ -128,7 +128,7 @@ Run:
 .venv/bin/tcapsule deploy
 ```
 
-This step installs (or updates) Samba onto the device. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, and sets up the Samba password files. You can run `deploy` for a new version to update.
+This step installs (or updates) Samba onto the device. It validates the checked-in binaries and copies the payload and boot files to the Time Capsule. Samba password files are generated on the device in RAM each time the managed runtime stages. You can run `deploy` for a new version to update.
 
 On Gen 5 NetBSD 6 devices, `deploy` reboots the device so the new runtime comes up cleanly.
 On older Gen 1-4 NetBSD 4 devices, `deploy` also reboots to clear the RAM disk, waits for SSH to return, and then runs `/mnt/Flash/rc.local`. The older devices still need `tcapsule activate` after later reboots that are not part of `deploy`.

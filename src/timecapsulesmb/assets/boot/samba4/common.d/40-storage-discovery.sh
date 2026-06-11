@@ -765,8 +765,7 @@ tc_verify_payload_dir() {
 
     [ -d "$payload_dir" ] || return 1
     [ -x "$payload_dir/smbd" ] || [ -x "$payload_dir/sbin/smbd" ] || return 1
-    [ -f "$payload_dir/private/smbpasswd" ] || return 1
-    [ -f "$payload_dir/private/username.map" ] || return 1
+    [ -d "$payload_dir/private" ] || return 1
 }
 
 tc_log_limited_command_output() {

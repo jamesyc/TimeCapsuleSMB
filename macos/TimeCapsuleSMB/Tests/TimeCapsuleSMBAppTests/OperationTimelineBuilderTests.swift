@@ -156,8 +156,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_mdns_advertiser"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_nbns_advertiser"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_boot_files"),
-            BackendEvent(type: "stage", operation: "deploy", stage: "upload_runtime_config"),
-            BackendEvent(type: "stage", operation: "deploy", stage: "upload_samba_accounts")
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_runtime_config")
         ])
 
         XCTAssertEqual(timeline.map(\.title), [
@@ -165,8 +164,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "Upload mdns-advertiser",
             "Upload nbns-advertiser",
             "Upload Boot Files",
-            "Upload Runtime Config",
-            "Upload Samba Account Files"
+            "Upload Runtime Config"
         ])
     }
 
@@ -206,7 +204,6 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "upload_nbns_advertiser",
             "upload_boot_files",
             "upload_runtime_config",
-            "upload_samba_accounts",
             "post_upload_actions",
             "verify_payload_upload",
             "flush_payload_upload",

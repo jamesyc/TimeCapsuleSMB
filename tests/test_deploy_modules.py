@@ -22,7 +22,6 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.deploy.auth import nt_hash_hex, render_smbpasswd
 from timecapsulesmb.deploy.commands import (
     EnsureVolumeMountedAction,
     InstallPermissionsAction,
@@ -60,8 +59,6 @@ from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS,
     GENERATED_FLASH_CONFIG_SOURCE,
-    GENERATED_SMBPASSWD_SOURCE,
-    GENERATED_USERNAME_MAP_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
@@ -147,19 +144,13 @@ def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> Readin
 
 
 class DeployModuleTests(unittest.TestCase):
-    _mdns_binary_tmpdir: tempfile.TemporaryDirectory[str] | None = None
-    _mdns_binary_path: Path | None = None
     _nbns_binary_tmpdir: tempfile.TemporaryDirectory[str] | None = None
     _nbns_binary_path: Path | None = None
 
     @classmethod
     def tearDownClass(cls) -> None:
-        if cls._mdns_binary_tmpdir is not None:
-            cls._mdns_binary_tmpdir.cleanup()
         if cls._nbns_binary_tmpdir is not None:
             cls._nbns_binary_tmpdir.cleanup()
-        cls._mdns_binary_tmpdir = None
-        cls._mdns_binary_path = None
         cls._nbns_binary_tmpdir = None
         cls._nbns_binary_path = None
 
@@ -278,11 +269,8 @@ class DeployModuleTests(unittest.TestCase):
     def _compile_mdns_advertiser_binary(self, tmp: Path) -> Path:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
-        if self.__class__._mdns_binary_path is not None:
-            return self.__class__._mdns_binary_path
 
-        self.__class__._mdns_binary_tmpdir = tempfile.TemporaryDirectory()
-        bin_path = Path(self.__class__._mdns_binary_tmpdir.name) / "mdns-advertiser"
+        bin_path = tmp / "mdns-advertiser"
         proc = subprocess.run(
             [
                 "cc",
@@ -302,8 +290,18 @@ class DeployModuleTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.__class__._mdns_binary_path = bin_path
         return bin_path
+
+    def _run_mdns_nt_hash(self, password: bytes) -> subprocess.CompletedProcess[bytes]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
+            return subprocess.run(
+                [str(bin_path), "--print-nt-hash-from-stdin"],
+                input=password,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
 
     def _compile_nbns_advertiser_binary(self, tmp: Path) -> Path:
         if shutil.which("cc") is None:
@@ -377,13 +375,28 @@ class DeployModuleTests(unittest.TestCase):
             "END\n"
         )
 
-    def test_nt_hash_hex_is_stable(self) -> None:
-        self.assertEqual(nt_hash_hex("password"), "8846F7EAEE8FB117AD06BDD830B7586C")
+    def test_mdns_print_nt_hash_hashes_utf8_passwords(self) -> None:
+        cases = [
+            (b"password", b"8846F7EAEE8FB117AD06BDD830B7586C\n"),
+            ("pässwörd".encode(), b"0553152250AC01ADB4213CB9938663E4\n"),
+            ("🔐password".encode(), b"CD08E0CEDBB719A7387D2F9DAE50FFA0\n"),
+        ]
+        for password, expected in cases:
+            with self.subTest(password=password):
+                result = self._run_mdns_nt_hash(password)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(result.stdout, expected)
 
-    def test_render_smbpasswd_maps_any_username_to_root(self) -> None:
-        smbpasswd_text, username_map = render_smbpasswd("password")
-        self.assertTrue(smbpasswd_text.startswith("root:0:"))
-        self.assertEqual(username_map, "!root = root\nroot = *\n")
+    def test_mdns_print_nt_hash_strips_single_acp_newline(self) -> None:
+        self.assertEqual(self._run_mdns_nt_hash(b"password\n").stdout, b"8846F7EAEE8FB117AD06BDD830B7586C\n")
+        self.assertEqual(self._run_mdns_nt_hash(b"password\r\n").stdout, b"8846F7EAEE8FB117AD06BDD830B7586C\n")
+
+    def test_mdns_print_nt_hash_rejects_invalid_or_empty_input(self) -> None:
+        for password in (b"", b"\xff"):
+            with self.subTest(password=password):
+                result = self._run_mdns_nt_hash(password)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, b"")
 
     def test_remote_request_reboot_uses_explicit_reboot_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -1348,7 +1361,7 @@ int main(void) {{
             bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2106\n")
+        self.assertEqual(run.stdout, "2220\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_accepts_debug_logging_before_version(self) -> None:
@@ -1361,7 +1374,7 @@ int main(void) {{
                 check=False,
             )
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2106\n")
+        self.assertEqual(run.stdout, "2220\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_traffic_summary_counters_are_debug_only(self) -> None:
@@ -6793,8 +6806,6 @@ int main(void) {{
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
             BINARY_MDNS_SOURCE: Path("/tmp/mdns-advertiser"),
             BINARY_NBNS_SOURCE: Path("/tmp/nbns-advertiser"),
-            GENERATED_SMBPASSWD_SOURCE: Path("/tmp/smbpasswd"),
-            GENERATED_USERNAME_MAP_SOURCE: Path("/tmp/username.map"),
             GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
             PACKAGED_RC_LOCAL_SOURCE: Path("/tmp/rc.local"),
             PACKAGED_COMMON_SH_SOURCE: Path("/tmp/common.sh"),
@@ -6814,8 +6825,8 @@ int main(void) {{
                         on_uploading=uploading.append,
                         on_uploaded=uploaded.append,
                     )
-        self.assertEqual(scp_mock.call_count, 12)
-        self.assertEqual(mount_mock.call_count, 5)
+        self.assertEqual(scp_mock.call_count, 10)
+        self.assertEqual(mount_mock.call_count, 3)
         self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
         self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
         sources = [call.args[1] for call in scp_mock.call_args_list]
@@ -6832,8 +6843,6 @@ int main(void) {{
                 Path("/tmp/manager.sh"),
                 Path("/tmp/dfree.sh"),
                 Path("/tmp/tcapsulesmb.conf"),
-                Path("/tmp/smbpasswd"),
-                Path("/tmp/username.map"),
             ],
         )
         destinations = [call.args[2] for call in scp_mock.call_args_list]
@@ -6850,14 +6859,12 @@ int main(void) {{
                 "/mnt/Flash/.manager.sh.tmp",
                 "/mnt/Flash/.dfree.sh.tmp",
                 "/mnt/Flash/.tcapsulesmb.conf.tmp",
-                "/Volumes/dk2/samba4/private/smbpasswd",
-                "/Volumes/dk2/samba4/private/username.map",
             ],
         )
         binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
         self.assertEqual(binary_upload_timeouts, [PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS] * 4)
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
-        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
+        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6)
         self.assertEqual(ssh_mock.call_count, 14)
         self.assertEqual(uploading, plan.uploads)
         self.assertEqual(uploaded, plan.uploads)
@@ -8025,7 +8032,8 @@ describe_managed_smbd_status "" ""
         self.assertIn(f"rm -rf {payload_dir}/smb.conf.template", text)
         self.assertIn(f"rm -rf {payload_dir}/private/adisk.uuid", text)
         self.assertIn(f"rm -rf {payload_dir}/private/nbns.enabled", text)
-        self.assertIn(f"generated smbpasswd (generated:smbpasswd, generated) -> {payload_dir}/private/smbpasswd", text)
+        self.assertNotIn("generated smbpasswd", text)
+        self.assertNotIn("generated:username.map", text)
         self.assertIn("generated flash runtime config (generated:tcapsulesmb.conf, flash_atomic, timeout 120s) -> /mnt/Flash/tcapsulesmb.conf", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4le", text)
@@ -8199,7 +8207,7 @@ describe_managed_smbd_status "" ""
                 (
                     RemotePermission(f"{payload_dir}/cache", "755"),
                     RemotePermission(f"{payload_dir}/nbns-advertiser", "755"),
-                    RemotePermission(f"{payload_dir}/private/smbpasswd", "600"),
+                    RemotePermission(f"{payload_dir}/private", "700"),
                 )
             )
         )
@@ -8211,7 +8219,8 @@ describe_managed_smbd_status "" ""
         self.assertNotIn("'/Volumes/dk2/Time Capsule Samba 4/libexec", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/cache'", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/nbns-advertiser'", permissions_cmd)
-        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/smbpasswd'", permissions_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private'", permissions_cmd)
+        self.assertNotIn("'/Volumes/dk2/Time Capsule Samba 4/private/smbpasswd'", permissions_cmd)
         self.assertNotIn("if [ -e ", permissions_cmd)
         self.assertNotIn("|| chmod 600", permissions_cmd)
         self.assertNotIn("|| true", permissions_cmd)

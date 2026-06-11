@@ -753,7 +753,7 @@
 "timeline.deploy.detail.post_activation_settle" = "Waiting briefly after activation before probing runtime readiness.";
 "timeline.deploy.detail.post_upload_actions" = "Installing flash hooks and applying file modes.";
 "timeline.deploy.detail.pre_upload_actions" = "Stopping managed services and removing stale deployment files.";
-"timeline.deploy.detail.prepare_deployment_files" = "Generating runtime config and Samba account files.";
+"timeline.deploy.detail.prepare_deployment_files" = "Generating runtime config.";
 "timeline.activate.detail.probe_runtime" = "Checking whether TimeCapsuleSMB is already running before activating it.";
 "timeline.activate.detail.post_activation_settle" = "Waiting briefly after activation before probing runtime readiness.";
 "timeline.deploy.detail.probe_runtime" = "Checking whether the device will start TimeCapsuleSMB automatically.";
@@ -766,7 +766,6 @@
 "timeline.deploy.detail.upload_nbns_advertiser" = "Copying nbns-advertiser to the payload volume.";
 "timeline.deploy.detail.upload_payload" = "Uploading managed SMB payload files.";
 "timeline.deploy.detail.upload_runtime_config" = "Writing runtime settings to /mnt/Flash.";
-"timeline.deploy.detail.upload_samba_accounts" = "Writing Samba account files to the payload volume.";
 "timeline.deploy.detail.upload_smbd" = "Copying smbd to the payload volume.";
 "timeline.deploy.detail.validate_artifacts" = "Checking the bundled payload files before writing to the device.";
 "timeline.deploy.detail.verify_payload_upload" = "Checking that the uploaded files are present.";
@@ -798,7 +797,6 @@
 "timeline.deploy.title.upload_nbns_advertiser" = "Upload nbns-advertiser";
 "timeline.deploy.title.upload_payload" = "Upload Payload";
 "timeline.deploy.title.upload_runtime_config" = "Upload Runtime Config";
-"timeline.deploy.title.upload_samba_accounts" = "Upload Samba Account Files";
 "timeline.deploy.title.upload_smbd" = "Upload smbd";
 "timeline.deploy.title.validate_artifacts" = "Check Local Files";
 "timeline.deploy.title.verify_payload_upload" = "Verify Upload";

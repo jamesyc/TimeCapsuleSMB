@@ -753,7 +753,7 @@
 "timeline.deploy.detail.post_activation_settle" = "激活后先短暂等待，再探测运行时就绪状态。";
 "timeline.deploy.detail.post_upload_actions" = "正在安装 flash hooks 并应用文件权限。";
 "timeline.deploy.detail.pre_upload_actions" = "正在停止托管服务并移除旧部署文件。";
-"timeline.deploy.detail.prepare_deployment_files" = "正在生成运行时配置和 Samba 账号文件。";
+"timeline.deploy.detail.prepare_deployment_files" = "正在生成运行时配置。";
 "timeline.activate.detail.probe_runtime" = "正在检查 TimeCapsuleSMB 是否已在运行，然后再激活。";
 "timeline.activate.detail.post_activation_settle" = "激活后先短暂等待，再探测运行时就绪状态。";
 "timeline.deploy.detail.probe_runtime" = "正在检查设备是否会自动启动 TimeCapsuleSMB。";
@@ -766,7 +766,6 @@
 "timeline.deploy.detail.upload_nbns_advertiser" = "正在复制 nbns-advertiser 到 payload 卷。";
 "timeline.deploy.detail.upload_payload" = "正在上传托管 SMB payload 文件。";
 "timeline.deploy.detail.upload_runtime_config" = "正在写入运行时设置到 /mnt/Flash。";
-"timeline.deploy.detail.upload_samba_accounts" = "正在写入 Samba 账号文件到 payload 卷。";
 "timeline.deploy.detail.upload_smbd" = "正在复制 smbd 到 payload 卷。";
 "timeline.deploy.detail.validate_artifacts" = "写入设备前正在检查打包的 payload 文件。";
 "timeline.deploy.detail.verify_payload_upload" = "正在检查上传的文件是否存在。";
@@ -798,7 +797,6 @@
 "timeline.deploy.title.upload_nbns_advertiser" = "上传 nbns-advertiser";
 "timeline.deploy.title.upload_payload" = "上传 Payload";
 "timeline.deploy.title.upload_runtime_config" = "上传运行时配置";
-"timeline.deploy.title.upload_samba_accounts" = "上传 Samba 账号文件";
 "timeline.deploy.title.upload_smbd" = "上传 smbd";
 "timeline.deploy.title.validate_artifacts" = "检查本地文件";
 "timeline.deploy.title.verify_payload_upload" = "验证上传";

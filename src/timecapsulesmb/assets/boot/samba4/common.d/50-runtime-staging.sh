@@ -154,6 +154,123 @@ tc_stage_runtime_executable() {
     fi
 }
 
+tc_validate_nt_hash() {
+    nt_hash=$1
+
+    case "$nt_hash" in
+        ????????????????????????????????)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    case "$nt_hash" in
+        *[!0123456789ABCDEF]*)
+            return 1
+            ;;
+    esac
+}
+
+tc_smbpasswd_lct() {
+    lct_seconds=$(date '+%s' 2>/dev/null || echo 0)
+    printf '%08X\n' "$lct_seconds" 2>/dev/null || printf '00000000\n'
+}
+
+tc_generate_runtime_smbpasswd() {
+    smbpasswd_tmp="$RAM_PRIVATE/smbpasswd.tmp.$$"
+    rm -f "$smbpasswd_tmp" >/dev/null 2>&1 || true
+
+    if sy_pw=$(/usr/bin/acp -q syPW 2>/dev/null); then
+        :
+    else
+        sy_pw_status=$?
+        tc_log "Samba runtime staging failed: acp syPW read failed status=$sy_pw_status"
+        return "$sy_pw_status"
+    fi
+    if [ -z "$sy_pw" ]; then
+        tc_log "Samba runtime staging failed: acp syPW returned empty password"
+        return 1
+    fi
+    if nt_hash=$(printf '%s\n' "$sy_pw" | "$TC_MDNS_BIN" --print-nt-hash-from-stdin 2>/dev/null); then
+        :
+    else
+        nt_hash_status=$?
+        tc_log "Samba runtime staging failed: NT hash generation failed status=$nt_hash_status"
+        return "$nt_hash_status"
+    fi
+    if ! tc_validate_nt_hash "$nt_hash"; then
+        tc_log "Samba runtime staging failed: generated NT hash had invalid shape"
+        return 1
+    fi
+    lct=$(tc_smbpasswd_lct)
+
+    if {
+        printf 'root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[U          ]:LCT-%s:\n' "$nt_hash" "$lct"
+    } >"$smbpasswd_tmp"; then
+        :
+    else
+        smbpasswd_status=$?
+        tc_log "Samba runtime staging failed: write smbpasswd temp failed: $smbpasswd_tmp status=$smbpasswd_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+        rm -f "$smbpasswd_tmp" >/dev/null 2>&1 || true
+        return "$smbpasswd_status"
+    fi
+    if chmod 600 "$smbpasswd_tmp"; then
+        :
+    else
+        smbpasswd_status=$?
+        tc_log "Samba runtime staging failed: chmod smbpasswd temp failed: $smbpasswd_tmp status=$smbpasswd_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+        rm -f "$smbpasswd_tmp" >/dev/null 2>&1 || true
+        return "$smbpasswd_status"
+    fi
+    if mv "$smbpasswd_tmp" "$RAM_PRIVATE/smbpasswd"; then
+        :
+    else
+        smbpasswd_status=$?
+        tc_log "Samba runtime staging failed: rename smbpasswd temp failed: $smbpasswd_tmp -> $RAM_PRIVATE/smbpasswd status=$smbpasswd_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+        rm -f "$smbpasswd_tmp" >/dev/null 2>&1 || true
+        return "$smbpasswd_status"
+    fi
+}
+
+tc_generate_runtime_username_map() {
+    username_map_tmp="$RAM_PRIVATE/username.map.tmp.$$"
+    rm -f "$username_map_tmp" >/dev/null 2>&1 || true
+
+    if {
+        printf '!root = root\n'
+        printf 'root = *\n'
+    } >"$username_map_tmp"; then
+        :
+    else
+        username_map_status=$?
+        tc_log "Samba runtime staging failed: write username.map temp failed: $username_map_tmp status=$username_map_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+        rm -f "$username_map_tmp" >/dev/null 2>&1 || true
+        return "$username_map_status"
+    fi
+    if chmod 600 "$username_map_tmp"; then
+        :
+    else
+        username_map_status=$?
+        tc_log "Samba runtime staging failed: chmod username.map temp failed: $username_map_tmp status=$username_map_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+        rm -f "$username_map_tmp" >/dev/null 2>&1 || true
+        return "$username_map_status"
+    fi
+    if mv "$username_map_tmp" "$RAM_PRIVATE/username.map"; then
+        :
+    else
+        username_map_status=$?
+        tc_log "Samba runtime staging failed: rename username.map temp failed: $username_map_tmp -> $RAM_PRIVATE/username.map status=$username_map_status"
+        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
+        rm -f "$username_map_tmp" >/dev/null 2>&1 || true
+        return "$username_map_status"
+    fi
+}
+
 tc_stage_runtime() {
     payload_dir=$1
     smbd_src=$2
@@ -161,29 +278,9 @@ tc_stage_runtime() {
 
     tc_stage_runtime_executable "$smbd_src" "$TC_SMBD_BIN" || return 1
 
-    for required_file in smbpasswd username.map; do
-        if [ ! -f "$payload_dir/private/$required_file" ]; then
-            tc_log "Samba runtime staging failed: required private file missing: $payload_dir/private/$required_file"
-            return 1
-        fi
-        if cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file"; then
-            :
-        else
-            private_status=$?
-            tc_log "Samba runtime staging failed: copy private file failed: $payload_dir/private/$required_file -> $RAM_PRIVATE/$required_file status=$private_status"
-            tc_log_runtime_storage_diagnostic "$RAM_ROOT"
-            return "$private_status"
-        fi
-    done
-    if chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map"; then
-        :
-    else
-        private_status=$?
-        tc_log "Samba runtime staging failed: chmod private files failed: $RAM_PRIVATE/smbpasswd $RAM_PRIVATE/username.map status=$private_status"
-        tc_log_runtime_storage_diagnostic "$RAM_ROOT"
-        return "$private_status"
-    fi
-    tc_log "staged Samba auth files into RAM private directory"
+    tc_generate_runtime_smbpasswd || return 1
+    tc_generate_runtime_username_map || return 1
+    tc_log "generated Samba auth files into RAM private directory"
 
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
         tc_stage_runtime_executable "$nbns_src" "$TC_NBNS_BIN" || return 1

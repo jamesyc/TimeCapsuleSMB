@@ -25,9 +25,9 @@ What is working now:
   - generated USB printer records when applicable
 - authenticated SMB access using:
   - examples and docs use Samba username `admin`
-  - generated auth stores a `root` Samba account
+  - boot-time generated RAM auth stores a `root` Samba account
   - incoming SMB usernames are mapped to Unix `root`
-  - password: the same password provided in `.env` as `TC_PASSWORD`
+  - password: the current AirPort device password read from `/usr/bin/acp -q syPW`
 - guest access disabled
 - deploy-time device compatibility detection
 - manual NetBSD 4 activation via `tcapsule activate`
@@ -51,8 +51,8 @@ Current user experience:
 
 Current auth model:
 - the docs and examples use SMB login user `admin`
-- `TC_PASSWORD` is reused as the SMB password
-- generated Samba auth stores a `root` SMB account hash
+- the current AirPort device password is used as the SMB password
+- boot-time generated Samba auth stores a `root` SMB account hash in RAM
 - the username map currently maps incoming SMB usernames to Unix `root`
 - filesystem access still runs as `root`
 - this avoids the privilege-switch failures seen with non-root identities on this firmware
@@ -122,8 +122,7 @@ The actual working split is:
   - `/Volumes/dkX/.samba4/smbd`
   - `/Volumes/dkX/.samba4/mdns-advertiser`
   - `/Volumes/dkX/.samba4/nbns-advertiser`
-  - `/Volumes/dkX/.samba4/private/smbpasswd`
-  - `/Volumes/dkX/.samba4/private/username.map`
+  - `/Volumes/dkX/.samba4/private/`
   - `/Volumes/dkX/.samba4/private/xattr.tdb`
   - `/Volumes/dkX/.samba4/cache`
 - tiny persistent boot hook on flash:
@@ -427,9 +426,11 @@ When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `locks/`
 - `private/`
 
-Current persistent auth files live in the selected payload home:
-- `/Volumes/dkX/.samba4/private/smbpasswd`
-- `/Volumes/dkX/.samba4/private/username.map`
+Current auth files are generated during runtime staging and live only in RAM:
+- `/mnt/Memory/samba4/private/smbpasswd`
+- `/mnt/Memory/samba4/private/username.map`
+
+The selected payload home still contains `/Volumes/dkX/.samba4/private/` for persistent Samba metadata such as `xattr.tdb`.
 
 Current NBNS binary also lives in the selected payload home:
 - `/Volumes/dkX/.samba4/nbns-advertiser`
@@ -483,8 +484,8 @@ Current rendered Samba config characteristics:
 
 Current auth mapping:
 - the docs and examples use `admin` as the normal user-facing SMB login name
-- the `smbpasswd` backend contains a `root` entry with the configured password hash
-- `username.map` contains:
+- the RAM `smbpasswd` backend contains a `root` entry generated from live AirPort `syPW`
+- RAM `username.map` contains:
   - `!root = root`
   - `root = *`
 - incoming SMB usernames are mapped to Unix `root`
@@ -681,7 +682,7 @@ Arguments:
 
 ### `configure`
 
-`tcapsule configure` creates or updates `.env`. In interactive mode it attempts AirPort Bonjour discovery, prompts for the SSH target and device password, checks SSH reachability, enables SSH through ACP when needed, probes the device, derives identity/config defaults, and writes the managed config. The same password is stored as `TC_PASSWORD` and later used for generated Samba auth.
+`tcapsule configure` creates or updates `.env`. In interactive mode it attempts AirPort Bonjour discovery, prompts for the SSH target and device password, checks SSH reachability, enables SSH through ACP when needed, probes the device, derives identity/config defaults, and writes the managed config. The password is stored as `TC_PASSWORD` for host-side SSH/ACP access; Samba auth is generated on the device at boot from live AirPort `syPW`.
 
 Arguments:
 - `--config PATH`: write/read this config path instead of the default `.env`
@@ -900,7 +901,7 @@ Samba NetBIOS, Samba server string, Bonjour instance, and Bonjour host labels ar
 
 Current validation behavior:
 - `TC_HOST`: must be non-empty.
-- `TC_PASSWORD`: must be present for commands that authenticate to the device or generate Samba auth.
+- `TC_PASSWORD`: must be present for commands that authenticate to the device.
 - `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: hidden boolean; internal disks use `ShareRoot` by default, and external disks always use the disk root.
 - `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
@@ -1085,9 +1086,7 @@ Current deploy flow:
   - `dfree.sh`
 - generates and uploads flash runtime config:
   - `/mnt/Flash/tcapsulesmb.conf`
-- generates and installs:
-  - `private/smbpasswd`
-  - `private/username.map`
+- does not upload password-derived Samba auth files; runtime staging generates RAM auth from live AirPort `syPW`
 - enables NBNS by default:
   - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used
 - applies the required permissions on files and directories
@@ -1115,11 +1114,13 @@ NetBSD 4 activation behavior:
 - `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, or if `/mnt/Flash/rc.local`, `/mnt/Flash/boot.sh`, or `/mnt/Flash/manager.sh` is already running, it skips running `/mnt/Flash/rc.local`
 
 The current password flow is:
-- `TC_PASSWORD` is also used as the Samba password
-- no separate Apple auth backend is used
+- `TC_PASSWORD` is retained for app/CLI SSH and ACP access
+- runtime staging reads `/usr/bin/acp -q syPW`, generates an NT hash through `mdns-advertiser`, and writes RAM-only `smbpasswd`
+- no deploy-time password-derived auth file is persisted to the hard disk
 
 This gives a near-enough user experience:
-- same password as the device password already entered during setup
+- same password as the current AirPort device password
+- password changes made in AirPort Utility are picked up after reboot/runtime staging
 - without reverse-engineering Apple’s actual SMB auth backend
 
 Useful operator modes:

@@ -474,8 +474,7 @@ def verify_payload_home_conn(
         "add_missing() { if [ -z \"$missing\" ]; then missing=\"$1\"; else missing=\"$missing; $1\"; fi; }; "
         f"[ -d {payload_dir} ] || add_missing 'missing payload directory'; "
         f"[ -x {payload_dir}/smbd ] || [ -x {payload_dir}/sbin/smbd ] || add_missing 'missing smbd'; "
-        f"[ -f {payload_dir}/private/smbpasswd ] || add_missing 'missing private/smbpasswd'; "
-        f"[ -f {payload_dir}/private/username.map ] || add_missing 'missing private/username.map'; "
+        f"[ -d {payload_dir}/private ] || add_missing 'missing private directory'; "
         "if [ -z \"$missing\" ]; then echo ok; exit 0; fi; "
         "echo \"$missing\"; exit 1"
     )

@@ -237,11 +237,38 @@ class StorageRuntimeTests(unittest.TestCase):
         acp = tmp_path / "acp"
         raw_text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
         if final_newline:
-            acp.write_text("#!/bin/sh\ncat <<'OUT'\n" + raw_text + "\nOUT\n")
+            acp.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1:$2\" = '-q:syPW' ]; then echo device-pass; exit 0; fi\n"
+                "cat <<'OUT'\n" + raw_text + "\nOUT\n"
+            )
         else:
-            acp.write_text("#!/bin/sh\nprintf %s " + shlex.quote(raw_text) + "\n")
+            acp.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1:$2\" = '-q:syPW' ]; then echo device-pass; exit 0; fi\n"
+                "printf %s " + shlex.quote(raw_text) + "\n"
+            )
         acp.chmod(0o755)
         return acp
+
+    def write_fake_mdns_hash_helper(
+        self,
+        flash: Path,
+        *,
+        nt_hash: str = "0123456789ABCDEF0123456789ABCDEF",
+    ) -> Path:
+        mdns = flash / "mdns-advertiser"
+        mdns.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = '--print-nt-hash-from-stdin' ]; then\n"
+            "    cat >/dev/null\n"
+            f"    echo {shlex.quote(nt_hash)}\n"
+            "    exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        mdns.chmod(0o755)
+        return mdns
 
     def write_sequence_acp(self, tmp_path: Path, raws: tuple[str | bytes, ...]) -> Path:
         raw_dir = tmp_path / "acp-sequence"
@@ -256,6 +283,7 @@ class StorageRuntimeTests(unittest.TestCase):
         acp = tmp_path / "acp"
         acp.write_text(
             "#!/bin/sh\n"
+            "if [ \"$1:$2\" = '-q:syPW' ]; then echo device-pass; exit 0; fi\n"
             f"count=$(/bin/cat {shlex.quote(str(count_path))} 2>/dev/null || echo 0)\n"
             "count=$((count + 1))\n"
             f"echo \"$count\" >{shlex.quote(str(count_path))}\n"
@@ -928,8 +956,7 @@ MaSt = (
         self.assertIn("[ -d /Volumes/dk2/.samba4 ]", remote_command)
         self.assertIn("[ -x /Volumes/dk2/.samba4/smbd ]", remote_command)
         self.assertIn("[ -x /Volumes/dk2/.samba4/sbin/smbd ]", remote_command)
-        self.assertIn("[ -f /Volumes/dk2/.samba4/private/smbpasswd ]", remote_command)
-        self.assertIn("[ -f /Volumes/dk2/.samba4/private/username.map ]", remote_command)
+        self.assertIn("[ -d /Volumes/dk2/.samba4/private ]", remote_command)
 
     def test_verify_payload_home_conn_reports_mount_and_payload_failures(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
@@ -941,10 +968,10 @@ MaSt = (
         with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
             with mock.patch(
                 "timecapsulesmb.device.storage.run_ssh",
-                return_value=mock.Mock(returncode=1, stdout="missing smbd; missing private/smbpasswd\n"),
+                return_value=mock.Mock(returncode=1, stdout="missing smbd; missing private directory\n"),
             ):
                 result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
-        self.assertEqual(result, PayloadVerificationResult(False, "missing smbd; missing private/smbpasswd"))
+        self.assertEqual(result, PayloadVerificationResult(False, "missing smbd; missing private directory"))
 
     def test_select_payload_home_skips_unmountable_internal_before_external(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
@@ -4379,12 +4406,12 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, "")
+            self.write_fake_mdns_hash_helper(flash)
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("admin:x\n")
-            (payload / "private/username.map").write_text("admin = root\n")
             events = tmp_path / "stage-events"
             script = tmp_path / "stage-runtime-temp-rename.sh"
             script.write_text(
@@ -4411,6 +4438,10 @@ MaSt = (
                     tc_stage_runtime {payload} {payload}/smbd ""
                     printf 'dest='
                     /bin/cat "$TC_SMBD_BIN"
+                    printf 'smbpasswd='
+                    /bin/cat "$RAM_PRIVATE/smbpasswd"
+                    printf 'username_map='
+                    /bin/cat "$RAM_PRIVATE/username.map"
                     /bin/cat {shlex.quote(str(events))}
                     """
                 )
@@ -4421,6 +4452,11 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("dest=payload smbd\n", proc.stdout)
+        self.assertRegex(
+            proc.stdout,
+            rf"root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:0123456789ABCDEF0123456789ABCDEF:\[U          \]:LCT-[0-9A-F]+:",
+        )
+        self.assertIn("username_map=!root = root\nroot = *\n", proc.stdout)
         self.assertRegex(
             proc.stdout,
             rf"cp:{payload}/smbd:{memory}/samba4/sbin/smbd\.tmp\.[0-9]+",
@@ -4435,12 +4471,12 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, "")
+            self.write_fake_mdns_hash_helper(flash)
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("admin:x\n")
-            (payload / "private/username.map").write_text("admin = root\n")
             script = tmp_path / "stage-runtime-copy-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4481,17 +4517,22 @@ MaSt = (
         self.assertIn("runtime storage diagnostic:", proc.stdout)
         self.assertEqual(list((memory / "samba4/sbin").glob("smbd.tmp.*")), [])
 
-    def test_common_stage_runtime_logs_private_copy_failure(self) -> None:
+    def test_common_stage_runtime_logs_hash_helper_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, "")
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("admin:x\n")
-            (payload / "private/username.map").write_text("admin = root\n")
-            script = tmp_path / "stage-runtime-private-copy-failure.sh"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = '--print-nt-hash-from-stdin' ]; then cat >/dev/null; exit 8; fi\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "stage-runtime-hash-helper-failure.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -4502,12 +4543,6 @@ MaSt = (
                     tc_init_runtime_env
                     tc_prepare_ram_root
                     tc_set_log "$RAM_VAR/test.log" test
-                    cp() {{
-                        case "$1" in
-                            {payload}/private/username.map) return 8 ;;
-                        esac
-                        /bin/cp "$1" "$2"
-                    }}
                     if tc_stage_runtime {payload} {payload}/smbd ""; then
                         echo unexpected-success
                     else
@@ -4524,22 +4559,103 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=8\n", proc.stdout)
         self.assertIn(
-            f"Samba runtime staging failed: copy private file failed: {payload}/private/username.map ->",
+            "Samba runtime staging failed: NT hash generation failed status=8",
             proc.stdout,
         )
-        self.assertIn("status=8", proc.stdout)
-        self.assertIn("runtime storage diagnostic:", proc.stdout)
+
+    def test_common_stage_runtime_logs_acp_password_read_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_mdns_hash_helper(flash)
+            (tmp_path / "acp").write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1:$2\" = '-q:syPW' ]; then exit 6; fi\n"
+                "exit 1\n"
+            )
+            (tmp_path / "acp").chmod(0o755)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("payload smbd\n")
+            (payload / "smbd").chmod(0o755)
+            script = tmp_path / "stage-runtime-acp-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    if tc_stage_runtime {payload} {payload}/smbd ""; then
+                        echo unexpected-success
+                    else
+                        echo "status=$?"
+                    fi
+                    /bin/cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=6\n", proc.stdout)
+        self.assertIn("Samba runtime staging failed: acp syPW read failed status=6", proc.stdout)
+
+    def test_common_stage_runtime_logs_invalid_hash_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, "")
+            self.write_fake_mdns_hash_helper(flash, nt_hash="not-a-valid-hash")
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("payload smbd\n")
+            (payload / "smbd").chmod(0o755)
+            script = tmp_path / "stage-runtime-invalid-hash.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    if tc_stage_runtime {payload} {payload}/smbd ""; then
+                        echo unexpected-success
+                    else
+                        echo "status=$?"
+                    fi
+                    printf 'smbpasswd_exists=%s\\n' "$([ -f {memory}/samba4/private/smbpasswd ] && echo yes || echo no)"
+                    /bin/cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=1\n", proc.stdout)
+        self.assertIn("smbpasswd_exists=no\n", proc.stdout)
+        self.assertIn("Samba runtime staging failed: generated NT hash had invalid shape", proc.stdout)
 
     def test_common_stage_runtime_logs_private_chmod_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, "")
+            self.write_fake_mdns_hash_helper(flash)
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("admin:x\n")
-            (payload / "private/username.map").write_text("admin = root\n")
             script = tmp_path / "stage-runtime-private-chmod-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4573,9 +4689,59 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=9\n", proc.stdout)
         self.assertIn(
-            f"Samba runtime staging failed: chmod private files failed: {memory}/samba4/private/smbpasswd {memory}/samba4/private/username.map status=9",
+            f"Samba runtime staging failed: chmod smbpasswd temp failed: {memory}/samba4/private/smbpasswd.tmp.",
             proc.stdout,
         )
+        self.assertIn("status=9", proc.stdout)
+        self.assertIn("runtime storage diagnostic:", proc.stdout)
+
+    def test_common_stage_runtime_logs_smbpasswd_rename_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, "")
+            self.write_fake_mdns_hash_helper(flash)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("payload smbd\n")
+            (payload / "smbd").chmod(0o755)
+            script = tmp_path / "stage-runtime-smbpasswd-rename-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mv() {{
+                        case "$1:$2" in
+                            {memory}/samba4/private/smbpasswd.tmp.*:{memory}/samba4/private/smbpasswd) return 10 ;;
+                        esac
+                        /bin/mv "$1" "$2"
+                    }}
+                    if tc_stage_runtime {payload} {payload}/smbd ""; then
+                        echo unexpected-success
+                    else
+                        echo "status=$?"
+                    fi
+                    /bin/cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=10\n", proc.stdout)
+        self.assertIn(
+            f"Samba runtime staging failed: rename smbpasswd temp failed: {memory}/samba4/private/smbpasswd.tmp.",
+            proc.stdout,
+        )
+        self.assertIn("status=10", proc.stdout)
         self.assertIn("runtime storage diagnostic:", proc.stdout)
 
     def test_common_generate_smb_conf_propagates_identity_failure_in_conditional_context(self) -> None:
@@ -4666,12 +4832,11 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             self.write_fake_acp(tmp_path, fixture.raw)
+            self.write_fake_mdns_hash_helper(flash)
             payload = volumes / "dk5/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("#!/bin/sh\nexit 0\n")
             (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("root:x\n")
-            (payload / "private/username.map").write_text("root = *\n")
             marker = shlex.quote(str(volumes / "dk5/.com.apple.timemachine.supported"))
             with (flash / "tcapsulesmb.conf").open("a") as conf:
                 conf.write("TC_SMB_BIND_INTERFACES='127.0.0.1/8'\n")

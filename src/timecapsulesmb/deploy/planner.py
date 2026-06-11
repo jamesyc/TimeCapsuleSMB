@@ -32,8 +32,6 @@ PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
 PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
 PACKAGED_MANAGER_SOURCE = "packaged:manager.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
-GENERATED_SMBPASSWD_SOURCE = "generated:smbpasswd"
-GENERATED_USERNAME_MAP_SOURCE = "generated:username.map"
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
 DEFAULT_ATA_IDLE_SECONDS = 300
 DEFAULT_DISKD_USE_VOLUME_ATTEMPTS = 2
@@ -235,10 +233,6 @@ def build_deployment_plan(
         RemoteSymlink("/root/tc-netbsd4be", "/mnt/Memory/samba4"),
         RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),
     ]
-    generated_files = [
-        FileTransfer(GENERATED_SMBPASSWD_SOURCE, f"{private_dir}/smbpasswd", "generated", None, "generated smbpasswd"),
-        FileTransfer(GENERATED_USERNAME_MAP_SOURCE, f"{private_dir}/username.map", "generated", None, "generated username.map"),
-    ]
     permissions = [
         RemotePermission(payload_targets["smbd"], "755"),
         RemotePermission(payload_targets["mdns-advertiser"], "755"),
@@ -252,8 +246,6 @@ def build_deployment_plan(
         RemotePermission(flash_targets["tcapsulesmb.conf"], "600"),
         RemotePermission(cache_dir, "755"),
         RemotePermission(private_dir, "700"),
-        RemotePermission(f"{private_dir}/smbpasswd", "600"),
-        RemotePermission(f"{private_dir}/username.map", "600"),
     ]
     return DeploymentPlan(
         host=host,
@@ -281,7 +273,6 @@ def build_deployment_plan(
             FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
             FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
-            *generated_files,
         ],
         pre_upload_actions=[
             # Existing installs run mdns-advertiser directly from /mnt/Flash.
