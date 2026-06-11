@@ -29,12 +29,10 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             fullname: "Office Capsule._airport._tcp.local."
         )
         let fixture = try await AppViewFixture(responses: [
-            .init(events: [BackendEvent(type: "result", operation: "capabilities", ok: true, payload: capabilitiesPayload())]),
-            .init(events: [BackendEvent(type: "result", operation: "validate-install", ok: true, payload: validationPayload())]),
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
             ])
-        ])
+        ], discoveryWaitsForReadiness: false)
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
@@ -42,7 +40,6 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             preferredID: "device-one"
         )
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
-        fixture.appStore.appReadinessStore.start()
         fixture.appStore.deviceDiscovery.startMonitoring()
         try await waitUntilStoreState { fixture.appStore.deviceDiscovery.state == .ready }
         let session = fixture.dashboardSession(for: profile)
@@ -301,37 +298,4 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         )
     }
 
-    private func capabilitiesPayload() -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "api_schema_version": .number(1),
-            "helper_version": .string("1.2.3"),
-            "helper_version_code": .number(123),
-            "operations": .array([.string("discover"), .string("validate-install")]),
-            "distribution_root": .string("/bundle/Distribution"),
-            "artifact_manifest_sha256": .string("abc"),
-            "confirmation_schema_version": .number(1),
-            "summary": .string("Helper capabilities resolved.")
-        ])
-    }
-
-    private func validationPayload() -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "ok": .bool(true),
-            "checks": .array([
-                .object([
-                    "id": .string("distribution_root"),
-                    "ok": .bool(true),
-                    "message": .string("distribution root is valid")
-                ])
-            ]),
-            "counts": .object([
-                "checks": .number(1),
-                "pass": .number(1),
-                "fail": .number(0)
-            ]),
-            "summary": .string("Install validation passed.")
-        ])
-    }
 }

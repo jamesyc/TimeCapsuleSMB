@@ -12,23 +12,30 @@ struct AppViewFixture {
     let runner: any HelperRunning
     let composition: AppViewComposition
 
-    init(responses: [StoreTestRunner.Response] = []) async throws {
-        try await self.init(runner: StoreTestRunner(responses: responses))
+    init(responses: [StoreTestRunner.Response] = [], discoveryWaitsForReadiness: Bool = true) async throws {
+        try await self.init(runner: StoreTestRunner(responses: responses), discoveryWaitsForReadiness: discoveryWaitsForReadiness)
     }
 
-    init(runner: any HelperRunning) async throws {
+    init(runner: any HelperRunning, discoveryWaitsForReadiness: Bool = true) async throws {
         temp = try TemporaryDirectory()
         registry = DeviceRegistryStore(applicationSupportURL: temp.url)
         await registry.load()
         self.runner = runner
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         passwordStore = InMemoryPasswordStore()
+        let readinessStore = AppReadinessStore(backend: coordinator.backend)
+        let deviceDiscovery = DeviceDiscoveryStore(
+            coordinator: coordinator,
+            readinessStore: discoveryWaitsForReadiness ? readinessStore : nil,
+            registry: registry
+        )
         appStore = AppStore(
-            appReadinessStore: AppReadinessStore(backend: coordinator.backend),
+            appReadinessStore: readinessStore,
             appSettingsStore: AppSettingsStore(settingsURL: temp.url.appendingPathComponent("app-settings.json")),
             deviceRegistry: registry,
             operationCoordinator: coordinator,
-            passwordStore: passwordStore
+            passwordStore: passwordStore,
+            deviceDiscovery: deviceDiscovery
         )
         composition = AppViewComposition(appStore: appStore)
     }
