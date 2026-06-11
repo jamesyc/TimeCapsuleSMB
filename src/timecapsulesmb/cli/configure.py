@@ -35,6 +35,7 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure import build_configure_env_values, write_configure_env_file
+from timecapsulesmb.services.configure_target import resolve_configure_target
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     probe_connection_state,
@@ -306,7 +307,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
     )
     values: dict[str, str] = {}
-    discovered_airport_syap: Optional[str] = None
     with CommandContext(
         telemetry,
         "configure",
@@ -400,8 +400,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         discovered_host = discovered_record_root_host(discovered_record) if discovered_record else None
         command_context.add_debug_fields(discovered_host=discovered_host)
         if discovered_record is not None:
-            discovered_airport_syap = discovered_record.properties.get("syAP") or None
-            command_context.add_debug_fields(discovered_airport_syap=discovered_airport_syap)
+            command_context.add_debug_fields(discovered_airport_syap=discovered_record.properties.get("syAP") or None)
         command_context.set_stage("prompt_host_password")
         if no_input_enabled(args):
             scripted_error = populate_scripted_host_and_password(existing, values, args, ssh_opts)
@@ -458,17 +457,27 @@ def main(argv: Optional[list[str]] = None) -> int:
         while True:
             if not args.json:
                 print("Checking login information...")
+            explicit_host = values["TC_HOST"]
+            if discovered_record is not None and discovered_host is not None and explicit_host == discovered_host:
+                explicit_host = ""
+            target = resolve_configure_target(
+                explicit_host=explicit_host,
+                selected_record=discovered_record,
+                existing=existing,
+                ssh_opts=ssh_opts,
+            )
+            command_context.add_debug_fields(configure_target_source=target.source)
             try:
                 result = configure_service.run_configure_flow(
                     configure_service.ConfigureFlowRequest(
                         existing=existing,
                         env_path=env_path,
-                        host=values["TC_HOST"],
+                        host=target.host,
                         password=values["TC_PASSWORD"],
                         ssh_opts=ssh_opts,
                         configure_id=configure_id,
                         persist_password=True,
-                        discovered_airport_syap=discovered_airport_syap,
+                        discovered_airport_syap=target.discovered_airport_syap,
                         enable_ssh=True,
                         verbose_wait=not args.json,
                         internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,

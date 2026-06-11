@@ -1510,6 +1510,45 @@ class AppApiTests(unittest.TestCase):
             serialized_events = json.dumps(collector.events)
             self.assertNotIn("goodpw", serialized_events)
 
+    def test_configure_selected_record_refreshes_stale_existing_host(self) -> None:
+        collector = CollectingSink()
+        captured_connections: list[SshConnection] = []
+
+        def capture_probe(connection: SshConnection) -> ProbedDeviceState:
+            captured_connections.append(connection)
+            return probed_state()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", side_effect=capture_probe):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "selected_record": {
+                                "name": "Office Capsule",
+                                "hostname": "office-capsule.local.",
+                                "service_type": "_airport._tcp.local.",
+                                "port": 5009,
+                                "ipv4": ["10.0.0.80"],
+                                "ipv6": [],
+                                "properties": {"syAP": "119"},
+                                "fullname": "Office Capsule._airport._tcp.local.",
+                            },
+                            "password": "goodpw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured_connections[0].host, "root@10.0.0.80")
+        self.assertEqual(values["TC_HOST"], "root@10.0.0.80")
+
     def test_configure_defaults_bare_host_to_root_user(self) -> None:
         collector = CollectingSink()
         captured_connections: list[SshConnection] = []

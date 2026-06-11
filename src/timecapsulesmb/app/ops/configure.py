@@ -5,7 +5,6 @@ import uuid
 from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.contracts import configure_payload
-from timecapsulesmb.app.ops.discovery import selected_record_host, selected_record_properties
 from timecapsulesmb.core.config import (
     DEFAULTS,
     parse_bool,
@@ -32,6 +31,7 @@ from timecapsulesmb.services.configure import (
     ConfigureFlowRequest,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.configure_target import resolve_configure_target
 
 
 def selected_record_name(params: dict[str, object]) -> str:
@@ -76,17 +76,20 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     configure_id = str(uuid.uuid4())
     ssh_opts = string_param(params, "ssh_opts", existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
     try:
-        host = configure_service.configure_ssh_target(
-            string_param(params, "host") or selected_record_host(params) or existing.get("TC_HOST", ""),
-            ssh_opts,
+        selected_record = params.get("selected_record")
+        target = resolve_configure_target(
+            explicit_host=string_param(params, "host"),
+            selected_record=selected_record if isinstance(selected_record, dict) else None,
+            existing=existing,
+            ssh_opts=ssh_opts,
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
+    host = target.host
     password = require_string_param(params, "password")
-    selected_record = params.get("selected_record")
     if isinstance(selected_record, dict):
         context.add_debug_fields(selected_bonjour_record=selected_record)
-    selected_props = selected_record_properties(params)
+    context.add_debug_fields(configure_target_source=target.source)
 
     def before_enable_ssh(_connection, _probed_state) -> None:
         context.stage("confirm_enable_ssh")
@@ -112,7 +115,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 ssh_opts=ssh_opts,
                 configure_id=configure_id,
                 persist_password=bool_param(params, "persist_password"),
-                discovered_airport_syap=selected_props.get("syAP") or None,
+                discovered_airport_syap=target.discovered_airport_syap,
                 enable_ssh=bool_param(params, "enable_ssh", True),
                 ssh_wait_timeout=int_param(params, "ssh_wait_timeout", 180),
                 internal_share_use_disk_root=bool_param(

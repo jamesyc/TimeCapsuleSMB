@@ -805,6 +805,47 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
+    func testSavedDiscoveryConfigureUsesCurrentRecordAfterIpChanges() async throws {
+        let oldRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.2"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let currentRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.80"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80"))
+            ])
+        ])
+        let existing = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "existing-device"
+        )
+
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        fixture.store.select(try XCTUnwrap(fixture.store.devices.first))
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        XCTAssertEqual(fixture.store.savedProfile?.id, existing.id)
+        XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
+        XCTAssertNil(fixture.runner.calls[1].params["host"])
+        XCTAssertEqual(fixture.runner.calls[1].context?.profileID, existing.id)
+    }
+
     func testSelectingSharedDiscoveryDeviceFromOverviewPromptsForPasswordWithoutRediscovering() async throws {
         let discovered = testDiscoveredDevice(
             name: "Office Capsule",

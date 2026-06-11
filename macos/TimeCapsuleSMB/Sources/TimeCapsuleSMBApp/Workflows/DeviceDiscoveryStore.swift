@@ -129,6 +129,12 @@ final class DeviceDiscoveryStore: ObservableObject {
         registry.matchingProfile(for: device)
     }
 
+    func currentDiscoveredDevice(for profile: DeviceProfile) -> DiscoveredDevice? {
+        devices.first { device in
+            matchingProfile(for: device)?.id == profile.id
+        }
+    }
+
     func lastSeenText(for profile: DeviceProfile) -> String? {
         guard state == .ready || state == .empty else {
             return nil

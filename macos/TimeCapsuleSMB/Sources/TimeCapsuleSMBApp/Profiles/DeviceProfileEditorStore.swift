@@ -382,11 +382,13 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func startReconfigure(profile: DeviceProfile, password: String, settings: DeviceProfileSettings) {
+        let discoveredDevice = currentDiscoveredDeviceMatchingDraftHost(for: profile)
+        let targetHost = discoveredDevice?.connectionTarget ?? draft.trimmedHost
         let configureDraft: ConfigureProfileDraft
         do {
             configureDraft = try profilePersistence.prepareConfigureTarget(
-                targetHost: draft.trimmedHost,
-                discoveredDevice: nil,
+                targetHost: targetHost,
+                discoveredDevice: discoveredDevice,
                 existingProfile: profile,
                 preferredID: profile.id,
                 settings: settings
@@ -396,7 +398,8 @@ final class DeviceProfileEditorStore: ObservableObject {
             return
         }
         let params = OperationParams.Configure.save(
-            host: draft.trimmedHost,
+            host: targetHost,
+            selectedRecord: discoveredDevice?.rawRecord,
             password: password,
             debugLogging: draft.debugLogging,
             internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
@@ -434,6 +437,14 @@ final class DeviceProfileEditorStore: ObservableObject {
         savedProfile = nil
         state = .reconfiguring
         process(lane.backend.events)
+    }
+
+    private func currentDiscoveredDeviceMatchingDraftHost(for profile: DeviceProfile) -> DiscoveredDevice? {
+        guard let device = appStore.deviceDiscovery.currentDiscoveredDevice(for: profile),
+              DeviceEndpointPolicy.normalizedHostKey(draft.trimmedHost) == DeviceEndpointPolicy.normalizedHostKey(device.connectionTarget) else {
+            return nil
+        }
+        return device
     }
 
     private func process(_ events: [BackendEvent]) {

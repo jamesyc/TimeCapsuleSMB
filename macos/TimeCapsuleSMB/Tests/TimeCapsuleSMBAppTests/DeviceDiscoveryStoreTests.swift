@@ -78,6 +78,38 @@ final class DeviceDiscoveryStoreTests: XCTestCase {
         XCTAssertEqual(fixture.monitor.lastSeenText(for: profile), "Seen now")
     }
 
+    func testCurrentDiscoveredDeviceMatchesSavedProfileAfterIpChanges() async throws {
+        let oldRecord = testDeviceRecord(
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.2"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let newRecord = testDeviceRecord(
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.80"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeReadyFixture(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
+                newRecord
+            ]))])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+
+        fixture.monitor.startMonitoring()
+
+        try await waitUntilStoreState { fixture.monitor.state == .ready }
+        let current = try XCTUnwrap(fixture.monitor.currentDiscoveredDevice(for: profile))
+        XCTAssertEqual(current.connectionTarget, "10.0.0.80")
+        XCTAssertEqual(current.fullname, "Office Capsule._airport._tcp.local.")
+        XCTAssertEqual(fixture.monitor.savedDevices.map(\.host), ["10.0.0.80"])
+    }
+
     func testRefreshPausesBehindActiveOperationAndResumesWhenRunnerIsFree() async throws {
         let fixture = try await makeReadyFixture(responses: [
             .init(events: [

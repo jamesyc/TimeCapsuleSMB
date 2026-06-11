@@ -493,11 +493,53 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(unsupported.registry.profile(id: unsupportedProfile.id)?.host, "10.0.0.2")
     }
 
+    func testReconfigureUsesCurrentDiscoveredRecordWhenHostChangesToNewBonjourAddress() async throws {
+        let oldRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.2"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let currentRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.80"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [currentRecord]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.80"))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: try DiscoveredDevice(record: oldRecord.decode(BonjourResolvedServicePayload.self), index: 0),
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.deviceDiscovery.refresh()
+        try await waitUntilStoreState { fixture.deviceDiscovery.state == .ready }
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+        store.draft.host = "10.0.0.80"
+
+        await store.save(profile: profile)
+
+        try await waitUntilStoreState { store.state == .saved }
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
+        XCTAssertEqual(fixture.runner.calls[1].params["selected_record"], currentRecord)
+        XCTAssertNil(fixture.runner.calls[1].params["host"])
+    }
+
     private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> (
         appStore: AppStore,
         registry: DeviceRegistryStore,
         passwordStore: InMemoryPasswordStore,
-        runner: StoreTestRunner
+        runner: StoreTestRunner,
+        deviceDiscovery: DeviceDiscoveryStore
     ) {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
@@ -505,12 +547,14 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         let runner = StoreTestRunner(responses: responses)
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let passwordStore = InMemoryPasswordStore()
+        let deviceDiscovery = DeviceDiscoveryStore(coordinator: coordinator, registry: registry)
         let appStore = AppStore(
             appReadinessStore: AppReadinessStore(backend: coordinator.backend),
             deviceRegistry: registry,
             operationCoordinator: coordinator,
-            passwordStore: passwordStore
+            passwordStore: passwordStore,
+            deviceDiscovery: deviceDiscovery
         )
-        return (appStore, registry, passwordStore, runner)
+        return (appStore, registry, passwordStore, runner, deviceDiscovery)
     }
 }
