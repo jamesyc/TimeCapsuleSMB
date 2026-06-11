@@ -1,26 +1,24 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules only support AFP and SMB1. Apple is removing AFP support in macOS 27, and removed SMB1 support from macOS a long time ago. This repo sets up modern Samba that runs directly on the Time Capsule itself; modern macOS can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
+Apple AirPort Time Capsules only support AFP and SMB1. Apple is removing AFP support in macOS 27, and removed SMB1 support from macOS a long time ago. This repo sets up modern Samba that runs directly on the Time Capsule itself; macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
 
 **NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5-15.7.7) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
-Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder.
+Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder, or upgrade to macOS 26.5 or newer.
 
 This project has 2 parts:
 - a fork of Samba 4, modified to work on the Apple Time Capsule
 - the installers for the Samba binary, via python or macOS GUI app. 
 
-This is fully working for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below.
-
-The Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
+This is now fully working for all Time Capsules: the Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />
 
-The `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
+The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
-NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices need a manual `activate` after every reboot**, unless you flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot. If you do not run the `activate` command after a reboot or flash the boot hook, then Samba will not start automatically on an older Time Capsule.
+NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot. If you do not run the `activate` command after a reboot or flash the boot hook, then Samba will not start automatically on an older Time Capsule!
 
 The current authentication model accepts any user as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
-AirPort Extreme devices are not officially supported (mostly because I do not own one to test on). Unofficially, they work fine.   
+AirPort Extreme devices are not officially supported. Unofficially, they work fine. Note that this is installed to the hard drive, so it will not work for an Airport Extreme without a hard drive (as there is not enough space to store the binaries on the flash memory).   
 
 ## Requirements
 
@@ -50,9 +48,10 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 7. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
    <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />  
 8. Click "Install/Update" to deploy to the device.  
-   <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />  
-9. (Optional) Go to the Checkup tab and run a Checkup.
-10. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section, and install the firmware patch to allow the device to automatically start Samba after reboots. 
+   <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />   
+9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
+   <img width="634" height="429" alt="image" src="https://github.com/user-attachments/assets/e35d8934-975b-4079-8087-8c22984a3165" />    
+10. (Optional) Go to the Checkup tab and run a Checkup.
 
 ## Quick Start (with python)
 
