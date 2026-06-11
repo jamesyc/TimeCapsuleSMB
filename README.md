@@ -10,7 +10,8 @@ This project has 2 parts:
 - the installers for the Samba binary, via python or the **macOS GUI app**. 
 
 This is now fully working for all Time Capsules: the Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
-<img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />
+<img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />  
+This is now able to fully reproduce the full Apple experience: after you install this, you do not have to worry about it again, even if the device IP address changes. It will show up automatically in Time Machine in settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
