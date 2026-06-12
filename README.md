@@ -52,7 +52,7 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
    <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />   
 9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
    <img width="634" height="429" alt="image" src="https://github.com/user-attachments/assets/e35d8934-975b-4079-8087-8c22984a3165" />    
-10. (Optional) Go to the Checkup tab and run a Checkup.
+10. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup. 
 
 ## Quick Start (with python)
 
