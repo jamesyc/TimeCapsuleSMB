@@ -586,6 +586,69 @@ class AppApiTests(unittest.TestCase):
         )
         self.assertEqual(payload["apple_firmware_match"]["matched"], False)
 
+    def test_flash_plan_payload_reports_multi_bank_apple_check(self) -> None:
+        payload = contracts.flash_plan_payload({
+            "backup_dir": "/tmp/flash-backup",
+            "flash_plan": {
+                "mode": "check_apple",
+                "target_bank": None,
+                "write_requested": False,
+                "already_satisfied": True,
+                "apple_match_status": "all_candidates_match",
+                "apple_match": {
+                    "matched": True,
+                    "template_source": "catalog",
+                    "template_version": "7.8.1",
+                },
+                "apple_matches": [
+                    {
+                        "bank": "primary",
+                        "match": {
+                            "matched": True,
+                            "template_source": "catalog",
+                            "template_version": "7.8.1",
+                        },
+                    },
+                    {
+                        "bank": "secondary",
+                        "match": {
+                            "matched": True,
+                            "template_source": "catalog",
+                            "template_version": "7.8.1",
+                        },
+                    },
+                ],
+            },
+        })
+
+        self.assertEqual(payload["summary"], "All candidate firmware banks match Apple stock firmware 7.8.1.")
+        self.assertEqual(payload["apple_match_status"], "all_candidates_match")
+        self.assertEqual(len(payload["apple_firmware_matches"]), 2)
+        self.assertTrue(payload["apple_firmware_match"]["matched"])
+
+    def test_flash_plan_payload_promotes_generic_download_payload_path(self) -> None:
+        payload = contracts.flash_plan_payload({
+            "backup_dir": "/tmp/flash-backup",
+            "files": {
+                "download_only_basebinary_payload": "/tmp/flash-backup/download_only.basebinary",
+            },
+            "flash_plan": {
+                "mode": "download_only",
+                "target_bank": None,
+                "write_requested": False,
+                "already_satisfied": False,
+                "payload": {
+                    "template_source": "catalog",
+                    "template_product_id": "116",
+                    "template_version": "7.8.1",
+                    "payload_sha256": "payload-sha",
+                },
+            },
+        })
+
+        self.assertEqual(payload["summary"], "Apple restore firmware validated (version 7.8.1, product 116).")
+        self.assertEqual(payload["firmware_payload_path"], "/tmp/flash-backup/download_only.basebinary")
+
     def test_flash_plan_rejects_backup_manifest_used_for_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             backup_dir = Path(tmp)

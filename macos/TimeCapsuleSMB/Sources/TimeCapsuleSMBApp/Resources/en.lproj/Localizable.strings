@@ -359,6 +359,9 @@
 "backend.summary.flash_apple_restore_product" = "product %@";
 "backend.summary.flash_apple_restore_validated" = "Apple restore firmware validated%@.";
 "backend.summary.flash_apple_restore_version" = "version %@";
+"backend.summary.flash_apple_all_candidates_match" = "All candidate firmware banks match Apple stock firmware%@.";
+"backend.summary.flash_apple_no_candidates_match" = "No candidate firmware banks match Apple stock firmware%@.";
+"backend.summary.flash_apple_some_candidates_match" = "%lld of %lld candidate firmware banks match Apple stock firmware%@.";
 "backend.summary.flash_apple_stock_matches" = "Active firmware bank matches Apple stock firmware%@.";
 "backend.summary.flash_apple_stock_mismatch" = "Active firmware bank does not match Apple stock firmware%@.";
 "backend.summary.flash_backup_saved" = "Flash backup saved to %@.";
@@ -431,6 +434,7 @@
 "flash.options.apple_firmware" = "Apple Firmware Options";
 "flash.row.active_bank" = "Active Bank";
 "flash.row.apple_match" = "Apple Match";
+"flash.row.apple_match_bank" = "Apple Match (%@)";
 "flash.row.apple_payload_sha256" = "Apple Payload SHA-256";
 "flash.row.apple_product" = "Apple Product";
 "flash.row.apple_source" = "Apple Source";

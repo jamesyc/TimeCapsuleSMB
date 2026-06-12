@@ -213,7 +213,7 @@ class FlashWorkflowTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_active_bank", return_value=payload):
             restore_plan = plan_restore_apple(analysis, syap="116", firmware_template=None)
         with mock.patch("timecapsulesmb.flash_workflow.find_apple_firmware_match", return_value=match):
-            check_plan = plan_check_apple(analysis, syap="116", firmware_template=None)
+            check_plan = plan_check_apple(make_inspection(), syap="116", firmware_template=None)
 
         self.assertTrue(restore_plan.already_satisfied)
         self.assertFalse(restore_plan.write_requested)

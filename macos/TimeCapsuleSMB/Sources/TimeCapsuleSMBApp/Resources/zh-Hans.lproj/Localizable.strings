@@ -359,6 +359,9 @@
 "backend.summary.flash_apple_restore_product" = "产品 %@";
 "backend.summary.flash_apple_restore_validated" = "Apple restore 固件已验证%@。";
 "backend.summary.flash_apple_restore_version" = "版本 %@";
+"backend.summary.flash_apple_all_candidates_match" = "所有候选固件区都与 Apple 原厂固件%@匹配。";
+"backend.summary.flash_apple_no_candidates_match" = "没有候选固件区与 Apple 原厂固件%@匹配。";
+"backend.summary.flash_apple_some_candidates_match" = "%lld/%lld 个候选固件区与 Apple 原厂固件%@匹配。";
 "backend.summary.flash_apple_stock_matches" = "活动固件区与 Apple 原厂固件%@匹配。";
 "backend.summary.flash_apple_stock_mismatch" = "活动固件区与 Apple 原厂固件%@不匹配。";
 "backend.summary.flash_backup_saved" = "Flash 备份已保存到 %@。";
@@ -431,6 +434,7 @@
 "flash.options.apple_firmware" = "Apple 固件选项";
 "flash.row.active_bank" = "当前 Bank";
 "flash.row.apple_match" = "Apple 匹配";
+"flash.row.apple_match_bank" = "Apple 匹配（%@）";
 "flash.row.apple_payload_sha256" = "Apple Payload SHA-256";
 "flash.row.apple_product" = "Apple 产品";
 "flash.row.apple_source" = "Apple 来源";

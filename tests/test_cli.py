@@ -7196,6 +7196,48 @@ class CliTests(unittest.TestCase):
         self.assertTrue(manifest["flash_plan"]["apple_match"]["matched"])
         self.assertIn("Apple firmware match: matched=True", output.getvalue())
 
+    def test_flash_check_apple_checks_all_ambiguous_active_candidates(self) -> None:
+        output = io.StringIO()
+        primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
+            with mock.patch("timecapsulesmb.flash.require_python_module", side_effect=AssertionError("zopfli not needed")):
+                with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                    with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                        with mock.patch(
+                            "timecapsulesmb.services.flash.read_flash_inputs",
+                            return_value=self.make_flash_inputs(primary, secondary),
+                        ):
+                            with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
+                                with redirect_stdout(output):
+                                    rc = cli_flash.main([
+                                        "--check-apple",
+                                        "--firmware-template",
+                                        str(template_path),
+                                        "--backup-dir",
+                                        str(backup_dir),
+                                    ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 0)
+        flash_mock.assert_not_called()
+        self.assertIsNone(manifest["active_bank"])
+        self.assertEqual(manifest["active_selection"]["status"], "multiple_candidates")
+        self.assertEqual(manifest["flash_plan"]["target_bank"], None)
+        self.assertEqual(manifest["flash_plan"]["apple_match_status"], "all_candidates_match")
+        self.assertTrue(manifest["flash_plan"]["apple_match"]["matched"])
+        self.assertEqual(
+            [(result["bank"], result["match"]["matched"]) for result in manifest["flash_plan"]["apple_matches"]],
+            [("primary", True), ("secondary", True)],
+        )
+        self.assertIn("Apple firmware match (primary): matched=True", output.getvalue())
+        self.assertIn("Apple firmware match (secondary): matched=True", output.getvalue())
+
     def test_flash_download_only_validates_firmware_without_write(self) -> None:
         output = io.StringIO()
         primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
@@ -7229,6 +7271,44 @@ class CliTests(unittest.TestCase):
         self.assertEqual(manifest["flash_plan"]["payload"]["key_id"], "observed-k30a-78100")
         self.assertTrue(manifest["flash_plan"]["already_satisfied"])
         self.assertTrue(manifest["flash_plan"]["apple_match"]["matched"])
+
+    def test_flash_download_only_validates_template_without_selected_active_bank(self) -> None:
+        output = io.StringIO()
+        primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
+            with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                    with mock.patch(
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(primary, secondary),
+                    ):
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
+                            with redirect_stdout(output):
+                                rc = cli_flash.main([
+                                    "--download-only",
+                                    "--firmware-template",
+                                    str(template_path),
+                                    "--backup-dir",
+                                    str(backup_dir),
+                                ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+            payload_exists = Path(manifest["files"]["download_only_basebinary_payload"]).exists()
+
+        self.assertEqual(rc, 0)
+        flash_mock.assert_not_called()
+        self.assertIsNone(manifest["active_bank"])
+        self.assertEqual(manifest["flash_plan"]["target_bank"], None)
+        self.assertEqual(manifest["flash_plan"]["apple_match_status"], "all_candidates_match")
+        self.assertEqual(manifest["files"]["download_only_basebinary_payload"], str((backup_dir / "download_only.basebinary").resolve()))
+        self.assertEqual(manifest["flash_plan"]["payload"]["key_id"], "observed-k30a-78100")
+        self.assertTrue(payload_exists)
+        self.assertIn("Firmware payload: source=", output.getvalue())
 
     def test_flash_download_only_reports_mismatch_without_write(self) -> None:
         output = io.StringIO()

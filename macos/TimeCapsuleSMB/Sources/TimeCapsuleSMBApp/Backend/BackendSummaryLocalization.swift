@@ -193,10 +193,21 @@ enum BackendSummaryLocalization {
         alreadySatisfied: Bool,
         writeRequested: Bool,
         appleFirmwareMatch: FlashAppleFirmwareMatchPayload?,
+        appleFirmwareMatches: [FlashBankAppleFirmwareMatchPayload] = [],
         firmwarePayload: FlashFirmwarePayload?
     ) -> String {
         if mode == "check_apple" {
             let version = appleFirmwareMatch?.templateVersion
+            if appleFirmwareMatches.count > 1 {
+                let matched = appleFirmwareMatches.filter { $0.match.matched }.count
+                if matched == appleFirmwareMatches.count {
+                    return L10n.format("backend.summary.flash_apple_all_candidates_match", flashVersionSuffix(version))
+                }
+                if matched == 0 {
+                    return L10n.format("backend.summary.flash_apple_no_candidates_match", flashVersionSuffix(version))
+                }
+                return L10n.format("backend.summary.flash_apple_some_candidates_match", matched, appleFirmwareMatches.count, flashVersionSuffix(version))
+            }
             if appleFirmwareMatch?.matched == true {
                 return L10n.format("backend.summary.flash_apple_stock_matches", flashVersionSuffix(version))
             }
@@ -332,12 +343,16 @@ enum BackendSummaryLocalization {
         }
         if let mode = payload.string("mode") {
             let appleFirmwareMatch = try? payload.object("apple_firmware_match")?.decode(FlashAppleFirmwareMatchPayload.self)
+            let appleFirmwareMatches = payload.array("apple_firmware_matches")?.compactMap {
+                try? $0.decode(FlashBankAppleFirmwareMatchPayload.self)
+            } ?? []
             let firmwarePayload = try? payload.object("firmware_payload")?.decode(FlashFirmwarePayload.self)
             return flashPlanSummary(
                 mode: mode,
                 alreadySatisfied: payload.bool("already_satisfied") == true,
                 writeRequested: payload.bool("write_requested") == true,
                 appleFirmwareMatch: appleFirmwareMatch,
+                appleFirmwareMatches: appleFirmwareMatches,
                 firmwarePayload: firmwarePayload
             )
         }
@@ -529,6 +544,7 @@ extension FlashPlanPayload {
             alreadySatisfied: alreadySatisfied,
             writeRequested: writeRequested,
             appleFirmwareMatch: appleFirmwareMatch,
+            appleFirmwareMatches: appleFirmwareMatches,
             firmwarePayload: firmwarePayload
         )
     }

@@ -804,6 +804,65 @@ struct FlashAppleFirmwareMatchPayload: Decodable, Equatable {
     }
 }
 
+struct FlashBankAppleFirmwareMatchPayload: Decodable, Equatable {
+    let bank: String
+    let match: FlashAppleFirmwareMatchPayload
+
+    enum CodingKeys: String, CodingKey {
+        case bank
+        case match
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.bank = try container.decodeIfPresent(String.self, forKey: .bank) ?? ""
+        self.match = try container.decodeIfPresent(FlashAppleFirmwareMatchPayload.self, forKey: .match)
+            ?? FlashAppleFirmwareMatchPayload.empty
+    }
+}
+
+extension FlashAppleFirmwareMatchPayload {
+    static let empty = FlashAppleFirmwareMatchPayload(
+        matched: false,
+        templateSource: "",
+        templatePath: nil,
+        templateProductID: nil,
+        templateVersion: nil,
+        templateSHA256: nil,
+        innerSHA256: nil,
+        innerSize: nil,
+        keyID: nil,
+        innerModel: nil,
+        innerVersion: nil
+    )
+
+    init(
+        matched: Bool,
+        templateSource: String,
+        templatePath: String?,
+        templateProductID: String?,
+        templateVersion: String?,
+        templateSHA256: String?,
+        innerSHA256: String?,
+        innerSize: Int?,
+        keyID: String?,
+        innerModel: Int?,
+        innerVersion: String?
+    ) {
+        self.matched = matched
+        self.templateSource = templateSource
+        self.templatePath = templatePath
+        self.templateProductID = templateProductID
+        self.templateVersion = templateVersion
+        self.templateSHA256 = templateSHA256
+        self.innerSHA256 = innerSHA256
+        self.innerSize = innerSize
+        self.keyID = keyID
+        self.innerModel = innerModel
+        self.innerVersion = innerVersion
+    }
+}
+
 struct FlashFirmwarePayload: Decodable, Equatable {
     let templateSource: String
     let templatePath: String?
@@ -866,6 +925,8 @@ struct FlashPlanPayload: Decodable, Equatable {
     let banks: [FlashBankPayload]
     let flashPlan: JSONValue?
     let appleFirmwareMatch: FlashAppleFirmwareMatchPayload?
+    let appleFirmwareMatches: [FlashBankAppleFirmwareMatchPayload]
+    let appleMatchStatus: String?
     let firmwarePayload: FlashFirmwarePayload?
     let firmwarePayloadPath: String?
     let summary: String
@@ -880,6 +941,8 @@ struct FlashPlanPayload: Decodable, Equatable {
         case banks
         case flashPlan = "flash_plan"
         case appleFirmwareMatch = "apple_firmware_match"
+        case appleFirmwareMatches = "apple_firmware_matches"
+        case appleMatchStatus = "apple_match_status"
         case firmwarePayload = "firmware_payload"
         case firmwarePayloadPath = "firmware_payload_path"
         case summary
@@ -896,6 +959,8 @@ struct FlashPlanPayload: Decodable, Equatable {
         self.banks = try container.decodeIfPresent([FlashBankPayload].self, forKey: .banks) ?? []
         self.flashPlan = try container.decodeIfPresent(JSONValue.self, forKey: .flashPlan)
         self.appleFirmwareMatch = try container.decodeIfPresent(FlashAppleFirmwareMatchPayload.self, forKey: .appleFirmwareMatch)
+        self.appleFirmwareMatches = try container.decodeIfPresent([FlashBankAppleFirmwareMatchPayload].self, forKey: .appleFirmwareMatches) ?? []
+        self.appleMatchStatus = try container.decodeIfPresent(String.self, forKey: .appleMatchStatus)
         self.firmwarePayload = try container.decodeIfPresent(FlashFirmwarePayload.self, forKey: .firmwarePayload)
         self.firmwarePayloadPath = try container.decodeIfPresent(String.self, forKey: .firmwarePayloadPath)
         self.summary = try container.decode(String.self, forKey: .summary)

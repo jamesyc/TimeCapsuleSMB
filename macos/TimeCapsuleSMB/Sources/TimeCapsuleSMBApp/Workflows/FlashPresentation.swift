@@ -128,7 +128,17 @@ struct FlashPresentation: Equatable {
             rows.append(PresentationRow(label: L10n.string("flash.row.mode"), value: plan.mode.title))
             rows.append(PresentationRow(label: L10n.string("flash.row.write_requested"), value: plan.writeRequested ? L10n.string("value.yes") : L10n.string("value.no")))
             if let match = plan.appleFirmwareMatch {
-                rows.append(PresentationRow(label: L10n.string("flash.row.apple_match"), value: match.matched ? L10n.string("value.yes") : L10n.string("value.no")))
+                if plan.appleFirmwareMatches.count > 1 {
+                    for result in plan.appleFirmwareMatches {
+                        let bank = result.bank.isEmpty ? L10n.string("value.unknown") : result.bank
+                        rows.append(PresentationRow(
+                            label: L10n.format("flash.row.apple_match_bank", bank),
+                            value: result.match.matched ? L10n.string("value.yes") : L10n.string("value.no")
+                        ))
+                    }
+                } else {
+                    rows.append(PresentationRow(label: L10n.string("flash.row.apple_match"), value: match.matched ? L10n.string("value.yes") : L10n.string("value.no")))
+                }
                 appendIfPresent(&rows, label: L10n.string("flash.row.apple_version"), value: match.templateVersion)
                 appendIfPresent(&rows, label: L10n.string("flash.row.apple_product"), value: match.templateProductID)
                 appendIfPresent(&rows, label: L10n.string("flash.row.apple_source"), value: match.templateSource)

@@ -477,9 +477,9 @@ def plan_from_operation(
             firmware_template=firmware_template,
             firmware_version=firmware_version,
         )
-    if analysis is None:
-        raise FlashAnalysisError(inspection_error_message(inspection))
     if operation == "restore":
+        if analysis is None:
+            raise FlashAnalysisError(inspection_error_message(inspection))
         return plan_restore_apple(
             analysis,
             syap=syap,
@@ -488,14 +488,14 @@ def plan_from_operation(
         )
     if operation == "check_apple":
         return plan_check_apple(
-            analysis,
+            inspection,
             syap=syap,
             firmware_template=firmware_template,
             firmware_version=firmware_version,
         )
     if operation == "download_only":
         return plan_download_only(
-            analysis,
+            inspection,
             syap=syap,
             firmware_template=firmware_template,
             firmware_version=firmware_version,
@@ -515,8 +515,14 @@ def save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashIns
 
 
 def save_acp_flash_payload(*, backup_dir: Path, plan: FlashPlan) -> Path | None:
-    if plan.target_bank is None or plan.payload is None:
+    if plan.payload is None:
         return None
+    if plan.target_bank is None:
+        if plan.mode != "download_only":
+            return None
+        path = backup_dir / f"{plan.mode}.basebinary"
+        path.write_bytes(plan.payload.data)
+        return path
     suffix = "patched" if plan.mode == "patch" else plan.mode
     path = backup_dir / f"{plan.target_bank.name}.{suffix}.basebinary"
     path.write_bytes(plan.payload.data)
@@ -563,8 +569,11 @@ def plan_flash_from_backup(
                     files["primary_patched"] = str(patched_primary_path)
         payload_path = save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
         files = bundle.manifest.get("files")
-        if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
-            files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
+        if isinstance(files, dict) and payload_path is not None:
+            if plan.target_bank is not None:
+                files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
+            elif plan.mode == "download_only":
+                files[f"{plan.mode}_basebinary_payload"] = str(payload_path)
         bundle.manifest["flash_plan"] = plan.to_jsonable()
         apply_flash_plan_to_manifest(bundle.manifest, plan)
     save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)

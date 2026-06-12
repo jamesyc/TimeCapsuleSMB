@@ -196,6 +196,26 @@ def build_restore_payload_from_template(
     )
 
 
+def build_download_payload_from_template(
+    *,
+    syap: str | int | None,
+    candidate: FirmwareTemplateCandidate,
+) -> AcpFlashPayload:
+    template = parse_firmware_template_for_syap(candidate=candidate, syap=syap)
+    login = classify_firmware_prefix_login(template.inner.payload)
+    if login.classification != "stock":
+        raise FlashAnalysisError(
+            f"Apple firmware template LOGIN classification is {login.classification}; expected stock"
+        )
+    return _payload_from_template(
+        candidate=candidate,
+        template=template,
+        data=candidate.data,
+        expected_prefix=template.inner.payload,
+        expected_login_classification="stock",
+    )
+
+
 def apple_match_from_template(
     *,
     bank: BankAnalysis,
@@ -343,6 +363,27 @@ def build_restore_payload_for_active_bank(
         syap=syap,
         candidates=candidates,
         build=lambda candidate: build_restore_payload_from_template(active=active, syap=syap, candidate=candidate),
+    )
+
+
+def build_download_payload_for_syap(
+    *,
+    syap: str | int | None,
+    firmware_template: Path | None,
+    firmware_version: str | None = None,
+    cache_dir: Path | None = None,
+) -> AcpFlashPayload:
+    candidates = resolve_firmware_template_candidates(
+        syap=syap,
+        firmware_template=firmware_template,
+        firmware_version=firmware_version,
+        cache_dir=cache_dir,
+    )
+    return _try_candidates(
+        syap=syap,
+        candidates=candidates,
+        target_label="device syAP",
+        build=lambda candidate: build_download_payload_from_template(syap=syap, candidate=candidate),
     )
 
 

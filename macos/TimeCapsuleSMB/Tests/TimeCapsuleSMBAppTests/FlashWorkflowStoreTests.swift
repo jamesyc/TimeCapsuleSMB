@@ -249,6 +249,41 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Payload SHA-256", value: "inner-sha")))
     }
 
+    func testAppleCheckPresentationShowsMultiBankMatchDetails() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "flash", ok: true, payload: flashBackupPayload())
+            ]),
+            .init(events: [
+                BackendEvent(
+                    type: "result",
+                    operation: "flash",
+                    ok: true,
+                    payload: flashPlanPayload(
+                        mode: .checkApple,
+                        writeRequested: false,
+                        alreadySatisfied: true,
+                        appleMatched: true,
+                        includeAppleFirmwareMatches: true
+                    )
+                )
+            ])
+        ])
+        let store = FlashWorkflowStore(backend: BackendClient(runner: runner))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        store.refresh(profile: profile)
+
+        store.backupAndInspect(password: "pw", profile: profile)
+        try await waitUntilStoreState { store.backup != nil }
+        store.planFlash(mode: .checkApple, profile: profile)
+        try await waitUntilStoreState { store.state == .appleCheckComplete }
+
+        let presentation = FlashPresentation(store: store)
+        XCTAssertEqual(presentation.message, "All candidate firmware banks match Apple stock firmware 7.8.1.")
+        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Match (primary)", value: "yes")))
+        XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Apple Match (secondary)", value: "yes")))
+    }
+
     func testAppleCheckMismatchUsesDedicatedState() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -514,7 +549,8 @@ final class FlashWorkflowStoreTests: XCTestCase {
         writeRequested: Bool,
         alreadySatisfied: Bool = false,
         appleMatched: Bool? = nil,
-        includeFirmwarePayload: Bool = false
+        includeFirmwarePayload: Bool = false,
+        includeAppleFirmwareMatches: Bool = false
     ) -> JSONValue {
         var payload: [String: JSONValue] = [
             "schema_version": .number(1),
@@ -540,6 +576,26 @@ final class FlashWorkflowStoreTests: XCTestCase {
                 "inner_model": .number(116),
                 "inner_version": .string("0x00070801")
             ])
+        }
+        if includeAppleFirmwareMatches {
+            let match: [String: JSONValue] = [
+                "matched": .bool(true),
+                "template_source": .string("catalog"),
+                "template_product_id": .string("116"),
+                "template_version": .string("7.8.1"),
+                "template_sha256": .string("template-sha"),
+                "inner_sha256": .string("inner-sha"),
+                "inner_size": .number(123),
+                "key_id": .string("key-one"),
+                "inner_model": .number(116),
+                "inner_version": .string("0x00070801")
+            ]
+            payload["apple_match_status"] = .string("all_candidates_match")
+            payload["apple_firmware_matches"] = .array([
+                .object(["bank": .string("primary"), "match": .object(match)]),
+                .object(["bank": .string("secondary"), "match": .object(match)])
+            ])
+            payload["summary"] = .string("All candidate firmware banks match Apple stock firmware 7.8.1.")
         }
         if includeFirmwarePayload {
             payload["firmware_payload"] = .object([

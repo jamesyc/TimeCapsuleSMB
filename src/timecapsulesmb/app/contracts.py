@@ -346,19 +346,50 @@ def _flash_plan_child(plan: Mapping[str, object], key: str) -> dict[str, object]
 def _firmware_payload_path(raw: Mapping[str, object], plan: Mapping[str, object]) -> str | None:
     target_bank = plan.get("target_bank")
     mode = plan.get("mode")
-    if not isinstance(target_bank, str) or not isinstance(mode, str):
+    if not isinstance(mode, str):
         return None
     files = raw.get("files")
     if not isinstance(files, dict):
         return None
-    value = files.get(f"{target_bank}_{mode}_basebinary_payload")
+    if isinstance(target_bank, str):
+        value = files.get(f"{target_bank}_{mode}_basebinary_payload")
+    else:
+        value = files.get(f"{mode}_basebinary_payload")
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _apple_firmware_summary(mode: str, match: Mapping[str, object] | None, payload: Mapping[str, object] | None) -> str | None:
+def _apple_matches(plan: Mapping[str, object]) -> list[Mapping[str, object]]:
+    matches = plan.get("apple_matches")
+    if not isinstance(matches, list):
+        return []
+    return [match for match in matches if isinstance(match, dict)]
+
+
+def _apple_match_count(matches: list[Mapping[str, object]], *, matched: bool) -> int:
+    count = 0
+    for result in matches:
+        match = result.get("match")
+        if isinstance(match, dict) and match.get("matched") is matched:
+            count += 1
+    return count
+
+
+def _apple_firmware_summary(
+    mode: str,
+    match: Mapping[str, object] | None,
+    payload: Mapping[str, object] | None,
+    matches: list[Mapping[str, object]],
+) -> str | None:
     if mode == "check_apple":
         version = None if match is None else match.get("template_version")
         version_text = f" {version}" if isinstance(version, str) and version.strip() else ""
+        if len(matches) > 1:
+            matched_count = _apple_match_count(matches, matched=True)
+            if matched_count == len(matches):
+                return f"All candidate firmware banks match Apple stock firmware{version_text}."
+            if matched_count == 0:
+                return f"No candidate firmware banks match Apple stock firmware{version_text}."
+            return f"{matched_count} of {len(matches)} candidate firmware banks match Apple stock firmware{version_text}."
         if match is not None and match.get("matched") is True:
             return f"Active firmware bank matches Apple stock firmware{version_text}."
         return f"Active firmware bank does not match Apple stock firmware{version_text}."
@@ -387,7 +418,8 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     apple_firmware_match = _flash_plan_child(plan, "apple_match")
     firmware_payload = _flash_plan_child(plan, "payload")
     firmware_payload_path = _firmware_payload_path(raw, plan)
-    apple_summary = _apple_firmware_summary(mode, apple_firmware_match, firmware_payload)
+    apple_firmware_matches = _apple_matches(plan)
+    apple_summary = _apple_firmware_summary(mode, apple_firmware_match, firmware_payload, apple_firmware_matches)
     if apple_summary is not None:
         summary = apple_summary
     elif already_satisfied:
@@ -402,6 +434,8 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
         "write_requested": write_requested,
         "already_satisfied": already_satisfied,
         "apple_firmware_match": apple_firmware_match,
+        "apple_firmware_matches": apple_firmware_matches,
+        "apple_match_status": plan.get("apple_match_status") if isinstance(plan.get("apple_match_status"), str) else None,
         "firmware_payload": firmware_payload,
         "firmware_payload_path": firmware_payload_path,
         "summary": summary,

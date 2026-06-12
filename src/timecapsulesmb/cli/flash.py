@@ -182,6 +182,18 @@ def print_flash_summary(manifest: dict[str, object]) -> None:
                 f"Apple firmware match: matched={apple_match['matched']} "
                 f"source={apple_match['template_source']} version={apple_match['template_version']}"
             )
+        apple_matches = plan.get("apple_matches")
+        if isinstance(apple_matches, list) and len(apple_matches) > 1:
+            for result in apple_matches:
+                if not isinstance(result, dict):
+                    continue
+                match = result.get("match")
+                if not isinstance(match, dict):
+                    continue
+                print(
+                    f"Apple firmware match ({result.get('bank')}): matched={match.get('matched')} "
+                    f"source={match.get('template_source')} version={match.get('template_version')}"
+                )
 
 
 def _operation_from_args(args: argparse.Namespace) -> str:
@@ -464,8 +476,11 @@ def _plan_flash(
             command_context.update_fields(patched_primary_path=str(patched_primary_path))
     payload_path = save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
     files = bundle.manifest.get("files")
-    if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
-        files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
+    if isinstance(files, dict) and payload_path is not None:
+        if plan.target_bank is not None:
+            files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
+        elif plan.mode == "download_only":
+            files[f"{plan.mode}_basebinary_payload"] = str(payload_path)
     bundle.manifest["flash_plan"] = plan.to_jsonable()
     apply_flash_plan_to_manifest(bundle.manifest, plan)
     _update_context_with_plan(command_context, plan, payload_path)
