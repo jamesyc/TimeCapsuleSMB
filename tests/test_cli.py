@@ -4550,12 +4550,14 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.99", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_open", return_value=False):
-                    with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_mock:
-                        with redirect_stdout(output):
-                            rc = set_ssh.main([])
+                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value="Connection refused"):
+                    with mock.patch("timecapsulesmb.services.acp_ssh.time.sleep") as sleep:
+                        with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_mock:
+                            with redirect_stdout(output):
+                                rc = set_ssh.main([])
 
         self.assertEqual(rc, 1)
+        self.assertEqual(sleep.call_args_list, [mock.call(2.0), mock.call(2.0)])
         enable_mock.assert_not_called()
         rendered = output.getvalue()
         self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", rendered)
@@ -4563,13 +4565,15 @@ class CliTests(unittest.TestCase):
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertIn("stage=acp_port_probe", finished["error"])
         self.assertIn("Failed to enable SSH via ACP: Could not connect to ACP on 10.0.0.99:5009", finished["error"])
+        self.assertIn("acp_port_probe_attempts=3", finished["error"])
+        self.assertIn("acp_port_probe_last_error=Connection refused", finished["error"])
 
     def test_set_ssh_enable_port_preflight_runs_enable_after_open_port(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_open", return_value=True):
+                with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
                     with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_mock:
                         with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True):
                             with redirect_stdout(output):
