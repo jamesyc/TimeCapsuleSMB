@@ -45,7 +45,7 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 3. Make sure Local Network permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
 4. Click "Add Device" on the left sidebar, and select your device. 
 5. Enter your device password, and click "Save Device". 
-6. Wait for the app to enable SSH for your Time Capsule. If it fails, close the app, reopen the app, and try again. 
+6. Wait for the app to enable SSH for your Time Capsule. If it fails, close the app, reopen the app, and try again. If you get an error `No AirPort ACP service responded at this address: Could not connect to ACP` check the IP address of the device, or check that your Mac firewall/system network permissions allows the app. 
 7. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
    <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />  
 8. Click "Install/Update" to deploy to the device.  
