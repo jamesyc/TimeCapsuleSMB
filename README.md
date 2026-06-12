@@ -45,15 +45,16 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 3. Make sure Local Network permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
 4. Click "Add Device" on the left sidebar, and select your device. 
 5. Enter your device password, and click "Save Device". 
-6. Wait for the app to enable SSH for your Time Capsule. If it fails, close the app, reopen the app, and try again. If you get an error `No AirPort ACP service responded at this address: Could not connect to ACP` check the IP address of the device, or check that your Mac firewall/system network permissions allows the app. 
-7. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
+6. Wait for the app to enable SSH for your Time Capsule.
+    - If it fails, close the app, reopen the app, and try again. If you get an error `No AirPort ACP service responded at this address: Could not connect to ACP` check the IP address of the device, or check that your Mac firewall/system network permissions allows the app. 
+8. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
    <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />  
-8. Click "Install/Update" to deploy to the device.  
-   <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />
-   If deploying to the device fails, try removing the saved device from the app, then go back to step 4 above to "Add Device" again. It usually works on the second deploy, if not the first one. 
-10. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
+9. Click "Install/Update" to deploy to the device.  
+   <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />    
+    - If deploying to the device fails, try removing the saved device from the app, then go back to step 4 above to "Add Device" again. It sometimes takes more than one deploy to copy all the files over. 
+11. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
    <img width="634" height="429" alt="image" src="https://github.com/user-attachments/assets/e35d8934-975b-4079-8087-8c22984a3165" />    
-11. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup. 
+12. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup. 
 
 ## Quick Start (with python)
 
