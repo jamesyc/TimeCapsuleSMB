@@ -12,6 +12,8 @@ final class InMemoryPasswordStore: PasswordStore {
     var readFailure: Failure?
     var saveFailure: Failure?
     var deleteFailure: Failure?
+    private(set) var passwordReadCount = 0
+    private(set) var availabilityReadCount = 0
 
     private var passwords: [String: String]
     private var invalidAccounts: Set<String>
@@ -22,6 +24,7 @@ final class InMemoryPasswordStore: PasswordStore {
     }
 
     func password(for account: String) throws -> String {
+        passwordReadCount += 1
         if readFailure != nil {
             throw PasswordStoreError.unavailable("In-memory password store read failed.")
         }
@@ -52,10 +55,16 @@ final class InMemoryPasswordStore: PasswordStore {
     }
 
     func credentialAvailability(for account: String) -> CredentialAvailability {
+        availabilityReadCount += 1
         if readFailure != nil {
             return .unavailable("In-memory password store read failed.")
         }
         return passwords[account] == nil ? .missing : .available
+    }
+
+    func resetTracking() {
+        passwordReadCount = 0
+        availabilityReadCount = 0
     }
 
     func state(for account: String) -> DevicePasswordState {

@@ -184,6 +184,10 @@ final class DeviceProfilePersistenceService {
         }
     }
 
+    func credentialState(for profile: DeviceProfile) -> DevicePasswordState {
+        effectivePasswordState(for: profile)
+    }
+
     func refreshCredentialStates() async {
         for profile in registry.profiles {
             await registry.updatePasswordState(effectivePasswordState(for: profile), for: profile.id)
@@ -203,6 +207,8 @@ final class DeviceProfilePersistenceService {
             return .available
         case .missing:
             return .missing
+        case .authenticationRequired:
+            return .available
         case .unavailable:
             return .keychainUnavailable
         }

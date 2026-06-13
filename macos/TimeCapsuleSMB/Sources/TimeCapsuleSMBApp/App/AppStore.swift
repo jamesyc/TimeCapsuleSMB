@@ -235,16 +235,7 @@ final class AppStore: ObservableObject {
     }
 
     private func effectivePasswordState(for profile: DeviceProfile) -> DevicePasswordState {
-        switch profilePersistence.credential(for: profile) {
-        case .available:
-            return .available
-        case .missing:
-            return .missing
-        case .invalid:
-            return .invalid
-        case .unavailable:
-            return .keychainUnavailable
-        }
+        profilePersistence.credentialState(for: profile)
     }
 
     private func applyAppSettings(_ settings: AppSettings) {

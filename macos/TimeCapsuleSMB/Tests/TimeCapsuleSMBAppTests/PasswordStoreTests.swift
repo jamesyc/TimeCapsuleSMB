@@ -78,6 +78,42 @@ final class PasswordStoreTests: XCTestCase {
         XCTAssertEqual(keychain.updatedAttributes?[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
         XCTAssertEqual(keychain.updatedAttributes?[kSecValueData as String] as? Data, Data("updated".utf8))
     }
+
+    func testKeychainAvailabilityCheckDoesNotReturnPasswordDataOrShowAuthenticationUI() {
+        let keychain = RecordingKeychainClient()
+        keychain.copyStatus = errSecSuccess
+        keychain.copyResult = [kSecAttrAccount as String: "device"] as CFDictionary
+        let store = KeychainPasswordStore(service: "test.service", keychainClient: keychain)
+
+        XCTAssertEqual(store.credentialAvailability(for: "device"), .available)
+
+        XCTAssertEqual(keychain.copiedQuery?[kSecAttrService as String] as? String, "test.service")
+        XCTAssertEqual(keychain.copiedQuery?[kSecAttrAccount as String] as? String, "device")
+        XCTAssertEqual(keychain.copiedQuery?[kSecReturnAttributes as String] as? Bool, true)
+        XCTAssertNil(keychain.copiedQuery?[kSecReturnData as String])
+        XCTAssertEqual(keychain.copiedQuery?[kSecUseAuthenticationUI as String] as? String, kSecUseAuthenticationUISkip as String)
+    }
+
+    func testKeychainAvailabilityReportsAuthenticationRequiredWithoutPrompting() {
+        let keychain = RecordingKeychainClient()
+        keychain.copyStatus = errSecInteractionNotAllowed
+        let store = KeychainPasswordStore(service: "test.service", keychainClient: keychain)
+
+        XCTAssertEqual(store.credentialAvailability(for: "device"), .authenticationRequired)
+        XCTAssertEqual(keychain.copiedQuery?[kSecUseAuthenticationUI as String] as? String, kSecUseAuthenticationUISkip as String)
+    }
+
+    func testKeychainPasswordReadIsCachedForSession() throws {
+        let keychain = RecordingKeychainClient()
+        keychain.copyStatus = errSecSuccess
+        keychain.copyResult = Data("secret".utf8) as CFData
+        let store = KeychainPasswordStore(service: "test.service", keychainClient: keychain)
+
+        XCTAssertEqual(try store.password(for: "device"), "secret")
+        XCTAssertEqual(try store.password(for: "device"), "secret")
+
+        XCTAssertEqual(keychain.copyCount, 1)
+    }
 }
 
 private final class RecordingKeychainClient: KeychainClient {
@@ -92,8 +128,10 @@ private final class RecordingKeychainClient: KeychainClient {
     private(set) var updatedQuery: [String: Any]?
     private(set) var updatedAttributes: [String: Any]?
     private(set) var deletedQuery: [String: Any]?
+    private(set) var copyCount = 0
 
     func copyMatching(_ query: [String: Any], result: inout CFTypeRef?) -> OSStatus {
+        copyCount += 1
         copiedQuery = query
         result = copyResult
         return copyStatus

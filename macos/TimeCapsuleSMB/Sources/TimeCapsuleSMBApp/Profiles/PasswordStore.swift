@@ -48,6 +48,7 @@ enum PasswordStoreError: Error, Equatable, LocalizedError {
 enum CredentialAvailability: Equatable {
     case available
     case missing
+    case authenticationRequired
     case unavailable(String)
 }
 
@@ -64,6 +65,7 @@ final class KeychainPasswordStore: PasswordStore {
     private let service: String
     private let accessibility: CFString
     private let keychainClient: KeychainClient
+    private var cachedPasswords: [String: String] = [:]
 
     init(
         service: String = KeychainPasswordStore.service,
@@ -76,6 +78,9 @@ final class KeychainPasswordStore: PasswordStore {
     }
 
     func password(for account: String) throws -> String {
+        if let cachedPassword = cachedPasswords[account] {
+            return cachedPassword
+        }
         var query = baseQuery(account: account)
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecReturnData as String] = true
@@ -92,6 +97,7 @@ final class KeychainPasswordStore: PasswordStore {
               let password = String(data: data, encoding: .utf8) else {
             throw PasswordStoreError.unavailable(L10n.string("password.error.unreadable_keychain_item"))
         }
+        cachedPasswords[account] = password
         return password
     }
 
@@ -104,6 +110,7 @@ final class KeychainPasswordStore: PasswordStore {
         ]
         let status = keychainClient.update(query, attributes: attributes)
         if status == errSecSuccess {
+            cachedPasswords[account] = password
             return
         }
         if status != errSecItemNotFound {
@@ -115,27 +122,36 @@ final class KeychainPasswordStore: PasswordStore {
         guard addStatus == errSecSuccess else {
             throw PasswordStoreError.unavailable(message(for: addStatus))
         }
+        cachedPasswords[account] = password
     }
 
     func deletePassword(for account: String) throws {
         let status = keychainClient.delete(baseQuery(account: account))
         if status == errSecSuccess || status == errSecItemNotFound {
+            cachedPasswords.removeValue(forKey: account)
             return
         }
         throw PasswordStoreError.unavailable(message(for: status))
     }
 
     func credentialAvailability(for account: String) -> CredentialAvailability {
-        do {
-            _ = try password(for: account)
+        var query = baseQuery(account: account)
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnAttributes as String] = true
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+
+        var result: CFTypeRef?
+        let status = keychainClient.copyMatching(query, result: &result)
+        if status == errSecSuccess {
             return .available
-        } catch PasswordStoreError.missing {
-            return .missing
-        } catch PasswordStoreError.unavailable(let message) {
-            return .unavailable(message)
-        } catch {
-            return .unavailable(error.localizedDescription)
         }
+        if status == errSecItemNotFound {
+            return .missing
+        }
+        if status == errSecInteractionNotAllowed {
+            return .authenticationRequired
+        }
+        return .unavailable(message(for: status))
     }
 
     private func baseQuery(account: String) -> [String: Any] {

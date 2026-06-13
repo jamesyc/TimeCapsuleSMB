@@ -37,6 +37,43 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: warning).primaryAction, .viewCheckup)
     }
 
+    func testDashboardSummaryChecksAvailabilityWithoutReadingPasswordSecret() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.passwordStore.resetTracking()
+
+        let summary = fixture.appStore.dashboardSummary(for: profile)
+
+        XCTAssertEqual(summary.passwordState, .available)
+        XCTAssertEqual(summary.primaryAction, .runCheckup)
+        XCTAssertEqual(fixture.passwordStore.passwordReadCount, 0)
+        XCTAssertEqual(fixture.passwordStore.availabilityReadCount, 1)
+    }
+
+    func testLaunchPasswordStateRefreshDoesNotReadPasswordSecrets() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.passwordStore.resetTracking()
+
+        await fixture.appStore.refreshPasswordStates()
+
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .available)
+        XCTAssertEqual(fixture.passwordStore.passwordReadCount, 0)
+        XCTAssertEqual(fixture.passwordStore.availabilityReadCount, 1)
+    }
+
     func testPrimaryActionsRouteThroughDashboardSession() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
