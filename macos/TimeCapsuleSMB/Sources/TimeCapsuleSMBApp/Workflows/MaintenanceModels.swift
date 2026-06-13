@@ -1,6 +1,7 @@
 import Foundation
 
 enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
+    case sshAccess
     case activate
     case uninstall
     case fsck
@@ -10,6 +11,8 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
 
     var title: String {
         switch self {
+        case .sshAccess:
+            return L10n.string("maintenance.workflow.ssh_access")
         case .activate:
             return L10n.string("maintenance.workflow.activate")
         case .uninstall:
@@ -23,6 +26,8 @@ enum MaintenanceWorkflow: String, CaseIterable, Equatable, Identifiable {
 
     var deviceWorkflowLane: DeviceWorkflowLane {
         switch self {
+        case .sshAccess:
+            return .sshAccess
         case .activate:
             return .activate
         case .uninstall:

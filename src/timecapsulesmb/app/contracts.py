@@ -7,6 +7,7 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
 from timecapsulesmb.services.reachability import ReachabilityResult
+from timecapsulesmb.services.ssh_access import SshAccessEnableResult, SshAccessProbeResult
 from timecapsulesmb.services.version_check import VersionCheckResult
 
 
@@ -135,6 +136,21 @@ def reachability_payload(result: ReachabilityResult) -> dict[str, object]:
         "counts": counts,
         "summary": result.summary,
     })
+
+
+def ssh_access_payload(result: SshAccessProbeResult | SshAccessEnableResult) -> dict[str, object]:
+    payload = jsonable(result)
+    if not isinstance(payload, dict):
+        payload = {}
+    if "ssh_port_reachable" not in payload:
+        payload["ssh_port_reachable"] = bool(getattr(result, "ssh_final_reachable", False))
+    if "acp_port_error" not in payload:
+        payload["acp_port_error"] = None
+    if "ssh_port_error" not in payload:
+        payload["ssh_port_error"] = None
+    payload["ssh_disabled_likely"] = bool(payload.get("acp_port_reachable")) and not bool(payload.get("ssh_port_reachable"))
+    payload["summary"] = getattr(result, "summary", "")
+    return _with_schema(payload)
 
 
 def configure_payload(

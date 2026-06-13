@@ -44,6 +44,7 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
     case deploy
     case doctor
     case reachability
+    case sshAccess = "ssh_access"
     case maintenance
     case activate
     case uninstall
@@ -61,6 +62,8 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
             return .doctor
         case "reachability":
             return .reachability
+        case "ssh-access":
+            return .sshAccess
         case "activate":
             return .activate
         case "uninstall":

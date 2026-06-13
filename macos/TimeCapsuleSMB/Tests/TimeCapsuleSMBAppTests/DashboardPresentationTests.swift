@@ -948,10 +948,14 @@ final class DashboardPresentationTests: XCTestCase {
     }
 
     func testMaintenanceActionPolicyUsesStableWorkflowActionGroups() {
+        XCTAssertEqual(MaintenanceActionPolicy.actions(for: .sshAccess), [.checkSSHAccess, .enableSSHAccess])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .activate), [.runActivation])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .uninstall), [.runUninstall])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .fsck), [.findVolumes, .planFsck, .runFsck])
         XCTAssertEqual(MaintenanceActionPolicy.actions(for: .repairXattrs), [.scanMetadata, .repairMetadata])
+        XCTAssertEqual(MaintenanceUserAction.checkSSHAccess.title, "Check SSH")
+        XCTAssertFalse(MaintenanceUserAction.checkSSHAccess.isCommitAction)
+        XCTAssertTrue(MaintenanceUserAction.enableSSHAccess.isCommitAction)
         XCTAssertEqual(MaintenanceUserAction.runActivation.title, "Activate")
         XCTAssertTrue(MaintenanceUserAction.runActivation.isCommitAction)
     }
@@ -973,10 +977,10 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .uninstall, .fsck, .repairXattrs])
         XCTAssertEqual(presentation.cards.first?.isSelected, true)
-        XCTAssertEqual(presentation.detail.workflow, .uninstall)
-        XCTAssertEqual(presentation.detail.title, "Uninstall")
+        XCTAssertEqual(presentation.detail.workflow, .sshAccess)
+        XCTAssertEqual(presentation.detail.title, "SSH Access")
     }
 
     func testMaintenancePresentationKeepsActivationForNetBSD4Devices() throws {
@@ -985,8 +989,8 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.activate, .uninstall, .fsck, .repairXattrs])
-        XCTAssertEqual(presentation.cards.first?.isSelected, true)
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .activate, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.first?.isSelected, false)
         XCTAssertEqual(presentation.detail.workflow, .activate)
     }
 

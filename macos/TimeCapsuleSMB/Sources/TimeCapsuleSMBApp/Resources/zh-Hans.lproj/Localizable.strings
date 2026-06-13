@@ -128,6 +128,9 @@
 "confirm.configure.enable_ssh_reboot.action" = "启用 SSH 并重启";
 "confirm.configure.enable_ssh_reboot.message" = "%@ 上的 SSH 已关闭。是否使用 AirPort ACP 启用 SSH 并重启此 AirPort 设备？";
 "confirm.configure.enable_ssh_reboot.title" = "启用 SSH 并重启？";
+"confirm.ssh_access.enable_reboot.action" = "启用 SSH 并重启";
+"confirm.ssh_access.enable_reboot.message" = "是否使用 AirPort ACP 在 %@ 上启用 SSH 并重启此 AirPort 设备？";
+"confirm.ssh_access.enable_reboot.title" = "启用 SSH 并重启？";
 "confirm.deploy.activate_now.action" = "部署并启动 SMB";
 "confirm.deploy.activate_now.message" = "将 TimeCapsuleSMB Deploy 到此 %@ 并在不重启的情况下启动 SMB？";
 "confirm.deploy.activate_now.title" = "部署并启动 SMB？";
@@ -184,6 +187,10 @@
 "stale_endpoint.message" = "此 Profile 当前配置为 %@，但 Bonjour 看到设备位于 %@。请先更新配置地址，再运行设备操作。";
 "stale_endpoint.title" = "%@ 现在位于 %@";
 "stale_endpoint.update_action" = "更新配置地址";
+"ssh_access_notice.enable_action" = "启用 SSH";
+"ssh_access_notice.message" = "AirPort ACP 可在 %@ 访问，但 SSH 已关闭。请先启用 SSH，再部署、检查或维护此设备。";
+"ssh_access_notice.open_action" = "打开 SSH 访问";
+"ssh_access_notice.title" = "%@ 已关闭 SSH";
 "dashboard.health.connection.keychain_unavailable" = "无法从 Keychain 读取保存的密码。";
 "dashboard.health.connection.not_refreshed" = "连接状态尚未刷新。";
 "dashboard.health.connection.password_invalid" = "保存的密码被设备拒绝。";
@@ -492,6 +499,8 @@
 "checkup.timeline.title" = "进度";
 "maintenance.action.choose" = "选择";
 "maintenance.action.choose_folder" = "选择文件夹";
+"maintenance.action.check_ssh_access" = "检查 SSH";
+"maintenance.action.enable_ssh_access" = "启用 SSH";
 "maintenance.action.find_volumes" = "查找卷";
 "maintenance.action.plan_disk_repair" = "规划磁盘修复";
 "maintenance.action.plan_start_smb" = "规划启动";
@@ -514,12 +523,17 @@
 "maintenance.presentation.risk.destructive" = "破坏性";
 "maintenance.presentation.risk.local_destructive" = "本地破坏性";
 "maintenance.presentation.risk.remote_write" = "远程写入";
+"maintenance.presentation.risk.reboot" = "重启";
+"maintenance.presentation.ssh_access.primary_action" = "启用 SSH";
+"maintenance.presentation.ssh_access.subtitle" = "通过 AirPort ACP 检查或启用 SSH。";
+"maintenance.presentation.ssh_access.title" = "SSH 访问";
 "maintenance.presentation.uninstall.primary_action" = "卸载";
 "maintenance.presentation.uninstall.subtitle" = "从选定设备移除 payload。";
 "maintenance.presentation.uninstall.title" = "卸载";
 "maintenance.completion.activate" = "启动完成";
 "maintenance.completion.fsck" = "磁盘修复完成";
 "maintenance.completion.repair_xattrs" = "元数据修复完成";
+"maintenance.completion.ssh_access" = "SSH 访问状态";
 "maintenance.completion.uninstall" = "卸载完成";
 "maintenance.fsck.no_volumes" = "规划磁盘修复前请先查找已挂载卷。";
 "maintenance.plan.activate" = "启动计划";
@@ -539,7 +553,10 @@
 "maintenance.plan.row.wait_after_reboot" = "重启后等待";
 "maintenance.plan.uninstall" = "卸载计划";
 "maintenance.result.already_active" = "已启动";
+"maintenance.result.acp" = "ACP";
+"maintenance.result.host" = "主机";
 "maintenance.result.returncode" = "返回码";
+"maintenance.result.ssh" = "SSH";
 "maintenance.state.awaiting_confirmation" = "继续前请查看确认对话框。";
 "maintenance.state.failed" = "维护失败。";
 "maintenance.state.fsck_list_ready" = "选择一个卷，然后规划磁盘修复。";
@@ -561,6 +578,7 @@
 "maintenance.workflow.activate" = "NetBSD4 启动";
 "maintenance.workflow.fsck" = "磁盘修复";
 "maintenance.workflow.repair_xattrs" = "文件元数据修复";
+"maintenance.workflow.ssh_access" = "SSH 访问";
 "maintenance.workflow.uninstall" = "卸载";
 "overview.empty.message" = "添加 Apple AirPort Time Capsule 或 AirPort Extreme 设备，以配置 SMB、运行检查并管理维护任务。";
 "overview.empty.title" = "没有保存的设备";
@@ -741,6 +759,7 @@
 "timeline.operation.reachability" = "可达性";
 "timeline.operation.readiness" = "App Readiness";
 "timeline.operation.repair_xattrs" = "文件元数据修复";
+"timeline.operation.ssh_access" = "SSH 访问";
 "timeline.operation.telemetry" = "遥测设置";
 "timeline.operation.uninstall" = "卸载";
 "timeline.operation.version_check" = "更新检查";
@@ -870,6 +889,8 @@
 "value.list_separator" = "，";
 "value.no" = "否";
 "value.not_required" = "不需要";
+"value.not_reachable" = "不可访问";
+"value.reachable" = "可访问";
 "value.required" = "需要";
 "value.unknown" = "未知";
 "value.yes" = "是";

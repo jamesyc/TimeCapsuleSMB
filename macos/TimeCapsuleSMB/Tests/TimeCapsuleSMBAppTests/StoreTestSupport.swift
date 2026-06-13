@@ -769,6 +769,24 @@ func testReachabilityPayload(
     ])
 }
 
+func testSSHAccessPayload(
+    host: String = "10.0.0.2",
+    acpPortReachable: Bool = true,
+    sshPortReachable: Bool = false,
+    summary: String = "AirPort ACP is reachable, but SSH is closed."
+) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "host": .string(host),
+        "acp_port_reachable": .bool(acpPortReachable),
+        "ssh_port_reachable": .bool(sshPortReachable),
+        "acp_port_error": acpPortReachable ? .null : .string("ACP port is closed."),
+        "ssh_port_error": sshPortReachable ? .null : .string("SSH port is closed."),
+        "ssh_disabled_likely": .bool(acpPortReachable && !sshPortReachable),
+        "summary": .string(summary)
+    ])
+}
+
 func testDeployPlanPayload(
     payloadFamily: String = "netbsd6_samba4",
     netbsd4: Bool? = nil,

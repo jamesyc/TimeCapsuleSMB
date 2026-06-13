@@ -1,6 +1,8 @@
 import Foundation
 
 enum MaintenanceUserAction: String, Equatable, Identifiable {
+    case checkSSHAccess
+    case enableSSHAccess
     case planActivation
     case runActivation
     case planUninstall
@@ -16,6 +18,10 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
 
     var title: String {
         switch self {
+        case .checkSSHAccess:
+            return L10n.string("maintenance.action.check_ssh_access")
+        case .enableSSHAccess:
+            return L10n.string("maintenance.action.enable_ssh_access")
         case .planActivation:
             return L10n.string("maintenance.action.plan_start_smb")
         case .runActivation:
@@ -41,6 +47,10 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .checkSSHAccess:
+            return "network"
+        case .enableSSHAccess:
+            return "key"
         case .planActivation, .planUninstall, .planFsck:
             return "doc.text.magnifyingglass"
         case .runActivation:
@@ -62,9 +72,9 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
 
     var isCommitAction: Bool {
         switch self {
-        case .runActivation, .runUninstall, .runFsck, .repairMetadata:
+        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .repairMetadata:
             return true
-        case .planActivation, .planUninstall, .findVolumes, .planFsck, .scanMetadata, .viewDiagnostics:
+        case .checkSSHAccess, .planActivation, .planUninstall, .findVolumes, .planFsck, .scanMetadata, .viewDiagnostics:
             return false
         }
     }
@@ -83,6 +93,8 @@ struct MaintenanceWorkflowCardPresentation: Equatable, Identifiable {
 extension MaintenanceWorkflow {
     var presentationTitle: String {
         switch self {
+        case .sshAccess:
+            return L10n.string("maintenance.presentation.ssh_access.title")
         case .activate:
             return L10n.string("maintenance.presentation.activate.title")
         case .uninstall:
@@ -96,6 +108,8 @@ extension MaintenanceWorkflow {
 
     var presentationSubtitle: String {
         switch self {
+        case .sshAccess:
+            return L10n.string("maintenance.presentation.ssh_access.subtitle")
         case .activate:
             return L10n.string("maintenance.presentation.activate.subtitle")
         case .uninstall:
@@ -109,6 +123,8 @@ extension MaintenanceWorkflow {
 
     var presentationRisk: String {
         switch self {
+        case .sshAccess:
+            return L10n.string("maintenance.presentation.risk.reboot")
         case .activate:
             return L10n.string("maintenance.presentation.risk.remote_write")
         case .uninstall, .fsck:
@@ -165,6 +181,8 @@ struct MaintenanceTimelinePresentation: Equatable {
 enum MaintenanceActionPolicy {
     static func actions(for workflow: MaintenanceWorkflow) -> [MaintenanceUserAction] {
         switch workflow {
+        case .sshAccess:
+            return [.checkSSHAccess, .enableSSHAccess]
         case .activate:
             return [.runActivation]
         case .uninstall:
@@ -179,6 +197,11 @@ enum MaintenanceActionPolicy {
     @MainActor
     static func enabledActions(workflow: MaintenanceWorkflow, store: MaintenanceStore) -> Set<MaintenanceUserAction> {
         switch workflow {
+        case .sshAccess:
+            return enabled([
+                (.checkSSHAccess, store.canCheckSSHAccess),
+                (.enableSSHAccess, store.canEnableSSHAccess)
+            ])
         case .activate:
             return enabled([
                 (.runActivation, store.canRunActivation)
@@ -284,6 +307,8 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         profile: DeviceProfile
     ) -> MaintenancePlanPresentation? {
         switch workflow {
+        case .sshAccess:
+            return nil
         case .activate:
             guard let plan = store.activationPlan else { return nil }
             return MaintenancePlanPresentation(
@@ -340,6 +365,17 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         store: MaintenanceStore
     ) -> MaintenanceCompletionPresentation? {
         switch workflow {
+        case .sshAccess:
+            guard let payload = store.sshAccessPayload else { return nil }
+            return MaintenanceCompletionPresentation(
+                title: L10n.string("maintenance.completion.ssh_access"),
+                rows: [
+                    PresentationRow(label: L10n.string("maintenance.result.host"), value: payload.host),
+                    PresentationRow(label: L10n.string("maintenance.result.acp"), value: payload.acpPortReachable ? L10n.string("value.reachable") : L10n.string("value.not_reachable")),
+                    PresentationRow(label: L10n.string("maintenance.result.ssh"), value: payload.sshPortReachable ? L10n.string("value.reachable") : L10n.string("value.not_reachable")),
+                    PresentationRow(label: L10n.string("deploy.result.message"), value: payload.summary)
+                ]
+            )
         case .activate:
             guard let result = store.activationResult else { return nil }
             return MaintenanceCompletionPresentation(
@@ -436,6 +472,8 @@ struct MaintenanceDashboardPresentation: Equatable {
 extension MaintenanceWorkflow {
     var operationName: String {
         switch self {
+        case .sshAccess:
+            return "ssh-access"
         case .activate:
             return "activate"
         case .uninstall:
@@ -451,6 +489,8 @@ extension MaintenanceWorkflow {
 extension MaintenanceStore {
     func state(for workflow: MaintenanceWorkflow) -> MaintenanceOperationState {
         switch workflow {
+        case .sshAccess:
+            return sshAccessState
         case .activate:
             return activateState
         case .uninstall:

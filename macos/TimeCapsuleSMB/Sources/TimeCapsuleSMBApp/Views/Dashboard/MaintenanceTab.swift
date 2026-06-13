@@ -319,10 +319,20 @@ private struct MaintenanceAdvancedOptionsView: View {
         DashboardDisclosureSection(title: L10n.string("maintenance.advanced_options")) {
             if workflow == .repairXattrs {
                 RepairXattrsAdvancedOptionsView(store: store)
+            } else if workflow == .sshAccess {
+                SSHAccessAdvancedOptionsView(store: store)
             } else {
                 RemoteMaintenanceAdvancedOptionsView(store: store)
             }
         }
+    }
+}
+
+private struct SSHAccessAdvancedOptionsView: View {
+    @ObservedObject var store: MaintenanceStore
+
+    var body: some View {
+        Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
     }
 }
 

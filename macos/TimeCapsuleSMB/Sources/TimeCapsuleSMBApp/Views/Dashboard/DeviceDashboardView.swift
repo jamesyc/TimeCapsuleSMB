@@ -10,6 +10,7 @@ struct DeviceDashboardView: View {
     let appStore: AppStore
     @ObservedObject var appSettingsStore: AppSettingsStore
     @ObservedObject var reachabilityStore: DeviceReachabilityStore
+    @ObservedObject var sshAccessStore: DeviceSSHAccessStore
     @ObservedObject var operationCoordinator: OperationCoordinator
     @ObservedObject var backend: BackendClient
     let showDiagnostics: () -> Void
@@ -31,6 +32,20 @@ struct DeviceDashboardView: View {
                     notice: notice,
                     update: {
                         session.updateConfiguredAddressFromDiscovery(profile: profile)
+                    }
+                )
+                .padding(.horizontal)
+                .padding(.top)
+            }
+
+            if let notice = session.sshAccessNotice(for: profile) {
+                DashboardSSHAccessNoticeView(
+                    notice: notice,
+                    open: {
+                        session.openSSHAccess(profile: profile)
+                    },
+                    enable: {
+                        session.enableSSHAccess(profile: profile)
                     }
                 )
                 .padding(.horizontal)
@@ -81,6 +96,9 @@ struct DeviceDashboardView: View {
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .onAppear {
+            session.refreshSSHAccessStatus(profile: profile)
+        }
         .alert(
             session.flashStore.manualPowerCycleNotice?.title ?? "",
             isPresented: manualPowerCycleNoticePresented,
@@ -110,6 +128,46 @@ struct DeviceDashboardView: View {
 
     private func diagnosticsText() -> String {
         DiagnosticsExportBuilder().build(context: appStore.diagnosticsExportContext(includeBackendEvents: true))
+    }
+}
+
+private struct DashboardSSHAccessNoticeView: View {
+    let notice: SSHAccessNotice
+    let open: () -> Void
+    let enable: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "key")
+                .foregroundStyle(.orange)
+                .frame(width: DeviceDashboardLayout.actionIconSize, height: DeviceDashboardLayout.actionIconSize)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n.format("ssh_access_notice.title", notice.deviceName))
+                    .font(.body.weight(.medium))
+                Text(L10n.format("ssh_access_notice.message", notice.host))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button {
+                        open()
+                    } label: {
+                        Label(L10n.string("ssh_access_notice.open_action"), systemImage: "wrench.and.screwdriver")
+                    }
+                    Button {
+                        enable()
+                    } label: {
+                        Label(L10n.string("ssh_access_notice.enable_action"), systemImage: "key")
+                    }
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 10)
+        .padding(.leading, 14)
+        .padding(.trailing, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 

@@ -15,6 +15,7 @@ final class AppStore: ObservableObject {
     let activityStore: ActivityStore
     let deviceDiscovery: DeviceDiscoveryStore
     let reachabilityStore: DeviceReachabilityStore
+    let sshAccessStore: DeviceSSHAccessStore
     let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
 
     private var cancellables: Set<AnyCancellable> = []
@@ -43,6 +44,7 @@ final class AppStore: ObservableObject {
         appUpdateStore: AppUpdateStore? = nil,
         deviceDiscovery: DeviceDiscoveryStore? = nil,
         reachabilityStore: DeviceReachabilityStore? = nil,
+        sshAccessStore: DeviceSSHAccessStore? = nil,
         localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil
     ) {
         self.appReadinessStore = appReadinessStore
@@ -62,11 +64,17 @@ final class AppStore: ObservableObject {
             registry: deviceRegistry
         )
         self.reachabilityStore = reachabilityStore ?? DeviceReachabilityStore(coordinator: operationCoordinator)
+        self.sshAccessStore = sshAccessStore ?? DeviceSSHAccessStore(coordinator: operationCoordinator)
         self.localNetworkPreflightChecker = localNetworkPreflightChecker
 
         deviceRegistry.$profiles
             .sink { [weak self] profiles in
                 self?.syncSelection(profiles: profiles)
+            }
+            .store(in: &cancellables)
+        self.deviceDiscovery.$devices
+            .sink { [weak self] _ in
+                self?.refreshSSHAccessForDiscoveredProfiles()
             }
             .store(in: &cancellables)
     }
@@ -273,5 +281,11 @@ final class AppStore: ObservableObject {
             return
         }
         route = profiles.first.map { .device($0.id) } ?? .allDevices
+    }
+
+    private func refreshSSHAccessForDiscoveredProfiles() {
+        for profile in deviceRegistry.profiles where deviceDiscovery.currentDiscoveredDevice(for: profile) != nil {
+            sshAccessStore.refreshIfNeeded(profile: profile)
+        }
     }
 }

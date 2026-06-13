@@ -47,6 +47,22 @@ final class BackendPayloadTests: XCTestCase {
 
         XCTAssertEqual(reachability.status, "partial")
         XCTAssertEqual(reachability.checks[0].id, "ping")
+
+        let sshAccess = try jsonValue("""
+        {
+          "schema_version": 1,
+          "host": "10.0.0.2",
+          "acp_port_reachable": true,
+          "ssh_port_reachable": false,
+          "acp_port_error": null,
+          "ssh_port_error": "Connection refused",
+          "ssh_disabled_likely": true,
+          "summary": "AirPort ACP is reachable, but SSH is closed."
+        }
+        """).decode(SSHAccessPayload.self)
+
+        XCTAssertEqual(sshAccess.host, "10.0.0.2")
+        XCTAssertTrue(sshAccess.isSSHDisabledLikely)
     }
 
     func testDecodesDiscoveryAndConfigurePayloads() throws {

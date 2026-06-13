@@ -50,6 +50,7 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var uninstallState: MaintenanceOperationState = .idle
     @Published private(set) var fsckState: MaintenanceOperationState = .idle
     @Published private(set) var repairState: MaintenanceOperationState = .idle
+    @Published private(set) var sshAccessState: MaintenanceOperationState = .idle
 
     @Published private(set) var activationPlan: ActivationPlanPayload?
     @Published private(set) var activationResult: ActivationResultPayload?
@@ -60,6 +61,7 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var fsckResult: FsckResultPayload?
     @Published private(set) var repairScan: RepairXattrsPayload?
     @Published private(set) var repairResult: RepairXattrsPayload?
+    @Published private(set) var sshAccessPayload: SSHAccessPayload?
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
@@ -71,6 +73,7 @@ final class MaintenanceStore: ObservableObject {
     let uninstallStore: UninstallStore
     let fsckStore: FsckStore
     let repairXattrsStore: RepairXattrsStore
+    let sshAccessStore: SSHAccessMaintenanceStore
 
     private let coordinator: OperationCoordinator?
     private let laneKeysByWorkflow: [MaintenanceWorkflow: OperationLaneKey]
@@ -89,6 +92,7 @@ final class MaintenanceStore: ObservableObject {
         self.uninstallStore = UninstallStore(backend: backendsByWorkflow[.uninstall] ?? backend.makeSibling())
         self.fsckStore = FsckStore(backend: backendsByWorkflow[.fsck] ?? backend.makeSibling())
         self.repairXattrsStore = RepairXattrsStore(backend: backendsByWorkflow[.repairXattrs] ?? backend.makeSibling())
+        self.sshAccessStore = SSHAccessMaintenanceStore(backend: backendsByWorkflow[.sshAccess] ?? backend.makeSibling())
         observeWorkflowStores()
         syncFromWorkflowStores()
     }
@@ -125,6 +129,11 @@ final class MaintenanceStore: ObservableObject {
             backend: backendsByWorkflow[.repairXattrs] ?? coordinator.lane(for: laneKey).backend,
             coordinator: coordinator,
             laneKey: laneKeysByWorkflow[.repairXattrs]
+        )
+        self.sshAccessStore = SSHAccessMaintenanceStore(
+            backend: backendsByWorkflow[.sshAccess] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.sshAccess]
         )
         observeWorkflowStores()
         syncFromWorkflowStores()
@@ -164,6 +173,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private func observeWorkflowStores() {
+        observe(sshAccessStore)
         observe(activationStore)
         observe(uninstallStore)
         observe(fsckStore)
@@ -220,6 +230,8 @@ final class MaintenanceStore: ObservableObject {
 
     func cancelPendingConfirmation(for workflow: MaintenanceWorkflow) {
         switch workflow {
+        case .sshAccess:
+            sshAccessStore.cancelPendingConfirmation()
         case .activate:
             activationStore.cancelPendingConfirmation()
         case .uninstall:
@@ -274,6 +286,14 @@ final class MaintenanceStore: ObservableObject {
 
     var canScanRepairXattrs: Bool {
         !isBusy && repairXattrsStore.canScan(path: trimmedRepairPath, options: currentRepairOptions)
+    }
+
+    var canCheckSSHAccess: Bool {
+        !isBusy && sshAccessStore.canCheck
+    }
+
+    var canEnableSSHAccess: Bool {
+        !isBusy && sshAccessStore.canEnable
     }
 
     @discardableResult
@@ -357,11 +377,30 @@ final class MaintenanceStore: ObservableObject {
         )
     }
 
+    @discardableResult
+    func checkSSHAccess(profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .sshAccess,
+            rejectAlreadyRunning: { sshAccessStore.rejectAlreadyRunning() },
+            start: { sshAccessStore.check(profile: profile) }
+        )
+    }
+
+    @discardableResult
+    func enableSSHAccess(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .sshAccess,
+            rejectAlreadyRunning: { sshAccessStore.rejectAlreadyRunning() },
+            start: { sshAccessStore.enable(password: password, noWait: noWait, profile: profile) }
+        )
+    }
+
     func clear() {
         activationStore.clear()
         uninstallStore.clear()
         fsckStore.clear()
         repairXattrsStore.clear()
+        sshAccessStore.clear()
         syncFromWorkflowStores()
     }
 
@@ -385,7 +424,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private var workflowStores: [any MaintenanceWorkflowStore] {
-        [activationStore, uninstallStore, fsckStore, repairXattrsStore]
+        [sshAccessStore, activationStore, uninstallStore, fsckStore, repairXattrsStore]
     }
 
     private var activeWorkflowStore: (any MaintenanceWorkflowStore)? {
@@ -398,6 +437,8 @@ final class MaintenanceStore: ObservableObject {
 
     private func workflowStore(for workflow: MaintenanceWorkflow) -> any MaintenanceWorkflowStore {
         switch workflow {
+        case .sshAccess:
+            return sshAccessStore
         case .activate:
             return activationStore
         case .uninstall:
@@ -475,6 +516,9 @@ final class MaintenanceStore: ObservableObject {
         repairScan = repairXattrsStore.scan
         repairResult = repairXattrsStore.result
 
+        sshAccessState = sshAccessStore.state
+        sshAccessPayload = sshAccessStore.payload
+
         currentStagesByWorkflow = workflowStages
         errorsByWorkflow = workflowErrors
         currentStage = currentStagesByWorkflow[selectedWorkflow] ?? currentStagesByWorkflow.values.first
@@ -483,12 +527,14 @@ final class MaintenanceStore: ObservableObject {
             activationStore.passwordInvalidProfileID,
             uninstallStore.passwordInvalidProfileID,
             fsckStore.passwordInvalidProfileID,
-            repairXattrsStore.passwordInvalidProfileID
+            repairXattrsStore.passwordInvalidProfileID,
+            sshAccessStore.passwordInvalidProfileID
         ].compactMap { $0 }.first
     }
 
     private var workflowStages: [MaintenanceWorkflow: OperationStageState] {
         var stages: [MaintenanceWorkflow: OperationStageState] = [:]
+        stages[.sshAccess] = sshAccessStore.currentStage
         stages[.activate] = activationStore.currentStage
         stages[.uninstall] = uninstallStore.currentStage
         stages[.fsck] = fsckStore.currentStage
@@ -498,6 +544,7 @@ final class MaintenanceStore: ObservableObject {
 
     private var workflowErrors: [MaintenanceWorkflow: BackendErrorViewModel] {
         var errors: [MaintenanceWorkflow: BackendErrorViewModel] = [:]
+        errors[.sshAccess] = sshAccessStore.error
         errors[.activate] = activationStore.error
         errors[.uninstall] = uninstallStore.error
         errors[.fsck] = fsckStore.error
@@ -521,3 +568,4 @@ extension ActivationStore: MaintenanceWorkflowStore {}
 extension UninstallStore: MaintenanceWorkflowStore {}
 extension FsckStore: MaintenanceWorkflowStore {}
 extension RepairXattrsStore: MaintenanceWorkflowStore {}
+extension SSHAccessMaintenanceStore: MaintenanceWorkflowStore {}

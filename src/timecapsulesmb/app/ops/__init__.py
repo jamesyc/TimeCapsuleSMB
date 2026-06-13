@@ -22,6 +22,7 @@ from timecapsulesmb.app.ops.readiness import (
     validate_install_operation,
     version_check_operation,
 )
+from timecapsulesmb.app.ops.ssh_access import ssh_access_operation
 from timecapsulesmb.services.app import OperationResult
 
 
@@ -48,6 +49,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("reachability", reachability_operation),
     OperationSpec("repair-xattrs", repair_xattrs_operation, telemetry=True),
     OperationSpec("set-telemetry", set_telemetry_operation),
+    OperationSpec("ssh-access", ssh_access_operation),
     OperationSpec("uninstall", uninstall_operation, telemetry=True),
     OperationSpec("validate-install", validate_install_operation),
     OperationSpec("version-check", version_check_operation),

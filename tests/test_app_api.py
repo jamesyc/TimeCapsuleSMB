@@ -48,6 +48,7 @@ from timecapsulesmb.services.flash import (
 )
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.repair_xattrs import RepairRunResult, RepairXattrsRequest
+from timecapsulesmb.services.ssh_access import SshAccessEnableResult, SshAccessProbeResult
 from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError, ssh_timeout_slow_device_message
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -1937,6 +1938,130 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
         stages = [event["stage"] for event in confirmed_collector.events_of_type("stage")]
         self.assertLess(stages.index("acp_port_probe"), stages.index("acp_enable_ssh"))
+        self.assertNotIn("secret", json.dumps(confirmed_collector.events))
+
+    def test_ssh_access_status_reports_acp_reachable_ssh_closed(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch(
+                "timecapsulesmb.app.ops.ssh_access.probe_ssh_access",
+                return_value=SshAccessProbeResult(
+                    host="10.0.0.2",
+                    acp_port_reachable=True,
+                    ssh_port_reachable=False,
+                    ssh_port_error="Connection refused",
+                ),
+            ) as probe:
+                rc = service.run_api_request(
+                    {
+                        "operation": "ssh-access",
+                        "params": {
+                            "config": str(config_path),
+                            "action": "status",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 0)
+        probe.assert_called_once_with("root@10.0.0.2")
+        payload = self.assert_single_terminal_event(collector, "result")["payload"]
+        self.assertEqual(payload["host"], "10.0.0.2")
+        self.assertTrue(payload["acp_port_reachable"])
+        self.assertFalse(payload["ssh_port_reachable"])
+        self.assertTrue(payload["ssh_disabled_likely"])
+        self.assertEqual(payload["summary"], "AirPort ACP is reachable, but SSH is closed.")
+
+    def test_ssh_access_enable_requires_reboot_confirmation(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.app.ops.ssh_access.enable_ssh_access") as enable_ssh:
+                rc = service.run_api_request(
+                    {
+                        "operation": "ssh-access",
+                        "params": {
+                            "config": str(config_path),
+                            "action": "enable",
+                            "password": "secret",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_not_called()
+        details = self.assert_confirmation(
+            collector,
+            "ssh_access.enable_reboot",
+            {
+                "host": "10.0.0.2",
+                "device_name": "10.0.0.2",
+                "requires_reboot": True,
+            },
+        )
+        self.assertEqual(details["context"]["host"], "root@10.0.0.2")
+        self.assertEqual(details["context"]["device_name"], "10.0.0.2")
+        self.assertNotIn("secret", json.dumps(collector.events))
+
+    def test_ssh_access_confirmed_enable_returns_normalized_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            first_collector = CollectingSink()
+            service.run_api_request(
+                {
+                    "operation": "ssh-access",
+                    "params": {
+                        "config": str(config_path),
+                        "action": "enable",
+                        "password": "secret",
+                    },
+                },
+                first_collector.sink,
+            )
+            confirmation_id = self.assert_confirmation(first_collector, "ssh_access.enable_reboot")["confirmation_id"]
+
+            confirmed_collector = CollectingSink()
+            result = SshAccessEnableResult(
+                host="10.0.0.2",
+                action="enable_ssh",
+                ssh_initially_reachable=False,
+                ssh_final_reachable=True,
+                acp_port_reachable=True,
+                reboot_requested=True,
+                waited=True,
+                summary="SSH is configured.",
+            )
+            with mock.patch("timecapsulesmb.app.ops.ssh_access.enable_ssh_access", return_value=result) as enable_ssh:
+                rc = service.run_api_request(
+                    {
+                        "operation": "ssh-access",
+                        "params": {
+                            "config": str(config_path),
+                            "action": "enable",
+                            "password": "secret",
+                            "confirmation_id": confirmation_id,
+                        },
+                    },
+                    confirmed_collector.sink,
+                )
+
+        self.assertEqual(rc, 0)
+        enable_ssh.assert_called_once()
+        self.assertEqual(enable_ssh.call_args.args[0].host, "root@10.0.0.2")
+        self.assertEqual(enable_ssh.call_args.args[0].password, "secret")
+        self.assertFalse(enable_ssh.call_args.kwargs["no_wait"])
+        payload = self.assert_single_terminal_event(confirmed_collector, "result")["payload"]
+        self.assertEqual(payload["action"], "enable_ssh")
+        self.assertTrue(payload["ssh_port_reachable"])
+        self.assertTrue(payload["ssh_final_reachable"])
+        self.assertFalse(payload["ssh_disabled_likely"])
+        self.assertIsNone(payload["ssh_port_error"])
+        self.assertEqual(payload["summary"], "SSH is configured.")
         self.assertNotIn("secret", json.dumps(confirmed_collector.events))
 
     def test_configure_enable_ssh_false_fails_without_confirmation(self) -> None:

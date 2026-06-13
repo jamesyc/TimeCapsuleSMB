@@ -63,6 +63,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         forwardChildChanges()
         forwardLaneEvents()
         observeProfileEditor()
+        observeSSHClosedFailures()
+        observeSSHAccessMaintenanceResults()
     }
 
     func summary(for profile: DeviceProfile) -> DeviceDashboardSummary {
@@ -71,6 +73,32 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     func staleEndpointNotice(for profile: DeviceProfile) -> StaleEndpointNotice? {
         appStore.deviceDiscovery.staleEndpointNotice(for: latestProfile(for: profile))
+    }
+
+    func sshAccessNotice(for profile: DeviceProfile) -> SSHAccessNotice? {
+        let currentProfile = latestProfile(for: profile)
+        return appStore.sshAccessStore.notice(
+            for: currentProfile,
+            staleEndpointNotice: staleEndpointNotice(for: currentProfile)
+        )
+    }
+
+    func refreshSSHAccessStatus(profile: DeviceProfile) {
+        appStore.sshAccessStore.refresh(profile: latestProfile(for: profile))
+    }
+
+    func openSSHAccess(profile: DeviceProfile) {
+        selectedTab = .maintenance
+        maintenanceStore.selectedWorkflow = .sshAccess
+        refreshSSHAccessStatus(profile: profile)
+    }
+
+    func enableSSHAccess(profile: DeviceProfile) {
+        selectedTab = .maintenance
+        maintenanceStore.selectedWorkflow = .sshAccess
+        if let password = maintenancePassword(for: profile) {
+            maintenanceStore.enableSSHAccess(password: password, profile: profile)
+        }
     }
 
     func updateConfiguredAddressFromDiscovery(profile: DeviceProfile) {
@@ -203,6 +231,12 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case .repairMetadata:
             selectedTab = .maintenance
             maintenanceStore.runRepairXattrs()
+        case .checkSSHAccess:
+            maintenanceStore.checkSSHAccess(profile: profile)
+        case .enableSSHAccess:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.enableSSHAccess(password: password, profile: profile)
+            }
         case .viewDiagnostics:
             showDiagnostics()
         }
@@ -365,6 +399,50 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 self?.applyProfileSettings(profile.settings)
             }
             .store(in: &cancellables)
+    }
+
+    private func observeSSHClosedFailures() {
+        deployStore.$error
+            .sink { [weak self] error in
+                self?.refreshSSHAccessAfterSSHClosedFailure(error)
+            }
+            .store(in: &cancellables)
+        doctorStore.$error
+            .sink { [weak self] error in
+                self?.refreshSSHAccessAfterSSHClosedFailure(error)
+            }
+            .store(in: &cancellables)
+        maintenanceStore.$error
+            .sink { [weak self] error in
+                self?.refreshSSHAccessAfterSSHClosedFailure(error)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func observeSSHAccessMaintenanceResults() {
+        maintenanceStore.$sshAccessPayload
+            .compactMap { $0 }
+            .sink { [weak self] payload in
+                guard let self,
+                      let profile = self.appStore.deviceRegistry.profile(id: self.id) else {
+                    return
+                }
+                self.appStore.sshAccessStore.apply(payload: payload, profile: profile)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func refreshSSHAccessAfterSSHClosedFailure(_ error: BackendErrorViewModel?) {
+        guard let error,
+              error.message.localizedCaseInsensitiveContains("SSH is not reachable") ||
+                error.message.localizedCaseInsensitiveContains("SSH port is closed"),
+              let profile = appStore.deviceRegistry.profile(id: id) else {
+            return
+        }
+        Task { @MainActor in
+            await Task.yield()
+            appStore.sshAccessStore.refresh(profile: profile)
+        }
     }
 
     private func retry(error: BackendErrorViewModel, profile: DeviceProfile) -> Bool {

@@ -38,6 +38,19 @@ enum OperationParams {
         }
     }
 
+    enum SSHAccess {
+        static func status() -> [String: JSONValue] {
+            ["action": .string("status")]
+        }
+
+        static func enable(noWait: Bool) -> [String: JSONValue] {
+            [
+                "action": .string("enable"),
+                "no_wait": .bool(noWait)
+            ]
+        }
+    }
+
     enum Configure {
         static func save(
             host: String = "",

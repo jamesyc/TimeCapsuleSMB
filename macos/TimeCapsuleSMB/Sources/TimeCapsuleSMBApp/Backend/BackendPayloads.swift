@@ -98,6 +98,44 @@ struct ReachabilityCheckPayload: Decodable, Equatable {
     let detail: String?
 }
 
+struct SSHAccessPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let host: String
+    let action: String?
+    let acpPortReachable: Bool
+    let sshPortReachable: Bool
+    let acpPortError: String?
+    let sshPortError: String?
+    let sshDisabledLikely: Bool?
+    let sshInitiallyReachable: Bool?
+    let sshFinalReachable: Bool?
+    let rebootRequested: Bool?
+    let waited: Bool?
+    let sshVerificationSkipped: Bool?
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case host
+        case action
+        case acpPortReachable = "acp_port_reachable"
+        case sshPortReachable = "ssh_port_reachable"
+        case acpPortError = "acp_port_error"
+        case sshPortError = "ssh_port_error"
+        case sshDisabledLikely = "ssh_disabled_likely"
+        case sshInitiallyReachable = "ssh_initially_reachable"
+        case sshFinalReachable = "ssh_final_reachable"
+        case rebootRequested = "reboot_requested"
+        case waited
+        case sshVerificationSkipped = "ssh_verification_skipped"
+        case summary
+    }
+
+    var isSSHDisabledLikely: Bool {
+        sshDisabledLikely ?? (acpPortReachable && !sshPortReachable)
+    }
+}
+
 struct InstallCheckPayload: Decodable, Equatable {
     let id: String
     let ok: Bool

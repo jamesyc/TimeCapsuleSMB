@@ -373,6 +373,7 @@ public struct ContentView: View {
                     appStore: appStore,
                     appSettingsStore: appSettingsStore,
                     reachabilityStore: appStore.reachabilityStore,
+                    sshAccessStore: appStore.sshAccessStore,
                     operationCoordinator: operationCoordinator,
                     backend: appBackend,
                     showDiagnostics: {

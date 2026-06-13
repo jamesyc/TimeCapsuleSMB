@@ -292,6 +292,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
             appStore: fixture.appStore,
             appSettingsStore: fixture.appStore.appSettingsStore,
             reachabilityStore: fixture.appStore.reachabilityStore,
+            sshAccessStore: fixture.appStore.sshAccessStore,
             operationCoordinator: fixture.appStore.operationCoordinator,
             backend: fixture.appStore.backend,
             showDiagnostics: {}

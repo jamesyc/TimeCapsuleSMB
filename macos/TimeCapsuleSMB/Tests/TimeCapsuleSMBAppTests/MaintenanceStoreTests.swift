@@ -22,7 +22,7 @@ final class MaintenanceStoreTests: XCTestCase {
             .repaired,
             .failed
         ])
-        XCTAssertEqual(MaintenanceWorkflow.allCases, [.activate, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck, .repairXattrs])
     }
 
     func testActivationPlanAndAlreadyActiveResult() async throws {

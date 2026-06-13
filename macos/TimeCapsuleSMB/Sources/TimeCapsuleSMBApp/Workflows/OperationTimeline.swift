@@ -131,6 +131,8 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.operation.discovery")
         case "reachability":
             return L10n.string("timeline.operation.reachability")
+        case "ssh-access":
+            return L10n.string("timeline.operation.ssh_access")
         case "configure":
             return L10n.string("timeline.operation.configure")
         case "deploy":
@@ -180,6 +182,16 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.reachability_ssh_auth")
         case ("reachability", "check_smb_port"):
             return L10n.string("timeline.stage.reachability_smb_port")
+        case ("ssh-access", "probe_ssh_access"):
+            return L10n.string("timeline.stage.checking_ssh")
+        case ("ssh-access", "confirm_enable_ssh"):
+            return L10n.string("timeline.stage.confirming_ssh_enable")
+        case ("ssh-access", "acp_port_probe"):
+            return L10n.string("timeline.stage.checking_airport_acp")
+        case ("ssh-access", "acp_enable_ssh"):
+            return L10n.string("timeline.stage.enabling_ssh")
+        case ("ssh-access", "wait_for_ssh_enabled"):
+            return L10n.string("timeline.stage.waiting_for_device")
         case ("configure", "ssh_probe"), ("configure", "ssh_probe_after_acp"):
             return L10n.string("timeline.stage.checking_ssh")
         case ("configure", "confirm_enable_ssh"):
