@@ -67,6 +67,7 @@ SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/n
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
+SSH_CONFIG_ISOLATION_ARGS = ("-F", "/dev/null")
 
 
 def _summarize_remote_command(remote_cmd: str) -> str:
@@ -305,7 +306,7 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
 
 
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    cmd = ["ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    cmd = ["ssh", *SSH_CONFIG_ISOLATION_ARGS, *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
     timeout_message = (
         "Timed out waiting for ssh command to finish: "
         f"{_summarize_remote_command(remote_cmd)}"
@@ -345,7 +346,7 @@ def _run_sshpass_ssh(
         raise SshError(missing_tool_message)
     env = dict(os.environ)
     env["SSHPASS"] = connection.password
-    cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    cmd = ["sshpass", "-e", "ssh", *SSH_CONFIG_ISOLATION_ARGS, *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
     proc: subprocess.CompletedProcess[bytes] | None = None
     for attempt in range(3):
         try:
@@ -427,6 +428,7 @@ def ssh_local_forward(
 
     cmd = [
         "ssh",
+        *SSH_CONFIG_ISOLATION_ARGS,
         "-N",
         "-o",
         "ExitOnForwardFailure=yes",
@@ -570,6 +572,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
         cmd = [
             scp,
             *legacy_option,
+            *SSH_CONFIG_ISOLATION_ARGS,
             *_normalize_ssh_tokens(connection.ssh_opts),
             str(src),
             _scp_remote_target(connection.host, dest),

@@ -108,6 +108,8 @@ class SSHTransportTests(unittest.TestCase):
             cmd,
             [
                 "ssh",
+                "-F",
+                "/dev/null",
                 "-o",
                 "PubkeyAcceptedKeyTypes=+ssh-rsa",
                 "root@192.168.1.67",
@@ -496,6 +498,8 @@ class SSHTransportTests(unittest.TestCase):
             cmd,
             [
                 "ssh",
+                "-F",
+                "/dev/null",
                 "-J",
                 "jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123",
                 "-o",
@@ -571,6 +575,8 @@ class SSHTransportTests(unittest.TestCase):
                         pass
         cmd = spawn_mock.call_args.args[0:2]
         self.assertEqual(cmd[0], "ssh")
+        self.assertIn("-F", cmd[1])
+        self.assertIn("/dev/null", cmd[1])
         self.assertIn("-J", cmd[1])
         self.assertIn("jump.example", cmd[1])
         self.assertEqual(fake_child.sendline.call_args_list, [mock.call("yes"), mock.call("pw")])
@@ -706,8 +712,10 @@ class SSHTransportTests(unittest.TestCase):
                 with mock.patch(
                     "timecapsulesmb.transport.ssh.subprocess.run",
                     return_value=subprocess.CompletedProcess(["sshpass"], 0, stdout=payload, stderr=b""),
-                ):
+                ) as subprocess_run_mock:
                     self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10), payload)
+        cmd = subprocess_run_mock.call_args.args[0]
+        self.assertEqual(cmd[:5], ["sshpass", "-e", "ssh", "-F", "/dev/null"])
 
     def test_run_ssh_capture_bytes_does_not_decode_successful_binary_stdout(self) -> None:
         payload = DecodeTrapBytes(b"\x00firmware\xff" * 4096)
@@ -838,6 +846,8 @@ class SSHTransportTests(unittest.TestCase):
 
         cmd = spawn_mock.call_args.args[0]
         self.assertEqual(cmd[:2], ["scp", "-O"])
+        self.assertIn("-F", cmd)
+        self.assertIn("/dev/null", cmd)
 
     def test_run_scp_omits_legacy_option_when_local_scp_rejects_it(self) -> None:
         with NamedTemporaryFile() as tmp:
@@ -857,6 +867,8 @@ class SSHTransportTests(unittest.TestCase):
         cmd = spawn_mock.call_args.args[0]
         self.assertEqual(cmd[0], "scp")
         self.assertNotIn("-O", cmd)
+        self.assertIn("-F", cmd)
+        self.assertIn("/dev/null", cmd)
 
     def test_run_scp_cat_fallback_timeout_reports_remote_destination(self) -> None:
         with NamedTemporaryFile() as tmp:
