@@ -26,6 +26,10 @@ class AppRecoveryTests(unittest.TestCase):
                     "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "
                     "enough to activate Samba after reboot."
                 ),
+                (
+                    "If your device resets itself, see "
+                    "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
+                ),
             ],
         )
 

@@ -106,7 +106,8 @@ final class RecoveryActionMapperTests: XCTestCase {
                 "Wait a few more minutes.",
                 "If the device is reachable at a new IP, update TC_HOST or rerun configure.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
-                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot."
+                "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.",
+                "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
             ],
             actionIDs: ["run_checkup"],
             message: "The device went down but SSH did not return before the timeout.",
@@ -126,14 +127,22 @@ final class RecoveryActionMapperTests: XCTestCase {
             english.detail,
             "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address."
         )
-        XCTAssertEqual(english.steps.count, 4)
+        XCTAssertEqual(english.steps.count, 5)
         XCTAssertEqual(english.steps[1], "If the device is reachable at a new IP, update TC_HOST or rerun configure.")
+        XCTAssertEqual(
+            english.steps[4],
+            "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
+        )
 
         L10n.apply(language: .simplifiedChinese)
         let chinese = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(chinese.title, "重启未完成")
         XCTAssertEqual(chinese.steps[0], "再等待几分钟。")
-        XCTAssertEqual(chinese.steps.count, 4)
+        XCTAssertEqual(chinese.steps.count, 5)
+        XCTAssertEqual(
+            chinese.steps[4],
+            "如果设备自行重置，请参见 https://github.com/jamesyc/TimeCapsuleSMB/issues/177。"
+        )
     }
 
     func testRecoveryGuidancePresentationLocalizesSlowDeviceSshTimeoutDetails() throws {

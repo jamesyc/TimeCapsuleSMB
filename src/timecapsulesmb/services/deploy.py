@@ -88,7 +88,9 @@ DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
     "  2. If the device is reachable at a new IP, update TC_HOST or rerun configure.\n"
     "  3. Make sure you are connected to the same network/wifi as the device.\n"
     "  4. On NetBSD 4 devices, run `tcapsule activate` once SSH is reachable; "
-    "deploy did not get far enough to activate Samba after reboot."
+    "deploy did not get far enough to activate Samba after reboot.\n"
+    "  5. If your device resets itself, see "
+    "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
 )
 DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"

@@ -695,6 +695,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "If the device is reachable at a new IP, update TC_HOST or rerun configure.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Make sure you are connected to the same network or Wi-Fi as the device.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "Device is responding very slowly";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "The %@ is responding very slowly. Please reboot the device. Then wait for SSH to come back and retry.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Reboot the device.";

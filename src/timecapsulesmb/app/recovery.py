@@ -289,6 +289,10 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
                 "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "
                 "enough to activate Samba after reboot."
             ),
+            (
+                "If your device resets itself, see "
+                "https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
+            ),
         ),
         retryable=True,
         suggested_operation="doctor",

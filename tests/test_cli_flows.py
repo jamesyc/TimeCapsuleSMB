@@ -435,6 +435,7 @@ class CliFlowTests(unittest.TestCase):
             )
 
         self.assertEqual(str(raised.exception), DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE)
+        self.assertIn("https://github.com/jamesyc/TimeCapsuleSMB/issues/177", str(raised.exception))
 
     def test_verify_managed_runtime_flow_succeeds_when_runtime_ready(self) -> None:
         command_context = FakeCommandContext()
