@@ -12,6 +12,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             .discoveryReady,
             .manualEntry,
             .passwordEntry,
+            .checkingLocalNetwork,
             .configuring,
             .awaitingConfirmation,
             .savingProfile,
@@ -358,6 +359,92 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["persist_password"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["password"], .string("secret"))
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
+    }
+
+    func testConfigureRunsAfterAllowedLocalNetworkPreflightAndForwardsTelemetry() async throws {
+        let checker = FixedLocalNetworkPreflightChecker(status: .allowed)
+        let fixture = try await makeStore(
+            responses: [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
+                ])
+            ],
+            localNetworkPreflightChecker: checker
+        )
+
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+        XCTAssertEqual(checker.checkCount, 1)
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_result"], .string("allowed"))
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_duration_ms"], .number(7))
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_service"], .string("_airport._tcp"))
+    }
+
+    func testConfigureContinuesAfterUnknownLocalNetworkPreflight() async throws {
+        let checker = FixedLocalNetworkPreflightChecker(status: .unknown, detail: "timeout")
+        let fixture = try await makeStore(
+            responses: [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
+                ])
+            ],
+            localNetworkPreflightChecker: checker
+        )
+
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_result"], .string("unknown"))
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_error"], .string("timeout"))
+    }
+
+    func testConfigureDeniedLocalNetworkPreflightUsesBackendTelemetryFailure() async throws {
+        let checker = FixedLocalNetworkPreflightChecker(status: .denied, detail: "policy denied")
+        let opener = TestRecordingURLOpener()
+        let fixture = try await makeStore(
+            responses: [
+                .init(events: [
+                    BackendEvent(
+                        type: "error",
+                        operation: "configure",
+                        code: "local_network_permission_denied",
+                        message: "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.",
+                        recovery: .object([
+                            "title": .string("Local Network access blocked"),
+                            "message": .string("macOS is blocking TimeCapsuleSMB from accessing devices on your local network."),
+                            "actions": .array([]),
+                            "action_ids": .array([.string("open_system_settings"), .string("retry")]),
+                            "retryable": .bool(true),
+                            "suggested_operation": .string("configure")
+                        ])
+                    )
+                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+            ],
+            localNetworkPreflightChecker: checker,
+            urlOpener: opener
+        )
+
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .failed }
+        XCTAssertEqual(fixture.runner.calls.count, 1)
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_result"], .string("denied"))
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_error"], .string("policy denied"))
+        XCTAssertEqual(fixture.store.error?.code, "local_network_permission_denied")
+
+        fixture.store.handleRecoveryAction(RecoveryAction(title: "Open System Settings", kind: .openSystemSettings))
+
+        XCTAssertEqual(opener.openedURLs, LocalNetworkRecovery.settingsURL.map { [$0] } ?? [])
     }
 
     func testPublishesWhenSetupBackendFinishesAfterConfigureResult() async throws {
@@ -909,7 +996,11 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
-    private func makeStore(responses: [StoreTestRunner.Response]) async throws -> (
+    private func makeStore(
+        responses: [StoreTestRunner.Response],
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil,
+        urlOpener: URLOpening = WorkspaceURLOpener()
+    ) async throws -> (
         store: AddDeviceFlowStore,
         runner: PausingStoreTestRunner,
         registry: DeviceRegistryStore,
@@ -921,7 +1012,13 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         let runner = PausingStoreTestRunner(responses: responses)
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let passwordStore = InMemoryPasswordStore()
-        let store = AddDeviceFlowStore(coordinator: coordinator, registry: registry, passwordStore: passwordStore)
+        let store = AddDeviceFlowStore(
+            coordinator: coordinator,
+            registry: registry,
+            passwordStore: passwordStore,
+            localNetworkPreflightChecker: localNetworkPreflightChecker,
+            urlOpener: urlOpener
+        )
         return (store, runner, registry, passwordStore)
     }
 }

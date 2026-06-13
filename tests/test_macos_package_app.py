@@ -581,12 +581,13 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
     monkeypatch.setattr(package_app, "assert_runtime_macho_architectures", lambda app, architectures: calls.append("runtime"))
     monkeypatch.setattr(package_app, "assert_no_external_macho_dependencies", lambda app: calls.append("external"))
     monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: calls.append("codesign"))
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: calls.append("app-codesign"))
 
     package_app.assert_bundle_layout(app, architectures=("arm64",))
     assert calls == []
 
     package_app.assert_bundle_layout(app, architectures=("arm64",), full_validation=True)
-    assert calls == ["runtime", "external", "codesign"]
+    assert calls == ["runtime", "external", "codesign", "app-codesign"]
 
 
 def test_copy_tools_creates_arch_dispatch_wrappers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -939,6 +940,80 @@ def test_assert_macho_code_signatures_valid_reports_invalid_signature(
 
     with pytest.raises(RuntimeError, match="invalid Mach-O code signature"):
         package_app.assert_macho_code_signatures_valid(app)
+
+
+def test_assert_app_bundle_signature_valid_reports_codesign_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert cmd[:5] == ["codesign", "--verify", "--deep", "--strict", "--verbose=4"]
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="bundle format is ambiguous\n")
+
+    monkeypatch.setattr(package_app.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="bundle format is ambiguous"):
+        package_app.assert_app_bundle_signature_valid(app)
+
+
+def test_ad_hoc_codesign_app_bundle_signs_helper_before_app(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    calls: list[Path] = []
+
+    monkeypatch.setattr(package_app, "ad_hoc_codesign", lambda path: calls.append(path))
+
+    package_app.ad_hoc_codesign_app_bundle(app)
+
+    assert calls == [helper, app]
+
+
+def test_package_app_signs_final_bundle_after_native_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    executable = tmp_path / "swift-build" / "TimeCapsuleSMB"
+    resource_build_dir = tmp_path / "swift-build"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    calls: list[str] = []
+
+    monkeypatch.setattr(package_app, "resolve_architectures", lambda arch: ("arm64",))
+    monkeypatch.setattr(package_app, "build_swift", lambda configuration, architectures: (executable, resource_build_dir))
+    monkeypatch.setattr(package_app, "copy_resources", lambda source, resources: calls.append("resources"))
+    monkeypatch.setattr(package_app, "copy_python_runtime", lambda args, resources, architectures: resources / "Python" / "Runtime" / "bin" / "python3")
+    monkeypatch.setattr(package_app, "create_python_packages", lambda python, resources, architectures, use_cache=True: calls.append("packages"))
+    monkeypatch.setattr(package_app, "finalize_python_bundle", lambda resources: calls.append("python-sign"))
+    monkeypatch.setattr(package_app, "copy_distribution", lambda resources: calls.append("distribution"))
+    monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: calls.append("native"))
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: calls.append("app-sign"))
+    monkeypatch.setattr(package_app, "assert_bundle_layout", lambda app, **kwargs: calls.append("assert"))
+
+    args = SimpleNamespace(
+        arch="native",
+        configuration="release",
+        output=tmp_path / "dist",
+        icon=None,
+        no_cache=False,
+        full_validation=False,
+        skip_smoke=True,
+    )
+
+    package_app.package_app(args)
+
+    assert calls[-3:] == ["native", "app-sign", "assert"]
 
 
 def test_macho_files_under_skips_symlink_aliases(tmp_path: Path) -> None:

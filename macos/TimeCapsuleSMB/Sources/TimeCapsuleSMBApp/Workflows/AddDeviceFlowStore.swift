@@ -8,6 +8,7 @@ enum AddDeviceFlowState: String, CaseIterable, Equatable {
     case discoveryReady
     case manualEntry
     case passwordEntry
+    case checkingLocalNetwork
     case configuring
     case awaitingConfirmation
     case savingProfile
@@ -30,6 +31,8 @@ enum AddDeviceFlowState: String, CaseIterable, Equatable {
             return L10n.string("add_device.state.manual_entry")
         case .passwordEntry:
             return L10n.string("add_device.state.password_entry")
+        case .checkingLocalNetwork:
+            return L10n.string("add_device.state.checking_local_network")
         case .configuring:
             return L10n.string("add_device.state.configuring")
         case .awaitingConfirmation:
@@ -84,6 +87,7 @@ final class AddDeviceFlowStore: ObservableObject {
     let discovery: DeviceDiscoveryStore
     let setupWorkflow: DeviceSetupWorkflow
 
+    private let urlOpener: URLOpening
     private var defaultDeviceSettings: DeviceProfileSettings = AppSettings.default.defaultDeviceSettings
     private var appliedDefaultDeviceSettings: DeviceProfileSettings = AppSettings.default.defaultDeviceSettings
     private var appliedDefaultBonjourTimeout = AppSettings.default.defaultBonjourTimeoutSeconds
@@ -95,11 +99,14 @@ final class AddDeviceFlowStore: ObservableObject {
         passwordStore: PasswordStore,
         profilePersistence: DeviceProfilePersistenceService? = nil,
         discovery: DeviceDiscoveryStore? = nil,
-        setupWorkflow: DeviceSetupWorkflow? = nil
+        setupWorkflow: DeviceSetupWorkflow? = nil,
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil,
+        urlOpener: URLOpening = WorkspaceURLOpener()
     ) {
         self.coordinator = coordinator
         self.registry = registry
         self.passwordStore = passwordStore
+        self.urlOpener = urlOpener
         let resolvedPersistence = profilePersistence ?? DeviceProfilePersistenceService(
             registry: registry,
             passwordStore: passwordStore
@@ -111,7 +118,8 @@ final class AddDeviceFlowStore: ObservableObject {
         )
         self.setupWorkflow = setupWorkflow ?? DeviceSetupWorkflow(
             coordinator: coordinator,
-            profilePersistence: resolvedPersistence
+            profilePersistence: resolvedPersistence,
+            localNetworkPreflightChecker: localNetworkPreflightChecker
         )
         observeDiscovery()
         observeSetupWorkflow()
@@ -267,6 +275,21 @@ final class AddDeviceFlowStore: ObservableObject {
         }
     }
 
+    func handleRecoveryAction(_ action: RecoveryAction) {
+        switch action.kind {
+        case .retry:
+            runConfigure()
+        case .openSystemSettings:
+            if let url = LocalNetworkRecovery.settingsURL {
+                urlOpener.open(url)
+            }
+        case .replacePassword:
+            state = .passwordEntry
+        default:
+            break
+        }
+    }
+
     func applyAppSettings(_ settings: AppSettings) {
         let previousDefaultTimeout = Self.timeoutText(appliedDefaultBonjourTimeout)
         if bonjourTimeout == previousDefaultTimeout {
@@ -374,7 +397,7 @@ final class AddDeviceFlowStore: ObservableObject {
 
     private var isSetupState: Bool {
         switch state {
-        case .configuring, .awaitingConfirmation, .savingProfile, .saved, .authFailed, .unsupported, .failed:
+        case .checkingLocalNetwork, .configuring, .awaitingConfirmation, .savingProfile, .saved, .authFailed, .unsupported, .failed:
             return true
         default:
             return false
@@ -422,7 +445,13 @@ final class AddDeviceFlowStore: ObservableObject {
         case .idle:
             if state == .awaitingConfirmation {
                 state = .passwordEntry
+            } else if state == .checkingLocalNetwork {
+                state = .passwordEntry
             }
+        case .checkingLocalNetwork:
+            error = nil
+            currentStage = nil
+            state = .checkingLocalNetwork
         case .configuring:
             error = nil
             currentStage = setupWorkflow.currentStage

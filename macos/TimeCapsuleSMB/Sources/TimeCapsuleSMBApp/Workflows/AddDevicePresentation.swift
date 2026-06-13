@@ -11,6 +11,10 @@ struct AddDeviceProgressPresentation: Equatable, BlockingProgressPresenting {
             self.title = L10n.string("add_device.progress.discovering.title")
             self.message = L10n.string("add_device.progress.discovering.message")
             self.detail = nil
+        case .checkingLocalNetwork:
+            self.title = L10n.string("add_device.progress.local_network.title")
+            self.message = L10n.string("add_device.progress.local_network.message")
+            self.detail = nil
         case .configuring:
             self.title = L10n.string("add_device.progress.configuring.title")
             self.message = L10n.string("add_device.progress.configuring.message")

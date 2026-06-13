@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
+import sys
 import time
 
 from timecapsulesmb.integrations.acp import (
@@ -17,6 +19,15 @@ from timecapsulesmb.transport.local import tcp_connect_error
 ACP_PORT_PROBE_ATTEMPTS = 3
 ACP_PORT_PROBE_RETRY_WINDOW_SECONDS = 4.0
 ACP_PORT_PROBE_RETRY_DELAY_SECONDS = ACP_PORT_PROBE_RETRY_WINDOW_SECONDS / (ACP_PORT_PROBE_ATTEMPTS - 1)
+
+
+def is_macos_gui_local_network_privacy_signal(error: object) -> bool:
+    if sys.platform != "darwin":
+        return False
+    if os.getenv("TCAPSULE_CLIENT") != "macos_gui":
+        return False
+    text = str(error)
+    return "[Errno 65]" in text or "No route to host" in text
 
 
 def _run_enable_ssh(
@@ -80,12 +91,19 @@ def enable_ssh_with_port_preflight(
         if attempt < ACP_PORT_PROBE_ATTEMPTS:
             sleep_func(ACP_PORT_PROBE_RETRY_DELAY_SECONDS)
     else:
-        callbacks.debug(
-            acp_port_probe_succeeded=False,
-            acp_port_probe_attempts=ACP_PORT_PROBE_ATTEMPTS,
-            acp_port_probe_errors=errors,
-            acp_port_probe_last_error=errors[-1]["error"] if errors else "connection failed",
-        )
+        last_error = errors[-1]["error"] if errors else "connection failed"
+        debug_fields: dict[str, object] = {
+            "acp_port_probe_succeeded": False,
+            "acp_port_probe_attempts": ACP_PORT_PROBE_ATTEMPTS,
+            "acp_port_probe_errors": errors,
+            "acp_port_probe_last_error": last_error,
+        }
+        if is_macos_gui_local_network_privacy_signal(last_error):
+            debug_fields.update(
+                macos_local_network_privacy_suspected=True,
+                macos_local_network_privacy_signal="errno65_no_route_to_host",
+            )
+        callbacks.debug(**debug_fields)
         raise ACPConnectionError(
             f"Could not connect to ACP on {host}:{ACP_PORT}. "
             "Check the device IP address or hostname."

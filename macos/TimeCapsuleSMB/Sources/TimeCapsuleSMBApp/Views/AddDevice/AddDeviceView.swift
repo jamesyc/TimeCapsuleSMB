@@ -141,7 +141,9 @@ struct AddDeviceView: View {
             }
 
             if let error = store.error {
-                ErrorBlock(error: error)
+                ErrorRecoveryView(error: error) { action in
+                    store.handleRecoveryAction(action)
+                }
             }
         }
     }
@@ -150,7 +152,7 @@ struct AddDeviceView: View {
         switch store.state {
         case .idle, .manualEntry, .passwordEntry:
             return "circle"
-        case .discovering, .configuring, .savingProfile:
+        case .discovering, .checkingLocalNetwork, .configuring, .savingProfile:
             return "hourglass"
         case .awaitingConfirmation:
             return "questionmark.circle"

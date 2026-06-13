@@ -29,6 +29,10 @@ OPTION_KEYS = frozenset({
     "include_time_machine",
     "internal_share_use_disk_root",
     "list_volumes",
+    "macos_local_network_preflight_duration_ms",
+    "macos_local_network_preflight_error",
+    "macos_local_network_preflight_result",
+    "macos_local_network_preflight_service",
     "max_depth",
     "mode",
     "mount_wait",
@@ -211,6 +215,7 @@ def _details_configure(params: Mapping[str, object], payload: object | None) -> 
     details: dict[str, object] = {}
     _copy_param(params, details, "enable_ssh")
     _copy_param(params, details, "persist_password")
+    _copy_param(params, details, "macos_local_network_preflight_result")
     if isinstance(params.get("selected_record"), Mapping):
         details["selected_bonjour_record"] = True
     if isinstance(payload, Mapping):

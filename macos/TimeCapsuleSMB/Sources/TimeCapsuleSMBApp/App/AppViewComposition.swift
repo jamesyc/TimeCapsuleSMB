@@ -19,7 +19,8 @@ struct AppViewComposition {
             registry: appStore.deviceRegistry,
             passwordStore: appStore.passwordStore,
             profilePersistence: appStore.profilePersistence,
-            discovery: appStore.deviceDiscovery
+            discovery: appStore.deviceDiscovery,
+            localNetworkPreflightChecker: appStore.localNetworkPreflightChecker
         )
         self.appSettingsEditorStore = AppSettingsEditorStore(settings: appStore.appSettingsStore.settings)
         self.dashboardStore = DashboardStore(appStore: appStore)

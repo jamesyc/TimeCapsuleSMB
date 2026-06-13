@@ -22,6 +22,8 @@
 "add_device.progress.configuring.title" = "正在连接 Apple AirPort 设备";
 "add_device.progress.discovering.message" = "正在浏览附近的 AirPort Bonjour 服务...";
 "add_device.progress.discovering.title" = "正在发现 Apple AirPort 设备";
+"add_device.progress.local_network.message" = "正在检查 macOS 是否允许本地网络访问...";
+"add_device.progress.local_network.title" = "正在检查本地网络访问";
 "add_device.progress.saving.message" = "正在写入保存的设备 Profile 和 Keychain 密码。";
 "add_device.progress.saving.title" = "正在保存设备";
 "add_device.reset" = "重置";
@@ -38,6 +40,7 @@
 "add_device.state.idle" = "空闲";
 "add_device.state.manual_entry" = "手动地址";
 "add_device.state.password_entry" = "需要密码";
+"add_device.state.checking_local_network" = "正在检查本地网络";
 "add_device.state.saved" = "已保存";
 "add_device.state.saving_profile" = "正在保存";
 "add_device.state.unsupported" = "不支持";
@@ -679,6 +682,7 @@
 "recovery.action.open" = "打开";
 "recovery.action.open_diagnostics" = "打开 Diagnostics";
 "recovery.action.open_finder" = "打开 Finder";
+"recovery.action.open_system_settings" = "打开系统设置";
 "recovery.action.replace_password" = "替换密码";
 "recovery.action.retry" = "重试";
 "recovery.action.run_checkup" = "运行检查";

@@ -3,6 +3,7 @@ import Foundation
 
 enum DeviceSetupWorkflowState: Equatable {
     case idle
+    case checkingLocalNetwork
     case configuring
     case awaitingConfirmation
     case savingProfile
@@ -21,22 +22,29 @@ final class DeviceSetupWorkflow: ObservableObject {
 
     let coordinator: OperationCoordinator
     let profilePersistence: DeviceProfilePersistenceService
+    private let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
 
     private var pendingConfigureDraft: ConfigureProfileDraft?
     private var activeLaneKey: OperationLaneKey?
+    private var localNetworkPreflightTask: Task<Void, Never>?
     private var operationObservers: [OperationLaneKey: BackendOperationObserver] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private var observedLaneKeys: Set<OperationLaneKey> = []
 
     init(
         coordinator: OperationCoordinator,
-        profilePersistence: DeviceProfilePersistenceService
+        profilePersistence: DeviceProfilePersistenceService,
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil
     ) {
         self.coordinator = coordinator
         self.profilePersistence = profilePersistence
+        self.localNetworkPreflightChecker = localNetworkPreflightChecker
     }
 
     var isRunning: Bool {
+        if localNetworkPreflightTask != nil {
+            return true
+        }
         switch activeLaneKey {
         case .some(let key):
             return coordinator.lane(for: key).isBusy
@@ -46,6 +54,9 @@ final class DeviceSetupWorkflow: ObservableObject {
     }
 
     var canCancel: Bool {
+        if localNetworkPreflightTask != nil {
+            return true
+        }
         guard let activeLaneKey else {
             return false
         }
@@ -92,6 +103,71 @@ final class DeviceSetupWorkflow: ObservableObject {
             pendingNewProfileSettings = newProfileSettings
         }
         observer(for: laneKey).clear()
+
+        if let localNetworkPreflightChecker {
+            state = .checkingLocalNetwork
+            localNetworkPreflightTask = Task { [weak self, localNetworkPreflightChecker] in
+                let result = await localNetworkPreflightChecker.check()
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+                    self.localNetworkPreflightTask = nil
+                    self.continueAfterLocalNetworkPreflight(
+                        result,
+                        target: target,
+                        password: password,
+                        settings: settings,
+                        existingProfile: existingProfile,
+                        configureDraft: configureDraft,
+                        laneKey: laneKey
+                    )
+                }
+            }
+            return
+        }
+
+        runConfigureBackend(
+            target: target,
+            password: password,
+            settings: settings,
+            existingProfile: existingProfile,
+            configureDraft: configureDraft,
+            laneKey: laneKey,
+            localNetworkPreflight: nil
+        )
+    }
+
+    private func continueAfterLocalNetworkPreflight(
+        _ result: LocalNetworkPreflightResult,
+        target: AddDeviceTarget,
+        password: String,
+        settings: DeviceProfileSettings,
+        existingProfile: DeviceProfile?,
+        configureDraft: ConfigureProfileDraft,
+        laneKey: OperationLaneKey
+    ) {
+        runConfigureBackend(
+            target: target,
+            password: password,
+            settings: settings,
+            existingProfile: existingProfile,
+            configureDraft: configureDraft,
+            laneKey: laneKey,
+            localNetworkPreflight: result
+        )
+    }
+
+    private func runConfigureBackend(
+        target: AddDeviceTarget,
+        password: String,
+        settings: DeviceProfileSettings,
+        existingProfile: DeviceProfile?,
+        configureDraft: ConfigureProfileDraft,
+        laneKey: OperationLaneKey,
+        localNetworkPreflight: LocalNetworkPreflightResult?
+    ) {
+        let lane = coordinator.lane(for: laneKey)
         switch coordinator.run(
             operation: "configure",
             params: OperationParams.Configure.save(
@@ -105,7 +181,8 @@ final class DeviceSetupWorkflow: ObservableObject {
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,
-                includeAtaStandby: true
+                includeAtaStandby: true,
+                localNetworkPreflight: localNetworkPreflight
             ),
             context: configureDraft.context,
             activeDeviceID: existingProfile?.id,
@@ -120,10 +197,18 @@ final class DeviceSetupWorkflow: ObservableObject {
             clearPendingConfigureDraft()
             rejectRun(message)
         }
-
     }
 
     func cancel() {
+        if let localNetworkPreflightTask {
+            localNetworkPreflightTask.cancel()
+            self.localNetworkPreflightTask = nil
+            clearPendingConfigureDraft()
+            pendingNewProfileSettings = nil
+            pendingPassword = ""
+            state = .idle
+            return
+        }
         guard let activeLaneKey else {
             return
         }
@@ -131,6 +216,8 @@ final class DeviceSetupWorkflow: ObservableObject {
     }
 
     func reset() {
+        localNetworkPreflightTask?.cancel()
+        localNetworkPreflightTask = nil
         if let activeLaneKey {
             let lane = coordinator.lane(for: activeLaneKey)
             if !lane.isBusy {
@@ -169,6 +256,8 @@ final class DeviceSetupWorkflow: ObservableObject {
     }
 
     private func resetRunState() {
+        localNetworkPreflightTask?.cancel()
+        localNetworkPreflightTask = nil
         if let activeLaneKey {
             let lane = coordinator.lane(for: activeLaneKey)
             if !lane.isBusy {

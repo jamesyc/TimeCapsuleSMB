@@ -59,6 +59,26 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics)))
     }
 
+    func testLocalNetworkRecoveryShowsSystemSettingsAction() throws {
+        let recovery = try recoveryValue(
+            title: "Local Network access blocked",
+            actions: ["Open System Settings > Privacy & Security > Local Network."],
+            suggestedOperation: "configure",
+            actionIDs: ["open_system_settings"]
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "configure",
+            code: "local_network_permission_denied",
+            message: "macOS is blocking TimeCapsuleSMB.",
+            recovery: recovery
+        )
+
+        let actions = RecoveryActionMapper.actions(for: error)
+
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Open System Settings", kind: .openSystemSettings)))
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
+    }
+
     func testHumanRecoveryTextDoesNotCreateActionButtons() throws {
         let recovery = try recoveryValue(
             title: "Disk issue",

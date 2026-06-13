@@ -50,7 +50,8 @@ enum OperationParams {
             fruitMetadataNetatalk: Bool? = nil,
             ataIdleSeconds: Int? = nil,
             ataStandby: Int? = nil,
-            includeAtaStandby: Bool = false
+            includeAtaStandby: Bool = false,
+            localNetworkPreflight: LocalNetworkPreflightResult? = nil
         ) -> [String: JSONValue] {
             var params: [String: JSONValue] = [
                 "password": .string(password),
@@ -81,6 +82,11 @@ enum OperationParams {
                 params["ata_standby"] = .number(Double(ataStandby))
             } else if includeAtaStandby {
                 params["ata_standby"] = .string("")
+            }
+            if let localNetworkPreflight {
+                for (key, value) in localNetworkPreflight.telemetryFields {
+                    params[key] = value
+                }
             }
             return params
         }

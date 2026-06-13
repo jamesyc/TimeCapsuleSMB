@@ -27,11 +27,15 @@ final class AddDevicePresentationTests: XCTestCase {
         XCTAssertEqual(configuring?.title, "Connecting to Apple AirPort device")
         XCTAssertEqual(configuring?.detail, "Checking SSH")
 
+        let localNetwork = AddDeviceProgressPresentation(state: .checkingLocalNetwork, currentStage: nil)
+        XCTAssertEqual(localNetwork?.title, "Checking Local Network Access")
+        XCTAssertNil(localNetwork?.detail)
+
         let saving = AddDeviceProgressPresentation(state: .savingProfile, currentStage: nil)
         XCTAssertEqual(saving?.title, "Saving Device")
         XCTAssertNil(saving?.detail)
 
-        for state in AddDeviceFlowState.allCases where ![.discovering, .configuring, .savingProfile].contains(state) {
+        for state in AddDeviceFlowState.allCases where ![.discovering, .checkingLocalNetwork, .configuring, .savingProfile].contains(state) {
             XCTAssertNil(AddDeviceProgressPresentation(state: state, currentStage: discoveryStage), "\(state) should not show a blocking progress modal.")
         }
     }

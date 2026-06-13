@@ -321,6 +321,12 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case .openFinder:
             openSMBAddress(for: profile)
             return true
+        case .openSystemSettings:
+            if let url = LocalNetworkRecovery.settingsURL {
+                urlOpener.open(url)
+                return true
+            }
+            return false
         case .diagnostics, .copyDiagnostics, .generic:
             return false
         }

@@ -170,6 +170,33 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
     }
 }
 
+final class FixedLocalNetworkPreflightChecker: LocalNetworkPreflightChecking {
+    private let result: LocalNetworkPreflightResult
+    private(set) var checkCount = 0
+
+    init(status: LocalNetworkPreflightStatus, detail: String? = nil) {
+        self.result = LocalNetworkPreflightResult(
+            status: status,
+            detail: detail,
+            durationMilliseconds: 7,
+            serviceType: "_airport._tcp"
+        )
+    }
+
+    func check() async -> LocalNetworkPreflightResult {
+        checkCount += 1
+        return result
+    }
+}
+
+final class TestRecordingURLOpener: URLOpening {
+    private(set) var openedURLs: [URL] = []
+
+    func open(_ url: URL) {
+        openedURLs.append(url)
+    }
+}
+
 final class PausingStoreTestRunner: HelperRunning, @unchecked Sendable {
     typealias Call = StoreTestRunner.Call
     typealias Response = StoreTestRunner.Response

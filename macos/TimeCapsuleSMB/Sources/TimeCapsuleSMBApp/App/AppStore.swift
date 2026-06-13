@@ -15,6 +15,7 @@ final class AppStore: ObservableObject {
     let activityStore: ActivityStore
     let deviceDiscovery: DeviceDiscoveryStore
     let reachabilityStore: DeviceReachabilityStore
+    let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -26,7 +27,8 @@ final class AppStore: ObservableObject {
             deviceRegistry: DeviceRegistryStore(),
             operationCoordinator: coordinator,
             passwordStore: KeychainPasswordStore(),
-            activityStore: ActivityStore(coordinator: coordinator)
+            activityStore: ActivityStore(coordinator: coordinator),
+            localNetworkPreflightChecker: BonjourLocalNetworkPreflightChecker()
         )
     }
 
@@ -40,7 +42,8 @@ final class AppStore: ObservableObject {
         activityStore: ActivityStore? = nil,
         appUpdateStore: AppUpdateStore? = nil,
         deviceDiscovery: DeviceDiscoveryStore? = nil,
-        reachabilityStore: DeviceReachabilityStore? = nil
+        reachabilityStore: DeviceReachabilityStore? = nil,
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil
     ) {
         self.appReadinessStore = appReadinessStore
         self.appSettingsStore = appSettingsStore ?? AppSettingsStore()
@@ -59,6 +62,7 @@ final class AppStore: ObservableObject {
             registry: deviceRegistry
         )
         self.reachabilityStore = reachabilityStore ?? DeviceReachabilityStore(coordinator: operationCoordinator)
+        self.localNetworkPreflightChecker = localNetworkPreflightChecker
 
         deviceRegistry.$profiles
             .sink { [weak self] profiles in

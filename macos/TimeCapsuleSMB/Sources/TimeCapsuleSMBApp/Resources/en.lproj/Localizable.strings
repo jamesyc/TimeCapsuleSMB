@@ -22,6 +22,8 @@
 "add_device.progress.configuring.title" = "Connecting to Apple AirPort device";
 "add_device.progress.discovering.message" = "Browsing for nearby AirPort Bonjour services...";
 "add_device.progress.discovering.title" = "Discovering Apple AirPort devices";
+"add_device.progress.local_network.message" = "Checking whether macOS allows local network access...";
+"add_device.progress.local_network.title" = "Checking Local Network Access";
 "add_device.progress.saving.message" = "Writing the saved device profile and Keychain password.";
 "add_device.progress.saving.title" = "Saving Device";
 "add_device.reset" = "Reset";
@@ -38,6 +40,7 @@
 "add_device.state.idle" = "Idle";
 "add_device.state.manual_entry" = "Manual Address";
 "add_device.state.password_entry" = "Password Required";
+"add_device.state.checking_local_network" = "Checking Local Network";
 "add_device.state.saved" = "Saved";
 "add_device.state.saving_profile" = "Saving";
 "add_device.state.unsupported" = "Unsupported";
@@ -679,6 +682,7 @@
 "recovery.action.open" = "Open";
 "recovery.action.open_diagnostics" = "Open Diagnostics";
 "recovery.action.open_finder" = "Open Finder";
+"recovery.action.open_system_settings" = "Open System Settings";
 "recovery.action.replace_password" = "Replace Password";
 "recovery.action.retry" = "Retry";
 "recovery.action.run_checkup" = "Run Checkup";

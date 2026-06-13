@@ -63,6 +63,18 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         suggested_operation="configure",
         action_ids=("replace_password",),
     ),
+    "local_network_permission_denied": RecoveryInfo(
+        "Local Network access blocked",
+        "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.",
+        (
+            "Open System Settings > Privacy & Security > Local Network.",
+            "Enable TimeCapsuleSMB in Local Network.",
+            "Quit and reopen TimeCapsuleSMB, then retry configure.",
+        ),
+        retryable=True,
+        suggested_operation="configure",
+        action_ids=("open_system_settings", "retry"),
+    ),
     "auth_failed": RecoveryInfo(
         "Authentication failed",
         "The device rejected the supplied password or SSH credentials.",

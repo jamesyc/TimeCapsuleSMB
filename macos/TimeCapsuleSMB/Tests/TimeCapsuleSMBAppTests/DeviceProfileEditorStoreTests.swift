@@ -448,6 +448,40 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         ))
     }
 
+    func testReconfigureForwardsLocalNetworkPreflightTelemetry() async throws {
+        let checker = FixedLocalNetworkPreflightChecker(status: .unknown, detail: "timeout")
+        let fixture = try await makeFixture(
+            responses: [
+                .init(events: [
+                    BackendEvent(
+                        type: "result",
+                        operation: "configure",
+                        ok: true,
+                        payload: testConfigurePayload(host: "root@10.0.0.9", syap: "119", model: "TimeCapsule8,119")
+                    )
+                ])
+            ],
+            localNetworkPreflightChecker: checker
+        )
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+
+        store.draft.host = "10.0.0.9"
+
+        await store.save(profile: profile)
+
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 }
+        XCTAssertEqual(checker.checkCount, 1)
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_result"], .string("unknown"))
+        XCTAssertEqual(fixture.runner.calls[0].params["macos_local_network_preflight_error"], .string("timeout"))
+    }
+
     func testAuthFailureAndUnsupportedDeviceSaveNothing() async throws {
         let auth = try await makeFixture(responses: [
             .init(events: [
@@ -671,7 +705,10 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
-    private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> (
+    private func makeFixture(
+        responses: [StoreTestRunner.Response],
+        localNetworkPreflightChecker: LocalNetworkPreflightChecking? = nil
+    ) async throws -> (
         appStore: AppStore,
         registry: DeviceRegistryStore,
         passwordStore: InMemoryPasswordStore,
@@ -690,7 +727,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             deviceRegistry: registry,
             operationCoordinator: coordinator,
             passwordStore: passwordStore,
-            deviceDiscovery: deviceDiscovery
+            deviceDiscovery: deviceDiscovery,
+            localNetworkPreflightChecker: localNetworkPreflightChecker
         )
         return (appStore, registry, passwordStore, runner, deviceDiscovery)
     }

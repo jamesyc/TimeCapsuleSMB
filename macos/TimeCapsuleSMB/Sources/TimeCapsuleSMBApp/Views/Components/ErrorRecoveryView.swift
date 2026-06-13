@@ -124,6 +124,8 @@ struct ErrorRecoveryView: View {
             return "doc.on.doc"
         case .diagnostics:
             return "wrench.and.screwdriver"
+        case .openSystemSettings:
+            return "gearshape"
         case .generic:
             return "arrow.right.circle"
         }

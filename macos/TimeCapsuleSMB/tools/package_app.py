@@ -1151,6 +1151,17 @@ def ad_hoc_codesign(path: Path) -> None:
     run_quiet(["codesign", "--force", "--sign", "-", str(path)])
 
 
+def nested_helper_code_paths(app: Path) -> list[Path]:
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    return [helper] if helper.is_file() else []
+
+
+def ad_hoc_codesign_app_bundle(app: Path) -> None:
+    for path in nested_helper_code_paths(app):
+        ad_hoc_codesign(path)
+    ad_hoc_codesign(app)
+
+
 def ad_hoc_codesign_macho_roots(roots: list[Path]) -> None:
     for path in sorted(macho_files_under(roots), key=str):
         if macho_architectures(path):
@@ -1401,6 +1412,22 @@ def assert_macho_code_signatures_valid(app: Path) -> None:
         if should_codesign_packaged_macho(path, app)
     ]
     assert_macho_code_signatures_valid_for_paths(paths)
+
+
+def assert_app_bundle_signature_valid(app: Path) -> None:
+    completed = subprocess.run(
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=4", str(app)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            "App bundle code signature verification failed"
+            + (f":\n{detail}" if detail else f" with rc={completed.returncode}")
+        )
 
 
 def assert_no_external_macho_dependencies_for_paths(paths: list[Path]) -> None:
@@ -1713,6 +1740,7 @@ def assert_bundle_layout(
     if full_validation:
         assert_no_external_macho_dependencies(app)
         assert_macho_code_signatures_valid(app)
+        assert_app_bundle_signature_valid(app)
     validate_app_resources(app)
 
 
@@ -1753,6 +1781,7 @@ def package_app(args: argparse.Namespace) -> Path:
     finalize_python_bundle(resources)
     copy_distribution(resources)
     copy_native_tools_layer(app, architectures, use_cache=not args.no_cache)
+    ad_hoc_codesign_app_bundle(app)
     assert_bundle_layout(
         app,
         icon_name=icon_name,

@@ -51,6 +51,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("validate-install", "validate_install"): StagePolicy(LOCAL_READ, True, "Validate local helper and artifact prerequisites."),
     ("version-check", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve version check cache path."),
     ("version-check", "check_version"): StagePolicy(LOCAL_READ, True, "Fetch or read version metadata."),
+    ("configure", "local_network_preflight"): StagePolicy(LOCAL_READ, True, "Check macOS Local Network permission before configuring."),
     ("configure", "load_existing_config"): StagePolicy(LOCAL_READ, True, "Read the existing .env configuration."),
     ("configure", "ssh_probe"): StagePolicy(REMOTE_READ, True, "Probe SSH reachability and device compatibility."),
     ("configure", "confirm_enable_ssh"): StagePolicy(REBOOT, True, "Confirm SSH enablement and reboot through AirPort ACP."),

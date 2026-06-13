@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 import uuid
 
 from timecapsulesmb.app.context import AppOperationContext
@@ -32,6 +34,37 @@ from timecapsulesmb.services.configure import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure_target import resolve_configure_target
+
+
+LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
+    "macos_local_network_preflight_result",
+    "macos_local_network_preflight_duration_ms",
+    "macos_local_network_preflight_service",
+    "macos_local_network_preflight_error",
+)
+
+
+def add_local_network_preflight_debug_fields(params: dict[str, object], context: AppOperationContext) -> None:
+    fields = {
+        key: params[key]
+        for key in LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS
+        if key in params and params[key] is not None
+    }
+    if fields:
+        context.add_debug_fields(**fields)
+
+
+def local_network_preflight_denied(params: dict[str, object]) -> bool:
+    return str(params.get("macos_local_network_preflight_result") or "").strip().lower() == "denied"
+
+
+def is_macos_gui_local_network_privacy_signal(error: object) -> bool:
+    if sys.platform != "darwin":
+        return False
+    if os.getenv("TCAPSULE_CLIENT") != "macos_gui":
+        return False
+    text = str(error)
+    return "[Errno 65]" in text or "No route to host" in text
 
 
 def selected_record_name(params: dict[str, object]) -> str:
@@ -69,6 +102,14 @@ def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> 
 
 
 def configure_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    add_local_network_preflight_debug_fields(params, context)
+    if local_network_preflight_denied(params):
+        context.stage("local_network_preflight")
+        raise AppOperationError(
+            "macOS is blocking TimeCapsuleSMB from accessing devices on your local network.",
+            code="local_network_permission_denied",
+        )
+
     context.stage("load_existing_config")
     app_paths = resolve_app_paths(config_path=config_path(params))
     env_path = app_paths.config_path
@@ -172,6 +213,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         raise AppOperationError("The AirPort admin password did not work.", code="auth_failed", debug=str(exc)) from exc
     except ACPConnectionError as exc:
         if context.current_stage == "acp_port_probe":
+            if is_macos_gui_local_network_privacy_signal(exc):
+                context.add_debug_fields(
+                    macos_local_network_privacy_suspected=True,
+                    macos_local_network_privacy_signal="errno65_no_route_to_host",
+                )
             raise AppOperationError(
                 f"No AirPort ACP service responded at this address: {exc}",
                 code="remote_error",

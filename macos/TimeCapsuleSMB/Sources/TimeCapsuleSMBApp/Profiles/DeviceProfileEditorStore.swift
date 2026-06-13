@@ -204,12 +204,14 @@ final class DeviceProfileEditorStore: ObservableObject {
     private let coordinator: OperationCoordinator
     private let lane: OperationLane
     private let profilePersistence: DeviceProfilePersistenceService
+    private let localNetworkPreflightChecker: LocalNetworkPreflightChecking?
     private var baselineDraft: DeviceProfileEditorDraft
     private let operationObserver = BackendOperationObserver()
     private var pendingProfile: DeviceProfile?
     private var pendingEditableFields: DeviceProfileEditableFields?
     private var pendingPassword: String?
     private var pendingConfigureDraft: ConfigureProfileDraft?
+    private var localNetworkPreflightTask: Task<Void, Never>?
     private var isApplyingDraft = false
     private var isApplyingPasswordDraft = false
     private var cancellables: Set<AnyCancellable> = []
@@ -226,6 +228,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         self.coordinator = appStore.operationCoordinator
         self.lane = appStore.operationCoordinator.lane(for: .deviceWorkflow(profile.id, .configure))
         self.profilePersistence = profilePersistence ?? appStore.profilePersistence
+        self.localNetworkPreflightChecker = appStore.localNetworkPreflightChecker
         observeBackend()
     }
 
@@ -384,6 +387,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     private func startReconfigure(profile: DeviceProfile, password: String, settings: DeviceProfileSettings) {
         let discoveredDevice = currentDiscoveredDeviceMatchingDraftHost(for: profile)
         let targetHost = discoveredDevice?.connectionTarget ?? draft.trimmedHost
+        let editableFields = DeviceProfileEditableFields(displayName: draft.displayName, settings: settings)
         let configureDraft: ConfigureProfileDraft
         do {
             configureDraft = try profilePersistence.prepareConfigureTarget(
@@ -397,6 +401,57 @@ final class DeviceProfileEditorStore: ObservableObject {
             failSave(error)
             return
         }
+
+        if let localNetworkPreflightChecker {
+            state = .reconfiguring
+            validationErrors = []
+            error = nil
+            currentStage = nil
+            savedProfile = nil
+            localNetworkPreflightTask = Task { [weak self, localNetworkPreflightChecker] in
+                let result = await localNetworkPreflightChecker.check()
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+                    self.localNetworkPreflightTask = nil
+                    self.runReconfigureBackend(
+                        profile: profile,
+                        password: password,
+                        settings: settings,
+                        editableFields: editableFields,
+                        discoveredDevice: discoveredDevice,
+                        targetHost: targetHost,
+                        configureDraft: configureDraft,
+                        localNetworkPreflight: result
+                    )
+                }
+            }
+            return
+        }
+
+        runReconfigureBackend(
+            profile: profile,
+            password: password,
+            settings: settings,
+            editableFields: editableFields,
+            discoveredDevice: discoveredDevice,
+            targetHost: targetHost,
+            configureDraft: configureDraft,
+            localNetworkPreflight: nil
+        )
+    }
+
+    private func runReconfigureBackend(
+        profile: DeviceProfile,
+        password: String,
+        settings: DeviceProfileSettings,
+        editableFields: DeviceProfileEditableFields,
+        discoveredDevice: DiscoveredDevice?,
+        targetHost: String,
+        configureDraft: ConfigureProfileDraft,
+        localNetworkPreflight: LocalNetworkPreflightResult?
+    ) {
         let params = OperationParams.Configure.save(
             host: targetHost,
             selectedRecord: discoveredDevice?.rawRecord,
@@ -408,7 +463,8 @@ final class DeviceProfileEditorStore: ObservableObject {
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,
-            includeAtaStandby: true
+            includeAtaStandby: true,
+            localNetworkPreflight: localNetworkPreflight
         )
         let start = coordinator.run(
             operation: "configure",
@@ -424,11 +480,12 @@ final class DeviceProfileEditorStore: ObservableObject {
                 message: start.rejectionMessage ?? L10n.string("operation.error.already_running")
             )
             state = .failed
+            profilePersistence.discardConfigureDraft(configureDraft)
             return
         }
         operationObserver.start(operation)
         pendingProfile = profile
-        pendingEditableFields = DeviceProfileEditableFields(displayName: draft.displayName, settings: settings)
+        pendingEditableFields = editableFields
         pendingPassword = password
         pendingConfigureDraft = configureDraft
         validationErrors = []
@@ -567,6 +624,8 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func clearPendingOperation() {
+        localNetworkPreflightTask?.cancel()
+        localNetworkPreflightTask = nil
         operationObserver.finish()
         profilePersistence.discardConfigureDraft(pendingConfigureDraft)
         pendingProfile = nil
