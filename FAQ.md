@@ -125,6 +125,13 @@ If it still fails, check Keychain Access for older Time Machine entries that ref
    ```
    smb://<yourtimecapsuleIP>/<share-name>
    ```
+#### I get a "MaSt" error
+
+We use ACP `MaSt` to check what hard drives are connected to the device. If you see the message `No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart`, that means we checked 10 times and the hard drive never loaded. 
+
+- If you are using an AirPort Express with an external hard drive, make sure it is plugged in.
+- If you are using an external hard drive, make sure it's properly formatted with HFS+
+- If you have a Time Capsule with an internal hard drive, then Apple ACP cannot detect the hard drive for some reason. Try reformatting it or swapping to a different hard drive.
 
 #### I get "Error 22" or "Invalid Argument" errors
 
