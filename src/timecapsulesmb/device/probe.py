@@ -6,6 +6,7 @@ import time
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
@@ -13,7 +14,11 @@ from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS, PS_CAPTURE_COMMAND
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.errors import TransportError
+from timecapsulesmb.transport.errors import (
+    SshAlgorithmNegotiationError,
+    SshAuthenticationError,
+    TransportError,
+)
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, run_ssh_capture_bytes, ssh_opts_use_proxy
 from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_MODEL,
@@ -471,10 +476,18 @@ describe_managed_mdns_status() {{
 '''
 
 
+class SshAccessStatus(str, Enum):
+    OPEN_AUTHENTICATED = "open_authenticated"
+    CLOSED = "closed"
+    AUTH_REJECTED = "auth_rejected"
+    ALGORITHM_NEGOTIATION_FAILED = "algorithm_negotiation_failed"
+    TRANSPORT_FAILED = "transport_failed"
+    DEVICE_PROBE_FAILED = "device_probe_failed"
+
+
 @dataclass(frozen=True)
 class ProbeResult:
-    ssh_port_reachable: bool
-    ssh_authenticated: bool
+    ssh_status: SshAccessStatus
     error: str | None
     os_name: str
     os_release: str
@@ -483,6 +496,14 @@ class ProbeResult:
     airport_model: str | None = None
     airport_syap: str | None = None
     elf_endianness_detail: str | None = None
+
+    @property
+    def ssh_port_reachable(self) -> bool:
+        return self.ssh_status != SshAccessStatus.CLOSED
+
+    @property
+    def ssh_authenticated(self) -> bool:
+        return self.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED
 
 
 @dataclass(frozen=True)
@@ -631,8 +652,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
     probe_host = connection.host.split("@", 1)[1] if "@" in connection.host else connection.host
     if not ssh_opts_use_proxy(connection.ssh_opts) and not tcp_open(probe_host, 22):
         return ProbeResult(
-            ssh_port_reachable=False,
-            ssh_authenticated=False,
+            ssh_status=SshAccessStatus.CLOSED,
             error="SSH is not reachable yet.",
             os_name="",
             os_release="",
@@ -644,11 +664,37 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         os_name, os_release, arch = _probe_remote_os_info_conn(connection)
         elf_endianness_probe = _probe_remote_elf_endianness_result_conn(connection)
         airport_identity = probe_remote_airport_identity_conn(connection)
-    except (TransportError, DeviceError) as exc:
+    except SshAuthenticationError as exc:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=False,
+            ssh_status=SshAccessStatus.AUTH_REJECTED,
             error=str(exc) or "SSH authentication failed.",
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        )
+    except SshAlgorithmNegotiationError as exc:
+        return ProbeResult(
+            ssh_status=SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED,
+            error=str(exc) or "SSH algorithm negotiation failed.",
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        )
+    except TransportError as exc:
+        return ProbeResult(
+            ssh_status=SshAccessStatus.TRANSPORT_FAILED,
+            error=str(exc) or "SSH transport failed.",
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        )
+    except DeviceError as exc:
+        return ProbeResult(
+            ssh_status=SshAccessStatus.DEVICE_PROBE_FAILED,
+            error=str(exc) or "Failed to probe device compatibility.",
             os_name="",
             os_release="",
             arch="",
@@ -656,8 +702,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         )
 
     return ProbeResult(
-        ssh_port_reachable=True,
-        ssh_authenticated=True,
+        ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
         error=None,
         os_name=os_name,
         os_release=os_release,

@@ -14,7 +14,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.device.compat import compatibility_from_probe_result
-from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
+from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.integrations.acp import ACP_PORT, ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.configure import (
@@ -61,8 +61,7 @@ class ConfigureServiceTests(unittest.TestCase):
 
     def make_probe_state(self) -> ProbedDeviceState:
         probe_result = ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="6.0",
@@ -79,21 +78,35 @@ class ConfigureServiceTests(unittest.TestCase):
     def make_auth_failed_probe_state(self) -> ProbedDeviceState:
         return ProbedDeviceState(
             probe_result=ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=False,
+                ssh_status=SshAccessStatus.AUTH_REJECTED,
                 error="SSH authentication failed.",
-                os_name=None,
-                os_release=None,
-                arch=None,
-                elf_endianness=None,
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+
+    def make_ssh_algorithm_failed_probe_state(self) -> ProbedDeviceState:
+        return ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED,
+                error=(
+                    "Unable to negotiate with 192.168.200.214 port 22: no matching MAC found. "
+                    "Their offer: hmac-md5,hmac-sha1,hmac-md5-96"
+                ),
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
             ),
             compatibility=None,
         )
 
     def make_unsupported_probe_state(self) -> ProbedDeviceState:
         probe_result = ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="5.0",
@@ -411,6 +424,25 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(written["TC_PASSWORD"], "badpw")
         self.assertEqual(written["TC_AIRPORT_SYAP"], "119")
         self.assertEqual(written["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+
+    def test_run_configure_flow_reports_ssh_algorithm_failure_without_auth_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ConfigureFlowError) as raised:
+                run_configure_flow(
+                    ConfigureFlowRequest(
+                        existing={},
+                        env_path=Path(tmp) / ".env",
+                        host="root@10.0.0.2",
+                        password="pw",
+                        ssh_opts="-o foo",
+                        configure_id="config-id",
+                        persist_password=True,
+                        probe=mock.Mock(return_value=self.make_ssh_algorithm_failed_probe_state()),
+                    )
+                )
+
+        self.assertEqual(raised.exception.code, "ssh_compatibility_failed")
+        self.assertIn("no matching MAC found", str(raised.exception))
 
     def test_run_configure_flow_rejects_unsupported_compatible_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

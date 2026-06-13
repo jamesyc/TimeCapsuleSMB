@@ -30,11 +30,17 @@ class DecodeTrapBytes(bytes):
 class SSHTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
+        ssh_transport._local_ssh_macs.cache_clear()
         ssh_transport.local_scp_path.cache_clear()
         ssh_transport.local_scp_supports_legacy_option.cache_clear()
+        self._local_macs_patch = mock.patch("timecapsulesmb.transport.ssh._local_ssh_macs", return_value=())
+        self._local_macs_patch.start()
+        self.addCleanup(self._local_macs_patch.stop)
 
     def tearDown(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
+        if hasattr(ssh_transport._local_ssh_macs, "cache_clear"):
+            ssh_transport._local_ssh_macs.cache_clear()
         ssh_transport.local_scp_path.cache_clear()
         ssh_transport.local_scp_supports_legacy_option.cache_clear()
 
@@ -108,6 +114,53 @@ class SSHTransportTests(unittest.TestCase):
                 "/bin/echo ok",
             ],
         )
+
+    def test_normalize_ssh_tokens_adds_supported_legacy_airport_macs_when_missing(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._local_ssh_macs", return_value=("hmac-sha1", "hmac-md5-96")):
+            tokens = ssh_transport._normalize_ssh_tokens("-o HostKeyAlgorithms=+ssh-rsa")
+
+        self.assertEqual(
+            tokens,
+            [
+                "-o",
+                "HostKeyAlgorithms=+ssh-rsa",
+                "-o",
+                "MACs=+hmac-sha1,hmac-md5-96",
+            ],
+        )
+
+    def test_normalize_ssh_tokens_preserves_explicit_mac_option(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._local_ssh_macs", return_value=("hmac-sha1", "hmac-md5-96")):
+            tokens = ssh_transport._normalize_ssh_tokens("-m hmac-md5-96 -o HostKeyAlgorithms=+ssh-rsa")
+
+        self.assertEqual(
+            tokens,
+            [
+                "-m",
+                "hmac-md5-96",
+                "-o",
+                "HostKeyAlgorithms=+ssh-rsa",
+            ],
+        )
+
+    def test_classify_ssh_client_error_detects_no_matching_mac_offer(self) -> None:
+        line = (
+            "Unable to negotiate with 192.168.200.214 port 22: no matching MAC found. "
+            "Their offer: hmac-md5,hmac-sha1,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96"
+        )
+
+        error = ssh_transport.classify_ssh_client_error(line)
+
+        self.assertIsInstance(error, ssh_transport.SshAlgorithmNegotiationError)
+        assert isinstance(error, ssh_transport.SshAlgorithmNegotiationError)
+        self.assertEqual(error.algorithm, "mac")
+        self.assertEqual(error.offered[0:2], ("hmac-md5", "hmac-sha1"))
+        self.assertEqual(str(error), line)
+
+    def test_classify_ssh_client_error_detects_auth_rejection(self) -> None:
+        error = ssh_transport.classify_ssh_client_error("Permission denied, please try again.\n")
+
+        self.assertIsInstance(error, ssh_transport.SshAuthenticationError)
 
     def test_spawn_with_password_replaces_invalid_utf8_output(self) -> None:
         try:
@@ -277,7 +330,7 @@ class SSHTransportTests(unittest.TestCase):
         )
         self.assertEqual(
             ssh_transport._extract_ssh_transport_error(output),
-            "bind [127.0.0.1]:108: Permission denied",
+            "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
         )
 
     def test_run_ssh_raises_on_ssh_transport_warning_even_with_zero_exit(self) -> None:

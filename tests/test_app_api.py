@@ -35,6 +35,7 @@ from timecapsulesmb.device.probe import (
     ProbeStepResult,
     ProbedDeviceState,
     ReadinessProbeResult,
+    SshAccessStatus,
 )
 from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
@@ -102,8 +103,7 @@ def unsupported_compatibility() -> DeviceCompatibility:
 def probed_state() -> ProbedDeviceState:
     return ProbedDeviceState(
         probe_result=ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="6.0",
@@ -119,8 +119,7 @@ def probed_state() -> ProbedDeviceState:
 def netbsd4_probed_state() -> ProbedDeviceState:
     return ProbedDeviceState(
         probe_result=ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="4.0",
@@ -136,8 +135,7 @@ def netbsd4_probed_state() -> ProbedDeviceState:
 def unreachable_probed_state() -> ProbedDeviceState:
     return ProbedDeviceState(
         probe_result=ProbeResult(
-            ssh_port_reachable=False,
-            ssh_authenticated=False,
+            ssh_status=SshAccessStatus.CLOSED,
             error="connection refused",
             os_name="",
             os_release="",
@@ -2002,6 +2000,47 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(collector.events_of_type("error")[0]["recovery"]["suggested_operation"], "configure")
         self.assertEqual(collector.events_of_type("error")[0]["recovery"]["action_ids"], ["replace_password"])
         self.assertNotIn("badpw", json.dumps(collector.events))
+
+    def test_configure_reports_ssh_algorithm_failure_without_password_rejection(self) -> None:
+        collector = CollectingSink()
+        ssh_error = (
+            "Unable to negotiate with 192.168.200.214 port 22: no matching MAC found. "
+            "Their offer: hmac-md5,hmac-sha1,hmac-ripemd160,hmac-ripemd160@openssh.com,hmac-sha1-96,hmac-md5-96"
+        )
+        probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED,
+                error=ssh_error,
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probe_state):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@192.168.200.214",
+                            "password": "pw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        self.assertFalse(config_path.exists())
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "ssh_compatibility_failed")
+        self.assertEqual(error["recovery"]["title"], "SSH compatibility failed")
+        self.assertNotEqual(error["recovery"]["title"], "AirPort password rejected")
+        self.assertNotIn("replace_password", error["recovery"]["action_ids"])
+        self.assertIn("no matching MAC found", error["message"])
 
     def test_configure_reports_acp_port_preflight_connection_failure(self) -> None:
         collector = CollectingSink()

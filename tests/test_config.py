@@ -130,7 +130,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_CONFIGURE_ID"] = "12345678-1234-1234-1234-123456789012"
         rendered = render_env_text(values)
         self.assertIn("TC_PASSWORD=secret", rendered)
-        self.assertIn("TC_SSH_OPTS='-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", rendered)
+        self.assertIn(f"TC_SSH_OPTS={shlex.quote(DEFAULTS['TC_SSH_OPTS'])}", rendered)
         self.assertNotIn("TC_MDNS_INSTANCE_NAME", rendered)
         self.assertNotIn("TC_MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_NETBIOS_NAME", rendered)

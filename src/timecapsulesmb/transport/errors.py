@@ -9,6 +9,27 @@ class SshError(TransportError):
     """Raised when an SSH command or tunnel operation fails."""
 
 
+class SshAuthenticationError(SshError):
+    """Raised when SSH reaches the device but credentials are rejected."""
+
+
+class SshAlgorithmNegotiationError(SshError):
+    """Raised when SSH reaches the device but cannot agree on a legacy algorithm."""
+
+    def __init__(self, message: str, *, algorithm: str, offered: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.algorithm = algorithm
+        self.offered = offered
+
+
+class SshClientConfigError(SshError):
+    """Raised when the local SSH client rejects our options or user config."""
+
+
+class SshNetworkError(SshError):
+    """Raised when the SSH client reports a network-level failure."""
+
+
 class ScpError(TransportError):
     """Raised when an SCP or upload operation fails."""
 

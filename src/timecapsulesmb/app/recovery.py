@@ -77,6 +77,13 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Check the detected model and OS.", "Use the CLI only if you intentionally pass unsupported-device overrides."),
         retryable=False,
     ),
+    "ssh_compatibility_failed": RecoveryInfo(
+        "SSH compatibility failed",
+        "The local SSH client could not negotiate algorithms with the AirPort SSH server.",
+        ("Update TimeCapsuleSMB and retry.", "Check debug details for the SSH algorithm error."),
+        retryable=True,
+        suggested_operation="configure",
+    ),
     "confirmation_required": RecoveryInfo(
         "Confirmation required",
         "This operation changes the device and needs explicit confirmation.",
@@ -120,6 +127,13 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "The SSH probe succeeded, but the detected hardware or OS cannot use a bundled payload.",
         ("Review the detected model and OS.", "Use a supported Apple AirPort Time Capsule or AirPort Extreme."),
         retryable=False,
+    ),
+    ("configure", "ssh_compatibility_failed"): RecoveryInfo(
+        "SSH compatibility failed",
+        "The AirPort SSH server only offered legacy algorithms that the local SSH client did not negotiate.",
+        ("Update TimeCapsuleSMB and retry.", "Check debug details for the SSH algorithm offer."),
+        retryable=True,
+        suggested_operation="configure",
     ),
     ("deploy", "confirmation_required"): RecoveryInfo(
         "Deploy confirmation required",

@@ -296,6 +296,7 @@ def _(value: NativeDnsSdDiscoveryDiagnostics) -> dict[str, object]:
 def _(value: ProbedDeviceState) -> dict[str, object]:
     probe = value.probe_result
     summary: dict[str, object] = {
+        "probe_ssh_status": probe.ssh_status.value,
         "probe_ssh_port_reachable": probe.ssh_port_reachable,
         "probe_ssh_authenticated": probe.ssh_authenticated,
     }

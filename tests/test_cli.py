@@ -79,6 +79,7 @@ from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     ReadinessProbeResult,
     RemoteInterfaceProbeResult,
+    SshAccessStatus,
 )
 from timecapsulesmb.device.storage import (
     MAST_PROBE_COMMAND,
@@ -562,8 +563,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_unreachable(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=False,
-            ssh_authenticated=False,
+            ssh_status=SshAccessStatus.CLOSED,
             error="SSH is not reachable yet.",
             os_name="",
             os_release="",
@@ -573,8 +573,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_auth_failed(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=False,
+            ssh_status=SshAccessStatus.AUTH_REJECTED,
             error="SSH authentication failed.",
             os_name="",
             os_release="",
@@ -584,8 +583,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd6(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="6.0",
@@ -597,8 +595,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd6_no_identity(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="6.0",
@@ -608,8 +605,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd6_unknown(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="6.0",
@@ -619,8 +615,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd6_big(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="6.0",
@@ -630,8 +625,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd4le(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="4.0",
@@ -641,8 +635,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd4le_airport_identity_113(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="4.0",
@@ -654,8 +647,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd4be(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="4.0",
@@ -665,8 +657,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd4be_airport_identity_106(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="4.0",
@@ -678,8 +669,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd4_unknown(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="4.0_STABLE",
@@ -689,8 +679,7 @@ class CliTests(unittest.TestCase):
 
     def make_probe_result_netbsd5(self) -> ProbeResult:
         return ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="5.0",
@@ -915,8 +904,7 @@ class CliTests(unittest.TestCase):
                 )
             deploy_compatibility = compatibility or self.make_supported_compatibility()
             deploy_probe_result = ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=True,
+                ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
                 error=None,
                 os_name=deploy_compatibility.os_name,
                 os_release=deploy_compatibility.os_release,
@@ -2388,8 +2376,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_telemetry_records_elf_endianness_probe_detail(self) -> None:
         probe_result = ProbeResult(
-            ssh_port_reachable=True,
-            ssh_authenticated=True,
+            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
             error=None,
             os_name="NetBSD",
             os_release="6.0",

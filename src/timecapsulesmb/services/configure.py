@@ -17,7 +17,7 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
-from timecapsulesmb.device.probe import ProbedDeviceState, probe_connection_state
+from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, probe_connection_state
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
@@ -236,16 +236,28 @@ def run_configure_flow(
         if not probe.ssh_port_reachable:
             raise ConfigureFlowError("SSH did not become reachable after enabling via ACP.", code="ssh_unreachable")
 
-    if not probe.ssh_authenticated:
+    if probe.ssh_status == SshAccessStatus.OPEN_AUTHENTICATED:
+        callbacks.debug(ssh_final_reachable=True)
+        callbacks.update(ssh_final_reachable=True)
+    elif probe.ssh_status == SshAccessStatus.AUTH_REJECTED:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
         if hooks.save_without_authentication is None or not hooks.save_without_authentication(probed_state):
             raise ConfigureFlowError(
                 probe.error or "The provided AirPort SSH target and password did not work.",
                 code="auth_failed",
             )
+    elif probe.ssh_status == SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED:
+        callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
+        raise ConfigureFlowError(probe.error or "SSH algorithm negotiation failed.", code="ssh_compatibility_failed")
+    elif probe.ssh_status == SshAccessStatus.TRANSPORT_FAILED:
+        callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
+        raise ConfigureFlowError(probe.error or "SSH transport failed.", code="ssh_transport_failed")
+    elif probe.ssh_status == SshAccessStatus.DEVICE_PROBE_FAILED:
+        callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
+        raise ConfigureFlowError(probe.error or "Failed to probe device compatibility.", code="device_probe_failed")
     else:
-        callbacks.debug(ssh_final_reachable=True)
-        callbacks.update(ssh_final_reachable=True)
+        callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
+        raise ConfigureFlowError(probe.error or "SSH did not become reachable.", code="ssh_unreachable")
 
     compatibility = probed_state.compatibility
     if compatibility is not None and not compatibility.supported:

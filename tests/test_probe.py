@@ -13,7 +13,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import timecapsulesmb.device.probe as probe
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
+    SshAccessStatus,
     flash_runtime_config_present_conn,
     preferred_interface_name,
     read_deployed_version_conn,
@@ -25,6 +27,7 @@ from timecapsulesmb.device.probe import (
     runtime_ram_root_present_conn,
     runtime_startup_failure_debug_fields,
 )
+from timecapsulesmb.transport.errors import SshAlgorithmNegotiationError, SshAuthenticationError, SshNetworkError
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -342,6 +345,73 @@ TC_DIAG_END routes
             args, _kwargs = call
             self.assertEqual(args[0], connection)
             self.assertEqual(len(args), 2)
+
+    def test_probe_device_conn_reports_closed_ssh_port_without_remote_probe(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False) as tcp_open_mock:
+            with mock.patch("timecapsulesmb.device.probe.run_ssh") as run_ssh_mock:
+                result = probe.probe_device_conn(connection)
+
+        self.assertEqual(result.ssh_status, SshAccessStatus.CLOSED)
+        self.assertFalse(result.ssh_port_reachable)
+        self.assertFalse(result.ssh_authenticated)
+        self.assertEqual(result.error, "SSH is not reachable yet.")
+        tcp_open_mock.assert_called_once_with("10.0.0.2", 22)
+        run_ssh_mock.assert_not_called()
+
+    def test_probe_device_conn_reports_auth_rejection_separately(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshAuthenticationError("Permission denied")):
+                result = probe.probe_device_conn(connection)
+
+        self.assertEqual(result.ssh_status, SshAccessStatus.AUTH_REJECTED)
+        self.assertTrue(result.ssh_port_reachable)
+        self.assertFalse(result.ssh_authenticated)
+        self.assertEqual(result.error, "Permission denied")
+
+    def test_probe_device_conn_reports_algorithm_negotiation_separately(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        error = SshAlgorithmNegotiationError(
+            "Unable to negotiate: no matching MAC found. Their offer: hmac-md5,hmac-sha1",
+            algorithm="mac",
+            offered=("hmac-md5", "hmac-sha1"),
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=error):
+                result = probe.probe_device_conn(connection)
+
+        self.assertEqual(result.ssh_status, SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED)
+        self.assertTrue(result.ssh_port_reachable)
+        self.assertFalse(result.ssh_authenticated)
+        self.assertIn("no matching MAC found", result.error or "")
+
+    def test_probe_device_conn_reports_transport_failure_without_auth_rejection(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshNetworkError("Connection timed out")):
+                result = probe.probe_device_conn(connection)
+
+        self.assertEqual(result.ssh_status, SshAccessStatus.TRANSPORT_FAILED)
+        self.assertTrue(result.ssh_port_reachable)
+        self.assertFalse(result.ssh_authenticated)
+        self.assertEqual(result.error, "Connection timed out")
+
+    def test_probe_device_conn_reports_device_probe_failure_after_ssh_auth(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+            with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", side_effect=DeviceError("bad uname")):
+                result = probe.probe_device_conn(connection)
+
+        self.assertEqual(result.ssh_status, SshAccessStatus.DEVICE_PROBE_FAILED)
+        self.assertTrue(result.ssh_port_reachable)
+        self.assertFalse(result.ssh_authenticated)
+        self.assertEqual(result.error, "bad uname")
 
     def test_probe_remote_os_info_conn_ignores_ssh_client_preamble(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")

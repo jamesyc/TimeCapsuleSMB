@@ -26,7 +26,7 @@ from timecapsulesmb.services.context import render_operation_debug_lines
 from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
+from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
@@ -267,8 +267,7 @@ class TelemetryTests(unittest.TestCase):
         )
         probe_state = ProbedDeviceState(
             probe_result=ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=True,
+                ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
                 error=None,
                 os_name="NetBSD",
                 os_release="6.0",
@@ -660,8 +659,7 @@ class TelemetryTests(unittest.TestCase):
                             ) as command:
                                 command.probe_state = ProbedDeviceState(
                                     probe_result=ProbeResult(
-                                        ssh_port_reachable=True,
-                                        ssh_authenticated=True,
+                                        ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
                                         error=None,
                                         os_name="NetBSD",
                                         os_release="6.0",
@@ -722,8 +720,7 @@ class TelemetryTests(unittest.TestCase):
     def test_render_operation_debug_lines_combines_context_sources(self) -> None:
         state = ProbedDeviceState(
             probe_result=ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=False,
+                ssh_status=SshAccessStatus.AUTH_REJECTED,
                 error="SSH authentication failed.",
                 os_name="",
                 os_release="",

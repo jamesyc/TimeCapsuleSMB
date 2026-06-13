@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import NonInteractivePromptError
 from timecapsulesmb.device.compat import DeviceCompatibility
-from timecapsulesmb.device.probe import ProbedDeviceState, ProbeResult
+from timecapsulesmb.device.probe import ProbedDeviceState, ProbeResult, SshAccessStatus
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -44,8 +44,7 @@ class CommandContextHelperTests(unittest.TestCase):
     def make_probe_state(self, compatibility: DeviceCompatibility | None = None) -> ProbedDeviceState:
         return ProbedDeviceState(
             probe_result=ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=True,
+                ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
                 error=None,
                 os_name="NetBSD",
                 os_release="6.0",

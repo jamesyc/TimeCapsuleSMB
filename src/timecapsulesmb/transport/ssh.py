@@ -12,7 +12,16 @@ from pathlib import Path
 
 from timecapsulesmb.core.errors import missing_dependency_message
 from timecapsulesmb.core.net import ipv6_literal
-from timecapsulesmb.transport.errors import ScpError, SshCommandTimeout, SshError, TransportError
+from timecapsulesmb.transport.errors import (
+    ScpError,
+    SshAlgorithmNegotiationError,
+    SshAuthenticationError,
+    SshClientConfigError,
+    SshCommandTimeout,
+    SshError,
+    SshNetworkError,
+    TransportError,
+)
 
 from .local import find_command, tcp_open
 
@@ -28,7 +37,6 @@ class SshConnection:
 SSH_TRANSPORT_ERROR_PATTERNS = (
     "bind [",
     "channel_setup_fwd_listener_tcpip:",
-    "bad configuration option",
     "could not resolve hostname",
     "connection refused",
     "connection timed out",
@@ -36,6 +44,13 @@ SSH_TRANSPORT_ERROR_PATTERNS = (
     "connection closed by remote host",
     "kex_exchange_identification:",
     "ssh: ",
+)
+LEGACY_AIRPORT_MACS = (
+    "hmac-sha1",
+    "hmac-md5-96",
+    "hmac-md5",
+    "hmac-sha1-96",
+    "hmac-ripemd160",
 )
 
 SSH_CLIENT_NOISE_PATTERNS = (
@@ -94,15 +109,56 @@ def _decode_ssh_error_output(stderr: bytes, stdout: bytes = b"", *, include_stdo
     return stderr_text + stdout_text
 
 
-def _extract_ssh_transport_error(output: str) -> str | None:
+def _parse_no_matching_algorithm(line: str) -> SshAlgorithmNegotiationError | None:
+    match = re.search(
+        r"no matching (?P<algorithm>MAC|key exchange method|host key type) found\. "
+        r"Their offer: (?P<offered>.+)$",
+        line,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    raw_algorithm = match.group("algorithm").lower()
+    algorithm = {
+        "mac": "mac",
+        "key exchange method": "kex",
+        "host key type": "host_key",
+    }[raw_algorithm]
+    offered = tuple(item.strip() for item in match.group("offered").split(",") if item.strip())
+    return SshAlgorithmNegotiationError(line, algorithm=algorithm, offered=offered)
+
+
+def _classify_ssh_client_error_line(line: str) -> SshError | None:
+    algorithm_error = _parse_no_matching_algorithm(line)
+    if algorithm_error is not None:
+        return algorithm_error
+
+    lowered = line.lower()
+    if "bad configuration option" in lowered:
+        return SshClientConfigError(f"Connecting to the device failed, SSH error: {line}")
+    if any(pattern in lowered for pattern in SSH_TRANSPORT_ERROR_PATTERNS):
+        return SshNetworkError(f"Connecting to the device failed, SSH error: {line}")
+    if "permission denied" in lowered or "please try again" in lowered:
+        return SshAuthenticationError(line)
+    return None
+
+
+def classify_ssh_client_error(output: str) -> SshError | None:
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        lowered = line.lower()
-        if any(pattern in lowered for pattern in SSH_TRANSPORT_ERROR_PATTERNS):
-            return line
+        error = _classify_ssh_client_error_line(line)
+        if error is not None:
+            return error
     return None
+
+
+def _extract_ssh_transport_error(output: str) -> str | None:
+    error = classify_ssh_client_error(output)
+    if error is None:
+        return None
+    return str(error)
 
 
 def _strip_ssh_client_noise(output: str) -> str:
@@ -165,6 +221,43 @@ def _ssh_option_supported(option_name: str) -> bool:
     return proc.returncode == 0 and "Bad configuration option" not in stderr
 
 
+@lru_cache(maxsize=None)
+def _local_ssh_macs() -> tuple[str, ...]:
+    try:
+        proc = subprocess.run(
+            ["ssh", "-Q", "mac"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ()
+    if proc.returncode != 0:
+        return ()
+    return tuple(line.strip() for line in proc.stdout.splitlines() if line.strip())
+
+
+def _legacy_airport_macs_supported_locally() -> tuple[str, ...]:
+    available = set(_local_ssh_macs())
+    return tuple(mac for mac in LEGACY_AIRPORT_MACS if mac in available)
+
+
+def _tokens_include_mac_option(tokens: list[str]) -> bool:
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        lowered = token.lower()
+        if lowered == "-m" or (lowered.startswith("-m") and lowered != "-m"):
+            return True
+        if lowered == "-o" and i + 1 < len(tokens) and tokens[i + 1].lower().startswith("macs="):
+            return True
+        if lowered.startswith("-omacs="):
+            return True
+        i += 1
+    return False
+
+
 def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
     tokens = shlex.split(ssh_opts)
     rewritten = tokens
@@ -204,6 +297,10 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
             continue
         expanded.append(token)
         i += 1
+    if not _tokens_include_mac_option(expanded):
+        legacy_macs = _legacy_airport_macs_supported_locally()
+        if legacy_macs:
+            expanded.extend(["-o", f"MACs=+{','.join(legacy_macs)}"])
     return expanded
 
 
@@ -225,9 +322,9 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
         if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
             break
         time.sleep(1)
-    transport_error = _extract_ssh_transport_error(stdout)
-    if transport_error:
-        raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
+    client_error = classify_ssh_client_error(stdout)
+    if client_error:
+        raise client_error
     stdout = _strip_ssh_client_noise(stdout)
     if check and rc != 0:
         raise SshError(stdout.strip() or f"ssh command failed with rc={rc}")
@@ -276,9 +373,9 @@ def _run_sshpass_ssh(
         b"" if proc.returncode == 0 else proc.stdout,
         include_stdout=stdout_is_text,
     )
-    transport_error = _extract_ssh_transport_error(combined_text)
-    if transport_error:
-        raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
+    client_error = classify_ssh_client_error(combined_text)
+    if client_error:
+        raise client_error
     return proc
 
 
@@ -353,9 +450,9 @@ def ssh_local_forward(
             elif idx == 2:
                 output.append(child.before or "")
                 text = "".join(output)
-                transport_error = _extract_ssh_transport_error(text)
-                if transport_error:
-                    raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
+                client_error = classify_ssh_client_error(text)
+                if client_error:
+                    raise client_error
                 raise SshError(text.strip() or "ssh tunnel exited before becoming ready")
             else:
                 output.append(child.before or "")
@@ -365,9 +462,9 @@ def ssh_local_forward(
                     continue
                 if time.time() - start_time < ready_timeout:
                     continue
-                transport_error = _extract_ssh_transport_error("".join(output))
-                if transport_error:
-                    raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
+                client_error = classify_ssh_client_error("".join(output))
+                if client_error:
+                    raise client_error
                 raise SshError(
                     "Timed out waiting for ssh tunnel to become ready: "
                     f"127.0.0.1:{local_port} -> {remote_host}:{remote_port} via {connection.host}"
@@ -493,9 +590,9 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 break
             time.sleep(1)
         if rc != 0:
-            transport_error = _extract_ssh_transport_error(stdout)
-            if transport_error:
-                raise ScpError(f"Connecting to the device failed, SSH error: {transport_error}")
+            client_error = classify_ssh_client_error(stdout)
+            if client_error:
+                raise ScpError(str(client_error)) from client_error
             raise ScpError(stdout.strip() or f"scp failed copying {src.name} to remote path {dest} with rc={rc}")
         _verify_remote_size(connection, src, dest, timeout=30)
         return

@@ -14,6 +14,7 @@ from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
     ProbeResult,
     ProbedDeviceState,
+    SshAccessStatus,
 )
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
@@ -241,8 +242,7 @@ class TelemetryDebugTests(unittest.TestCase):
     def test_probe_debug_summary_suppresses_first_class_telemetry_fields(self) -> None:
         state = ProbedDeviceState(
             probe_result=ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=True,
+                ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
                 error=None,
                 os_name="NetBSD",
                 os_release="6.0",
@@ -264,6 +264,7 @@ class TelemetryDebugTests(unittest.TestCase):
         self.assertEqual(
             debug_summary(state),
             {
+                "probe_ssh_status": "open_authenticated",
                 "probe_ssh_port_reachable": True,
                 "probe_ssh_authenticated": True,
             },
@@ -272,8 +273,7 @@ class TelemetryDebugTests(unittest.TestCase):
     def test_unsupported_probe_debug_summary_includes_reason(self) -> None:
         state = ProbedDeviceState(
             probe_result=ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=True,
+                ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
                 error=None,
                 os_name="Linux",
                 os_release="6.8",
@@ -295,6 +295,7 @@ class TelemetryDebugTests(unittest.TestCase):
         self.assertEqual(
             debug_summary(state),
             {
+                "probe_ssh_status": "open_authenticated",
                 "probe_ssh_port_reachable": True,
                 "probe_ssh_authenticated": True,
                 "probe_supported": False,
@@ -305,8 +306,7 @@ class TelemetryDebugTests(unittest.TestCase):
     def test_probe_debug_summary_includes_elf_endianness_detail_when_present(self) -> None:
         state = ProbedDeviceState(
             probe_result=ProbeResult(
-                ssh_port_reachable=True,
-                ssh_authenticated=True,
+                ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
                 error=None,
                 os_name="NetBSD",
                 os_release="6.0",
@@ -329,6 +329,7 @@ class TelemetryDebugTests(unittest.TestCase):
         self.assertEqual(
             debug_summary(state),
             {
+                "probe_ssh_status": "open_authenticated",
                 "probe_ssh_port_reachable": True,
                 "probe_ssh_authenticated": True,
                 "probe_elf_endianness": "unknown",
