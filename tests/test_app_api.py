@@ -2126,6 +2126,46 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(collector.events_of_type("error")[0]["recovery"]["action_ids"], ["replace_password"])
         self.assertNotIn("badpw", json.dumps(collector.events))
 
+    def test_configure_reports_ssh_auth_rejection_as_password_failure_without_writing_env(self) -> None:
+        collector = CollectingSink()
+        ssh_error = "root@192.168.1.162: Permission denied (publickey,password,keyboard-interactive)."
+        probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.AUTH_REJECTED,
+                error=ssh_error,
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probe_state):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@192.168.1.162",
+                            "password": "badpw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        self.assertFalse(config_path.exists())
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertEqual(error["message"], "The AirPort admin password did not work.")
+        self.assertEqual(error["debug"], ssh_error)
+        self.assertEqual(error["recovery"]["title"], "AirPort password rejected")
+        self.assertEqual(error["recovery"]["suggested_operation"], "configure")
+        self.assertEqual(error["recovery"]["action_ids"], ["replace_password"])
+        self.assertNotIn("badpw", json.dumps(collector.events))
+
     def test_configure_reports_ssh_algorithm_failure_without_password_rejection(self) -> None:
         collector = CollectingSink()
         ssh_error = (

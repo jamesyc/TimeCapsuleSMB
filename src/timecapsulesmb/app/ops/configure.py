@@ -42,6 +42,7 @@ LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
     "macos_local_network_preflight_service",
     "macos_local_network_preflight_error",
 )
+AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
 
 
 def add_local_network_preflight_debug_fields(params: dict[str, object], context: AppOperationContext) -> None:
@@ -201,7 +202,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         )
     except ConfigureFlowError as exc:
         if exc.code == "auth_failed":
-            raise AppOperationError(str(exc), code="auth_failed") from exc
+            raise AppOperationError(
+                AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
+                code="auth_failed",
+                debug=str(exc),
+            ) from exc
         if exc.code == "ssh_compatibility_failed":
             raise AppOperationError(str(exc), code="ssh_compatibility_failed") from exc
         if exc.code == "unsupported_device":
@@ -210,7 +215,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except ACPAuthError as exc:
-        raise AppOperationError("The AirPort admin password did not work.", code="auth_failed", debug=str(exc)) from exc
+        raise AppOperationError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code="auth_failed", debug=str(exc)) from exc
     except ACPConnectionError as exc:
         if context.current_stage == "acp_port_probe":
             if is_macos_gui_local_network_privacy_signal(exc):
