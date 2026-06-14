@@ -112,6 +112,14 @@ final class AppSettingsStoreTests: XCTestCase {
 
         XCTAssertEqual(L10n.string("app_settings.title", language: .english), "Settings")
         XCTAssertEqual(L10n.string("app_settings.title", language: .simplifiedChinese), "设置")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .french), "Paramètres")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .german), "Einstellungen")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .dutch), "Instellingen")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .spanish), "Ajustes")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .italian), "Impostazioni")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .portuguese), "Configurações")
+        XCTAssertEqual(L10n.string("app_language.french", language: .french), "Français")
+        XCTAssertEqual(L10n.string("app_language.german", language: .german), "Deutsch")
         XCTAssertEqual(
             L10n.string("app_settings.subtitle", language: .simplifiedChinese),
             "新设备默认值和 App 级别行为。"
@@ -128,14 +136,23 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(L10n.format("activity.multiple_active", 2), "2 个正在进行的操作")
     }
 
-    func testSimplifiedChineseLocalizationCoversEnglishKeysAndFormatTokens() {
+    func testSupportedLocalizationsCoverEnglishKeysAndFormatTokens() {
         let english = L10n.strings(language: .english)
-        let simplifiedChinese = L10n.strings(language: .simplifiedChinese)
+        let localizedLanguages = AppLanguage.allCases.filter { language in
+            language.localizationIdentifier != nil && language != .english
+        }
 
         XCTAssertFalse(english.isEmpty)
-        XCTAssertEqual(Set(simplifiedChinese.keys), Set(english.keys))
-        for key in english.keys {
-            XCTAssertEqual(formatTokens(in: simplifiedChinese[key] ?? ""), formatTokens(in: english[key] ?? ""), key)
+        for language in localizedLanguages {
+            let localized = L10n.strings(language: language)
+            XCTAssertEqual(Set(localized.keys), Set(english.keys), language.rawValue)
+            for key in english.keys {
+                XCTAssertEqual(
+                    formatTokens(in: localized[key] ?? ""),
+                    formatTokens(in: english[key] ?? ""),
+                    "\(language.rawValue): \(key)"
+                )
+            }
         }
     }
 
@@ -300,7 +317,7 @@ final class AppSettingsStoreTests: XCTestCase {
     }
 
     private func formatTokens(in string: String) -> [String] {
-        let pattern = "%(?:\\d+\\$)?[@df]"
+        let pattern = "%(?:\\d+\\$)?(?:lld|[@df])"
         let regex = try! NSRegularExpression(pattern: pattern)
         let range = NSRange(string.startIndex..<string.endIndex, in: string)
         return regex.matches(in: string, range: range).map { match in
