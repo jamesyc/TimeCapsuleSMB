@@ -16,7 +16,8 @@ let package = Package(
     defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "TimeCapsuleSMB", targets: ["TimeCapsuleSMBExecutable"])
+        .executable(name: "TimeCapsuleSMB", targets: ["TimeCapsuleSMBExecutable"]),
+        .executable(name: "tcapsule", targets: ["TimeCapsuleSMBHelper"])
     ],
     targets: [
         .target(
@@ -28,6 +29,10 @@ let package = Package(
             name: "TimeCapsuleSMBExecutable",
             dependencies: ["TimeCapsuleSMBApp"],
             path: "Sources/TimeCapsuleSMBExecutable"
+        ),
+        .executableTarget(
+            name: "TimeCapsuleSMBHelper",
+            path: "Sources/TimeCapsuleSMBHelper"
         ),
         .testTarget(
             name: "TimeCapsuleSMBAppTests",

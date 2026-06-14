@@ -24,6 +24,7 @@ from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE  # noqa: E
 
 APP_NAME = "TimeCapsuleSMB"
 PRODUCT_NAME = "TimeCapsuleSMB"
+HELPER_PRODUCT_NAME = "tcapsule"
 APP_VERSION = CLI_VERSION
 APP_VERSION_CODE = str(CLI_VERSION_CODE)
 APP_ICON_FILE = f"{PRODUCT_NAME}.icns"
@@ -125,7 +126,7 @@ def swift_build_dir(configuration: str, architecture: str) -> Path:
     return PACKAGE_ROOT / ".build" / f"{architecture}-apple-macosx" / configuration
 
 
-def build_swift(configuration: str, architectures: tuple[str, ...]) -> tuple[Path, Path]:
+def build_swift_product(configuration: str, architectures: tuple[str, ...], product_name: str) -> tuple[Path, list[Path]]:
     executables: list[Path] = []
     build_dirs: list[Path] = []
     for architecture in architectures:
@@ -137,24 +138,34 @@ def build_swift(configuration: str, architectures: tuple[str, ...]) -> tuple[Pat
             "--triple",
             SWIFT_TRIPLES[architecture],
             "--product",
-            PRODUCT_NAME,
+            product_name,
         ], cwd=PACKAGE_ROOT)
         build_dir = swift_build_dir(configuration, architecture)
-        executable = build_dir / PRODUCT_NAME
+        executable = build_dir / product_name
         if not executable.is_file():
             raise RuntimeError(f"Swift build did not produce {executable}")
         executables.append(executable)
         build_dirs.append(build_dir)
 
     if len(executables) == 1:
-        return executables[0], build_dirs[0]
+        return executables[0], build_dirs
 
     universal_dir = PACKAGE_ROOT / ".build" / "package-app" / configuration
     universal_dir.mkdir(parents=True, exist_ok=True)
-    universal_executable = universal_dir / PRODUCT_NAME
+    universal_executable = universal_dir / product_name
     run(["lipo", "-create", *[str(path) for path in executables], "-output", str(universal_executable)])
     universal_executable.chmod(0o755)
-    return universal_executable, build_dirs[0]
+    return universal_executable, build_dirs
+
+
+def build_swift(configuration: str, architectures: tuple[str, ...]) -> tuple[Path, Path]:
+    executable, build_dirs = build_swift_product(configuration, architectures, PRODUCT_NAME)
+    return executable, build_dirs[0]
+
+
+def build_helper(configuration: str, architectures: tuple[str, ...]) -> Path:
+    executable, _build_dirs = build_swift_product(configuration, architectures, HELPER_PRODUCT_NAME)
+    return executable
 
 
 def copy_resources(build_dir: Path, resources_dir: Path) -> None:
@@ -236,48 +247,10 @@ def create_app_icon(source: Path, resources_dir: Path, *, use_cache: bool = True
         shutil.copy2(icon_path, cached_icon)
 
 
-def write_helper_wrapper(helper_path: Path) -> None:
-    helper_path.write_text(
-        """#!/bin/sh
-set -eu
-
-CONTENTS_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-RESOURCES_DIR="$CONTENTS_DIR/Resources"
-PYTHON_HOME="$RESOURCES_DIR/Python/Runtime/Python.framework/Versions/Current"
-if [ -z "${TCAPSULE_APP_PYTHON:-}" ]; then
-    PYTHON="$PYTHON_HOME/bin/python3"
-    export PYTHONHOME="$PYTHON_HOME"
-else
-    PYTHON="$TCAPSULE_APP_PYTHON"
-fi
-PYTHON_PACKAGES="$RESOURCES_DIR/Python/site-packages"
-CA_CERT_FILE="$PYTHON_PACKAGES/certifi/cacert.pem"
-
-if [ -z "${TCAPSULE_STATE_DIR:-}" ]; then
-    export TCAPSULE_STATE_DIR="$HOME/Library/Application Support/TimeCapsuleSMB"
-fi
-if [ -z "${TCAPSULE_CONFIG:-}" ]; then
-    export TCAPSULE_CONFIG="$TCAPSULE_STATE_DIR/.env"
-fi
-if [ -z "${TCAPSULE_DISTRIBUTION_ROOT:-}" ]; then
-    export TCAPSULE_DISTRIBUTION_ROOT="$RESOURCES_DIR/Distribution"
-fi
-
-mkdir -p "$TCAPSULE_STATE_DIR"
-export PATH="$RESOURCES_DIR/Tools/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
-export PYTHONPATH="$PYTHON_PACKAGES${PYTHONPATH:+:$PYTHONPATH}"
-export PYTHONNOUSERSITE=1
-export PYTHONDONTWRITEBYTECODE=1
-if [ -f "$CA_CERT_FILE" ]; then
-    export SSL_CERT_FILE="${SSL_CERT_FILE:-$CA_CERT_FILE}"
-    export REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-$CA_CERT_FILE}"
-fi
-
-exec "$PYTHON" -m timecapsulesmb.cli.main "$@"
-""",
-        encoding="utf-8",
-    )
-    helper_path.chmod(0o755)
+def copy_helper_executable(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    destination.chmod(0o755)
 
 
 def python_major_minor(python: str) -> tuple[int, int]:
@@ -540,6 +513,7 @@ def prepared_python_framework(args: argparse.Namespace, architectures: tuple[str
             extract_python_framework(source, staged_framework)
         prune_python_runtime(staged_framework)
         remove_python_bytecode(staged_framework)
+        remove_appledouble_files(staged_framework)
         rewrite_python_framework_install_names(staged_framework)
         assert_macho_has_architectures(python_framework_executable(staged_framework), architectures, "Bundled Python executable")
         assert_macho_has_architectures(python_framework_dylib(staged_framework), architectures, "Bundled Python framework")
@@ -583,6 +557,7 @@ def copy_python_runtime(args: argparse.Namespace, resources_dir: Path, architect
             extract_python_framework(python_runtime_pkg(args), framework)
         prune_python_runtime(framework)
         remove_python_bytecode(framework)
+        remove_appledouble_files(framework)
         rewrite_python_framework_install_names(framework)
         assert_macho_architectures_for_roots([framework], architectures, "Bundled Python runtime architecture")
         assert_no_external_macho_dependencies_for_roots([framework])
@@ -714,6 +689,28 @@ def remove_python_bytecode(root: Path) -> None:
             path.unlink()
 
 
+def appledouble_files_under(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return sorted(path for path in root.rglob("._*") if path.name.startswith("._"))
+
+
+def remove_appledouble_files(root: Path) -> None:
+    for path in sorted(appledouble_files_under(root), key=lambda candidate: len(candidate.parts), reverse=True):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def assert_no_appledouble_files(root: Path) -> None:
+    files = appledouble_files_under(root)
+    if files:
+        joined = "\n  - ".join(str(path) for path in files[:20])
+        extra = "" if len(files) <= 20 else f"\n  - ... and {len(files) - 20} more"
+        raise RuntimeError(f"App bundle contains AppleDouble metadata files:\n  - {joined}{extra}")
+
+
 def python_cache_identity(python: str) -> dict[str, object]:
     code = (
         "import json, platform, sys, sysconfig\n"
@@ -777,6 +774,7 @@ def build_python_packages(python: str, site_packages: Path) -> None:
                 shutil.rmtree(generated_build_lib)
     remove_optional_zeroconf_extensions(site_packages)
     remove_python_bytecode(site_packages)
+    remove_appledouble_files(site_packages)
 
 
 def create_python_packages(
@@ -809,6 +807,7 @@ def create_python_packages(
             staged_site_packages.mkdir(parents=True)
             build_python_packages(python, staged_site_packages)
             remove_python_bytecode(staged_site_packages)
+            remove_appledouble_files(staged_site_packages)
             assert_macho_architectures_for_roots([staged_site_packages], architectures, "Bundled Python package architecture")
             assert_no_external_macho_dependencies_for_roots([staged_site_packages])
             ad_hoc_codesign_site_packages(staged_site_packages)
@@ -821,6 +820,7 @@ def create_python_packages(
     site_packages.mkdir()
     build_python_packages(python, site_packages)
     remove_python_bytecode(site_packages)
+    remove_appledouble_files(site_packages)
     assert_macho_architectures_for_roots([site_packages], architectures, "Bundled Python package architecture")
     assert_no_external_macho_dependencies_for_roots([site_packages])
     ad_hoc_codesign_site_packages(site_packages)
@@ -845,6 +845,7 @@ def copy_distribution(resources_dir: Path) -> None:
     distribution.mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "bin", distribution / "bin")
     shutil.copy2(ARTIFACT_MANIFEST, distribution / "artifact-manifest.json")
+    remove_appledouble_files(distribution)
     assert_distribution_artifacts(distribution)
 
 
@@ -1140,6 +1141,7 @@ def macho_validation_roots(app: Path) -> list[Path]:
     contents = app / "Contents"
     return macho_files_under([
         contents / "MacOS",
+        contents / "Helpers",
         contents / "Resources" / "Tools" / "bin",
         contents / "Resources" / "Python" / "Runtime",
         contents / "Resources" / "Python" / "site-packages",
@@ -1183,6 +1185,8 @@ def finalize_python_bundle(resources_dir: Path) -> None:
     site_packages = resources_dir / "Python" / "site-packages"
     remove_python_bytecode(framework)
     remove_python_bytecode(site_packages)
+    remove_appledouble_files(framework)
+    remove_appledouble_files(site_packages)
     if framework.is_dir():
         ad_hoc_codesign_python_framework(framework)
     if site_packages.is_dir():
@@ -1352,6 +1356,7 @@ def prepared_native_tools_layer(architectures: tuple[str, ...]) -> Path:
         resources.mkdir(parents=True)
         copy_tools_from_sources(resources, architectures, sources)
         dependency_sources = vendor_macho_dependencies(staging)
+        remove_appledouble_files(staging)
         ad_hoc_codesign_macho_bundle(staging)
         assert_tool_architectures(staging, architectures)
         assert_runtime_macho_architectures(staging, architectures)
@@ -1373,6 +1378,7 @@ def copy_native_tools_layer(app: Path, architectures: tuple[str, ...], *, use_ca
 
     copy_tools(contents / "Resources", architectures)
     vendor_macho_dependencies(app)
+    remove_appledouble_files(app)
     ad_hoc_codesign_macho_bundle(app)
     assert_tool_architectures(app, architectures)
     assert_runtime_macho_architectures(app, architectures)
@@ -1569,7 +1575,9 @@ def runtime_architecture_roots(app: Path, architectures: tuple[str, ...]) -> lis
     contents = app / "Contents"
     roots: list[tuple[Path, str]] = []
     executable = contents / "MacOS" / PRODUCT_NAME
+    helper = contents / "Helpers" / HELPER_PRODUCT_NAME
     roots.extend((executable, architecture) for architecture in architectures)
+    roots.extend((helper, architecture) for architecture in architectures)
     python_runtime = contents / "Resources" / "Python" / "Runtime"
     roots.extend(
         (path, architecture)
@@ -1701,6 +1709,7 @@ def assert_bundle_layout(
     artifact_manifest = distribution / "artifact-manifest.json"
     tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
     python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
+    assert_no_appledouble_files(app)
     required_executables = [executable, helper, python_executable]
     missing_executables = [path for path in required_executables if not path.is_file() or not os.access(path, os.X_OK)]
     if missing_executables:
@@ -1710,6 +1719,7 @@ def assert_bundle_layout(
         raise RuntimeError(f"App bundle is missing bundled Python framework: {python_dylib}")
     if architectures:
         assert_macho_has_architectures(executable, architectures, "App executable")
+        assert_macho_has_architectures(helper, architectures, "Helper executable")
         assert_macho_has_architectures(python_executable, architectures, "Bundled Python executable")
         assert_macho_has_architectures(python_dylib, architectures, "Bundled Python framework")
         assert_python_extension_architectures(app, architectures)
@@ -1752,9 +1762,41 @@ def smoke_test(app: Path) -> None:
         smoke_request(helper, "validate-install", state_dir)
 
 
+def validate_app_zip(zip_path: Path, app_name: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="timecapsulesmb-package-zip-") as tmp:
+        extract_dir = Path(tmp)
+        run(["unzip", "-q", str(zip_path), "-d", str(extract_dir)])
+        extracted_app = extract_dir / app_name
+        if not extracted_app.is_dir():
+            raise RuntimeError(f"App zip did not extract {app_name}: {zip_path}")
+        assert_no_appledouble_files(extract_dir)
+        assert_app_bundle_signature_valid(extracted_app)
+
+
+def create_app_zip(app: Path, zip_path: Path) -> None:
+    assert_no_appledouble_files(app)
+    if zip_path.exists():
+        zip_path.unlink()
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    run([
+        "ditto",
+        "-c",
+        "-k",
+        "--keepParent",
+        "--norsrc",
+        "--noextattr",
+        "--noacl",
+        "--noqtn",
+        str(app),
+        str(zip_path),
+    ])
+    validate_app_zip(zip_path, app.name)
+
+
 def package_app(args: argparse.Namespace) -> Path:
     architectures = resolve_architectures(args.arch)
     executable, resource_build_dir = build_swift(args.configuration, architectures)
+    helper_executable = build_helper(args.configuration, architectures)
     output_dir = args.output.resolve()
     app = output_dir / f"{APP_NAME}.app"
     contents = app / "Contents"
@@ -1775,13 +1817,16 @@ def package_app(args: argparse.Namespace) -> Path:
     copy_resources(resource_build_dir, resources)
     if args.icon:
         create_app_icon(args.icon.resolve(), resources, use_cache=not args.no_cache)
-    write_helper_wrapper(helpers / "tcapsule")
+    copy_helper_executable(helper_executable, helpers / HELPER_PRODUCT_NAME)
     python_executable = copy_python_runtime(args, resources, architectures)
     create_python_packages(str(python_executable), resources, architectures, use_cache=not args.no_cache)
     finalize_python_bundle(resources)
     copy_distribution(resources)
     copy_native_tools_layer(app, architectures, use_cache=not args.no_cache)
+    remove_appledouble_files(app)
+    assert_no_appledouble_files(app)
     ad_hoc_codesign_app_bundle(app)
+    assert_app_bundle_signature_valid(app)
     assert_bundle_layout(
         app,
         icon_name=icon_name,
@@ -1791,6 +1836,9 @@ def package_app(args: argparse.Namespace) -> Path:
 
     if not args.skip_smoke:
         smoke_test(app)
+    if getattr(args, "zip", False) or getattr(args, "zip_output", None):
+        zip_path = (args.zip_output or (output_dir / f"{APP_NAME}.app.zip")).resolve()
+        create_app_zip(app, zip_path)
     return app
 
 
@@ -1830,6 +1878,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--skip-smoke", action="store_true", help="Skip bundled helper capabilities and validate-install smoke tests.")
     parser.add_argument("--no-cache", action="store_true", help="Rebuild package-only cached artifacts instead of reusing them.")
     parser.add_argument("--full-validation", action="store_true", help="Run the full Mach-O dependency and signature validation pass even for trusted cached layers.")
+    parser.add_argument("--zip", action="store_true", help="Create and validate TimeCapsuleSMB.app.zip next to the app bundle.")
+    parser.add_argument("--zip-output", type=Path, help="Zip output path; implies --zip.")
     return parser.parse_args(argv)
 
 

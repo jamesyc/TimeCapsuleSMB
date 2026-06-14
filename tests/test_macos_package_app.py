@@ -229,6 +229,37 @@ def test_build_swift_creates_universal_binary_with_lipo(monkeypatch: pytest.Monk
     assert ["lipo", "-create"] == calls[-1][:2]
 
 
+def test_build_helper_creates_universal_helper_with_lipo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[:2] == ["swift", "build"]:
+            architecture = cmd[cmd.index("--triple") + 1].split("-", 1)[0]
+            product = cmd[cmd.index("--product") + 1]
+            executable = package_app.swift_build_dir("release", architecture) / product
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_text(architecture, encoding="utf-8")
+            executable.chmod(0o755)
+        if cmd and cmd[0] == "lipo":
+            output = Path(cmd[cmd.index("-output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("universal helper", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "run", fake_run)
+
+    executable = package_app.build_helper("release", ("arm64", "x86_64"))
+
+    assert executable == tmp_path / ".build" / "package-app" / "release" / "tcapsule"
+    assert ["swift", "build"] == calls[0][:2]
+    assert "--product" in calls[0]
+    assert calls[0][calls[0].index("--product") + 1] == "tcapsule"
+    assert ["lipo", "-create"] == calls[-1][:2]
+
+
 def test_remove_optional_zeroconf_extensions_keeps_pure_python_package(tmp_path: Path) -> None:
     package_app = load_package_app_module()
     zeroconf = tmp_path / "site-packages" / "zeroconf"
@@ -417,6 +448,35 @@ def test_remove_python_bytecode_removes_nested_pycache_and_orphans(tmp_path: Pat
     assert_no_python_bytecode(root)
 
 
+def test_remove_appledouble_files_removes_metadata_sidecars(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    root = tmp_path / "TimeCapsuleSMB.app"
+    normal = root / "Contents" / "Resources" / "Python"
+    sidecar = root / "Contents" / "Resources" / "._Python"
+    nested_sidecar_dir = root / "Contents" / "Resources" / "._Metadata"
+    normal.mkdir(parents=True)
+    sidecar.write_text("appledouble", encoding="utf-8")
+    nested_sidecar_dir.mkdir()
+    (nested_sidecar_dir / "file").write_text("metadata", encoding="utf-8")
+
+    package_app.remove_appledouble_files(root)
+
+    assert normal.is_dir()
+    assert not sidecar.exists()
+    assert not nested_sidecar_dir.exists()
+    package_app.assert_no_appledouble_files(root)
+
+
+def test_assert_no_appledouble_files_reports_nested_sidecars(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    sidecar = tmp_path / "TimeCapsuleSMB.app" / "Contents" / "Resources" / "._Python"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("appledouble", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="AppleDouble metadata files"):
+        package_app.assert_no_appledouble_files(tmp_path / "TimeCapsuleSMB.app")
+
+
 def test_create_python_packages_reuses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     package_app = load_package_app_module()
     cache_entry = tmp_path / "cache" / "site"
@@ -509,26 +569,29 @@ def test_package_args_do_not_allow_missing_bundled_tools() -> None:
     assert not hasattr(args, "require_tools")
     assert args.no_cache is False
     assert args.full_validation is False
+    assert args.zip is False
+    assert args.zip_output is None
     assert package_app.parse_args(["--no-cache"]).no_cache is True
     assert package_app.parse_args(["--full-validation"]).full_validation is True
+    assert package_app.parse_args(["--zip"]).zip is True
+    zip_args = package_app.parse_args(["--zip-output", "release.zip"])
+    assert zip_args.zip_output == Path("release.zip")
     with pytest.raises(SystemExit):
         package_app.parse_args(["--allow-missing-tools"])
 
 
-def test_helper_wrapper_uses_bundled_python_runtime(tmp_path: Path) -> None:
+def test_copy_helper_executable_preserves_bundled_helper_path(tmp_path: Path) -> None:
     package_app = load_package_app_module()
-    helper = tmp_path / "tcapsule"
+    source = tmp_path / "build" / "tcapsule"
+    destination = tmp_path / "TimeCapsuleSMB.app" / "Contents" / "Helpers" / "tcapsule"
+    source.parent.mkdir(parents=True)
+    source.write_text("mach-o helper", encoding="utf-8")
+    source.chmod(0o644)
 
-    package_app.write_helper_wrapper(helper)
+    package_app.copy_helper_executable(source, destination)
 
-    text = helper.read_text(encoding="utf-8")
-    assert "Python/Runtime/Python.framework/Versions/Current" in text
-    assert 'PYTHON="$PYTHON_HOME/bin/python3"' in text
-    assert 'export PYTHONHOME="$PYTHON_HOME"' in text
-    assert "certifi/cacert.pem" in text
-    assert "SSL_CERT_FILE" in text
-    assert "PYTHONDONTWRITEBYTECODE=1" in text
-    assert "/usr/bin/python3" not in text
+    assert destination.read_text(encoding="utf-8") == "mach-o helper"
+    assert destination.stat().st_mode & 0o777 == 0o755
 
 
 def test_assert_bundle_layout_requires_bundled_ca_certificates(
@@ -571,9 +634,10 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
     (distribution / "artifact-manifest.json").write_text('{"artifacts":{}}', encoding="utf-8")
     create_fake_certifi_package(python_packages)
     calls: list[str] = []
+    architecture_labels: list[str] = []
 
     monkeypatch.setattr(package_app, "artifact_paths", lambda: [])
-    monkeypatch.setattr(package_app, "assert_macho_has_architectures", lambda path, architectures, label: None)
+    monkeypatch.setattr(package_app, "assert_macho_has_architectures", lambda path, architectures, label: architecture_labels.append(label))
     monkeypatch.setattr(package_app, "assert_python_extension_architectures", lambda app, architectures: None)
     monkeypatch.setattr(package_app, "assert_tool_architectures", lambda app, architectures: None)
     monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda app: None)
@@ -584,8 +648,15 @@ def test_assert_bundle_layout_uses_full_macho_validation_only_when_requested(
     monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: calls.append("app-codesign"))
 
     package_app.assert_bundle_layout(app, architectures=("arm64",))
+    assert architecture_labels == [
+        "App executable",
+        "Helper executable",
+        "Bundled Python executable",
+        "Bundled Python framework",
+    ]
     assert calls == []
 
+    architecture_labels.clear()
     package_app.assert_bundle_layout(app, architectures=("arm64",), full_validation=True)
     assert calls == ["runtime", "external", "codesign", "app-codesign"]
 
@@ -959,6 +1030,63 @@ def test_assert_app_bundle_signature_valid_reports_codesign_failure(
         package_app.assert_app_bundle_signature_valid(app)
 
 
+def test_create_app_zip_uses_metadata_free_archive_and_validates_unzip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    zip_path = tmp_path / "dist" / "TimeCapsuleSMB.app.zip"
+    app.mkdir()
+    calls: list[list[str]] = []
+    verified: list[Path] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[0] == "ditto":
+            Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+            Path(cmd[-1]).write_bytes(b"zip")
+        elif cmd[0] == "unzip":
+            extract_dir = Path(cmd[-1])
+            (extract_dir / app.name).mkdir()
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "run", fake_run)
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: verified.append(app))
+
+    package_app.create_app_zip(app, zip_path)
+
+    assert calls[0][:4] == ["ditto", "-c", "-k", "--keepParent"]
+    assert "--norsrc" in calls[0]
+    assert "--noextattr" in calls[0]
+    assert "--noacl" in calls[0]
+    assert "--noqtn" in calls[0]
+    assert calls[1][:2] == ["unzip", "-q"]
+    assert verified and verified[0].name == "TimeCapsuleSMB.app"
+
+
+def test_validate_app_zip_rejects_root_appledouble_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    zip_path = tmp_path / "TimeCapsuleSMB.app.zip"
+    zip_path.write_bytes(b"zip")
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert cmd[:2] == ["unzip", "-q"]
+        extract_dir = Path(cmd[-1])
+        (extract_dir / "TimeCapsuleSMB.app").mkdir()
+        (extract_dir / "._TimeCapsuleSMB.app").write_text("appledouble", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_app, "run", fake_run)
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+
+    with pytest.raises(RuntimeError, match="AppleDouble metadata files"):
+        package_app.validate_app_zip(zip_path, "TimeCapsuleSMB.app")
+
+
 def test_ad_hoc_codesign_app_bundle_signs_helper_before_app(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -984,21 +1112,29 @@ def test_package_app_signs_final_bundle_after_native_tools(
     package_app = load_package_app_module()
     monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
     executable = tmp_path / "swift-build" / "TimeCapsuleSMB"
+    helper_executable = tmp_path / "swift-build" / "tcapsule"
     resource_build_dir = tmp_path / "swift-build"
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
+    helper_executable.write_text("helper", encoding="utf-8")
+    helper_executable.chmod(0o755)
     calls: list[str] = []
 
     monkeypatch.setattr(package_app, "resolve_architectures", lambda arch: ("arm64",))
     monkeypatch.setattr(package_app, "build_swift", lambda configuration, architectures: (executable, resource_build_dir))
+    monkeypatch.setattr(package_app, "build_helper", lambda configuration, architectures: helper_executable)
     monkeypatch.setattr(package_app, "copy_resources", lambda source, resources: calls.append("resources"))
+    monkeypatch.setattr(package_app, "copy_helper_executable", lambda source, destination: calls.append("helper"))
     monkeypatch.setattr(package_app, "copy_python_runtime", lambda args, resources, architectures: resources / "Python" / "Runtime" / "bin" / "python3")
     monkeypatch.setattr(package_app, "create_python_packages", lambda python, resources, architectures, use_cache=True: calls.append("packages"))
     monkeypatch.setattr(package_app, "finalize_python_bundle", lambda resources: calls.append("python-sign"))
     monkeypatch.setattr(package_app, "copy_distribution", lambda resources: calls.append("distribution"))
     monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: calls.append("native"))
+    monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: calls.append("clean"))
+    monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: calls.append("assert-clean"))
     monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: calls.append("app-sign"))
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: calls.append("app-verify"))
     monkeypatch.setattr(package_app, "assert_bundle_layout", lambda app, **kwargs: calls.append("assert"))
 
     args = SimpleNamespace(
@@ -1009,11 +1145,13 @@ def test_package_app_signs_final_bundle_after_native_tools(
         no_cache=False,
         full_validation=False,
         skip_smoke=True,
+        zip=False,
+        zip_output=None,
     )
 
     package_app.package_app(args)
 
-    assert calls[-3:] == ["native", "app-sign", "assert"]
+    assert calls[-6:] == ["native", "clean", "assert-clean", "app-sign", "app-verify", "assert"]
 
 
 def test_macho_files_under_skips_symlink_aliases(tmp_path: Path) -> None:
@@ -1061,6 +1199,27 @@ def test_runtime_macho_architecture_validation_checks_internal_dependencies(
 
     with pytest.raises(RuntimeError, match=r"libtool\.dylib: missing x86_64"):
         package_app.assert_runtime_macho_architectures(app, ("arm64", "x86_64"))
+
+
+def test_runtime_macho_architecture_validation_checks_helper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    helper = tmp_path / "TimeCapsuleSMB.app" / "Contents" / "Helpers" / "tcapsule"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("helper", encoding="utf-8")
+
+    def fake_architectures(path: Path) -> set[str]:
+        if path.resolve() == helper.resolve():
+            return {"arm64"}
+        return set()
+
+    monkeypatch.setattr(package_app, "macho_architectures", fake_architectures)
+    monkeypatch.setattr(package_app, "macho_dependencies", lambda path: [])
+
+    with pytest.raises(RuntimeError, match=r"tcapsule: missing x86_64"):
+        package_app.assert_runtime_macho_architectures(tmp_path / "TimeCapsuleSMB.app", ("arm64", "x86_64"))
 
 
 def test_python_dependency_validation_uses_bundled_python(
