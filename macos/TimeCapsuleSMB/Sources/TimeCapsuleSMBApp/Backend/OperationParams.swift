@@ -38,7 +38,7 @@ enum OperationParams {
         }
     }
 
-    enum SSHAccess {
+    enum SetSSH {
         static func status() -> [String: JSONValue] {
             ["action": .string("status")]
         }

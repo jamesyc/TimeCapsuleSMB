@@ -62,7 +62,7 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
             return .doctor
         case "reachability":
             return .reachability
-        case "ssh-access":
+        case "set-ssh":
             return .sshAccess
         case "activate":
             return .activate

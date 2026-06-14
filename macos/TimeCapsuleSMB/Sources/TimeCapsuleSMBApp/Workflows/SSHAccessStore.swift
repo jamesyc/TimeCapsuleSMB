@@ -59,8 +59,8 @@ final class DeviceSSHAccessStore: ObservableObject {
         currentStages[profile.id] = nil
         observer(for: profile.id).clear()
         switch coordinator.run(
-            operation: "ssh-access",
-            params: OperationParams.SSHAccess.status(),
+            operation: "set-ssh",
+            params: OperationParams.SetSSH.status(),
             context: profile.runtimeContext,
             activeDeviceID: profile.id,
             laneKey: laneKey
@@ -101,7 +101,7 @@ final class DeviceSSHAccessStore: ObservableObject {
 
     private func reject(profileID: DeviceProfile.ID, message: String) {
         errors[profileID] = BackendErrorViewModel(
-            operation: "ssh-access",
+            operation: "set-ssh",
             code: "operation_rejected",
             message: message
         )
@@ -146,7 +146,7 @@ final class DeviceSSHAccessStore: ObservableObject {
     }
 
     private func handle(_ event: BackendEvent, profileID: DeviceProfile.ID) {
-        guard event.operation == "ssh-access" else {
+        guard event.operation == "set-ssh" else {
             return
         }
         if let stage = OperationStageState(event: event) {
@@ -171,7 +171,7 @@ final class DeviceSSHAccessStore: ObservableObject {
             errors[profileID] = nil
         } catch {
             errors[profileID] = BackendErrorViewModel(
-                operation: "ssh-access",
+                operation: "set-ssh",
                 code: "contract_error",
                 message: error.localizedDescription
             )
@@ -180,7 +180,7 @@ final class DeviceSSHAccessStore: ObservableObject {
     }
 
     private func finishIfLaneStopped(profileID: DeviceProfile.ID) {
-        if coordinator.activeOperation(for: .deviceWorkflow(profileID, .sshAccess))?.operation != "ssh-access" {
+        if coordinator.activeOperation(for: .deviceWorkflow(profileID, .sshAccess))?.operation != "set-ssh" {
             operationObservers[profileID]?.finish()
         }
     }
@@ -198,7 +198,7 @@ final class SSHAccessMaintenanceStore: ObservableObject {
 
     init(backend: BackendClient, coordinator: OperationCoordinator? = nil, laneKey: OperationLaneKey? = nil) {
         self.operation = MaintenanceWorkflowOperation(
-            name: "ssh-access",
+            name: "set-ssh",
             backend: backend,
             coordinator: coordinator,
             laneKey: laneKey
@@ -247,13 +247,13 @@ final class SSHAccessMaintenanceStore: ObservableObject {
 
     @discardableResult
     func check(profile: DeviceProfile? = nil) -> OperationStartResult {
-        startRun(params: OperationParams.SSHAccess.status(), profile: profile, password: nil, runningState: .loading)
+        startRun(params: OperationParams.SetSSH.status(), profile: profile, password: nil, runningState: .loading)
     }
 
     @discardableResult
     func enable(password: String, noWait: Bool, profile: DeviceProfile? = nil) -> OperationStartResult {
         startRun(
-            params: OperationParams.SSHAccess.enable(noWait: noWait),
+            params: OperationParams.SetSSH.enable(noWait: noWait),
             profile: profile,
             password: password,
             runningState: .running

@@ -4442,8 +4442,8 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_port_preflight") as enable_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True):
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_ssh_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True):
                         with redirect_stdout(output):
                             rc = set_ssh.main([])
         self.assertEqual(rc, 0)
@@ -4460,8 +4460,8 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
                         with redirect_stdout(output):
                             rc = set_ssh.main(["--status"])
 
@@ -4477,7 +4477,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
                     with redirect_stdout(output):
                         rc = set_ssh.main(["--enable"])
 
@@ -4490,7 +4490,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
                     with redirect_stdout(output):
                         rc = set_ssh.main(["--disable"])
 
@@ -4503,8 +4503,8 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
-                    with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state") as wait_mock:
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state") as wait_mock:
                         with redirect_stdout(output):
                             rc = set_ssh.main(["--enable", "--no-wait"])
 
@@ -4518,7 +4518,7 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_port_preflight", side_effect=RuntimeError("ACP failed")):
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=RuntimeError("ACP failed")):
                     with redirect_stdout(output):
                         rc = set_ssh.main([])
         self.assertEqual(rc, 1)
@@ -4562,7 +4562,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.services.acp_ssh.tcp_connect_error", return_value=None):
                     with mock.patch("timecapsulesmb.services.acp_ssh.enable_ssh") as enable_mock:
-                        with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True):
+                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True):
                             with redirect_stdout(output):
                                 rc = set_ssh.main([])
 
@@ -4576,7 +4576,7 @@ class CliTests(unittest.TestCase):
         error = "ACP command failed with error_code -0x1234 (likely wrong AirPort admin password)"
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh_with_port_preflight", side_effect=RuntimeError(error)):
+                with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight", side_effect=RuntimeError(error)):
                     with redirect_stdout(output):
                         rc = set_ssh.main([])
 
@@ -4596,7 +4596,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh", side_effect=RuntimeError(error)):
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh", side_effect=RuntimeError(error)):
                         with redirect_stdout(output):
                             rc = set_ssh.main([])
 
@@ -4617,7 +4617,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="n"):
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
                         with redirect_stdout(output):
                             rc = set_ssh.main([])
 
@@ -4635,9 +4635,9 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh"):
-                        with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=False) as wait_port_mock:
-                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up") as wait_up_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"):
+                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=False) as wait_port_mock:
+                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up") as wait_up_mock:
                                 with redirect_stdout(output):
                                     rc = set_ssh.main([])
         self.assertEqual(rc, 1)
@@ -4658,9 +4658,9 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh"):
-                        with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True) as wait_port_mock:
-                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=False) as wait_up_mock:
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"):
+                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", return_value=True) as wait_port_mock:
+                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=False) as wait_up_mock:
                                 with redirect_stdout(output):
                                     rc = set_ssh.main([])
         self.assertEqual(rc, 1)
@@ -4680,9 +4680,9 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_ssh_mock:
-                        with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, False]):
-                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=True):
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_ssh_mock:
+                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, False]):
+                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=True):
                                 with redirect_stdout(output):
                                     rc = set_ssh.main([])
         self.assertEqual(rc, 1)
@@ -4708,9 +4708,9 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh"):
-                        with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=True):
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh"):
+                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, True]):
+                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=True):
                                 with redirect_stdout(output):
                                     rc = set_ssh.main([])
         self.assertEqual(rc, 0)
@@ -4729,9 +4729,9 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", side_effect=AssertionError("--yes should skip prompt")) as input_mock:
-                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
-                        with mock.patch("timecapsulesmb.cli.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=True):
+                    with mock.patch("timecapsulesmb.services.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                        with mock.patch("timecapsulesmb.services.set_ssh.runtime_service.wait_for_tcp_port_state", side_effect=[True, True]):
+                            with mock.patch("timecapsulesmb.services.set_ssh.wait_for_device_up", return_value=True):
                                 with redirect_stdout(output):
                                     rc = set_ssh.main(["--yes"])
         self.assertEqual(rc, 0)

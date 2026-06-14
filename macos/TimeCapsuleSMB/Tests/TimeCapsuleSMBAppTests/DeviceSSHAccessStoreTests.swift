@@ -6,8 +6,8 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
     func testRefreshRunsSSHAccessStatusAndStoresSnapshot() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "stage", operation: "ssh-access", stage: "probe_ssh_access"),
-                BackendEvent(type: "result", operation: "ssh-access", ok: true, payload: testSSHAccessPayload())
+                BackendEvent(type: "stage", operation: "set-ssh", stage: "probe_ssh"),
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())
             ])
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -17,7 +17,7 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
         store.refresh(profile: profile)
         try await waitUntilStoreState { store.snapshot(for: profile) != nil }
 
-        XCTAssertEqual(runner.calls.map(\.operation), ["ssh-access"])
+        XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh"])
         XCTAssertEqual(runner.calls[0].context?.profileID, profile.id)
         XCTAssertEqual(runner.calls[0].params["action"], .string("status"))
         XCTAssertEqual(store.snapshot(for: profile)?.payload.isSSHDisabledLikely, true)
@@ -28,7 +28,7 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
     func testNoticeAppearsOnlyWhenACPReachableAndSSHClosed() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "ssh-access", ok: true, payload: testSSHAccessPayload())
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())
             ])
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -58,10 +58,10 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
         var now = Date(timeIntervalSince1970: 100)
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "ssh-access", ok: true, payload: testSSHAccessPayload())
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "ssh-access", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
             ])
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -72,13 +72,13 @@ final class DeviceSSHAccessStoreTests: XCTestCase {
         try await waitUntilStoreState { runner.calls.count == 1 && store.snapshot(for: profile) != nil }
         store.refreshIfNeeded(profile: profile)
 
-        XCTAssertEqual(runner.calls.map(\.operation), ["ssh-access"])
+        XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh"])
 
         now = Date(timeIntervalSince1970: 161)
         store.refreshIfNeeded(profile: profile)
         try await waitUntilStoreState { runner.calls.count == 2 }
 
-        XCTAssertEqual(runner.calls.map(\.operation), ["ssh-access", "ssh-access"])
+        XCTAssertEqual(runner.calls.map(\.operation), ["set-ssh", "set-ssh"])
     }
 
     func testApplyMaintenancePayloadUpdatesSnapshot() async throws {

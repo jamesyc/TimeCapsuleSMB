@@ -332,6 +332,28 @@ def _details_reachability(_params: Mapping[str, object], payload: object | None)
     return details
 
 
+def _details_set_ssh(_params: Mapping[str, object], payload: object | None) -> dict[str, object]:
+    details: dict[str, object] = {}
+    if isinstance(payload, Mapping):
+        _copy_payload_keys(payload, details, (
+            "action",
+            "host",
+            "acp_port_reachable",
+            "ssh_port_reachable",
+            "ssh_disabled_likely",
+            "ssh_initially_reachable",
+            "ssh_final_reachable",
+            "reboot_requested",
+            "waited",
+            "ssh_verification_skipped",
+            "ssh_disable_persisted",
+            "ssh_reboot_observed_down",
+            "device_recovered",
+            "summary",
+        ))
+    return details
+
+
 def _details_repair_xattrs(_params: Mapping[str, object], payload: object | None) -> dict[str, object]:
     details: dict[str, object] = {}
     if isinstance(payload, Mapping):
@@ -412,6 +434,7 @@ DETAIL_EXTRACTORS: dict[str, DetailExtractor] = {
     "fsck": _details_fsck,
     "reachability": _details_reachability,
     "repair-xattrs": _details_repair_xattrs,
+    "set-ssh": _details_set_ssh,
     "uninstall": _details_uninstall,
     "validate-install": _details_validate_install,
     "version-check": _details_version_check,

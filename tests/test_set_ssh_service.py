@@ -13,11 +13,16 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.integrations.acp import ACP_PORT
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.ssh_access import SSH_PORT, SshAccessProbeResult, enable_ssh_access, probe_ssh_access
+from timecapsulesmb.services.set_ssh import (
+    SSH_PORT,
+    SetSshStatusResult,
+    enable_set_ssh,
+    probe_set_ssh_status,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
-class SSHAccessServiceTests(unittest.TestCase):
+class SetSshServiceTests(unittest.TestCase):
     def test_probe_reports_likely_disabled_when_acp_open_and_ssh_closed(self) -> None:
         calls: list[tuple[str, int, float]] = []
 
@@ -25,7 +30,7 @@ class SSHAccessServiceTests(unittest.TestCase):
             calls.append((host, port, timeout))
             return None if port == ACP_PORT else "Connection refused"
 
-        result = probe_ssh_access("root@10.0.0.2", timeout=1.5, tcp_connect_error_func=tcp_error)
+        result = probe_set_ssh_status("root@10.0.0.2", timeout=1.5, tcp_connect_error_func=tcp_error)
 
         self.assertEqual(calls, [("10.0.0.2", ACP_PORT, 1.5), ("10.0.0.2", SSH_PORT, 1.5)])
         self.assertEqual(result.host, "10.0.0.2")
@@ -36,11 +41,11 @@ class SSHAccessServiceTests(unittest.TestCase):
 
     def test_enable_noops_when_ssh_is_already_open(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.services.ssh_access.enable_ssh_with_port_preflight") as enable:
-            result = enable_ssh_access(
+        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable:
+            result = enable_set_ssh(
                 connection,
                 no_wait=False,
-                probe=lambda _host: SshAccessProbeResult(
+                initial=SetSshStatusResult(
                     host="10.0.0.2",
                     acp_port_reachable=True,
                     ssh_port_reachable=True,
@@ -55,14 +60,14 @@ class SSHAccessServiceTests(unittest.TestCase):
     def test_enable_requests_acp_reboot_and_waits_for_ssh(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         stages: list[str] = []
-        with mock.patch("timecapsulesmb.services.ssh_access.enable_ssh_with_port_preflight") as enable:
+        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight") as enable:
             wait = mock.Mock(return_value=True)
-            result = enable_ssh_access(
+            result = enable_set_ssh(
                 connection,
                 no_wait=False,
                 callbacks=OperationCallbacks(set_stage=stages.append),
                 wait_for_tcp_port_state=wait,
-                probe=lambda _host: SshAccessProbeResult(
+                initial=SetSshStatusResult(
                     host="10.0.0.2",
                     acp_port_reachable=True,
                     ssh_port_reachable=False,
@@ -86,13 +91,13 @@ class SSHAccessServiceTests(unittest.TestCase):
 
     def test_enable_no_wait_skips_ssh_verification(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.services.ssh_access.enable_ssh_with_port_preflight"):
+        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"):
             wait = mock.Mock()
-            result = enable_ssh_access(
+            result = enable_set_ssh(
                 connection,
                 no_wait=True,
                 wait_for_tcp_port_state=wait,
-                probe=lambda _host: SshAccessProbeResult(
+                initial=SetSshStatusResult(
                     host="10.0.0.2",
                     acp_port_reachable=True,
                     ssh_port_reachable=False,

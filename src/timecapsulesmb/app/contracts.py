@@ -7,7 +7,7 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
 from timecapsulesmb.services.reachability import ReachabilityResult
-from timecapsulesmb.services.ssh_access import SshAccessEnableResult, SshAccessProbeResult
+from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult
 from timecapsulesmb.services.version_check import VersionCheckResult
 
 
@@ -138,7 +138,7 @@ def reachability_payload(result: ReachabilityResult) -> dict[str, object]:
     })
 
 
-def ssh_access_payload(result: SshAccessProbeResult | SshAccessEnableResult) -> dict[str, object]:
+def set_ssh_payload(result: SetSshStatusResult | SetSshResult) -> dict[str, object]:
     payload = jsonable(result)
     if not isinstance(payload, dict):
         payload = {}

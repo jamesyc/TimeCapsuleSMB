@@ -473,7 +473,7 @@ extension MaintenanceWorkflow {
     var operationName: String {
         switch self {
         case .sshAccess:
-            return "ssh-access"
+            return "set-ssh"
         case .activate:
             return "activate"
         case .uninstall:
