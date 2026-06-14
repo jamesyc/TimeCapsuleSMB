@@ -63,7 +63,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         forwardChildChanges()
         forwardLaneEvents()
         observeProfileEditor()
-        observeSSHClosedFailures()
+        observeRemoteWorkflowFailures()
         observeSSHAccessMaintenanceResults()
     }
 
@@ -401,20 +401,20 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             .store(in: &cancellables)
     }
 
-    private func observeSSHClosedFailures() {
+    private func observeRemoteWorkflowFailures() {
         deployStore.$error
             .sink { [weak self] error in
-                self?.refreshSSHAccessAfterSSHClosedFailure(error)
+                self?.refreshSSHAccessAfterRemoteFailure(error)
             }
             .store(in: &cancellables)
         doctorStore.$error
             .sink { [weak self] error in
-                self?.refreshSSHAccessAfterSSHClosedFailure(error)
+                self?.refreshSSHAccessAfterRemoteFailure(error)
             }
             .store(in: &cancellables)
         maintenanceStore.$error
             .sink { [weak self] error in
-                self?.refreshSSHAccessAfterSSHClosedFailure(error)
+                self?.refreshSSHAccessAfterRemoteFailure(error)
             }
             .store(in: &cancellables)
     }
@@ -432,10 +432,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             .store(in: &cancellables)
     }
 
-    private func refreshSSHAccessAfterSSHClosedFailure(_ error: BackendErrorViewModel?) {
-        guard let error,
-              error.message.localizedCaseInsensitiveContains("SSH is not reachable") ||
-                error.message.localizedCaseInsensitiveContains("SSH port is closed"),
+    private func refreshSSHAccessAfterRemoteFailure(_ error: BackendErrorViewModel?) {
+        guard error != nil,
               let profile = appStore.deviceRegistry.profile(id: id) else {
             return
         }

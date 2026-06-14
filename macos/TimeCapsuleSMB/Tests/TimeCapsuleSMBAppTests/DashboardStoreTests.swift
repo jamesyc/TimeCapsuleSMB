@@ -227,6 +227,41 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "deploy", "reachability"])
     }
 
+    func testDeployFailureRefreshesSSHAccessStatusWithoutSSHSpecificErrorText() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(
+                events: [
+                    BackendEvent.error(
+                        operation: "deploy",
+                        code: "remote_error",
+                        message: "Compatibility check failed."
+                    )
+                ],
+                result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
+            ),
+            .init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload())
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+
+        session.runInstall(profile: profile)
+        try await waitUntilStoreState {
+            fixture.runner.calls.map(\.operation) == ["deploy", "set-ssh"] &&
+                fixture.appStore.sshAccessStore.snapshot(for: profile) != nil
+        }
+
+        XCTAssertEqual(fixture.runner.calls[1].params["action"], .string("status"))
+        XCTAssertEqual(session.sshAccessNotice(for: profile)?.host, "10.0.0.2")
+    }
+
     func testCheckupDoesNotClearSuccessfulDeployTimeline() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
@@ -647,6 +682,9 @@ final class DashboardStoreTests: XCTestCase {
             .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
                 BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: failure)
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "set-ssh", ok: true, payload: testSSHAccessPayload(sshPortReachable: true))
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
