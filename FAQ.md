@@ -229,6 +229,7 @@ In the macOS app, each saved device has advanced settings for the managed SMB ru
 - **ATA standby seconds**: default blank. Optionally sets the built-in ATA disk standby timer. Leave blank to avoid applying a standby timer; use `0` to disable the standby timer.
 - **Enable NBNS**: default on. Starts the NetBIOS name responder so older SMB/Windows-style network browsing can find the device.
 - **Internal Share Uses Disk Root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.
+- **Bind SMB to LAN Only**: default on. Binds Samba only to LAN-side interfaces discovered by the managed runtime, reducing the chance that SMB listens on WAN or tunnel interfaces. If unchecked, Samba can bind to all detected SMB-capable interfaces, including WAN interfaces.
 - **Allow SMB Share Browsing**: default off. Relaxes anonymous browse restrictions so clients can enumerate shares more easily. Shares still require authentication.
 - **Allow Any SMB Protocol**: default off. Removes the SMB2/SMB3-only protocol restriction. Leave off unless an old client needs legacy SMB compatibility.
 - **Force Debug Logging**: default off. Enables verbose smbd/mDNS logging on the device. Use only for troubleshooting because it writes more logs.
