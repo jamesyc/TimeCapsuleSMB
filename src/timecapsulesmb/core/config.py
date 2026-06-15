@@ -61,6 +61,7 @@ DEFAULTS = {
     "TC_HOST": DEFAULT_SSH_TARGET_PLACEHOLDER,
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
+    "TC_SMB_BIND_LAN_ONLY": "true",
     "TC_SMB_BROWSE_COMPATIBILITY": "false",
     "TC_ANY_PROTOCOL": "false",
     "TC_FRUIT_METADATA_NETATALK": "true",
@@ -74,6 +75,7 @@ ENV_FILE_KEYS = [
     "TC_PASSWORD",
     "TC_SSH_OPTS",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+    "TC_SMB_BIND_LAN_ONLY",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_ANY_PROTOCOL",
     "TC_FRUIT_METADATA_NETATALK",
@@ -428,6 +430,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
+    "TC_SMB_BIND_LAN_ONLY": validate_bool,
     "TC_SMB_BROWSE_COMPATIBILITY": validate_bool,
     "TC_ANY_PROTOCOL": validate_bool,
     "TC_FRUIT_METADATA_NETATALK": validate_bool,
@@ -448,6 +451,7 @@ class ConfigProfile:
 
 CONFIGURE_VALIDATED_KEYS = (
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+    "TC_SMB_BIND_LAN_ONLY",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_ANY_PROTOCOL",
     "TC_FRUIT_METADATA_NETATALK",
@@ -458,6 +462,7 @@ CONFIGURE_VALIDATED_KEYS = (
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+    "TC_SMB_BIND_LAN_ONLY",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_ANY_PROTOCOL",
     "TC_FRUIT_METADATA_NETATALK",

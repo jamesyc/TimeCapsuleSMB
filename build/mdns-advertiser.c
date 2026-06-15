@@ -626,42 +626,75 @@ static int print_auto_ip_cidrs_with_provider(FILE *stream,
 static int link_contexts_need_ipv4_socket(const struct link_context_set *set);
 static int link_contexts_need_ipv6_socket(const struct link_context_set *set);
 
-static int print_smb_bind_interfaces_with_provider(FILE *stream,
-                                                   mdns_collect_link_contexts_fn collect_contexts,
-                                                   void *userdata) {
-    struct link_context_set links;
+static void filter_smb_bind_link_contexts(struct link_context_set *out,
+                                          const struct link_context_set *in,
+                                          int lan_only) {
     size_t i;
-    int has_samba_address = 0;
+
+    memset(out, 0, sizeof(*out));
+    for (i = 0; i < in->count; i++) {
+        if (lan_only && !iface_name_is_strong_lan(in->links[i].name)) {
+            continue;
+        }
+        if (!link_context_has_samba_address(&in->links[i])) {
+            continue;
+        }
+        if (out->count >= MAX_IFACE_CONTEXTS) {
+            out->truncated = 1;
+            break;
+        }
+        out->links[out->count++] = in->links[i];
+    }
+    sort_link_contexts(out);
+}
+
+static int print_smb_bind_interfaces_with_policy(FILE *stream,
+                                                 mdns_collect_link_contexts_fn collect_contexts,
+                                                 void *userdata,
+                                                 int lan_only) {
+    struct link_context_set all_links;
+    struct link_context_set bind_links;
 
     if (collect_contexts == NULL) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
 
-    memset(&links, 0, sizeof(links));
-    if (collect_contexts(&links, userdata) != 0) {
+    memset(&all_links, 0, sizeof(all_links));
+    memset(&bind_links, 0, sizeof(bind_links));
+    if (collect_contexts(&all_links, userdata) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
-    if (links.count == 0) {
+    if (all_links.count == 0) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
-    sort_link_contexts(&links);
-    for (i = 0; i < links.count; i++) {
-        if (link_context_has_samba_address(&links.links[i])) {
-            has_samba_address = 1;
-            break;
-        }
-    }
-    if (!has_samba_address) {
-        return EXIT_AUTO_IP_UNAVAILABLE;
-    }
-    if (links.truncated) {
+    if (all_links.truncated) {
         fprintf(stderr, "auto-ip: Samba bind interface list exceeded static capacity\n");
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
-    if (print_smb_link_bind_tokens(stream, &links) != 0) {
+    filter_smb_bind_link_contexts(&bind_links, &all_links, lan_only);
+    if (bind_links.count == 0) {
+        return EXIT_AUTO_IP_UNAVAILABLE;
+    }
+    if (bind_links.truncated) {
+        fprintf(stderr, "auto-ip: Samba bind interface list exceeded static capacity\n");
+        return EXIT_AUTO_IP_PROBE_FAILED;
+    }
+    if (print_smb_link_bind_tokens(stream, &bind_links) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
     return EXIT_OK;
+}
+
+static int print_smb_bind_interfaces_with_provider(FILE *stream,
+                                                   mdns_collect_link_contexts_fn collect_contexts,
+                                                   void *userdata) {
+    return print_smb_bind_interfaces_with_policy(stream, collect_contexts, userdata, 0);
+}
+
+static int print_smb_bind_interfaces_lan_with_provider(FILE *stream,
+                                                       mdns_collect_link_contexts_fn collect_contexts,
+                                                       void *userdata) {
+    return print_smb_bind_interfaces_with_policy(stream, collect_contexts, userdata, 1);
 }
 
 static int print_mdns_socket_families_with_provider(FILE *stream,
@@ -1629,6 +1662,7 @@ static void usage(const char *prog) {
             "       %s --print-nt-hash-from-stdin\n"
             "       %s --print-auto-ip-cidrs\n"
             "       %s --print-smb-bind-interfaces\n"
+            "       %s --print-smb-bind-interfaces-lan\n"
             "       %s --print-mdns-socket-families\n"
             "       %s --version\n"
             "Options:\n"
@@ -1636,6 +1670,7 @@ static void usage(const char *prog) {
             "  --print-nt-hash-from-stdin Read a UTF-8 password from stdin and print its uppercase NT hash\n"
             "  --print-auto-ip-cidrs Print usable live IPv4 CIDRs and exit 0, or exit 11 if none exist\n"
             "  --print-smb-bind-interfaces Print live IPv4/IPv6 address CIDRs for Samba interfaces\n"
+            "  --print-smb-bind-interfaces-lan Print Samba CIDRs only from bridge/br/lan owner interfaces\n"
             "  --print-mdns-socket-families Print required mDNS UDP socket families for live advertise links\n"
             "  --version          Print advertiser version code and exit\n"
             "  --debug-logging    Enable verbose mDNS traffic counter diagnostics\n"
@@ -1672,7 +1707,7 @@ static void usage(const char *prog) {
             "  --airport-srcv <v> Source/build version for _airport._tcp\n"
             "  --airport-bjsd <n> Bonjour seed/build field for _airport._tcp\n"
             "  --airport-port <p> _airport._tcp service port (default: 5009)\n",
-            prog, prog, prog, prog, prog, prog, prog, prog, prog);
+            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int append_bytes(uint8_t *buf, size_t *off, size_t cap, const void *src, size_t len) {
@@ -7316,6 +7351,7 @@ int main(int argc, char **argv) {
     int auto_ip = 0;
     int print_auto_ip_cidrs = 0;
     int print_smb_bind_interfaces = 0;
+    int print_smb_bind_interfaces_lan = 0;
     int print_mdns_socket_families = 0;
     int print_nt_hash_from_stdin_flag = 0;
     int auto_contexts_ready = 0;
@@ -7374,6 +7410,8 @@ int main(int argc, char **argv) {
             print_auto_ip_cidrs = 1;
         } else if (strcmp(argv[i], "--print-smb-bind-interfaces") == 0) {
             print_smb_bind_interfaces = 1;
+        } else if (strcmp(argv[i], "--print-smb-bind-interfaces-lan") == 0) {
+            print_smb_bind_interfaces_lan = 1;
         } else if (strcmp(argv[i], "--print-mdns-socket-families") == 0) {
             print_mdns_socket_families = 1;
         } else if (strcmp(argv[i], "--print-nt-hash-from-stdin") == 0) {
@@ -7453,6 +7491,11 @@ int main(int argc, char **argv) {
         return print_smb_bind_interfaces_with_provider(stdout,
                                                        collect_usable_link_contexts_provider,
                                                        NULL);
+    }
+    if (print_smb_bind_interfaces_lan) {
+        return print_smb_bind_interfaces_lan_with_provider(stdout,
+                                                           collect_usable_link_contexts_provider,
+                                                           NULL);
     }
     if (print_mdns_socket_families) {
         return print_mdns_socket_families_with_provider(stdout,

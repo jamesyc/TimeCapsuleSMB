@@ -282,6 +282,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ssh_group.add_argument("--no-enable-ssh", action="store_true", help="Fail instead of enabling SSH via ACP if SSH is closed")
     parser.add_argument("--json", action="store_true", help="Output a machine-readable configure result")
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-smb-bind-lan-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smb-browse-compatibility", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--netatalk", action="store_true", help=argparse.SUPPRESS)
@@ -481,6 +482,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         enable_ssh=True,
                         verbose_wait=not args.json,
                         internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
+                        smb_bind_lan_only=False if args.no_smb_bind_lan_only else None,
                         smb_browse_compatibility=True if args.smb_browse_compatibility else None,
                         any_protocol=True if args.any_protocol else None,
                         fruit_metadata_netatalk=True if args.netatalk else None,

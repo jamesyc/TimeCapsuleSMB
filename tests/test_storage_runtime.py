@@ -1095,6 +1095,7 @@ MaSt = (
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
                 "TC_AIRPORT_SYAP": "106",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+                "TC_SMB_BIND_LAN_ONLY": "true",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
@@ -1120,6 +1121,7 @@ MaSt = (
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", rendered)
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", rendered)
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("SMB_BIND_LAN_ONLY=1\n", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
@@ -1163,6 +1165,7 @@ MaSt = (
         config = AppConfig.from_values(
             {
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
+                "TC_SMB_BIND_LAN_ONLY": "false",
                 "TC_SMB_BROWSE_COMPATIBILITY": "false",
                 "TC_ANY_PROTOCOL": "false",
                 "TC_FRUIT_METADATA_NETATALK": "false",
@@ -1175,12 +1178,14 @@ MaSt = (
             nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=True,
+            smb_bind_lan_only=True,
             smb_browse_compatibility=True,
             any_protocol=True,
             fruit_metadata_netatalk=True,
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("SMB_BIND_LAN_ONLY=1\n", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
@@ -1189,6 +1194,7 @@ MaSt = (
         config = AppConfig.from_values(
             {
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+                "TC_SMB_BIND_LAN_ONLY": "true",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
@@ -1201,12 +1207,14 @@ MaSt = (
             nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=False,
+            smb_bind_lan_only=False,
             smb_browse_compatibility=False,
             any_protocol=False,
             fruit_metadata_netatalk=False,
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
+        self.assertIn("SMB_BIND_LAN_ONLY=0\n", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=0\n", rendered)
@@ -4824,6 +4832,77 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("bind=\n", proc.stdout)
+
+    def test_common_smb_bind_probe_defaults_to_lan_only_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$1\" > {shlex.quote(str(memory / 'samba4/var/mdns-arg'))}\n"
+                "echo '192.168.1.40/24'\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "smb-bind-lan-only.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    bind=$(tc_probe_smb_bind_interfaces)
+                    printf 'bind=%s\\n' "$bind"
+                    printf 'arg=%s\\n' "$(cat "$RAM_VAR/mdns-arg")"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("bind=127.0.0.1/8 ::1/128 192.168.1.40/24\n", proc.stdout)
+        self.assertIn("arg=--print-smb-bind-interfaces-lan\n", proc.stdout)
+
+    def test_common_smb_bind_probe_can_use_all_interface_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$1\" > {shlex.quote(str(memory / 'samba4/var/mdns-arg'))}\n"
+                "echo '192.168.1.40/24'\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "smb-bind-all.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    SMB_BIND_LAN_ONLY=0
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    bind=$(tc_probe_smb_bind_interfaces)
+                    printf 'bind=%s\\n' "$bind"
+                    printf 'arg=%s\\n' "$(cat "$RAM_VAR/mdns-arg")"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("bind=127.0.0.1/8 ::1/128 192.168.1.40/24\n", proc.stdout)
+        self.assertIn("arg=--print-smb-bind-interfaces\n", proc.stdout)
 
     def test_manager_serves_external_payload_disk_as_hidden_samba_share(self) -> None:
         fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_external_only")

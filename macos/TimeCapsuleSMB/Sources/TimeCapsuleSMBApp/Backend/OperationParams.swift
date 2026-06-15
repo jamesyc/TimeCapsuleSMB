@@ -58,6 +58,7 @@ enum OperationParams {
             password: String,
             debugLogging: Bool,
             internalShareUseDiskRoot: Bool? = nil,
+            smbBindLanOnly: Bool? = nil,
             smbBrowseCompatibility: Bool? = nil,
             anyProtocol: Bool? = nil,
             fruitMetadataNetatalk: Bool? = nil,
@@ -78,6 +79,9 @@ enum OperationParams {
             }
             if let internalShareUseDiskRoot {
                 params["internal_share_use_disk_root"] = .bool(internalShareUseDiskRoot)
+            }
+            if let smbBindLanOnly {
+                params["smb_bind_lan_only"] = .bool(smbBindLanOnly)
             }
             if let smbBrowseCompatibility {
                 params["smb_browse_compatibility"] = .bool(smbBrowseCompatibility)
@@ -126,6 +130,7 @@ enum OperationParams {
             noWait: Bool,
             nbnsEnabled: Bool,
             internalShareUseDiskRoot: Bool = false,
+            smbBindLanOnly: Bool = true,
             smbBrowseCompatibility: Bool = false,
             anyProtocol: Bool = false,
             fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
@@ -140,6 +145,7 @@ enum OperationParams {
                 "no_wait": .bool(noWait),
                 "nbns_enabled": .bool(nbnsEnabled),
                 "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
+                "smb_bind_lan_only": .bool(smbBindLanOnly),
                 "smb_browse_compatibility": .bool(smbBrowseCompatibility),
                 "any_protocol": .bool(anyProtocol),
                 "fruit_metadata_netatalk": .bool(fruitMetadataNetatalk),

@@ -393,6 +393,7 @@ struct AppSettingsDraft: Equatable {
     var defaultBonjourTimeoutSeconds: String
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
+    var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
     var fruitMetadataNetatalk: Bool
@@ -413,6 +414,7 @@ struct AppSettingsDraft: Equatable {
         defaultBonjourTimeoutSeconds = Self.formatDouble(settings.defaultBonjourTimeoutSeconds)
         nbnsEnabled = settings.defaultDeviceSettings.nbnsEnabled
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
+        smbBindLanOnly = settings.defaultDeviceSettings.smbBindLanOnly
         smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
         anyProtocol = settings.defaultDeviceSettings.anyProtocol
         fruitMetadataNetatalk = settings.defaultDeviceSettings.fruitMetadataNetatalk
@@ -460,6 +462,7 @@ struct AppSettingsDraft: Equatable {
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: nbnsEnabled,
                 internalShareUseDiskRoot: internalShareUseDiskRoot,
+                smbBindLanOnly: smbBindLanOnly,
                 smbBrowseCompatibility: smbBrowseCompatibility,
                 anyProtocol: anyProtocol,
                 fruitMetadataNetatalk: fruitMetadataNetatalk,

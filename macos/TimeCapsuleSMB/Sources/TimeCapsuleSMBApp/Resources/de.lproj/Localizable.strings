@@ -885,6 +885,7 @@
 "toggle.enable_debug_logging" = "Debug-Protokollierung aktivieren";
 "toggle.enable_nbns" = "Enable NBNS";
 "toggle.internal_share_use_disk_root" = "Interne Freigabe verwendet Festplatten-Root";
+"toggle.smb_bind_lan_only" = "SMB nur an LAN binden";
 "toggle.smb_browse_compatibility" = "Allow SMB Share Browsing";
 "toggle.any_protocol" = "Alle SMB-Protokolle zulassen";
 "toggle.use_netatalk_metadata" = "Verwenden Sie Netatalk für metadata";

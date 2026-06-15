@@ -140,6 +140,7 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("TC_SAMBA_USER", rendered)
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
+        self.assertIn("TC_SMB_BIND_LAN_ONLY=true", rendered)
         self.assertIn("TC_SMB_BROWSE_COMPATIBILITY=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
         self.assertIn("TC_FRUIT_METADATA_NETATALK=true", rendered)
@@ -446,6 +447,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "invalid_value")
         self.assertEqual(errors[0].key, "TC_ANY_PROTOCOL")
         values["TC_ANY_PROTOCOL"] = "false"
+        values["TC_SMB_BIND_LAN_ONLY"] = "not-bool"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_SMB_BIND_LAN_ONLY")
+        values["TC_SMB_BIND_LAN_ONLY"] = "true"
         values["TC_SMB_BROWSE_COMPATIBILITY"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
@@ -485,6 +492,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_SAMBA_USER"] = "bad user"
         values["TC_PAYLOAD_DIR_NAME"] = "/bad"
         values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = "not-bool"
+        values["TC_SMB_BIND_LAN_ONLY"] = "not-bool"
         values["TC_SMB_BROWSE_COMPATIBILITY"] = "not-bool"
         values["TC_ANY_PROTOCOL"] = "not-bool"
         values["TC_FRUIT_METADATA_NETATALK"] = "not-bool"

@@ -176,6 +176,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 password: password,
                 debugLogging: settings.debugLogging,
                 internalShareUseDiskRoot: settings.internalShareUseDiskRoot,
+                smbBindLanOnly: settings.smbBindLanOnly,
                 smbBrowseCompatibility: settings.smbBrowseCompatibility,
                 anyProtocol: settings.anyProtocol,
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,

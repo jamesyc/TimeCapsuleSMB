@@ -108,8 +108,13 @@ tc_normalize_mdns_socket_families() {
 }
 
 tc_probe_smb_bind_tokens() {
+    bind_arg=--print-smb-bind-interfaces
+
     [ -x "$TC_MDNS_BIN" ] || return 1
-    bind_tokens=$("$TC_MDNS_BIN" --print-smb-bind-interfaces 2>/dev/null) || return $?
+    if [ "${SMB_BIND_LAN_ONLY:-1}" = "1" ]; then
+        bind_arg=--print-smb-bind-interfaces-lan
+    fi
+    bind_tokens=$("$TC_MDNS_BIN" "$bind_arg" 2>/dev/null) || return $?
     tc_normalize_smb_bind_tokens "$bind_tokens" || return 1
 }
 

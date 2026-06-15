@@ -6,6 +6,7 @@ struct DeployOptions: Equatable {
     let noReboot: Bool
     let noWait: Bool
     let internalShareUseDiskRoot: Bool
+    let smbBindLanOnly: Bool
     let smbBrowseCompatibility: Bool
     let anyProtocol: Bool
     let fruitMetadataNetatalk: Bool
@@ -19,6 +20,7 @@ struct DeployOptions: Equatable {
         noReboot: Bool,
         noWait: Bool,
         internalShareUseDiskRoot: Bool,
+        smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
         smbBrowseCompatibility: Bool,
         anyProtocol: Bool,
         fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
@@ -31,6 +33,7 @@ struct DeployOptions: Equatable {
         self.noReboot = noReboot
         self.noWait = noWait
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
@@ -115,6 +118,9 @@ final class DeployWorkflowStore: ObservableObject {
         }
     }
     @Published var internalShareUseDiskRoot = false {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var smbBindLanOnly = DeviceProfileSettings.default.smbBindLanOnly {
         didSet { reconcilePlanFreshness() }
     }
     @Published var smbBrowseCompatibility = false {
@@ -241,6 +247,7 @@ final class DeployWorkflowStore: ObservableObject {
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
+                smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 anyProtocol: options.anyProtocol,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
@@ -293,6 +300,7 @@ final class DeployWorkflowStore: ObservableObject {
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
+                smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 anyProtocol: options.anyProtocol,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
@@ -353,6 +361,7 @@ final class DeployWorkflowStore: ObservableObject {
             noReboot: rebootOptions.noReboot,
             noWait: rebootOptions.noWait,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
+            smbBindLanOnly: smbBindLanOnly,
             smbBrowseCompatibility: smbBrowseCompatibility,
             anyProtocol: anyProtocol,
             fruitMetadataNetatalk: fruitMetadataNetatalk,

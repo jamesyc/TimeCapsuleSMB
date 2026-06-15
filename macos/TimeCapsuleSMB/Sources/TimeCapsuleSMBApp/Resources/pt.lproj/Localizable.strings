@@ -885,6 +885,7 @@
 "toggle.enable_debug_logging" = "Ativar registro de depuração";
 "toggle.enable_nbns" = "Ativar NBNS";
 "toggle.internal_share_use_disk_root" = "Compartilhamento interno usa raiz de disco";
+"toggle.smb_bind_lan_only" = "Vincular SMB somente à LAN";
 "toggle.smb_browse_compatibility" = "Permitir SMB compartilhar navegação";
 "toggle.any_protocol" = "Permitir qualquer protocolo SMB";
 "toggle.use_netatalk_metadata" = "Use Netatalk para metadata";

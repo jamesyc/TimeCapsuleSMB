@@ -885,6 +885,7 @@
 "toggle.enable_debug_logging" = "启用调试日志";
 "toggle.enable_nbns" = "启用 NBNS";
 "toggle.internal_share_use_disk_root" = "内部共享使用磁盘根目录";
+"toggle.smb_bind_lan_only" = "仅将 SMB 绑定到 LAN";
 "toggle.smb_browse_compatibility" = "允许浏览 SMB 共享";
 "toggle.any_protocol" = "允许任意 SMB 协议";
 "toggle.use_netatalk_metadata" = "使用 Netatalk 存储元数据";

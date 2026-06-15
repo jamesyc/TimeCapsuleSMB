@@ -150,13 +150,14 @@ private struct DeviceProfileAdvancedSettingsView: View {
                         Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.draft.internalShareUseDiskRoot)
                     }
                     GridRow {
+                        Toggle(L10n.string("toggle.smb_bind_lan_only"), isOn: $store.draft.smbBindLanOnly)
                         Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $store.draft.smbBrowseCompatibility)
-                        Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
                     }
                     GridRow {
-                        Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+                        Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
                         Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $store.draft.fruitMetadataNetatalk)
                     }
+                    Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
                 }
             }
         }

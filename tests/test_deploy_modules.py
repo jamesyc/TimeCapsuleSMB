@@ -2225,7 +2225,7 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_dual_stack_bind_records")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "10.0.1.1/24 169.254.1.9/16 fdbb:1111:2222:3333::40/64\n")
+        self.assertEqual(run.stdout, "10.0.1.1/24 fdbb:1111:2222:3333::40/64\n")
 
     def test_mdns_advertise_links_exclude_fe80_only_links_but_keep_ipv4_fe80_transport(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2376,6 +2376,11 @@ static int fake_collect_links(struct link_context_set *out, void *userdata) {{
         append_link_ipv4(out, "bridge0", inet_addr("169.254.1.9"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
         out->truncated = 1;
     }}
+    if (plan->mode == 5) {{
+        inet_pton(AF_INET6, "fe80::40", &ll);
+        append_link_ipv4(out, "bridge0", inet_addr("169.254.1.9"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv6(out, "bridge0", &ll, 64, 7, IFF_UP | IFF_RUNNING);
+    }}
     return 0;
 }}
 
@@ -2406,12 +2411,78 @@ int main(void) {{
     if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
         return 6;
     }}
+    plan.mode = 5;
+    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+        return 7;
+    }}
     return 0;
 }}
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_print_smb_bind_status")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "169.254.1.9/16 fdbb:1111:2222:3333::40/64\n")
+        self.assertEqual(run.stdout, "fdbb:1111:2222:3333::40/64\n")
+
+    def test_mdns_print_smb_bind_interfaces_lan_filters_wan_and_link_local(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+struct fake_lan_plan {{
+    int mode;
+}};
+
+static int fake_collect_links(struct link_context_set *out, void *userdata) {{
+    struct fake_lan_plan *plan = (struct fake_lan_plan *)userdata;
+    struct in6_addr bridge_ula;
+    struct in6_addr wan_ula;
+
+    memset(out, 0, sizeof(*out));
+    if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &bridge_ula) != 1 ||
+        inet_pton(AF_INET6, "fdbb:aaaa:bbbb:cccc::217", &wan_ula) != 1) {{
+        return -1;
+    }}
+    if (plan->mode == 1) {{
+        append_link_ipv4(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv4(out, "bridge0", inet_addr("169.254.1.9"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv6(out, "bridge0", &bridge_ula, 64, 7, IFF_UP | IFF_RUNNING);
+    }}
+    if (plan->mode == 1 || plan->mode == 2) {{
+        append_link_ipv4(out, "bcmeth1", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv4(out, "bcmeth1", inet_addr("169.254.155.207"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv6(out, "bcmeth1", &wan_ula, 64, 8, IFF_UP | IFF_RUNNING);
+    }}
+    return 0;
+}}
+
+int main(void) {{
+    struct fake_lan_plan plan;
+
+    memset(&plan, 0, sizeof(plan));
+    plan.mode = 1;
+    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_OK) {{
+        return 1;
+    }}
+    if (print_smb_bind_interfaces_lan_with_provider(stdout, fake_collect_links, &plan) != EXIT_OK) {{
+        return 2;
+    }}
+    plan.mode = 2;
+    if (print_smb_bind_interfaces_lan_with_provider(stdout, fake_collect_links, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+        return 3;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_print_smb_bind_lan_filter")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout,
+            "10.0.1.1/24 fdbb:1111:2222:3333::40/64 192.168.1.217/24 fdbb:aaaa:bbbb:cccc::217/64\n"
+            "10.0.1.1/24 fdbb:1111:2222:3333::40/64\n",
+        )
 
     def test_mdns_print_socket_families_uses_advertise_links_not_samba_tokens(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()

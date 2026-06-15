@@ -885,6 +885,7 @@
 "toggle.enable_debug_logging" = "Activer la journalisation du débogage";
 "toggle.enable_nbns" = "Activer NBNS";
 "toggle.internal_share_use_disk_root" = "Le partage interne utilise la racine du disque";
+"toggle.smb_bind_lan_only" = "Lier SMB au LAN uniquement";
 "toggle.smb_browse_compatibility" = "Autoriser SMB la navigation partagée";
 "toggle.any_protocol" = "Autoriser tout protocole SMB";
 "toggle.use_netatalk_metadata" = "Utilisez Netatalk pour metadata";

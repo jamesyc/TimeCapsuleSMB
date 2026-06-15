@@ -133,6 +133,7 @@ class DeployRuntimeConfig:
     nbns_enabled: bool
     debug_logging: bool | None = None
     internal_share_use_disk_root: bool | None = None
+    smb_bind_lan_only: bool | None = None
     smb_browse_compatibility: bool | None = None
     any_protocol: bool | None = None
     fruit_metadata_netatalk: bool | None = None
@@ -685,6 +686,7 @@ def upload_and_verify_deployment_payload(
         nbns_enabled=runtime_config.nbns_enabled,
         debug_logging=runtime_config.debug_logging,
         internal_share_use_disk_root=runtime_config.internal_share_use_disk_root,
+        smb_bind_lan_only=runtime_config.smb_bind_lan_only,
         smb_browse_compatibility=runtime_config.smb_browse_compatibility,
         any_protocol=runtime_config.any_protocol,
         fruit_metadata_netatalk=runtime_config.fruit_metadata_netatalk,
@@ -1032,6 +1034,7 @@ def render_flash_runtime_config(
     nbns_enabled: bool,
     debug_logging: bool | None = None,
     internal_share_use_disk_root: bool | None = None,
+    smb_bind_lan_only: bool | None = None,
     smb_browse_compatibility: bool | None = None,
     any_protocol: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
@@ -1040,6 +1043,10 @@ def render_flash_runtime_config(
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
+    smb_bind_lan_only_default = config.get(
+        "TC_SMB_BIND_LAN_ONLY",
+        DEFAULTS["TC_SMB_BIND_LAN_ONLY"],
+    )
     smb_browse_compatibility_default = config.get(
         "TC_SMB_BROWSE_COMPATIBILITY",
         DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"],
@@ -1065,6 +1072,11 @@ def render_flash_runtime_config(
         if internal_share_use_disk_root is None
         else internal_share_use_disk_root
     )
+    effective_smb_bind_lan_only = (
+        parse_bool(smb_bind_lan_only_default)
+        if smb_bind_lan_only is None
+        else smb_bind_lan_only
+    )
     effective_any_protocol = (
         parse_bool(any_protocol_default)
         if any_protocol is None
@@ -1087,6 +1099,7 @@ def render_flash_runtime_config(
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
+        ("SMB_BIND_LAN_ONLY", 1 if effective_smb_bind_lan_only else 0),
         ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),
         ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
         ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),

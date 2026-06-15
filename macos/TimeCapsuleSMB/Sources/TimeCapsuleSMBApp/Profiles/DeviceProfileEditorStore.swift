@@ -77,6 +77,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var host: String
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
+    var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
     var fruitMetadataNetatalk: Bool
@@ -90,6 +91,7 @@ struct DeviceProfileEditorDraft: Equatable {
         host: String,
         nbnsEnabled: Bool,
         internalShareUseDiskRoot: Bool = false,
+        smbBindLanOnly: Bool = true,
         smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
         fruitMetadataNetatalk: Bool = true,
@@ -102,6 +104,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.host = host
         self.nbnsEnabled = nbnsEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
@@ -117,6 +120,7 @@ struct DeviceProfileEditorDraft: Equatable {
             host: profile.host,
             nbnsEnabled: profile.settings.nbnsEnabled,
             internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
+            smbBindLanOnly: profile.settings.smbBindLanOnly,
             smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
             anyProtocol: profile.settings.anyProtocol,
             fruitMetadataNetatalk: profile.settings.fruitMetadataNetatalk,
@@ -169,6 +173,7 @@ struct DeviceProfileEditorDraft: Equatable {
         let settings = DeviceProfileSettings(
             nbnsEnabled: nbnsEnabled,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
+            smbBindLanOnly: smbBindLanOnly,
             smbBrowseCompatibility: smbBrowseCompatibility,
             anyProtocol: anyProtocol,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
@@ -458,6 +463,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             password: password,
             debugLogging: draft.debugLogging,
             internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
+            smbBindLanOnly: draft.smbBindLanOnly,
             smbBrowseCompatibility: draft.smbBrowseCompatibility,
             anyProtocol: draft.anyProtocol,
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,

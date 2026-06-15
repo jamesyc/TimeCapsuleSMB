@@ -53,6 +53,7 @@ class ConfigureFlowRequest:
     ssh_wait_timeout: int = 180
     verbose_wait: bool = True
     internal_share_use_disk_root: bool | None = None
+    smb_bind_lan_only: bool | None = None
     smb_browse_compatibility: bool | None = None
     any_protocol: bool | None = None
     fruit_metadata_netatalk: bool | None = None
@@ -200,6 +201,7 @@ def run_configure_flow(
         ssh_opts=request.ssh_opts,
         configure_id=request.configure_id,
         internal_share_use_disk_root=request.internal_share_use_disk_root,
+        smb_bind_lan_only=request.smb_bind_lan_only,
         smb_browse_compatibility=request.smb_browse_compatibility,
         any_protocol=request.any_protocol,
         fruit_metadata_netatalk=request.fruit_metadata_netatalk,
@@ -328,6 +330,7 @@ def build_configure_env_values(
     ssh_opts: str,
     configure_id: str,
     internal_share_use_disk_root: bool | None = None,
+    smb_bind_lan_only: bool | None = None,
     smb_browse_compatibility: bool | None = None,
     any_protocol: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
@@ -344,6 +347,11 @@ def build_configure_env_values(
             parse_bool(existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"]))
             if internal_share_use_disk_root is None
             else internal_share_use_disk_root
+        ) else "false",
+        "TC_SMB_BIND_LAN_ONLY": "true" if (
+            parse_bool(existing.get("TC_SMB_BIND_LAN_ONLY", DEFAULTS["TC_SMB_BIND_LAN_ONLY"]))
+            if smb_bind_lan_only is None
+            else smb_bind_lan_only
         ) else "false",
         "TC_SMB_BROWSE_COMPATIBILITY": "true" if (
             parse_bool(existing.get("TC_SMB_BROWSE_COMPATIBILITY", DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"]))

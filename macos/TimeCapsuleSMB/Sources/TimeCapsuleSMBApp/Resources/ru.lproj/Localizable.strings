@@ -885,6 +885,7 @@
 "toggle.enable_debug_logging" = "Включить ведение журнала отладки";
 "toggle.enable_nbns" = "Включить NBNS";
 "toggle.internal_share_use_disk_root" = "Внутренний общий ресурс использует корень диска";
+"toggle.smb_bind_lan_only" = "Привязывать SMB только к LAN";
 "toggle.smb_browse_compatibility" = "Разрешить SMB просмотр акций";
 "toggle.any_protocol" = "Разрешить любой протокол SMB";
 "toggle.use_netatalk_metadata" = "Используйте Netatalk для metadata";

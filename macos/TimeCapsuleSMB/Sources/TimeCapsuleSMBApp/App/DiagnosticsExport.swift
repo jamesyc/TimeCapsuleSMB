@@ -45,6 +45,7 @@ struct DiagnosticsExportBuilder {
             append("Version Check URL", value: context.appSettings.versionCheckURL.isEmpty ? "auto" : context.appSettings.versionCheckURL, to: &lines)
             append("Time Machine Warnings", value: context.appSettings.timeMachineWarningsEnabled, to: &lines)
             append("Default NBNS", value: context.appSettings.defaultDeviceSettings.nbnsEnabled, to: &lines)
+            append("Default SMB Bind LAN Only", value: context.appSettings.defaultDeviceSettings.smbBindLanOnly, to: &lines)
             append("Default SMB Browse Compatibility", value: context.appSettings.defaultDeviceSettings.smbBrowseCompatibility, to: &lines)
             append("Default Netatalk Metadata", value: context.appSettings.defaultDeviceSettings.fruitMetadataNetatalk, to: &lines)
             append("Default Debug Logging", value: context.appSettings.defaultDeviceSettings.debugLogging, to: &lines)

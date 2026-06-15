@@ -165,6 +165,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     "internal_share_use_disk_root",
                     parse_bool(existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])),
                 ),
+                smb_bind_lan_only=bool_param(
+                    params,
+                    "smb_bind_lan_only",
+                    parse_bool(existing.get("TC_SMB_BIND_LAN_ONLY", DEFAULTS["TC_SMB_BIND_LAN_ONLY"])),
+                ),
                 smb_browse_compatibility=bool_param(
                     params,
                     "smb_browse_compatibility",

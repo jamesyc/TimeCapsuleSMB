@@ -36,6 +36,7 @@ enum DevicePasswordState: String, Codable, CaseIterable, Equatable {
 struct DeviceProfileSettings: Codable, Equatable {
     var nbnsEnabled: Bool
     var internalShareUseDiskRoot: Bool
+    var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
     var anyProtocol: Bool
     var fruitMetadataNetatalk: Bool
@@ -47,6 +48,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     static let `default` = DeviceProfileSettings(
         nbnsEnabled: true,
         internalShareUseDiskRoot: false,
+        smbBindLanOnly: true,
         smbBrowseCompatibility: false,
         anyProtocol: false,
         fruitMetadataNetatalk: true,
@@ -59,6 +61,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     init(
         nbnsEnabled: Bool,
         internalShareUseDiskRoot: Bool = false,
+        smbBindLanOnly: Bool = true,
         smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
         fruitMetadataNetatalk: Bool = true,
@@ -69,6 +72,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     ) {
         self.nbnsEnabled = nbnsEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.anyProtocol = anyProtocol
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
@@ -81,6 +85,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case nbnsEnabled
         case internalShareUseDiskRoot
+        case smbBindLanOnly
         case smbBrowseCompatibility
         case anyProtocol
         case fruitMetadataNetatalk
@@ -94,6 +99,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         nbnsEnabled = try container.decodeIfPresent(Bool.self, forKey: .nbnsEnabled) ?? Self.default.nbnsEnabled
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
+        smbBindLanOnly = try container.decodeIfPresent(Bool.self, forKey: .smbBindLanOnly) ?? Self.default.smbBindLanOnly
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
         fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk

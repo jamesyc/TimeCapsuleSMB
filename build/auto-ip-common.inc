@@ -800,11 +800,17 @@ static int TC_AUTO_IP_UNUSED link_ipv6_addr_is_samba_bindable(const struct link_
     return addr->prefix_len >= 0 && runtime_ipv6_is_bindable(&addr->addr);
 }
 
+static int TC_AUTO_IP_UNUSED link_ipv4_addr_is_samba_bindable(const struct link_ipv4_addr *addr) {
+    return runtime_ipv4_is_bindable(addr->addr) && !ipv4_is_link_local(addr->addr);
+}
+
 static int TC_AUTO_IP_UNUSED link_context_has_samba_address(const struct link_context *ctx) {
     size_t i;
 
-    if (ctx->ipv4_count > 0) {
-        return 1;
+    for (i = 0; i < ctx->ipv4_count; i++) {
+        if (link_ipv4_addr_is_samba_bindable(&ctx->ipv4[i])) {
+            return 1;
+        }
     }
     for (i = 0; i < ctx->ipv6_count; i++) {
         if (link_ipv6_addr_is_samba_bindable(&ctx->ipv6[i])) {
@@ -983,6 +989,9 @@ static int TC_AUTO_IP_UNUSED print_smb_link_bind_tokens(FILE *stream, const stru
         const struct link_context *ctx = &set->links[i];
         for (j = 0; j < ctx->ipv4_count; j++) {
             char cidr[INET_ADDRSTRLEN + 4];
+            if (!link_ipv4_addr_is_samba_bindable(&ctx->ipv4[j])) {
+                continue;
+            }
             if (link_context_ipv4_cidr(cidr, sizeof(cidr), &ctx->ipv4[j]) != 0) {
                 return -1;
             }

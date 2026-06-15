@@ -46,6 +46,7 @@ struct AppSettingsView: View {
                     }
                     Toggle(L10n.string("toggle.enable_nbns"), isOn: $editor.draft.nbnsEnabled)
                     Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $editor.draft.internalShareUseDiskRoot)
+                    Toggle(L10n.string("toggle.smb_bind_lan_only"), isOn: $editor.draft.smbBindLanOnly)
                     Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $editor.draft.smbBrowseCompatibility)
                     Toggle(L10n.string("toggle.any_protocol"), isOn: $editor.draft.anyProtocol)
                     Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $editor.draft.fruitMetadataNetatalk)

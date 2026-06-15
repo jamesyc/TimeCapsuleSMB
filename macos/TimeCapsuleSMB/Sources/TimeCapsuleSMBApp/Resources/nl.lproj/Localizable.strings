@@ -885,6 +885,7 @@
 "toggle.enable_debug_logging" = "Debug-logboekregistratie inschakelen";
 "toggle.enable_nbns" = "Inschakelen NBNS";
 "toggle.internal_share_use_disk_root" = "Intern delen maakt gebruik van schijfroot";
+"toggle.smb_bind_lan_only" = "SMB alleen aan LAN binden";
 "toggle.smb_browse_compatibility" = "Toestaan SMB Bladeren delen";
 "toggle.any_protocol" = "Elk SMB-protocol toestaan";
 "toggle.use_netatalk_metadata" = "Gebruik Netatalk voor metadata";

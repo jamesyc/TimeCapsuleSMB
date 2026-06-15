@@ -1494,8 +1494,19 @@ def probe_remote_network_capabilities_conn(connection: SshConnection, *, timeout
     script = rf'''
 RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
 RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
+RUNTIME_CONFIG_FILE=${{RUNTIME_CONFIG_FILE:-/mnt/Flash/tcapsulesmb.conf}}
 RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
 RUNTIME_NBNS_BIN=${{RUNTIME_NBNS_BIN:-$RUNTIME_RAM_SBIN/nbns-advertiser}}
+SMB_BIND_LAN_ONLY=${{SMB_BIND_LAN_ONLY:-1}}
+
+if [ -f "$RUNTIME_CONFIG_FILE" ]; then
+    . "$RUNTIME_CONFIG_FILE"
+fi
+
+case "$SMB_BIND_LAN_ONLY" in
+    0|false|FALSE|no|NO) SMB_BIND_ARG=--print-smb-bind-interfaces ;;
+    *) SMB_BIND_ARG=--print-smb-bind-interfaces-lan ;;
+esac
 
 tc_probe_cap() {{
     cap_name=$1
@@ -1514,7 +1525,7 @@ tc_probe_cap() {{
     fi
 }}
 
-tc_probe_cap smb "$RUNTIME_MDNS_BIN" --print-smb-bind-interfaces
+tc_probe_cap smb "$RUNTIME_MDNS_BIN" "$SMB_BIND_ARG"
 tc_probe_cap mdns "$RUNTIME_MDNS_BIN" --print-mdns-socket-families
 tc_probe_cap nbns "$RUNTIME_NBNS_BIN" --print-nbns-socket-families
 '''
