@@ -142,7 +142,6 @@ derive_airport_fields() {
     iface_mac=$1
 
     AIRPORT_INSTANCE_NAME=$(get_airport_system_name || true)
-    AIRPORT_HOST_LABEL=$(get_airport_host_label || true)
     AIRPORT_WAMA=
     AIRPORT_RAMA=$(get_radio_mac bwl0 || true)
     AIRPORT_RAM2=$(get_radio_mac bwl1 || true)
@@ -387,7 +386,7 @@ tc_prepare_mdns_identity() {
     fi
 
     if derive_airport_fields "$iface_mac"; then
-        tc_log "$context: derived airport fields instance=${AIRPORT_INSTANCE_NAME:-missing} host=${AIRPORT_HOST_LABEL:-missing} model=${MDNS_DEVICE_MODEL:-missing} wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} rast=${AIRPORT_RAST:-missing} rana=${AIRPORT_RANA:-missing} syfl=${AIRPORT_SYFL:-missing} syap=${AIRPORT_SYAP:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing} bjsd=${AIRPORT_BJSD:-missing}"
+        tc_log "$context: derived airport fields instance=${AIRPORT_INSTANCE_NAME:-missing} mdns_host=${MDNS_HOST_LABEL:-missing} model=${MDNS_DEVICE_MODEL:-missing} wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} rast=${AIRPORT_RAST:-missing} rana=${AIRPORT_RANA:-missing} syfl=${AIRPORT_SYFL:-missing} syap=${AIRPORT_SYAP:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing} bjsd=${AIRPORT_BJSD:-missing}"
     else
         tc_log "$context: airport clone fields incomplete; skipping _airport._tcp advertisement"
     fi

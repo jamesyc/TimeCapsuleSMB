@@ -109,31 +109,19 @@ get_airport_system_name() {
     get_airport_acp_value syNm
 }
 
-get_airport_host_label() {
-    /bin/hostname 2>/dev/null | sed -n '1p'
-}
-
-tc_identity_first_label() {
+tc_hostname_first_label() {
     printf '%s\n' "$1" | sed -n '1p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/\..*$//'
 }
 
-tc_normalize_mdns_instance_name() {
+tc_normalize_mdns_name() {
     printf '%s\n' "$1" \
         | sed -n '1p' \
-        | sed 's/[[:cntrl:].]/-/g;s/^[[:space:]]*//;s/[[:space:]]*$//' \
+        | sed 's/[[:cntrl:]]/-/g;s/^[[:space:]]*//;s/[[:space:]]*$//' \
         | sed 's/^\(.\{1,63\}\).*/\1/'
 }
 
-tc_normalize_mdns_host_label() {
-    tc_identity_first_label "$1" \
-        | sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/' \
-        | sed 's/[^abcdefghijklmnopqrstuvwxyz0123456789-]/-/g;s/^-*//;s/-*$//' \
-        | sed 's/^\(.\{1,63\}\).*/\1/' \
-        | sed 's/^-*//;s/-*$//'
-}
-
 tc_normalize_netbios_name() {
-    netbios_name=$(tc_identity_first_label "$1" \
+    netbios_name=$(tc_hostname_first_label "$1" \
         | sed 's/[^ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]//g' \
         | sed 's/^\(.\{1,15\}\).*/\1/')
     case "$netbios_name" in
@@ -157,14 +145,11 @@ tc_init_runtime_identity() {
     runtime_system_name=$(get_airport_system_name || true)
     runtime_hostname=$(/bin/hostname 2>/dev/null | sed -n '1p' || true)
 
-    runtime_host_label=$(tc_normalize_mdns_host_label "$runtime_hostname" || true)
-    if [ -z "$runtime_host_label" ]; then
-        runtime_host_label=$(tc_normalize_mdns_host_label "$runtime_system_name" || true)
+    runtime_mdns_name=$(tc_normalize_mdns_name "$runtime_system_name" || true)
+    if [ -z "$runtime_mdns_name" ]; then
+        runtime_mdns_name=$(tc_normalize_mdns_name "$runtime_hostname" || true)
     fi
-    [ -n "$runtime_host_label" ] || runtime_host_label=timecapsule
-
-    runtime_instance_name=$(tc_normalize_mdns_instance_name "$runtime_system_name" || true)
-    [ -n "$runtime_instance_name" ] || runtime_instance_name=$runtime_host_label
+    [ -n "$runtime_mdns_name" ] || runtime_mdns_name=timecapsule
 
     runtime_netbios_name=$(tc_normalize_netbios_name "$runtime_hostname" || true)
     if [ -z "$runtime_netbios_name" ]; then
@@ -173,10 +158,10 @@ tc_init_runtime_identity() {
     [ -n "$runtime_netbios_name" ] || runtime_netbios_name=TimeCapsule
 
     runtime_server_string=$(tc_normalize_server_string "$runtime_system_name" || true)
-    [ -n "$runtime_server_string" ] || runtime_server_string=$runtime_instance_name
+    [ -n "$runtime_server_string" ] || runtime_server_string=$runtime_mdns_name
 
-    MDNS_INSTANCE_NAME=$runtime_instance_name
-    MDNS_HOST_LABEL=$runtime_host_label
+    MDNS_INSTANCE_NAME=$runtime_mdns_name
+    MDNS_HOST_LABEL=$runtime_mdns_name
     SMB_NETBIOS_NAME=$runtime_netbios_name
     SMB_SERVER_STRING=$runtime_server_string
     TC_RUNTIME_IDENTITY_READY=1

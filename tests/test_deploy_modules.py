@@ -873,14 +873,15 @@ echo ok
 
         self.assertEqual(result.system_name, "James's AirPort.Time Capsule")
         self.assertEqual(result.hostname, "Time Capsule.local")
-        self.assertEqual(result.mdns_instance_name, "James's AirPort-Time Capsule")
-        self.assertEqual(result.mdns_host_label, "time-capsule")
+        self.assertEqual(result.mdns_instance_name, "James's AirPort.Time Capsule")
+        self.assertEqual(result.mdns_host_label, "James's AirPort.Time Capsule")
         self.assertEqual(result.netbios_name, "TimeCapsule")
 
     def test_runtime_naming_identity_rejects_netbios_without_alnum(self) -> None:
         result = derive_runtime_naming_identity("极端 时间胶囊", "---.local")
 
-        self.assertEqual(result.mdns_host_label, "timecapsule")
+        self.assertEqual(result.mdns_instance_name, "极端 时间胶囊")
+        self.assertEqual(result.mdns_host_label, "极端 时间胶囊")
         self.assertEqual(result.netbios_name, "TimeCapsule")
 
     def test_probe_remote_runtime_naming_identity_reads_acp_and_hostname(self) -> None:
@@ -892,7 +893,7 @@ echo ok
         self.assertEqual(result.system_name, "Time Capsule")
         self.assertEqual(result.hostname, "time-capsule.local")
         self.assertEqual(result.mdns_instance_name, "Time Capsule")
-        self.assertEqual(result.mdns_host_label, "time-capsule")
+        self.assertEqual(result.mdns_host_label, "Time Capsule")
         self.assertEqual(result.netbios_name, "time-capsule")
         command = run_ssh_mock.call_args.args[1]
         self.assertIn("/usr/bin/acp -q syNm", command)
@@ -1214,6 +1215,84 @@ int main(void) {{
 }}
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_airport_txt_invalid_mac")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_mdns_advertiser_escapes_dotted_generated_names_as_single_wire_label(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    unsigned char packet[BUF_SIZE];
+    size_t off = 0;
+    size_t cursor = 0;
+    char decoded[MAX_NAME];
+    char host_fqdn[MAX_NAME];
+    char instance_fqdn[MAX_NAME];
+    char extracted[MAX_NAME];
+    const char *raw_name = "A.B.'s AirPort Time Capsule";
+    const char *expected_host = "A\\.B\\.'s AirPort Time Capsule.local.";
+    const char *expected_instance = "A\\.B\\.'s AirPort Time Capsule._smb._tcp.local.";
+    size_t raw_len = strlen(raw_name);
+
+    if (validate_generated_dns_label(raw_name, "host label") != 0) {{
+        return 1;
+    }}
+    if (build_host_fqdn(host_fqdn, sizeof(host_fqdn), raw_name) != 0) {{
+        return 2;
+    }}
+    if (strcmp(host_fqdn, expected_host) != 0) {{
+        fprintf(stderr, "host_fqdn=%s\n", host_fqdn);
+        return 3;
+    }}
+    if (encode_name(packet, &off, sizeof(packet), host_fqdn) != 0) {{
+        return 4;
+    }}
+    if (packet[0] != (unsigned char)raw_len || memcmp(packet + 1, raw_name, raw_len) != 0) {{
+        return 5;
+    }}
+    if (packet[raw_len + 1] != 5 ||
+        memcmp(packet + raw_len + 2, "local", 5) != 0 ||
+        packet[raw_len + 7] != 0 ||
+        off != raw_len + 8) {{
+        return 6;
+    }}
+    if (decode_name(packet, off, &cursor, decoded, sizeof(decoded)) != 0 ||
+        cursor != off ||
+        !name_equals(decoded, expected_host)) {{
+        fprintf(stderr, "decoded=%s cursor=%lu off=%lu\n", decoded, (unsigned long)cursor, (unsigned long)off);
+        return 7;
+    }}
+    if (build_host_label_from_fqdn(extracted, sizeof(extracted), host_fqdn) != 0 ||
+        strcmp(extracted, raw_name) != 0) {{
+        fprintf(stderr, "host_label=%s\n", extracted);
+        return 8;
+    }}
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), raw_name, "_smb._tcp.local.") != 0) {{
+        return 9;
+    }}
+    if (strcmp(instance_fqdn, expected_instance) != 0) {{
+        fprintf(stderr, "instance_fqdn=%s\n", instance_fqdn);
+        return 10;
+    }}
+    if (extract_instance_name(extracted, sizeof(extracted), instance_fqdn, "_smb._tcp.local.") != 0 ||
+        strcmp(extracted, raw_name) != 0) {{
+        fprintf(stderr, "instance=%s\n", extracted);
+        return 11;
+    }}
+    if (build_host_fqdn(host_fqdn, sizeof(host_fqdn), "Time Capsule") != 0 ||
+        strcmp(host_fqdn, "Time Capsule.local.") != 0) {{
+        fprintf(stderr, "plain_host=%s\n", host_fqdn);
+        return 12;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_dotted_name_wire_label")
         self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_mdns_advertiser_sets_cache_flush_for_unique_records_only(self) -> None:
@@ -1639,7 +1718,7 @@ int main(void) {{
         self.assertIn("Usage:", run.stderr)
         self.assertNotIn("snapshot load:", run.stderr)
 
-    def test_mdns_advertiser_capture_only_validates_optional_dns_labels(self) -> None:
+    def test_mdns_advertiser_capture_only_rejects_invalid_optional_dns_label_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             bin_path = self._compile_mdns_advertiser_binary(tmp)
@@ -1649,14 +1728,14 @@ int main(void) {{
                     "--save-snapshot",
                     str(tmp / "applemdns.txt"),
                     "--host",
-                    "bad.host",
+                    "bad\x01host",
                 ],
                 capture_output=True,
                 text=True,
                 check=False,
             )
         self.assertEqual(run.returncode, 5)
-        self.assertIn("host label must not contain dots", run.stderr)
+        self.assertIn("host label contains an invalid control character", run.stderr)
         self.assertNotIn("mdns capture-only:", run.stderr)
 
     def test_mdns_advertiser_snapshot_capture_requires_auto_ip(self) -> None:

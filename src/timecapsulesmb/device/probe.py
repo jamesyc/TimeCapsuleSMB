@@ -922,24 +922,25 @@ def _truncate_utf8(value: str, max_bytes: int) -> str:
     return "".join(output)
 
 
-def _first_dns_label(value: str) -> str:
+def _hostname_first_label(value: str) -> str:
     return value.strip().split(".", 1)[0].strip()
 
 
-def normalize_runtime_mdns_instance_name(value: str) -> str:
-    normalized = "".join("-" if char == "." or ord(char) < 0x20 or ord(char) == 0x7F else char for char in value)
+def normalize_runtime_mdns_name(value: str) -> str:
+    normalized = "".join("-" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in value)
     return _truncate_utf8(normalized.strip(), MAX_DNS_LABEL_BYTES)
 
 
+def normalize_runtime_mdns_instance_name(value: str) -> str:
+    return normalize_runtime_mdns_name(value)
+
+
 def normalize_runtime_mdns_host_label(value: str) -> str:
-    candidate = _first_dns_label(value).lower()
-    normalized = re.sub(r"[^a-z0-9-]", "-", candidate).strip("-")
-    normalized = _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES)
-    return normalized.strip("-")
+    return normalize_runtime_mdns_name(value)
 
 
 def normalize_runtime_netbios_name(value: str) -> str:
-    candidate = _first_dns_label(value)
+    candidate = _hostname_first_label(value)
     normalized = re.sub(r"[^A-Za-z0-9_-]", "", candidate)
     if not re.search(r"[A-Za-z0-9]", normalized):
         return ""
@@ -950,9 +951,9 @@ def derive_runtime_naming_identity(system_name: str | None, hostname: str | None
     raw_system_name = (system_name or "").strip() or None
     raw_hostname = (hostname or "").strip() or None
 
-    mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
+    mdns_host_label = normalize_runtime_mdns_host_label(raw_system_name or "")
     if not mdns_host_label:
-        mdns_host_label = normalize_runtime_mdns_host_label(raw_system_name or "")
+        mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
     if not mdns_host_label:
         mdns_host_label = "timecapsule"
 

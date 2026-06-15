@@ -427,7 +427,10 @@ static const unsigned int g_startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 
 
 static long long monotonic_millis(void);
 static int name_equals(const char *a, const char *b);
+static int escape_dns_label(char *out, size_t out_len, const char *label);
+static int unescape_dns_label(char *out, size_t out_len, const char *label);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
+static int build_host_fqdn(char *out, size_t out_len, const char *host_label);
 static int is_airport_enabled(const struct config *cfg);
 static int is_riousbprint_enabled(const struct config *cfg);
 static int is_pdl_datastream_enabled(const struct config *cfg);
@@ -1141,8 +1144,10 @@ static void trim_trailing_dot(char *value) {
 static int extract_instance_name(char *out, size_t out_len, const char *instance_fqdn, const char *service_type) {
     char fqdn_copy[MAX_NAME];
     char service_copy[MAX_NAME];
+    char escaped_instance[MAX_NAME];
     size_t fqdn_len;
     size_t service_len;
+    size_t instance_len;
 
     if (strlen(instance_fqdn) >= sizeof(fqdn_copy) || strlen(service_type) >= sizeof(service_copy)) {
         return -1;
@@ -1163,35 +1168,45 @@ static int extract_instance_name(char *out, size_t out_len, const char *instance
     if (fqdn_copy[fqdn_len - service_len - 1] != '.') {
         return -1;
     }
-    if (fqdn_len - service_len - 1 >= out_len) {
+    instance_len = fqdn_len - service_len - 1;
+    if (instance_len >= sizeof(escaped_instance)) {
         return -1;
     }
-    memcpy(out, fqdn_copy, fqdn_len - service_len - 1);
-    out[fqdn_len - service_len - 1] = '\0';
-    trim_trailing_dot(out);
-    return 0;
+    memcpy(escaped_instance, fqdn_copy, instance_len);
+    escaped_instance[instance_len] = '\0';
+    return unescape_dns_label(out, out_len, escaped_instance);
 }
 
 static int build_host_label_from_fqdn(char *out, size_t out_len, const char *host_fqdn) {
     size_t i;
+    size_t label_len = 0;
+    char escaped_label[MAX_NAME];
 
     if (host_fqdn == NULL || host_fqdn[0] == '\0') {
         return -1;
     }
     for (i = 0; host_fqdn[i] != '\0'; i++) {
+        if (host_fqdn[i] == '\\') {
+            if (host_fqdn[i + 1] == '\0' || label_len + 2 >= sizeof(escaped_label)) {
+                return -1;
+            }
+            escaped_label[label_len++] = host_fqdn[i++];
+            escaped_label[label_len++] = host_fqdn[i];
+            continue;
+        }
         if (host_fqdn[i] == '.') {
             break;
         }
-        if (i + 1 >= out_len) {
+        if (label_len + 1 >= sizeof(escaped_label)) {
             return -1;
         }
-        out[i] = host_fqdn[i];
+        escaped_label[label_len++] = host_fqdn[i];
     }
-    if (i == 0 || i >= out_len) {
+    if (label_len == 0 || label_len >= sizeof(escaped_label)) {
         return -1;
     }
-    out[i] = '\0';
-    return 0;
+    escaped_label[label_len] = '\0';
+    return unescape_dns_label(out, out_len, escaped_label);
 }
 
 static struct service_record *find_record(struct service_record_set *set, const char *service_type, const char *instance_name) {
@@ -1679,7 +1694,7 @@ static int append_u32(uint8_t *buf, size_t *off, size_t cap, uint32_t value) {
     return append_bytes(buf, off, cap, &net, sizeof(net));
 }
 
-static int validate_single_dns_label(const char *value, const char *field_name) {
+static int validate_dns_label_text(const char *value, const char *field_name, int allow_dots) {
     size_t len;
     const unsigned char *p;
 
@@ -1694,7 +1709,7 @@ static int validate_single_dns_label(const char *value, const char *field_name) 
         return -1;
     }
 
-    if (strchr(value, '.') != NULL) {
+    if (!allow_dots && strchr(value, '.') != NULL) {
         fprintf(stderr, "%s must not contain dots\n", field_name);
         return -1;
     }
@@ -1709,14 +1724,91 @@ static int validate_single_dns_label(const char *value, const char *field_name) 
     return 0;
 }
 
+static int validate_single_dns_label(const char *value, const char *field_name) {
+    return validate_dns_label_text(value, field_name, 0);
+}
+
+static int validate_generated_dns_label(const char *value, const char *field_name) {
+    return validate_dns_label_text(value, field_name, 1);
+}
+
+static int escape_dns_label(char *out, size_t out_len, const char *label) {
+    size_t in_i;
+    size_t out_i = 0;
+
+    if (label == NULL || label[0] == '\0') {
+        return -1;
+    }
+    for (in_i = 0; label[in_i] != '\0'; in_i++) {
+        unsigned char ch = (unsigned char)label[in_i];
+        if (ch == '.' || ch == '\\') {
+            if (out_i + 2 >= out_len) {
+                return -1;
+            }
+            out[out_i++] = '\\';
+            out[out_i++] = (char)ch;
+        } else {
+            if (out_i + 1 >= out_len) {
+                return -1;
+            }
+            out[out_i++] = (char)ch;
+        }
+    }
+    out[out_i] = '\0';
+    return 0;
+}
+
+static int unescape_dns_label(char *out, size_t out_len, const char *label) {
+    size_t in_i;
+    size_t out_i = 0;
+
+    if (label == NULL || label[0] == '\0') {
+        return -1;
+    }
+    for (in_i = 0; label[in_i] != '\0'; in_i++) {
+        unsigned char ch = (unsigned char)label[in_i];
+        if (ch == '\\') {
+            in_i++;
+            if (label[in_i] == '\0') {
+                return -1;
+            }
+            ch = (unsigned char)label[in_i];
+        }
+        if (out_i + 1 >= out_len) {
+            return -1;
+        }
+        out[out_i++] = (char)ch;
+    }
+    out[out_i] = '\0';
+    return 0;
+}
+
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type) {
+    char escaped_instance[MAX_NAME];
     int written;
 
-    written = snprintf(out, out_len, "%s.%s", instance_name, service_type);
+    if (escape_dns_label(escaped_instance, sizeof(escaped_instance), instance_name) != 0) {
+        return -1;
+    }
+    written = snprintf(out, out_len, "%s.%s", escaped_instance, service_type);
     if (written < 0 || (size_t)written >= out_len) {
         return -1;
     }
 
+    return 0;
+}
+
+static int build_host_fqdn(char *out, size_t out_len, const char *host_label) {
+    char escaped_host[MAX_NAME];
+    int written;
+
+    if (escape_dns_label(escaped_host, sizeof(escaped_host), host_label) != 0) {
+        return -1;
+    }
+    written = snprintf(out, out_len, "%s.local.", escaped_host);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
     return 0;
 }
 
@@ -2648,30 +2740,49 @@ static int validate_dns_name(const char *value, const char *field_name) {
 }
 
 static int encode_name(uint8_t *buf, size_t *off, size_t cap, const char *name) {
-    char temp[MAX_NAME];
-    char *token;
-    char *saveptr = NULL;
+    size_t name_i = 0;
+    size_t label_len = 0;
+    uint8_t label[MAX_LABEL];
 
-    if (strlen(name) >= sizeof(temp)) {
+    if (name == NULL || name[0] == '\0') {
         return -1;
     }
-    strcpy(temp, name);
 
-    token = strtok_r(temp, ".", &saveptr);
-    while (token != NULL) {
-        size_t len = strlen(token);
-        uint8_t label_len;
-        if (len == 0 || len > 63) {
+    while (name[name_i] != '\0') {
+        unsigned char ch = (unsigned char)name[name_i++];
+        if (ch == '\\') {
+            if (name[name_i] == '\0') {
+                return -1;
+            }
+            ch = (unsigned char)name[name_i++];
+        } else if (ch == '.') {
+            uint8_t wire_len;
+            if (label_len == 0) {
+                if (name[name_i] == '\0') {
+                    break;
+                }
+                return -1;
+            }
+            wire_len = (uint8_t)label_len;
+            if (append_bytes(buf, off, cap, &wire_len, 1) != 0 ||
+                append_bytes(buf, off, cap, label, label_len) != 0) {
+                return -1;
+            }
+            label_len = 0;
+            continue;
+        }
+        if (label_len >= MAX_LABEL) {
             return -1;
         }
-        label_len = (uint8_t)len;
-        if (append_bytes(buf, off, cap, &label_len, 1) != 0) {
+        label[label_len++] = ch;
+    }
+
+    if (label_len > 0) {
+        uint8_t wire_len = (uint8_t)label_len;
+        if (append_bytes(buf, off, cap, &wire_len, 1) != 0 ||
+            append_bytes(buf, off, cap, label, label_len) != 0) {
             return -1;
         }
-        if (append_bytes(buf, off, cap, token, len) != 0) {
-            return -1;
-        }
-        token = strtok_r(NULL, ".", &saveptr);
     }
 
     return append_bytes(buf, off, cap, "\0", 1);
@@ -2729,11 +2840,24 @@ static int decode_name(const uint8_t *packet, size_t packet_len, size_t *cursor,
             }
             out[out_pos++] = '.';
         }
-        if (out_pos + len >= out_len) {
-            return -1;
+        {
+            size_t label_i;
+            for (label_i = 0; label_i < len; label_i++) {
+                unsigned char ch = packet[pos + 1 + label_i];
+                if (ch == '.' || ch == '\\') {
+                    if (out_pos + 2 >= out_len) {
+                        return -1;
+                    }
+                    out[out_pos++] = '\\';
+                    out[out_pos++] = (char)ch;
+                } else {
+                    if (out_pos + 1 >= out_len) {
+                        return -1;
+                    }
+                    out[out_pos++] = (char)ch;
+                }
+            }
         }
-        memcpy(out + out_pos, packet + pos + 1, len);
-        out_pos += len;
         pos += 1 + len;
         if (!jumped) {
             next_cursor = pos;
@@ -3150,7 +3274,6 @@ static int write_snapshot_file_atomic(const char *path, const struct service_rec
 static int build_airport_snapshot_set(const struct config *cfg, struct service_record_set *out) {
     struct service_record *record;
     char airport_txt[256];
-    int written;
 
     if (cfg->instance_name[0] == '\0' || cfg->host_label[0] == '\0' ||
         !cfg_has_airport_identity_macs(cfg)) {
@@ -3169,8 +3292,7 @@ static int build_airport_snapshot_set(const struct config *cfg, struct service_r
         return -1;
     }
     strncpy(record->host_label, cfg->host_label, sizeof(record->host_label) - 1);
-    written = snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", cfg->host_label);
-    if (written < 0 || (size_t)written >= sizeof(record->host_fqdn)) {
+    if (build_host_fqdn(record->host_fqdn, sizeof(record->host_fqdn), record->host_label) != 0) {
         return -1;
     }
     record->port = cfg->airport_port;
@@ -3240,7 +3362,7 @@ static int load_snapshot_file(const char *path, struct service_record_set *out) 
             }
         } else if (strncmp(line, "HOST=", 5) == 0) {
             strncpy(current.host_label, line + 5, sizeof(current.host_label) - 1);
-            if (snprintf(current.host_fqdn, sizeof(current.host_fqdn), "%s.local.", current.host_label) >= (int)sizeof(current.host_fqdn)) {
+            if (build_host_fqdn(current.host_fqdn, sizeof(current.host_fqdn), current.host_label) != 0) {
                 fclose(fp);
                 return -1;
             }
@@ -7373,8 +7495,8 @@ int main(int argc, char **argv) {
         return EXIT_MISSING_REQUIRED_ARGS;
     }
 
-    if ((cfg.instance_name[0] != '\0' && validate_single_dns_label(cfg.instance_name, "instance name") != 0) ||
-        (cfg.host_label[0] != '\0' && validate_single_dns_label(cfg.host_label, "host label") != 0)) {
+    if ((cfg.instance_name[0] != '\0' && validate_generated_dns_label(cfg.instance_name, "instance name") != 0) ||
+        (cfg.host_label[0] != '\0' && validate_generated_dns_label(cfg.host_label, "host label") != 0)) {
         return EXIT_INVALID_DNS_LABEL;
     }
     if ((cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') && !auto_ip) {
@@ -7405,7 +7527,7 @@ int main(int argc, char **argv) {
         const char *txts[RIOUSBPRINT_MAX_TXT_ITEMS];
         size_t txt_count;
 
-        if (validate_single_dns_label(cfg.riousbprint_instance_name, "riousbprint name") != 0) {
+        if (validate_generated_dns_label(cfg.riousbprint_instance_name, "riousbprint name") != 0) {
             return EXIT_INVALID_DNS_LABEL;
         }
         if (cfg.riousbprint_port == 0) {
@@ -7435,7 +7557,9 @@ int main(int argc, char **argv) {
     }
 
     if (!capture_only) {
-        snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
+        if (build_host_fqdn(cfg.host_fqdn, sizeof(cfg.host_fqdn), cfg.host_label) != 0) {
+            return EXIT_INVALID_DNS_LABEL;
+        }
         log_startup_config(&cfg);
     } else {
         fprintf(stderr, "mdns capture-only: save_all=%s save_airport=%s save_trusted=%s airport_identity=%s\n",
