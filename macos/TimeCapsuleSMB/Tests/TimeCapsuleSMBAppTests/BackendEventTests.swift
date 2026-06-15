@@ -102,6 +102,18 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.localizedSummary, "诊断检查通过。")
     }
 
+    func testBackendEventLocalizesKnownErrorSummaries() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let event = BackendEvent(type: "error", operation: "doctor", code: "auth_failed", message: "Password rejected.")
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(event.localizedSummary, "doctor: The device rejected the supplied password or SSH credentials.")
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(event.localizedSummary, "doctor：设备拒绝了提供的密码或 SSH 凭据。")
+    }
+
     func testBackendSummaryLocalizationCoversRuntimeWaitMessages() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

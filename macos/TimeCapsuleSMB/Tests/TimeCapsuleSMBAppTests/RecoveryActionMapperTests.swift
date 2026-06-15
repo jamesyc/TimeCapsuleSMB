@@ -16,6 +16,57 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics)))
     }
 
+    func testBackendErrorViewModelLocalizesAuthFailureMessagesAcrossFlows() {
+        let doctorError = BackendErrorViewModel(operation: "doctor", code: "auth_failed", message: "Password rejected.")
+        let configureError = BackendErrorViewModel(
+            operation: "configure",
+            code: "auth_failed",
+            message: "The AirPort admin password did not work."
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(doctorError.message, "The device rejected the supplied password or SSH credentials.")
+        XCTAssertEqual(configureError.message, "The AirPort admin password did not work.")
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(doctorError.message, "设备拒绝了提供的密码或 SSH 凭据。")
+        XCTAssertEqual(configureError.message, "AirPort 管理员密码无效。")
+    }
+
+    func testRecoveryGuidancePresentationLocalizesConfigureAuthFailure() throws {
+        let recovery = try recoveryValue(
+            title: "AirPort password rejected",
+            actions: [
+                "Re-enter the AirPort admin password.",
+                "Confirm the selected device is the intended Apple device."
+            ],
+            suggestedOperation: "configure",
+            actionIDs: ["replace_password"],
+            message: "ACP or SSH authentication failed while configuring the device.",
+            localizationKey: "configure.auth_failed"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "configure",
+            code: "auth_failed",
+            message: "The AirPort admin password did not work.",
+            recovery: recovery
+        )
+
+        L10n.apply(language: .english)
+        let english = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(english.title, "AirPort password rejected")
+        XCTAssertEqual(english.errorMessage, "The AirPort admin password did not work.")
+        XCTAssertEqual(english.detail, "ACP or SSH authentication failed while configuring the device.")
+        XCTAssertEqual(english.steps.first, "Re-enter the AirPort admin password.")
+
+        L10n.apply(language: .simplifiedChinese)
+        let chinese = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(chinese.title, "AirPort 密码被拒绝")
+        XCTAssertEqual(chinese.errorMessage, "AirPort 管理员密码无效。")
+        XCTAssertEqual(chinese.detail, "配置设备时 ACP 或 SSH 身份验证失败。")
+        XCTAssertEqual(chinese.steps, ["重新输入 AirPort 管理员密码。", "确认所选设备是目标 Apple 设备。"])
+    }
+
     func testSuggestedOperationMapsToUserFacingAction() throws {
         let recovery = try recoveryValue(
             title: "Disk issue",

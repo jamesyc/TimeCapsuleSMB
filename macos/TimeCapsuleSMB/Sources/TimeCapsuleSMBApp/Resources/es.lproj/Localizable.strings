@@ -721,6 +721,16 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Asegúrese de estar conectado a la misma red o Wi-Fi que el dispositivo.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "En dispositivos NetBSD 4, ejecute tcapsule activate una vez que se pueda acceder a SSH; La implementación no llegó lo suficientemente lejos como para activar Samba después del reinicio.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Si su dispositivo se reinicia solo, consulte https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.error.auth_failed" = "El dispositivo rechazó la contraseña o las credenciales SSH proporcionadas.";
+"backend.error.configure.auth_failed" = "La contraseña de administrador de AirPort no funcionó.";
+"backend.recovery.auth_failed.title" = "Error de autenticación";
+"backend.recovery.auth_failed.message" = "El dispositivo rechazó la contraseña o las credenciales SSH proporcionadas.";
+"backend.recovery.auth_failed.action.1" = "Vuelva a introducir la contraseña de administrador de AirPort.";
+"backend.recovery.auth_failed.action.2" = "Verifique que SSH esté activado en el dispositivo.";
+"backend.recovery.configure.auth_failed.title" = "Contraseña de AirPort rechazada";
+"backend.recovery.configure.auth_failed.message" = "La autenticación ACP o SSH falló al configurar el dispositivo.";
+"backend.recovery.configure.auth_failed.action.1" = "Vuelva a introducir la contraseña de administrador de AirPort.";
+"backend.recovery.configure.auth_failed.action.2" = "Confirme que el dispositivo seleccionado es el dispositivo Apple previsto.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "El dispositivo responde muy lentamente";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "El %@ responde muy lentamente. Reinicie el dispositivo. Luego espere a que SSH regrese y vuelva a intentarlo.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Reinicie el dispositivo.";

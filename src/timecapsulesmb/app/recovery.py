@@ -82,6 +82,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
+        localization_key="auth_failed",
     ),
     "unsupported_device": RecoveryInfo(
         "Unsupported device",
@@ -133,6 +134,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         retryable=True,
         suggested_operation="configure",
         action_ids=("replace_password",),
+        localization_key="configure.auth_failed",
     ),
     ("configure", "unsupported_device"): RecoveryInfo(
         "Unsupported device",

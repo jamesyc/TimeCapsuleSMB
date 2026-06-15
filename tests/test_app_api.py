@@ -2196,6 +2196,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["message"], "The AirPort admin password did not work.")
         self.assertEqual(error["debug"], ssh_error)
         self.assertEqual(error["recovery"]["title"], "AirPort password rejected")
+        self.assertEqual(error["recovery"]["localization_key"], "configure.auth_failed")
         self.assertEqual(error["recovery"]["suggested_operation"], "configure")
         self.assertEqual(error["recovery"]["action_ids"], ["replace_password"])
         self.assertNotIn("badpw", json.dumps(collector.events))

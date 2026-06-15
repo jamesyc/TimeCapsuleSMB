@@ -721,6 +721,16 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "На устройствах NetBSD 4 запустите tcapsule activate, как только SSH станет доступен; развертывание не зашло достаточно далеко, чтобы активировать Samba после перезагрузки.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Если ваше устройство выполняет перезагрузку, см. https://github.com/jamesyc/TimeCapsuleSMB/issues/177..";
+"backend.error.auth_failed" = "Устройство отклонило указанный пароль или учетные данные SSH.";
+"backend.error.configure.auth_failed" = "Пароль администратора AirPort не подошел.";
+"backend.recovery.auth_failed.title" = "Ошибка аутентификации";
+"backend.recovery.auth_failed.message" = "Устройство отклонило указанный пароль или учетные данные SSH.";
+"backend.recovery.auth_failed.action.1" = "Введите пароль администратора AirPort еще раз.";
+"backend.recovery.auth_failed.action.2" = "Убедитесь, что SSH включен на устройстве.";
+"backend.recovery.configure.auth_failed.title" = "Пароль AirPort отклонен";
+"backend.recovery.configure.auth_failed.message" = "Аутентификация ACP или SSH не удалась во время настройки устройства.";
+"backend.recovery.configure.auth_failed.action.1" = "Введите пароль администратора AirPort еще раз.";
+"backend.recovery.configure.auth_failed.action.2" = "Убедитесь, что выбрано нужное устройство Apple.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "Устройство отвечает очень медленно.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "%@ отвечает очень медленно. Пожалуйста, перезагрузите устройство. Затем подождите, пока SSH вернется, и повторите попытку.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Перезагрузите устройство.";

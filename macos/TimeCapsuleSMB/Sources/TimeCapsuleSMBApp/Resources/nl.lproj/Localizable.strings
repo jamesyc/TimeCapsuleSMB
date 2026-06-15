@@ -721,6 +721,16 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "Op NetBSD 4-apparaten voert u tcapsule activate uit zodra SSH bereikbaar is; De implementatie is niet ver genoeg gekomen om Samba te activeren na het opnieuw opstarten.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Als uw apparaat zichzelf reset, zie https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.error.auth_failed" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
+"backend.error.configure.auth_failed" = "Het AirPort-beheerderswachtwoord werkte niet.";
+"backend.recovery.auth_failed.title" = "Authenticatie mislukt";
+"backend.recovery.auth_failed.message" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
+"backend.recovery.auth_failed.action.1" = "Voer het AirPort-beheerderswachtwoord opnieuw in.";
+"backend.recovery.auth_failed.action.2" = "Controleer of SSH op het apparaat is ingeschakeld.";
+"backend.recovery.configure.auth_failed.title" = "AirPort-wachtwoord geweigerd";
+"backend.recovery.configure.auth_failed.message" = "ACP- of SSH-authenticatie is mislukt tijdens het configureren van het apparaat.";
+"backend.recovery.configure.auth_failed.action.1" = "Voer het AirPort-beheerderswachtwoord opnieuw in.";
+"backend.recovery.configure.auth_failed.action.2" = "Bevestig dat het geselecteerde apparaat het bedoelde Apple-apparaat is.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.title" = "Apparaat reageert erg langzaam";
 "backend.recovery.remote_error.ssh_timeout_slow_device.message" = "De %@ reageert erg langzaam. Start het apparaat opnieuw op. Wacht vervolgens tot SSH terugkomt en probeer het opnieuw.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Start het apparaat opnieuw op.";

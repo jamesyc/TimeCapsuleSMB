@@ -122,7 +122,7 @@ struct BackendErrorViewModel: Equatable {
     let recovery: BackendRecoveryPayload?
 
     var message: String {
-        localError?.message ?? rawMessage ?? ""
+        localError?.message ?? BackendErrorLocalization.message(operation: operation, code: code) ?? rawMessage ?? ""
     }
 
     init(event: BackendEvent) {
@@ -158,6 +158,18 @@ struct BackendErrorViewModel: Equatable {
     }
 }
 
+enum BackendErrorLocalization {
+    static func message(operation: String, code: String) -> String? {
+        for key in ["backend.error.\(operation).\(code)", "backend.error.\(code)"] {
+            let value = L10n.string(key)
+            if value != key {
+                return value
+            }
+        }
+        return nil
+    }
+}
+
 extension BackendEvent {
     var payloadSummaryText: String? {
         guard let payload else {
@@ -181,6 +193,11 @@ extension BackendEvent {
     var localizedSummary: String {
         if type == "result", let localizedPayloadSummaryText {
             return localizedPayloadSummaryText
+        }
+        if type == "error",
+           let code,
+           let localizedMessage = BackendErrorLocalization.message(operation: operation, code: code) {
+            return L10n.format("event.summary.error", operation, localizedMessage)
         }
         return summary
     }
