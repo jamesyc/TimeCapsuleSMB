@@ -222,12 +222,19 @@ Yes! If you want to rebuild `smbd` yourself, run the scripts in `build/` on a Ne
 
 #### Can I customize the configuration?
 
-Only a small set of local configuration is managed now:
-- device host
-- device/root password
-- legacy SSH options
+In the macOS app, each saved device has advanced settings for the managed SMB runtime. These settings are saved to the local device profile first. Run **Install / Update** afterward to push runtime-affecting changes to the Time Capsule.
 
-Share names and Bonjour names come from the Time Capsule itself. For most users, the defaults are recommended.
+- **Mount wait seconds**: default `30`. How long deploy, uninstall, fsck, and related operations wait for the AirPort disk to wake and mount.
+- **ATA idle seconds**: default `300`. Sets the built-in ATA disk idle timer when the managed runtime starts. Use `0` to disable the idle timer.
+- **ATA standby seconds**: default blank. Optionally sets the built-in ATA disk standby timer. Leave blank to avoid applying a standby timer; use `0` to disable the standby timer.
+- **Enable NBNS**: default on. Starts the NetBIOS name responder so older SMB/Windows-style network browsing can find the device.
+- **Internal Share Uses Disk Root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.
+- **Allow SMB Share Browsing**: default off. Relaxes anonymous browse restrictions so clients can enumerate shares more easily. Shares still require authentication.
+- **Allow Any SMB Protocol**: default off. Removes the SMB2/SMB3-only protocol restriction. Leave off unless an old client needs legacy SMB compatibility.
+- **Force Debug Logging**: default off. Enables verbose smbd/mDNS logging on the device. Use only for troubleshooting because it writes more logs.
+- **Use Netatalk for metadata**: default on. Stores Apple/Finder metadata in the Netatalk-compatible format used by Samba's fruit module. If unchecked, use `fruit:metadata = stream` instead.
+
+Share names and Bonjour names still come from the Time Capsule itself. For most users, the defaults are recommended.
 
 ## Maintenance
 
