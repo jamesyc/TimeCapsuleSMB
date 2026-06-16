@@ -1,31 +1,24 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules only support AFP and SMB1. Apple is removing AFP support in macOS 27, and removed SMB1 support from macOS a long time ago. This repo sets up modern Samba that runs directly on the Time Capsule itself; macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
-
-**NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5-15.7.7) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
-Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder, or upgrade to macOS 26.5 or newer.
+Apple AirPort Time Capsules only support AFP and SMB1. Apple removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). This is a modern Samba setup that runs directly on the Time Capsule itself; macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
 
 This project has 2 parts:
 - a fork of Samba 4, modified to work on the Apple Time Capsule
 - the installers for the Samba binary, via python or the **macOS GUI app**. 
 
-This is now fully working for all Time Capsules: the Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
+This now fully works for all Time Capsules. The Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />  
-This is now able to fully reproduce the full Apple experience: after you install this, you do not have to worry about it again, even if the device IP address changes. It will show up automatically in Time Machine in settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
+You get the full Apple experience reproduced: after you install this, you do not have to worry about it again, even if the device IP address changes. It will show up automatically in Time Machine in settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
-NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot. If you do not run the `activate` command after a reboot or flash the boot hook, then Samba will not start automatically on an older Time Capsule!
+NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can use this to flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot. If you do not run the `activate` command after a reboot or flash the boot hook, then Samba will not start automatically on an older Time Capsule!
 
 The current authentication model accepts any user as the username, and the Samba password is the current Time Capsule device password. At boot, the device reads its live AirPort `syPW` value and generates the Samba password file in RAM, so a device-password change is picked up after reboot. Guest access is disabled.
 
 AirPort Extreme devices are not officially supported. Unofficially, they work fine. Note that this is installed to the hard drive, so it will not work for an Airport Extreme without a hard drive (as there is not enough space to store the binaries on the flash memory).   
 
 ## Requirements
-
-The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine. 
-
-Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else. 
 
 You will need:  
 - A macOS 14+ or Linux machine on the same local network as the Time Capsule
@@ -38,15 +31,18 @@ For the python setup, you need:
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else. The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine. 
+
 ## Quick Start (macOS app)
 
 1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
 2. Unzip the app and run it. If you get a "cannot be opened" warning, you need to manually disable Gatekeeper for this app.
-3. Make sure Local Network permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
+3. Make sure *Local Network* permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
 4. Click "Add Device" on the left sidebar, and select your device. 
 5. Enter your device password, and click "Save Device". 
 6. Wait for the app to enable SSH for your Time Capsule.
-    - If it fails, close the app, reopen the app, removed the saved device, and try again.  
+    - If it fails, close the app, reopen the app, remove the saved device, and try again.
+    - Also, try rebooting your device.
 7. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
    <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />  
 8. Click "Install/Update" to deploy to the device.  
@@ -55,7 +51,9 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
     - There are reports the device may reset during a deploy, see [this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/177) for more information.
 9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
    <img width="634" height="429" alt="image" src="https://github.com/user-attachments/assets/e35d8934-975b-4079-8087-8c22984a3165" />
-10. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup.  
+10. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup.
+
+Please [read the FAQ](FAQ.md) for more information. 
 
 ## Quick Start (with python)
 
