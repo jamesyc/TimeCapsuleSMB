@@ -1946,6 +1946,7 @@ int main(void) {{
         source = '''
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <stdio.h>
 #include <string.h>
 
 static int fake_getifaddrs(struct ifaddrs **out);
@@ -2046,6 +2047,7 @@ int main(void) {{
         source = '''
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <stdio.h>
 #include <string.h>
 
 static int fake_getifaddrs(struct ifaddrs **out);
@@ -2157,6 +2159,146 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "auto_ip_getifaddrs_unnamed_entries")
         self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_mdns_smb_bind_lan_recovers_netbsd4_owner_names_from_ifconfig(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <stdio.h>
+#include <string.h>
+
+static int fake_getifaddrs(struct ifaddrs **out);
+static void fake_freeifaddrs(struct ifaddrs *list);
+static FILE *fake_popen(const char *command, const char *mode);
+static int fake_pclose(FILE *stream);
+
+#define getifaddrs fake_getifaddrs
+#define freeifaddrs fake_freeifaddrs
+#define popen fake_popen
+#define pclose fake_pclose
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+#undef getifaddrs
+#undef freeifaddrs
+#undef popen
+#undef pclose
+
+static struct ifaddrs fake_ifas[3];
+static struct sockaddr_in fake_addrs4[2];
+static struct sockaddr_in fake_masks4[2];
+static struct sockaddr_in6 fake_addr6;
+static struct sockaddr_in6 fake_mask6;
+static FILE *fake_ifconfig_stream;
+
+static void set_ipv4_sockaddr(struct sockaddr_in *sin, const char *addr) {{
+    memset(sin, 0, sizeof(*sin));
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    sin->sin_len = sizeof(*sin);
+#endif
+    sin->sin_family = AF_INET;
+    sin->sin_addr.s_addr = inet_addr(addr);
+}}
+
+static void set_ipv6_sockaddr(struct sockaddr_in6 *sin6, const char *addr) {{
+    memset(sin6, 0, sizeof(*sin6));
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    sin6->sin6_len = sizeof(*sin6);
+#endif
+    sin6->sin6_family = AF_INET6;
+    inet_pton(AF_INET6, addr, &sin6->sin6_addr);
+}}
+
+static void set_ipv6_prefix64_mask(struct sockaddr_in6 *sin6) {{
+    memset(sin6, 0, sizeof(*sin6));
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    sin6->sin6_len = sizeof(*sin6);
+#endif
+    sin6->sin6_family = AF_INET6;
+    memset(sin6->sin6_addr.s6_addr, 0xff, 8);
+}}
+
+static int fake_getifaddrs(struct ifaddrs **out) {{
+    memset(fake_ifas, 0, sizeof(fake_ifas));
+    memset(fake_addrs4, 0, sizeof(fake_addrs4));
+    memset(fake_masks4, 0, sizeof(fake_masks4));
+    memset(&fake_addr6, 0, sizeof(fake_addr6));
+    memset(&fake_mask6, 0, sizeof(fake_mask6));
+
+    set_ipv4_sockaddr(&fake_addrs4[0], "192.168.1.193");
+    set_ipv4_sockaddr(&fake_masks4[0], "255.255.255.0");
+    fake_ifas[0].ifa_next = &fake_ifas[1];
+    fake_ifas[0].ifa_name = "";
+    fake_ifas[0].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[0].ifa_addr = (struct sockaddr *)(void *)&fake_addrs4[0];
+    fake_ifas[0].ifa_netmask = (struct sockaddr *)(void *)&fake_masks4[0];
+
+    set_ipv6_sockaddr(&fake_addr6, "fdbb:5737:6e53:9bf7::40");
+    set_ipv6_prefix64_mask(&fake_mask6);
+    fake_ifas[1].ifa_next = &fake_ifas[2];
+    fake_ifas[1].ifa_name = "";
+    fake_ifas[1].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[1].ifa_addr = (struct sockaddr *)(void *)&fake_addr6;
+    fake_ifas[1].ifa_netmask = (struct sockaddr *)(void *)&fake_mask6;
+
+    set_ipv4_sockaddr(&fake_addrs4[1], "10.0.1.1");
+    set_ipv4_sockaddr(&fake_masks4[1], "255.255.255.0");
+    fake_ifas[2].ifa_next = NULL;
+    fake_ifas[2].ifa_name = "";
+    fake_ifas[2].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[2].ifa_addr = (struct sockaddr *)(void *)&fake_addrs4[1];
+    fake_ifas[2].ifa_netmask = (struct sockaddr *)(void *)&fake_masks4[1];
+
+    *out = &fake_ifas[0];
+    return 0;
+}}
+
+static void fake_freeifaddrs(struct ifaddrs *list) {{
+    (void)list;
+}}
+
+static FILE *fake_popen(const char *command, const char *mode) {{
+    (void)command;
+    if (strcmp(mode, "r") != 0) {{
+        return NULL;
+    }}
+    fake_ifconfig_stream = tmpfile();
+    if (fake_ifconfig_stream == NULL) {{
+        return NULL;
+    }}
+    fputs(
+        "mgi1: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500\\n"
+        "\\tinet6 fdbb:5737:6e53:9bf7::40 prefixlen 64 autoconf\\n"
+        "\\tinet 192.168.1.193 netmask 0xffffff00 broadcast 192.168.1.255\\n"
+        "bridge0: flags=8043<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500\\n"
+        "\\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255\\n",
+        fake_ifconfig_stream);
+    rewind(fake_ifconfig_stream);
+    return fake_ifconfig_stream;
+}}
+
+static int fake_pclose(FILE *stream) {{
+    return fclose(stream);
+}}
+
+int main(void) {{
+    if (print_smb_bind_interfaces_with_provider(stdout, collect_usable_link_contexts_provider, NULL) != EXIT_OK) {{
+        return 1;
+    }}
+    if (print_smb_bind_interfaces_lan_with_provider(stdout, collect_usable_link_contexts_provider, NULL) != EXIT_OK) {{
+        return 2;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_smb_bind_lan_recovers_netbsd4_ifconfig_names")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout,
+            "10.0.1.1/24 192.168.1.193/24 fdbb:5737:6e53:9bf7::40/64\n"
+            "10.0.1.1/24\n",
+        )
 
     def test_mdns_smb_bind_tokens_and_host_records_are_link_scoped_dual_stack(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2482,6 +2624,75 @@ int main(void) {{
             run.stdout,
             "10.0.1.1/24 fdbb:1111:2222:3333::40/64 192.168.1.217/24 fdbb:aaaa:bbbb:cccc::217/64\n"
             "10.0.1.1/24 fdbb:1111:2222:3333::40/64\n",
+        )
+
+    def test_mdns_print_smb_bind_interfaces_lan_falls_back_for_unnamed_netbsd4_links(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+struct fake_unnamed_lan_plan {{
+    int mode;
+}};
+
+static int fake_collect_links(struct link_context_set *out, void *userdata) {{
+    struct fake_unnamed_lan_plan *plan = (struct fake_unnamed_lan_plan *)userdata;
+    struct in6_addr ula;
+    struct in6_addr public_addr;
+
+    memset(out, 0, sizeof(*out));
+    if (inet_pton(AF_INET6, "fdbb:5737:6e53:9bf7::40", &ula) != 1 ||
+        inet_pton(AF_INET6, "2001:db8:5737:6e53::40", &public_addr) != 1) {{
+        return -1;
+    }}
+    if (plan->mode == 1) {{
+        append_link_ipv4(out, "ip4-0a000101", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv4(out, "ip4-a9fea3e0", inet_addr("169.254.163.224"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv6(out, "ipv6", &ula, 64, 0, IFF_UP | IFF_RUNNING);
+        append_link_ipv6(out, "ipv6-if9", &public_addr, 64, 0, IFF_UP | IFF_RUNNING);
+    }}
+    if (plan->mode == 2) {{
+        append_link_ipv6(out, "ipv6", &ula, 64, 0, IFF_UP | IFF_RUNNING);
+    }}
+    if (plan->mode == 3) {{
+        append_link_ipv6(out, "ipv6-if9", &public_addr, 64, 0, IFF_UP | IFF_RUNNING);
+    }}
+    return 0;
+}}
+
+int main(void) {{
+    struct fake_unnamed_lan_plan plan;
+
+    memset(&plan, 0, sizeof(plan));
+    plan.mode = 1;
+    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_OK) {{
+        return 1;
+    }}
+    if (print_smb_bind_interfaces_lan_with_provider(stdout, fake_collect_links, &plan) != EXIT_OK) {{
+        return 2;
+    }}
+    plan.mode = 2;
+    if (print_smb_bind_interfaces_lan_with_provider(stdout, fake_collect_links, &plan) != EXIT_OK) {{
+        return 3;
+    }}
+    plan.mode = 3;
+    if (print_smb_bind_interfaces_lan_with_provider(stdout, fake_collect_links, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+        return 4;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_print_smb_bind_lan_unnamed_fallback")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout,
+            "10.0.1.1/24 fdbb:5737:6e53:9bf7::40/64 2001:db8:5737:6e53::40/64\n"
+            "10.0.1.1/24 fdbb:5737:6e53:9bf7::40/64\n"
+            "fdbb:5737:6e53:9bf7::40/64\n",
         )
 
     def test_mdns_print_socket_families_uses_advertise_links_not_samba_tokens(self) -> None:

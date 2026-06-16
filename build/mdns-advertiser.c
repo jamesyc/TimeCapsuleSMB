@@ -628,13 +628,20 @@ static int link_contexts_need_ipv6_socket(const struct link_context_set *set);
 
 static void filter_smb_bind_link_contexts(struct link_context_set *out,
                                           const struct link_context_set *in,
-                                          int lan_only) {
+                                          int lan_only,
+                                          int unnamed_lan_fallback) {
     size_t i;
 
     memset(out, 0, sizeof(*out));
     for (i = 0; i < in->count; i++) {
-        if (lan_only && !iface_name_is_strong_lan(in->links[i].name)) {
-            continue;
+        if (lan_only) {
+            if (unnamed_lan_fallback) {
+                if (!link_context_is_unnamed_private_lan_fallback(&in->links[i])) {
+                    continue;
+                }
+            } else if (!iface_name_is_strong_lan(in->links[i].name)) {
+                continue;
+            }
         }
         if (!link_context_has_samba_address(&in->links[i])) {
             continue;
@@ -671,7 +678,16 @@ static int print_smb_bind_interfaces_with_policy(FILE *stream,
         fprintf(stderr, "auto-ip: Samba bind interface list exceeded static capacity\n");
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
-    filter_smb_bind_link_contexts(&bind_links, &all_links, lan_only);
+    filter_smb_bind_link_contexts(&bind_links, &all_links, lan_only, 0);
+    if (lan_only && bind_links.count == 0) {
+        /*
+         * Some NetBSD 4 Time Capsules expose getifaddrs address rows without
+         * interface names, so bridge0 appears as synthetic ip4-* links. In
+         * that case keep LAN-only mode working by falling back to private LAN
+         * Samba bind candidates instead of deferring startup forever.
+         */
+        filter_smb_bind_link_contexts(&bind_links, &all_links, lan_only, 1);
+    }
     if (bind_links.count == 0) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }

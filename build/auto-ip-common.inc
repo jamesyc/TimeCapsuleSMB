@@ -20,6 +20,9 @@
 #ifndef MAX_LINK_IPV6_ADDRS
 #define MAX_LINK_IPV6_ADDRS 8
 #endif
+#ifndef MAX_IFCONFIG_OWNER_ENTRIES
+#define MAX_IFCONFIG_OWNER_ENTRIES 64
+#endif
 
 struct iface_context {
     char name[IFNAMSIZ];
@@ -63,6 +66,18 @@ struct link_context_set {
     struct link_context links[MAX_IFACE_CONTEXTS];
     size_t count;
     int truncated;
+};
+
+struct ifconfig_address_owner {
+    int family;
+    uint32_t ipv4_addr;
+    struct in6_addr ipv6_addr;
+    char name[IFNAMSIZ];
+};
+
+struct ifconfig_address_owner_map {
+    struct ifconfig_address_owner entries[MAX_IFCONFIG_OWNER_ENTRIES];
+    size_t count;
 };
 
 static int TC_AUTO_IP_UNUSED runtime_ipv4_is_usable(uint32_t ipv4_addr) {
@@ -251,6 +266,10 @@ static int TC_AUTO_IP_UNUSED ipv6_is_multicast_addr(const struct in6_addr *addr)
 
 static int TC_AUTO_IP_UNUSED ipv6_is_link_local_addr(const struct in6_addr *addr) {
     return addr->s6_addr[0] == 0xfe && (addr->s6_addr[1] & 0xc0) == 0x80;
+}
+
+static int TC_AUTO_IP_UNUSED ipv6_is_ula_addr(const struct in6_addr *addr) {
+    return (addr->s6_addr[0] & 0xfe) == 0xfc;
 }
 
 static int TC_AUTO_IP_UNUSED runtime_ipv6_is_usable(const struct in6_addr *addr) {
@@ -515,7 +534,7 @@ static int TC_AUTO_IP_UNUSED collect_iface_contexts_with_policy(struct iface_con
             continue;
         }
         name = usable_ifaddrs_name(ifa, name_buf, sizeof(name_buf), current_name);
-        if (name[0] != '\0') {
+        if (name[0] != '\0' && name != current_name) {
             strncpy(current_name, name, sizeof(current_name) - 1);
             current_name[sizeof(current_name) - 1] = '\0';
         }
@@ -820,6 +839,285 @@ static int TC_AUTO_IP_UNUSED link_context_has_samba_address(const struct link_co
     return 0;
 }
 
+static int TC_AUTO_IP_UNUSED link_context_has_private_lan_samba_address(const struct link_context *ctx) {
+    size_t i;
+
+    for (i = 0; i < ctx->ipv4_count; i++) {
+        if (link_ipv4_addr_is_samba_bindable(&ctx->ipv4[i]) &&
+            ipv4_is_rfc1918(ctx->ipv4[i].addr)) {
+            return 1;
+        }
+    }
+    for (i = 0; i < ctx->ipv6_count; i++) {
+        if (link_ipv6_addr_is_samba_bindable(&ctx->ipv6[i]) &&
+            ipv6_is_ula_addr(&ctx->ipv6[i].addr)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int TC_AUTO_IP_UNUSED iface_name_is_synthetic_from_address(const char *name) {
+    return iface_name_has_prefix(name, "ip4-") ||
+           strcmp(name, "ipv6") == 0 ||
+           iface_name_has_prefix(name, "ipv6-if");
+}
+
+static int TC_AUTO_IP_UNUSED link_context_is_unnamed_private_lan_fallback(const struct link_context *ctx) {
+    return iface_name_is_synthetic_from_address(ctx->name) &&
+           link_context_has_private_lan_samba_address(ctx);
+}
+
+static void TC_AUTO_IP_UNUSED ifconfig_owner_map_add_ipv4(struct ifconfig_address_owner_map *map,
+                                                          const char *name,
+                                                          const char *addr_text) {
+    struct in_addr parsed;
+    size_t i;
+
+    if (name == NULL || name[0] == '\0' || addr_text == NULL || addr_text[0] == '\0') {
+        return;
+    }
+    if (inet_pton(AF_INET, addr_text, &parsed) != 1) {
+        return;
+    }
+    for (i = 0; i < map->count; i++) {
+        if (map->entries[i].family == AF_INET &&
+            map->entries[i].ipv4_addr == parsed.s_addr) {
+            return;
+        }
+    }
+    if (map->count >= MAX_IFCONFIG_OWNER_ENTRIES) {
+        return;
+    }
+    map->entries[map->count].family = AF_INET;
+    map->entries[map->count].ipv4_addr = parsed.s_addr;
+    strncpy(map->entries[map->count].name, name, sizeof(map->entries[map->count].name) - 1);
+    map->count++;
+}
+
+static void TC_AUTO_IP_UNUSED ifconfig_owner_map_add_ipv6(struct ifconfig_address_owner_map *map,
+                                                          const char *name,
+                                                          const char *addr_text) {
+    struct in6_addr parsed;
+    char normalized[INET6_ADDRSTRLEN + IFNAMSIZ];
+    char *scope;
+    size_t i;
+
+    if (name == NULL || name[0] == '\0' || addr_text == NULL || addr_text[0] == '\0') {
+        return;
+    }
+    strncpy(normalized, addr_text, sizeof(normalized) - 1);
+    normalized[sizeof(normalized) - 1] = '\0';
+    scope = strchr(normalized, '%');
+    if (scope != NULL) {
+        *scope = '\0';
+    }
+    if (inet_pton(AF_INET6, normalized, &parsed) != 1) {
+        return;
+    }
+    for (i = 0; i < map->count; i++) {
+        if (map->entries[i].family == AF_INET6 &&
+            memcmp(&map->entries[i].ipv6_addr, &parsed, sizeof(parsed)) == 0) {
+            return;
+        }
+    }
+    if (map->count >= MAX_IFCONFIG_OWNER_ENTRIES) {
+        return;
+    }
+    map->entries[map->count].family = AF_INET6;
+    map->entries[map->count].ipv6_addr = parsed;
+    strncpy(map->entries[map->count].name, name, sizeof(map->entries[map->count].name) - 1);
+    map->count++;
+}
+
+static int TC_AUTO_IP_UNUSED copy_first_token(char *out,
+                                              size_t out_len,
+                                              const char *text) {
+    const char *end;
+    size_t len;
+
+    if (out_len == 0 || text == NULL) {
+        return 0;
+    }
+    while (*text != '\0' && isspace((unsigned char)*text)) {
+        text++;
+    }
+    end = text;
+    while (*end != '\0' && !isspace((unsigned char)*end)) {
+        end++;
+    }
+    len = (size_t)(end - text);
+    if (len == 0) {
+        return 0;
+    }
+    if (len >= out_len) {
+        len = out_len - 1;
+    }
+    memcpy(out, text, len);
+    out[len] = '\0';
+    return 1;
+}
+
+static void TC_AUTO_IP_UNUSED ifconfig_owner_map_parse_line(struct ifconfig_address_owner_map *map,
+                                                            char *current_name,
+                                                            size_t current_name_len,
+                                                            const char *line) {
+    const char *cursor;
+    const char *colon;
+    char token[INET6_ADDRSTRLEN + IFNAMSIZ];
+    size_t name_len;
+
+    if (line == NULL || line[0] == '\0') {
+        return;
+    }
+    if (line[0] != ' ' && line[0] != '\t') {
+        colon = strchr(line, ':');
+        if (colon == NULL || colon == line || current_name_len == 0) {
+            return;
+        }
+        name_len = (size_t)(colon - line);
+        if (name_len >= current_name_len) {
+            name_len = current_name_len - 1;
+        }
+        memcpy(current_name, line, name_len);
+        current_name[name_len] = '\0';
+        return;
+    }
+
+    cursor = line;
+    while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (strncmp(cursor, "inet ", 5) == 0) {
+        if (copy_first_token(token, sizeof(token), cursor + 5)) {
+            ifconfig_owner_map_add_ipv4(map, current_name, token);
+        }
+    } else if (strncmp(cursor, "inet6 ", 6) == 0) {
+        if (copy_first_token(token, sizeof(token), cursor + 6)) {
+            ifconfig_owner_map_add_ipv6(map, current_name, token);
+        }
+    }
+}
+
+static int TC_AUTO_IP_UNUSED collect_ifconfig_address_owners(struct ifconfig_address_owner_map *map) {
+    FILE *stream;
+    char line[256];
+    char current_name[IFNAMSIZ];
+
+    memset(map, 0, sizeof(*map));
+    current_name[0] = '\0';
+
+    /*
+     * NetBSD 4 getifaddrs can drop owner names from address rows entirely.
+     * /sbin/ifconfig still reports address ownership, so use it only as a
+     * bounded fallback to relabel synthetic ip4-* / ipv6 contexts.
+     */
+    stream = popen("/sbin/ifconfig -a", "r");
+    if (stream == NULL) {
+        return -1;
+    }
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        ifconfig_owner_map_parse_line(map, current_name, sizeof(current_name), line);
+    }
+    if (pclose(stream) == -1) {
+        return -1;
+    }
+    return 0;
+}
+
+static const char TC_AUTO_IP_UNUSED *ifconfig_owner_for_ipv4(const struct ifconfig_address_owner_map *map,
+                                                            uint32_t ipv4_addr) {
+    size_t i;
+
+    for (i = 0; i < map->count; i++) {
+        if (map->entries[i].family == AF_INET &&
+            map->entries[i].ipv4_addr == ipv4_addr) {
+            return map->entries[i].name;
+        }
+    }
+    return NULL;
+}
+
+static const char TC_AUTO_IP_UNUSED *ifconfig_owner_for_ipv6(const struct ifconfig_address_owner_map *map,
+                                                            const struct in6_addr *ipv6_addr) {
+    size_t i;
+
+    for (i = 0; i < map->count; i++) {
+        if (map->entries[i].family == AF_INET6 &&
+            memcmp(&map->entries[i].ipv6_addr, ipv6_addr, sizeof(*ipv6_addr)) == 0) {
+            return map->entries[i].name;
+        }
+    }
+    return NULL;
+}
+
+static int TC_AUTO_IP_UNUSED link_context_set_has_synthetic_names(const struct link_context_set *set) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (iface_name_is_synthetic_from_address(set->links[i].name)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void TC_AUTO_IP_UNUSED relabel_synthetic_link_contexts_from_ifconfig(struct link_context_set *set) {
+    struct ifconfig_address_owner_map owners;
+    struct link_context_set relabeled;
+    size_t i;
+
+    if (!link_context_set_has_synthetic_names(set)) {
+        return;
+    }
+    if (collect_ifconfig_address_owners(&owners) != 0 || owners.count == 0) {
+        return;
+    }
+
+    memset(&relabeled, 0, sizeof(relabeled));
+    relabeled.truncated = set->truncated;
+    for (i = 0; i < set->count; i++) {
+        const struct link_context *ctx = &set->links[i];
+        size_t j;
+
+        for (j = 0; j < ctx->ipv4_count; j++) {
+            const char *name = ctx->name;
+            const char *owner;
+            if (iface_name_is_synthetic_from_address(name)) {
+                owner = ifconfig_owner_for_ipv4(&owners, ctx->ipv4[j].addr);
+                if (owner != NULL && owner[0] != '\0') {
+                    name = owner;
+                }
+            }
+            append_link_ipv4(&relabeled,
+                             name,
+                             ctx->ipv4[j].addr,
+                             ctx->ipv4[j].netmask,
+                             ctx->flags);
+        }
+        for (j = 0; j < ctx->ipv6_count; j++) {
+            const char *name = ctx->name;
+            const char *owner;
+            if (iface_name_is_synthetic_from_address(name)) {
+                owner = ifconfig_owner_for_ipv6(&owners, &ctx->ipv6[j].addr);
+                if (owner != NULL && owner[0] != '\0') {
+                    name = owner;
+                }
+            }
+            append_link_ipv6_with_transport(&relabeled,
+                                            name,
+                                            &ctx->ipv6[j].addr,
+                                            ctx->ipv6[j].prefix_len,
+                                            ctx->ipv6[j].scope_id,
+                                            ctx->flags,
+                                            ctx->mdns_ipv6_transport);
+        }
+    }
+    if (relabeled.count > 0) {
+        *set = relabeled;
+    }
+}
+
 static int TC_AUTO_IP_UNUSED link_context_has_advertisable_ipv4(const struct link_context *ctx) {
     return ctx->ipv4_count > 0;
 }
@@ -1075,13 +1373,18 @@ static int TC_AUTO_IP_UNUSED collect_link_contexts_with_policy(struct link_conte
             continue;
         }
         flags = (int)ifa->ifa_flags;
-        if (!iface_flags_are_usable(flags, require_running)) {
-            continue;
-        }
+        /*
+         * NetBSD 4 can report AF_LINK owner rows separately from unnamed
+         * address rows. Preserve the owner name before filtering by flags so
+         * bridge0/mgi1 ownership is not replaced with synthetic ip4-* names.
+         */
         name = usable_ifaddrs_name(ifa, name_buf, sizeof(name_buf), current_name);
-        if (name[0] != '\0') {
+        if (name[0] != '\0' && name != current_name) {
             strncpy(current_name, name, sizeof(current_name) - 1);
             current_name[sizeof(current_name) - 1] = '\0';
+        }
+        if (!iface_flags_are_usable(flags, require_running)) {
+            continue;
         }
 
         if (ifa->ifa_addr->sa_family == AF_INET) {
@@ -1130,6 +1433,7 @@ static int TC_AUTO_IP_UNUSED collect_link_contexts_with_policy(struct link_conte
     }
 
     freeifaddrs(ifaddr_list);
+    relabel_synthetic_link_contexts_from_ifconfig(out);
     {
         size_t i;
         size_t write_i = 0;
