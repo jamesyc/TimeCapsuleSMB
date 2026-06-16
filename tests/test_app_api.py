@@ -1998,6 +1998,8 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(payload["ssh_port_reachable"])
         self.assertTrue(payload["ssh_disabled_likely"])
         self.assertEqual(payload["summary"], "AirPort ACP is reachable, but SSH is closed.")
+        self._telemetry_factory.assert_not_called()
+        self._telemetry_client.emit.assert_not_called()
 
     def test_set_ssh_enable_requires_reboot_confirmation(self) -> None:
         collector = CollectingSink()
@@ -2039,6 +2041,13 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(details["context"]["host"], "root@10.0.0.2")
         self.assertEqual(details["context"]["device_name"], "10.0.0.2")
         self.assertNotIn("secret", json.dumps(collector.events))
+        self.assertEqual(self._telemetry_client.emit.call_count, 2)
+        started = self._telemetry_client.emit.call_args_list[0]
+        finished = self._telemetry_client.emit.call_args_list[1]
+        self.assertEqual(started.args, ("set_ssh_started",))
+        self.assertEqual(started.kwargs["options"]["action"], "enable")
+        self.assertEqual(finished.args, ("set_ssh_finished",))
+        self.assertEqual(finished.kwargs["result"], "confirmation_required")
 
     def test_set_ssh_confirmed_enable_returns_normalized_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

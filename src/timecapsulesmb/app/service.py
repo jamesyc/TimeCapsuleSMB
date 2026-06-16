@@ -195,7 +195,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
 
 
 def _api_telemetry_session(operation: str, params: dict[str, object]) -> OperationTelemetrySession | None:
-    if operation not in TELEMETRY_OPERATIONS:
+    if not _should_emit_api_telemetry(operation, params):
         return None
     try:
         requested_config_path = config_path(params)
@@ -216,6 +216,15 @@ def _api_telemetry_session(operation: str, params: dict[str, object]) -> Operati
         )
     except Exception:
         return None
+
+
+def _should_emit_api_telemetry(operation: str, params: dict[str, object]) -> bool:
+    if operation not in TELEMETRY_OPERATIONS:
+        return False
+    if operation == "set-ssh":
+        action = str(params.get("action") or "status").strip().lower() or "status"
+        return action != "status"
+    return True
 
 
 def _finish_api_telemetry(
