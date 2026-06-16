@@ -11,6 +11,7 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
     case italian = "it"
     case portuguese = "pt"
     case russian = "ru"
+    case lithuanian = "lt"
     case simplifiedChinese = "zh-Hans"
 
     var id: String {
@@ -37,6 +38,8 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
             return L10n.string("app_language.portuguese")
         case .russian:
             return L10n.string("app_language.russian")
+        case .lithuanian:
+            return L10n.string("app_language.lithuanian")
         case .simplifiedChinese:
             return L10n.string("app_language.simplified_chinese")
         }
@@ -61,6 +64,8 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
         case .portuguese:
             return rawValue
         case .russian:
+            return rawValue
+        case .lithuanian:
             return rawValue
         case .simplifiedChinese:
             return rawValue
@@ -87,6 +92,8 @@ enum AppLanguage: String, CaseIterable, Codable, Identifiable, Equatable {
             return Locale(identifier: "pt")
         case .russian:
             return Locale(identifier: "ru")
+        case .lithuanian:
+            return Locale(identifier: "lt")
         case .simplifiedChinese:
             return Locale(identifier: "zh-Hans-CN")
         }

@@ -119,9 +119,11 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(L10n.string("app_settings.title", language: .italian), "Impostazioni")
         XCTAssertEqual(L10n.string("app_settings.title", language: .portuguese), "Configurações")
         XCTAssertEqual(L10n.string("app_settings.title", language: .russian), "Настройки")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .lithuanian), "Nustatymai")
         XCTAssertEqual(L10n.string("app_language.french", language: .french), "Français")
         XCTAssertEqual(L10n.string("app_language.german", language: .german), "Deutsch")
         XCTAssertEqual(L10n.string("app_language.russian", language: .russian), "Русский")
+        XCTAssertEqual(L10n.string("app_language.lithuanian", language: .lithuanian), "Lietuvių")
         XCTAssertEqual(
             L10n.string("app_settings.subtitle", language: .simplifiedChinese),
             "新设备默认值和 App 级别行为。"
