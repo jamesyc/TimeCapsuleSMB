@@ -303,6 +303,11 @@ class CheckTests(unittest.TestCase):
             name="Time Capsule Samba 4",
             fullname="Time Capsule Samba 4._smb._tcp.local.",
         )
+        default_adisk_instance = BonjourServiceInstance(
+            service_type="_adisk._tcp.local.",
+            name="Time Capsule Samba 4",
+            fullname="Time Capsule Samba 4._adisk._tcp.local.",
+        )
         default_bonjour_record = BonjourResolvedService(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
@@ -310,26 +315,38 @@ class CheckTests(unittest.TestCase):
             port=445,
             ipv4=["10.0.0.2"],
         )
+        default_adisk_record = BonjourResolvedService(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            service_type="_adisk._tcp.local.",
+            port=9,
+            ipv4=["10.0.0.2"],
+            properties={
+                "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                "adVF": "0x1010",
+                "dk2": "adVF=0x83,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
+            },
+        )
         default_bonjour_snapshot = BonjourDiscoverySnapshot(
-            instances=[default_bonjour_instance],
-            resolved=[default_bonjour_record],
+            instances=[default_bonjour_instance, default_adisk_instance],
+            resolved=[default_bonjour_record, default_adisk_record],
         )
         default_bonjour_diagnostics = BonjourDiscoveryDiagnostics(
             service="_smb",
-            service_types=["_smb._tcp.local."],
+            service_types=["_smb._tcp.local.", "_adisk._tcp.local."],
             timeout_sec=6.0,
             elapsed_sec=6.0,
             ip_version="V4Only",
-            instance_count=1,
-            resolved_count=1,
+            instance_count=2,
+            resolved_count=2,
             pending_count=0,
             service_added_count=1,
             service_updated_count=0,
             resolve_attempt_count=1,
             resolve_success_count=1,
             resolve_error_count=0,
-            instances=[default_bonjour_instance],
-            resolved=[default_bonjour_record],
+            instances=[default_bonjour_instance, default_adisk_instance],
+            resolved=[default_bonjour_record, default_adisk_record],
         )
         self._exit_stack.enter_context(
             mock.patch(
@@ -382,6 +399,12 @@ class CheckTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.flash_runtime_config_present_conn", return_value=True))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.runtime_ram_root_present_conn", return_value=True))
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn",
+                return_value=self.runtime_identity_from_values(),
+            )
+        )
         self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn",
@@ -841,6 +864,7 @@ class CheckTests(unittest.TestCase):
             TC_NETBIOS_NAME="Home",
         )
         airport_instance = BonjourServiceInstance("_airport._tcp.local.", "Home", "Home._airport._tcp.local.")
+        adisk_instance = BonjourServiceInstance("_adisk._tcp.local.", "Home", "Home._adisk._tcp.local.")
         airport_record = BonjourResolvedService(
             "Home",
             "home.local",
@@ -848,22 +872,33 @@ class CheckTests(unittest.TestCase):
             port=5009,
             ipv4=["10.0.0.2"],
         )
+        adisk_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_adisk._tcp.local.",
+            port=9,
+            properties={
+                "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                "adVF": "0x1010",
+                "dk2": "adVF=0x83,adVN=Data,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+            },
+        )
         diagnostics = BonjourDiscoveryDiagnostics(
             service=None,
-            service_types=["_airport._tcp.local.", "_smb._tcp.local."],
+            service_types=["_airport._tcp.local.", "_smb._tcp.local.", "_adisk._tcp.local."],
             timeout_sec=6.0,
             elapsed_sec=6.0,
             ip_version="V4Only",
-            instance_count=1,
-            resolved_count=1,
+            instance_count=2,
+            resolved_count=2,
             pending_count=0,
             service_added_count=1,
             service_updated_count=0,
             resolve_attempt_count=1,
             resolve_success_count=1,
             resolve_error_count=0,
-            instances=[airport_instance],
-            resolved=[airport_record],
+            instances=[airport_instance, adisk_instance],
+            resolved=[airport_record, adisk_record],
         )
         resolved_smb = BonjourResolvedService(
             "Home",
@@ -892,7 +927,7 @@ class CheckTests(unittest.TestCase):
                 ),
                 "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
-                    return_value=(BonjourDiscoverySnapshot([airport_instance], [airport_record]), None, diagnostics)
+                    return_value=(BonjourDiscoverySnapshot([airport_instance, adisk_instance], [airport_record, adisk_record]), None, diagnostics)
                 ),
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": resolve_mock,
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
@@ -1034,6 +1069,7 @@ class CheckTests(unittest.TestCase):
         )
         native_smb_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
         native_airport_instance = BonjourServiceInstance("_airport._tcp.local.", "Home", "Home._airport._tcp.local.")
+        native_adisk_instance = BonjourServiceInstance("_adisk._tcp.local.", "Home", "Home._adisk._tcp.local.")
         native_smb_record = BonjourResolvedService(
             "Home",
             "home.local",
@@ -1050,14 +1086,26 @@ class CheckTests(unittest.TestCase):
             ipv4=["10.0.0.2"],
             fullname="Home._airport._tcp.local.",
         )
+        native_adisk_record = BonjourResolvedService(
+            "Home",
+            "home.local",
+            "_adisk._tcp.local.",
+            port=9,
+            properties={
+                "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                "adVF": "0x1010",
+                "dk2": "adVF=0x83,adVN=Data,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+            },
+            fullname="Home._adisk._tcp.local.",
+        )
         native_debug = NativeDnsSdDiscoveryDiagnostics(
             timeout_sec=6.0,
             elapsed_sec=1.0,
             status="ok",
-            service_types=["_smb._tcp.local.", "_airport._tcp.local."],
+            service_types=["_smb._tcp.local.", "_airport._tcp.local.", "_adisk._tcp.local."],
             ip_version="V4Only",
-            instance_count=2,
-            resolved_count=2,
+            instance_count=3,
+            resolved_count=3,
             browses=[NativeDnsSdBrowseResult("_smb._tcp")],
         )
         zeroconf_debug = BonjourDiscoveryDiagnostics(
@@ -1100,8 +1148,8 @@ class CheckTests(unittest.TestCase):
                 "timecapsulesmb.checks.doctor_steps.discover_native_dns_sd_snapshot_detailed": mock.Mock(
                     return_value=(
                         BonjourDiscoverySnapshot(
-                            [native_smb_instance, native_airport_instance],
-                            [native_smb_record, native_airport_record],
+                            [native_smb_instance, native_airport_instance, native_adisk_instance],
+                            [native_smb_record, native_airport_record, native_adisk_record],
                         ),
                         native_debug,
                     )
@@ -2946,6 +2994,258 @@ class CheckTests(unittest.TestCase):
         self.assertIn(
             "Bonjour services for \"James's AirPort Time Capsule\" advertise inconsistent host targets: _airport=Jamess-AirPort-Time-Capsule.local; _smb=james-s-airport-time-capsule.local; _adisk=james-s-airport-time-capsule.local; _device-info=james-s-airport-time-capsule.local",
             messages,
+        )
+
+    def test_run_doctor_checks_accepts_punctuated_instance_with_dns_safe_time_machine_target(self) -> None:
+        instance_name = "A.B.'s AirPort Time Capsule"
+        values = self.valid_doctor_values(
+            TC_HOST="root@192.168.1.217",
+            TC_MDNS_INSTANCE_NAME=instance_name,
+            TC_MDNS_HOST_LABEL="time-capsule",
+            TC_NETBIOS_NAME="TimeCapsule",
+        )
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", instance_name, f"{instance_name}._smb._tcp.local."),
+            BonjourServiceInstance("_adisk._tcp.local.", instance_name, f"{instance_name}._adisk._tcp.local."),
+        ]
+        records = [
+            BonjourResolvedService(instance_name, "time-capsule.local", "_smb._tcp.local.", port=445, ipv4=["192.168.1.217"]),
+            BonjourResolvedService(
+                instance_name,
+                "time-capsule.local",
+                "_adisk._tcp.local.",
+                port=9,
+                properties={
+                    "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                    "adVF": "0x1010",
+                    "dk2": "adVF=0x83,adVN=AirPort Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                },
+            ),
+        ]
+        active_smb_conf = """
+        [global]
+            netbios name = TimeCapsule
+
+        [AirPort Disk]
+            path = /Volumes/dk2/ShareRoot
+        """
+        identity = RuntimeNamingIdentityProbeResult(
+            system_name=instance_name,
+            hostname="time-capsule.local",
+            mdns_instance_name=instance_name,
+            mdns_host_label="time-capsule",
+            netbios_name="TimeCapsule",
+            detail="ok",
+        )
+
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            read_active_smb_conf=active_smb_conf,
+            runtime_naming_identity=identity,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="192.168.1.217/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("192.168.1.20",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: Bonjour _smb._tcp target host label is DNS-safe for Time Machine: time-capsule", messages)
+        self.assertIn("Bonjour IPv4: Bonjour _adisk._tcp target host label is DNS-safe for Time Machine: time-capsule", messages)
+        self.assertIn("Bonjour IPv4: _smb._tcp target host label matches runtime mDNS host label 'time-capsule'", messages)
+        self.assertIn("Bonjour IPv4: _adisk._tcp TXT advertises active Time Machine shares: AirPort Disk", messages)
+        self.assertFalse(any("unsafe label" in result.message for result in run.results))
+
+    def test_run_doctor_checks_fails_when_time_machine_srv_target_uses_display_name_label(self) -> None:
+        instance_name = "James's AirPort Time Capsule"
+        values = self.valid_doctor_values(
+            TC_HOST="root@192.168.1.217",
+            TC_MDNS_INSTANCE_NAME=instance_name,
+            TC_MDNS_HOST_LABEL="jamess-airport-time-capsule",
+            TC_NETBIOS_NAME="jamess-airport-",
+        )
+        unsafe_host = "James's AirPort Time Capsule.local"
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", instance_name, f"{instance_name}._smb._tcp.local."),
+            BonjourServiceInstance("_adisk._tcp.local.", instance_name, f"{instance_name}._adisk._tcp.local."),
+        ]
+        records = [
+            BonjourResolvedService(instance_name, unsafe_host, "_smb._tcp.local.", port=445, ipv4=["192.168.1.217"]),
+            BonjourResolvedService(
+                instance_name,
+                unsafe_host,
+                "_adisk._tcp.local.",
+                port=9,
+                properties={
+                    "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                    "adVF": "0x1010",
+                    "dk2": "adVF=0x83,adVN=AirPort Disk,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                },
+            ),
+        ]
+        active_smb_conf = """
+        [global]
+            netbios name = jamess-airport-
+
+        [AirPort Disk]
+            path = /Volumes/dk2/ShareRoot
+        """
+        identity = RuntimeNamingIdentityProbeResult(
+            system_name=instance_name,
+            hostname="jamess-airport-time-capsule",
+            mdns_instance_name=instance_name,
+            mdns_host_label="jamess-airport-time-capsule",
+            netbios_name="jamess-airport-",
+            detail="ok",
+        )
+
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            read_active_smb_conf=active_smb_conf,
+            runtime_naming_identity=identity,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="192.168.1.217/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("192.168.1.20",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn(
+            "Bonjour IPv4: Bonjour _smb._tcp target host \"James's AirPort Time Capsule.local\" uses unsafe label \"James's AirPort Time Capsule\"; Time Machine Settings may ignore SRV targets with spaces or punctuation",
+            messages,
+        )
+        self.assertIn(
+            "Bonjour IPv4: _smb._tcp target host label \"James's AirPort Time Capsule\" does not match runtime mDNS host label 'jamess-airport-time-capsule'",
+            messages,
+        )
+
+    def test_run_doctor_checks_fails_when_adisk_txt_does_not_match_active_samba_shares(self) -> None:
+        instance_name = "Home"
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME=instance_name,
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", instance_name, "Home._smb._tcp.local."),
+            BonjourServiceInstance("_adisk._tcp.local.", instance_name, "Home._adisk._tcp.local."),
+        ]
+        records = [
+            BonjourResolvedService(instance_name, "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.2"]),
+            BonjourResolvedService(
+                instance_name,
+                "home.local",
+                "_adisk._tcp.local.",
+                port=9,
+                properties={
+                    "sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                    "adVF": "0x1010",
+                    "dk2": "adVF=0x83,adVN=Backup,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+                },
+            ),
+        ]
+
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            runtime_naming_identity=self.runtime_identity_from_values(values),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: _adisk._tcp TXT does not advertise active Samba share(s): Data", messages)
+        self.assertIn("Bonjour IPv4: _adisk._tcp TXT advertises stale share(s) not present in active Samba config: Backup", messages)
+
+    def test_run_doctor_checks_fails_when_adisk_service_is_missing_for_active_shares(self) -> None:
+        instance_name = "Home"
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME=instance_name,
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+        )
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", instance_name, "Home._smb._tcp.local."),
+            BonjourServiceInstance("_device-info._tcp.local.", instance_name, "Home._device-info._tcp.local."),
+        ]
+        records = [
+            BonjourResolvedService(instance_name, "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.2"]),
+            BonjourResolvedService(instance_name, "home.local", "_device-info._tcp.local.", port=0),
+        ]
+
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            runtime_naming_identity=self.runtime_identity_from_values(values),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertIn(
+            "Bonjour IPv4: _adisk._tcp Time Machine service missing for 'Home'; Time Machine Settings will not list active shares: Data",
+            [result.message for result in run.results],
         )
 
     def test_run_doctor_checks_passes_bonjour_when_service_record_lacks_embedded_ip_but_host_resolves(self) -> None:

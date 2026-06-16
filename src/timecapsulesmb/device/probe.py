@@ -926,17 +926,20 @@ def _hostname_first_label(value: str) -> str:
     return value.strip().split(".", 1)[0].strip()
 
 
-def normalize_runtime_mdns_name(value: str) -> str:
+def normalize_runtime_mdns_instance_name(value: str) -> str:
     normalized = "".join("-" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in value)
     return _truncate_utf8(normalized.strip(), MAX_DNS_LABEL_BYTES)
 
 
-def normalize_runtime_mdns_instance_name(value: str) -> str:
-    return normalize_runtime_mdns_name(value)
+def _normalize_runtime_mdns_host_label_text(value: str) -> str:
+    candidate = value.strip().lower()
+    normalized = re.sub(r"[^a-z0-9-]", "-", candidate).strip("-")
+    normalized = _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES).strip("-")
+    return normalized
 
 
 def normalize_runtime_mdns_host_label(value: str) -> str:
-    return normalize_runtime_mdns_name(value)
+    return _normalize_runtime_mdns_host_label_text(_hostname_first_label(value))
 
 
 def normalize_runtime_netbios_name(value: str) -> str:
@@ -951,9 +954,9 @@ def derive_runtime_naming_identity(system_name: str | None, hostname: str | None
     raw_system_name = (system_name or "").strip() or None
     raw_hostname = (hostname or "").strip() or None
 
-    mdns_host_label = normalize_runtime_mdns_host_label(raw_system_name or "")
+    mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
     if not mdns_host_label:
-        mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
+        mdns_host_label = _normalize_runtime_mdns_host_label_text(raw_system_name or "")
     if not mdns_host_label:
         mdns_host_label = "timecapsule"
 

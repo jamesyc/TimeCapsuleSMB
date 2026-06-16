@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -284,6 +285,8 @@ def _add_active_smb_conf_results(
 
 
 _BONJOUR_TARGET_SERVICE_ORDER = ("_airport", "_smb", "_adisk", "_device-info")
+_BONJOUR_HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_ADISK_DISK_KEY_RE = re.compile(r"^dk[0-9]+$")
 
 
 def _bonjour_service_label(service_type: str) -> str:
@@ -315,6 +318,205 @@ def _bonjour_service_targets_for_instance(records: Iterable[object], instance_na
 
 def _format_bonjour_service_targets(service_targets: dict[str, tuple[str, ...]]) -> str:
     return "; ".join(f"{service}={','.join(hosts)}" for service, hosts in service_targets.items())
+
+
+def _canonical_bonjour_host(hostname: str | None) -> str:
+    return (hostname or "").strip().rstrip(".").lower()
+
+
+def _bonjour_host_label(hostname: str | None) -> str | None:
+    host = (hostname or "").strip().rstrip(".")
+    if not host:
+        return None
+    if host.lower().endswith(".local"):
+        return host[: -len(".local")]
+    return host
+
+
+def _is_bonjour_host_label_safe(label: str | None) -> bool:
+    return bool(label and _BONJOUR_HOST_LABEL_RE.fullmatch(label))
+
+
+def _bonjour_tcp_service_name(service_label: str) -> str:
+    return f"{service_label}._tcp"
+
+
+def _add_bonjour_target_host_label_result(
+    service_label: str,
+    hostname: str | None,
+    add_result: Callable[[CheckResult], None],
+) -> bool:
+    service_name = _bonjour_tcp_service_name(service_label)
+    host = (hostname or "").strip().rstrip(".")
+    label = _bonjour_host_label(host)
+    if not host or label is None:
+        add_result(CheckResult("FAIL", f"Bonjour {service_name} service target host is unavailable"))
+        return True
+    if _is_bonjour_host_label_safe(label):
+        add_result(CheckResult("PASS", f"Bonjour {service_name} target host label is DNS-safe for Time Machine: {label}"))
+        return False
+    add_result(
+        CheckResult(
+            "FAIL",
+            f"Bonjour {service_name} target host {host!r} uses unsafe label {label!r}; "
+            "Time Machine Settings may ignore SRV targets with spaces or punctuation",
+        )
+    )
+    return True
+
+
+def _add_expected_bonjour_host_label_result(
+    target: BonjourServiceTarget,
+    expected_host_label: str | None,
+    add_result: Callable[[CheckResult], None],
+) -> bool:
+    if not expected_host_label:
+        return False
+    actual_host_label = target.host_label()
+    if not actual_host_label:
+        add_result(CheckResult("FAIL", f"_smb._tcp service target did not expose a host label; expected {expected_host_label!r}"))
+        return True
+    if actual_host_label.lower() == expected_host_label.lower():
+        add_result(CheckResult("PASS", f"_smb._tcp target host label matches runtime mDNS host label {expected_host_label!r}"))
+        return False
+    add_result(
+        CheckResult(
+            "FAIL",
+            f"_smb._tcp target host label {actual_host_label!r} does not match runtime mDNS host label {expected_host_label!r}",
+        )
+    )
+    return True
+
+
+def _bonjour_records_for_instance(
+    records: Iterable[BonjourResolvedService],
+    instance_name: str | None,
+    service_label: str,
+) -> list[BonjourResolvedService]:
+    if instance_name is None:
+        return []
+    return [
+        record
+        for record in records
+        if record.name == instance_name and _bonjour_service_label(record.service_type) == service_label
+    ]
+
+
+def _packed_txt_fields(value: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for chunk in value.split(","):
+        if "=" not in chunk:
+            continue
+        key, field_value = chunk.split("=", 1)
+        key = key.strip()
+        if key:
+            fields[key] = field_value.strip()
+    return fields
+
+
+def _adisk_disk_fields(record: BonjourResolvedService) -> dict[str, dict[str, str]]:
+    disks: dict[str, dict[str, str]] = {}
+    for key, value in record.properties.items():
+        if _ADISK_DISK_KEY_RE.fullmatch(key):
+            disks[key] = _packed_txt_fields(value)
+    return disks
+
+
+def _add_time_machine_adisk_results(
+    records: Iterable[BonjourResolvedService],
+    *,
+    instance_name: str | None,
+    smb_hostname: str | None,
+    active_share_names: list[str],
+    add_result: Callable[[CheckResult], None],
+) -> bool:
+    if instance_name is None:
+        return False
+
+    failed = False
+    adisk_records = _bonjour_records_for_instance(records, instance_name, "_adisk")
+    if not adisk_records:
+        related_records = [
+            record
+            for record in records
+            if record.name == instance_name and _bonjour_service_label(record.service_type) in {"_airport", "_device-info"}
+        ]
+        if active_share_names and related_records:
+            add_result(
+                CheckResult(
+                    "FAIL",
+                    f"_adisk._tcp Time Machine service missing for {instance_name!r}; "
+                    f"Time Machine Settings will not list active shares: {', '.join(active_share_names)}",
+                )
+            )
+            return True
+        return False
+
+    adisk_record = sorted(adisk_records, key=lambda record: (record.hostname or "", record.fullname or ""))[0]
+    add_result(CheckResult("PASS", f"discovered _adisk._tcp Time Machine service for {instance_name!r}"))
+
+    failed = _add_bonjour_target_host_label_result("_adisk", adisk_record.hostname, add_result) or failed
+    if smb_hostname and _canonical_bonjour_host(adisk_record.hostname) == _canonical_bonjour_host(smb_hostname):
+        add_result(CheckResult("PASS", f"_adisk._tcp target host matches _smb._tcp target host {_canonical_bonjour_host(smb_hostname)}"))
+    elif smb_hostname:
+        failed = True
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"_adisk._tcp target host {_canonical_bonjour_host(adisk_record.hostname) or 'unavailable'} "
+                f"does not match _smb._tcp target host {_canonical_bonjour_host(smb_hostname)}",
+            )
+        )
+
+    sys_txt = adisk_record.properties.get("sys", "")
+    if sys_txt and "adVF=" in sys_txt:
+        add_result(CheckResult("PASS", "_adisk._tcp TXT includes Time Machine system flags"))
+    else:
+        failed = True
+        add_result(CheckResult("FAIL", "_adisk._tcp TXT is missing Time Machine system flags"))
+
+    disk_fields = _adisk_disk_fields(adisk_record)
+    if not disk_fields:
+        failed = True
+        add_result(CheckResult("FAIL", "_adisk._tcp TXT does not advertise any Time Machine disks"))
+        return failed
+
+    advertised_shares: list[str] = []
+    for disk_key, fields in sorted(disk_fields.items()):
+        missing_fields = [field for field in ("adVF", "adVN", "adVU") if not fields.get(field)]
+        if missing_fields:
+            failed = True
+            add_result(CheckResult("FAIL", f"_adisk._tcp TXT disk {disk_key} is missing fields: {', '.join(missing_fields)}"))
+            continue
+        share_name = fields["adVN"]
+        if share_name not in advertised_shares:
+            advertised_shares.append(share_name)
+
+    if active_share_names:
+        active_set = set(active_share_names)
+        advertised_set = set(advertised_shares)
+        missing = [share for share in active_share_names if share not in advertised_set]
+        extra = [share for share in advertised_shares if share not in active_set]
+        if missing:
+            failed = True
+            add_result(
+                CheckResult(
+                    "FAIL",
+                    f"_adisk._tcp TXT does not advertise active Samba share(s): {', '.join(missing)}",
+                )
+            )
+        if extra:
+            failed = True
+            add_result(
+                CheckResult(
+                    "FAIL",
+                    f"_adisk._tcp TXT advertises stale share(s) not present in active Samba config: {', '.join(extra)}",
+                )
+            )
+        if not missing and not extra:
+            add_result(CheckResult("PASS", f"_adisk._tcp TXT advertises active Time Machine shares: {', '.join(active_share_names)}"))
+
+    return failed
 
 
 def _add_bonjour_service_target_consistency_results(
@@ -442,6 +644,7 @@ def _evaluate_bonjour_snapshot(
     target_ip: str | None,
     family: str | None,
     interfaces: list[str] | None,
+    active_share_names: list[str],
     resolver: Callable[..., tuple[BonjourResolvedService | None, CheckResult | None]],
     browse_miss_message: str,
     targeted_resolve_pass_message: str,
@@ -496,6 +699,12 @@ def _evaluate_bonjour_snapshot(
             add(target_result)
             if target.hostname:
                 outcome.target = target
+                if _add_bonjour_target_host_label_result("_smb", target.hostname, add):
+                    outcome.debug_needed = True
+                    outcome.fallback_allowed = True
+                if _add_expected_bonjour_host_label_result(target, bonjour_expected.host_label, add):
+                    outcome.debug_needed = True
+                    outcome.fallback_allowed = True
                 host_ip_result = _add_bonjour_host_ip_results(
                     target.hostname,
                     expected_ip=target_ip,
@@ -504,6 +713,15 @@ def _evaluate_bonjour_snapshot(
                 )
                 if host_ip_result.status == "FAIL":
                     outcome.debug_needed = True
+            if _add_time_machine_adisk_results(
+                records_for_targets,
+                instance_name=resolution.instance.name,
+                smb_hostname=target.hostname,
+                active_share_names=active_share_names,
+                add_result=add,
+            ):
+                outcome.debug_needed = True
+                outcome.fallback_allowed = True
         else:
             outcome.debug_needed = True
             outcome.fallback_allowed = True
@@ -533,6 +751,12 @@ def _evaluate_bonjour_snapshot(
             add(target_result)
             if target.hostname:
                 outcome.target = target
+                if _add_bonjour_target_host_label_result("_smb", target.hostname, add):
+                    outcome.debug_needed = True
+                    outcome.fallback_allowed = True
+                if _add_expected_bonjour_host_label_result(target, bonjour_expected.host_label, add):
+                    outcome.debug_needed = True
+                    outcome.fallback_allowed = True
                 host_ip_result = _add_bonjour_host_ip_results(
                     target.hostname,
                     expected_ip=target_ip,
@@ -541,6 +765,15 @@ def _evaluate_bonjour_snapshot(
                 )
                 if host_ip_result.status == "FAIL":
                     outcome.debug_needed = True
+            if _add_time_machine_adisk_results(
+                smb_snapshot.resolved,
+                instance_name=resolved_record.name,
+                smb_hostname=target.hostname,
+                active_share_names=active_share_names,
+                add_result=add,
+            ):
+                outcome.debug_needed = True
+                outcome.fallback_allowed = True
 
     return outcome
 
@@ -553,6 +786,7 @@ def _evaluate_zeroconf_bonjour_attempt(
     target_ip: str | None,
     family: str | None,
     interfaces: list[str] | None,
+    active_share_names: list[str],
 ) -> _BonjourAttemptOutcome:
     if discovery_error is not None:
         return _BonjourAttemptOutcome(
@@ -571,6 +805,7 @@ def _evaluate_zeroconf_bonjour_attempt(
         target_ip=target_ip,
         family=family,
         interfaces=interfaces,
+        active_share_names=active_share_names,
         resolver=resolve_smb_instance,
         browse_miss_message=(
             f"Python zeroconf browse did not observe expected _smb._tcp instance {expected_name!r}; "
@@ -613,6 +848,7 @@ def _evaluate_native_bonjour_attempt(
     target_ip: str | None,
     family: str | None,
     interfaces: list[str] | None,
+    active_share_names: list[str],
 ) -> tuple[_BonjourAttemptOutcome | None, NativeDnsSdDiscoveryDiagnostics | None]:
     native_result = discover_native_dns_sd_snapshot_detailed(
         None,
@@ -630,6 +866,7 @@ def _evaluate_native_bonjour_attempt(
         target_ip=target_ip,
         family=family,
         interfaces=interfaces,
+        active_share_names=active_share_names,
         resolver=_native_smb_resolver(native_debug),
         browse_miss_message=(
             f"native macOS dns-sd browse did not observe expected _smb._tcp instance {expected_name!r}; "
@@ -651,6 +888,7 @@ def _add_bonjour_results(
     proxied_ssh: bool,
     skip_bonjour: bool,
     network_plan: NetworkCheckPlan | None = None,
+    active_share_names: list[str] | None = None,
     add_result: Callable[[CheckResult], None],
 ) -> DoctorBonjourResult:
     bonjour_instance: str | None = None
@@ -663,6 +901,7 @@ def _add_bonjour_results(
     native_fallback_diagnostics: list[object] = []
     bonjour_backend_debug: dict[str, str] = {}
     bonjour_service_targets: dict[str, tuple[str, ...]] = {}
+    active_share_names = active_share_names or []
 
     if proxied_ssh and not skip_bonjour:
         bonjour_reason = "Bonjour check skipped for SSH-proxied target"
@@ -726,6 +965,7 @@ def _add_bonjour_results(
                     target_ip=target_ip,
                     family=family,
                     interfaces=interfaces,
+                    active_share_names=active_share_names,
                 )
 
                 chosen_outcome = zeroconf_outcome
@@ -735,6 +975,7 @@ def _add_bonjour_results(
                         target_ip=target_ip,
                         family=family,
                         interfaces=interfaces,
+                        active_share_names=active_share_names,
                     )
                     if native_debug is not None:
                         native_fallback_diagnostics.append(native_debug)

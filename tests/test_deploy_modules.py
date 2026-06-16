@@ -869,19 +869,19 @@ echo ok
         self.assertNotIn("ACPData.bin", command)
 
     def test_runtime_naming_identity_derives_effective_names(self) -> None:
-        result = derive_runtime_naming_identity("James's AirPort.Time Capsule", "Time Capsule.local")
+        result = derive_runtime_naming_identity("A.B.'s AirPort Time Capsule", "Time Capsule.local")
 
-        self.assertEqual(result.system_name, "James's AirPort.Time Capsule")
+        self.assertEqual(result.system_name, "A.B.'s AirPort Time Capsule")
         self.assertEqual(result.hostname, "Time Capsule.local")
-        self.assertEqual(result.mdns_instance_name, "James's AirPort.Time Capsule")
-        self.assertEqual(result.mdns_host_label, "James's AirPort.Time Capsule")
+        self.assertEqual(result.mdns_instance_name, "A.B.'s AirPort Time Capsule")
+        self.assertEqual(result.mdns_host_label, "time-capsule")
         self.assertEqual(result.netbios_name, "TimeCapsule")
 
     def test_runtime_naming_identity_rejects_netbios_without_alnum(self) -> None:
         result = derive_runtime_naming_identity("极端 时间胶囊", "---.local")
 
         self.assertEqual(result.mdns_instance_name, "极端 时间胶囊")
-        self.assertEqual(result.mdns_host_label, "极端 时间胶囊")
+        self.assertEqual(result.mdns_host_label, "timecapsule")
         self.assertEqual(result.netbios_name, "TimeCapsule")
 
     def test_probe_remote_runtime_naming_identity_reads_acp_and_hostname(self) -> None:
@@ -893,7 +893,7 @@ echo ok
         self.assertEqual(result.system_name, "Time Capsule")
         self.assertEqual(result.hostname, "time-capsule.local")
         self.assertEqual(result.mdns_instance_name, "Time Capsule")
-        self.assertEqual(result.mdns_host_label, "Time Capsule")
+        self.assertEqual(result.mdns_host_label, "time-capsule")
         self.assertEqual(result.netbios_name, "time-capsule")
         command = run_ssh_mock.call_args.args[1]
         self.assertIn("/usr/bin/acp -q syNm", command)

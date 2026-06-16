@@ -32,6 +32,7 @@ from timecapsulesmb.checks.doctor_steps import (
     check_xattr_tdb_persistence,
 )
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.checks.smb_config import parse_active_share_names
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.transport.ssh import SshConnection
@@ -94,6 +95,7 @@ def run_doctor_checks(
         proxied_ssh=target.proxied_ssh,
         skip_bonjour=inputs.options.skip_bonjour,
         network_plan=network_plan.plan,
+        active_share_names=parse_active_share_names(smb_config.text or ""),
         add_result=sink.add,
     )
     _add_bonjour_debug_fields(
