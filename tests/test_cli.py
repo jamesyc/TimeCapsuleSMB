@@ -1857,7 +1857,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", rendered_env)
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
-        self.assertEqual(fake_values["TC_SMB_BIND_LAN_ONLY"], "true")
+        self.assertEqual(fake_values["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(fake_values["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
         self.assertEqual(fake_values["TC_FRUIT_METADATA_NETATALK"], "true")
@@ -1951,6 +1951,17 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_SMB_BIND_LAN_ONLY"], "false")
+
+    def test_configure_hidden_smb_bind_lan_only_arg_writes_true(self) -> None:
+        result = self.run_configure_cli(
+            ["--smb-bind-lan-only"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_SMB_BIND_LAN_ONLY"], "true")
 
     def test_configure_hidden_any_protocol_arg_writes_true(self) -> None:
         result = self.run_configure_cli(

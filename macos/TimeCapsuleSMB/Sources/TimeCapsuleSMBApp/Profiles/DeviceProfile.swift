@@ -48,7 +48,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     static let `default` = DeviceProfileSettings(
         nbnsEnabled: true,
         internalShareUseDiskRoot: false,
-        smbBindLanOnly: true,
+        smbBindLanOnly: false,
         smbBrowseCompatibility: false,
         anyProtocol: false,
         fruitMetadataNetatalk: true,
@@ -61,7 +61,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     init(
         nbnsEnabled: Bool,
         internalShareUseDiskRoot: Bool = false,
-        smbBindLanOnly: Bool = true,
+        smbBindLanOnly: Bool = false,
         smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
         fruitMetadataNetatalk: Bool = true,

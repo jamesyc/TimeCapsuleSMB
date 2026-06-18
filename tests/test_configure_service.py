@@ -395,7 +395,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(result.identity.syap, "119")
         self.assertEqual(result.identity.model, "TimeCapsule8,119")
         self.assertEqual(written["TC_HOST"], "root@10.0.0.2")
-        self.assertEqual(written["TC_SMB_BIND_LAN_ONLY"], "true")
+        self.assertEqual(written["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertNotIn("TC_PASSWORD", written)

@@ -140,7 +140,7 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("TC_SAMBA_USER", rendered)
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
-        self.assertIn("TC_SMB_BIND_LAN_ONLY=true", rendered)
+        self.assertIn("TC_SMB_BIND_LAN_ONLY=false", rendered)
         self.assertIn("TC_SMB_BROWSE_COMPATIBILITY=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
         self.assertIn("TC_FRUIT_METADATA_NETATALK=true", rendered)

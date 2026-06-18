@@ -91,7 +91,7 @@ struct DeviceProfileEditorDraft: Equatable {
         host: String,
         nbnsEnabled: Bool,
         internalShareUseDiskRoot: Bool = false,
-        smbBindLanOnly: Bool = true,
+        smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
         smbBrowseCompatibility: Bool = false,
         anyProtocol: Bool = false,
         fruitMetadataNetatalk: Bool = true,

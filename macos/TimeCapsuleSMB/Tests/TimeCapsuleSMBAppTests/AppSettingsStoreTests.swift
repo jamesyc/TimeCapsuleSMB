@@ -61,7 +61,16 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .loaded)
         XCTAssertEqual(store.settings.language, .system)
         XCTAssertEqual(store.settings.appearance, .system)
+        XCTAssertFalse(store.settings.defaultDeviceSettings.smbBindLanOnly)
         XCTAssertFalse(store.settings.telemetryEnabled)
+    }
+
+    func testLegacyDeviceSettingsWithoutSMBBindLANOnlyUseDefaultOff() throws {
+        let data = #"{"nbnsEnabled":true,"debugLogging":false,"mountWaitSeconds":30}"#.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+
+        XCTAssertFalse(settings.smbBindLanOnly)
     }
 
     func testCorruptSettingsFailsWithoutReplacingDefaults() async throws {

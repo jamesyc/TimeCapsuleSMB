@@ -3094,7 +3094,7 @@ class AppApiTests(unittest.TestCase):
         verify_runtime.assert_called_once()
         render_runtime.assert_called_once()
         self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], False)
-        self.assertEqual(render_runtime.call_args.kwargs["smb_bind_lan_only"], True)
+        self.assertEqual(render_runtime.call_args.kwargs["smb_bind_lan_only"], False)
         self.assertEqual(render_runtime.call_args.kwargs["smb_browse_compatibility"], True)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
         self.assertEqual(render_runtime.call_args.kwargs["fruit_metadata_netatalk"], True)
