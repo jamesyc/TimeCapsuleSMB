@@ -31,6 +31,21 @@ def _flash_upload_tmp_path(destination: str) -> str:
     return str(path.with_name(f".{path.name}.tmp"))
 
 
+def _cleanup_flash_upload_tmp_paths(connection: SshConnection, destinations: Iterable[str]) -> None:
+    tmp_paths = tuple(dict.fromkeys(_flash_upload_tmp_path(destination) for destination in destinations))
+    if not tmp_paths:
+        return
+    quoted_paths = " ".join(shlex.quote(path) for path in tmp_paths)
+    run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {quoted_paths}')}")
+
+
+def _best_effort_cleanup_flash_upload_tmp_path(connection: SshConnection, tmp_destination: str) -> None:
+    try:
+        run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {shlex.quote(tmp_destination)}')}", check=False)
+    except Exception:
+        pass
+
+
 def upload_flash_file(
     connection: SshConnection,
     source: Path,
@@ -45,14 +60,18 @@ def upload_flash_file(
     quoted_mode = shlex.quote(mode)
 
     run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {quoted_tmp}')}")
-    run_scp(connection, source, tmp_destination, timeout=timeout)
-    install_script = (
-        "rc=0; "
-        f"chmod {quoted_mode} {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
-        f"rm -f {quoted_tmp}; "
-        'exit "$rc"'
-    )
-    run_ssh(connection, f"/bin/sh -c {shlex.quote(install_script)}")
+    try:
+        run_scp(connection, source, tmp_destination, timeout=timeout)
+        install_script = (
+            "rc=0; "
+            f"chmod {quoted_mode} {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
+            f"rm -f {quoted_tmp}; "
+            'exit "$rc"'
+        )
+        run_ssh(connection, f"/bin/sh -c {shlex.quote(install_script)}")
+    except Exception:
+        _best_effort_cleanup_flash_upload_tmp_path(connection, tmp_destination)
+        raise
 
 
 def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:
@@ -97,6 +116,7 @@ def upload_deployment_payload(
     on_uploaded: Callable[[FileTransfer], None] | None = None,
 ) -> None:
     planned_modes = {permission.path: permission.mode for permission in plan.permissions}
+    flash_tmp_paths_cleaned = False
     for transfer in plan.uploads:
         source = _resolve_transfer_source(source_resolver, transfer)
         if on_uploading is not None:
@@ -105,6 +125,12 @@ def upload_deployment_payload(
         if transfer.mode in {"scp", "generated"}:
             _scp_transfer(connection, source, transfer)
         elif transfer.mode == "flash_atomic":
+            if not flash_tmp_paths_cleaned:
+                _cleanup_flash_upload_tmp_paths(
+                    connection,
+                    (planned.destination for planned in plan.uploads if planned.mode == "flash_atomic"),
+                )
+                flash_tmp_paths_cleaned = True
             timeout = transfer.timeout_seconds if transfer.timeout_seconds is not None else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
             upload_flash_file(
                 connection,

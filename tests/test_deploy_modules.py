@@ -128,7 +128,7 @@ from timecapsulesmb.services.runtime_verification import (
     BOOT_SETTLE_MESSAGE,
     BOOT_SETTLE_SECONDS,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.transport.ssh import ScpError, SshCommandTimeout, SshConnection, SshError
 
 
 def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
@@ -7226,7 +7226,16 @@ int main(void) {{
         self.assertEqual(binary_upload_timeouts, [PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS] * 4)
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
         self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6)
-        self.assertEqual(ssh_mock.call_count, 14)
+        self.assertEqual(ssh_mock.call_count, 15)
+        cleanup_command = ssh_mock.call_args_list[0].args[1]
+        self.assertIn("rm -f", cleanup_command)
+        self.assertIn("/mnt/Flash/.mdns-advertiser.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.rc.local.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.common.sh.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.manager.sh.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
         self.assertEqual(uploading, plan.uploads)
         self.assertEqual(uploaded, plan.uploads)
 
@@ -7246,7 +7255,10 @@ int main(void) {{
 
         self.assertEqual([call.args[1] for call in scp_mock.call_args_list], [Path("/tmp/dfree.sh"), Path("/tmp/tcapsulesmb.conf")])
         self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.dfree.sh.tmp", "/mnt/Flash/.tcapsulesmb.conf.tmp"])
-        self.assertEqual(ssh_mock.call_count, 4)
+        self.assertEqual(ssh_mock.call_count, 5)
+        cleanup_command = ssh_mock.call_args_list[0].args[1]
+        self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
         mount_mock.assert_not_called()
 
     def test_upload_and_verify_deployment_payload_records_upload_measurements(self) -> None:
@@ -7316,6 +7328,19 @@ int main(void) {{
         self.assertIn("chmod 755 /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
         self.assertIn("mv -f /mnt/Flash/.mdns-advertiser.tmp /mnt/Flash/mdns-advertiser", ssh_commands[1])
         self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
+
+    def test_upload_flash_file_removes_tmp_after_upload_failure(self) -> None:
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_scp", side_effect=ScpError("cat: stdout: Input/output error")):
+            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
+                with self.assertRaisesRegex(ScpError, "Input/output error"):
+                    upload_flash_file(connection, Path("/tmp/mdns-advertiser"), "/mnt/Flash/mdns-advertiser", timeout=180)
+
+        ssh_commands = [call.args[1] for call in ssh_mock.call_args_list]
+        self.assertEqual(len(ssh_commands), 2)
+        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[0])
+        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
+        self.assertEqual(ssh_mock.call_args_list[1].kwargs, {"check": False})
 
     def test_render_managed_runtime_verification_passes_when_runtime_probe_succeeds(self) -> None:
         verification = ManagedRuntimeProbeResult(
