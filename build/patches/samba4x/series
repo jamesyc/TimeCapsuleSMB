@@ -102,3 +102,9 @@
 # path has already cached valid stat metadata; keep stream enumeration alive
 # for macOS delete/share checks without hiding failures on uncached paths.
 0026-time-capsule-fstreaminfo-cached-stat.patch|use cached stat for default streaminfo fallback
+# macOS Time Machine sends FSCTL_SRV_REQUEST_RESUME_KEY inside a compounded
+# request while probing backup-disk capabilities. The default VFS can complete
+# that resume-key request synchronously, but wrapper layers must propagate the
+# completed state before the SMB2 compound guard treats it as illegal async IOCTL
+# work and returns NT_STATUS_INTERNAL_ERROR.
+0028-time-machine-resume-key-sync-completion.patch|propagate synchronous resume-key IOCTL completion
