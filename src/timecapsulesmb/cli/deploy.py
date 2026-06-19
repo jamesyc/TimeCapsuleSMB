@@ -59,7 +59,10 @@ def _non_negative_int(value: str) -> int:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to an AirPort storage device.")
+    parser = argparse.ArgumentParser(
+        description="Deploy the checked-in Samba 4 payload to an AirPort storage device.",
+        usage="%(prog)s [options]",
+    )
     add_config_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot; activate the deployed runtime in place")
     parser.add_argument(
