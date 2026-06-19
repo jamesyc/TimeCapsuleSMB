@@ -32,6 +32,7 @@ from timecapsulesmb.flash import (
 )
 from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.flash_payloads import AcpFlashPayload
+from timecapsulesmb.flash_workflow import RESTORE_PRIMARY_AMBIGUOUS_WARNING
 from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
@@ -547,7 +548,7 @@ class FlashAnalysisTests(unittest.TestCase):
                 ],
             })
 
-            with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_active_bank", return_value=payload):
+            with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank", return_value=payload):
                 bundle, plan = flash_service.plan_flash_from_backup(
                     backup_dir=backup_dir,
                     operation="restore",
@@ -570,6 +571,21 @@ class FlashAnalysisTests(unittest.TestCase):
         secondary = make_bank(login=STOCK_LOGIN_NETBSD4_DUMMY, release=b"NetBSD 4.0_STABLE #0: current")
         changed_primary_footer = find_footer(changed_primary)
         secondary_footer = find_footer(secondary)
+        payload = AcpFlashPayload(
+            data=b"payload",
+            expected_prefix=changed_primary[: changed_primary_footer.end_offset],
+            expected_login_classification="stock",
+            template_source="test",
+            template_path=Path("/tmp/template.basebinary"),
+            template_product_id="116",
+            template_version="7.8.1",
+            template_sha256="template-sha",
+            payload_sha256="payload-sha",
+            key_id="test-key",
+            inner_model=116,
+            inner_version=0x00070801,
+            inner_payload_size=changed_primary_footer.end_offset,
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             backup_dir = Path(tmp)
@@ -600,14 +616,23 @@ class FlashAnalysisTests(unittest.TestCase):
                 ],
             })
 
-            with self.assertRaisesRegex(FlashAnalysisError, "multiple firmware banks passed active selection checks"):
-                flash_service.plan_flash_from_backup(
+            with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank", return_value=payload):
+                bundle, plan = flash_service.plan_flash_from_backup(
                     backup_dir=backup_dir,
                     operation="restore",
                     force=False,
                     firmware_template=None,
                     firmware_version=None,
                 )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        assert plan.target_bank is not None
+        self.assertEqual(plan.target_bank.name, "primary")
+        self.assertEqual(plan.warnings, (RESTORE_PRIMARY_AMBIGUOUS_WARNING,))
+        self.assertIsNone(bundle.manifest["active_bank"])
+        self.assertEqual(bundle.manifest["active_selection"]["status"], "multiple_candidates")
+        self.assertIsNone(bundle.inspection.active_selection.selected_by)
 
     def test_inspect_flash_banks_keeps_invalid_secondary_status_without_raising(self) -> None:
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")

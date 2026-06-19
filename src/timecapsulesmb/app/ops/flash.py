@@ -30,6 +30,7 @@ from timecapsulesmb.services.flash import (
     require_netbsd4_flash_target,
     validate_live_target_matches_backup,
     write_flash_plan,
+    write_stage_for_plan,
 )
 from timecapsulesmb.services.runtime import (
     require_connection_compatibility,
@@ -169,10 +170,13 @@ def _confirmation_message(target: FlashTarget, mode: str, bank: str | None, *, r
             f"Patch the primary firmware bank boot hook on {target.acp_host} "
             "and acknowledge that manual power cycle is required after a successful write?"
         )
-    bank_text = f" {bank}" if bank else ""
+    bank_text = bank or "target"
     if reboot_after_write:
-        return f"Restore Apple stock firmware to the active{bank_text} bank on {target.acp_host} and reboot after validation?"
-    return f"Restore Apple stock firmware to the active{bank_text} bank on {target.acp_host}?"
+        return (
+            f"Restore Apple stock firmware to the {bank_text} firmware bank on {target.acp_host} "
+            "and reboot after validation?"
+        )
+    return f"Restore Apple stock firmware to the {bank_text} firmware bank on {target.acp_host}?"
 
 
 def _finish_validated_write(
@@ -331,7 +335,7 @@ def _write_operation(params: dict[str, object], context: AppOperationContext) ->
             plan=plan,
             log=context.log,
         )
-        context.stage("write_primary_bank" if plan_operation == "patch" else "write_active_bank")
+        context.stage(write_stage_for_plan(plan))
         context.log("Sending ACP flash command...")
         write_flash_plan(
             target=target,

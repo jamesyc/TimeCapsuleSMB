@@ -7003,6 +7003,58 @@ class CliTests(unittest.TestCase):
         self.assertIn("Primary firmware bank is already patched; no write needed.", output.getvalue())
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "success")
 
+    def test_flash_restore_targets_primary_when_both_banks_are_active_candidates(self) -> None:
+        output = io.StringIO()
+        stock_primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        stock_secondary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            patched_primary = self.make_patched_flash_bank(stock_primary)
+            patched_secondary = self.make_patched_flash_bank(stock_secondary)
+            template_path.write_bytes(self.make_firmware_template(stock_primary, product_id=113))
+            with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                    with mock.patch(
+                        "timecapsulesmb.services.flash.read_flash_inputs",
+                        return_value=self.make_flash_inputs(
+                            patched_primary,
+                            patched_secondary,
+                            live_login=PATCHED_LOGIN_SCRIPT,
+                        ),
+                    ):
+                        with mock.patch("timecapsulesmb.services.flash.flash_firmware_bank") as flash_mock:
+                            with mock.patch("builtins.input", return_value="n"):
+                                with redirect_stdout(output):
+                                    rc = cli_flash.main([
+                                        "--restore",
+                                        "--firmware-template",
+                                        str(template_path),
+                                        "--backup-dir",
+                                        str(backup_dir),
+                                    ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 0)
+        flash_mock.assert_not_called()
+        self.assertIsNone(manifest["active_bank"])
+        self.assertEqual(manifest["active_selection"]["status"], "multiple_candidates")
+        self.assertEqual(manifest["active_selection"]["candidates"], ["primary", "secondary"])
+        self.assertEqual(manifest["write_policy"], "target_bank_restore")
+        self.assertEqual(manifest["flash_plan"]["target_bank"], "primary")
+        self.assertEqual(
+            manifest["flash_plan"]["warnings"],
+            ["restore targets primary because multiple firmware banks passed active selection checks"],
+        )
+        self.assertTrue(manifest["banks"][0]["would_write"])
+        self.assertEqual(manifest["banks"][0]["write_decision"], "primary bank restore from Apple firmware planned")
+        self.assertFalse(manifest["banks"][1]["would_write"])
+        self.assertEqual(manifest["banks"][1]["write_decision"], "secondary bank left unmodified")
+        self.assertEqual(manifest["write_outcome"]["status"], "cancelled")
+        self.assertIn("Warning: restore targets primary because multiple firmware banks passed active selection checks", output.getvalue())
+
     def test_flash_patch_rejects_poweroff(self) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -7085,10 +7137,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(manifest["operation"], "restore")
         self.assertEqual(manifest["flash_plan"]["mode"], "restore")
         self.assertFalse(manifest["flash_plan"]["already_satisfied"])
+        self.assertEqual(manifest["write_policy"], "target_bank_restore")
         self.assertTrue(manifest["banks"][0]["would_write"])
-        self.assertEqual(manifest["banks"][0]["write_decision"], "active bank restore from Apple firmware planned")
+        self.assertEqual(manifest["banks"][0]["write_decision"], "primary bank restore from Apple firmware planned")
         self.assertFalse(manifest["banks"][1]["would_write"])
-        self.assertEqual(manifest["banks"][1]["write_decision"], "inactive bank left unmodified")
+        self.assertEqual(manifest["banks"][1]["write_decision"], "secondary bank left unmodified")
         self.assertEqual(manifest["write_outcome"]["status"], "validated")
         self.assertTrue(manifest["write_outcome"]["write_validated"])
         self.assertEqual(manifest["write_result"]["login_classification"], "stock")
@@ -7246,7 +7299,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(manifest["flash_plan"]["already_satisfied"])
         self.assertTrue(manifest["flash_plan"]["apple_match"]["matched"])
         self.assertFalse(manifest["banks"][0]["would_write"])
-        self.assertEqual(manifest["banks"][0]["write_decision"], "active bank already matches requested Apple stock firmware; no write needed")
+        self.assertEqual(manifest["banks"][0]["write_decision"], "primary bank already matches requested Apple stock firmware; no write needed")
         self.assertEqual(manifest["write_outcome"]["status"], "not_needed")
         self.assertFalse(manifest["write_outcome"]["write_may_have_modified_device"])
         self.assertIn("already matches the requested Apple stock firmware", output.getvalue())

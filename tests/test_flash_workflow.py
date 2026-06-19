@@ -21,6 +21,7 @@ from timecapsulesmb.flash import (
 from timecapsulesmb.flash_payloads import AcpFlashPayload, AppleFirmwareMatch
 from timecapsulesmb.flash_workflow import (
     FlashPlan,
+    RESTORE_PRIMARY_AMBIGUOUS_WARNING,
     expected_bank_after_write,
     plan_check_apple,
     plan_patch_primary,
@@ -102,9 +103,12 @@ def make_inspection(
     primary_backup_valid: bool = True,
     secondary_backup_valid: bool = True,
     primary_active_candidate: bool = True,
+    secondary_active_candidate: bool = False,
+    active_selection: ActiveSelectionInfo | None = None,
 ) -> FlashInspection:
     primary = primary or make_bank("primary", patch=make_patch(make_bank("primary")))
     secondary = secondary or make_bank("secondary")
+    active_selection = active_selection or ActiveSelectionInfo("single_candidate", ("primary",), "test")
     return FlashInspection(
         primary=BankInspection(
             "primary",
@@ -129,12 +133,12 @@ def make_inspection(
             secondary,
             secondary_backup_valid,
             () if secondary_backup_valid else ("bad secondary",),
-            False,
-            ("inactive",),
+            secondary_active_candidate,
+            () if secondary_active_candidate else ("inactive",),
             None,
             None,
         ),
-        active_selection=ActiveSelectionInfo("single_candidate", ("primary",), "test"),
+        active_selection=active_selection,
     )
 
 
@@ -208,10 +212,9 @@ class FlashWorkflowTests(unittest.TestCase):
     def test_restore_and_check_plans_cover_already_satisfied_states(self) -> None:
         payload = make_payload(expected_prefix=b"abcdefgh")
         match = AppleFirmwareMatch(True, "template", None, "116", "7.8.1", "sha", "inner", 8, "key", 116, 0x70801)
-        analysis = make_analysis()
 
-        with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_active_bank", return_value=payload):
-            restore_plan = plan_restore_apple(analysis, syap="116", firmware_template=None)
+        with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank", return_value=payload):
+            restore_plan = plan_restore_apple(make_inspection(), syap="116", firmware_template=None)
         with mock.patch("timecapsulesmb.flash_workflow.find_apple_firmware_match", return_value=match):
             check_plan = plan_check_apple(make_inspection(), syap="116", firmware_template=None)
 
@@ -219,6 +222,55 @@ class FlashWorkflowTests(unittest.TestCase):
         self.assertFalse(restore_plan.write_requested)
         self.assertTrue(check_plan.already_satisfied)
         self.assertFalse(check_plan.write_requested)
+
+    def test_plan_restore_targets_primary_when_multiple_candidates_pass(self) -> None:
+        payload = make_payload()
+        inspection = make_inspection(
+            secondary_active_candidate=True,
+            active_selection=ActiveSelectionInfo("multiple_candidates", ("primary", "secondary"), None),
+        )
+
+        with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank", return_value=payload) as build:
+            plan = plan_restore_apple(inspection, syap="116", firmware_template=None)
+
+        self.assertEqual(plan.target_bank.name, "primary")
+        self.assertEqual(plan.warnings, (RESTORE_PRIMARY_AMBIGUOUS_WARNING,))
+        build.assert_called_once_with(
+            inspection.primary.analysis,
+            syap="116",
+            firmware_template=None,
+            firmware_version=None,
+            cache_dir=None,
+        )
+
+    def test_plan_restore_preserves_selected_secondary_target(self) -> None:
+        payload = make_payload()
+        inspection = make_inspection(
+            primary_active_candidate=False,
+            secondary_active_candidate=True,
+            active_selection=ActiveSelectionInfo("single_candidate", ("secondary",), "test"),
+        )
+
+        with mock.patch("timecapsulesmb.flash_workflow.build_restore_payload_for_bank", return_value=payload):
+            plan = plan_restore_apple(inspection, syap="116", firmware_template=None)
+
+        self.assertEqual(plan.target_bank.name, "secondary")
+        self.assertEqual(plan.warnings, ())
+
+    def test_plan_restore_rejects_invalid_backup_bank(self) -> None:
+        inspection = make_inspection(secondary_backup_valid=False)
+
+        with self.assertRaisesRegex(FlashAnalysisError, "both firmware banks must be valid backups"):
+            plan_restore_apple(inspection, syap="116", firmware_template=None)
+
+    def test_plan_restore_rejects_when_no_bank_passes_active_selection(self) -> None:
+        inspection = make_inspection(
+            primary_active_candidate=False,
+            active_selection=ActiveSelectionInfo("no_candidates", (), None),
+        )
+
+        with self.assertRaisesRegex(FlashAnalysisError, "no firmware bank passed active selection"):
+            plan_restore_apple(inspection, syap="116", firmware_template=None)
 
     def write_plan(self, *, payload: AcpFlashPayload | None = None, readback: bytes | None = None) -> tuple[FlashPlan, bytes]:
         active = make_bank("primary")

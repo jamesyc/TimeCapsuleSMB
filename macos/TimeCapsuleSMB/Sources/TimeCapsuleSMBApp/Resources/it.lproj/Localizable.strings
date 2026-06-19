@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Patch del primario firmware bank boot hook su %@? Dopo una scrittura riuscita è necessario il riavvio manuale.";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook?";
 "confirm.flash.restore_write.action" = "Scrivi Firmware";
-"confirm.flash.restore_write.message" = "Ripristinare lo stock Apple firmware sul firmware attivo bank su %@ e riavviare dopo la convalida?";
+"confirm.flash.restore_write.message" = "Ripristinare lo stock Apple firmware sul firmware bank %@ su %@ e riavviare dopo la convalida?";
 "confirm.flash.restore_write.title" = "Ripristinare Apple Firmware?";
 "confirm.repair_xattrs.action" = "Riparazione xattrs";
 "confirm.repair_xattrs.message" = "Riparare i problemi noti di macOS metadata in %@?";

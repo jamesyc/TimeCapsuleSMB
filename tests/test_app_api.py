@@ -627,6 +627,24 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(len(payload["apple_firmware_matches"]), 2)
         self.assertTrue(payload["apple_firmware_match"]["matched"])
 
+    def test_flash_plan_payload_promotes_plan_warnings(self) -> None:
+        payload = contracts.flash_plan_payload({
+            "backup_dir": "/tmp/flash-backup",
+            "flash_plan": {
+                "mode": "restore",
+                "target_bank": "primary",
+                "write_requested": True,
+                "already_satisfied": False,
+                "warnings": [
+                    "restore targets primary because multiple firmware banks passed active selection checks",
+                ],
+            },
+        })
+
+        self.assertEqual(payload["warnings"], [
+            "restore targets primary because multiple firmware banks passed active selection checks",
+        ])
+
     def test_flash_plan_payload_promotes_generic_download_payload_path(self) -> None:
         payload = contracts.flash_plan_payload({
             "backup_dir": "/tmp/flash-backup",
@@ -777,12 +795,34 @@ class AppApiTests(unittest.TestCase):
             bundle = SimpleNamespace(manifest=manifest, backup_dir=backup_dir)
             connection = object()
             target = SimpleNamespace(acp_host="10.0.0.2", connection=connection)
+            confirmation_collector = CollectingSink()
             collector = CollectingSink()
             params = {
                 "action": "write",
                 "backup_dir": str(backup_dir),
                 "mode": "restore",
             }
+            with mock.patch("timecapsulesmb.app.ops.flash.plan_flash_from_backup", return_value=(bundle, plan)):
+                with mock.patch("timecapsulesmb.app.ops.flash.load_request_config", return_value=object()):
+                    with mock.patch("timecapsulesmb.app.ops.flash._resolve_flash_target", return_value=target):
+                        rc = service.run_api_request(
+                            {
+                                "operation": "flash",
+                                "params": params,
+                            },
+                            confirmation_collector.sink,
+                        )
+
+            self.assertEqual(rc, 1)
+            details = self.assert_confirmation(
+                confirmation_collector,
+                "flash.restore_write",
+                {"host": "10.0.0.2", "mode": "restore", "target_bank": "primary"},
+            )
+            self.assertEqual(
+                details["message"],
+                "Restore Apple stock firmware to the primary firmware bank on 10.0.0.2 and reboot after validation?",
+            )
             params["confirmation_id"] = self.confirmation_id_for(
                 "flash",
                 params,

@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Pataisyti pirminio programinės įrangos banko įkrovos įskiepį %@? Sėkmingai įrašius reikalingas rankinis maitinimo ciklas.";
 "confirm.flash.patch_write.title" = "Pataisyti programinės įrangos įkrovos įskiepį?";
 "confirm.flash.restore_write.action" = "Įrašyti programinę įrangą";
-"confirm.flash.restore_write.message" = "Atkurti „Apple“ originalią programinę įrangą į aktyvų programinės įrangos banką %@ ir paleisti iš naujo po patvirtinimo?";
+"confirm.flash.restore_write.message" = "Atkurti „Apple“ originalią programinę įrangą į programinės įrangos banką %@ įrenginyje %@ ir paleisti iš naujo po patvirtinimo?";
 "confirm.flash.restore_write.title" = "Atkurti Apple programinę įrangą?";
 "confirm.repair_xattrs.action" = "Taisyti xattrs";
 "confirm.repair_xattrs.message" = "Taisyti žinomus saugius macOS metaduomenų sutrikimus %@?";

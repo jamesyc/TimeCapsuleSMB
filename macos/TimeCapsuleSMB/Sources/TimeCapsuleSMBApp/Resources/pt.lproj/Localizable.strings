@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Corrigir o firmware bank boot hook primário em %@? O ciclo de energia manual é necessário após uma gravação bem-sucedida.";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook?";
 "confirm.flash.restore_write.action" = "Escreva Firmware";
-"confirm.flash.restore_write.message" = "Restaurar o estoque da Apple firmware para o firmware bank ativo em %@ e reiniciar após a validação?";
+"confirm.flash.restore_write.message" = "Restaurar o estoque da Apple firmware para o firmware bank %@ em %@ e reiniciar após a validação?";
 "confirm.flash.restore_write.title" = "Restaurar Apple Firmware?";
 "confirm.repair_xattrs.action" = "Reparar xattrs";
 "confirm.repair_xattrs.message" = "Reparar problemas conhecidos como seguros de macOS metadata sob %@?";

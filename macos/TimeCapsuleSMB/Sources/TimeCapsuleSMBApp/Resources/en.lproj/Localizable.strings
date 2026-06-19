@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Patch the primary firmware bank boot hook on %@? Manual power cycle is required after a successful write.";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook?";
 "confirm.flash.restore_write.action" = "Write Firmware";
-"confirm.flash.restore_write.message" = "Restore Apple stock firmware to the active firmware bank on %@ and reboot after validation?";
+"confirm.flash.restore_write.message" = "Restore Apple stock firmware to the %@ firmware bank on %@ and reboot after validation?";
 "confirm.flash.restore_write.title" = "Restore Apple Firmware?";
 "confirm.repair_xattrs.action" = "Repair xattrs";
 "confirm.repair_xattrs.message" = "Repair known-safe macOS metadata issues under %@?";

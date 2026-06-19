@@ -381,6 +381,13 @@ def _apple_matches(plan: Mapping[str, object]) -> list[Mapping[str, object]]:
     return [match for match in matches if isinstance(match, dict)]
 
 
+def _flash_plan_warnings(plan: Mapping[str, object]) -> list[str]:
+    warnings = plan.get("warnings")
+    if not isinstance(warnings, list):
+        return []
+    return [str(warning) for warning in warnings if isinstance(warning, str) and warning.strip()]
+
+
 def _apple_match_count(matches: list[Mapping[str, object]], *, matched: bool) -> int:
     count = 0
     for result in matches:
@@ -435,6 +442,7 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     firmware_payload = _flash_plan_child(plan, "payload")
     firmware_payload_path = _firmware_payload_path(raw, plan)
     apple_firmware_matches = _apple_matches(plan)
+    warnings = _flash_plan_warnings(plan)
     apple_summary = _apple_firmware_summary(mode, apple_firmware_match, firmware_payload, apple_firmware_matches)
     if apple_summary is not None:
         summary = apple_summary
@@ -454,6 +462,7 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
         "apple_match_status": plan.get("apple_match_status") if isinstance(plan.get("apple_match_status"), str) else None,
         "firmware_payload": firmware_payload,
         "firmware_payload_path": firmware_payload_path,
+        "warnings": warnings,
         "summary": summary,
     })
 

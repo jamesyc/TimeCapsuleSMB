@@ -55,6 +55,7 @@ from timecapsulesmb.services.flash import (
     save_flash_manifest,
     save_primary_patched_bank_if_ready,
     write_flash_plan,
+    write_stage_for_plan,
 )
 from timecapsulesmb.services.reboot import RebootFlowError, observe_reboot_cycle, request_reboot
 from timecapsulesmb.services.runtime import load_env_config
@@ -216,7 +217,7 @@ def _confirmation_prompt(plan: FlashPlan) -> str:
         product = "unknown" if payload is None else payload.template_product_id or str(payload.inner_model)
         return (
             f"This will flash Apple stock firmware {version} for product {product} "
-            f"to the active {plan.target_bank.name} bank. Continue?"
+            f"to the {plan.target_bank.name} firmware bank. Continue?"
         )
     return "This will patch the primary firmware bank. Continue?"
 
@@ -247,8 +248,8 @@ def _build_parser() -> argparse.ArgumentParser:
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--read-only", action="store_true", help="Dump and back up firmware banks without patch planning")
     mode_group.add_argument("--patch", action="store_true", help="Patch the primary firmware bank LOGIN hook")
-    mode_group.add_argument("--restore", action="store_true", help="Restore the active firmware bank from Apple stock firmware")
-    mode_group.add_argument("--check-apple", action="store_true", help="Check whether the active bank matches Apple stock firmware")
+    mode_group.add_argument("--restore", action="store_true", help="Restore the target firmware bank from Apple stock firmware")
+    mode_group.add_argument("--check-apple", action="store_true", help="Check whether candidate firmware banks match Apple stock firmware")
     mode_group.add_argument("--download-only", action="store_true", help="Download and validate Apple firmware without writing")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before --patch or --restore writes")
     add_no_input_argument(parser)
@@ -526,7 +527,8 @@ def _prepare_write(
         if operation == "patch":
             print("Primary firmware bank is already patched; no write needed.")
         else:
-            print("Active firmware bank already matches the requested Apple stock firmware; no write needed.")
+            target_name = "target" if plan.target_bank is None else plan.target_bank.name.capitalize()
+            print(f"{target_name} firmware bank already matches the requested Apple stock firmware; no write needed.")
         record_write_outcome(
             bundle=bundle,
             plan=plan,
@@ -576,8 +578,8 @@ def _write_flash(
     log: ProgressLogger,
 ) -> dict[str, object] | None:
     assert plan.target_bank is not None
-    stage = "write_primary_bank" if plan.mode == "patch" else "write_active_bank"
-    target_text = "primary" if plan.mode == "patch" else f"active {plan.target_bank.name}"
+    stage = write_stage_for_plan(plan)
+    target_text = plan.target_bank.name
     command_context.set_stage(stage)
     emit_progress(log, f"Sending ACP flash command for {target_text} bank...")
     try:

@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Patch %@ 上 primary firmware bank 的 Boot Hook？成功写入后需要手动断电重启。";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook？";
 "confirm.flash.restore_write.action" = "写入 Firmware";
-"confirm.flash.restore_write.message" = "将 %@ 上的 active firmware bank 恢复为 Apple stock firmware，并在验证后重启？";
+"confirm.flash.restore_write.message" = "将 %@ 上的 %@ firmware bank 恢复为 Apple stock firmware，并在验证后重启？";
 "confirm.flash.restore_write.title" = "恢复 Apple Firmware？";
 "confirm.repair_xattrs.action" = "修复 xattrs";
 "confirm.repair_xattrs.message" = "修复 %@ 下已知安全的 macOS metadata 问题？";

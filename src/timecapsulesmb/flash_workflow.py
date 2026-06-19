@@ -20,7 +20,7 @@ from timecapsulesmb.flash_payloads import (
     AppleFirmwareMatch,
     build_download_payload_for_syap,
     build_patch_payload_for_bank,
-    build_restore_payload_for_active_bank,
+    build_restore_payload_for_bank,
     find_apple_firmware_match,
 )
 from timecapsulesmb.integrations.acp import ACPError
@@ -68,6 +68,11 @@ class FlashPlan:
         }
 
 
+RESTORE_PRIMARY_AMBIGUOUS_WARNING = (
+    "restore targets primary because multiple firmware banks passed active selection checks"
+)
+
+
 def inactive_bank(analysis: FlashAnalysis) -> BankAnalysis | None:
     if analysis.active_bank == "primary":
         return analysis.secondary
@@ -104,6 +109,14 @@ def _patch_preflight_lines(reason: str, inspection: FlashInspection) -> list[str
         bank_inspection_status_line(inspection.primary),
         bank_inspection_status_line(inspection.secondary),
         "Use --force to patch the primary bank anyway after reviewing the backup status.",
+    ]
+
+
+def _restore_preflight_lines(reason: str, inspection: FlashInspection) -> list[str]:
+    return [
+        reason,
+        bank_inspection_status_line(inspection.primary),
+        bank_inspection_status_line(inspection.secondary),
     ]
 
 
@@ -157,6 +170,35 @@ def require_primary_patch_ready(inspection: FlashInspection, *, force: bool = Fa
         detail = f": {analysis.patch_error}" if analysis.patch_error else ""
         raise FlashAnalysisError(f"refusing to patch because primary bank has no patch candidate{detail}")
     return analysis
+
+
+def require_restore_target_bank(inspection: FlashInspection) -> tuple[BankAnalysis, tuple[str, ...]]:
+    if not _both_backup_banks_valid(inspection):
+        raise FlashAnalysisError(
+            "\n".join(_restore_preflight_lines(
+                "refusing to restore because both firmware banks must be valid backups",
+                inspection,
+            ))
+        )
+
+    active = _selected_active_for_read_plan(inspection)
+    if active is not None:
+        return active, ()
+
+    if inspection.active_selection.status == "multiple_candidates":
+        primary = inspection.primary
+        if primary.analysis is not None and primary.active_candidate:
+            return primary.analysis, (RESTORE_PRIMARY_AMBIGUOUS_WARNING,)
+
+    analysis = inspection.strict_analysis
+    if analysis is not None:
+        raise FlashAnalysisError(active_selection_error_message(analysis, write=True))
+    raise FlashAnalysisError(
+        "\n".join(_restore_preflight_lines(
+            "refusing to restore because firmware bank inspection failed",
+            inspection,
+        ))
+    )
 
 
 def require_active_for_read_plan(analysis: FlashAnalysis) -> BankAnalysis:
@@ -285,30 +327,30 @@ def plan_patch_primary(
 
 
 def plan_restore_apple(
-    analysis: FlashAnalysis,
+    inspection: FlashInspection,
     *,
     syap: str | int | None,
     firmware_template: Path | None,
     firmware_version: str | None = None,
     cache_dir: Path | None = None,
 ) -> FlashPlan:
-    active = require_active_and_inactive_valid(analysis)
-    payload = build_restore_payload_for_active_bank(
-        active,
+    target, warnings = require_restore_target_bank(inspection)
+    payload = build_restore_payload_for_bank(
+        target,
         syap=syap,
         firmware_template=firmware_template,
         firmware_version=firmware_version,
         cache_dir=cache_dir,
     )
-    already_satisfied = active.data[: len(payload.expected_prefix)] == payload.expected_prefix
+    already_satisfied = target.data[: len(payload.expected_prefix)] == payload.expected_prefix
     match = apple_match_from_restore_payload(payload=payload, matched=already_satisfied)
     return FlashPlan(
         mode="restore",
-        target_bank=active,
+        target_bank=target,
         payload=payload,
         apple_match=match,
         already_satisfied=already_satisfied,
-        warnings=(),
+        warnings=warnings,
     )
 
 
@@ -412,8 +454,8 @@ def active_checksum_property(bank_name: str) -> str:
 def expected_bank_after_write(active: BankAnalysis, payload: AcpFlashPayload) -> tuple[bytes, int]:
     if len(payload.expected_prefix) != active.footer.end_offset:
         raise FlashAnalysisError(
-            "flash payload expected prefix length does not match active bank footer end_offset: "
-            f"payload={len(payload.expected_prefix)}, active_end_offset={active.footer.end_offset}"
+            "flash payload expected prefix length does not match target bank footer end_offset: "
+            f"payload={len(payload.expected_prefix)}, target_end_offset={active.footer.end_offset}"
         )
     expected = bytearray(active.data)
     expected[: active.footer.end_offset] = payload.expected_prefix

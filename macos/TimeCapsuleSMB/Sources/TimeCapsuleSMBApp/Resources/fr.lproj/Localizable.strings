@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Corriger le firmware bank boot hook principal sur %@ ? Un cycle d'alimentation manuel est requis après une écriture réussie.";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook ?";
 "confirm.flash.restore_write.action" = "Écrivez Firmware";
-"confirm.flash.restore_write.message" = "Restaurer le stock Apple firmware sur le firmware bank actif sur %@ et redémarrer après validation ?";
+"confirm.flash.restore_write.message" = "Restaurer le stock Apple firmware sur le firmware bank %@ sur %@ et redémarrer après validation ?";
 "confirm.flash.restore_write.title" = "Restaurer Apple Firmware ?";
 "confirm.repair_xattrs.action" = "Réparation xattrs";
 "confirm.repair_xattrs.message" = "Réparer les problèmes macOS metadata connus et sûrs sous %@ ?";

@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Patch de primaire firmware bank boot hook op %@? Na succesvol schrijven is een handmatige uit- en uitschakelcyclus vereist.";
 "confirm.flash.patch_write.title" = "Patch Firmware Boot Hook?";
 "confirm.flash.restore_write.action" = "Schrijf Firmware";
-"confirm.flash.restore_write.message" = "Apple-voorraad firmware herstellen naar de actieve firmware bank op %@ en opnieuw opstarten na validatie?";
+"confirm.flash.restore_write.message" = "Apple-voorraad firmware herstellen naar firmware bank %@ op %@ en opnieuw opstarten na validatie?";
 "confirm.flash.restore_write.title" = "Apple herstellen Firmware?";
 "confirm.repair_xattrs.action" = "Reparatie xattrs";
 "confirm.repair_xattrs.message" = "Repareer bekende veilige macOS metadata problemen onder %@?";

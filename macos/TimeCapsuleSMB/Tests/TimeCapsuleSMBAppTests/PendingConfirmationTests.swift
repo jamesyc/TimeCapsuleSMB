@@ -259,7 +259,10 @@ final class PendingConfirmationTests: XCTestCase {
                 "action_title": .string("Backend action"),
                 "confirmation_id": .string("abc123"),
                 "presentation_id": .string("flash.restore_write"),
-                "presentation_values": .object(["host": .string("10.0.0.2")])
+                "presentation_values": .object([
+                    "host": .string("10.0.0.2"),
+                    "target_bank": .string("primary")
+                ])
             ])
         )
 
@@ -268,7 +271,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(confirmation.title, "Restore Apple Firmware?")
         XCTAssertEqual(
             confirmation.message,
-            "Restore Apple stock firmware to the active firmware bank on 10.0.0.2 and reboot after validation?"
+            "Restore Apple stock firmware to the primary firmware bank on 10.0.0.2 and reboot after validation?"
         )
         XCTAssertEqual(confirmation.actionTitle, "Write Firmware")
     }

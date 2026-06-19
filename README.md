@@ -163,10 +163,10 @@ To back up the flash on your device. Then run:
 ```
 This will then patch a small boot hook launcher (to the primary firmware bank only). It just tells the device to run the `/mnt/Flash/rc.local` file at every startup.
 
-On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the selected active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. Patch mode normally requires exactly one safely selected active bank; `--force` is available only for patch mode and bypasses the backup/active-candidate preflight to target the primary bank.
+On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore a selected target bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. Patch mode targets the primary bank. Restore mode uses the selected active bank when only one bank passes active selection; if both banks pass and primary is safe, restore targets primary.
 
 Patch mode cannot send a reboot or poweroff command after a successful write. After `tcapsule flash --patch` reports success, a user needs to manually
-unplug the device to reboot, and then wait a few minutes for the device to boot to run `tcapsule doctor`. Restore mode can request a software reboot with `tcapsule flash --restore --reboot`; after that, use `tcapsule flash --check-apple` to verify the active bank matches Apple stock firmware.
+unplug the device to reboot, and then wait a few minutes for the device to boot to run `tcapsule doctor`. Restore mode can request a software reboot with `tcapsule flash --restore --reboot`; after that, use `tcapsule flash --check-apple` to verify the candidate bank or banks match Apple stock firmware.
 
 If you do not want to patch the device, run:
 

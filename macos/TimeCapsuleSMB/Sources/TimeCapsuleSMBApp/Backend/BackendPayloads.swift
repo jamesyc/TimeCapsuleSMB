@@ -967,6 +967,7 @@ struct FlashPlanPayload: Decodable, Equatable {
     let appleMatchStatus: String?
     let firmwarePayload: FlashFirmwarePayload?
     let firmwarePayloadPath: String?
+    let warnings: [String]
     let summary: String
 
     enum CodingKeys: String, CodingKey {
@@ -983,6 +984,7 @@ struct FlashPlanPayload: Decodable, Equatable {
         case appleMatchStatus = "apple_match_status"
         case firmwarePayload = "firmware_payload"
         case firmwarePayloadPath = "firmware_payload_path"
+        case warnings
         case summary
     }
 
@@ -1001,6 +1003,7 @@ struct FlashPlanPayload: Decodable, Equatable {
         self.appleMatchStatus = try container.decodeIfPresent(String.self, forKey: .appleMatchStatus)
         self.firmwarePayload = try container.decodeIfPresent(FlashFirmwarePayload.self, forKey: .firmwarePayload)
         self.firmwarePayloadPath = try container.decodeIfPresent(String.self, forKey: .firmwarePayloadPath)
+        self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
         self.summary = try container.decode(String.self, forKey: .summary)
     }
 }

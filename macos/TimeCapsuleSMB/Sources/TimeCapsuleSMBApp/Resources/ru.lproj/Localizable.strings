@@ -167,7 +167,7 @@
 "confirm.flash.patch_write.message" = "Исправить основной firmware bank boot hook на %@? После успешной записи требуется ручной выключение и включение питания.";
 "confirm.flash.patch_write.title" = "Патч Firmware Boot Hook?";
 "confirm.flash.restore_write.action" = "Напишите Firmware";
-"confirm.flash.restore_write.message" = "Восстановить стандартный firmware Apple до активного firmware bank на %@ и перезагрузить компьютер после проверки?";
+"confirm.flash.restore_write.message" = "Восстановить стандартный firmware Apple до firmware bank %@ на %@ и перезагрузить компьютер после проверки?";
 "confirm.flash.restore_write.title" = "Восстановить Apple Firmware?";
 "confirm.repair_xattrs.action" = "Ремонт xattrs";
 "confirm.repair_xattrs.message" = "Устранить заведомо безопасные проблемы macOS metadata под %@?";

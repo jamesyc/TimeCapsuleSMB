@@ -17,7 +17,6 @@ from timecapsulesmb.flash import (
     FlashAnalysis,
     FlashAnalysisError,
     FlashInspection,
-    inspection_error_message,
     inspection_to_jsonable,
     inspect_flash_banks,
     require_zopfli_gzip_available,
@@ -195,12 +194,13 @@ def _manifest_banks(manifest: dict[str, object]) -> list[dict[str, object]]:
 def apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) -> None:
     target_name = None if plan.target_bank is None else plan.target_bank.name
     for bank in _manifest_banks(manifest):
+        bank_name = str(bank.get("name") or "target")
         if bank.get("name") != target_name:
             bank["would_write"] = False
             if target_name is not None and plan.mode == "patch":
                 bank["write_decision"] = "secondary backup left unmodified"
             elif target_name is not None:
-                bank["write_decision"] = "inactive bank left unmodified"
+                bank["write_decision"] = f"{bank_name} bank left unmodified"
             continue
 
         bank["would_write"] = plan.write_requested
@@ -211,13 +211,23 @@ def apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) -
                 bank["write_decision"] = "primary bank patch planned"
         elif plan.mode == "restore":
             if plan.write_requested:
-                bank["write_decision"] = "active bank restore from Apple firmware planned"
+                bank["write_decision"] = f"{target_name} bank restore from Apple firmware planned"
             else:
-                bank["write_decision"] = "active bank already matches requested Apple stock firmware; no write needed"
+                bank["write_decision"] = (
+                    f"{target_name} bank already matches requested Apple stock firmware; no write needed"
+                )
         elif plan.mode == "check_apple":
             bank["write_decision"] = "check only; no firmware write planned"
         elif plan.mode == "download_only":
             bank["write_decision"] = "download only; no firmware write planned"
+
+
+def _write_policy_for_operation(operation: str) -> str:
+    if operation == "patch":
+        return "primary_bank_patch"
+    if operation == "restore":
+        return "target_bank_restore"
+    return "active_bank_only"
 
 
 def manifest_from_inspection(
@@ -230,7 +240,7 @@ def manifest_from_inspection(
 ) -> dict[str, object]:
     payload = inspection_to_jsonable(
         inspection,
-        write_policy="primary_bank_patch" if operation == "patch" else "active_bank_only",
+        write_policy=_write_policy_for_operation(operation),
     )
     if operation != "patch":
         _mark_manifest_no_write(payload, "backup only; no patch candidate built")
@@ -334,7 +344,7 @@ def _manifest_live_login_match(manifest: dict[str, object], name: str, data: byt
 def _refresh_manifest_inspection(manifest: dict[str, object], inspection: FlashInspection, *, operation: str) -> None:
     payload = inspection_to_jsonable(
         inspection,
-        write_policy="primary_bank_patch" if operation == "patch" else "active_bank_only",
+        write_policy=_write_policy_for_operation(operation),
     )
     if operation != "patch":
         _mark_manifest_no_write(payload, "backup only; no patch candidate built")
@@ -478,10 +488,8 @@ def plan_from_operation(
             firmware_version=firmware_version,
         )
     if operation == "restore":
-        if analysis is None:
-            raise FlashAnalysisError(inspection_error_message(inspection))
         return plan_restore_apple(
-            analysis,
+            inspection,
             syap=syap,
             firmware_template=firmware_template,
             firmware_version=firmware_version,
@@ -614,6 +622,12 @@ def write_outcome_payload(
     return outcome
 
 
+def write_stage_for_plan(plan: FlashPlan) -> str:
+    if plan.target_bank is not None and plan.target_bank.name == "primary":
+        return "write_primary_bank"
+    return "write_active_bank"
+
+
 def record_write_outcome(
     *,
     bundle: FlashAnalysisBundle,
@@ -692,7 +706,7 @@ def write_flash_plan(
         status="attempting",
         write_validated=False,
         write_may_have_modified_device=True,
-        stage="write_primary_bank" if plan.mode == "patch" else "write_active_bank",
+        stage=write_stage_for_plan(plan),
     )
     write_result = write_and_validate_plan(
         connection=target.connection,

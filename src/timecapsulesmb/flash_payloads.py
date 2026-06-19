@@ -172,15 +172,15 @@ def build_patch_payload_from_template(
 
 def build_restore_payload_from_template(
     *,
-    active: BankAnalysis,
+    bank: BankAnalysis,
     syap: str | int | None,
     candidate: FirmwareTemplateCandidate,
 ) -> AcpFlashPayload:
     template = parse_firmware_template_for_syap(candidate=candidate, syap=syap)
-    if len(template.inner.payload) != active.footer.end_offset:
+    if len(template.inner.payload) != bank.footer.end_offset:
         raise FlashAnalysisError(
-            "Apple firmware payload length does not match active bank footer end_offset: "
-            f"template={len(template.inner.payload)}, active_end_offset={active.footer.end_offset}"
+            "Apple firmware payload length does not match target bank footer end_offset: "
+            f"template={len(template.inner.payload)}, target_end_offset={bank.footer.end_offset}"
         )
     login = classify_firmware_prefix_login(template.inner.payload)
     if login.classification != "stock":
@@ -345,8 +345,8 @@ def build_patch_payload_for_active_bank(
     )
 
 
-def build_restore_payload_for_active_bank(
-    active: BankAnalysis,
+def build_restore_payload_for_bank(
+    bank: BankAnalysis,
     *,
     syap: str | int | None,
     firmware_template: Path | None,
@@ -362,7 +362,24 @@ def build_restore_payload_for_active_bank(
     return _try_candidates(
         syap=syap,
         candidates=candidates,
-        build=lambda candidate: build_restore_payload_from_template(active=active, syap=syap, candidate=candidate),
+        build=lambda candidate: build_restore_payload_from_template(bank=bank, syap=syap, candidate=candidate),
+    )
+
+
+def build_restore_payload_for_active_bank(
+    active: BankAnalysis,
+    *,
+    syap: str | int | None,
+    firmware_template: Path | None,
+    firmware_version: str | None = None,
+    cache_dir: Path | None = None,
+) -> AcpFlashPayload:
+    return build_restore_payload_for_bank(
+        active,
+        syap=syap,
+        firmware_template=firmware_template,
+        firmware_version=firmware_version,
+        cache_dir=cache_dir,
     )
 
 

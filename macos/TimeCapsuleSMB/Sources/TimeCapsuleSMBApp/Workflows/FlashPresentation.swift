@@ -186,6 +186,9 @@ struct FlashPresentation: Equatable {
         if store.manualPowerCycleRequiredAfterWrite {
             warnings.append(L10n.string("flash.warning.manual_power_cycle"))
         }
+        if let plan = store.plan {
+            warnings.append(contentsOf: plan.warnings)
+        }
         return warnings
     }
 }
