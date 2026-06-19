@@ -38,6 +38,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     var internalShareUseDiskRoot: Bool
     var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
+    var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
@@ -50,6 +51,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         internalShareUseDiskRoot: false,
         smbBindLanOnly: false,
         smbBrowseCompatibility: false,
+        mdnsAdvertiseAFP: false,
         anyProtocol: false,
         fruitMetadataNetatalk: true,
         debugLogging: false,
@@ -63,6 +65,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         internalShareUseDiskRoot: Bool = false,
         smbBindLanOnly: Bool = false,
         smbBrowseCompatibility: Bool = false,
+        mdnsAdvertiseAFP: Bool = false,
         anyProtocol: Bool = false,
         fruitMetadataNetatalk: Bool = true,
         debugLogging: Bool,
@@ -74,6 +77,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
+        self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
@@ -87,6 +91,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         case internalShareUseDiskRoot
         case smbBindLanOnly
         case smbBrowseCompatibility
+        case mdnsAdvertiseAFP
         case anyProtocol
         case fruitMetadataNetatalk
         case debugLogging
@@ -101,6 +106,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
         smbBindLanOnly = try container.decodeIfPresent(Bool.self, forKey: .smbBindLanOnly) ?? Self.default.smbBindLanOnly
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
+        mdnsAdvertiseAFP = try container.decodeIfPresent(Bool.self, forKey: .mdnsAdvertiseAFP) ?? Self.default.mdnsAdvertiseAFP
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
         fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging

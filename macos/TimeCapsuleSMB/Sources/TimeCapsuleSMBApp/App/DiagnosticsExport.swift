@@ -47,6 +47,7 @@ struct DiagnosticsExportBuilder {
             append("Default NBNS", value: context.appSettings.defaultDeviceSettings.nbnsEnabled, to: &lines)
             append("Default SMB Bind LAN Only", value: context.appSettings.defaultDeviceSettings.smbBindLanOnly, to: &lines)
             append("Default SMB Browse Compatibility", value: context.appSettings.defaultDeviceSettings.smbBrowseCompatibility, to: &lines)
+            append("Default mDNS Advertise AFP", value: context.appSettings.defaultDeviceSettings.mdnsAdvertiseAFP, to: &lines)
             append("Default Netatalk Metadata", value: context.appSettings.defaultDeviceSettings.fruitMetadataNetatalk, to: &lines)
             append("Default Debug Logging", value: context.appSettings.defaultDeviceSettings.debugLogging, to: &lines)
             append("Default Mount Wait", value: context.appSettings.defaultDeviceSettings.mountWaitSeconds, to: &lines)

@@ -1859,6 +1859,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(fake_values["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(fake_values["TC_SMB_BROWSE_COMPATIBILITY"], "false")
+        self.assertEqual(fake_values["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
         self.assertEqual(fake_values["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
@@ -1962,6 +1963,28 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_SMB_BIND_LAN_ONLY"], "true")
+
+    def test_configure_hidden_no_mdns_advertise_afp_arg_writes_false(self) -> None:
+        result = self.run_configure_cli(
+            ["--no-mdns-advertise-afp"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_MDNS_ADVERTISE_AFP"], "false")
+
+    def test_configure_hidden_mdns_advertise_afp_arg_writes_true(self) -> None:
+        result = self.run_configure_cli(
+            ["--mdns-advertise-afp"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_MDNS_ADVERTISE_AFP"], "true")
 
     def test_configure_hidden_any_protocol_arg_writes_true(self) -> None:
         result = self.run_configure_cli(
@@ -4979,6 +5002,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
         self.assertIn("NBNS_ENABLED=1\n", flash_config)
         self.assertIn("ANY_PROTOCOL=0\n", flash_config)
+        self.assertIn("MDNS_ADVERTISE_AFP=0\n", flash_config)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)
         self.assertIn("MDNS_DEBUG_LOGGING=1\n", flash_config)
         self.assertNotIn("SMB_SAMBA_USER", flash_config)
@@ -5058,6 +5082,40 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertIn("SMB_BIND_LAN_ONLY=0\n", captured["flash_config"])
+
+    def test_deploy_uses_configured_mdns_advertise_afp(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-reboot"],
+            values=self.make_valid_env(TC_MDNS_ADVERTISE_AFP="true"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("MDNS_ADVERTISE_AFP=1\n", captured["flash_config"])
+
+    def test_deploy_mdns_advertise_afp_arg_overrides_config(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-reboot", "--mdns-advertise-afp"],
+            values=self.make_valid_env(TC_MDNS_ADVERTISE_AFP="false"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("MDNS_ADVERTISE_AFP=1\n", captured["flash_config"])
 
     def test_deploy_uses_configured_netatalk_metadata(self) -> None:
         captured: dict[str, str] = {}

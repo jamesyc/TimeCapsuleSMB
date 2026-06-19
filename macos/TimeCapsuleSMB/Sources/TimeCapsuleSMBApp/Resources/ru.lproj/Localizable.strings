@@ -888,6 +888,7 @@
 "toggle.internal_share_use_disk_root" = "Внутренний общий ресурс использует корень диска";
 "toggle.smb_bind_lan_only" = "Привязывать SMB только к LAN";
 "toggle.smb_browse_compatibility" = "Разрешить SMB просмотр акций";
+"toggle.mdns_advertise_afp" = "Рекламировать AFP через Bonjour";
 "toggle.any_protocol" = "Разрешить любой протокол SMB";
 "toggle.use_netatalk_metadata" = "Используйте Netatalk для metadata";
 "toggle.force_debug_logging" = "Принудительное ведение журнала отладки";

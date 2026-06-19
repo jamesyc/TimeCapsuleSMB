@@ -571,6 +571,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             debugLogging: true,
@@ -593,6 +594,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["smb_bind_lan_only"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["smb_browse_compatibility"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(600))
@@ -616,6 +618,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             nbnsEnabled: false,
             internalShareUseDiskRoot: false,
             smbBrowseCompatibility: false,
+            mdnsAdvertiseAFP: false,
             anyProtocol: false,
             fruitMetadataNetatalk: false,
             debugLogging: false,
@@ -629,6 +632,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             nbnsEnabled: true,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             debugLogging: true,
@@ -649,6 +653,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["smb_bind_lan_only"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["smb_browse_compatibility"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["mdns_advertise_afp"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(111))

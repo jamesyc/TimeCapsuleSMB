@@ -888,6 +888,7 @@
 "toggle.internal_share_use_disk_root" = "Intern delen maakt gebruik van schijfroot";
 "toggle.smb_bind_lan_only" = "SMB alleen aan LAN binden";
 "toggle.smb_browse_compatibility" = "Toestaan SMB Bladeren delen";
+"toggle.mdns_advertise_afp" = "AFP via Bonjour adverteren";
 "toggle.any_protocol" = "Elk SMB-protocol toestaan";
 "toggle.use_netatalk_metadata" = "Gebruik Netatalk voor metadata";
 "toggle.force_debug_logging" = "Forceer logboekregistratie voor foutopsporing";

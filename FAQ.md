@@ -245,6 +245,7 @@ In the macOS app, each saved device has advanced settings for the managed SMB ru
 - **Internal Share Uses Disk Root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.
 - **Bind SMB to LAN Only**: default off. When enabled, binds Samba only to LAN-side interfaces discovered by the managed runtime, reducing the chance that SMB listens on WAN or tunnel interfaces. When disabled, Samba can bind to all detected SMB-capable interfaces, including WAN interfaces.
 - **Allow SMB Share Browsing**: default off. Relaxes anonymous browse restrictions so clients can enumerate shares more easily. Shares still require authentication.
+- **Advertise AFP over Bonjour**: default off. When off, generated Time Machine ADisk records advertise SMB-only `adVF=0x82`. When on, the mDNS advertiser also publishes `_afpovertcp` and generated ADisk records use AFP+SMB `adVF=0x83`.
 - **Allow Any SMB Protocol**: default off. Removes the SMB2/SMB3-only protocol restriction. Leave off unless an old client needs legacy SMB compatibility.
 - **Force Debug Logging**: default off. Enables verbose smbd/mDNS logging on the device. Use only for troubleshooting because it writes more logs.
 - **Use Netatalk for metadata**: default on. Stores Apple/Finder metadata in the Netatalk-compatible format used by Samba's fruit module. If unchecked, use `fruit:metadata = stream` instead.

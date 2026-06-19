@@ -55,6 +55,7 @@ class ConfigureFlowRequest:
     internal_share_use_disk_root: bool | None = None
     smb_bind_lan_only: bool | None = None
     smb_browse_compatibility: bool | None = None
+    mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     debug_logging: bool | None = None
@@ -203,6 +204,7 @@ def run_configure_flow(
         internal_share_use_disk_root=request.internal_share_use_disk_root,
         smb_bind_lan_only=request.smb_bind_lan_only,
         smb_browse_compatibility=request.smb_browse_compatibility,
+        mdns_advertise_afp=request.mdns_advertise_afp,
         any_protocol=request.any_protocol,
         fruit_metadata_netatalk=request.fruit_metadata_netatalk,
         debug_logging=request.debug_logging,
@@ -332,6 +334,7 @@ def build_configure_env_values(
     internal_share_use_disk_root: bool | None = None,
     smb_bind_lan_only: bool | None = None,
     smb_browse_compatibility: bool | None = None,
+    mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     debug_logging: bool | None = None,
@@ -357,6 +360,11 @@ def build_configure_env_values(
             parse_bool(existing.get("TC_SMB_BROWSE_COMPATIBILITY", DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"]))
             if smb_browse_compatibility is None
             else smb_browse_compatibility
+        ) else "false",
+        "TC_MDNS_ADVERTISE_AFP": "true" if (
+            parse_bool(existing.get("TC_MDNS_ADVERTISE_AFP", DEFAULTS["TC_MDNS_ADVERTISE_AFP"]))
+            if mdns_advertise_afp is None
+            else mdns_advertise_afp
         ) else "false",
         "TC_ANY_PROTOCOL": "true" if (
             parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))

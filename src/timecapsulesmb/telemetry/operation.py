@@ -34,6 +34,7 @@ OPTION_KEYS = frozenset({
     "macos_local_network_preflight_result",
     "macos_local_network_preflight_service",
     "max_depth",
+    "mdns_advertise_afp",
     "mode",
     "mount_wait",
     "nbns_enabled",

@@ -60,6 +60,7 @@ enum OperationParams {
             internalShareUseDiskRoot: Bool? = nil,
             smbBindLanOnly: Bool? = nil,
             smbBrowseCompatibility: Bool? = nil,
+            mdnsAdvertiseAFP: Bool? = nil,
             anyProtocol: Bool? = nil,
             fruitMetadataNetatalk: Bool? = nil,
             ataIdleSeconds: Int? = nil,
@@ -85,6 +86,9 @@ enum OperationParams {
             }
             if let smbBrowseCompatibility {
                 params["smb_browse_compatibility"] = .bool(smbBrowseCompatibility)
+            }
+            if let mdnsAdvertiseAFP {
+                params["mdns_advertise_afp"] = .bool(mdnsAdvertiseAFP)
             }
             if let anyProtocol {
                 params["any_protocol"] = .bool(anyProtocol)
@@ -132,6 +136,7 @@ enum OperationParams {
             internalShareUseDiskRoot: Bool = false,
             smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
             smbBrowseCompatibility: Bool = false,
+            mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
             anyProtocol: Bool = false,
             fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
             debugLogging: Bool,
@@ -147,6 +152,7 @@ enum OperationParams {
                 "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
                 "smb_bind_lan_only": .bool(smbBindLanOnly),
                 "smb_browse_compatibility": .bool(smbBrowseCompatibility),
+                "mdns_advertise_afp": .bool(mdnsAdvertiseAFP),
                 "any_protocol": .bool(anyProtocol),
                 "fruit_metadata_netatalk": .bool(fruitMetadataNetatalk),
                 "debug_logging": .bool(debugLogging),

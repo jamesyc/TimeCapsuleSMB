@@ -73,6 +73,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
     parser.add_argument("--no-nbns", action="store_true", help="Disable the bundled NBNS responder on the next boot")
+    mdns_afp_group = parser.add_mutually_exclusive_group()
+    mdns_afp_group.add_argument("--mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
+    mdns_afp_group.add_argument("--no-mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--mount-wait",
         type=_non_negative_int,
@@ -87,6 +90,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--json currently requires --dry-run")
 
     nbns_enabled = not args.no_nbns
+    mdns_advertise_afp = (
+        True if args.mdns_advertise_afp
+        else False if args.no_mdns_advertise_afp
+        else None
+    )
     deploy_options = DeployOptions(
         dry_run=args.dry_run,
         no_reboot=args.no_reboot,
@@ -201,6 +209,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 runtime_config=DeployRuntimeConfig(
                     nbns_enabled=nbns_enabled,
                     debug_logging=args.debug_logging,
+                    mdns_advertise_afp=mdns_advertise_afp,
                 ),
                 callbacks=command_context.to_operation_callbacks(),
                 on_pre_upload_action_done=report_pre_upload_action,

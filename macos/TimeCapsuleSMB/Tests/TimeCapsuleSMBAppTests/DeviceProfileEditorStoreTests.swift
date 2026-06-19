@@ -128,6 +128,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.nbnsEnabled = false
         store.draft.internalShareUseDiskRoot = true
         store.draft.smbBrowseCompatibility = true
+        store.draft.mdnsAdvertiseAFP = true
         store.draft.anyProtocol = true
         store.draft.fruitMetadataNetatalk = true
         store.draft.debugLogging = true
@@ -145,6 +146,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             debugLogging: true,
@@ -397,6 +399,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.nbnsEnabled = false
         store.draft.internalShareUseDiskRoot = true
         store.draft.smbBrowseCompatibility = true
+        store.draft.mdnsAdvertiseAFP = true
         store.draft.anyProtocol = true
         store.draft.fruitMetadataNetatalk = true
         store.draft.debugLogging = true
@@ -421,6 +424,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["persist_password"], .bool(false))
         XCTAssertEqual(call.params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(call.params["smb_browse_compatibility"], .bool(true))
+        XCTAssertEqual(call.params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(call.params["any_protocol"], .bool(true))
         XCTAssertEqual(call.params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(call.params["debug_logging"], .bool(true))
@@ -439,6 +443,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             debugLogging: true,

@@ -888,6 +888,7 @@
 "toggle.internal_share_use_disk_root" = "La condivisione interna utilizza la radice del disco";
 "toggle.smb_bind_lan_only" = "Associa SMB solo alla LAN";
 "toggle.smb_browse_compatibility" = "Consenti SMB Navigazione condivisa";
+"toggle.mdns_advertise_afp" = "Pubblicizza AFP tramite Bonjour";
 "toggle.any_protocol" = "Consenti qualsiasi protocollo SMB";
 "toggle.use_netatalk_metadata" = "Usa Netatalk per metadata";
 "toggle.force_debug_logging" = "Forza la registrazione del debug";

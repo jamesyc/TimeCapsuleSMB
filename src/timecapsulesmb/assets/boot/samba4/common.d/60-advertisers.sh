@@ -469,8 +469,10 @@ tc_launch_mdns_advertiser() {
         --generated-airport-services \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
-        --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}" \
-        --afp
+        --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}"
+    if [ "${MDNS_ADVERTISE_AFP:-0}" = "1" ]; then
+        set -- "$@" --afp
+    fi
     if [ "$diskless" = "1" ]; then
         set -- "$@" --diskless
     fi

@@ -8,6 +8,7 @@ struct DeployOptions: Equatable {
     let internalShareUseDiskRoot: Bool
     let smbBindLanOnly: Bool
     let smbBrowseCompatibility: Bool
+    let mdnsAdvertiseAFP: Bool
     let anyProtocol: Bool
     let fruitMetadataNetatalk: Bool
     let debugLogging: Bool
@@ -22,6 +23,7 @@ struct DeployOptions: Equatable {
         internalShareUseDiskRoot: Bool,
         smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
         smbBrowseCompatibility: Bool,
+        mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool,
         fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
         debugLogging: Bool,
@@ -35,6 +37,7 @@ struct DeployOptions: Equatable {
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
+        self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
@@ -124,6 +127,9 @@ final class DeployWorkflowStore: ObservableObject {
         didSet { reconcilePlanFreshness() }
     }
     @Published var smbBrowseCompatibility = false {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var mdnsAdvertiseAFP = DeviceProfileSettings.default.mdnsAdvertiseAFP {
         didSet { reconcilePlanFreshness() }
     }
     @Published var anyProtocol = false {
@@ -249,6 +255,7 @@ final class DeployWorkflowStore: ObservableObject {
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
+                mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
@@ -302,6 +309,7 @@ final class DeployWorkflowStore: ObservableObject {
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
+                mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
@@ -363,6 +371,7 @@ final class DeployWorkflowStore: ObservableObject {
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             smbBindLanOnly: smbBindLanOnly,
             smbBrowseCompatibility: smbBrowseCompatibility,
+            mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,

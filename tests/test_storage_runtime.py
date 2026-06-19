@@ -1123,6 +1123,7 @@ MaSt = (
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
         self.assertIn("SMB_BIND_LAN_ONLY=1\n", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
+        self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
@@ -1180,6 +1181,7 @@ MaSt = (
             internal_share_use_disk_root=True,
             smb_bind_lan_only=True,
             smb_browse_compatibility=True,
+            mdns_advertise_afp=True,
             any_protocol=True,
             fruit_metadata_netatalk=True,
         )
@@ -1187,6 +1189,7 @@ MaSt = (
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
         self.assertIn("SMB_BIND_LAN_ONLY=1\n", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
+        self.assertIn("MDNS_ADVERTISE_AFP=1\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
 
@@ -1196,6 +1199,7 @@ MaSt = (
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
                 "TC_SMB_BIND_LAN_ONLY": "true",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
+                "TC_MDNS_ADVERTISE_AFP": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
             }
@@ -1209,6 +1213,7 @@ MaSt = (
             internal_share_use_disk_root=False,
             smb_bind_lan_only=False,
             smb_browse_compatibility=False,
+            mdns_advertise_afp=False,
             any_protocol=False,
             fruit_metadata_netatalk=False,
         )
@@ -1216,8 +1221,42 @@ MaSt = (
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
         self.assertIn("SMB_BIND_LAN_ONLY=0\n", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=0\n", rendered)
+        self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=0\n", rendered)
+
+    def test_runtime_env_maps_afp_advertising_to_adisk_disk_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "mdns-advertise-afp-env.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    MDNS_ADVERTISE_AFP=0
+                    tc_init_runtime_env
+                    printf 'disabled=%s|%s\\n' "$MDNS_ADVERTISE_AFP" "$TC_ADISK_DISK_ADVF"
+                    MDNS_ADVERTISE_AFP=1
+                    tc_init_runtime_env
+                    printf 'enabled=%s|%s\\n' "$MDNS_ADVERTISE_AFP" "$TC_ADISK_DISK_ADVF"
+                    MDNS_ADVERTISE_AFP=invalid
+                    tc_init_runtime_env
+                    printf 'invalid=%s|%s\\n' "$MDNS_ADVERTISE_AFP" "$TC_ADISK_DISK_ADVF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("disabled=0|0x82\n", proc.stdout)
+        self.assertIn("enabled=1|0x83\n", proc.stdout)
+        self.assertIn("invalid=0|0x82\n", proc.stdout)
 
     def test_flash_runtime_config_uses_drive_settings_from_config(self) -> None:
         config = AppConfig.from_values(
@@ -3205,7 +3244,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
         self.assertIn("--generated-airport-services", events_text)
-        self.assertIn("--afp", events_text)
+        self.assertNotIn("--afp", events_text)
         self.assertIn("--auto-ip", events_text)
         self.assertIn("--airport-wama 80:EA:96:E6:58:68", events_text)
         self.assertNotIn("--snapshot-newer-than-boot", events_text)
@@ -4980,7 +5019,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"payload={volumes}/dk5/.samba4|{volumes}/dk5|/dev/dk5\n", proc.stdout)
         self.assertIn(f"shares\nUSB Backup\t{volumes}/dk5\tdk5\t0\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n", proc.stdout)
-        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x83\n", proc.stdout)
+        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x82\n", proc.stdout)
         self.assertIn("marker=yes\n", proc.stdout)
         self.assertIn("runtime=yes\n", proc.stdout)
         self.assertIn("[USB Backup]\n", proc.stdout)
@@ -5752,12 +5791,70 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("launching mdns-advertiser", proc.stdout)
         self.assertIn("--generated-airport-services", proc.stdout)
-        self.assertIn("--afp", proc.stdout)
+        self.assertNotIn("--afp", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
         self.assertNotIn("--save-all-snapshot", proc.stdout)
         self.assertNotIn("--save-snapshot", proc.stdout)
         self.assertNotIn("--save-airport-snapshot", proc.stdout)
         self.assertNotIn("--load-snapshot", proc.stdout)
+
+    def test_common_mdns_launch_passes_afp_when_advertise_afp_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            args_file = tmp_path / "mdns-args.txt"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" > {shlex.quote(str(args_file))}\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "mdns-afp-enabled.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    MDNS_ADVERTISE_AFP=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    tc_ensure_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AFP
+                        MDNS_HOST_LABEL=afp
+                        MDNS_DEVICE_MODEL=TimeCapsule
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_WAMA=
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    tc_launch_mdns_advertiser "mdns startup" 1 0 0
+                    wait "$mdns_launch_pid" || true
+                    cat {shlex.quote(str(args_file))}
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--afp", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
 
     def test_common_mdns_advertiser_passes_prni_printer_args_to_generated_launch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5962,7 +6059,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--diskless", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("--afp", proc.stdout)
+        self.assertNotIn("--afp", proc.stdout)
         self.assertNotIn("--adisk-shares-file", proc.stdout)
         self.assertNotIn("--debug-logging", proc.stdout)
         self.assertIn("mdns startup: starting mdns advertiser in diskless auto-ip mode", proc.stdout)
@@ -6025,7 +6122,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--debug-logging", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("--afp", proc.stdout)
+        self.assertNotIn("--afp", proc.stdout)
         self.assertIn("mdns startup: debug logging enabled at", proc.stdout)
 
     def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:

@@ -10,6 +10,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Version: 2.1.4"))
         XCTAssertTrue(text.contains("- Appearance: system"))
         XCTAssertTrue(text.contains("- Default SMB Browse Compatibility: false"))
+        XCTAssertTrue(text.contains("- Default mDNS Advertise AFP: false"))
         XCTAssertTrue(text.contains("- State: Ready"))
         XCTAssertTrue(text.contains("- Helper Version: 2.1.4 (20125)"))
         XCTAssertTrue(text.contains("- Validation Counts: checks=1, fail=0, pass=1"))

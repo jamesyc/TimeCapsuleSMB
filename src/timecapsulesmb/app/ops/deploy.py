@@ -203,6 +203,11 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         "smb_browse_compatibility",
         parse_bool(config.get("TC_SMB_BROWSE_COMPATIBILITY", DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"])),
     )
+    mdns_advertise_afp = bool_param(
+        params,
+        "mdns_advertise_afp",
+        parse_bool(config.get("TC_MDNS_ADVERTISE_AFP", DEFAULTS["TC_MDNS_ADVERTISE_AFP"])),
+    )
     any_protocol = bool_param(
         params,
         "any_protocol",
@@ -318,6 +323,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 internal_share_use_disk_root=internal_share_use_disk_root,
                 smb_bind_lan_only=smb_bind_lan_only,
                 smb_browse_compatibility=smb_browse_compatibility,
+                mdns_advertise_afp=mdns_advertise_afp,
                 any_protocol=any_protocol,
                 fruit_metadata_netatalk=fruit_metadata_netatalk,
                 ata_idle_seconds=ata_idle_seconds,

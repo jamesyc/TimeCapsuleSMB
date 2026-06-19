@@ -35,6 +35,7 @@ class ConfigureServiceTests(unittest.TestCase):
             {
                 "TC_SMB_BIND_LAN_ONLY": "false",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
+                "TC_MDNS_ADVERTISE_AFP": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
             },
             host="root@10.0.0.2",
@@ -50,14 +51,17 @@ class ConfigureServiceTests(unittest.TestCase):
             configure_id="config-id",
             smb_bind_lan_only=True,
             smb_browse_compatibility=True,
+            mdns_advertise_afp=True,
             fruit_metadata_netatalk=True,
         )
 
         self.assertEqual(preserved["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(preserved["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+        self.assertEqual(preserved["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(preserved["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(enabled["TC_SMB_BIND_LAN_ONLY"], "true")
         self.assertEqual(enabled["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+        self.assertEqual(enabled["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(enabled["TC_FRUIT_METADATA_NETATALK"], "true")
 
     def make_connection(self) -> SshConnection:
@@ -397,6 +401,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(written["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(written["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
+        self.assertEqual(written["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertNotIn("TC_PASSWORD", written)
         self.assertEqual(stages, ["ssh_probe", "write_env"])

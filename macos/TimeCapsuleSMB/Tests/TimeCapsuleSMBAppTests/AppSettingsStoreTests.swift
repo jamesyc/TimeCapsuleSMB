@@ -26,6 +26,7 @@ final class AppSettingsStoreTests: XCTestCase {
                 nbnsEnabled: false,
                 internalShareUseDiskRoot: true,
                 smbBrowseCompatibility: true,
+                mdnsAdvertiseAFP: true,
                 anyProtocol: true,
                 fruitMetadataNetatalk: true,
                 debugLogging: true,
@@ -62,6 +63,7 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.settings.language, .system)
         XCTAssertEqual(store.settings.appearance, .system)
         XCTAssertFalse(store.settings.defaultDeviceSettings.smbBindLanOnly)
+        XCTAssertFalse(store.settings.defaultDeviceSettings.mdnsAdvertiseAFP)
         XCTAssertFalse(store.settings.telemetryEnabled)
     }
 
@@ -71,6 +73,7 @@ final class AppSettingsStoreTests: XCTestCase {
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
         XCTAssertFalse(settings.smbBindLanOnly)
+        XCTAssertFalse(settings.mdnsAdvertiseAFP)
     }
 
     func testCorruptSettingsFailsWithoutReplacingDefaults() async throws {
@@ -236,6 +239,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "timeline.state.pending": "等待中",
             "toggle.enable_debug_logging": "启用调试日志",
             "toggle.smb_browse_compatibility": "允许浏览 SMB 共享",
+            "toggle.mdns_advertise_afp": "通过 Bonjour 广播 AFP",
             "toggle.use_netatalk_metadata": "使用 Netatalk 存储元数据",
             "value.never": "从未",
             "workflow.state.deploying": "正在部署"

@@ -389,6 +389,7 @@ final class DashboardStoreTests: XCTestCase {
             nbnsEnabled: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             debugLogging: true,
@@ -403,6 +404,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
+        XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
         XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
@@ -438,6 +440,7 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.nbnsEnabled = false
         session.profileEditorStore.draft.internalShareUseDiskRoot = true
         session.profileEditorStore.draft.smbBrowseCompatibility = true
+        session.profileEditorStore.draft.mdnsAdvertiseAFP = true
         session.profileEditorStore.draft.anyProtocol = true
         session.profileEditorStore.draft.fruitMetadataNetatalk = true
         session.profileEditorStore.draft.debugLogging = true
@@ -451,6 +454,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
+        XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
         XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)

@@ -175,6 +175,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     "smb_browse_compatibility",
                     parse_bool(existing.get("TC_SMB_BROWSE_COMPATIBILITY", DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"])),
                 ),
+                mdns_advertise_afp=bool_param(
+                    params,
+                    "mdns_advertise_afp",
+                    parse_bool(existing.get("TC_MDNS_ADVERTISE_AFP", DEFAULTS["TC_MDNS_ADVERTISE_AFP"])),
+                ),
                 any_protocol=bool_param(
                     params,
                     "any_protocol",

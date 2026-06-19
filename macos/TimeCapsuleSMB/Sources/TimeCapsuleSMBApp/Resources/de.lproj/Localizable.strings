@@ -888,6 +888,7 @@
 "toggle.internal_share_use_disk_root" = "Interne Freigabe verwendet Festplatten-Root";
 "toggle.smb_bind_lan_only" = "SMB nur an LAN binden";
 "toggle.smb_browse_compatibility" = "Allow SMB Share Browsing";
+"toggle.mdns_advertise_afp" = "AFP über Bonjour ankündigen";
 "toggle.any_protocol" = "Alle SMB-Protokolle zulassen";
 "toggle.use_netatalk_metadata" = "Verwenden Sie Netatalk für metadata";
 "toggle.force_debug_logging" = "Debug-Protokollierung erzwingen";

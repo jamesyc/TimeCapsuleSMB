@@ -43,6 +43,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.nbnsEnabled = false
         store.internalShareUseDiskRoot = true
         store.smbBrowseCompatibility = true
+        store.mdnsAdvertiseAFP = true
         store.anyProtocol = true
         store.fruitMetadataNetatalk = true
         store.debugLogging = true
@@ -63,6 +64,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["nbns_enabled"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
@@ -249,6 +251,16 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .planReady)
         XCTAssertTrue(store.canDeploy)
 
+        store.mdnsAdvertiseAFP = true
+
+        XCTAssertEqual(store.state, .planStale)
+        XCTAssertTrue(store.canDeploy)
+
+        store.mdnsAdvertiseAFP = false
+
+        XCTAssertEqual(store.state, .planReady)
+        XCTAssertTrue(store.canDeploy)
+
         store.fruitMetadataNetatalk = false
 
         XCTAssertEqual(store.state, .planStale)
@@ -325,6 +337,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.mountWait = "30"
         store.internalShareUseDiskRoot = true
         store.smbBrowseCompatibility = true
+        store.mdnsAdvertiseAFP = true
         store.anyProtocol = true
         store.fruitMetadataNetatalk = true
 

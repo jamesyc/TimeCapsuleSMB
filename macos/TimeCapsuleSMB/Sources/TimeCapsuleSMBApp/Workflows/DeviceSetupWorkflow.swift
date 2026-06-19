@@ -178,6 +178,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 internalShareUseDiskRoot: settings.internalShareUseDiskRoot,
                 smbBindLanOnly: settings.smbBindLanOnly,
                 smbBrowseCompatibility: settings.smbBrowseCompatibility,
+                mdnsAdvertiseAFP: settings.mdnsAdvertiseAFP,
                 anyProtocol: settings.anyProtocol,
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
                 ataIdleSeconds: settings.ataIdleSeconds,

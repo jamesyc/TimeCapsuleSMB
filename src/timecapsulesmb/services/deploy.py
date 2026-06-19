@@ -135,6 +135,7 @@ class DeployRuntimeConfig:
     internal_share_use_disk_root: bool | None = None
     smb_bind_lan_only: bool | None = None
     smb_browse_compatibility: bool | None = None
+    mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     ata_idle_seconds: str | int | None = None
@@ -688,6 +689,7 @@ def upload_and_verify_deployment_payload(
         internal_share_use_disk_root=runtime_config.internal_share_use_disk_root,
         smb_bind_lan_only=runtime_config.smb_bind_lan_only,
         smb_browse_compatibility=runtime_config.smb_browse_compatibility,
+        mdns_advertise_afp=runtime_config.mdns_advertise_afp,
         any_protocol=runtime_config.any_protocol,
         fruit_metadata_netatalk=runtime_config.fruit_metadata_netatalk,
         ata_idle_seconds=runtime_config.ata_idle_seconds,
@@ -1036,6 +1038,7 @@ def render_flash_runtime_config(
     internal_share_use_disk_root: bool | None = None,
     smb_bind_lan_only: bool | None = None,
     smb_browse_compatibility: bool | None = None,
+    mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     ata_idle_seconds: str | int | None = None,
@@ -1050,6 +1053,10 @@ def render_flash_runtime_config(
     smb_browse_compatibility_default = config.get(
         "TC_SMB_BROWSE_COMPATIBILITY",
         DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"],
+    )
+    mdns_advertise_afp_default = config.get(
+        "TC_MDNS_ADVERTISE_AFP",
+        DEFAULTS["TC_MDNS_ADVERTISE_AFP"],
     )
     any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
     fruit_metadata_netatalk_default = config.get(
@@ -1087,6 +1094,11 @@ def render_flash_runtime_config(
         if smb_browse_compatibility is None
         else smb_browse_compatibility
     )
+    effective_mdns_advertise_afp = (
+        parse_bool(mdns_advertise_afp_default)
+        if mdns_advertise_afp is None
+        else mdns_advertise_afp
+    )
     effective_fruit_metadata_netatalk = (
         parse_bool(fruit_metadata_netatalk_default)
         if fruit_metadata_netatalk is None
@@ -1101,6 +1113,7 @@ def render_flash_runtime_config(
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
         ("SMB_BIND_LAN_ONLY", 1 if effective_smb_bind_lan_only else 0),
         ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),
+        ("MDNS_ADVERTISE_AFP", 1 if effective_mdns_advertise_afp else 0),
         ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
         ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),

@@ -79,6 +79,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var internalShareUseDiskRoot: Bool
     var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
+    var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
@@ -93,6 +94,7 @@ struct DeviceProfileEditorDraft: Equatable {
         internalShareUseDiskRoot: Bool = false,
         smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
         smbBrowseCompatibility: Bool = false,
+        mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool = false,
         fruitMetadataNetatalk: Bool = true,
         debugLogging: Bool,
@@ -106,6 +108,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
+        self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
@@ -122,6 +125,7 @@ struct DeviceProfileEditorDraft: Equatable {
             internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
             smbBindLanOnly: profile.settings.smbBindLanOnly,
             smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
+            mdnsAdvertiseAFP: profile.settings.mdnsAdvertiseAFP,
             anyProtocol: profile.settings.anyProtocol,
             fruitMetadataNetatalk: profile.settings.fruitMetadataNetatalk,
             debugLogging: profile.settings.debugLogging,
@@ -175,6 +179,7 @@ struct DeviceProfileEditorDraft: Equatable {
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             smbBindLanOnly: smbBindLanOnly,
             smbBrowseCompatibility: smbBrowseCompatibility,
+            mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,
@@ -465,6 +470,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
             smbBindLanOnly: draft.smbBindLanOnly,
             smbBrowseCompatibility: draft.smbBrowseCompatibility,
+            mdnsAdvertiseAFP: draft.mdnsAdvertiseAFP,
             anyProtocol: draft.anyProtocol,
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
             ataIdleSeconds: settings.ataIdleSeconds,

@@ -384,6 +384,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
         deployStore.smbBindLanOnly = settings.smbBindLanOnly
         deployStore.smbBrowseCompatibility = settings.smbBrowseCompatibility
+        deployStore.mdnsAdvertiseAFP = settings.mdnsAdvertiseAFP
         deployStore.anyProtocol = settings.anyProtocol
         deployStore.fruitMetadataNetatalk = settings.fruitMetadataNetatalk
         deployStore.debugLogging = settings.debugLogging

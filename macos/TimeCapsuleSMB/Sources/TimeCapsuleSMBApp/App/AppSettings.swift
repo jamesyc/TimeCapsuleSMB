@@ -402,6 +402,7 @@ struct AppSettingsDraft: Equatable {
     var internalShareUseDiskRoot: Bool
     var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
+    var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
@@ -423,6 +424,7 @@ struct AppSettingsDraft: Equatable {
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
         smbBindLanOnly = settings.defaultDeviceSettings.smbBindLanOnly
         smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
+        mdnsAdvertiseAFP = settings.defaultDeviceSettings.mdnsAdvertiseAFP
         anyProtocol = settings.defaultDeviceSettings.anyProtocol
         fruitMetadataNetatalk = settings.defaultDeviceSettings.fruitMetadataNetatalk
         debugLogging = settings.defaultDeviceSettings.debugLogging
@@ -471,6 +473,7 @@ struct AppSettingsDraft: Equatable {
                 internalShareUseDiskRoot: internalShareUseDiskRoot,
                 smbBindLanOnly: smbBindLanOnly,
                 smbBrowseCompatibility: smbBrowseCompatibility,
+                mdnsAdvertiseAFP: mdnsAdvertiseAFP,
                 anyProtocol: anyProtocol,
                 fruitMetadataNetatalk: fruitMetadataNetatalk,
                 debugLogging: debugLogging,

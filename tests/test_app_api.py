@@ -1828,6 +1828,29 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(values["TC_FRUIT_METADATA_NETATALK"], "true")
 
+    def test_configure_mdns_advertise_afp_param_writes_true(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "goodpw",
+                            "mdns_advertise_afp": True,
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_MDNS_ADVERTISE_AFP"], "true")
+
     def test_configure_ata_params_write_drive_timer_settings(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3096,6 +3119,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], False)
         self.assertEqual(render_runtime.call_args.kwargs["smb_bind_lan_only"], False)
         self.assertEqual(render_runtime.call_args.kwargs["smb_browse_compatibility"], True)
+        self.assertEqual(render_runtime.call_args.kwargs["mdns_advertise_afp"], False)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
         self.assertEqual(render_runtime.call_args.kwargs["fruit_metadata_netatalk"], True)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)

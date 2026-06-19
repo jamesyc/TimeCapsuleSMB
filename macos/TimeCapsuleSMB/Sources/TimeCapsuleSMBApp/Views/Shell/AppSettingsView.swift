@@ -48,6 +48,7 @@ struct AppSettingsView: View {
                     Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $editor.draft.internalShareUseDiskRoot)
                     Toggle(L10n.string("toggle.smb_bind_lan_only"), isOn: $editor.draft.smbBindLanOnly)
                     Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $editor.draft.smbBrowseCompatibility)
+                    Toggle(L10n.string("toggle.mdns_advertise_afp"), isOn: $editor.draft.mdnsAdvertiseAFP)
                     Toggle(L10n.string("toggle.any_protocol"), isOn: $editor.draft.anyProtocol)
                     Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $editor.draft.fruitMetadataNetatalk)
                     Toggle(L10n.string("toggle.force_debug_logging"), isOn: $editor.draft.debugLogging)

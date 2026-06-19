@@ -888,6 +888,7 @@
 "toggle.internal_share_use_disk_root" = "Vidinis bendrinimas naudoja disko šaknį";
 "toggle.smb_bind_lan_only" = "Susieti SMB tik su LAN";
 "toggle.smb_browse_compatibility" = "Leisti SMB bendrinimo naršymą";
+"toggle.mdns_advertise_afp" = "Skelbti AFP per Bonjour";
 "toggle.any_protocol" = "Leisti bet kurį SMB protokolą";
 "toggle.use_netatalk_metadata" = "Naudoti Netatalk metaduomenims";
 "toggle.force_debug_logging" = "Priverstiniai derinimo žurnalai";

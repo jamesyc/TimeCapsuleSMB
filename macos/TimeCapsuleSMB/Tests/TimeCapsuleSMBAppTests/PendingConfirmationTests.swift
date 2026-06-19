@@ -46,6 +46,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["no_wait"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(false))
+        XCTAssertEqual(params["mdns_advertise_afp"], .bool(false))
         XCTAssertEqual(params["any_protocol"], .bool(false))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertNil(params["credentials"])
@@ -59,6 +60,7 @@ final class PendingConfirmationTests: XCTestCase {
             nbnsEnabled: true,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             debugLogging: false,
@@ -70,6 +72,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["dry_run"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
+        XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
@@ -93,6 +96,7 @@ final class PendingConfirmationTests: XCTestCase {
             debugLogging: true,
             internalShareUseDiskRoot: false,
             smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             ataIdleSeconds: 0,
@@ -106,6 +110,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["debug_logging"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
+        XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))

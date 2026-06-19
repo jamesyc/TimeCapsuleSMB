@@ -154,9 +154,10 @@ private struct DeviceProfileAdvancedSettingsView: View {
                         Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $store.draft.smbBrowseCompatibility)
                     }
                     GridRow {
-                        Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
+                        Toggle(L10n.string("toggle.mdns_advertise_afp"), isOn: $store.draft.mdnsAdvertiseAFP)
                         Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $store.draft.fruitMetadataNetatalk)
                     }
+                    Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
                     Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
                 }
             }

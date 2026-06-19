@@ -30,9 +30,9 @@ TC_PAYLOAD_LOG_DIR=
 TC_PAYLOAD_LOG_VOLUME=
 TC_RUNTIME_LOG_MAX_BYTES=32768
 TC_SMBD_DISK_LOGGING_ENABLED=0
-# Publish Time Machine volume flags for both Apple's AFP stack and Samba so
-# older and newer macOS clients can discover the same advertised disk.
-TC_ADISK_DISK_ADVF=0x83
+# Publish SMB-only Time Machine flags by default. Enabling AFP advertisement
+# below switches generated ADisk rows to the Apple AFP+SMB compatibility flag.
+TC_ADISK_DISK_ADVF=0x82
 TC_ADISK_TXT_MAX_BYTES=255
 TC_ADISK_TXT_ADVF_PREFIX_BYTES=6
 TC_ADISK_TXT_ADVN_MID_BYTES=6
@@ -134,6 +134,7 @@ tc_init_runtime_env() {
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     SMB_BIND_LAN_ONLY=${SMB_BIND_LAN_ONLY:-1}
     SMB_BROWSE_COMPATIBILITY=${SMB_BROWSE_COMPATIBILITY:-0}
+    MDNS_ADVERTISE_AFP=${MDNS_ADVERTISE_AFP:-0}
     ANY_PROTOCOL=${ANY_PROTOCOL:-0}
     FRUIT_METADATA_NETATALK=${FRUIT_METADATA_NETATALK:-1}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
@@ -145,6 +146,22 @@ tc_init_runtime_env() {
         *)
             tc_add_runtime_env_warning "runtime config: invalid SMB_BIND_LAN_ONLY=$SMB_BIND_LAN_ONLY; using 1"
             SMB_BIND_LAN_ONLY=1
+            ;;
+    esac
+
+    case "$MDNS_ADVERTISE_AFP" in
+        1|true|TRUE|yes|YES)
+            MDNS_ADVERTISE_AFP=1
+            TC_ADISK_DISK_ADVF=0x83
+            ;;
+        0|false|FALSE|no|NO)
+            MDNS_ADVERTISE_AFP=0
+            TC_ADISK_DISK_ADVF=0x82
+            ;;
+        *)
+            tc_add_runtime_env_warning "runtime config: invalid MDNS_ADVERTISE_AFP=$MDNS_ADVERTISE_AFP; using 0"
+            MDNS_ADVERTISE_AFP=0
+            TC_ADISK_DISK_ADVF=0x82
             ;;
     esac
 }
