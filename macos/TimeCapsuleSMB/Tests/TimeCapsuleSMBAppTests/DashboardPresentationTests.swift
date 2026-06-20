@@ -18,6 +18,32 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.status, .warning)
     }
 
+    func testCheckupPresentationLocalizesKnownDoctorCheckCodes() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "SMB is configured to bind to LAN-only interface(s) 192.168.1.0/24, but this Mac has no address on those runtime Samba network(s). Disable Bind SMB to LAN Only for this profile and redeploy, or connect from the Time Capsule LAN side.",
+                domain: "SMB Auth",
+                code: "smb_bind_lan_only_unreachable"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        let presentation = CheckupPresentation(summary: summary, state: .failed)
+        let row = try XCTUnwrap(presentation.domains.first?.rows.first)
+
+        XCTAssertEqual(presentation.domains.first?.domain, .smbAuth)
+        XCTAssertEqual(
+            row.message,
+            "SMB is bound to the Time Capsule LAN, but this Mac is on another network. Turn off Bind SMB to LAN Only for this device and run Install / Update SMB, or connect from the Time Capsule LAN side."
+        )
+        XCTAssertFalse(row.message.contains("configured to bind"))
+    }
+
     func testInstallActionsUseDownloadBoxIconExceptReinstall() {
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.title, "Refresh Status")
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.systemImage, "arrow.clockwise")

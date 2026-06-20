@@ -346,6 +346,7 @@
 "dialog.forget.error_title" = "Kon apparaat niet vergeten";
 "dialog.forget.message" = "%@ verwijderen van deze Mac? Hierdoor wordt Samba niet van het apparaat verwijderd.";
 "dialog.forget.title" = "Dit apparaat vergeten?";
+"doctor.check.smb_bind_lan_only_unreachable" = "SMB is aan het Time Capsule-LAN gebonden, maar deze Mac zit op een ander netwerk. Schakel \"SMB alleen aan LAN binden\" uit voor dit apparaat en voer \"SMB installeren / bijwerken\" uit, of verbind vanaf de LAN-kant van de Time Capsule.";
 "doctor.domain.connection" = "Verbinding";
 "doctor.domain.disk" = "Schijf";
 "doctor.domain.finder_bonjour" = "Finder / Bonjour";

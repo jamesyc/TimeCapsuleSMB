@@ -110,6 +110,7 @@ TRANSIENT_MDNS_READINESS_FAILURES = {
     "mdns-advertiser is not bound to required UDP 5353 listener",
 }
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
+DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE = "smb_bind_lan_only_unreachable"
 
 
 def _run_doctor_retryable_check(
@@ -1185,6 +1186,78 @@ def _doctor_smb_client_targets(
     return targets
 
 
+def _config_bool_enabled(config: AppConfig, key: str) -> bool:
+    return config.get(key).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _format_list_for_message(values: Iterable[str]) -> str:
+    items = [value for value in values if value]
+    if not items:
+        return "none"
+    return ", ".join(items)
+
+
+def _lan_only_smb_bind_unreachable_result(
+    config: AppConfig,
+    network_plan: NetworkCheckPlan | None,
+    smb_targets: Iterable[SmbClientTargetInput],
+) -> CheckResult | None:
+    if network_plan is None or not _config_bool_enabled(config, "TC_SMB_BIND_LAN_ONLY"):
+        return None
+
+    samba_families = [
+        family_plan
+        for family_plan in network_plan.families()
+        if family_plan.samba_expected and family_plan.remote_addresses
+    ]
+    if not samba_families:
+        return None
+    if any(family_plan.local_sources for family_plan in samba_families):
+        return None
+
+    bound_addresses = [
+        address
+        for family_plan in samba_families
+        for address in family_plan.remote_addresses
+    ]
+    bound_cidrs = [
+        cidr
+        for family_plan in samba_families
+        for cidr in family_plan.remote_cidrs
+    ]
+    target_displays = [_smb_client_target_debug(target) for target in smb_targets]
+    target_ips = [
+        ip
+        for target in smb_targets
+        for ip in [_ip_literal(target.ip_address if isinstance(target, SmbClientTarget) else target)]
+        if ip is not None
+    ]
+    outside_targets = [ip for ip in target_ips if ip not in bound_addresses]
+    outside_clause = ""
+    if outside_targets:
+        outside_clause = (
+            f"; checked SMB target(s) {_format_list_for_message(target_displays)} "
+            f"outside the bound address(es) {_format_list_for_message(bound_addresses)}"
+        )
+    return CheckResult(
+        "FAIL",
+        "SMB is configured to bind to LAN-only interface(s) "
+        f"{_format_list_for_message(bound_cidrs or bound_addresses)}, "
+        "but this Mac has no address on those runtime Samba network(s)"
+        f"{outside_clause}. Disable Bind SMB to LAN Only for this profile and redeploy, "
+        "or connect from the Time Capsule LAN side.",
+        {
+            "code": DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE,
+            "domain": "SMB Auth",
+            "smb_bind_lan_only": True,
+            "bound_addresses": bound_addresses,
+            "bound_cidrs": bound_cidrs,
+            "checked_targets": target_displays,
+            "outside_checked_target_ips": outside_targets,
+        },
+    )
+
+
 def _smb_listing_looks_like_local_route_failure(result: CheckResult) -> bool:
     if "NT_STATUS_HOST_UNREACHABLE" in result.message:
         return True
@@ -1304,6 +1377,9 @@ def _add_authenticated_smb_results(
     if debug_fields is not None and listing_result.details.get("attempts"):
         debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
     if listing_result.status != "PASS":
+        bind_result = _lan_only_smb_bind_unreachable_result(config, network_plan, smb_servers)
+        if bind_result is not None:
+            add_result(bind_result)
         if _smb_listing_looks_like_local_route_failure(listing_result):
             add_result(
                 CheckResult(

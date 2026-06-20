@@ -477,6 +477,17 @@ extension DoctorPayload {
     }
 }
 
+extension DoctorCheckPayload {
+    var localizedMessage: String {
+        switch code {
+        case "smb_bind_lan_only_unreachable":
+            return L10n.string("doctor.check.smb_bind_lan_only_unreachable")
+        default:
+            return message
+        }
+    }
+}
+
 extension ActivationPlanPayload {
     var localizedSummary: String {
         L10n.string("backend.summary.activation_plan_generated")

@@ -506,6 +506,10 @@ struct DoctorCheckPayload: Decodable, Equatable {
     let message: String
     let details: JSONValue
 
+    var code: String? {
+        details.stringValue(for: "code")
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.status = try container.decode(String.self, forKey: .status)

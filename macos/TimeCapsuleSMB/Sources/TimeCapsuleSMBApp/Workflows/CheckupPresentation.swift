@@ -118,10 +118,10 @@ struct CheckupRowPresentation: Equatable, Identifiable {
     let message: String
 
     init(index: Int, check: DoctorCheckPayload) {
-        self.id = "\(index):\(check.status):\(check.message)"
+        self.id = "\(index):\(check.status):\(check.code ?? check.message)"
         self.status = CheckupStatusPresentation(status: check.status)
         self.statusText = check.status
-        self.message = check.message
+        self.message = check.localizedMessage
     }
 }
 

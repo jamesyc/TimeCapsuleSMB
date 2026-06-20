@@ -4241,6 +4241,79 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
         nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.9", "10.0.0.9")
 
+    def test_run_doctor_checks_explains_unreachable_lan_only_smb_bind(self) -> None:
+        values = self.valid_doctor_values(
+            TC_HOST="root@192.168.4.6",
+            TC_SMB_BIND_LAN_ONLY="true",
+            TC_MDNS_HOST_LABEL="drwho",
+            TC_MDNS_INSTANCE_NAME="DrWho",
+            TC_NETBIOS_NAME="drwho",
+        )
+        listing_result = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed after 1 attempt(s): attempt 1 192.168.4.6: connection refused",
+            {
+                "attempts": [
+                    {
+                        "server": "192.168.4.6",
+                        "ip_address": "192.168.4.6",
+                        "outcome": "error",
+                        "failure": "Connection refused",
+                    }
+                ]
+            },
+        )
+        debug_fields: dict[str, object] = {}
+
+        run = self.run_doctor_with_mocks(
+            values,
+            ssh_login=CheckResult("PASS", "ssh ok"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = drwho\n[TMData]\n    path = /Volumes/dk2/ShareRoot\n",
+            skip_bonjour=True,
+            smb_listing=listing_result,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="192.168.1.1/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
+                    return_value=("192.168.4.171",)
+                ),
+                "timecapsulesmb.checks.doctor_steps.time.sleep": mock.Mock(),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        bind_result = next(result for result in run.results if "Bind SMB to LAN Only" in result.message)
+        self.assertEqual(bind_result.status, "FAIL")
+        self.assertIn("192.168.1.0/24", bind_result.message)
+        self.assertIn("192.168.4.6", bind_result.message)
+        self.assertEqual(bind_result.details["code"], "smb_bind_lan_only_unreachable")
+        self.assertEqual(bind_result.details["domain"], "SMB Auth")
+        self.assertEqual(bind_result.details["bound_addresses"], ["192.168.1.1"])
+        self.assertEqual(bind_result.details["outside_checked_target_ips"], ["192.168.4.6"])
+        self.assertEqual(
+            debug_fields["runtime_network_plan"]["ipv4"],
+            {
+                "remote_addresses": ["192.168.1.1"],
+                "remote_cidrs": ["192.168.1.0/24"],
+                "local_sources": [],
+                "mdns_expected": True,
+                "samba_expected": True,
+                "nbns_expected": True,
+            },
+        )
+        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
+        self.assertEqual(
+            run.mocks.check_authenticated_smb_listing.call_args_list[0],
+            mock.call("admin", "pw", ["drwho.local", "192.168.4.6"], port=445),
+        )
+
     def test_run_doctor_checks_checks_nbns_only_for_reachable_ipv4(self) -> None:
         nbns_mock = mock.Mock(return_value=mock.Mock(status="PASS", message="nbns ok"))
         run = self.run_doctor_with_mocks(

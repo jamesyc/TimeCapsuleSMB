@@ -346,6 +346,7 @@
 "dialog.forget.error_title" = "无法忘记设备";
 "dialog.forget.message" = "从此 Mac 移除 %@？这不会从设备卸载 Samba。";
 "dialog.forget.title" = "忘记此设备？";
+"doctor.check.smb_bind_lan_only_unreachable" = "SMB 已绑定到 Time Capsule LAN，但这台 Mac 位于另一个网络。请为此设备关闭“仅将 SMB 绑定到 LAN”，然后运行“安装/更新 SMB”，或从 Time Capsule 的 LAN 侧连接。";
 "doctor.domain.connection" = "连接";
 "doctor.domain.disk" = "磁盘";
 "doctor.domain.finder_bonjour" = "Finder / Bonjour";

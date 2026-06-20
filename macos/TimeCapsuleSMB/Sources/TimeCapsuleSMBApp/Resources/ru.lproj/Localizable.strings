@@ -346,6 +346,7 @@
 "dialog.forget.error_title" = "Не удалось забыть устройство";
 "dialog.forget.message" = "Удалить %@ с этого Mac? При этом Samba не удаляется с устройства.";
 "dialog.forget.title" = "Забыть это устройство?";
+"doctor.check.smb_bind_lan_only_unreachable" = "SMB привязан к LAN Time Capsule, но этот Mac находится в другой сети. Отключите «Привязывать SMB только к LAN» для этого устройства и запустите «Установить / обновить SMB» либо подключитесь со стороны LAN Time Capsule.";
 "doctor.domain.connection" = "Соединение";
 "doctor.domain.disk" = "Диск";
 "doctor.domain.finder_bonjour" = "Finder / Bonjour";
