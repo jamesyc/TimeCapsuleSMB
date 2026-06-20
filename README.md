@@ -12,7 +12,7 @@ You get the full Apple experience reproduced: after you install this, you do not
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
-NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can use this to flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot. If you do not run the `activate` command after a reboot or flash the boot hook, then Samba will not start automatically on an older Time Capsule!
+NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can **use this to flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot**. If you do not flash the boot hook, then Samba will not start automatically on an older Time Capsule!
 
 The current authentication model accepts any user as the username, and the Samba password is the current Time Capsule device password. At boot, the device reads its live AirPort `syPW` value and generates the Samba password file in RAM, so a device-password change is picked up after reboot. Guest access is disabled.
 
