@@ -80,6 +80,10 @@
 # open disconnected; retry once outside the open-global TDB lock instead of
 # reporting the durable handle as permanently missing.
 0024-time-machine-durable-open-live-retry.patch|retry transient live durable-open reconnect races
+# Time Capsule HFS can update ctime when the last writable fd closes. Record
+# durable cookies after that close so reconnect keeps strict ctime validation
+# without comparing against Samba's own stale pre-close snapshot.
+0029-time-machine-durable-post-close-cookie-stat.patch|record durable cookie stat after fd_close
 # Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
 # interface enumeration through libreplace's ioctl-based fallback.
 0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD
