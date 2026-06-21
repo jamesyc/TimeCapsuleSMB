@@ -61,7 +61,7 @@ index c33508f..1f8e29b 100644
 +			goto not_found;
 +		}
 +
-+		DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
++		DBG_DEBUG("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
 +			   "open %s is still attached to a live smbd; "
 +			   "treating matching durable reconnect as transiently "
 +			   "unavailable\n",
@@ -72,15 +72,17 @@ index c33508f..1f8e29b 100644
  		DBG_WARNING("smbXsrv_open_global_verify_record for %s "
  			    "failed: %s\n",
  			    tdb_data_dbg(key),
-@@ -1367,6 +1428,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1367,6 +1428,9 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  	TDB_DATA key = smbXsrv_open_global_id_to_key(
  		persistent_id & UINT32_MAX, &key_buf);
  	int ret, local_id;
-+	bool retried_live_open = false;
++	const int live_open_retry_delay_msec = 150;
++	const int live_open_retry_max = 10;
++	int live_open_retries = 0;
  	NTSTATUS status;
  
  	if (session_info == NULL) {
-@@ -1414,6 +1476,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1414,6 +1478,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  
  	state.op->idle_time = now;
  	state.op->status = NT_STATUS_FILE_CLOSED;
@@ -88,25 +90,48 @@ index c33508f..1f8e29b 100644
  
  	status = dbwrap_do_locked(
  		table->global.db_ctx, key, smb2srv_open_recreate_fn, &state);
-@@ -1424,6 +1487,23 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1424,6 +1489,46 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  		goto fail;
  	}
  
 +	if (NT_STATUS_EQUAL(state.status, NT_STATUS_FILE_NOT_AVAILABLE) &&
-+	    !retried_live_open)
++	    live_open_retries < live_open_retry_max)
 +	{
-+		retried_live_open = true;
-+		DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
-+			   "waiting 100ms for %s to be marked disconnected\n",
-+			   tdb_data_dbg(key));
++		live_open_retries += 1;
++		if (live_open_retries == 1) {
++			DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
++				   "waiting up to %dms in %dms intervals "
++				   "for %s to be marked disconnected\n",
++				   live_open_retry_delay_msec *
++					   live_open_retry_max,
++				   live_open_retry_delay_msec,
++				   tdb_data_dbg(key));
++		} else {
++			DBG_DEBUG("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
++				  "retry %d/%d waiting for %s to be marked "
++				  "disconnected\n",
++				  live_open_retries,
++				  live_open_retry_max,
++				  tdb_data_dbg(key));
++		}
 +		/*
 +		 * Do not sleep while the TDB record is locked: the old smbd
 +		 * needs the same record lock in order to store the disconnected
 +		 * durable-open state that makes recreate safe.
 +		 */
 +		TALLOC_FREE(state.op->global);
-+		smb_msleep(100);
++		smb_msleep(live_open_retry_delay_msec);
 +		goto retry_live_open;
++	}
++
++	if (NT_STATUS_EQUAL(state.status, NT_STATUS_FILE_NOT_AVAILABLE)) {
++		DBG_NOTICE("TIMECAPSULE_DURABLE_OPEN_LIVE_RETRY: "
++			   "open %s is still attached to a live smbd after "
++			   "%d retries over %dms; returning "
++			   "NT_STATUS_FILE_NOT_AVAILABLE\n",
++			   tdb_data_dbg(key),
++			   live_open_retries,
++			   live_open_retries * live_open_retry_delay_msec);
 +	}
 +
  	if (!NT_STATUS_IS_OK(state.status)) {
