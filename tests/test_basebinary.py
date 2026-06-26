@@ -56,6 +56,23 @@ class BasebinaryTests(unittest.TestCase):
         self.assertEqual(key.stored_key.hex(), "c025fefa2320b0e985dfac106694db4a")
         self.assertEqual(key.derived_key.hex(), "d93fe5e63e3eafc9a4fd8f3443b2fc62")
 
+    def test_observed_airport5_104_key_is_in_default_trial_keyring(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-airport5-104-78100")
+
+        self.assertEqual(key.stored_key.hex(), "ec7abae211819b1349880d2035a24d78")
+        self.assertEqual(key.derived_key.hex(), "f560a1fe0c9f843368aa2e0410846a50")
+
+    def test_default_keyring_parses_observed_airport5_104_model_104_container(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-airport5-104-78100")
+        payload = b"model 104 firmware payload" * 128
+        encoded = compose_basebinary(make_header(encrypted=True, model=104, version=0x07818000), payload, key=key)
+
+        parsed = parse_basebinary(encoded)
+
+        self.assertEqual(parsed.key_id, "observed-airport5-104-78100")
+        self.assertEqual(parsed.header.model, 104)
+        self.assertEqual(parsed.payload, payload)
+
     def test_observed_airport5_105_key_is_in_default_trial_keyring(self) -> None:
         key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-airport5-105-78100")
 
@@ -105,6 +122,23 @@ class BasebinaryTests(unittest.TestCase):
 
         self.assertEqual(parsed.key_id, "observed-k10a-78100")
         self.assertEqual(parsed.header.model, 114)
+        self.assertEqual(parsed.payload, payload)
+
+    def test_observed_airport5_117_key_is_in_default_trial_keyring(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-airport5-117-78100")
+
+        self.assertEqual(key.stored_key.hex(), "74119d5182c7a317db0026e49efde79a")
+        self.assertEqual(key.derived_key.hex(), "6d0b864d9fd9bc37fa2205c0bbdbc0b2")
+
+    def test_default_keyring_parses_observed_airport5_117_model_117_container(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-airport5-117-78100")
+        payload = b"model 117 firmware payload" * 128
+        encoded = compose_basebinary(make_header(encrypted=True, model=117, version=0x07818000), payload, key=key)
+
+        parsed = parse_basebinary(encoded)
+
+        self.assertEqual(parsed.key_id, "observed-airport5-117-78100")
+        self.assertEqual(parsed.header.model, 117)
         self.assertEqual(parsed.payload, payload)
 
     def test_observed_k30b_key_is_in_default_trial_keyring(self) -> None:

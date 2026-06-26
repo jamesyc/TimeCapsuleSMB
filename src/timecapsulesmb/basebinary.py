@@ -106,6 +106,11 @@ DEFAULT_BASEBINARY_KEYS: tuple[BasebinaryKey, ...] = (
         provenance="extracted from a NetBSD4 ACPd binary and validated by checksum against Apple product 106 firmware",
     ),
     BasebinaryKey.from_hex(
+        "observed-airport5-104-78100",
+        "ec7abae211819b1349880d2035a24d78",
+        provenance="extracted from an AirPort5,104 ACPd binary and validated by checksum against Apple product 104 firmware",
+    ),
+    BasebinaryKey.from_hex(
         "observed-airport5-105-78100",
         "87f52f57c573e87499b6d69c8e4bcb8b",
         provenance="extracted from an AirPort5,105 ACPd binary and validated by checksum against Apple product 105 firmware",
@@ -124,6 +129,11 @@ DEFAULT_BASEBINARY_KEYS: tuple[BasebinaryKey, ...] = (
         "observed-k10a-78100",
         "a66e263e7b751242ac7fa0c90951ed08",
         provenance="extracted from an AirPort5,114 A1354 ACPd binary and validated by checksum against Apple product 114 firmware",
+    ),
+    BasebinaryKey.from_hex(
+        "observed-airport5-117-78100",
+        "74119d5182c7a317db0026e49efde79a",
+        provenance="extracted from an AirPort5,117 ACPd binary and validated by checksum against Apple product 117 firmware",
     ),
     BasebinaryKey.from_hex(
         "observed-k30b-78100",
