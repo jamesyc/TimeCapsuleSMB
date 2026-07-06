@@ -34,6 +34,11 @@ class ArtifactTests(unittest.TestCase):
         self.assertNotIn("mdns-advertiser-netbsd4", manifest)
         self.assertNotIn("nbns-advertiser-netbsd4", manifest)
 
+    def test_checked_in_distribution_artifacts_match_manifest(self) -> None:
+        results = validate_artifacts(REPO_ROOT)
+        failures = [f"{name}: {message}" for name, ok, message in results if not ok]
+        self.assertFalse(failures, "\n".join(failures))
+
     def test_sha256_file_matches_known_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "x.bin"

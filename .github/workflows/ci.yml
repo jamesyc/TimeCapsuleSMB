@@ -45,7 +45,7 @@ jobs:
       - name: Run Ruff
         run: python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
 
-      - name: Run artifact tests
+      - name: Verify checked-in artifact manifest
         run: python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py
 
       - name: Run full test suite
