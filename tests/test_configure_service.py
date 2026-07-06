@@ -36,6 +36,7 @@ class ConfigureServiceTests(unittest.TestCase):
                 "TC_SMB_BIND_LAN_ONLY": "false",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_MDNS_ADVERTISE_AFP": "true",
+                "TC_REQUIRE_SMB_ENCRYPTION": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
             },
             host="root@10.0.0.2",
@@ -52,17 +53,32 @@ class ConfigureServiceTests(unittest.TestCase):
             smb_bind_lan_only=True,
             smb_browse_compatibility=True,
             mdns_advertise_afp=True,
+            require_smb_encryption=True,
             fruit_metadata_netatalk=True,
         )
 
         self.assertEqual(preserved["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(preserved["TC_SMB_BROWSE_COMPATIBILITY"], "true")
         self.assertEqual(preserved["TC_MDNS_ADVERTISE_AFP"], "true")
+        self.assertEqual(preserved["TC_REQUIRE_SMB_ENCRYPTION"], "true")
         self.assertEqual(preserved["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(enabled["TC_SMB_BIND_LAN_ONLY"], "true")
         self.assertEqual(enabled["TC_SMB_BROWSE_COMPATIBILITY"], "true")
         self.assertEqual(enabled["TC_MDNS_ADVERTISE_AFP"], "true")
+        self.assertEqual(enabled["TC_REQUIRE_SMB_ENCRYPTION"], "true")
         self.assertEqual(enabled["TC_FRUIT_METADATA_NETATALK"], "true")
+
+    def test_build_configure_env_values_rejects_smb_encryption_with_any_protocol(self) -> None:
+        with self.assertRaisesRegex(ValueError, "SMB encryption requires SMB3-only"):
+            build_configure_env_values(
+                {},
+                host="root@10.0.0.2",
+                password="pw",
+                ssh_opts="-o foo",
+                configure_id="config-id",
+                any_protocol=True,
+                require_smb_encryption=True,
+            )
 
     def make_connection(self) -> SshConnection:
         return SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -402,6 +418,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(written["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(written["TC_MDNS_ADVERTISE_AFP"], "false")
+        self.assertEqual(written["TC_REQUIRE_SMB_ENCRYPTION"], "false")
         self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertNotIn("TC_PASSWORD", written)
         self.assertEqual(stages, ["ssh_probe", "write_env"])

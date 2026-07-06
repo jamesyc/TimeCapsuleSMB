@@ -12,6 +12,7 @@ from timecapsulesmb.core.config import (
     parse_bool,
 )
 from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.app.ops.common import (
     load_request_config,
     resolve_request_target,
@@ -213,6 +214,18 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         "any_protocol",
         parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
     )
+    require_smb_encryption = bool_param(
+        params,
+        "require_smb_encryption",
+        parse_bool(config.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"])),
+    )
+    try:
+        validate_smb_protocol_options(
+            any_protocol=any_protocol,
+            require_smb_encryption=require_smb_encryption,
+        )
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
     fruit_metadata_netatalk = bool_param(
         params,
         "fruit_metadata_netatalk",
@@ -325,6 +338,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 smb_browse_compatibility=smb_browse_compatibility,
                 mdns_advertise_afp=mdns_advertise_afp,
                 any_protocol=any_protocol,
+                require_smb_encryption=require_smb_encryption,
                 fruit_metadata_netatalk=fruit_metadata_netatalk,
                 ata_idle_seconds=ata_idle_seconds,
                 ata_standby=ata_standby,

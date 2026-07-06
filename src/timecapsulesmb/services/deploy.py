@@ -11,6 +11,7 @@ import tempfile
 from timecapsulesmb.core.config import DEFAULTS, MANAGED_PAYLOAD_DIR_NAME, AppConfig, parse_bool, shell_quote
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.boot_assets import boot_asset_path
@@ -137,6 +138,7 @@ class DeployRuntimeConfig:
     smb_browse_compatibility: bool | None = None
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
+    require_smb_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     ata_idle_seconds: str | int | None = None
     ata_standby: str | int | None = None
@@ -691,6 +693,7 @@ def upload_and_verify_deployment_payload(
         smb_browse_compatibility=runtime_config.smb_browse_compatibility,
         mdns_advertise_afp=runtime_config.mdns_advertise_afp,
         any_protocol=runtime_config.any_protocol,
+        require_smb_encryption=runtime_config.require_smb_encryption,
         fruit_metadata_netatalk=runtime_config.fruit_metadata_netatalk,
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
@@ -1040,6 +1043,7 @@ def render_flash_runtime_config(
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
+    require_smb_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     ata_idle_seconds: str | int | None = None,
     ata_standby: str | int | None = None,
@@ -1059,6 +1063,10 @@ def render_flash_runtime_config(
         DEFAULTS["TC_MDNS_ADVERTISE_AFP"],
     )
     any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
+    require_smb_encryption_default = config.get(
+        "TC_REQUIRE_SMB_ENCRYPTION",
+        DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"],
+    )
     fruit_metadata_netatalk_default = config.get(
         "TC_FRUIT_METADATA_NETATALK",
         DEFAULTS["TC_FRUIT_METADATA_NETATALK"],
@@ -1089,6 +1097,15 @@ def render_flash_runtime_config(
         if any_protocol is None
         else any_protocol
     )
+    effective_require_smb_encryption = (
+        parse_bool(require_smb_encryption_default)
+        if require_smb_encryption is None
+        else require_smb_encryption
+    )
+    validate_smb_protocol_options(
+        any_protocol=effective_any_protocol,
+        require_smb_encryption=effective_require_smb_encryption,
+    )
     effective_smb_browse_compatibility = (
         parse_bool(smb_browse_compatibility_default)
         if smb_browse_compatibility is None
@@ -1115,6 +1132,7 @@ def render_flash_runtime_config(
         ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),
         ("MDNS_ADVERTISE_AFP", 1 if effective_mdns_advertise_afp else 0),
         ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
+        ("REQUIRE_SMB_ENCRYPTION", 1 if effective_require_smb_encryption else 0),
         ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),

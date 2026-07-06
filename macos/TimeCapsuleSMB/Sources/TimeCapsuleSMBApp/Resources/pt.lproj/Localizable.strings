@@ -897,6 +897,7 @@
 "toggle.smb_browse_compatibility" = "Permitir SMB compartilhar navegação";
 "toggle.mdns_advertise_afp" = "Anunciar AFP via Bonjour";
 "toggle.any_protocol" = "Permitir qualquer protocolo SMB";
+"toggle.require_smb_encryption" = "Exigir criptografia SMB";
 "toggle.use_netatalk_metadata" = "Use Netatalk para metadata";
 "toggle.force_debug_logging" = "Forçar registro de depuração";
 "toggle.no_reboot" = "Sem reinicialização";

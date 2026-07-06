@@ -14,6 +14,7 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device.probe import probe_connection_state
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
 from timecapsulesmb.services.app import (
@@ -132,6 +133,23 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
     if isinstance(selected_record, dict):
         context.add_debug_fields(selected_bonjour_record=selected_record)
     context.add_debug_fields(configure_target_source=target.source)
+    any_protocol = bool_param(
+        params,
+        "any_protocol",
+        parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
+    )
+    require_smb_encryption = bool_param(
+        params,
+        "require_smb_encryption",
+        parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"])),
+    )
+    try:
+        validate_smb_protocol_options(
+            any_protocol=any_protocol,
+            require_smb_encryption=require_smb_encryption,
+        )
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
 
     def before_enable_ssh(_connection, _probed_state) -> None:
         context.stage("confirm_enable_ssh")
@@ -180,11 +198,8 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     "mdns_advertise_afp",
                     parse_bool(existing.get("TC_MDNS_ADVERTISE_AFP", DEFAULTS["TC_MDNS_ADVERTISE_AFP"])),
                 ),
-                any_protocol=bool_param(
-                    params,
-                    "any_protocol",
-                    parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
-                ),
+                any_protocol=any_protocol,
+                require_smb_encryption=require_smb_encryption,
                 fruit_metadata_netatalk=bool_param(
                     params,
                     "fruit_metadata_netatalk",

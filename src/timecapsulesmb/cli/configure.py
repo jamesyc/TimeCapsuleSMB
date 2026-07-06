@@ -17,8 +17,10 @@ from timecapsulesmb.core.config import (
     ConfigError,
     DEFAULTS,
     infer_mdns_device_model_from_airport_syap,
+    parse_bool,
     parse_env_file,
 )
+from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
@@ -289,7 +291,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     mdns_afp_group = parser.add_mutually_exclusive_group()
     mdns_afp_group.add_argument("--mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
     mdns_afp_group.add_argument("--no-mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
+    any_protocol_group = parser.add_mutually_exclusive_group()
+    any_protocol_group.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
+    any_protocol_group.add_argument("--no-any-protocol", action="store_true", help=argparse.SUPPRESS)
+    require_smb_encryption_group = parser.add_mutually_exclusive_group()
+    require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
+    require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--netatalk", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
@@ -301,6 +308,31 @@ def main(argv: Optional[list[str]] = None) -> int:
     env_path = resolve_app_paths(config_path=args.config).config_path
     env_exists = env_path.exists()
     existing = parse_env_file(env_path)
+    any_protocol = (
+        True if args.any_protocol
+        else False if args.no_any_protocol
+        else None
+    )
+    require_smb_encryption = (
+        True if args.require_smb_encryption
+        else False if args.no_require_smb_encryption
+        else None
+    )
+    try:
+        validate_smb_protocol_options(
+            any_protocol=(
+                parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
+                if any_protocol is None
+                else any_protocol
+            ),
+            require_smb_encryption=(
+                parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
+                if require_smb_encryption is None
+                else require_smb_encryption
+            ),
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     configure_id = str(uuid.uuid4())
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
@@ -498,7 +530,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                             else False if args.no_mdns_advertise_afp
                             else None
                         ),
-                        any_protocol=True if args.any_protocol else None,
+                        any_protocol=any_protocol,
+                        require_smb_encryption=require_smb_encryption,
                         fruit_metadata_netatalk=True if args.netatalk else None,
                         ata_idle_seconds=args.ata_idle_seconds,
                         ata_standby=args.ata_standby,

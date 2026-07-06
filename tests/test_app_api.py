@@ -1891,6 +1891,50 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(values["TC_MDNS_ADVERTISE_AFP"], "true")
 
+    def test_configure_require_smb_encryption_param_writes_true(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "goodpw",
+                            "require_smb_encryption": True,
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_REQUIRE_SMB_ENCRYPTION"], "true")
+
+    def test_configure_rejects_any_protocol_with_smb_encryption(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            rc = service.run_api_request(
+                {
+                    "operation": "configure",
+                    "params": {
+                        "config": str(config_path),
+                        "host": "root@10.0.0.2",
+                        "password": "goodpw",
+                        "any_protocol": True,
+                        "require_smb_encryption": True,
+                    },
+                },
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 1)
+        self.assertIn("SMB encryption requires SMB3-only", collector.events_of_type("error")[0]["message"])
+
     def test_configure_ata_params_write_drive_timer_settings(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3109,6 +3153,7 @@ class AppApiTests(unittest.TestCase):
             "internal_share_use_disk_root": False,
             "smb_browse_compatibility": True,
             "any_protocol": False,
+            "require_smb_encryption": True,
             "fruit_metadata_netatalk": True,
             "debug_logging": False,
             "ata_idle_seconds": 0,
@@ -3166,6 +3211,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(render_runtime.call_args.kwargs["smb_browse_compatibility"], True)
         self.assertEqual(render_runtime.call_args.kwargs["mdns_advertise_afp"], False)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["require_smb_encryption"], True)
         self.assertEqual(render_runtime.call_args.kwargs["fruit_metadata_netatalk"], True)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
         self.assertEqual(render_runtime.call_args.kwargs["ata_idle_seconds"], 0)

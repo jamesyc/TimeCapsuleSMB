@@ -897,6 +897,7 @@
 "toggle.smb_browse_compatibility" = "Leisti SMB bendrinimo naršymą";
 "toggle.mdns_advertise_afp" = "Skelbti AFP per Bonjour";
 "toggle.any_protocol" = "Leisti bet kurį SMB protokolą";
+"toggle.require_smb_encryption" = "Reikalauti SMB šifravimo";
 "toggle.use_netatalk_metadata" = "Naudoti Netatalk metaduomenims";
 "toggle.force_debug_logging" = "Priverstiniai derinimo žurnalai";
 "toggle.no_reboot" = "Be paleidimo iš naujo";

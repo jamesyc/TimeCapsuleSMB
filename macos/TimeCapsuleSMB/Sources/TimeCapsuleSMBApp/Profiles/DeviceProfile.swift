@@ -40,6 +40,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
+    var requireSMBEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
@@ -53,6 +54,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         smbBrowseCompatibility: false,
         mdnsAdvertiseAFP: false,
         anyProtocol: false,
+        requireSMBEncryption: false,
         fruitMetadataNetatalk: true,
         debugLogging: false,
         mountWaitSeconds: 30,
@@ -67,6 +69,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         smbBrowseCompatibility: Bool = false,
         mdnsAdvertiseAFP: Bool = false,
         anyProtocol: Bool = false,
+        requireSMBEncryption: Bool = false,
         fruitMetadataNetatalk: Bool = true,
         debugLogging: Bool,
         mountWaitSeconds: Int,
@@ -79,6 +82,10 @@ struct DeviceProfileSettings: Codable, Equatable {
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
+        self.requireSMBEncryption = requireSMBEncryption
+        if self.requireSMBEncryption {
+            self.anyProtocol = false
+        }
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
@@ -93,6 +100,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         case smbBrowseCompatibility
         case mdnsAdvertiseAFP
         case anyProtocol
+        case requireSMBEncryption
         case fruitMetadataNetatalk
         case debugLogging
         case mountWaitSeconds
@@ -108,6 +116,10 @@ struct DeviceProfileSettings: Codable, Equatable {
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
         mdnsAdvertiseAFP = try container.decodeIfPresent(Bool.self, forKey: .mdnsAdvertiseAFP) ?? Self.default.mdnsAdvertiseAFP
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
+        requireSMBEncryption = try container.decodeIfPresent(Bool.self, forKey: .requireSMBEncryption) ?? Self.default.requireSMBEncryption
+        if requireSMBEncryption {
+            anyProtocol = false
+        }
         fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
         mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds

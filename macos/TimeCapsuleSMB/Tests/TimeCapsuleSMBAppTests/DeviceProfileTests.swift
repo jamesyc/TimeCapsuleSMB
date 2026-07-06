@@ -105,11 +105,29 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.smbBrowseCompatibility, false)
         XCTAssertEqual(settings.mdnsAdvertiseAFP, false)
         XCTAssertEqual(settings.anyProtocol, false)
+        XCTAssertEqual(settings.requireSMBEncryption, false)
         XCTAssertEqual(settings.fruitMetadataNetatalk, true)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
         XCTAssertEqual(settings.ataIdleSeconds, 300)
         XCTAssertNil(settings.ataStandby)
+    }
+
+    func testProfileSettingsDecodeSmbEncryptionClearsAnyProtocol() throws {
+        let data = Data("""
+        {
+          "nbnsEnabled": true,
+          "anyProtocol": true,
+          "requireSMBEncryption": true,
+          "debugLogging": false,
+          "mountWaitSeconds": 45
+        }
+        """.utf8)
+
+        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+
+        XCTAssertEqual(settings.anyProtocol, false)
+        XCTAssertEqual(settings.requireSMBEncryption, true)
     }
 
     func testProfileSettingsDecodeSmbBrowseCompatibility() throws {

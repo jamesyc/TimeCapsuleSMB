@@ -10,6 +10,7 @@ struct DeployOptions: Equatable {
     let smbBrowseCompatibility: Bool
     let mdnsAdvertiseAFP: Bool
     let anyProtocol: Bool
+    let requireSMBEncryption: Bool
     let fruitMetadataNetatalk: Bool
     let debugLogging: Bool
     let ataIdleSeconds: Int
@@ -25,6 +26,7 @@ struct DeployOptions: Equatable {
         smbBrowseCompatibility: Bool,
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool,
+        requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
         fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
         debugLogging: Bool,
         ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
@@ -39,6 +41,7 @@ struct DeployOptions: Equatable {
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
+        self.requireSMBEncryption = requireSMBEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.ataIdleSeconds = ataIdleSeconds
@@ -133,7 +136,20 @@ final class DeployWorkflowStore: ObservableObject {
         didSet { reconcilePlanFreshness() }
     }
     @Published var anyProtocol = false {
-        didSet { reconcilePlanFreshness() }
+        didSet {
+            if anyProtocol && requireSMBEncryption {
+                requireSMBEncryption = false
+            }
+            reconcilePlanFreshness()
+        }
+    }
+    @Published var requireSMBEncryption = DeviceProfileSettings.default.requireSMBEncryption {
+        didSet {
+            if requireSMBEncryption && anyProtocol {
+                anyProtocol = false
+            }
+            reconcilePlanFreshness()
+        }
     }
     @Published var fruitMetadataNetatalk = DeviceProfileSettings.default.fruitMetadataNetatalk {
         didSet { reconcilePlanFreshness() }
@@ -257,6 +273,7 @@ final class DeployWorkflowStore: ObservableObject {
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
+                requireSMBEncryption: options.requireSMBEncryption,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
@@ -311,6 +328,7 @@ final class DeployWorkflowStore: ObservableObject {
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
+                requireSMBEncryption: options.requireSMBEncryption,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
@@ -373,6 +391,7 @@ final class DeployWorkflowStore: ObservableObject {
             smbBrowseCompatibility: smbBrowseCompatibility,
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
+            requireSMBEncryption: requireSMBEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,
             ataIdleSeconds: ataIdleSecondsValue,

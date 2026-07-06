@@ -16,6 +16,7 @@ from timecapsulesmb.core.config import (
     write_env_file,
 )
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
+from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import ProbedDeviceState, SshAccessStatus, probe_connection_state
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
@@ -57,6 +58,7 @@ class ConfigureFlowRequest:
     smb_browse_compatibility: bool | None = None
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
+    require_smb_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     debug_logging: bool | None = None
     ata_idle_seconds: object | None = None
@@ -206,6 +208,7 @@ def run_configure_flow(
         smb_browse_compatibility=request.smb_browse_compatibility,
         mdns_advertise_afp=request.mdns_advertise_afp,
         any_protocol=request.any_protocol,
+        require_smb_encryption=request.require_smb_encryption,
         fruit_metadata_netatalk=request.fruit_metadata_netatalk,
         debug_logging=request.debug_logging,
         ata_idle_seconds=request.ata_idle_seconds,
@@ -336,11 +339,27 @@ def build_configure_env_values(
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
+    require_smb_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     debug_logging: bool | None = None,
     ata_idle_seconds: object | None = None,
     ata_standby: object | None = None,
 ) -> dict[str, str]:
+    effective_any_protocol = (
+        parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
+        if any_protocol is None
+        else any_protocol
+    )
+    effective_require_smb_encryption = (
+        parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
+        if require_smb_encryption is None
+        else require_smb_encryption
+    )
+    validate_smb_protocol_options(
+        any_protocol=effective_any_protocol,
+        require_smb_encryption=effective_require_smb_encryption,
+    )
+
     values = preserved_env_file_values(existing)
     values.update({
         "TC_HOST": host,
@@ -366,11 +385,8 @@ def build_configure_env_values(
             if mdns_advertise_afp is None
             else mdns_advertise_afp
         ) else "false",
-        "TC_ANY_PROTOCOL": "true" if (
-            parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
-            if any_protocol is None
-            else any_protocol
-        ) else "false",
+        "TC_ANY_PROTOCOL": "true" if effective_any_protocol else "false",
+        "TC_REQUIRE_SMB_ENCRYPTION": "true" if effective_require_smb_encryption else "false",
         "TC_FRUIT_METADATA_NETATALK": "true" if (
             parse_bool(existing.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"]))
             if fruit_metadata_netatalk is None

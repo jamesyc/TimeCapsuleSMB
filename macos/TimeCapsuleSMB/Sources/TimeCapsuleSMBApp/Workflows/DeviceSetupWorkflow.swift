@@ -180,6 +180,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 smbBrowseCompatibility: settings.smbBrowseCompatibility,
                 mdnsAdvertiseAFP: settings.mdnsAdvertiseAFP,
                 anyProtocol: settings.anyProtocol,
+                requireSMBEncryption: settings.requireSMBEncryption,
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,

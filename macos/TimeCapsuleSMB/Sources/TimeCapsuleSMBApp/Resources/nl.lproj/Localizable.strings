@@ -897,6 +897,7 @@
 "toggle.smb_browse_compatibility" = "Toestaan SMB Bladeren delen";
 "toggle.mdns_advertise_afp" = "AFP via Bonjour adverteren";
 "toggle.any_protocol" = "Elk SMB-protocol toestaan";
+"toggle.require_smb_encryption" = "SMB-versleuteling vereisen";
 "toggle.use_netatalk_metadata" = "Gebruik Netatalk voor metadata";
 "toggle.force_debug_logging" = "Forceer logboekregistratie voor foutopsporing";
 "toggle.no_reboot" = "Geen herstart";

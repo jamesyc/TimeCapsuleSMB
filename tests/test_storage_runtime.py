@@ -1125,6 +1125,7 @@ MaSt = (
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
+        self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
@@ -1191,7 +1192,40 @@ MaSt = (
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("MDNS_ADVERTISE_AFP=1\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
+        self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
+
+    def test_flash_runtime_config_requires_smb_encryption(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_ANY_PROTOCOL": "false",
+                "TC_REQUIRE_SMB_ENCRYPTION": "true",
+            }
+        )
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+        )
+
+        self.assertIn("ANY_PROTOCOL=0\n", rendered)
+        self.assertIn("REQUIRE_SMB_ENCRYPTION=1\n", rendered)
+
+    def test_flash_runtime_config_rejects_any_protocol_with_smb_encryption(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_ANY_PROTOCOL": "true",
+                "TC_REQUIRE_SMB_ENCRYPTION": "true",
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "SMB encryption requires SMB3-only"):
+            render_flash_runtime_config(
+                config,
+                PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+                nbns_enabled=True,
+            )
 
     def test_flash_runtime_config_deploy_time_overrides_can_disable_saved_values(self) -> None:
         config = AppConfig.from_values(
@@ -5128,6 +5162,44 @@ MaSt = (
         self.assertNotIn("max protocol =", proc.stdout)
         self.assertIn("dos charset = ASCII\n    server multi channel support = no", proc.stdout)
         self.assertNotIn("dos charset = ASCII\n\n    server multi channel support = no", proc.stdout)
+
+    def test_common_generate_smb_conf_requires_smb3_encryption_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-require-encryption.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    ANY_PROTOCOL=0
+                    REQUIRE_SMB_ENCRYPTION=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    share_rows=$(cat <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
+                    cat "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("server smb encrypt = required", proc.stdout)
+        self.assertIn("server min protocol = SMB3_00", proc.stdout)
+        self.assertIn("server max protocol = SMB3", proc.stdout)
+        self.assertNotIn("min protocol = SMB2", proc.stdout)
 
     def test_common_generate_smb_conf_uses_browse_compatibility_restrict_anonymous(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

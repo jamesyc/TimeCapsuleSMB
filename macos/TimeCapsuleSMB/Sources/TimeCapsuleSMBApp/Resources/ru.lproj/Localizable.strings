@@ -897,6 +897,7 @@
 "toggle.smb_browse_compatibility" = "Разрешить SMB просмотр акций";
 "toggle.mdns_advertise_afp" = "Рекламировать AFP через Bonjour";
 "toggle.any_protocol" = "Разрешить любой протокол SMB";
+"toggle.require_smb_encryption" = "Требовать шифрование SMB";
 "toggle.use_netatalk_metadata" = "Используйте Netatalk для metadata";
 "toggle.force_debug_logging" = "Принудительное ведение журнала отладки";
 "toggle.no_reboot" = "Без перезагрузки";

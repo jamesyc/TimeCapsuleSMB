@@ -1861,6 +1861,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(fake_values["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
+        self.assertEqual(fake_values["TC_REQUIRE_SMB_ENCRYPTION"], "false")
         self.assertEqual(fake_values["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
@@ -1996,6 +1997,38 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "true")
+
+    def test_configure_require_smb_encryption_arg_writes_true(self) -> None:
+        result = self.run_configure_cli(
+            ["--require-smb-encryption"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_REQUIRE_SMB_ENCRYPTION"], "true")
+
+    def test_configure_rejects_any_protocol_with_smb_encryption(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            result = self.run_configure_cli(
+                ["--any-protocol", "--require-smb-encryption"],
+                raises=SystemExit,
+            )
+        self.assertEqual(result.exception.code, 2)
+
+    def test_configure_can_disable_any_protocol_when_requiring_smb_encryption(self) -> None:
+        result = self.run_configure_cli(
+            ["--no-any-protocol", "--require-smb-encryption"],
+            existing_values=self.make_valid_env(TC_ANY_PROTOCOL="true"),
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_ANY_PROTOCOL"], "false")
+        self.assertEqual(result.values["TC_REQUIRE_SMB_ENCRYPTION"], "true")
 
     def test_configure_netatalk_arg_writes_true(self) -> None:
         result = self.run_configure_cli(
@@ -5116,6 +5149,31 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertIn("MDNS_ADVERTISE_AFP=1\n", captured["flash_config"])
+
+    def test_deploy_require_smb_encryption_arg_overrides_config(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-reboot", "--require-smb-encryption"],
+            values=self.make_valid_env(TC_REQUIRE_SMB_ENCRYPTION="false"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("REQUIRE_SMB_ENCRYPTION=1\n", captured["flash_config"])
+
+    def test_deploy_rejects_any_protocol_with_smb_encryption(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            result = self.run_deploy_cli(
+                ["--no-reboot", "--any-protocol", "--require-smb-encryption"],
+                raises=SystemExit,
+            )
+        self.assertEqual(result.exception.code, 2)
 
     def test_deploy_uses_configured_netatalk_metadata(self) -> None:
         captured: dict[str, str] = {}

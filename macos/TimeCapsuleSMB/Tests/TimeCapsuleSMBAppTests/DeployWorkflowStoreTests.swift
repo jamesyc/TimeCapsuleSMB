@@ -45,6 +45,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.smbBrowseCompatibility = true
         store.mdnsAdvertiseAFP = true
         store.anyProtocol = true
+        store.requireSMBEncryption = true
         store.fruitMetadataNetatalk = true
         store.debugLogging = true
         store.ataIdleSeconds = "0"
@@ -65,7 +66,8 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["mdns_advertise_afp"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(false))
+        XCTAssertEqual(runner.calls[0].params["require_smb_encryption"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["ata_idle_seconds"], .number(0))

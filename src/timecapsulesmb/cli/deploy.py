@@ -11,9 +11,12 @@ from timecapsulesmb.cli.runtime import (
     print_json,
 )
 from timecapsulesmb.core.config import (
+    DEFAULTS,
     airport_family_display_name_from_identity,
+    parse_bool,
 )
 from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.telemetry import TelemetryClient
@@ -79,6 +82,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     mdns_afp_group = parser.add_mutually_exclusive_group()
     mdns_afp_group.add_argument("--mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
     mdns_afp_group.add_argument("--no-mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
+    any_protocol_group = parser.add_mutually_exclusive_group()
+    any_protocol_group.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
+    any_protocol_group.add_argument("--no-any-protocol", action="store_true", help=argparse.SUPPRESS)
+    require_smb_encryption_group = parser.add_mutually_exclusive_group()
+    require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
+    require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--mount-wait",
         type=_non_negative_int,
@@ -98,6 +107,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         else False if args.no_mdns_advertise_afp
         else None
     )
+    any_protocol = (
+        True if args.any_protocol
+        else False if args.no_any_protocol
+        else None
+    )
+    require_smb_encryption = (
+        True if args.require_smb_encryption
+        else False if args.no_require_smb_encryption
+        else None
+    )
     deploy_options = DeployOptions(
         dry_run=args.dry_run,
         no_reboot=args.no_reboot,
@@ -109,6 +128,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     app_paths = resolve_app_paths(config_path=args.config)
     config = load_env_config(env_path=args.config)
+    try:
+        validate_smb_protocol_options(
+            any_protocol=(
+                parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
+                if any_protocol is None
+                else any_protocol
+            ),
+            require_smb_encryption=(
+                parse_bool(config.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
+                if require_smb_encryption is None
+                else require_smb_encryption
+            ),
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     telemetry = TelemetryClient.from_config(config, nbns_enabled=nbns_enabled)
     with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
@@ -213,6 +247,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     nbns_enabled=nbns_enabled,
                     debug_logging=args.debug_logging,
                     mdns_advertise_afp=mdns_advertise_afp,
+                    any_protocol=any_protocol,
+                    require_smb_encryption=require_smb_encryption,
                 ),
                 callbacks=command_context.to_operation_callbacks(),
                 on_pre_upload_action_done=report_pre_upload_action,

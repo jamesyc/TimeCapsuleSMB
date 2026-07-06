@@ -81,6 +81,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
+    var requireSMBEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
@@ -96,6 +97,7 @@ struct DeviceProfileEditorDraft: Equatable {
         smbBrowseCompatibility: Bool = false,
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool = false,
+        requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
         fruitMetadataNetatalk: Bool = true,
         debugLogging: Bool,
         mountWaitSeconds: String,
@@ -110,6 +112,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
+        self.requireSMBEncryption = requireSMBEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
@@ -127,6 +130,7 @@ struct DeviceProfileEditorDraft: Equatable {
             smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
             mdnsAdvertiseAFP: profile.settings.mdnsAdvertiseAFP,
             anyProtocol: profile.settings.anyProtocol,
+            requireSMBEncryption: profile.settings.requireSMBEncryption,
             fruitMetadataNetatalk: profile.settings.fruitMetadataNetatalk,
             debugLogging: profile.settings.debugLogging,
             mountWaitSeconds: String(profile.settings.mountWaitSeconds),
@@ -181,6 +185,7 @@ struct DeviceProfileEditorDraft: Equatable {
             smbBrowseCompatibility: smbBrowseCompatibility,
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
+            requireSMBEncryption: requireSMBEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait,
@@ -472,6 +477,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             smbBrowseCompatibility: draft.smbBrowseCompatibility,
             mdnsAdvertiseAFP: draft.mdnsAdvertiseAFP,
             anyProtocol: draft.anyProtocol,
+            requireSMBEncryption: draft.requireSMBEncryption,
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,

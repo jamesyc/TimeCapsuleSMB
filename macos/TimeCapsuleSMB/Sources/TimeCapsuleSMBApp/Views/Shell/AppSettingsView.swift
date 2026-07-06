@@ -49,7 +49,10 @@ struct AppSettingsView: View {
                     Toggle(L10n.string("toggle.smb_bind_lan_only"), isOn: $editor.draft.smbBindLanOnly)
                     Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $editor.draft.smbBrowseCompatibility)
                     Toggle(L10n.string("toggle.mdns_advertise_afp"), isOn: $editor.draft.mdnsAdvertiseAFP)
-                    Toggle(L10n.string("toggle.any_protocol"), isOn: $editor.draft.anyProtocol)
+                    Toggle(L10n.string("toggle.any_protocol"), isOn: anyProtocolBinding)
+                        .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: editor.draft.requireSMBEncryption))
+                    Toggle(L10n.string("toggle.require_smb_encryption"), isOn: requireSMBEncryptionBinding)
+                        .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(anyProtocol: editor.draft.anyProtocol))
                     Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $editor.draft.fruitMetadataNetatalk)
                     Toggle(L10n.string("toggle.force_debug_logging"), isOn: $editor.draft.debugLogging)
                     SettingsFormRow(title: L10n.string("field.mount_wait")) {
@@ -120,6 +123,30 @@ struct AppSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var anyProtocolBinding: Binding<Bool> {
+        Binding(
+            get: { editor.draft.anyProtocol },
+            set: { value in
+                editor.draft.anyProtocol = value
+                if value {
+                    editor.draft.requireSMBEncryption = false
+                }
+            }
+        )
+    }
+
+    private var requireSMBEncryptionBinding: Binding<Bool> {
+        Binding(
+            get: { editor.draft.requireSMBEncryption },
+            set: { value in
+                editor.draft.requireSMBEncryption = value
+                if value {
+                    editor.draft.anyProtocol = false
+                }
+            }
+        )
     }
 
     private var header: some View {

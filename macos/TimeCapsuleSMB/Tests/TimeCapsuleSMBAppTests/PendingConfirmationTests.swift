@@ -48,6 +48,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(false))
         XCTAssertEqual(params["any_protocol"], .bool(false))
+        XCTAssertEqual(params["require_smb_encryption"], .bool(false))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertNil(params["credentials"])
     }
@@ -62,6 +63,7 @@ final class PendingConfirmationTests: XCTestCase {
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
+            requireSMBEncryption: false,
             fruitMetadataNetatalk: true,
             debugLogging: false,
             ataIdleSeconds: 0,
@@ -74,6 +76,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
+        XCTAssertEqual(params["require_smb_encryption"], .bool(false))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))

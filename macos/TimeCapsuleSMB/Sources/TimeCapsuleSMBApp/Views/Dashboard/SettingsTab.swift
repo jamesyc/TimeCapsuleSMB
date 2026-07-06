@@ -157,10 +157,39 @@ private struct DeviceProfileAdvancedSettingsView: View {
                         Toggle(L10n.string("toggle.mdns_advertise_afp"), isOn: $store.draft.mdnsAdvertiseAFP)
                         Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $store.draft.fruitMetadataNetatalk)
                     }
-                    Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
+                    GridRow {
+                        Toggle(L10n.string("toggle.any_protocol"), isOn: anyProtocolBinding)
+                            .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: store.draft.requireSMBEncryption))
+                        Toggle(L10n.string("toggle.require_smb_encryption"), isOn: requireSMBEncryptionBinding)
+                            .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(anyProtocol: store.draft.anyProtocol))
+                    }
                     Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
                 }
             }
         }
+    }
+
+    private var anyProtocolBinding: Binding<Bool> {
+        Binding(
+            get: { store.draft.anyProtocol },
+            set: { value in
+                store.draft.anyProtocol = value
+                if value {
+                    store.draft.requireSMBEncryption = false
+                }
+            }
+        )
+    }
+
+    private var requireSMBEncryptionBinding: Binding<Bool> {
+        Binding(
+            get: { store.draft.requireSMBEncryption },
+            set: { value in
+                store.draft.requireSMBEncryption = value
+                if value {
+                    store.draft.anyProtocol = false
+                }
+            }
+        )
     }
 }

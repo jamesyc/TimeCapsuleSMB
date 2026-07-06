@@ -335,7 +335,12 @@ tc_generate_smb_conf_from_share_rows() {
     else
         tc_prepare_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES" || return 1
     fi
-    if [ "$ANY_PROTOCOL" != "1" ]; then
+    if [ "$REQUIRE_SMB_ENCRYPTION" = "1" ]; then
+        smbd_protocol_lines="    server smb encrypt = required
+    server min protocol = SMB3_00
+    server max protocol = SMB3
+"
+    elif [ "$ANY_PROTOCOL" != "1" ]; then
         smbd_protocol_lines="    min protocol = SMB2
     max protocol = SMB3
 "
