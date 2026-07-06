@@ -12,6 +12,7 @@
 # Targets:
 #   make venv                    - create local virtualenv at .venv
 #   make install                 - install Python dependencies into .venv
+#   make lint                    - run Ruff against Python sources and tests
 #   make test                    - run C compile checks and Python pytest suite
 #   make test-parallel           - run C compile checks and pytest-xdist suite
 #   make coverage                - run Python tests with coverage and show missing lines
@@ -22,7 +23,7 @@
 #   make set-ssh                 - advanced SSH toggle helper
 #   make clean                   - remove the .venv directory
 
-.PHONY: venv install test test-parallel coverage coverage-html test-c discover bootstrap-host set-ssh setup clean
+.PHONY: venv install lint test test-parallel coverage coverage-html test-c discover bootstrap-host set-ssh setup clean
 
 VENVDIR := .venv
 PYTHON := python3
@@ -37,6 +38,9 @@ install: venv
 	$(PIP) install -U pip
 	$(PIP) install -r requirements.txt
 	$(PIP) install -e .
+
+lint: install
+	$(PY) -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
 
 test: install test-c
 	$(PY) -m pytest

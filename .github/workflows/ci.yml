@@ -40,6 +40,9 @@ jobs:
       - name: Compile nbns-advertiser
         run: cc -Wall -Wextra -Werror -o /tmp/nbns-advertiser-test build/nbns-advertiser.c
 
+      - name: Run Ruff
+        run: python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
+
       - name: Run artifact tests
         run: python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py
 
