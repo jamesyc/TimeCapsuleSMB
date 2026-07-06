@@ -37,7 +37,7 @@ venv:
 install: venv
 	$(PIP) install -U pip
 	$(PIP) install -r requirements.txt
-	$(PIP) install -e .
+	$(PIP) install -e ".[dev]"
 
 lint: install
 	$(PY) -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
