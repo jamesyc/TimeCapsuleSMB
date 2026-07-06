@@ -562,7 +562,10 @@ def test_finalize_python_bundle_cleans_before_resigning(
     assert_no_python_bytecode(resources)
 
 
-def test_package_args_do_not_allow_missing_bundled_tools() -> None:
+def test_package_args_do_not_allow_missing_bundled_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TCAPSULE_CODESIGN_IDENTITY", raising=False)
+    monkeypatch.delenv("TCAPSULE_NOTARY_PROFILE", raising=False)
+    monkeypatch.delenv("TCAPSULE_NOTARY_TIMEOUT", raising=False)
     package_app = load_package_app_module()
 
     args = package_app.parse_args([])
@@ -571,9 +574,28 @@ def test_package_args_do_not_allow_missing_bundled_tools() -> None:
     assert args.full_validation is False
     assert args.zip is False
     assert args.zip_output is None
+    assert args.codesign_identity is None
+    assert args.notarize is False
+    assert args.notary_profile == "tcapsulesmb-notary"
+    assert args.notary_timeout == "30m"
     assert package_app.parse_args(["--no-cache"]).no_cache is True
     assert package_app.parse_args(["--full-validation"]).full_validation is True
     assert package_app.parse_args(["--zip"]).zip is True
+    notarize_args = package_app.parse_args([
+        "--notarize",
+        "--codesign-identity",
+        "Developer ID Application: Example (TEAMID)",
+        "--notary-profile",
+        "release-profile",
+        "--notary-timeout",
+        "45m",
+    ])
+    assert notarize_args.notarize is True
+    assert notarize_args.codesign_identity == "Developer ID Application: Example (TEAMID)"
+    assert notarize_args.notary_profile == "release-profile"
+    assert notarize_args.notary_timeout == "45m"
+    with pytest.raises(SystemExit):
+        package_app.parse_args(["--notarize", "--no-notarize"])
     zip_args = package_app.parse_args(["--zip-output", "release.zip"])
     assert zip_args.zip_output == Path("release.zip")
     with pytest.raises(SystemExit):
@@ -991,6 +1013,40 @@ def test_ad_hoc_codesign_macho_bundle_signs_python_framework_last(
     assert calls == [python_binary, framework]
 
 
+def test_developer_id_codesign_app_bundle_signs_nested_code_framework_and_app(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    library = app / "Contents" / "Frameworks" / "libtool.dylib"
+    tool = app / "Contents" / "Resources" / "Tools" / "bin" / "smbclient"
+    executable = app / "Contents" / "MacOS" / "TimeCapsuleSMB"
+    framework = app / "Contents" / "Resources" / "Python" / "Runtime" / "Python.framework"
+    for path in (library, tool, executable, framework / "Versions" / "3.13" / "Python"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("macho", encoding="utf-8")
+    calls: list[Path] = []
+
+    monkeypatch.setattr(package_app, "macho_validation_roots", lambda app: [executable, tool, library])
+    monkeypatch.setattr(package_app, "macho_architectures", lambda path: {"arm64"})
+    monkeypatch.setattr(package_app, "developer_id_codesign", lambda path, identity: calls.append(path))
+    monkeypatch.setattr(package_app, "assert_macho_code_signatures_valid", lambda app: calls.append(Path("verify-macho")))
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: calls.append(Path("verify-app")))
+
+    package_app.developer_id_codesign_app_bundle(app, "Developer ID Application: Example (TEAMID)")
+
+    assert calls == [
+        library,
+        tool,
+        executable,
+        framework,
+        app,
+        Path("verify-macho"),
+        Path("verify-app"),
+    ]
+
+
 def test_assert_macho_code_signatures_valid_reports_invalid_signature(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1087,6 +1143,54 @@ def test_validate_app_zip_rejects_root_appledouble_sidecar(
         package_app.validate_app_zip(zip_path, "TimeCapsuleSMB.app")
 
 
+def test_notarize_archive_requires_accepted_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    archive = tmp_path / "TimeCapsuleSMB-notary.zip"
+    archive.write_bytes(b"zip")
+    calls: list[list[str]] = []
+
+    def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"status":"Invalid","id":"submission-id","message":"bad signature"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
+
+    with pytest.raises(RuntimeError, match="bad signature"):
+        package_app.notarize_archive(archive, "release-profile", "30m")
+    assert calls[0][:4] == ["xcrun", "notarytool", "submit", str(archive)]
+    assert "--keychain-profile" in calls[0]
+    assert "release-profile" in calls[0]
+
+
+def test_notarize_archive_returns_submission_id_on_accept(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    archive = tmp_path / "TimeCapsuleSMB-notary.zip"
+    archive.write_bytes(b"zip")
+
+    def fake_run_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"status":"Accepted","id":"submission-id","message":"Processing complete"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(package_app, "run_quiet", fake_run_quiet)
+
+    assert package_app.notarize_archive(archive, "release-profile", "30m") == "submission-id"
+
+
 def test_ad_hoc_codesign_app_bundle_signs_helper_before_app(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1145,13 +1249,99 @@ def test_package_app_signs_final_bundle_after_native_tools(
         no_cache=False,
         full_validation=False,
         skip_smoke=True,
+        codesign_identity=None,
+        notarize=False,
+        notary_profile="tcapsulesmb-notary",
+        notary_timeout="30m",
         zip=False,
         zip_output=None,
     )
 
-    package_app.package_app(args)
+    result = package_app.package_app(args)
 
     assert calls[-6:] == ["native", "clean", "assert-clean", "app-sign", "app-verify", "assert"]
+    assert result.app == tmp_path / "dist" / "TimeCapsuleSMB.app"
+    assert result.zip_path is None
+    assert result.notarization_archive is None
+
+
+def test_package_app_result_includes_zip_and_notarization_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    executable = tmp_path / "swift-build" / "TimeCapsuleSMB"
+    helper_executable = tmp_path / "swift-build" / "tcapsule"
+    resource_build_dir = tmp_path / "swift-build"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    helper_executable.write_text("helper", encoding="utf-8")
+    helper_executable.chmod(0o755)
+
+    monkeypatch.setattr(package_app, "resolve_architectures", lambda arch: ("arm64",))
+    monkeypatch.setattr(package_app, "build_swift", lambda configuration, architectures: (executable, resource_build_dir))
+    monkeypatch.setattr(package_app, "build_helper", lambda configuration, architectures: helper_executable)
+    monkeypatch.setattr(package_app, "copy_resources", lambda source, resources: None)
+    monkeypatch.setattr(package_app, "copy_helper_executable", lambda source, destination: None)
+    monkeypatch.setattr(package_app, "copy_python_runtime", lambda args, resources, architectures: resources / "Python" / "Runtime" / "bin" / "python3")
+    monkeypatch.setattr(package_app, "create_python_packages", lambda python, resources, architectures, use_cache=True: None)
+    monkeypatch.setattr(package_app, "finalize_python_bundle", lambda resources: None)
+    monkeypatch.setattr(package_app, "copy_distribution", lambda resources: None)
+    monkeypatch.setattr(package_app, "copy_native_tools_layer", lambda app, architectures, use_cache=True: None)
+    monkeypatch.setattr(package_app, "remove_appledouble_files", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_no_appledouble_files", lambda app: None)
+    monkeypatch.setattr(package_app, "ad_hoc_codesign_app_bundle", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_app_bundle_signature_valid", lambda app: None)
+    monkeypatch.setattr(package_app, "assert_bundle_layout", lambda app, **kwargs: None)
+    monkeypatch.setattr(package_app, "developer_id_codesign_app_bundle", lambda app, identity: None)
+    monkeypatch.setattr(package_app, "notarize_app", lambda app, output_dir, **kwargs: "submission-id")
+    monkeypatch.setattr(package_app, "create_app_zip", lambda app, zip_path: zip_path.write_bytes(b"zip"))
+
+    args = SimpleNamespace(
+        arch="native",
+        configuration="release",
+        output=tmp_path / "dist",
+        icon=None,
+        no_cache=False,
+        full_validation=False,
+        skip_smoke=True,
+        codesign_identity="Developer ID Application: Example (TEAMID)",
+        notarize=True,
+        notary_profile="tcapsulesmb-notary",
+        notary_timeout="30m",
+        zip=True,
+        zip_output=None,
+    )
+
+    result = package_app.package_app(args)
+
+    assert result.app == tmp_path / "dist" / "TimeCapsuleSMB.app"
+    assert result.notarization_archive == tmp_path / "dist" / "TimeCapsuleSMB-notary.zip"
+    assert result.zip_path == tmp_path / "dist" / "TimeCapsuleSMB.app.zip"
+
+
+def test_main_prints_labeled_artifact_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    result = package_app.PackageResult(
+        app=tmp_path / "TimeCapsuleSMB.app",
+        notarization_archive=tmp_path / "TimeCapsuleSMB-notary.zip",
+        zip_path=tmp_path / "TimeCapsuleSMB.app.zip",
+    )
+    monkeypatch.setattr(package_app, "package_app", lambda args: result)
+
+    assert package_app.main([]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"App bundle: {result.app}",
+        f"Notarization archive: {result.notarization_archive}",
+        f"Distributable zip: {result.zip_path}",
+    ]
 
 
 def test_macho_files_under_skips_symlink_aliases(tmp_path: Path) -> None:
@@ -1167,6 +1357,21 @@ def test_macho_files_under_skips_symlink_aliases(tmp_path: Path) -> None:
 
     assert real in paths
     assert alias not in paths
+
+
+def test_macho_files_under_includes_object_files_but_not_archives(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    root = tmp_path / "root"
+    root.mkdir()
+    object_file = root / "python.o"
+    archive = root / "libpython.a"
+    object_file.write_text("macho object", encoding="utf-8")
+    archive.write_text("archive", encoding="utf-8")
+
+    paths = package_app.macho_files_under([root])
+
+    assert object_file in paths
+    assert archive not in paths
 
 
 def test_runtime_macho_architecture_validation_checks_internal_dependencies(

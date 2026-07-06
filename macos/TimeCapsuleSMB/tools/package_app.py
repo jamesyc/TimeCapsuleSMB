@@ -42,6 +42,8 @@ PYTHON_RUNTIME_CACHE_VERSION = 2
 PYTHON_SITE_PACKAGES_CACHE_VERSION = 2
 APP_ICON_CACHE_VERSION = 1
 NATIVE_TOOLS_CACHE_VERSION = 1
+DEFAULT_NOTARY_PROFILE = "tcapsulesmb-notary"
+DEFAULT_NOTARY_TIMEOUT = "30m"
 CACHE_COMPLETE_MARKER = ".complete"
 CACHE_MANIFEST_FILE = "manifest.json"
 PACKAGE_CACHE_IGNORED_NAMES = {"__pycache__", ".DS_Store"}
@@ -70,6 +72,19 @@ BONJOUR_SERVICE_TYPES = [
     "_adisk._tcp",
     "_device-info._tcp",
 ]
+
+
+class PackageResult:
+    def __init__(
+        self,
+        *,
+        app: Path,
+        zip_path: Path | None = None,
+        notarization_archive: Path | None = None,
+    ) -> None:
+        self.app = app
+        self.zip_path = zip_path
+        self.notarization_archive = notarization_archive
 
 
 def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -1122,7 +1137,7 @@ def files_under(roots: list[Path]) -> list[Path]:
 def is_macho_candidate(path: Path) -> bool:
     if path.suffix == ".a":
         return False
-    return path.name == "Python" or path.suffix in {".dylib", ".so"} or os.access(path, os.X_OK)
+    return path.name == "Python" or path.suffix in {".dylib", ".o", ".so"} or os.access(path, os.X_OK)
 
 
 def macho_files_under(roots: list[Path]) -> list[Path]:
@@ -1151,6 +1166,19 @@ def macho_validation_roots(app: Path) -> list[Path]:
 
 def ad_hoc_codesign(path: Path) -> None:
     run_quiet(["codesign", "--force", "--sign", "-", str(path)])
+
+
+def developer_id_codesign(path: Path, identity: str) -> None:
+    run_quiet([
+        "codesign",
+        "--force",
+        "--timestamp",
+        "--options",
+        "runtime",
+        "--sign",
+        identity,
+        str(path),
+    ])
 
 
 def nested_helper_code_paths(app: Path) -> list[Path]:
@@ -1226,6 +1254,18 @@ def ad_hoc_codesign_macho_bundle(app: Path) -> None:
     framework = bundled_python_framework(app)
     if framework.is_dir():
         ad_hoc_codesign(framework)
+
+
+def developer_id_codesign_app_bundle(app: Path, identity: str) -> None:
+    for path in sorted(macho_validation_roots(app), key=lambda candidate: codesign_order(candidate, app)):
+        if macho_architectures(path):
+            developer_id_codesign(path, identity)
+    framework = bundled_python_framework(app)
+    if framework.is_dir():
+        developer_id_codesign(framework, identity)
+    developer_id_codesign(app, identity)
+    assert_macho_code_signatures_valid(app)
+    assert_app_bundle_signature_valid(app)
 
 
 def vendor_macho_dependencies(app: Path) -> set[Path]:
@@ -1793,7 +1833,76 @@ def create_app_zip(app: Path, zip_path: Path) -> None:
     validate_app_zip(zip_path, app.name)
 
 
-def package_app(args: argparse.Namespace) -> Path:
+def notarization_archive_path(output_dir: Path) -> Path:
+    return output_dir / f"{APP_NAME}-notary.zip"
+
+
+def create_notarization_archive(app: Path, zip_path: Path) -> None:
+    if zip_path.exists():
+        zip_path.unlink()
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    run(["ditto", "-c", "-k", "--keepParent", str(app), str(zip_path)])
+
+
+def notarize_archive(zip_path: Path, profile: str, timeout: str) -> str:
+    completed = run_quiet([
+        "xcrun",
+        "notarytool",
+        "submit",
+        str(zip_path),
+        "--keychain-profile",
+        profile,
+        "--wait",
+        "--timeout",
+        timeout,
+        "--output-format",
+        "json",
+    ])
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"notarytool returned non-JSON output:\n{completed.stdout}") from exc
+    status = payload.get("status")
+    submission_id = str(payload.get("id") or "")
+    if status != "Accepted":
+        detail = payload.get("message") or completed.stdout
+        raise RuntimeError(f"Notarization failed with status {status!r} for submission {submission_id}: {detail}")
+    if submission_id:
+        print(f"Notarization accepted: {submission_id}", file=sys.stderr)
+    return submission_id
+
+
+def staple_notarization_ticket(app: Path) -> None:
+    run(["xcrun", "stapler", "staple", str(app)])
+    run(["xcrun", "stapler", "validate", str(app)])
+
+
+def assert_gatekeeper_accepts_app(app: Path) -> None:
+    completed = subprocess.run(
+        ["spctl", "-a", "-t", "exec", "-vvv", str(app)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            "Gatekeeper assessment failed"
+            + (f":\n{detail}" if detail else f" with rc={completed.returncode}")
+        )
+
+
+def notarize_app(app: Path, output_dir: Path, *, profile: str, timeout: str) -> str:
+    archive = notarization_archive_path(output_dir)
+    create_notarization_archive(app, archive)
+    submission_id = notarize_archive(archive, profile, timeout)
+    staple_notarization_ticket(app)
+    assert_gatekeeper_accepts_app(app)
+    return submission_id
+
+
+def package_app(args: argparse.Namespace) -> PackageResult:
     architectures = resolve_architectures(args.arch)
     executable, resource_build_dir = build_swift(args.configuration, architectures)
     helper_executable = build_helper(args.configuration, architectures)
@@ -1834,12 +1943,27 @@ def package_app(args: argparse.Namespace) -> Path:
         full_validation=args.full_validation,
     )
 
+    if args.notarize and not args.codesign_identity:
+        raise RuntimeError("--notarize requires --codesign-identity with a Developer ID Application identity.")
+    if args.codesign_identity:
+        developer_id_codesign_app_bundle(app, args.codesign_identity)
+
     if not args.skip_smoke:
         smoke_test(app)
+    notarization_archive: Path | None = None
+    if args.notarize:
+        notarize_app(
+            app,
+            output_dir,
+            profile=args.notary_profile,
+            timeout=args.notary_timeout,
+        )
+        notarization_archive = notarization_archive_path(output_dir)
+    zip_path: Path | None = None
     if getattr(args, "zip", False) or getattr(args, "zip_output", None):
         zip_path = (args.zip_output or (output_dir / f"{APP_NAME}.app.zip")).resolve()
         create_app_zip(app, zip_path)
-    return app
+    return PackageResult(app=app, zip_path=zip_path, notarization_archive=notarization_archive)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -1878,6 +2002,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--skip-smoke", action="store_true", help="Skip bundled helper capabilities and validate-install smoke tests.")
     parser.add_argument("--no-cache", action="store_true", help="Rebuild package-only cached artifacts instead of reusing them.")
     parser.add_argument("--full-validation", action="store_true", help="Run the full Mach-O dependency and signature validation pass even for trusted cached layers.")
+    parser.add_argument(
+        "--codesign-identity",
+        default=os.getenv("TCAPSULE_CODESIGN_IDENTITY"),
+        help="Developer ID Application identity used for distribution signing. Defaults to TCAPSULE_CODESIGN_IDENTITY.",
+    )
+    notarization = parser.add_mutually_exclusive_group()
+    notarization.add_argument("--notarize", dest="notarize", action="store_true", help="Submit the signed app to Apple, staple the ticket, and validate Gatekeeper acceptance.")
+    notarization.add_argument("--no-notarize", dest="notarize", action="store_false", help="Build without Apple notarization. This is the default.")
+    parser.set_defaults(notarize=False)
+    parser.add_argument(
+        "--notary-profile",
+        default=os.getenv("TCAPSULE_NOTARY_PROFILE", DEFAULT_NOTARY_PROFILE),
+        help=f"notarytool keychain profile to use with --notarize. Defaults to TCAPSULE_NOTARY_PROFILE or {DEFAULT_NOTARY_PROFILE}.",
+    )
+    parser.add_argument(
+        "--notary-timeout",
+        default=os.getenv("TCAPSULE_NOTARY_TIMEOUT", DEFAULT_NOTARY_TIMEOUT),
+        help=f"Maximum time to wait for Apple notarization. Defaults to TCAPSULE_NOTARY_TIMEOUT or {DEFAULT_NOTARY_TIMEOUT}.",
+    )
     parser.add_argument("--zip", action="store_true", help="Create and validate TimeCapsuleSMB.app.zip next to the app bundle.")
     parser.add_argument("--zip-output", type=Path, help="Zip output path; implies --zip.")
     return parser.parse_args(argv)
@@ -1885,7 +2028,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        app = package_app(parse_args(argv or sys.argv[1:]))
+        result = package_app(parse_args(sys.argv[1:] if argv is None else argv))
     except subprocess.CalledProcessError as exc:
         print(f"command failed with exit code {exc.returncode}: {exc.cmd}", file=sys.stderr)
         if exc.stdout:
@@ -1896,7 +2039,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(app)
+    print(f"App bundle: {result.app}")
+    if result.notarization_archive is not None:
+        print(f"Notarization archive: {result.notarization_archive}")
+    if result.zip_path is not None:
+        print(f"Distributable zip: {result.zip_path}")
     return 0
 
 
