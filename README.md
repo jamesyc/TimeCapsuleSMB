@@ -1,5 +1,11 @@
 # TimeCapsuleSMB
 
+[![CI](https://github.com/jamesyc/TimeCapsuleSMB/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesyc/TimeCapsuleSMB/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/jamesyc/TimeCapsuleSMB)](https://github.com/jamesyc/TimeCapsuleSMB/releases/latest)
+[![License](https://img.shields.io/github/license/jamesyc/TimeCapsuleSMB)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
+[![macOS App](https://img.shields.io/badge/macOS%20app-download-brightgreen)](https://github.com/jamesyc/TimeCapsuleSMB/releases/latest)
+
 Apple AirPort Time Capsules only support AFP and SMB1. Apple removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). This is a modern Samba setup that runs directly on the Time Capsule itself; macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
 
 This project has 2 parts:
