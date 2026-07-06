@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest an improvement to TimeCapsuleSMB.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow, device limitation, or user pain should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - macOS app
+        - Python CLI
+        - Deploy/runtime scripts
+        - Doctor/checkup
+        - Samba build or patches
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Relevant Time Capsule model or generation
+      description: Leave blank if this is not device-specific.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workaround or different design did you consider?

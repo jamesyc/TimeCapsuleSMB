@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a TimeCapsuleSMB problem that is not specifically a doctor failure.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please remove passwords, public IPs, and serial numbers before attaching logs.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect to happen?
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      options:
+        - macOS app
+        - Python CLI
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host system
+      description: "Example: macOS 15.5, Ubuntu 24.04, Debian 12."
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Time Capsule model and generation
+      description: "Example: Gen 5 NetBSD 6, Gen 4 NetBSD 4 little-endian, A1355."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the commands or app actions that trigger the problem.
+      placeholder: |
+        1. Run ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant sanitized logs, terminal output, or screenshots.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I removed passwords, public IPs, and serial numbers from logs.
+          required: true
+        - label: I searched existing issues for this problem.
+          required: true

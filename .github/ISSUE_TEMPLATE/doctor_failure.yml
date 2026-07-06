@@ -1,0 +1,63 @@
+name: Doctor failure
+description: Report a failing tcapsule doctor or app Checkup result.
+title: "[Doctor]: "
+labels:
+  - bug
+  - doctor
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please run doctor from the repository root and attach sanitized output. Doctor is the fastest way to diagnose device, network, SMB, Bonjour, and artifact issues.
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      options:
+        - macOS app Checkup
+        - Python CLI doctor
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host system
+      description: "Example: macOS 15.5, Ubuntu 24.04, Debian 12."
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Time Capsule model and generation
+      description: "Example: Gen 5 NetBSD 6, Gen 4 NetBSD 4 little-endian, A1355."
+    validations:
+      required: true
+  - type: textarea
+    id: doctor-json
+    attributes:
+      label: Sanitized doctor JSON
+      description: Run `.venv/bin/tcapsule doctor --json` and remove passwords, public IPs, and serial numbers before pasting.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: doctor-human
+    attributes:
+      label: Human-readable doctor output
+      description: Optional, but useful if the JSON does not capture the visible failure.
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Recent changes
+      description: Did this start after deploy, firmware flash, device reboot, router change, macOS update, or TimeCapsuleSMB update?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I removed passwords, public IPs, and serial numbers from logs.
+          required: true
+        - label: I did not use dns-sd output as the only evidence for this report.
+          required: true
