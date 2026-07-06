@@ -723,6 +723,12 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "在 NetBSD 4 设备上，SSH 可用后请运行 tcapsule activate；部署尚未走到重启后激活 Samba 的步骤。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "如果设备自行重置，请参见 https://github.com/jamesyc/TimeCapsuleSMB/issues/177。";
+"backend.recovery.configure.remote_error.acp_port_probe.title" = "无法通过此地址访问 AirPort";
+"backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB 在启用 SSH 前无法连接到 AirPort ACP 服务。即使 ACP 被阻止，备份或 AirPort 实用工具仍可能工作。";
+"backend.recovery.configure.remote_error.acp_port_probe.action.1" = "停用会路由本地网络流量的 VPN 或安全软件，然后重试。";
+"backend.recovery.configure.remote_error.acp_port_probe.action.2" = "检查 IP 地址是否为 Time Capsule 或 AirPort 地址。";
+"backend.recovery.configure.remote_error.acp_port_probe.action.3" = "确认你连接在与设备相同的网络上。";
+"backend.recovery.configure.remote_error.acp_port_probe.action.4" = "使用发现功能，或输入当前 LAN IP 地址。";
 "backend.error.auth_failed" = "设备拒绝了提供的密码或 SSH 凭据。";
 "backend.error.configure.auth_failed" = "AirPort 管理员密码无效。";
 "backend.recovery.auth_failed.title" = "身份验证失败";

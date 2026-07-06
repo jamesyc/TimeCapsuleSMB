@@ -723,6 +723,12 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Make sure you are connected to the same network or Wi-Fi as the device.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort not reachable at this address";
+"backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. Backups or AirPort Utility may still work even when ACP is blocked.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Disable VPN or security software that routes local network traffic, then try again.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Check that the IP address is the Time Capsule or AirPort address.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Confirm you are on the same network as the device.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Use discovery or enter the current LAN IP address.";
 "backend.error.auth_failed" = "The device rejected the supplied password or SSH credentials.";
 "backend.error.configure.auth_failed" = "The AirPort admin password did not work.";
 "backend.recovery.auth_failed.title" = "Authentication failed";

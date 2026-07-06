@@ -2374,6 +2374,11 @@ class AppApiTests(unittest.TestCase):
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "remote_error")
         self.assertEqual(error["recovery"]["title"], "AirPort not reachable at this address")
+        self.assertEqual(error["recovery"]["localization_key"], "configure.remote_error.acp_port_probe")
+        self.assertEqual(
+            error["recovery"]["actions"][0],
+            "Disable VPN or security software that routes local network traffic, then try again.",
+        )
         self.assertIn("No AirPort ACP service responded", error["message"])
         self.assertIn("Check the device IP address or hostname", error["message"])
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]

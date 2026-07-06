@@ -723,6 +723,12 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "NetBSD 4 įrenginiuose paleiskite tcapsule activate, kai SSH bus pasiekiama; diegimas nebuvo pakankamai atliktas, kad po paleidimo iš naujo aktyvuotų Samba.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Jei jūsų įrenginys atsistatė, žiūrėkite https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
+"backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort nepasiekiamas šiuo adresu";
+"backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB negalėjo pasiekti AirPort ACP tarnybos prieš įjungiant SSH. Atsarginės kopijos arba AirPort Utility gali veikti net tada, kai ACP blokuojamas.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Išjunkite VPN arba saugos programinę įrangą, kuri nukreipia vietinio tinklo srautą, tada bandykite dar kartą.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Patikrinkite, ar IP adresas yra Time Capsule arba AirPort adresas.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Patvirtinkite, kad esate tame pačiame tinkle kaip įrenginys.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Naudokite aptikimą arba įveskite dabartinį LAN IP adresą.";
 "backend.error.auth_failed" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.error.configure.auth_failed" = "AirPort administratoriaus slaptažodis neveikė.";
 "backend.recovery.auth_failed.title" = "Autentifikacija nepavyko";

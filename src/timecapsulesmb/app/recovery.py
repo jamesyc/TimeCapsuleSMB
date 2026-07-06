@@ -217,14 +217,17 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
 _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
     ("configure", "remote_error", "acp_port_probe"): RecoveryInfo(
         "AirPort not reachable at this address",
-        "The helper could not reach the AirPort ACP service before enabling SSH.",
+        "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. "
+        "Backups or AirPort Utility may still work even when ACP is blocked.",
         (
+            "Disable VPN or security software that routes local network traffic, then try again.",
             "Check that the IP address is the Time Capsule or AirPort address.",
             "Confirm you are on the same network as the device.",
             "Use discovery or enter the current LAN IP address.",
         ),
         retryable=True,
         suggested_operation="configure",
+        localization_key="configure.remote_error.acp_port_probe",
     ),
     ("configure", "remote_error", "acp_enable_ssh"): RecoveryInfo(
         "ACP SSH enablement failed",

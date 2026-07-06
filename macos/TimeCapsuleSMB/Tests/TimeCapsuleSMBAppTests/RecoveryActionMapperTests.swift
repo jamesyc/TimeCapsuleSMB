@@ -150,6 +150,43 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
     }
 
+    func testRecoveryGuidancePresentationLocalizesConfigureAcpPortProbeDetails() throws {
+        let recovery = try recoveryValue(
+            title: "AirPort not reachable at this address",
+            actions: [
+                "Disable VPN or security software that routes local network traffic, then try again.",
+                "Check that the IP address is the Time Capsule or AirPort address.",
+                "Confirm you are on the same network as the device.",
+                "Use discovery or enter the current LAN IP address."
+            ],
+            suggestedOperation: "configure",
+            message: "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. Backups or AirPort Utility may still work even when ACP is blocked.",
+            localizationKey: "configure.remote_error.acp_port_probe"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "configure",
+            code: "remote_error",
+            message: "No AirPort ACP service responded at this address.",
+            recovery: recovery
+        )
+
+        L10n.apply(language: .english)
+        let english = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(english.title, "AirPort not reachable at this address")
+        XCTAssertEqual(
+            english.detail,
+            "TimeCapsuleSMB could not reach the AirPort ACP service before enabling SSH. Backups or AirPort Utility may still work even when ACP is blocked."
+        )
+        XCTAssertEqual(english.steps[0], "Disable VPN or security software that routes local network traffic, then try again.")
+        XCTAssertEqual(english.steps.count, 4)
+
+        L10n.apply(language: .simplifiedChinese)
+        let chinese = RecoveryGuidancePresentation(error: error)
+        XCTAssertEqual(chinese.title, "无法通过此地址访问 AirPort")
+        XCTAssertEqual(chinese.steps[0], "停用会路由本地网络流量的 VPN 或安全软件，然后重试。")
+        XCTAssertEqual(chinese.steps.count, 4)
+    }
+
     func testRecoveryGuidancePresentationLocalizesRebootTimeoutDetails() throws {
         let recovery = try recoveryValue(
             title: "Reboot did not finish",

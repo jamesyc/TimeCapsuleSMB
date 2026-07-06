@@ -723,6 +723,12 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "На устройствах NetBSD 4 запустите tcapsule activate, как только SSH станет доступен; развертывание не зашло достаточно далеко, чтобы активировать Samba после перезагрузки.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Если ваше устройство выполняет перезагрузку, см. https://github.com/jamesyc/TimeCapsuleSMB/issues/177..";
+"backend.recovery.configure.remote_error.acp_port_probe.title" = "AirPort недоступен по этому адресу";
+"backend.recovery.configure.remote_error.acp_port_probe.message" = "TimeCapsuleSMB не смог подключиться к службе AirPort ACP перед включением SSH. Резервное копирование или AirPort Utility могут продолжать работать, даже если ACP заблокирован.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.1" = "Отключите VPN или защитное ПО, которое маршрутизирует трафик локальной сети, затем повторите попытку.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.2" = "Проверьте, что IP-адрес является адресом Time Capsule или AirPort.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.3" = "Убедитесь, что вы находитесь в той же сети, что и устройство.";
+"backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Используйте обнаружение или введите текущий LAN IP-адрес.";
 "backend.error.auth_failed" = "Устройство отклонило указанный пароль или учетные данные SSH.";
 "backend.error.configure.auth_failed" = "Пароль администратора AirPort не подошел.";
 "backend.recovery.auth_failed.title" = "Ошибка аутентификации";
