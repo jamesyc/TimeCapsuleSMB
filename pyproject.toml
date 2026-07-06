@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,38 @@ version = "2.2.8"
 description = "Deploy modern Samba to Apple AirPort Time Capsules."
 readme = "README.md"
 requires-python = ">=3.9"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+  { name = "James Chang" },
+]
+keywords = [
+  "airport-time-capsule",
+  "bonjour",
+  "macos",
+  "netbsd",
+  "samba",
+  "smb",
+  "time-machine",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Environment :: MacOS X",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: System :: Archiving :: Backup",
+  "Topic :: System :: Networking",
+]
 dependencies = [
   "ifaddr>=0.2.0",
   "pexpect>=4.9.0",
@@ -15,6 +47,14 @@ dependencies = [
   "zopfli>=0.2.3.post1",
   "zeroconf>=0.132.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jamesyc/TimeCapsuleSMB"
+Documentation = "https://github.com/jamesyc/TimeCapsuleSMB#readme"
+FAQ = "https://github.com/jamesyc/TimeCapsuleSMB/blob/main/FAQ.md"
+Issues = "https://github.com/jamesyc/TimeCapsuleSMB/issues"
+Releases = "https://github.com/jamesyc/TimeCapsuleSMB/releases"
+Source = "https://github.com/jamesyc/TimeCapsuleSMB"
 
 [project.optional-dependencies]
 dev = [
