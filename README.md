@@ -6,15 +6,15 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
 [![macOS App](https://img.shields.io/badge/macOS%20app-download-brightgreen)](https://github.com/jamesyc/TimeCapsuleSMB/releases/latest)
 
-Apple AirPort Time Capsules only support AFP and SMB1. Apple removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). This is a modern Samba setup that runs directly on the Time Capsule itself; macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
+Apple AirPort Time Capsules only support AFP and SMB1 natively. Apple removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). This is a modern Samba setup that runs directly on the Time Capsule itself; macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
 
 This project has 2 parts:
-- a fork of Samba 4, modified to work on the Apple Time Capsule
-- the installers for the Samba binary, via python or the **macOS GUI app**. 
+- a fork of Samba 4, modified to work on the Apple Time Capsule 
+- the installers for the Samba binary, via terminal or the **macOS GUI app**. 
 
-This now fully works for all Time Capsules. The Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
+The Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You can open Finder, choose Connect to Server, and use a normal SMB URL without relying on Apple’s legacy stack. You can also use the disk for Time Machine backups:  
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />  
-You get the full Apple experience reproduced: after you install this, you do not have to worry about it again, even if the device IP address changes. It will show up automatically in Time Machine in settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
+You get the full Apple experience reproduced: after you install this, you do not have to worry about it again, even if the device IP address changes. It will show up automatically in the Time Machine section in the Settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
