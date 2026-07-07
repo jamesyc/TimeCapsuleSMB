@@ -89,9 +89,9 @@ public struct ContentView: View {
                     ToolbarIconButton(
                         title: L10n.string("toolbar.cancel"),
                         systemImage: "xmark.circle",
-                        disabled: !operationCoordinator.canCancel
+                        disabled: cancelButtonDisabled
                     ) {
-                        operationCoordinator.cancel()
+                        cancelSelectedOperation()
                     }
                 }
             }
@@ -221,6 +221,23 @@ public struct ContentView: View {
             return true
         }
         return operationCoordinator.isDeviceBusy(profile)
+    }
+
+    private var cancelButtonDisabled: Bool {
+        if let selectedDeviceID = appStore.selectedDeviceID,
+           operationCoordinator.isDeviceBusy(selectedDeviceID) {
+            return !operationCoordinator.canCancel(profileID: selectedDeviceID)
+        }
+        return !operationCoordinator.canCancel
+    }
+
+    private func cancelSelectedOperation() {
+        if let selectedDeviceID = appStore.selectedDeviceID,
+           operationCoordinator.isDeviceBusy(selectedDeviceID) {
+            operationCoordinator.cancel(profileID: selectedDeviceID)
+            return
+        }
+        operationCoordinator.cancel()
     }
 
     private func configureCloseGuard() {

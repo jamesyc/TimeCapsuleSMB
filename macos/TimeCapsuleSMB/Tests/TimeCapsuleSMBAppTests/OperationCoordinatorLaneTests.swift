@@ -492,6 +492,101 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         try await waitUntilStoreState { !coordinator.appLane.backend.isRunning }
     }
 
+    func testCancelProfileOnlyCancelsSelectedDeviceLane() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+                ], pauseBeforeEvents: true)
+            ],
+            .init("deploy", profileID: "device-two"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+                ], pauseBeforeEvents: true)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let firstLane = OperationLaneKey.deviceWorkflow("device-one", .deploy)
+        let secondLane = OperationLaneKey.deviceWorkflow("device-two", .deploy)
+
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: firstLane
+        ))
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            context: context("device-two"),
+            activeDeviceID: "device-two",
+            laneKey: secondLane
+        ))
+        try await waitUntilStoreState {
+            runner.calls.count == 2
+                && coordinator.lane(for: firstLane).backend.isRunning
+                && coordinator.lane(for: secondLane).backend.isRunning
+        }
+
+        XCTAssertTrue(coordinator.canCancel(profileID: "device-two"))
+        coordinator.cancel(profileID: "device-two")
+        runner.finish(.init("deploy", profileID: "device-two"))
+
+        try await waitUntilStoreState {
+            !coordinator.lane(for: secondLane).backend.isRunning
+                && coordinator.lane(for: firstLane).backend.isRunning
+        }
+        XCTAssertEqual(coordinator.lane(for: secondLane).backend.events.last?.code, "cancelled")
+        XCTAssertTrue(coordinator.lane(for: firstLane).backend.events.isEmpty)
+
+        runner.finishAll()
+        try await waitUntilStoreState { !coordinator.lane(for: firstLane).backend.isRunning }
+    }
+
+    func testCanCancelProfileFollowsSelectedDeviceCancellableState() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "stage", operation: "doctor", stage: "checking", cancellable: false)
+                ], pauseAfterEvents: true)
+            ],
+            .init("doctor", profileID: "device-two"): [
+                .init(events: [
+                    BackendEvent(type: "stage", operation: "doctor", stage: "checking")
+                ], pauseBeforeEvents: true)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let firstLane = OperationLaneKey.deviceWorkflow("device-one", .doctor)
+        let secondLane = OperationLaneKey.deviceWorkflow("device-two", .doctor)
+
+        XCTAssertStarted(coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: firstLane
+        ))
+        XCTAssertStarted(coordinator.run(
+            operation: "doctor",
+            context: context("device-two"),
+            activeDeviceID: "device-two",
+            laneKey: secondLane
+        ))
+        try await waitUntilStoreState {
+            runner.calls.count == 2
+                && coordinator.lane(for: firstLane).backend.currentCancellable == false
+                && coordinator.lane(for: secondLane).backend.isRunning
+        }
+
+        XCTAssertFalse(coordinator.canCancel(profileID: "device-one"))
+        XCTAssertTrue(coordinator.canCancel(profileID: "device-two"))
+
+        runner.finishAll()
+        try await waitUntilStoreState {
+            !coordinator.lane(for: firstLane).backend.isRunning
+                && !coordinator.lane(for: secondLane).backend.isRunning
+        }
+    }
+
     func testClearingOneLaneDoesNotClearOtherLaneEvents() async throws {
         let runner = OperationKeyedStoreTestRunner(responses: [
             .init("discover"): [

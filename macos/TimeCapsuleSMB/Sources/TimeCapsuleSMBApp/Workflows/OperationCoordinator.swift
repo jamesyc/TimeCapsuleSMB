@@ -296,6 +296,10 @@ final class OperationCoordinator: ObservableObject {
         primaryLane()?.canCancel ?? false
     }
 
+    func canCancel(profileID: DeviceProfile.ID) -> Bool {
+        cancellableDeviceLane(for: profileID)?.canCancel ?? false
+    }
+
     var hasActiveWork: Bool {
         allLanes.contains { $0.isBusy }
     }
@@ -393,6 +397,10 @@ final class OperationCoordinator: ObservableObject {
         primaryLane()?.cancel()
     }
 
+    func cancel(profileID: DeviceProfile.ID) {
+        cancellableDeviceLane(for: profileID)?.cancel()
+    }
+
     func cancel(laneKey: OperationLaneKey) {
         lane(for: laneKey).cancel()
     }
@@ -481,6 +489,12 @@ final class OperationCoordinator: ObservableObject {
     private func activeDeviceLane(for profileID: DeviceProfile.ID) -> OperationLane? {
         allLanes.first { lane in
             resourceKey(for: lane) == .device(profileID) && lane.activeOperation != nil
+        }
+    }
+
+    private func cancellableDeviceLane(for profileID: DeviceProfile.ID) -> OperationLane? {
+        allLanes.first { lane in
+            resourceKey(for: lane) == .device(profileID) && lane.canCancel
         }
     }
 
