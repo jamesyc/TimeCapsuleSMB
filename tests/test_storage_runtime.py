@@ -5119,7 +5119,10 @@ MaSt = (
             proc.stdout,
         )
         self.assertIn("max open files = 512", proc.stdout)
-        self.assertIn("max smbd processes = 16", proc.stdout)
+        self.assertIn("aio read size = 0", proc.stdout)
+        self.assertIn("aio write size = 0", proc.stdout)
+        self.assertIn("deadtime = 15", proc.stdout)
+        self.assertIn("max smbd processes = 8", proc.stdout)
         self.assertNotIn("log level = 5", proc.stdout)
         self.assertTrue(smbd_core_dir_exists)
         self.assertEqual(smbd_core_parent_mode, 0o700)

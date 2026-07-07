@@ -389,9 +389,11 @@ ${smbd_protocol_lines}    server multi channel support = no
     max log size = $smbd_max_log_size
 $smbd_log_level_line
     smb ports = 445
-    deadtime = 60
+    aio read size = 0
+    aio write size = 0
+    deadtime = 15
     max open files = 512
-    max smbd processes = 16
+    max smbd processes = 8
     reset on zero vc = yes
     fruit:aapl = yes
     fruit:model = $smbd_fruit_model
