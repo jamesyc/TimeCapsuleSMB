@@ -2107,7 +2107,8 @@ class CliTests(unittest.TestCase):
         result.mocks.write_env_file.assert_not_called()
 
     def test_configure_no_input_json_outputs_machine_readable_summary(self) -> None:
-        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": "pw"}):
+        password = "super-secret-configure-password"
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": password}):
             result = self.run_configure_cli(
                 [
                     "--no-input",
@@ -2126,6 +2127,28 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["device_syap"], "119")
         self.assertNotIn("TC_PASSWORD", payload)
+        self.assertNotIn(password, result.text)
+
+    def test_configure_no_input_json_failure_does_not_print_password(self) -> None:
+        password = "super-secret-configure-password"
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": password}):
+            result = self.run_configure_cli(
+                [
+                    "--no-input",
+                    "--json",
+                    "--host",
+                    "root@10.0.0.2",
+                    "--password-env",
+                    "TCAPSULE_TEST_PASSWORD",
+                ],
+                probe_state=self.make_probe_state(self.make_probe_result_auth_failed()),
+            )
+
+        payload = json.loads(result.text)
+        self.assertEqual(result.rc, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "The provided AirPort SSH target and password did not work.")
+        self.assertNotIn(password, result.text)
 
     def test_configure_preserves_existing_ata_settings(self) -> None:
         result = self.run_configure_cli(

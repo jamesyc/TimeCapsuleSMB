@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import socket
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -15,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli.runtime import (
     json_text,
+    print_json,
     write_json_file,
 )
 from timecapsulesmb.core.config import AppConfig, ConfigError, DEFAULTS
@@ -105,6 +108,57 @@ class RuntimeTests(unittest.TestCase):
 
     def test_json_text_uses_stable_pretty_format(self) -> None:
         self.assertEqual(json_text({"b": 1, "a": {"c": 2}}), '{\n  "a": {\n    "c": 2\n  },\n  "b": 1\n}')
+
+    def test_json_text_preserves_sensitive_values_for_file_serialization(self) -> None:
+        self.assertEqual(json_text({"TC_PASSWORD": "secret"}), '{\n  "TC_PASSWORD": "secret"\n}')
+
+    def test_print_json_redacts_nested_sensitive_values(self) -> None:
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            print_json({
+                "host": "root@10.0.0.2",
+                "TC_PASSWORD": "secret",
+                "nested": {
+                    "credentials": {"password": "nested-secret"},
+                    "key_id": "observed-k30a-78100",
+                    "tokens": ["token-secret"],
+                    "ok": True,
+                },
+                "items": [
+                    {"session_secret": "session-secret-value"},
+                    {"name": "public"},
+                ],
+                "localization_key": "configure.auth_failed",
+            })
+
+        self.assertEqual(
+            output.getvalue(),
+            (
+                '{\n'
+                '  "TC_PASSWORD": "<redacted>",\n'
+                '  "host": "root@10.0.0.2",\n'
+                '  "items": [\n'
+                '    {\n'
+                '      "session_secret": "<redacted>"\n'
+                '    },\n'
+                '    {\n'
+                '      "name": "public"\n'
+                '    }\n'
+                '  ],\n'
+                '  "localization_key": "configure.auth_failed",\n'
+                '  "nested": {\n'
+                '    "credentials": "<redacted>",\n'
+                '    "key_id": "observed-k30a-78100",\n'
+                '    "ok": true,\n'
+                '    "tokens": "<redacted>"\n'
+                '  }\n'
+                '}\n'
+            ),
+        )
+        self.assertNotIn("nested-secret", output.getvalue())
+        self.assertNotIn("token-secret", output.getvalue())
+        self.assertNotIn("session-secret-value", output.getvalue())
 
     def test_write_json_file_adds_trailing_newline(self) -> None:
         with TemporaryDirectory() as tmp:

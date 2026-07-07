@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from timecapsulesmb.core.redaction import SENSITIVE_KEY_PARTS
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -54,7 +55,6 @@ OPTION_KEYS = frozenset({
     "wait_after_reboot",
     "yes",
 })
-SENSITIVE_KEY_PARTS = ("credentials", "password", "secret", "token", "key")
 RESERVED_EVENT_FIELD_KEYS = frozenset({
     "schema_version",
     "event",

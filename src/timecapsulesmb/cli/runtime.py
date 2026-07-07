@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from timecapsulesmb.core.config import ConfigError
+from timecapsulesmb.core.redaction import redact_sensitive_fields
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     is_netbsd4_payload_family,
@@ -118,7 +119,7 @@ def json_text(data: object) -> str:
 
 
 def print_json(data: object) -> None:
-    print(json_text(data))
+    print(json_text(redact_sensitive_fields(data)))
 
 
 def write_json_file(path: Path, data: object) -> None:

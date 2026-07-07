@@ -3,32 +3,14 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
+from timecapsulesmb.core.redaction import redact_sensitive_fields
 from timecapsulesmb.app.stage_policy import stage_policy
 
 
-SENSITIVE_KEY_PARTS = ("password", "secret", "token", "key")
-REDACTION_KEY_ALLOWLIST = {"localization_key"}
-REDACTED = "<redacted>"
-
-
 def redact(value: object) -> object:
-    if isinstance(value, dict):
-        redacted: dict[str, object] = {}
-        for key, item in value.items():
-            key_text = str(key).lower()
-            if key_text not in REDACTION_KEY_ALLOWLIST and any(part in key_text for part in SENSITIVE_KEY_PARTS):
-                redacted[str(key)] = REDACTED
-            else:
-                redacted[str(key)] = redact(item)
-        return redacted
-    if isinstance(value, (list, tuple, set)):
-        return [redact(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    return value
+    return redact_sensitive_fields(value)
 
 
 @dataclass(frozen=True)

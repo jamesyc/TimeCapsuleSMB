@@ -256,9 +256,10 @@ class AppApiTests(unittest.TestCase):
                 "password": "secret",
                 "nested": {
                     "TC_PASSWORD": "secret",
-                    "api_key": "secret",
-                    "ssh_private_key": "secret",
+                    "credentials": {"password": "nested-secret"},
+                    "session_token": "token-secret",
                     "localization_key": "remote_error.ssh_timeout_slow_device",
+                    "key_id": "observed-k30a-78100",
                 },
             },
         })
@@ -267,9 +268,10 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(data["payload"]["password"], "<redacted>")
         self.assertEqual(data["payload"]["nested"]["TC_PASSWORD"], "<redacted>")
-        self.assertEqual(data["payload"]["nested"]["api_key"], "<redacted>")
-        self.assertEqual(data["payload"]["nested"]["ssh_private_key"], "<redacted>")
+        self.assertEqual(data["payload"]["nested"]["credentials"], "<redacted>")
+        self.assertEqual(data["payload"]["nested"]["session_token"], "<redacted>")
         self.assertEqual(data["payload"]["nested"]["localization_key"], "remote_error.ssh_timeout_slow_device")
+        self.assertEqual(data["payload"]["nested"]["key_id"], "observed-k30a-78100")
 
     def test_result_event_preserves_falsey_payloads(self) -> None:
         collector = CollectingSink()

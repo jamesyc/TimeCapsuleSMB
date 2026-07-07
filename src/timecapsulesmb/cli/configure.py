@@ -59,6 +59,10 @@ from timecapsulesmb.cli.util import color_cyan, color_red
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect")
 
 
+class ScriptedConfigureInputError(RuntimeError):
+    pass
+
+
 def non_negative_integer_arg(value: str) -> str:
     if not value.isdigit():
         raise argparse.ArgumentTypeError("must be a non-negative integer")
@@ -214,19 +218,19 @@ def _scripted_ssh_target_value(
         return None, str(exc)
 
 
-def _scripted_password_value(existing: dict[str, str], args: argparse.Namespace) -> tuple[str | None, str | None]:
+def _scripted_password_value(existing: dict[str, str], args: argparse.Namespace) -> str:
     try:
         password = read_password_source_args(args)
     except ConfigError as exc:
-        return None, str(exc)
+        raise ScriptedConfigureInputError(str(exc)) from exc
     if password is None:
         password = existing.get("TC_PASSWORD", "")
     if not password:
-        return None, (
+        raise ScriptedConfigureInputError(
             "configure --no-input requires a device password from --password-env, "
             "--password-file, --password-stdin, or an existing TC_PASSWORD."
         )
-    return password, None
+    return password
 
 
 def populate_scripted_host_and_password(
@@ -234,18 +238,14 @@ def populate_scripted_host_and_password(
     values: dict[str, str],
     args: argparse.Namespace,
     ssh_opts: str,
-) -> str | None:
+) -> None:
     host, host_error = _scripted_ssh_target_value(existing, host_arg=args.host, ssh_opts=ssh_opts)
     if host_error is not None:
-        return host_error
+        raise ScriptedConfigureInputError(host_error)
     assert host is not None
-    password, password_error = _scripted_password_value(existing, args)
-    if password_error is not None:
-        return password_error
-    assert password is not None
+    password = _scripted_password_value(existing, args)
     values["TC_HOST"] = host
     values["TC_PASSWORD"] = password
-    return None
 
 
 def prompt_valid_config_value(key: str, label: str, current: str, secret: bool = False) -> str:
@@ -441,9 +441,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.add_debug_fields(discovered_airport_syap=discovered_record.properties.get("syAP") or None)
         command_context.set_stage("prompt_host_password")
         if no_input_enabled(args):
-            scripted_error = populate_scripted_host_and_password(existing, values, args, ssh_opts)
-            if scripted_error is not None:
-                return fail_configure(scripted_error)
+            try:
+                populate_scripted_host_and_password(existing, values, args, ssh_opts)
+            except ScriptedConfigureInputError as exc:
+                return fail_configure(str(exc))
         else:
             prompt_host_and_password(existing, values, discovered_host, ssh_opts)
 
