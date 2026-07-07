@@ -80,7 +80,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Restore package cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: macos/TimeCapsuleSMB/.build/package-app
           key: package-app-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/TimeCapsuleSMB/tools/package_app.py', 'macos/TimeCapsuleSMB/Package.swift', 'macos/TimeCapsuleSMB/Assets/AppIcon/tcs.jpg', 'pyproject.toml', 'requirements.txt', 'src/**', 'bin/**') }}
