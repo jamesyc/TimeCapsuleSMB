@@ -329,7 +329,7 @@ tc_generate_smb_conf_from_share_rows() {
     chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
     tc_prepare_smbd_core_dir "$payload_dir/logs" || true
     if [ "$TC_SMBD_DISK_LOGGING_ENABLED" = "1" ]; then
-        smbd_log_level_line="    log level = 5 vfs:8 fruit:8"
+        smbd_log_level_line="    log level = 10"
         : >>"$smbd_log" || true
         tc_log "smbd debug logging enabled at $smbd_log"
     else

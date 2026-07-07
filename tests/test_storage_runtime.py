@@ -5123,7 +5123,7 @@ MaSt = (
         self.assertIn("aio write size = 0", proc.stdout)
         self.assertIn("deadtime = 15", proc.stdout)
         self.assertIn("max smbd processes = 8", proc.stdout)
-        self.assertNotIn("log level = 5", proc.stdout)
+        self.assertNotIn("log level = 10", proc.stdout)
         self.assertTrue(smbd_core_dir_exists)
         self.assertEqual(smbd_core_parent_mode, 0o700)
         self.assertEqual(smbd_core_dir_mode, 0o700)
@@ -5431,7 +5431,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
         self.assertIn("max log size = 0", proc.stdout)
-        self.assertIn("log level = 5 vfs:8 fruit:8", proc.stdout)
+        self.assertIn("log level = 10", proc.stdout)
 
     def test_common_smbd_bound_tcp_445_requires_configured_socket_families(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
