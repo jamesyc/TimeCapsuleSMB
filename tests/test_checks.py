@@ -34,6 +34,7 @@ from timecapsulesmb.checks.doctor import (
     check_xattr_tdb_persistence,
     run_doctor_checks,
 )
+from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
@@ -2146,6 +2147,140 @@ class CheckTests(unittest.TestCase):
         log_tail_mock.assert_called_once()
         ram_diagnostics_mock.assert_called_once()
 
+    @staticmethod
+    def data_disk_log_tails(**overrides: object) -> dict[str, object]:
+        timeout_text = (
+            "(unavailable: Timed out waiting for ssh command to finish: "
+            "/bin/sh -c 'tail -n 80 /Volumes/dk2/.samba4/logs/log.smbd')"
+        )
+        logs: dict[str, object] = {
+            "remote_rc_local_log_tail": "rc log",
+            "remote_manager_log_tail": "manager log",
+            "remote_payload_log_dir": "/Volumes/dk2/.samba4",
+            "remote_smbd_log_tail": timeout_text,
+            "remote_mdns_log_tail": timeout_text,
+            "remote_nbns_log_tail": timeout_text,
+        }
+        logs.update(overrides)
+        return logs
+
+    def test_data_disk_unresponsive_result_flags_payload_timeouts_when_ramdisk_reads_succeed(self) -> None:
+        result = _data_disk_unresponsive_result(self.data_disk_log_tails())
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("data disk appears unresponsive", result.message)
+        self.assertIn("log.smbd, mdns.log, nbns.log", result.message)
+        self.assertIn("/Volumes/dk2/.samba4/logs", result.message)
+        self.assertIn("ramdisk reads succeeded", result.message)
+        self.assertEqual(result.details["data_disk_timed_out_logs"], ["log.smbd", "mdns.log", "nbns.log"])
+
+    def test_data_disk_unresponsive_result_flags_single_payload_log_timeout(self) -> None:
+        result = _data_disk_unresponsive_result(
+            self.data_disk_log_tails(
+                remote_mdns_log_tail="mdns log",
+                remote_nbns_log_tail="nbns log",
+            )
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIn("log.smbd", result.message)
+        self.assertNotIn("mdns.log", result.message)
+        self.assertEqual(result.details["data_disk_timed_out_logs"], ["log.smbd"])
+
+    def test_data_disk_unresponsive_result_skips_when_ramdisk_reads_also_time_out(self) -> None:
+        timeout_text = "(unavailable: Timed out waiting for ssh command to finish: tail)"
+        result = _data_disk_unresponsive_result(
+            self.data_disk_log_tails(
+                remote_rc_local_log_tail=timeout_text,
+                remote_manager_log_tail=timeout_text,
+            )
+        )
+
+        self.assertIsNone(result)
+
+    def test_data_disk_unresponsive_result_skips_without_payload_log_dir(self) -> None:
+        # Without a payload dir the mdns/nbns tails come from ramdisk fallback
+        # paths, so timeouts there say nothing about the data disk.
+        result = _data_disk_unresponsive_result(
+            self.data_disk_log_tails(remote_payload_log_dir="(unavailable from active smb.conf)")
+        )
+
+        self.assertIsNone(result)
+
+    def test_data_disk_unresponsive_result_skips_when_payload_reads_fail_without_timeout(self) -> None:
+        error_text = "(unavailable: SshError: ssh command failed with rc=255)"
+        result = _data_disk_unresponsive_result(
+            self.data_disk_log_tails(
+                remote_smbd_log_tail=error_text,
+                remote_mdns_log_tail=error_text,
+                remote_nbns_log_tail=error_text,
+            )
+        )
+
+        self.assertIsNone(result)
+
+    def test_data_disk_unresponsive_result_skips_when_payload_reads_succeed(self) -> None:
+        result = _data_disk_unresponsive_result(
+            self.data_disk_log_tails(
+                remote_smbd_log_tail="smbd log",
+                remote_mdns_log_tail="mdns log",
+                remote_nbns_log_tail="nbns log",
+            )
+        )
+
+        self.assertIsNone(result)
+
+    def test_run_doctor_checks_promotes_data_disk_timeouts_to_fail_result(self) -> None:
+        debug_fields: dict[str, object] = {}
+        log_tail_mock = mock.Mock(return_value=self.data_disk_log_tails())
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[CheckResult("FAIL", "SMB file create failed: NT_STATUS_UNSUCCESSFUL opening remote file")],
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": log_tail_mock,
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        disk_results = [result for result in run.results if "data disk appears unresponsive" in result.message]
+        self.assertEqual(len(disk_results), 1)
+        self.assertEqual(disk_results[0].status, "FAIL")
+        self.assertEqual(debug_fields["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
+        log_tail_mock.assert_called_once()
+
+    def test_run_doctor_checks_does_not_add_data_disk_fail_when_log_tails_read_fine(self) -> None:
+        debug_fields: dict[str, object] = {}
+        log_tail_mock = mock.Mock(
+            return_value=self.data_disk_log_tails(
+                remote_smbd_log_tail="smbd log",
+                remote_mdns_log_tail="mdns log",
+                remote_nbns_log_tail="nbns log",
+            )
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[CheckResult("FAIL", "SMB file create failed: NT_STATUS_UNSUCCESSFUL opening remote file")],
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": log_tail_mock,
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertFalse(any("data disk appears unresponsive" in result.message for result in run.results))
+
     def test_run_doctor_checks_adds_mast_probe_for_xattr_parent_missing(self) -> None:
         debug_fields: dict[str, object] = {}
         mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
@@ -3899,6 +4034,93 @@ class CheckTests(unittest.TestCase):
                 ("FAIL", "SMB file read timed out for admin@server.local/Data"),
             ],
         )
+
+    def test_check_authenticated_smb_file_ops_detailed_surfaces_nt_status_over_smb1_fallback_noise(self) -> None:
+        # smbclient prints the real NT status on stdout and misleading SMB1
+        # fallback noise as the last stderr line; the failure message must keep
+        # the NT status and the details must preserve both streams.
+        nt_status_line = "NT_STATUS_INVALID_PARAMETER opening remote file .sample.txt"
+        smb1_noise = "smb1cli_req_writev_submit: called for dialect[SMB3_11] server[server.local]"
+
+        def fake_run_local_capture(args, timeout=15, **kwargs):
+            command_text = args[-1]
+            if 'put "' in command_text:
+                return subprocess.CompletedProcess(args, 1, f"{nt_status_line}\n", f"session setup ok\n{smb1_noise}\n")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
+                results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
+
+        self.assertEqual(
+            [(result.status, result.message) for result in results],
+            [
+                ("PASS", "SMB directory create works for admin@server.local/Data"),
+                ("FAIL", f"SMB file create failed: {nt_status_line}"),
+            ],
+        )
+        failure = results[-1]
+        self.assertEqual(failure.details["returncode"], 1)
+        self.assertEqual(failure.details["stdout_tail"], nt_status_line)
+        self.assertEqual(failure.details["stderr_tail"], f"session setup ok\n{smb1_noise}")
+
+    def test_check_authenticated_smb_file_ops_detailed_directory_create_failure_prefers_nt_status(self) -> None:
+        def fake_run_local_capture(args, timeout=15, **kwargs):
+            command_text = args[-1]
+            if 'mkdir "' in command_text:
+                return subprocess.CompletedProcess(
+                    args,
+                    1,
+                    "NT_STATUS_MEDIA_WRITE_PROTECTED making remote directory\n",
+                    "smb1cli_req_writev_submit: called for dialect[SMB3_11] server[server.local]\n",
+                )
+            self.fail(f"unexpected smbclient invocation after mkdir failure: {command_text}")
+
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
+                results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "FAIL")
+        self.assertEqual(
+            results[0].message,
+            "SMB directory create failed: NT_STATUS_MEDIA_WRITE_PROTECTED making remote directory",
+        )
+        self.assertEqual(results[0].details["returncode"], 1)
+        self.assertIn("stderr_tail", results[0].details)
+
+    def test_check_authenticated_smb_file_ops_detailed_failure_without_nt_status_uses_last_line(self) -> None:
+        def fake_run_local_capture(args, timeout=15, **kwargs):
+            command_text = args[-1]
+            if 'put "' in command_text:
+                return subprocess.CompletedProcess(args, 1, "", "first noise line\nfinal error line\n")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
+                results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
+
+        failure = results[-1]
+        self.assertEqual(failure.status, "FAIL")
+        self.assertEqual(failure.message, "SMB file create failed: final error line")
+        self.assertNotIn("stdout_tail", failure.details)
+        self.assertEqual(failure.details["stderr_tail"], "first noise line\nfinal error line")
+
+    def test_check_authenticated_smb_file_ops_detailed_failure_without_output_reports_returncode(self) -> None:
+        def fake_run_local_capture(args, timeout=15, **kwargs):
+            command_text = args[-1]
+            if 'put "' in command_text:
+                return subprocess.CompletedProcess(args, 3, "", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
+                results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
+
+        failure = results[-1]
+        self.assertEqual(failure.status, "FAIL")
+        self.assertEqual(failure.message, "SMB file create failed: failed with rc=3")
+        self.assertEqual(failure.details, {"returncode": 3})
 
     def test_check_authenticated_smb_listing_uses_neutral_smbclient_config(self) -> None:
         captured_args = None

@@ -97,6 +97,33 @@ def _smbclient_failure_line(proc: subprocess.CompletedProcess[str]) -> str:
     return detail[-1] if detail else f"failed with rc={proc.returncode}"
 
 
+def _smbclient_proc_failure_detail(proc: subprocess.CompletedProcess[str]) -> tuple[str, dict[str, object]]:
+    # smbclient prints NT_STATUS failures on stdout while libsmb noise lands on
+    # stderr (e.g. the misleading SMB1-fallback "smb1cli_req_writev_submit" line
+    # emitted after the server already rejected the SMB2 call), so summarizing
+    # from one stream's last line can bury the real error. Prefer the first
+    # NT_STATUS line across both streams and keep full tails in details.
+    stdout_tail = _smbclient_text_tail(proc.stdout)
+    stderr_tail = _smbclient_text_tail(proc.stderr)
+    lines: list[str] = []
+    for text in (stdout_tail, stderr_tail):
+        if text:
+            lines.extend(line.strip() for line in text.splitlines() if line.strip())
+    nt_status_lines = [line for line in lines if "NT_STATUS_" in line]
+    if nt_status_lines:
+        message = nt_status_lines[0]
+    elif lines:
+        message = lines[-1]
+    else:
+        message = f"failed with rc={proc.returncode}"
+    details: dict[str, object] = {"returncode": proc.returncode}
+    if stdout_tail:
+        details["stdout_tail"] = stdout_tail
+    if stderr_tail:
+        details["stderr_tail"] = stderr_tail
+    return message, details
+
+
 def _smbclient_failure_target_display(target: SmbClientTarget) -> str:
     if target.ip_address:
         return f"{target.server} via {target.ip_address}"
@@ -423,9 +450,8 @@ def check_authenticated_smb_file_ops_detailed(
         )
 
     def fail_result(prefix: str, proc: subprocess.CompletedProcess[str]) -> list[CheckResult]:
-        detail = (proc.stderr or proc.stdout).strip().splitlines()
-        msg = detail[-1] if detail else f"failed with rc={proc.returncode}"
-        return results + [CheckResult("FAIL", f"{prefix}: {msg}")]
+        msg, details = _smbclient_proc_failure_detail(proc)
+        return results + [CheckResult("FAIL", f"{prefix}: {msg}", details)]
 
     with tempfile.TemporaryDirectory(prefix="tcapsule-doctor-") as tmpdir:
         tmp_root = Path(tmpdir)
@@ -455,7 +481,8 @@ def check_authenticated_smb_file_ops_detailed(
             return timeout_results
         assert proc is not None
         if proc.returncode != 0:
-            return [CheckResult("FAIL", f"SMB directory create failed: {((proc.stderr or proc.stdout).strip().splitlines() or [f'failed with rc={proc.returncode}'])[-1]}")]
+            msg, details = _smbclient_proc_failure_detail(proc)
+            return [CheckResult("FAIL", f"SMB directory create failed: {msg}", details)]
         results.append(CheckResult("PASS", f"SMB directory create works for {target}"))
 
         proc, timeout_results = run_step("SMB file create", [f'cd "{test_dir_name}"', f'put "{upload_path}" "{upload_name}"'])

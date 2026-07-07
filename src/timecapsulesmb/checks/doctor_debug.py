@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.doctor_state import DoctorSink, DoctorTarget, RemoteAccess
 from timecapsulesmb.device.probe import (
+    REMOTE_PAYLOAD_LOG_FILENAMES,
+    REMOTE_RUNTIME_RAM_LOG_PATHS,
     read_remote_service_socket_diagnostics_conn,
     read_runtime_log_tails_conn,
     read_runtime_ram_diagnostics_conn,
@@ -90,9 +92,58 @@ def _doctor_add_mast_probe_on_disk_failure(target: DoctorTarget, remote: RemoteA
         sink.debug_fields["mast_probe_error"] = f"{type(e).__name__}: {e}"
 
 
+_REMOTE_LOG_TAIL_TIMEOUT_MARKER = "Timed out waiting for ssh command"
+
+
+def _remote_log_tail_timed_out(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("(unavailable:")
+        and _REMOTE_LOG_TAIL_TIMEOUT_MARKER in value
+    )
+
+
+def _data_disk_unresponsive_result(logs: Mapping[str, object]) -> CheckResult | None:
+    # Timeouts reading small log files on the data disk while the ramdisk logs
+    # read fine point at the disk itself (failing, or not spinning back up)
+    # rather than SSH or the device being down. Surface that as its own FAIL
+    # instead of leaving it buried in debug context.
+    payload_dir = logs.get("remote_payload_log_dir")
+    if not isinstance(payload_dir, str) or payload_dir.startswith("(unavailable"):
+        # Without a payload dir the payload log keys are ramdisk fallbacks,
+        # so a timeout there says nothing about the data disk.
+        return None
+    timed_out_files = sorted(
+        filename
+        for key, filename in REMOTE_PAYLOAD_LOG_FILENAMES.items()
+        if _remote_log_tail_timed_out(logs.get(key))
+    )
+    if not timed_out_files:
+        return None
+    ram_reads = [logs.get(key) for key in REMOTE_RUNTIME_RAM_LOG_PATHS]
+    ram_read_ok = any(
+        isinstance(value, str) and not value.startswith("(unavailable") for value in ram_reads
+    )
+    if not ram_read_ok:
+        # SSH or the whole device is unhealthy; do not blame the data disk.
+        return None
+    return CheckResult(
+        "FAIL",
+        f"data disk appears unresponsive: reading {', '.join(timed_out_files)} under "
+        f"{payload_dir.rstrip('/')}/logs timed out over SSH while ramdisk reads succeeded; "
+        "the disk may be failing or not spinning back up "
+        "(run disk repair, then power-cycle the device)",
+        {"data_disk_timed_out_logs": timed_out_files},
+    )
+
+
 def _doctor_add_fatal_runtime_log_tails(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
     if sink.fatal() and sink.debug_fields is not None and remote.remote_checks_enabled:
-        sink.debug_fields.update(read_runtime_log_tails_conn(target.connection))
+        logs = read_runtime_log_tails_conn(target.connection)
+        sink.debug_fields.update(logs)
+        disk_result = _data_disk_unresponsive_result(logs)
+        if disk_result is not None:
+            sink.add(disk_result)
         try:
             sink.debug_fields["remote_runtime_ram_diagnostics"] = read_runtime_ram_diagnostics_conn(target.connection)
         except Exception as e:
