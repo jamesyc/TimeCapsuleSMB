@@ -82,7 +82,9 @@ mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirna
         --disable-lz4 \
         --disable-acl-support \
         --disable-xattr-support \
+        --disable-iconv-open \
         --disable-iconv \
+        --disable-locale \
         --disable-md2man
 
     "$RSYNC_MAKE" -j"$RSYNC_JOBS"

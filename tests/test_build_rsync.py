@@ -156,6 +156,8 @@ class RsyncBuildScriptTests(unittest.TestCase):
             self.assertIn("--with-included-popt", args)
             self.assertIn("--disable-openssl", args)
             self.assertIn("--disable-xattr-support", args)
+            self.assertIn("--disable-iconv-open", args)
+            self.assertIn("--disable-locale", args)
             configure_env = env_capture.read_text()
             self.assertIn("--sysroot=", configure_env)
             self.assertIn("LDFLAGS=-static", configure_env)

@@ -1,0 +1,37 @@
+diff --git a/flist.c b/flist.c
+index 236a375..0946804 100644
+--- a/flist.c
++++ b/flist.c
+@@ -1254,6 +1254,23 @@ static struct file_struct *recv_file_entry(int f, struct file_list *flist, int x
+ 	return file;
+ }
+ 
++static void tc_normalize_hfs_unknown_owner(STRUCT_STAT *st)
++{
++	/*
++	 * AirPort Time Capsule HFS can report absent catalog owner/group IDs
++	 * as 0xffffffff. rsync copies those IDs into its file list when owner
++	 * or group preservation is enabled, so normalize only this appliance
++	 * HFS sentinel to the forced root/wheel identity used by the payload.
++	 */
++	if (st->st_uid == (uid_t)-1) {
++		st->st_uid = 0;
++	}
++
++	if (st->st_gid == (gid_t)-1) {
++		st->st_gid = 0;
++	}
++}
++
+ /* Create a file_struct for a named file by reading its stat() information
+  * and performing extensive checks against global options.
+  *
+@@ -1345,6 +1362,8 @@ struct file_struct *make_file(const char *fname, struct file_list *flist,
+ 		return NULL;
+ 	}
+ 
++	tc_normalize_hfs_unknown_owner(&st);
++
+ 	if (filter_level == NO_FILTERS)
+ 		goto skip_filters;
+ 

@@ -26,15 +26,15 @@
     },
     "rsync": {
       "path": "bin/rsync/rsync",
-      "sha256": "16a925a97fdda1e1872bebcca024212c43bfc217adafdb7dd83876e0e7ae7a8e"
+      "sha256": "5f0908da9e958b34b88915a29d5e66a14f7ef383ba77c9ade22d91ad956fe28f"
     },
     "rsync-netbsd4le": {
       "path": "bin/rsync-netbsd4le/rsync",
-      "sha256": "7095f23462941d7c4d2df492bafd1c024caed9b5fbbedf8e2ebcad0ebd5dbb6d"
+      "sha256": "c081d71d38a0b05507807c8bb7d4f8f1adf0569aae5617b72bfd5a305fb722e4"
     },
     "rsync-netbsd4be": {
       "path": "bin/rsync-netbsd4be/rsync",
-      "sha256": "db36ed4ace337e4f42e802c2e512610a80f8d8f6a84b5f1b4a6c847e128189ec"
+      "sha256": "4a53d16c4d5196b410986c58dbc4153f85ba682ccd9c07108e0b7f126c106312"
     },
     "smbd": {
       "path": "bin/samba4/smbd",
