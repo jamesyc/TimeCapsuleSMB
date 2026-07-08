@@ -66,6 +66,32 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(row.message, "The device is still starting up. Wait a few minutes, then run Checkup again.")
     }
 
+    func testCheckupPresentationLocalizesPayloadMissingFromDiskCheck() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .english)
+
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(
+                status: "FAIL",
+                message: "active smb.conf xattr_tdb:file parent is missing",
+                domain: "Runtime",
+                code: "payload_missing_from_disk"
+            )
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        let presentation = CheckupPresentation(summary: summary, state: .failed)
+        let row = try XCTUnwrap(presentation.domains.first?.rows.first)
+
+        XCTAssertEqual(presentation.domains.first?.domain, .runtime)
+        XCTAssertEqual(
+            row.message,
+            "The SMB folder is missing from the data disk; the disk may have been erased. Run \"Install / Update SMB\" to reinstall."
+        )
+        XCTAssertFalse(row.message.contains("xattr_tdb"))
+    }
+
     func testInstallActionsUseDownloadBoxIconExceptReinstall() {
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.title, "Refresh Status")
         XCTAssertEqual(DashboardSecondaryAction.refreshStatus.systemImage, "arrow.clockwise")

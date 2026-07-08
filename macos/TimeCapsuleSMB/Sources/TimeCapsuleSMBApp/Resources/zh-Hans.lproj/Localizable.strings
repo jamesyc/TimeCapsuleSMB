@@ -348,6 +348,7 @@
 "dialog.forget.title" = "忘记此设备？";
 "doctor.check.smb_bind_lan_only_unreachable" = "SMB 已绑定到 Time Capsule LAN，但这台 Mac 位于另一个网络。请为此设备关闭“仅将 SMB 绑定到 LAN”，然后运行“安装/更新 SMB”，或从 Time Capsule 的 LAN 侧连接。";
 "doctor.check.device_starting_up" = "设备仍在启动中。请等待几分钟，然后再次运行检查。";
+"doctor.check.payload_missing_from_disk" = "数据磁盘上缺少 SMB 文件夹；磁盘可能已被抹掉。请运行“安装/更新 SMB”以重新安装。";
 "doctor.domain.connection" = "连接";
 "doctor.domain.disk" = "磁盘";
 "doctor.domain.finder_bonjour" = "Finder / Bonjour";

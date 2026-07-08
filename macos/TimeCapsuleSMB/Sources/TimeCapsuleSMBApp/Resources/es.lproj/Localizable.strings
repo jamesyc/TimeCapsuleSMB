@@ -348,6 +348,7 @@
 "dialog.forget.title" = "¿Olvidaste este dispositivo?";
 "doctor.check.smb_bind_lan_only_unreachable" = "SMB está vinculado a la LAN de Time Capsule, pero este Mac está en otra red. Desactiva \"Vincular SMB solo a LAN\" para este dispositivo y ejecuta \"Instalar / actualizar SMB\", o conéctate desde el lado LAN de Time Capsule.";
 "doctor.check.device_starting_up" = "El dispositivo todavía se está iniciando. Espera unos minutos y vuelve a ejecutar el chequeo.";
+"doctor.check.payload_missing_from_disk" = "Falta la carpeta SMB en el disco de datos; puede que el disco se haya borrado. Ejecuta \"Instalar / actualizar SMB\" para reinstalar.";
 "doctor.domain.connection" = "Conexión";
 "doctor.domain.disk" = "Disco";
 "doctor.domain.finder_bonjour" = "Finder / Bonjour";

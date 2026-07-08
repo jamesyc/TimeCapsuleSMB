@@ -113,6 +113,8 @@ TRANSIENT_MDNS_READINESS_FAILURES = {
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE = "smb_bind_lan_only_unreachable"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
+DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
+DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_GRACE_SECONDS = 180
 STARTUP_GRACE_PERSISTENT_FAILURE_PREFIXES = (
     "missing local tool ",
@@ -204,7 +206,13 @@ def _add_probe_line_results(
             add_result(CheckResult("PASS", line.removeprefix("PASS:")))
             emitted = True
         elif line.startswith("FAIL:"):
-            add_result(CheckResult("FAIL", line.removeprefix("FAIL:")))
+            message = line.removeprefix("FAIL:")
+            details = (
+                {"code": DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK}
+                if message == DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE
+                else {}
+            )
+            add_result(CheckResult("FAIL", message, details))
             emitted = True
 
     if emitted:

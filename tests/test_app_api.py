@@ -37,7 +37,7 @@ from timecapsulesmb.device.probe import (
     ReadinessProbeResult,
     SshAccessStatus,
 )
-from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
+from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume, PayloadHomeSelection, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
 from timecapsulesmb.services.app import AppOperationError, jsonable
@@ -3559,7 +3559,12 @@ class AppApiTests(unittest.TestCase):
 
         self.assertIn("Timed out waiting for ssh command to finish: reboot", str(raised.exception))
 
-    def test_deploy_reports_no_mast_volumes_as_no_disk_code(self) -> None:
+    def run_confirmed_deploy_with_mast(
+        self,
+        mast_discovery,
+        *,
+        payload_home_selection: PayloadHomeSelection | None = None,
+    ) -> tuple[int, CollectingSink]:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
@@ -3588,14 +3593,33 @@ class AppApiTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
-                            with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=(), attempts=1, raw_output="")):
-                                rc = service.run_api_request(
-                                    {
-                                        "operation": "deploy",
-                                        "params": params,
-                                    },
-                                    collector.sink,
-                                )
+                            with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=mast_discovery):
+                                if payload_home_selection is None:
+                                    rc = service.run_api_request(
+                                        {
+                                            "operation": "deploy",
+                                            "params": params,
+                                        },
+                                        collector.sink,
+                                    )
+                                else:
+                                    with mock.patch(
+                                        "timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn",
+                                        return_value=payload_home_selection,
+                                    ):
+                                        rc = service.run_api_request(
+                                            {
+                                                "operation": "deploy",
+                                                "params": params,
+                                            },
+                                            collector.sink,
+                                        )
+        return rc, collector
+
+    def test_deploy_reports_no_mast_volumes_as_no_disk_code(self) -> None:
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            SimpleNamespace(volumes=(), attempts=1, raw_output="")
+        )
 
         self.assertEqual(rc, 1)
         error = collector.events_of_type("error")[0]
@@ -3614,6 +3638,56 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["reboot_was_attempted"], False)
         self.assertEqual(finished["device_came_back_after_reboot"], False)
         self.assertEqual(finished["deploy_startup_mode"], "reboot_then_verify")
+
+    def test_deploy_reports_disk_without_hfs_as_no_hfs_partition_code(self) -> None:
+        raw_mast_output = """
+MaSt = (
+    {
+        deviceName = "wd0";
+        model = "Seagate Expansion HDD";
+        size = 8000000000000;
+        builtin = true;
+        partitions = (
+        );
+    }
+);
+"""
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            MaStDiscoveryResult((), 1, raw_mast_output)
+        )
+
+        self.assertEqual(rc, 1)
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "deploy_no_hfs_partition")
+        self.assertEqual(error["recovery"]["title"], "No valid HFS partition")
+        self.assertEqual(error["recovery"]["action_ids"], [])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "read_mast")
+
+    def test_deploy_reports_unwritable_hfs_volume_as_disk_not_writable_code(self) -> None:
+        volume = MaStVolume(
+            "wd0",
+            "dk2",
+            "/Volumes/dk2",
+            "Data",
+            "f42bdb83-c265-5522-a087-25606a4d0abf",
+            True,
+            "hfs",
+        )
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            MaStDiscoveryResult((volume,), 1, ""),
+            payload_home_selection=PayloadHomeSelection(None, ()),
+        )
+
+        self.assertEqual(rc, 1)
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "deploy_disk_not_writable")
+        self.assertEqual(error["recovery"]["title"], "No writable payload volume")
+        self.assertEqual(error["recovery"]["action_ids"], [])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "select_payload_home")
 
     def test_activate_requires_explicit_confirmation(self) -> None:
         collector = CollectingSink()

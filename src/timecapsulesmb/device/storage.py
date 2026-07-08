@@ -430,6 +430,10 @@ def _parse_mast_openstep_inventory(content: str) -> tuple[MaStDiskSnapshot, ...]
             else:
                 disk_name = name
             continue
+        model = _openstep_assignment_value(line, "model")
+        if model is not None and not in_partitions:
+            disk_name = disk_name or model
+            continue
 
         fmt = _openstep_assignment_value(line, "format")
         if fmt is not None and in_partitions:

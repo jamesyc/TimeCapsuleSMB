@@ -37,6 +37,7 @@ from timecapsulesmb.checks.doctor import (
 from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
 from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_CODE_DEVICE_STARTING_UP,
+    DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK,
     DOCTOR_STARTUP_GRACE_SECONDS,
     _apply_startup_grace,
 )
@@ -2533,6 +2534,14 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         mast_probe_mock.assert_called_once()
         self.assertEqual(debug_fields["mast_probe_command"], MAST_PROBE_COMMAND)
+        failures = [result for result in run.results if result.status == "FAIL"]
+        payload_missing = [
+            result
+            for result in failures
+            if result.message == "active smb.conf xattr_tdb:file parent is missing"
+        ]
+        self.assertEqual(len(payload_missing), 1)
+        self.assertEqual(payload_missing[0].details["code"], DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK)
         self.assertEqual(debug_fields["mast_probe_returncode"], 0)
         self.assertEqual(debug_fields["mast_probe_volume_count"], 1)
         self.assertEqual(debug_fields["mast_probe_candidates"][0]["part"], "dk2")

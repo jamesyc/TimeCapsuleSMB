@@ -35,6 +35,7 @@ from timecapsulesmb.device.storage import (
     mast_volumes_debug_summary,
     ordered_payload_candidate_volumes,
     payload_candidate_checks_debug_summary,
+    parse_mast_inventory,
     parse_mast_plist,
     probe_mast_diagnostics_conn,
     render_ensure_volume_root_mounted_script,
@@ -852,6 +853,38 @@ MaSt = (
         self.assertEqual(result.volumes, ())
         self.assertEqual(result.attempts, 1)
         self.assertEqual(result.raw_output, raw_output)
+        read_mock.assert_called_once_with(connection)
+        sleep_mock.assert_not_called()
+
+    def test_wait_for_mast_volumes_stops_when_disk_has_empty_partition_table(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        raw_output = """
+MaSt = (
+    {
+        deviceName = "wd0";
+        model = "Seagate Expansion HDD";
+        size = 8000000000000;
+        builtin = true;
+        partitions = (
+        );
+    }
+);
+"""
+
+        with mock.patch(
+            "timecapsulesmb.device.storage.read_mast_volumes_with_output_conn",
+            return_value=MaStReadResult((), raw_output),
+        ) as read_mock:
+            with mock.patch("timecapsulesmb.device.storage.time.sleep") as sleep_mock:
+                result = wait_for_mast_volumes_conn(connection, attempts=10, delay_seconds=3)
+
+        inventory = parse_mast_inventory(raw_output)
+        self.assertEqual(result.volumes, ())
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(result.raw_output, raw_output)
+        self.assertEqual(inventory[0].name, "Seagate Expansion HDD")
+        self.assertEqual(inventory[0].size, "8000000000000")
+        self.assertEqual(inventory[0].partitions, ())
         read_mock.assert_called_once_with(connection)
         sleep_mock.assert_not_called()
 

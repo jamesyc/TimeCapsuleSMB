@@ -348,6 +348,7 @@
 "dialog.forget.title" = "Pamiršti šį įrenginį?";
 "doctor.check.smb_bind_lan_only_unreachable" = "SMB susietas su Time Capsule LAN, bet šis Mac yra kitame tinkle. Išjunkite „Susieti SMB tik su LAN“ šiam įrenginiui ir paleiskite „Įdiegti / atnaujinti SMB“, arba prisijunkite iš Time Capsule LAN pusės.";
 "doctor.check.device_starting_up" = "Įrenginys vis dar paleidžiamas. Palaukite kelias minutes ir paleiskite patikrinimą iš naujo.";
+"doctor.check.payload_missing_from_disk" = "Duomenų diske trūksta SMB aplanko; diskas galėjo būti ištrintas. Paleiskite „Įdiegti / atnaujinti SMB“, kad įdiegtumėte iš naujo.";
 "doctor.domain.connection" = "Ryšys";
 "doctor.domain.disk" = "Diskas";
 "doctor.domain.finder_bonjour" = "Finder / Bonjour";
