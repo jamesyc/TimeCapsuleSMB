@@ -15,6 +15,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _add_bonjour_results,
     _build_doctor_target,
     _doctor_add_bonjour_naming_info,
+    _doctor_apply_startup_grace,
     _doctor_check_active_smb_conf,
     _doctor_check_authenticated_smb,
     _doctor_check_deployed_config,
@@ -28,6 +29,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_runtime_naming_identity,
     _doctor_check_runtime_ram_root,
     _doctor_check_ssh_login,
+    _doctor_probe_startup_age,
     _doctor_validate_config,
     check_xattr_tdb_persistence,
 )
@@ -82,6 +84,8 @@ def run_doctor_checks(
     if _doctor_check_runtime_ram_root(target, remote, sink).stop:
         return sink.results, sink.fatal()
 
+    startup_age = _doctor_probe_startup_age(target, remote, sink)
+
     naming = _doctor_check_runtime_naming_identity(target, remote, sink)
     _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_managed_smbd(target, remote, sink)
@@ -112,4 +116,5 @@ def run_doctor_checks(
     _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, network_plan, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink)
+    _doctor_apply_startup_grace(sink, startup_age)
     return sink.results, sink.fatal()

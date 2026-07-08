@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import shlex
 import subprocess
 import time
@@ -1891,6 +1892,61 @@ def runtime_ram_root_present_conn(connection: SshConnection) -> bool:
         timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
     )
     return proc.returncode == 0
+
+
+MANAGER_LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+MANAGER_LOG_TIMESTAMP_CHARS = 19
+RUNTIME_MANAGER_LOG = f"{RUNTIME_RAM_ROOT}/var/manager.log"
+_MANAGER_LOG_MISSING_MARKER = "(missing manager.log)"
+
+
+@dataclass(frozen=True)
+class ManagerStartupAgeProbeResult:
+    manager_started_seconds_ago: float | None
+    detail: str
+
+
+def _parse_manager_log_timestamp(line: str) -> datetime.datetime | None:
+    try:
+        return datetime.datetime.strptime(line[:MANAGER_LOG_TIMESTAMP_CHARS], MANAGER_LOG_TIMESTAMP_FORMAT)
+    except ValueError:
+        return None
+
+
+def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
+    # The manager log lives on the ramdisk and is recreated per runtime
+    # session, so its first line carries this session's start timestamp in
+    # device-local time. Reading the device clock in the same format lets the
+    # host compute the age without epoch math or timezone assumptions on the
+    # tiny NetBSD userspace (sh, sed, and date only; no wc/grep/awk on device).
+    script = (
+        f"date '+{MANAGER_LOG_TIMESTAMP_FORMAT}'; "
+        f"if [ -f {shlex.quote(RUNTIME_MANAGER_LOG)} ]; then /usr/bin/sed -n 1p {shlex.quote(RUNTIME_MANAGER_LOG)}; "
+        f"else echo '{_MANAGER_LOG_MISSING_MARKER}'; fi"
+    )
+    try:
+        proc = run_ssh(
+            connection,
+            f"/bin/sh -c {shlex.quote(script)}",
+            check=False,
+            timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+        )
+    except SshCommandTimeout:
+        return ManagerStartupAgeProbeResult(None, "manager startup age probe timed out")
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    if proc.returncode != 0 or len(lines) < 2:
+        return ManagerStartupAgeProbeResult(None, f"manager startup age probe failed (rc={proc.returncode})")
+    device_now_line, manager_first_line = lines[0], lines[1]
+    if manager_first_line == _MANAGER_LOG_MISSING_MARKER:
+        return ManagerStartupAgeProbeResult(None, "manager log missing")
+    device_now = _parse_manager_log_timestamp(device_now_line)
+    manager_started = _parse_manager_log_timestamp(manager_first_line)
+    if device_now is None or manager_started is None:
+        return ManagerStartupAgeProbeResult(None, "manager startup age probe output unparseable")
+    seconds_ago = (device_now - manager_started).total_seconds()
+    if seconds_ago < 0:
+        return ManagerStartupAgeProbeResult(None, f"manager start is {-seconds_ago:.0f}s in the future; ignoring")
+    return ManagerStartupAgeProbeResult(seconds_ago, f"manager started {seconds_ago:.0f}s ago")
 
 
 def _limit_remote_log_tail(text: str) -> str:

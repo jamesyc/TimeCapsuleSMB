@@ -18,6 +18,7 @@ from timecapsulesmb.device.probe import (
     SshAccessStatus,
     flash_runtime_config_present_conn,
     preferred_interface_name,
+    probe_manager_startup_age_conn,
     read_deployed_version_conn,
     probe_remote_interface_conn,
     read_remote_network_diagnostics_conn,
@@ -129,6 +130,89 @@ class ProbeTests(unittest.TestCase):
             result = runtime_ram_root_present_conn(connection)
 
         self.assertFalse(result)
+
+    def test_probe_manager_startup_age_conn_computes_age_from_device_clock_and_manager_log(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="2026-07-07 17:58:40\n2026-07-07 17:57:59 manager: manager startup beginning\n",
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = probe_manager_startup_age_conn(connection)
+
+        self.assertEqual(result.manager_started_seconds_ago, 41.0)
+        self.assertEqual(result.detail, "manager started 41s ago")
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertIn(probe.RUNTIME_MANAGER_LOG, args[1])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def test_probe_manager_startup_age_conn_returns_none_when_manager_log_is_missing(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="2026-07-07 17:58:40\n(missing manager.log)\n",
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_manager_startup_age_conn(connection)
+
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertEqual(result.detail, "manager log missing")
+
+    def test_probe_manager_startup_age_conn_returns_none_for_unparseable_log_line(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="2026-07-07 17:58:40\ngarbage first line without timestamp\n",
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_manager_startup_age_conn(connection)
+
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertIn("unparseable", result.detail)
+
+    def test_probe_manager_startup_age_conn_returns_none_when_manager_start_is_in_the_future(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="2026-07-07 17:57:00\n2026-07-07 17:57:59 manager: manager startup beginning\n",
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_manager_startup_age_conn(connection)
+
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertIn("in the future", result.detail)
+
+    def test_probe_manager_startup_age_conn_returns_none_on_probe_failure(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout="")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_manager_startup_age_conn(connection)
+
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertIn("rc=1", result.detail)
+
+    def test_probe_manager_startup_age_conn_returns_none_on_ssh_timeout(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=probe.SshCommandTimeout("Timed out waiting for ssh command to finish: probe"),
+        ):
+            result = probe_manager_startup_age_conn(connection)
+
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertEqual(result.detail, "manager startup age probe timed out")
 
     def test_read_runtime_log_tails_conn_fetches_ram_and_payload_logs_with_short_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")

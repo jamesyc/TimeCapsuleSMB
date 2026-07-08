@@ -347,6 +347,7 @@
 "dialog.forget.message" = "Remover %@ deste Mac? Isso não desinstala Samba do dispositivo.";
 "dialog.forget.title" = "Esqueceu este dispositivo?";
 "doctor.check.smb_bind_lan_only_unreachable" = "O SMB está vinculado à LAN do Time Capsule, mas este Mac está em outra rede. Desative \"Vincular SMB somente à LAN\" para este dispositivo e execute \"Instalar / atualizar SMB\", ou conecte-se pelo lado LAN do Time Capsule.";
+"doctor.check.device_starting_up" = "O dispositivo ainda está iniciando. Aguarde alguns minutos e execute a verificação novamente.";
 "doctor.domain.connection" = "Conexão";
 "doctor.domain.disk" = "Disco";
 "doctor.domain.finder_bonjour" = "Finder / Bonjour";

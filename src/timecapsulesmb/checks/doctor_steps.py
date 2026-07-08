@@ -78,6 +78,7 @@ from timecapsulesmb.device.probe import (
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
+    probe_manager_startup_age_conn,
     probe_remote_network_capabilities_conn,
     probe_remote_interface_conn,
     probe_remote_runtime_naming_identity_conn,
@@ -111,6 +112,8 @@ TRANSIENT_MDNS_READINESS_FAILURES = {
 }
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE = "smb_bind_lan_only_unreachable"
+DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
+DOCTOR_STARTUP_GRACE_SECONDS = 180
 
 
 def _run_doctor_retryable_check(
@@ -1573,6 +1576,86 @@ def _doctor_check_runtime_ram_root(target: DoctorTarget, remote: RemoteAccess, s
 
     sink.add(CheckResult("PASS", f"managed runtime directory {RUNTIME_RAM_ROOT} exists"))
     return StepDecision()
+
+
+def _doctor_probe_startup_age(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> float | None:
+    if not remote.remote_checks_enabled:
+        return None
+    try:
+        probe = probe_manager_startup_age_conn(target.connection)
+    except Exception as e:
+        if sink.debug_fields is not None:
+            sink.debug_fields["manager_startup_age_error"] = f"{type(e).__name__}: {e}"
+        return None
+    if sink.debug_fields is not None:
+        sink.debug_fields["manager_startup_age"] = {
+            "seconds_ago": probe.manager_started_seconds_ago,
+            "detail": probe.detail,
+        }
+    return probe.manager_started_seconds_ago
+
+
+def _apply_startup_grace(
+    results: list[CheckResult],
+    manager_started_seconds_ago: float | None,
+    *,
+    grace_seconds: int = DOCTOR_STARTUP_GRACE_SECONDS,
+) -> tuple[list[CheckResult], CheckResult | None]:
+    """Collapse startup-window failures into a single actionable FAIL.
+
+    When the device's manager started less than grace_seconds ago, failures are
+    most likely services that have not finished coming up yet (disk activation,
+    Samba staging, smbd bind, mDNS takeover, ...). Demote them to INFO with
+    their original messages and report one FAIL telling the user to wait and
+    re-run. Persistent failure classes (unreachable device, bad credentials,
+    invalid config, payload not deployed, version mismatch) are structurally
+    exempt: they either stop doctor before the startup-age probe runs or
+    prevent the probe from producing an age at all.
+    """
+    if manager_started_seconds_ago is None:
+        return results, None
+    if not 0 <= manager_started_seconds_ago < grace_seconds:
+        return results, None
+    failures = [result for result in results if result.status == "FAIL"]
+    if not failures:
+        return results, None
+    transformed: list[CheckResult] = []
+    for result in results:
+        if result.status == "FAIL":
+            details = dict(result.details)
+            details["masked_by"] = DOCTOR_CODE_DEVICE_STARTING_UP
+            transformed.append(CheckResult("INFO", result.message, details))
+        else:
+            transformed.append(result)
+    startup_fail = CheckResult(
+        "FAIL",
+        f"some checks failed while the device was still starting up "
+        f"(managed services started {int(manager_started_seconds_ago)}s ago); "
+        "wait a few minutes and run doctor again",
+        {
+            "code": DOCTOR_CODE_DEVICE_STARTING_UP,
+            "domain": "Runtime",
+            "manager_started_seconds_ago": int(manager_started_seconds_ago),
+            "startup_grace_seconds": grace_seconds,
+            "masked_failures": [result.message for result in failures],
+        },
+    )
+    transformed.append(startup_fail)
+    return transformed, startup_fail
+
+
+def _doctor_apply_startup_grace(sink: DoctorSink, manager_started_seconds_ago: float | None) -> None:
+    transformed, startup_fail = _apply_startup_grace(sink.results, manager_started_seconds_ago)
+    if startup_fail is None:
+        return
+    # Replace the collected results directly: the demoted failures were already
+    # streamed via on_result with their original FAIL status, so only the new
+    # summary failure is streamed here.
+    sink.results[:] = transformed
+    if sink.on_result is not None:
+        sink.on_result(startup_fail)
+    if sink.debug_fields is not None:
+        sink.debug_fields["startup_grace_applied"] = True
 
 
 def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> RuntimeNamingState:

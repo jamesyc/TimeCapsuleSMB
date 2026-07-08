@@ -35,6 +35,11 @@ from timecapsulesmb.checks.doctor import (
     run_doctor_checks,
 )
 from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
+from timecapsulesmb.checks.doctor_steps import (
+    DOCTOR_CODE_DEVICE_STARTING_UP,
+    DOCTOR_STARTUP_GRACE_SECONDS,
+    _apply_startup_grace,
+)
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
@@ -53,6 +58,7 @@ from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
+    ManagerStartupAgeProbeResult,
     RemoteInterfaceProbeResult,
     RemoteNetworkCapabilitiesProbeResult,
     RUNTIME_RAM_ROOT,
@@ -2281,6 +2287,157 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertFalse(any("data disk appears unresponsive" in result.message for result in run.results))
 
+    def test_apply_startup_grace_masks_failures_within_grace_window(self) -> None:
+        results = [
+            CheckResult("PASS", "ssh ok"),
+            CheckResult("FAIL", "managed runtime smbd binary missing"),
+            CheckResult("WARN", "could not inspect active smb.conf"),
+            CheckResult("FAIL", "smbd is not bound to required TCP 445 sockets", {"domain": "Runtime"}),
+        ]
+
+        transformed, startup_fail = _apply_startup_grace(results, 41.0)
+
+        self.assertIsNotNone(startup_fail)
+        self.assertEqual(
+            [(result.status, result.message) for result in transformed],
+            [
+                ("PASS", "ssh ok"),
+                ("INFO", "managed runtime smbd binary missing"),
+                ("WARN", "could not inspect active smb.conf"),
+                ("INFO", "smbd is not bound to required TCP 445 sockets"),
+                ("FAIL", startup_fail.message),
+            ],
+        )
+        self.assertIn("still starting up", startup_fail.message)
+        self.assertIn("41s ago", startup_fail.message)
+        self.assertEqual(startup_fail.details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
+        self.assertEqual(startup_fail.details["domain"], "Runtime")
+        self.assertEqual(startup_fail.details["manager_started_seconds_ago"], 41)
+        self.assertEqual(startup_fail.details["startup_grace_seconds"], DOCTOR_STARTUP_GRACE_SECONDS)
+        self.assertEqual(
+            startup_fail.details["masked_failures"],
+            ["managed runtime smbd binary missing", "smbd is not bound to required TCP 445 sockets"],
+        )
+        demoted = transformed[3]
+        self.assertEqual(demoted.details["masked_by"], DOCTOR_CODE_DEVICE_STARTING_UP)
+        self.assertEqual(demoted.details["domain"], "Runtime")
+
+    def test_apply_startup_grace_leaves_passing_results_untouched_within_grace_window(self) -> None:
+        results = [CheckResult("PASS", "ssh ok"), CheckResult("WARN", "minor")]
+
+        transformed, startup_fail = _apply_startup_grace(results, 41.0)
+
+        self.assertIsNone(startup_fail)
+        self.assertEqual(transformed, results)
+
+    def test_apply_startup_grace_skips_when_manager_started_long_ago(self) -> None:
+        results = [CheckResult("FAIL", "managed runtime smbd binary missing")]
+
+        transformed, startup_fail = _apply_startup_grace(results, float(DOCTOR_STARTUP_GRACE_SECONDS))
+
+        self.assertIsNone(startup_fail)
+        self.assertEqual(transformed, results)
+
+    def test_apply_startup_grace_skips_when_manager_age_unknown(self) -> None:
+        results = [CheckResult("FAIL", "managed runtime smbd binary missing")]
+
+        transformed, startup_fail = _apply_startup_grace(results, None)
+
+        self.assertIsNone(startup_fail)
+        self.assertEqual(transformed, results)
+
+    def test_run_doctor_checks_collapses_startup_failures_into_single_fail(self) -> None:
+        debug_fields: dict[str, object] = {}
+        streamed: list[CheckResult] = []
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
+            debug_fields=debug_fields,
+            on_result=streamed.append,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                    return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
+                ),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].details["code"], DOCTOR_CODE_DEVICE_STARTING_UP)
+        demoted = [result for result in run.results if result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP]
+        self.assertTrue(demoted)
+        self.assertTrue(all(result.status == "INFO" for result in demoted))
+        self.assertTrue(any("managed mDNS takeover is not active" in result.message for result in demoted))
+        self.assertEqual(failures[0].details["masked_failures"], [result.message for result in demoted])
+        self.assertTrue(debug_fields["startup_grace_applied"])
+        self.assertEqual(debug_fields["manager_startup_age"], {"seconds_ago": 41.0, "detail": "manager started 41s ago"})
+        # The synthesized failure is streamed so live consumers (CLI) see it last.
+        self.assertEqual(streamed[-1].details.get("code"), DOCTOR_CODE_DEVICE_STARTING_UP)
+
+    def test_run_doctor_checks_keeps_failures_when_manager_started_long_ago(self) -> None:
+        debug_fields: dict[str, object] = {}
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                    return_value=ManagerStartupAgeProbeResult(400.0, "manager started 400s ago")
+                ),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertTrue(
+            any(
+                result.status == "FAIL" and "managed mDNS takeover is not active" in result.message
+                for result in run.results
+            )
+        )
+        self.assertFalse(
+            any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results)
+        )
+        self.assertNotIn("startup_grace_applied", debug_fields)
+
+    def test_run_doctor_checks_passing_run_is_untouched_by_recent_startup(self) -> None:
+        debug_fields: dict[str, object] = {}
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+            skip_bonjour=True,
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                    return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
+                ),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertFalse(any(result.status == "FAIL" for result in run.results))
+        self.assertFalse(
+            any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results)
+        )
+        self.assertNotIn("startup_grace_applied", debug_fields)
+
     def test_run_doctor_checks_adds_mast_probe_for_xattr_parent_missing(self) -> None:
         debug_fields: dict[str, object] = {}
         mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
@@ -4349,6 +4506,8 @@ class CheckTests(unittest.TestCase):
                                             with mock.patch(
                                                 "timecapsulesmb.device.probe.run_ssh",
                                                 side_effect=[
+                                                    # startup-age probe: manager started well past the grace window
+                                                    mock.Mock(returncode=0, stdout="2026-07-07 12:30:00\n2026-07-07 12:00:00 manager: manager startup beginning\n"),
                                                     mock.Mock(stdout="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n"),
                                                     mock.Mock(stdout="enabled\n"),
                                                 ],
@@ -4370,7 +4529,7 @@ class CheckTests(unittest.TestCase):
         nbns_index = results.index(nbns_result)
         listing_index = next(i for i, result in enumerate(results) if result.message == "listing ok")
         self.assertLess(nbns_index, listing_index)
-        self.assertEqual(run_ssh_mock.call_count, 2)
+        self.assertEqual(run_ssh_mock.call_count, 3)
         nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "10.0.0.2")
 
     def test_run_doctor_checks_uses_runtime_network_plan_for_hostname_target_nbns(self) -> None:
@@ -4399,6 +4558,8 @@ class CheckTests(unittest.TestCase):
                                             with mock.patch(
                                                 "timecapsulesmb.device.probe.run_ssh",
                                                 side_effect=[
+                                                    # startup-age probe: manager started well past the grace window
+                                                    mock.Mock(returncode=0, stdout="2026-07-07 12:30:00\n2026-07-07 12:00:00 manager: manager startup beginning\n"),
                                                     mock.Mock(stdout="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n"),
                                                     mock.Mock(stdout="enabled\n"),
                                                 ],
@@ -4444,6 +4605,8 @@ class CheckTests(unittest.TestCase):
                                             with mock.patch(
                                                 "timecapsulesmb.device.probe.run_ssh",
                                                 side_effect=[
+                                                    # startup-age probe: manager started well past the grace window
+                                                    mock.Mock(returncode=0, stdout="2026-07-07 12:30:00\n2026-07-07 12:00:00 manager: manager startup beginning\n"),
                                                     mock.Mock(stdout="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n"),
                                                     mock.Mock(stdout="enabled\n"),
                                                 ],
