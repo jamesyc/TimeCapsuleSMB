@@ -114,6 +114,11 @@ DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE = "smb_bind_lan_only_unreachable"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
 DOCTOR_STARTUP_GRACE_SECONDS = 180
+STARTUP_GRACE_PERSISTENT_FAILURE_PREFIXES = (
+    "missing local tool ",
+    "Unsupported device OS:",
+    "device compatibility check failed:",
+)
 
 
 def _run_doctor_retryable_check(
@@ -1610,18 +1615,22 @@ def _apply_startup_grace(
     re-run. Persistent failure classes (unreachable device, bad credentials,
     invalid config, payload not deployed, version mismatch) are structurally
     exempt: they either stop doctor before the startup-age probe runs or
-    prevent the probe from producing an age at all.
+    prevent the probe from producing an age at all. Local prerequisite and
+    compatibility failures can still be reported after the startup-age probe,
+    so keep those as FAIL because waiting will not fix them.
     """
     if manager_started_seconds_ago is None:
         return results, None
     if not 0 <= manager_started_seconds_ago < grace_seconds:
         return results, None
-    failures = [result for result in results if result.status == "FAIL"]
-    if not failures:
+    maskable_failures = [
+        result for result in results if result.status == "FAIL" and _startup_grace_can_mask_failure(result)
+    ]
+    if not maskable_failures:
         return results, None
     transformed: list[CheckResult] = []
     for result in results:
-        if result.status == "FAIL":
+        if result.status == "FAIL" and _startup_grace_can_mask_failure(result):
             details = dict(result.details)
             details["masked_by"] = DOCTOR_CODE_DEVICE_STARTING_UP
             transformed.append(CheckResult("INFO", result.message, details))
@@ -1637,11 +1646,24 @@ def _apply_startup_grace(
             "domain": "Runtime",
             "manager_started_seconds_ago": int(manager_started_seconds_ago),
             "startup_grace_seconds": grace_seconds,
-            "masked_failures": [result.message for result in failures],
+            "masked_failures": [result.message for result in maskable_failures],
         },
     )
     transformed.append(startup_fail)
     return transformed, startup_fail
+
+
+def _startup_grace_can_mask_failure(result: CheckResult) -> bool:
+    if result.details.get("code") == DOCTOR_CODE_RUNTIME_NOT_INSTALLED:
+        return False
+    message = result.message
+    if message.startswith(STARTUP_GRACE_PERSISTENT_FAILURE_PREFIXES):
+        return False
+    if message == "could not determine device compatibility":
+        return False
+    if message.startswith("Detected NetBSD ") and "not supported" in message:
+        return False
+    return True
 
 
 def _doctor_apply_startup_grace(sink: DoctorSink, manager_started_seconds_ago: float | None) -> None:

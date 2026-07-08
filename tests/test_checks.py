@@ -2346,6 +2346,21 @@ class CheckTests(unittest.TestCase):
         self.assertIsNone(startup_fail)
         self.assertEqual(transformed, results)
 
+    def test_apply_startup_grace_keeps_persistent_failures_during_grace_window(self) -> None:
+        results = [
+            CheckResult("FAIL", "missing local tool sshpass; NetBSD4 upload fallback requires sshpass"),
+            CheckResult(
+                "FAIL",
+                "Detected NetBSD 6.0 (earmv4) with big-endian binaries, "
+                "which is not supported by the current Samba payload.",
+            ),
+        ]
+
+        transformed, startup_fail = _apply_startup_grace(results, 41.0)
+
+        self.assertIsNone(startup_fail)
+        self.assertEqual(transformed, results)
+
     def test_run_doctor_checks_collapses_startup_failures_into_single_fail(self) -> None:
         debug_fields: dict[str, object] = {}
         streamed: list[CheckResult] = []
@@ -2413,6 +2428,58 @@ class CheckTests(unittest.TestCase):
             any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in run.results)
         )
         self.assertNotIn("startup_grace_applied", debug_fields)
+
+    def test_run_doctor_checks_keeps_compatibility_failure_during_startup_grace(self) -> None:
+        unsupported_state = mock.Mock(
+            probe_result=mock.Mock(
+                ssh_authenticated=True,
+                error=None,
+                os_name="NetBSD",
+                os_release="6.0",
+                arch="earmv4",
+                elf_endianness="big",
+            ),
+            compatibility=DeviceCompatibility(
+                os_name="NetBSD",
+                os_release="6.0",
+                arch="earmv4",
+                elf_endianness="big",
+                payload_family=None,
+                device_generation="unknown",
+                supported=False,
+                reason_code="unsupported_netbsd6_endianness",
+            ),
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
+            precomputed_probe_state=unsupported_state,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                    return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
+                ),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+            },
+        )
+
+        failures = [result for result in run.results if result.status == "FAIL"]
+        self.assertTrue(
+            any("not supported by the current Samba payload" in result.message for result in failures)
+        )
+        self.assertTrue(
+            any(result.details.get("code") == DOCTOR_CODE_DEVICE_STARTING_UP for result in failures)
+        )
+        demoted = [result for result in run.results if result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP]
+        self.assertTrue(any("managed mDNS takeover is not active" in result.message for result in demoted))
+        self.assertFalse(
+            any("not supported by the current Samba payload" in result.message for result in demoted)
+        )
 
     def test_run_doctor_checks_passing_run_is_untouched_by_recent_startup(self) -> None:
         debug_fields: dict[str, object] = {}
