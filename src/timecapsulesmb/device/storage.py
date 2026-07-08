@@ -40,6 +40,22 @@ class MaStVolume:
 
 
 @dataclass(frozen=True)
+class MaStPartitionSnapshot:
+    device: str
+    name: str
+    format: str
+
+
+@dataclass(frozen=True)
+class MaStDiskSnapshot:
+    device: str
+    name: str
+    size: object | None
+    builtin: bool
+    partitions: tuple[MaStPartitionSnapshot, ...]
+
+
+@dataclass(frozen=True)
 class PayloadHome:
     volume_root: str
     device_path: str
@@ -212,6 +228,35 @@ def _volumes_from_plist_root(root: object) -> tuple[MaStVolume, ...]:
     return tuple(volumes)
 
 
+def _partition_snapshot_from_mapping(partition: dict[str, object]) -> MaStPartitionSnapshot:
+    return MaStPartitionSnapshot(
+        device=str(partition.get("deviceName") or ""),
+        name=str(partition.get("name") or ""),
+        format=str(partition.get("format") or "").lower(),
+    )
+
+
+def _disk_snapshot_from_mapping(disk: dict[str, object]) -> MaStDiskSnapshot:
+    partitions = disk.get("partitions")
+    return MaStDiskSnapshot(
+        device=str(disk.get("deviceName") or ""),
+        name=str(disk.get("name") or disk.get("model") or ""),
+        size=disk.get("size") or disk.get("capacity") or disk.get("totalSize"),
+        builtin=bool(disk.get("builtin")),
+        partitions=tuple(
+            _partition_snapshot_from_mapping(partition)
+            for partition in partitions
+            if isinstance(partition, dict)
+        )
+        if isinstance(partitions, list)
+        else (),
+    )
+
+
+def _disk_snapshots_from_plist_root(root: object) -> tuple[MaStDiskSnapshot, ...]:
+    return tuple(_disk_snapshot_from_mapping(disk) for disk in _plist_root_items(root))
+
+
 def _parse_mast_openstep(content: str) -> tuple[MaStVolume, ...]:
     text = _strip_mast_assignment_prefix(content)
     volumes: list[MaStVolume] = []
@@ -310,6 +355,108 @@ def _parse_mast_openstep(content: str) -> tuple[MaStVolume, ...]:
     return tuple(volumes)
 
 
+def _parse_mast_openstep_inventory(content: str) -> tuple[MaStDiskSnapshot, ...]:
+    text = _strip_mast_assignment_prefix(content)
+    disks: list[MaStDiskSnapshot] = []
+    partitions: list[MaStPartitionSnapshot] = []
+    disk_device = ""
+    disk_name = ""
+    disk_size: object | None = None
+    disk_builtin = False
+    in_partitions = False
+    part_device = ""
+    part_name = ""
+    part_format = ""
+
+    def emit_partition() -> None:
+        nonlocal part_device, part_name, part_format
+        if part_device or part_name or part_format:
+            partitions.append(MaStPartitionSnapshot(part_device, part_name, part_format.lower()))
+        part_device = ""
+        part_name = ""
+        part_format = ""
+
+    def flush_disk() -> None:
+        nonlocal partitions, disk_device, disk_name, disk_size, disk_builtin
+        if disk_device or disk_name or partitions:
+            disks.append(
+                MaStDiskSnapshot(
+                    device=disk_device,
+                    name=disk_name,
+                    size=disk_size,
+                    builtin=disk_builtin,
+                    partitions=tuple(partitions),
+                )
+            )
+        partitions = []
+        disk_device = ""
+        disk_name = ""
+        disk_size = None
+        disk_builtin = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line == "(":
+            continue
+        if re.match(r"^partitions\s*=", line):
+            in_partitions = True
+            continue
+        if _openstep_collection_close(line):
+            if part_device or part_name or part_format:
+                emit_partition()
+            in_partitions = False
+            continue
+        if _openstep_object_close(line):
+            if in_partitions and (part_device or part_name or part_format):
+                emit_partition()
+            elif not in_partitions:
+                flush_disk()
+            continue
+
+        device_name = _openstep_assignment_value(line, "deviceName")
+        if device_name is not None:
+            if in_partitions:
+                part_device = device_name
+            else:
+                if disk_device:
+                    flush_disk()
+                disk_device = device_name
+            continue
+
+        name = _openstep_assignment_value(line, "name")
+        if name is not None:
+            if in_partitions:
+                part_name = name
+            else:
+                disk_name = name
+            continue
+
+        fmt = _openstep_assignment_value(line, "format")
+        if fmt is not None and in_partitions:
+            part_format = fmt
+            continue
+
+        size = _openstep_assignment_value(line, "size")
+        if size is None:
+            size = _openstep_assignment_value(line, "capacity")
+        if size is None:
+            size = _openstep_assignment_value(line, "totalSize")
+        if size is not None and not in_partitions:
+            disk_size = size
+            continue
+
+        builtin = _openstep_bool_assignment(line, "builtin")
+        if builtin is not None and not in_partitions:
+            disk_builtin = builtin
+            continue
+
+    if part_device or part_name or part_format:
+        emit_partition()
+    if disk_device or disk_name or partitions:
+        flush_disk()
+    return tuple(disks)
+
+
 def parse_mast_plist(content: str | bytes) -> tuple[MaStVolume, ...]:
     text: str | None = None
     if isinstance(content, bytes):
@@ -328,6 +475,26 @@ def parse_mast_plist(content: str | bytes) -> tuple[MaStVolume, ...]:
         if text is None:
             text = content.decode("utf-8", errors="replace")
         return _parse_mast_openstep(text)
+
+
+def parse_mast_inventory(content: str | bytes) -> tuple[MaStDiskSnapshot, ...]:
+    text: str | None = None
+    if isinstance(content, bytes):
+        data = content
+    else:
+        text = content.strip()
+        xml_start = text.find("<?xml")
+        if xml_start >= 0:
+            text = text[xml_start:]
+        else:
+            text = _strip_mast_assignment_prefix(text)
+        data = text.encode("utf-8", errors="replace")
+    try:
+        return _disk_snapshots_from_plist_root(plistlib.loads(data))
+    except plistlib.InvalidFileException:
+        if text is None:
+            text = content.decode("utf-8", errors="replace")
+        return _parse_mast_openstep_inventory(text)
 
 
 def read_mast_volumes_with_output_conn(connection: SshConnection) -> MaStReadResult:
@@ -404,6 +571,12 @@ def wait_for_mast_volumes_conn(
         volumes = read_result.volumes
         raw_output = read_result.raw_output
         if volumes:
+            return MaStDiscoveryResult(volumes, attempt, raw_output)
+        try:
+            disks = parse_mast_inventory(raw_output)
+        except Exception:
+            disks = ()
+        if disks:
             return MaStDiscoveryResult(volumes, attempt, raw_output)
         if attempt < attempts:
             time.sleep(delay_seconds)

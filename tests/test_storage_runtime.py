@@ -823,6 +823,38 @@ MaSt = (
         self.assertEqual(read_mock.call_count, 3)
         self.assertEqual(sleep_mock.call_args_list, [mock.call(3), mock.call(3)])
 
+    def test_wait_for_mast_volumes_stops_when_disk_has_no_hfs_partitions(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        raw_output = """
+MaSt = (
+    {
+        deviceName = "wd0";
+        name = "Seagate Expansion HDD";
+        builtin = true;
+        partitions = (
+            {
+                deviceName = "dk2";
+                name = "PS3FAT";
+                format = "msdos";
+            }
+        );
+    }
+);
+"""
+
+        with mock.patch(
+            "timecapsulesmb.device.storage.read_mast_volumes_with_output_conn",
+            return_value=MaStReadResult((), raw_output),
+        ) as read_mock:
+            with mock.patch("timecapsulesmb.device.storage.time.sleep") as sleep_mock:
+                result = wait_for_mast_volumes_conn(connection, attempts=10, delay_seconds=3)
+
+        self.assertEqual(result.volumes, ())
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(result.raw_output, raw_output)
+        read_mock.assert_called_once_with(connection)
+        sleep_mock.assert_not_called()
+
     def test_probe_mast_diagnostics_records_empty_success(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         raw_output = "MaSt = (\n);\n"

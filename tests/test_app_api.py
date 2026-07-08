@@ -3559,7 +3559,7 @@ class AppApiTests(unittest.TestCase):
 
         self.assertIn("Timed out waiting for ssh command to finish: reboot", str(raised.exception))
 
-    def test_deploy_reports_no_mast_volumes_as_remote_error(self) -> None:
+    def test_deploy_reports_no_mast_volumes_as_no_disk_code(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
@@ -3599,8 +3599,8 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         error = collector.events_of_type("error")[0]
-        self.assertEqual(error["code"], "remote_error")
-        self.assertEqual(error["recovery"]["title"], "No HFS volumes found")
+        self.assertEqual(error["code"], "deploy_no_disk_detected")
+        self.assertEqual(error["recovery"]["title"], "No internal disk detected")
         self.assertEqual(error["recovery"]["action_ids"], [])
         self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], True)
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs

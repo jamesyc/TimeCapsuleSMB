@@ -69,6 +69,11 @@ def optional_unsigned_int_override_param(params: dict[str, object], name: str) -
     return int_param(params, name, 0)
 
 
+def _device_error_code(exc: DeviceError) -> str:
+    code = getattr(exc, "code", "")
+    return code if isinstance(code, str) and code else "remote_error"
+
+
 def confirmation_presentation_for_startup_mode(
     *,
     startup_mode: DeploymentStartupMode,
@@ -303,7 +308,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             wait_after_reboot=not no_wait,
         )
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        raise AppOperationError(str(exc), code=_device_error_code(exc)) from exc
     plan = prepared_plan.plan
     if dry_run:
         return OperationResult(True, deploy_plan_payload(
@@ -352,7 +357,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        raise AppOperationError(str(exc), code=_device_error_code(exc)) from exc
 
     try:
         completion = complete_deployment_after_upload(
@@ -366,7 +371,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code="remote_error") from exc
+        raise AppOperationError(str(exc), code=_device_error_code(exc)) from exc
     return OperationResult(True, _deploy_completion_payload(completion))
 
 
@@ -390,5 +395,5 @@ def verify_runtime(
     except DeviceError as exc:
         raise AppOperationError(
             str(exc),
-            code="remote_error",
+            code=_device_error_code(exc),
         ) from exc

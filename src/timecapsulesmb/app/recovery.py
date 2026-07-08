@@ -169,6 +169,35 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ("Check the device model and OS.", "Do not deploy from the GUI until a supported payload is available."),
         retryable=False,
     ),
+    ("deploy", "deploy_no_disk_detected"): RecoveryInfo(
+        "No internal disk detected",
+        "The device did not report any internal disk through MaSt.",
+        (
+            "Check that the disk is connected and seated.",
+            "Power-cycle the device and retry after the disk spins up.",
+            "Some devices cannot fully detect some disks larger than 2TB.",
+        ),
+        retryable=True,
+        suggested_operation="deploy",
+    ),
+    ("deploy", "deploy_no_hfs_partition"): RecoveryInfo(
+        "No valid HFS partition",
+        "A disk was found, but it does not expose a valid HFS partition that TimeCapsuleSMB can deploy to.",
+        (
+            "Erase the disk with AirPort Utility using Erase Disk.",
+            "Retry deploy after the Time Capsule formats the disk.",
+            "Some devices cannot detect some partitions larger than 2TB.",
+        ),
+        retryable=False,
+        suggested_operation="deploy",
+    ),
+    ("deploy", "deploy_disk_not_writable"): RecoveryInfo(
+        "No writable payload volume",
+        "MaSt found HFS volumes, but none accepted the managed payload directory.",
+        ("Wake or remount the disk.", "Check available free space.", "Retry deploy."),
+        retryable=True,
+        suggested_operation="deploy",
+    ),
     ("activate", "confirmation_required"): RecoveryInfo(
         "Activation confirmation required",
         "NetBSD4 activation starts the deployed runtime and must be confirmed.",

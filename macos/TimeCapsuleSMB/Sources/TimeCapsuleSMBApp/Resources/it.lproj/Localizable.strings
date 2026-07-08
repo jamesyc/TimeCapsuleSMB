@@ -732,6 +732,9 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Usa la scoperta o inserisci l’indirizzo IP LAN corrente.";
 "backend.error.auth_failed" = "Il dispositivo ha rifiutato la password o le credenziali SSH fornite.";
 "backend.error.configure.auth_failed" = "La password amministratore AirPort non ha funzionato.";
+"backend.error.deploy.deploy_no_disk_detected" = "Non è stato rilevato alcun disco interno. Controlla che il disco sia collegato e inserito correttamente. Nota: alcuni dispositivi non riescono a rilevare completamente alcuni dischi più grandi di 2 TB.";
+"backend.error.deploy.deploy_no_hfs_partition" = "È stato trovato un disco, ma non è stata rilevata alcuna partizione HFS valida. Inizializza il disco con Utility AirPort (Erase Disk) per formattarlo per Time Capsule. Nota: alcuni dispositivi non riescono a rilevare alcune partizioni più grandi di 2 TB.";
+"backend.error.deploy.deploy_disk_not_writable" = "È stato trovato un disco HFS valido, ma TimeCapsuleSMB non è riuscito a scrivere il payload. Riattiva o rimonta il disco, controlla lo spazio libero e riprova.";
 "backend.recovery.auth_failed.title" = "Autenticazione non riuscita";
 "backend.recovery.auth_failed.message" = "Il dispositivo ha rifiutato la password o le credenziali SSH fornite.";
 "backend.recovery.auth_failed.action.1" = "Reinserisci la password amministratore AirPort.";

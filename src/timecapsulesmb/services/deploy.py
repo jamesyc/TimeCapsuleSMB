@@ -53,12 +53,14 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
+    MaStDiskSnapshot,
     MaStDiscoveryResult,
     PayloadHome,
     PayloadHomeSelection,
     PayloadVerificationResult,
     build_dry_run_payload_home,
     payload_candidate_checks_debug_summary,
+    parse_mast_inventory,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
 )
@@ -231,6 +233,12 @@ class DeployArtifactValidationError(ValueError):
     """Raised when local deploy artifacts fail validation."""
 
 
+class DeployDeviceError(DeviceError):
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def default_deploy_service_dependencies() -> DeployServiceDependencies:
     return DeployServiceDependencies(
         validate_artifacts=validate_artifacts,
@@ -260,13 +268,57 @@ def _best_effort_debug_summary(render, value: object) -> object | None:
 
 def no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
     return (
-        f"No deployable HFS disk was found after {attempts} MaSt queries "
+        f"No internal disk was detected after {attempts} MaSt queries "
         f"spaced {delay_seconds} seconds apart."
+    )
+
+
+def no_hfs_partition_message() -> str:
+    return (
+        "A disk was found, but no valid HFS partition was detected. "
+        "Erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
+        "Note: some devices cannot detect some partitions larger than 2TB."
     )
 
 
 def no_writable_mast_volumes_message(volume_count: int) -> str:
     return f"MaSt found {volume_count} deployable HFS volume(s), but deploy could not write to any of them."
+
+
+def mast_disk_inventory_debug_summary(disks: tuple[MaStDiskSnapshot, ...]) -> list[dict[str, object]]:
+    return [
+        {
+            "disk": disk.device,
+            "name": disk.name,
+            "size": disk.size,
+            "builtin": disk.builtin,
+            "partitions": [
+                {
+                    "part": partition.device,
+                    "format": partition.format,
+                    "name": partition.name,
+                }
+                for partition in disk.partitions
+            ],
+        }
+        for disk in disks
+    ]
+
+
+def mast_no_volume_error(mast_discovery: MaStDiscoveryResult) -> DeployDeviceError:
+    try:
+        disks = parse_mast_inventory(mast_discovery.raw_output)
+    except Exception:
+        disks = ()
+    if disks:
+        return DeployDeviceError(no_hfs_partition_message(), code="deploy_no_hfs_partition")
+    return DeployDeviceError(
+        no_mast_volumes_message(
+            attempts=MAST_DISCOVERY_ATTEMPTS,
+            delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+        ),
+        code="deploy_no_disk_detected",
+    )
 
 
 def payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
@@ -493,12 +545,12 @@ def select_deploy_payload_home(
         wait_for_mast_volumes=wait_for_mast_volumes,
     )
     if not mast_discovery.volumes:
-        raise DeviceError(
-            no_mast_volumes_message(
-                attempts=MAST_DISCOVERY_ATTEMPTS,
-                delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
-            )
-        )
+        try:
+            disks = parse_mast_inventory(mast_discovery.raw_output)
+        except Exception:
+            disks = ()
+        callbacks.debug(mast_disk_inventory=mast_disk_inventory_debug_summary(disks))
+        raise mast_no_volume_error(mast_discovery)
 
     callbacks.stage("select_payload_home")
     if select_payload_home is None:
@@ -516,7 +568,10 @@ def select_deploy_payload_home(
         ),
     )
     if selection.payload_home is None:
-        raise DeviceError(no_writable_mast_volumes_message(len(mast_discovery.volumes)))
+        raise DeployDeviceError(
+            no_writable_mast_volumes_message(len(mast_discovery.volumes)),
+            code="deploy_disk_not_writable",
+        )
     return selection.payload_home
 
 

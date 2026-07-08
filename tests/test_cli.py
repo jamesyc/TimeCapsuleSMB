@@ -5304,7 +5304,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(
             str(result.exception),
-            "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.",
+            "No internal disk was detected after 10 MaSt queries spaced 3 seconds apart.",
         )
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
@@ -5317,6 +5317,53 @@ class CliTests(unittest.TestCase):
         self.assertIn("mast_candidates=[]", telemetry_error)
         self.assertIn(f"mast_acp_output_chars={len(raw_mast_output)}", telemetry_error)
         self.assertIn(f"mast_acp_output={raw_mast_output}", telemetry_error)
+        self.assertIn("mast_disk_inventory=[]", telemetry_error)
+
+    def test_deploy_exits_when_mast_finds_disk_without_hfs_partition(self) -> None:
+        raw_mast_output = plistlib.dumps(
+            [
+                {
+                    "deviceName": "wd0",
+                    "name": "Seagate Expansion HDD",
+                    "size": 8_000_000_000_000,
+                    "builtin": True,
+                    "partitions": [
+                        {
+                            "deviceName": "dk2",
+                            "name": "PS3FAT",
+                            "format": "msdos",
+                        }
+                    ],
+                }
+            ]
+        ).decode()
+        result = self.run_deploy_cli(
+            ["--yes"],
+            mast_volumes=(),
+            mast_discovery=MaStDiscoveryResult((), 1, raw_mast_output),
+            patch_actions=True,
+            patch_upload=True,
+            raises=SystemExit,
+        )
+
+        self.assertEqual(
+            str(result.exception),
+            "A disk was found, but no valid HFS partition was detected. "
+            "Erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
+            "Note: some devices cannot detect some partitions larger than 2TB.",
+        )
+        result.mocks.wait_for_mast_volumes_conn.assert_called_once()
+        result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+        telemetry_error = self.telemetry_payload("deploy_finished")["error"]
+        self.assertIn("stage=read_mast", telemetry_error)
+        self.assertIn("mast_read_attempts=1", telemetry_error)
+        self.assertIn("mast_volume_count=0", telemetry_error)
+        self.assertIn("mast_disk_inventory=[{disk:wd0", telemetry_error)
+        self.assertIn("format:msdos", telemetry_error)
+        self.assertIn("name:PS3FAT", telemetry_error)
+        self.assertIn("size:8000000000000", telemetry_error)
 
     def test_deploy_no_reboot_activates_after_upload_phase(self) -> None:
         result = self.run_deploy_cli(

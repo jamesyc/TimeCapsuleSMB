@@ -732,6 +732,9 @@
 "backend.recovery.configure.remote_error.acp_port_probe.action.4" = "Gebruik ontdekking of voer het huidige LAN-IP-adres in.";
 "backend.error.auth_failed" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
 "backend.error.configure.auth_failed" = "Het AirPort-beheerderswachtwoord werkte niet.";
+"backend.error.deploy.deploy_no_disk_detected" = "Er is geen interne schijf gedetecteerd. Controleer of de schijf is aangesloten en goed vastzit. Opmerking: sommige apparaten kunnen sommige schijven groter dan 2 TB niet volledig detecteren.";
+"backend.error.deploy.deploy_no_hfs_partition" = "Er is een schijf gevonden, maar er is geen geldige HFS-partitie gedetecteerd. Wis de schijf met AirPort-configuratieprogramma (Erase Disk) om deze voor de Time Capsule te formatteren. Opmerking: sommige apparaten kunnen sommige partities groter dan 2 TB niet detecteren.";
+"backend.error.deploy.deploy_disk_not_writable" = "Er is een geldige HFS-schijf gevonden, maar TimeCapsuleSMB kon de payload er niet naartoe schrijven. Activeer of koppel de schijf opnieuw, controleer de vrije ruimte en probeer het opnieuw.";
 "backend.recovery.auth_failed.title" = "Authenticatie mislukt";
 "backend.recovery.auth_failed.message" = "Het apparaat heeft het opgegeven wachtwoord of de SSH-inloggegevens geweigerd.";
 "backend.recovery.auth_failed.action.1" = "Voer het AirPort-beheerderswachtwoord opnieuw in.";
