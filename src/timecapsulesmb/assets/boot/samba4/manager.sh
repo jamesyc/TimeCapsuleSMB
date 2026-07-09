@@ -1169,11 +1169,19 @@ tc_manager_launch_current_mdns_advertiser() {
     fi
 }
 
+tc_manager_reap_apple_mdnsresponder() {
+    if runtime_process_present_by_ucomm mDNSResponder; then
+        tc_log "manager mDNS recovery: Apple mDNSResponder is running alongside the advertiser; reaping to keep UDP 5353 uncontested"
+        tc_kill_apple_mdnsresponder
+    fi
+}
+
 tc_manager_reconcile_mdns() {
     mdns_auto_ip_status=0
 
     if runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
         if tc_mdns_bound_udp_5353; then
+            tc_manager_reap_apple_mdnsresponder
             return 0
         fi
         tc_log "manager mDNS recovery: mdns advertiser is running without required UDP 5353 listeners"

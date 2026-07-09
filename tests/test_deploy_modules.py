@@ -271,7 +271,7 @@ class DeployModuleTests(unittest.TestCase):
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
-        bin_path = tmp / "mdns-advertiser"
+        bin_path = tmp / "mdns-advertiser-test"
         proc = subprocess.run(
             [
                 "cc",

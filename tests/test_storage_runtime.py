@@ -2244,6 +2244,7 @@ MaSt = (
                     runtime_process_present_by_ucomm() {
                         case "$1" in
                             mdns-advertiser) return 0 ;;
+                            mDNSResponder) return 1 ;;
                             *) echo unexpected-runtime; return 1 ;;
                         esac
                     }
@@ -2275,6 +2276,64 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "prepare\ninit\nchanged=0\nready=1\n")
+
+    def test_manager_reconcile_reaps_apple_mdnsresponder_when_advertiser_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_log() { :; }
+                    tc_prepare_local_hostname_resolution() { echo prepare; }
+                    tc_init_runtime_identity() {
+                        echo init
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            mDNSResponder) return 0 ;;
+                            *) echo unexpected-runtime; return 1 ;;
+                        esac
+                    }
+                    stop_runtime_process_by_ucomm() { :; }
+                    tc_kill_apple_mdnsresponder() { echo reaped; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    tc_nbns_enabled() { return 0; }
+                    TC_MANAGER_IDENTITY_SIGNATURE_READY=0
+                    TC_MANAGER_LAST_IDENTITY_SIGNATURE=
+                    tc_manager_stop_samba_lane_without_payload() { :; }
+                    sleep() {
+                        if [ "$1" = "1" ]; then
+                            return 0
+                        fi
+                        echo "changed=$TC_MANAGER_IDENTITY_CHANGED"
+                        echo "ready=$TC_MANAGER_IDENTITY_SIGNATURE_READY"
+                        exit 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("reaped", proc.stdout.splitlines())
 
     def test_manager_iteration_reconciles_no_payload_without_samba_or_nbns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

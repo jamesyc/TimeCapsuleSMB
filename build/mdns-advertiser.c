@@ -79,6 +79,7 @@
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
 #define MDNS_DEGRADED_RETRY_SECONDS 5
+#define MDNS_MDNSRESPONDER_GUARD_SECONDS 5
 #define MDNS_COUNTER_LOG_INTERVAL_MS 30000
 #define ADVERTISER_VERSION_CODE 2220
 #define NT_HASH_MAX_PASSWORD_BYTES 4096
@@ -3995,9 +3996,9 @@ static long long monotonic_millis(void) {
 
 static void kill_mdnsresponder(int sig) {
     if (sig == SIGKILL) {
-        (void)system("/usr/bin/pkill -9 mDNSResponder >/dev/null 2>&1 || true");
+        (void)system("/usr/bin/pkill -9 '^mDNSResponder$' >/dev/null 2>&1 || true");
     } else {
-        (void)system("/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true");
+        (void)system("/usr/bin/pkill '^mDNSResponder$' >/dev/null 2>&1 || true");
     }
 }
 
@@ -4128,10 +4129,6 @@ static int configure_outbound_multicast_socket(int sockfd, uint32_t ipv4_addr, c
         return -1;
     }
     return configure_multicast_socket_options(sockfd);
-}
-
-static int mdns_takeover_confirmed(int shared_bind) {
-    return shared_bind || !mdnsresponder_is_alive();
 }
 
 static int open_bound_mdns_socket(int shared_bind, int log_bind_errors) {
@@ -4830,24 +4827,25 @@ static int acquire_dualstack_mdns_sockets(int shared_bind,
         sleep_millis(retry_delays_ms[i]);
         acquire_status = open_dualstack_mdns_sockets_for_desired(shared_bind, desired_links, active_links, 0, out, status);
         if (acquire_status >= 0) {
-            if (mdns_takeover_confirmed(shared_bind)) {
-                if (mdns_transport_is_healthy(status)) {
-                    fprintf(stderr,
-                            shared_bind
-                                ? "mDNS required transport shared bind established after SIGTERM + %ums\n"
-                                : "mDNS required transport takeover established after SIGTERM + %ums\n",
-                            retry_delays_ms[i]);
-                    return 0;
+            if (mdns_transport_is_healthy(status)) {
+                /* A successful exclusive bind means we own UDP 5353; a respawned
+                 * mDNSResponder can no longer hold the port, so reap it best-effort
+                 * but never release the socket we just won. */
+                if (!shared_bind) {
+                    kill_mdnsresponder(SIGKILL);
                 }
                 fprintf(stderr,
-                        "mDNS transport degraded after SIGTERM + %ums; missing required ipv4=%d ipv6=%d, retrying takeover\n",
-                        retry_delays_ms[i],
-                        status->missing_required_ipv4,
-                        status->missing_required_ipv6);
-            } else {
-                fprintf(stderr, "mDNS sockets acquired after SIGTERM + %ums but Apple mDNSResponder is still alive; retrying\n",
+                        shared_bind
+                            ? "mDNS required transport shared bind established after SIGTERM + %ums\n"
+                            : "mDNS required transport takeover established after SIGTERM + %ums\n",
                         retry_delays_ms[i]);
+                return 0;
             }
+            fprintf(stderr,
+                    "mDNS transport degraded after SIGTERM + %ums; missing required ipv4=%d ipv6=%d, retrying takeover\n",
+                    retry_delays_ms[i],
+                    status->missing_required_ipv4,
+                    status->missing_required_ipv6);
             close_mdns_socket_pair(out);
             memset(active_links, 0, sizeof(*active_links));
         }
@@ -4858,24 +4856,24 @@ static int acquire_dualstack_mdns_sockets(int shared_bind,
         sleep_millis(retry_delays_ms[i]);
         acquire_status = open_dualstack_mdns_sockets_for_desired(shared_bind, desired_links, active_links, 0, out, status);
         if (acquire_status >= 0) {
-            if (mdns_takeover_confirmed(shared_bind)) {
-                if (mdns_transport_is_healthy(status)) {
-                    fprintf(stderr,
-                            shared_bind
-                                ? "mDNS required transport shared bind established after SIGKILL + %ums\n"
-                                : "mDNS required transport takeover established after SIGKILL + %ums\n",
-                            retry_delays_ms[i]);
-                    return 0;
+            if (mdns_transport_is_healthy(status)) {
+                /* Exclusive bind won: hold the socket and reap any respawned
+                 * mDNSResponder best-effort rather than releasing the port. */
+                if (!shared_bind) {
+                    kill_mdnsresponder(SIGKILL);
                 }
                 fprintf(stderr,
-                        "mDNS transport degraded after SIGKILL + %ums; missing required ipv4=%d ipv6=%d, retrying takeover\n",
-                        retry_delays_ms[i],
-                        status->missing_required_ipv4,
-                        status->missing_required_ipv6);
-            } else {
-                fprintf(stderr, "mDNS sockets acquired after SIGKILL + %ums but Apple mDNSResponder is still alive; retrying\n",
+                        shared_bind
+                            ? "mDNS required transport shared bind established after SIGKILL + %ums\n"
+                            : "mDNS required transport takeover established after SIGKILL + %ums\n",
                         retry_delays_ms[i]);
+                return 0;
             }
+            fprintf(stderr,
+                    "mDNS transport degraded after SIGKILL + %ums; missing required ipv4=%d ipv6=%d, retrying takeover\n",
+                    retry_delays_ms[i],
+                    status->missing_required_ipv4,
+                    status->missing_required_ipv6);
             close_mdns_socket_pair(out);
             memset(active_links, 0, sizeof(*active_links));
         }
@@ -7761,6 +7759,7 @@ int main(int argc, char **argv) {
     if (auto_ip) {
         time_t last_iface_poll;
         time_t last_degraded_retry;
+        time_t last_mdnsresponder_guard;
         struct mdns_socket_pair sockets;
         struct mdns_transport_status transport_status;
         int startup_counters_logged = 0;
@@ -7784,6 +7783,7 @@ int main(int argc, char **argv) {
         startup_burst_start_ms = monotonic_millis();
         last_iface_poll = time(NULL);
         last_degraded_retry = time(NULL);
+        last_mdnsresponder_guard = time(NULL);
 
         while (!g_stop) {
             fd_set rfds;
@@ -7888,6 +7888,16 @@ int main(int argc, char **argv) {
                     log_mdns_counters_force("degraded_retry_failed");
                 }
                 last_degraded_retry = time(NULL);
+            }
+
+            /* We hold UDP 5353; a respawned mDNSResponder cannot reclaim the port, but
+             * reap it so it stops answering queries out of band. Never touch sockets. */
+            if (time(NULL) - last_mdnsresponder_guard >= MDNS_MDNSRESPONDER_GUARD_SECONDS) {
+                if (mdnsresponder_is_alive()) {
+                    fprintf(stderr, "mdns guard: Apple mDNSResponder respawned while we hold UDP %d; reaping\n", MDNS_PORT);
+                    kill_mdnsresponder(SIGKILL);
+                }
+                last_mdnsresponder_guard = time(NULL);
             }
 
             now_ms = monotonic_millis();

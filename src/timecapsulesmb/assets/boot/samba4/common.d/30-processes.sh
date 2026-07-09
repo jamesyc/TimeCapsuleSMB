@@ -172,6 +172,10 @@ stop_runtime_process_by_ucomm() {
     return 1
 }
 
+tc_kill_apple_mdnsresponder() {
+    /usr/bin/pkill -9 '^mDNSResponder$' >/dev/null 2>&1 || true
+}
+
 stop_manager_process() {
     tc_log "stopping old manager"
     kill_manager_pids TERM
