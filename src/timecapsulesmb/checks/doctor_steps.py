@@ -110,16 +110,53 @@ TRANSIENT_MDNS_READINESS_FAILURES = {
     "mdns-advertiser process is not running",
     "mdns-advertiser is not bound to required UDP 5353 listener",
 }
+STARTUP_GRACE_MASK = "mask"
+STARTUP_GRACE_PRESERVE = "preserve"
+STARTUP_GRACE_DETAIL_KEY = "startup_grace"
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE = "smb_bind_lan_only_unreachable"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
 DOCTOR_STARTUP_GRACE_SECONDS = 180
-STARTUP_GRACE_PERSISTENT_FAILURE_PREFIXES = (
-    "missing local tool ",
-    "Unsupported device OS:",
-    "device compatibility check failed:",
+STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
+    "managed runtime smbd binary missing",
+    "managed runtime smb.conf missing",
+    "active smb.conf passdb backend is not staged in RAM",
+    "active smb.conf username map is not staged in RAM",
+    "active smb.conf xattr_tdb:file is not persistent disk storage",
+    "one or more managed share volumes are not mounted",
+    "manager is not running for managed runtime",
+    "managed smbd parent process is not running",
+    "smbd is not bound to required TCP 445 sockets",
+    "managed smbd readiness probe timed out",
+    "device Samba version unavailable (managed runtime smbd binary missing)",
+    "mDNS startup deferred; no usable address has appeared yet",
+    "mdns-advertiser process is not running",
+    "mdns-advertiser bound to UDP 5353 but bind address is not active",
+    "mdns-advertiser is waiting for a usable address",
+    "mdns-advertiser is not bound to required UDP 5353 listener",
+    "Apple mDNSResponder is still running",
+}
+SMB_CONNECTION_SHAPED_FAILURE_TOKENS = (
+    "NT_STATUS_CONNECTION_REFUSED",
+    "NT_STATUS_HOST_UNREACHABLE",
+    "NT_STATUS_IO_TIMEOUT",
+    "NT_STATUS_CONNECTION_RESET",
+    "NT_STATUS_INVALID_NETWORK_RESPONSE",
+    "NT_STATUS_BAD_NETWORK_NAME",
+    "Connection refused",
+    "Connection reset",
+    "Host is down",
+    "No route to host",
+    "Network is unreachable",
+    "Operation timed out",
+    "timed out",
+)
+SMB_PERSISTENT_FAILURE_TOKENS = (
+    "NT_STATUS_LOGON_FAILURE",
+    "NT_STATUS_ACCESS_DENIED",
+    "NT_STATUS_WRONG_PASSWORD",
 )
 
 
@@ -166,6 +203,61 @@ def _readiness_probe_retryable(probe: ReadinessProbeResult, retryable_failures: 
     return bool(failure_details) and all(detail in retryable_failures for detail in failure_details)
 
 
+def _with_startup_grace_policy(result: CheckResult, policy: str) -> CheckResult:
+    details = dict(result.details)
+    details[STARTUP_GRACE_DETAIL_KEY] = policy
+    return CheckResult(result.status, result.message, details)
+
+
+def _startup_transient_result(status: str, message: str, details: dict[str, object] | None = None) -> CheckResult:
+    resolved_details = dict(details or {})
+    resolved_details[STARTUP_GRACE_DETAIL_KEY] = STARTUP_GRACE_MASK
+    return CheckResult(status, message, resolved_details)
+
+
+def _probe_failure_details(message: str) -> dict[str, object]:
+    details: dict[str, object] = {}
+    if message == DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE:
+        details["code"] = DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK
+        details[STARTUP_GRACE_DETAIL_KEY] = STARTUP_GRACE_PRESERVE
+    elif message in STARTUP_GRACE_TRANSIENT_PROBE_FAILURES:
+        details[STARTUP_GRACE_DETAIL_KEY] = STARTUP_GRACE_MASK
+    return details
+
+
+def _smb_failure_texts(result: CheckResult) -> list[str]:
+    texts = [result.message]
+    attempts = result.details.get("attempts")
+    if isinstance(attempts, list):
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            for key in ("failure", "stderr_tail", "stdout_tail", "outcome"):
+                value = attempt.get(key)
+                if isinstance(value, str) and value:
+                    texts.append(value)
+    for key in ("failure", "stderr_tail", "stdout_tail", "error"):
+        value = result.details.get(key)
+        if isinstance(value, str) and value:
+            texts.append(value)
+    return texts
+
+
+def _smb_failure_is_connection_shaped(result: CheckResult) -> bool:
+    if result.status != "FAIL":
+        return False
+    texts = _smb_failure_texts(result)
+    if any(token in text for token in SMB_PERSISTENT_FAILURE_TOKENS for text in texts):
+        return False
+    return any(token in text for token in SMB_CONNECTION_SHAPED_FAILURE_TOKENS for text in texts)
+
+
+def _tag_smb_startup_transient_if_connection_shaped(result: CheckResult) -> CheckResult:
+    if _smb_failure_is_connection_shaped(result):
+        return _with_startup_grace_policy(result, STARTUP_GRACE_MASK)
+    return result
+
+
 def _authenticated_smb_listing_with_doctor_retries(
     username: str,
     password: str,
@@ -207,12 +299,7 @@ def _add_probe_line_results(
             emitted = True
         elif line.startswith("FAIL:"):
             message = line.removeprefix("FAIL:")
-            details = (
-                {"code": DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK}
-                if message == DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE
-                else {}
-            )
-            add_result(CheckResult("FAIL", message, details))
+            add_result(CheckResult("FAIL", message, _probe_failure_details(message)))
             emitted = True
 
     if emitted:
@@ -221,7 +308,7 @@ def _add_probe_line_results(
     if fallback_ready:
         add_result(CheckResult("PASS", fallback_pass_message))
     else:
-        add_result(CheckResult("FAIL", fallback_fail_message))
+        add_result(_startup_transient_result("FAIL", fallback_fail_message))
 
 
 def _add_sshpass_result_for_payload(add_result: Callable[[CheckResult], None], payload_family: str | None) -> None:
@@ -1321,7 +1408,7 @@ def _add_tunneled_authenticated_smb_results(
             )
             if debug_fields is not None and listing_result.details.get("attempts"):
                 debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
-            add_result(listing_result)
+            add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
             if listing_result.status != "PASS":
                 return False
             share_name = _select_smb_file_ops_share(
@@ -1341,7 +1428,7 @@ def _add_tunneled_authenticated_smb_results(
                 share_name,
                 port=local_port,
             ):
-                add_result(result)
+                add_result(_tag_smb_startup_transient_if_connection_shaped(result))
                 if result.status == "FAIL":
                     file_ops_ok = False
             return file_ops_ok
@@ -1416,7 +1503,7 @@ def _add_authenticated_smb_results(
                 add_result=add_result,
             ):
                 return
-        add_result(listing_result)
+        add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
         return
     add_result(listing_result)
     share_name = _select_smb_file_ops_share(
@@ -1446,7 +1533,7 @@ def _add_authenticated_smb_results(
         port=445,
         **file_ops_kwargs,
     ):
-        add_result(result)
+        add_result(_tag_smb_startup_transient_if_connection_shaped(result))
 
 
 def _doctor_validate_config(inputs: DoctorInputs, sink: DoctorSink) -> StepDecision:
@@ -1613,32 +1700,36 @@ def _apply_startup_grace(
     manager_started_seconds_ago: float | None,
     *,
     grace_seconds: int = DOCTOR_STARTUP_GRACE_SECONDS,
-) -> tuple[list[CheckResult], CheckResult | None]:
-    """Collapse startup-window failures into a single actionable FAIL.
+) -> tuple[list[CheckResult], tuple[CheckResult, ...]]:
+    """Collapse pure startup-window failures into a single actionable FAIL.
 
     When the device's manager started less than grace_seconds ago, failures are
-    most likely services that have not finished coming up yet (disk activation,
-    Samba staging, smbd bind, mDNS takeover, ...). Demote them to INFO with
-    their original messages and report one FAIL telling the user to wait and
-    re-run. Persistent failure classes (unreachable device, bad credentials,
-    invalid config, payload not deployed, version mismatch) are structurally
-    exempt: they either stop doctor before the startup-age probe runs or
-    prevent the probe from producing an age at all. Local prerequisite and
-    compatibility failures can still be reported after the startup-age probe,
-    so keep those as FAIL because waiting will not fix them.
+    only maskable when every FAIL explicitly opted in with startup_grace=mask.
+    Unknown or persistent failures keep the original results so "wait and retry"
+    is never the headline for a failure that waiting cannot fix.
     """
     if manager_started_seconds_ago is None:
-        return results, None
+        return results, ()
     if not 0 <= manager_started_seconds_ago < grace_seconds:
-        return results, None
-    maskable_failures = [
-        result for result in results if result.status == "FAIL" and _startup_grace_can_mask_failure(result)
-    ]
-    if not maskable_failures:
-        return results, None
+        return results, ()
+    failures = [result for result in results if result.status == "FAIL"]
+    if not failures:
+        return results, ()
+    if not all(_startup_grace_can_mask_failure(result) for result in failures):
+        recent_startup_note = CheckResult(
+            "INFO",
+            f"device services started {int(manager_started_seconds_ago)}s ago; "
+            "some failures above may resolve once startup completes",
+            {
+                "domain": "Runtime",
+                "manager_started_seconds_ago": int(manager_started_seconds_ago),
+                "startup_grace_seconds": grace_seconds,
+            },
+        )
+        return [*results, recent_startup_note], (recent_startup_note,)
     transformed: list[CheckResult] = []
     for result in results:
-        if result.status == "FAIL" and _startup_grace_can_mask_failure(result):
+        if result.status == "FAIL":
             details = dict(result.details)
             details["masked_by"] = DOCTOR_CODE_DEVICE_STARTING_UP
             transformed.append(CheckResult("INFO", result.message, details))
@@ -1654,38 +1745,40 @@ def _apply_startup_grace(
             "domain": "Runtime",
             "manager_started_seconds_ago": int(manager_started_seconds_ago),
             "startup_grace_seconds": grace_seconds,
-            "masked_failures": [result.message for result in maskable_failures],
+            "masked_failures": [result.message for result in failures],
         },
     )
     transformed.append(startup_fail)
-    return transformed, startup_fail
+    return transformed, (startup_fail,)
 
 
 def _startup_grace_can_mask_failure(result: CheckResult) -> bool:
-    if result.details.get("code") == DOCTOR_CODE_RUNTIME_NOT_INSTALLED:
-        return False
-    message = result.message
-    if message.startswith(STARTUP_GRACE_PERSISTENT_FAILURE_PREFIXES):
-        return False
-    if message == "could not determine device compatibility":
-        return False
-    if message.startswith("Detected NetBSD ") and "not supported" in message:
-        return False
-    return True
+    return result.details.get(STARTUP_GRACE_DETAIL_KEY) == STARTUP_GRACE_MASK
 
 
-def _doctor_apply_startup_grace(sink: DoctorSink, manager_started_seconds_ago: float | None) -> None:
-    transformed, startup_fail = _apply_startup_grace(sink.results, manager_started_seconds_ago)
-    if startup_fail is None:
+def _doctor_apply_startup_grace(
+    sink: DoctorSink,
+    manager_started_seconds_ago: float | None,
+    *,
+    enabled: bool = True,
+) -> None:
+    if not enabled:
+        return
+    transformed, synthesized_results = _apply_startup_grace(sink.results, manager_started_seconds_ago)
+    if not synthesized_results:
         return
     # Replace the collected results directly: the demoted failures were already
-    # streamed via on_result with their original FAIL status, so only the new
-    # summary failure is streamed here.
+    # streamed via on_result with their original FAIL status, so only synthesized
+    # grace results are streamed here.
     sink.results[:] = transformed
     if sink.on_result is not None:
-        sink.on_result(startup_fail)
+        for result in synthesized_results:
+            sink.on_result(result)
     if sink.debug_fields is not None:
-        sink.debug_fields["startup_grace_applied"] = True
+        if any(result.status == "FAIL" for result in synthesized_results):
+            sink.debug_fields["startup_grace_applied"] = True
+        else:
+            sink.debug_fields["startup_grace_mixed_failures"] = True
 
 
 def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> RuntimeNamingState:

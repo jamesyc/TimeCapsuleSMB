@@ -41,6 +41,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
     parser.add_argument("--skip-bonjour", action="store_true", help="Skip Bonjour browse/resolve checks")
     parser.add_argument("--skip-smb", action="store_true", help="Skip authenticated SMB listing check")
+    parser.add_argument("--no-startup-grace", action="store_true", help="Show raw startup-window failures instead of collapsing known transient checks")
     parser.add_argument("--json", action="store_true", help="Output doctor results as JSON")
     args = parser.parse_args(argv)
 
@@ -53,6 +54,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             skip_ssh=args.skip_ssh,
             skip_bonjour=args.skip_bonjour,
             skip_smb=args.skip_smb,
+            startup_grace=not args.no_startup_grace,
             json_output=args.json,
         )
         if not args.skip_ssh and config.has_value("TC_HOST"):
@@ -71,6 +73,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             skip_ssh=args.skip_ssh,
             skip_bonjour=args.skip_bonjour,
             skip_smb=args.skip_smb,
+            startup_grace=not args.no_startup_grace,
             on_result=None if args.json else print_result,
             debug_fields=doctor_debug,
         )

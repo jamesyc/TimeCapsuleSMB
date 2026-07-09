@@ -50,6 +50,7 @@ def run_doctor_checks(
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
+    startup_grace: bool = True,
     on_result: Optional[Callable[[CheckResult], None]] = None,
     debug_fields: dict[str, object] | None = None,
 ) -> tuple[list[CheckResult], bool]:
@@ -116,5 +117,5 @@ def run_doctor_checks(
     _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, network_plan, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink)
-    _doctor_apply_startup_grace(sink, startup_age)
+    _doctor_apply_startup_grace(sink, startup_age, enabled=startup_grace)
     return sink.results, sink.fatal()

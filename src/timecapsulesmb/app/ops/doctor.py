@@ -16,7 +16,8 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
     skip_ssh = bool_param(params, "skip_ssh")
     skip_bonjour = bool_param(params, "skip_bonjour")
     skip_smb = bool_param(params, "skip_smb")
-    context.update_fields(skip_ssh=skip_ssh, skip_bonjour=skip_bonjour, skip_smb=skip_smb)
+    startup_grace = bool_param(params, "startup_grace", default=True)
+    context.update_fields(skip_ssh=skip_ssh, skip_bonjour=skip_bonjour, skip_smb=skip_smb, startup_grace=startup_grace)
     connection = None
     if not skip_ssh and config.has_value("TC_HOST"):
         connection = resolve_request_connection(config, context, allow_empty_password=True)
@@ -33,6 +34,7 @@ def doctor_operation(params: dict[str, object], context: AppOperationContext) ->
         skip_ssh=skip_ssh,
         skip_bonjour=skip_bonjour,
         skip_smb=skip_smb,
+        startup_grace=startup_grace,
         on_result=on_result,
         debug_fields=debug_fields,
     )

@@ -2600,6 +2600,23 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertNotIn("bonjour_timeout", checks.call_args.kwargs)
+        self.assertIs(checks.call_args.kwargs["startup_grace"], True)
+
+    def test_doctor_can_disable_startup_grace_from_request_params(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                with mock.patch("timecapsulesmb.app.ops.common.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                    with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", return_value=([], False)) as checks:
+                        rc = service.run_api_request(
+                            {"operation": "doctor", "params": {"startup_grace": False}},
+                            collector.sink,
+                        )
+
+        self.assertEqual(rc, 0)
+        self.assertIs(checks.call_args.kwargs["startup_grace"], False)
 
     def test_doctor_uses_request_credentials_without_requiring_saved_password(self) -> None:
         collector = CollectingSink()
