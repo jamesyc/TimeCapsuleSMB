@@ -736,6 +736,7 @@
 "backend.error.deploy.deploy_no_disk_detected" = "Es wurde keine interne Festplatte erkannt. Prüfen Sie, ob die Festplatte angeschlossen ist und richtig sitzt. Hinweis: Manche Geräte können einige Festplatten über 2 TB nicht vollständig erkennen.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Eine Festplatte wurde gefunden, aber es wurde keine gültige HFS-Partition erkannt. Löschen Sie die Festplatte mit dem AirPort-Dienstprogramm (Festplatte löschen), um sie für die Time Capsule zu formatieren. Hinweis: Manche Geräte können einige Partitionen über 2 TB nicht erkennen.";
 "backend.error.deploy.deploy_disk_not_writable" = "Eine gültige HFS-Festplatte wurde gefunden, aber TimeCapsuleSMB konnte die Nutzdaten nicht darauf schreiben. Wecken oder mounten Sie die Festplatte neu, prüfen Sie den freien Speicherplatz und versuchen Sie es erneut.";
+"backend.error.ssh_enable_timeout" = "Das Gerät hat die Einstellung akzeptiert, aber SSH ist noch nicht verfügbar. Warten Sie ein paar Minuten (oder starten Sie das Gerät neu) und versuchen Sie es erneut.";
 "backend.recovery.auth_failed.title" = "Authentifizierung fehlgeschlagen";
 "backend.recovery.auth_failed.message" = "Das Gerät hat das angegebene Passwort oder die SSH-Anmeldedaten abgelehnt.";
 "backend.recovery.auth_failed.action.1" = "Geben Sie das AirPort-Admin-Passwort erneut ein.";

@@ -16,6 +16,7 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.set_ssh import (
     SSH_PORT,
     SetSshStatusResult,
+    SetSshVerificationError,
     enable_set_ssh,
     probe_set_ssh_status,
 )
@@ -108,6 +109,24 @@ class SetSshServiceTests(unittest.TestCase):
         self.assertTrue(result.ssh_verification_skipped)
         self.assertFalse(result.ssh_final_reachable)
         self.assertEqual(result.summary, "SSH enable requested; not waiting for SSH to open.")
+
+    def test_enable_raises_verification_error_when_ssh_does_not_open(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.services.set_ssh.enable_ssh_with_port_preflight"):
+            wait = mock.Mock(return_value=False)
+            with self.assertRaises(SetSshVerificationError) as raised:
+                enable_set_ssh(
+                    connection,
+                    no_wait=False,
+                    wait_for_tcp_port_state=wait,
+                    initial=SetSshStatusResult(
+                        host="10.0.0.2",
+                        acp_port_reachable=True,
+                        ssh_port_reachable=False,
+                    ),
+                )
+
+        self.assertEqual(str(raised.exception), "SSH did not open after enabling via ACP.")
 
 
 if __name__ == "__main__":

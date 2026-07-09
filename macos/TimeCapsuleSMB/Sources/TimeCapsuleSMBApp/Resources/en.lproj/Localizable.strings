@@ -736,6 +736,7 @@
 "backend.error.deploy.deploy_no_disk_detected" = "No internal disk was detected. Check that the disk is connected and seated. Note: some devices cannot fully detect some disks larger than 2 TB.";
 "backend.error.deploy.deploy_no_hfs_partition" = "A disk was found, but no valid HFS partition was detected. Erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. Note: some devices cannot detect some partitions larger than 2 TB.";
 "backend.error.deploy.deploy_disk_not_writable" = "A valid HFS disk was found, but TimeCapsuleSMB could not write the payload to it. Wake or remount the disk, check free space, then retry.";
+"backend.error.ssh_enable_timeout" = "The device accepted the setting, but SSH hasn't come up yet. Wait a few minutes (or restart the device) and try again.";
 "backend.recovery.auth_failed.title" = "Authentication failed";
 "backend.recovery.auth_failed.message" = "The device rejected the supplied password or SSH credentials.";
 "backend.recovery.auth_failed.action.1" = "Re-enter the AirPort admin password.";

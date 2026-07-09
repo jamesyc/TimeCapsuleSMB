@@ -736,6 +736,7 @@
 "backend.error.deploy.deploy_no_disk_detected" = "Aucun disque interne n'a été détecté. Vérifiez que le disque est connecté et bien inséré. Remarque : certains appareils ne peuvent pas détecter complètement certains disques de plus de 2 To.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Un disque a été trouvé, mais aucune partition HFS valide n'a été détectée. Effacez le disque avec Utilitaire AirPort (Erase Disk) pour le formater pour la Time Capsule. Remarque : certains appareils ne peuvent pas détecter certaines partitions de plus de 2 To.";
 "backend.error.deploy.deploy_disk_not_writable" = "Un disque HFS valide a été trouvé, mais TimeCapsuleSMB n'a pas pu y écrire la charge utile. Réveillez ou remontez le disque, vérifiez l'espace libre, puis réessayez.";
+"backend.error.ssh_enable_timeout" = "L'appareil a accepté le réglage, mais SSH n'est pas encore disponible. Patientez quelques minutes (ou redémarrez l'appareil), puis réessayez.";
 "backend.recovery.auth_failed.title" = "Authentification échouée";
 "backend.recovery.auth_failed.message" = "L'appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.recovery.auth_failed.action.1" = "Saisissez à nouveau le mot de passe administrateur AirPort.";

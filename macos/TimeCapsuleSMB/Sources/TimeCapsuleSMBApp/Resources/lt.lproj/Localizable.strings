@@ -736,6 +736,7 @@
 "backend.error.deploy.deploy_no_disk_detected" = "Vidinis diskas neaptiktas. Patikrinkite, ar diskas prijungtas ir tinkamai įstatytas. Pastaba: kai kurie įrenginiai negali visiškai aptikti kai kurių didesnių nei 2 TB diskų.";
 "backend.error.deploy.deploy_no_hfs_partition" = "Diskas rastas, bet tinkamas HFS skaidinys neaptiktas. Ištrinkite diską naudodami AirPort Utility (Erase Disk), kad jis būtų suformatuotas Time Capsule. Pastaba: kai kurie įrenginiai negali aptikti kai kurių didesnių nei 2 TB skaidinių.";
 "backend.error.deploy.deploy_disk_not_writable" = "Rastas tinkamas HFS diskas, bet TimeCapsuleSMB negalėjo į jį įrašyti paketo. Pažadinkite arba iš naujo prijunkite diską, patikrinkite laisvą vietą ir bandykite dar kartą.";
+"backend.error.ssh_enable_timeout" = "Įrenginys priėmė nustatymą, bet SSH dar nepasiekiama. Palaukite kelias minutes (arba paleiskite įrenginį iš naujo) ir bandykite dar kartą.";
 "backend.recovery.auth_failed.title" = "Autentifikacija nepavyko";
 "backend.recovery.auth_failed.message" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.recovery.auth_failed.action.1" = "Pakartotinai įveskite AirPort administratoriaus slaptažodį.";

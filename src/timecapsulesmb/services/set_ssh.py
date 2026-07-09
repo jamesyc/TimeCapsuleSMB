@@ -170,7 +170,7 @@ def enable_set_ssh(
     )
     if not final_reachable:
         callbacks.update(ssh_final_reachable=False)
-        raise RuntimeError("SSH did not open after enabling via ACP.")
+        raise SetSshVerificationError("SSH did not open after enabling via ACP.")
     return SetSshResult(
         host=target_host,
         action=SetSshAction.ENABLE.value,

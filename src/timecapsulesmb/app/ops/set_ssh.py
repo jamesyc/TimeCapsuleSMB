@@ -8,6 +8,7 @@ from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
 from timecapsulesmb.services.runtime import resolve_env_connection
 from timecapsulesmb.services.set_ssh import (
+    SetSshVerificationError,
     disable_set_ssh,
     enable_set_ssh,
     probe_set_ssh_status,
@@ -45,6 +46,8 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 callbacks=context.to_operation_callbacks(),
                 initial=initial,
             )
+        except SetSshVerificationError as exc:
+            raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="ssh_enable_timeout") from exc
         except Exception as exc:
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="remote_error") from exc
     else:

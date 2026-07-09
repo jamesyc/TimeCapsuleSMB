@@ -33,6 +33,30 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(configureError.message, "AirPort 管理员密码无效。")
     }
 
+    func testBackendErrorViewModelLocalizesSSHEnableTimeoutAcrossFlows() {
+        let configureError = BackendErrorViewModel(
+            operation: "configure",
+            code: "ssh_enable_timeout",
+            message: "SSH did not open after enabling via ACP."
+        )
+        let setSSHError = BackendErrorViewModel(
+            operation: "set-ssh",
+            code: "ssh_enable_timeout",
+            message: "Failed to enable SSH via ACP: SSH did not open after enabling via ACP."
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(
+            configureError.message,
+            "The device accepted the setting, but SSH hasn't come up yet. Wait a few minutes (or restart the device) and try again."
+        )
+        XCTAssertEqual(setSSHError.message, configureError.message)
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(configureError.message, "设备已接受该设置，但 SSH 尚未启动。请等待几分钟（或重启设备），然后重试。")
+        XCTAssertEqual(setSSHError.message, configureError.message)
+    }
+
     func testRecoveryGuidancePresentationLocalizesConfigureAuthFailure() throws {
         let recovery = try recoveryValue(
             title: "AirPort password rejected",
