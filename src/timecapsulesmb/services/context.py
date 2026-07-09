@@ -149,3 +149,22 @@ class OperationContext:
                 config=self.config,
             ),
         ])
+
+
+def exception_cause_detail(exc: BaseException) -> str | None:
+    seen: set[int] = set()
+    current = exc.__cause__ or exc.__context__
+    while current is not None and id(current) not in seen:
+        detail = str(current).strip()
+        if detail:
+            return detail
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def message_with_exception_cause(message: str, exc: BaseException) -> str:
+    detail = exception_cause_detail(exc)
+    if not detail or detail == message.strip():
+        return message
+    return f"{message}\nCaused by: {detail}"

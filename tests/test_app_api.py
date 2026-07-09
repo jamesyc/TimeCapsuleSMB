@@ -37,7 +37,14 @@ from timecapsulesmb.device.probe import (
     ReadinessProbeResult,
     SshAccessStatus,
 )
-from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume, PayloadHomeSelection, build_dry_run_payload_home
+from timecapsulesmb.device.storage import (
+    MaStDiscoveryResult,
+    MaStVolume,
+    PayloadHome,
+    PayloadHomeSelection,
+    StorageDeviceError,
+    build_dry_run_payload_home,
+)
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
 from timecapsulesmb.services.app import AppOperationError, jsonable
@@ -3666,6 +3673,9 @@ class AppApiTests(unittest.TestCase):
         mast_discovery,
         *,
         payload_home_selection: PayloadHomeSelection | None = None,
+        select_payload_home_side_effect=None,
+        run_remote_actions_side_effect=None,
+        upload_side_effect=None,
     ) -> tuple[int, CollectingSink]:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -3696,7 +3706,35 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=mast_discovery):
-                                if payload_home_selection is None:
+                                with ExitStack() as stack:
+                                    if select_payload_home_side_effect is not None:
+                                        stack.enter_context(
+                                            mock.patch(
+                                                "timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn",
+                                                side_effect=select_payload_home_side_effect,
+                                            )
+                                        )
+                                    elif payload_home_selection is not None:
+                                        stack.enter_context(
+                                            mock.patch(
+                                                "timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn",
+                                                return_value=payload_home_selection,
+                                            )
+                                        )
+                                    if run_remote_actions_side_effect is not None:
+                                        stack.enter_context(
+                                            mock.patch(
+                                                "timecapsulesmb.services.deploy.run_remote_actions",
+                                                side_effect=run_remote_actions_side_effect,
+                                            )
+                                        )
+                                    if upload_side_effect is not None:
+                                        stack.enter_context(
+                                            mock.patch(
+                                                "timecapsulesmb.services.deploy.upload_deployment_payload",
+                                                side_effect=upload_side_effect,
+                                            )
+                                        )
                                     rc = service.run_api_request(
                                         {
                                             "operation": "deploy",
@@ -3704,18 +3742,6 @@ class AppApiTests(unittest.TestCase):
                                         },
                                         collector.sink,
                                     )
-                                else:
-                                    with mock.patch(
-                                        "timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn",
-                                        return_value=payload_home_selection,
-                                    ):
-                                        rc = service.run_api_request(
-                                            {
-                                                "operation": "deploy",
-                                                "params": params,
-                                            },
-                                            collector.sink,
-                                        )
         return rc, collector
 
     def test_deploy_reports_no_mast_volumes_as_no_disk_code(self) -> None:
@@ -3790,6 +3816,90 @@ MaSt = (
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "select_payload_home")
+
+    def test_deploy_reports_write_test_timeout_code(self) -> None:
+        volume = MaStVolume(
+            "wd0",
+            "dk2",
+            "/Volumes/dk2",
+            "Data",
+            "f42bdb83-c265-5522-a087-25606a4d0abf",
+            True,
+            "hfs",
+        )
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            MaStDiscoveryResult((volume,), 1, ""),
+            select_payload_home_side_effect=StorageDeviceError(
+                "The disk did not respond when tested. It may be failing or unable to spin up. "
+                "Run Disk Repair; if this keeps happening, the disk may need replacing.",
+                code="disk_write_test_unresponsive",
+            ),
+        )
+
+        self.assertEqual(rc, 1)
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "disk_write_test_unresponsive")
+        self.assertIn("The disk did not respond when tested.", error["message"])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "select_payload_home")
+
+    def test_deploy_reports_manager_stop_timeout_code(self) -> None:
+        volume = MaStVolume(
+            "wd0",
+            "dk2",
+            "/Volumes/dk2",
+            "Data",
+            "f42bdb83-c265-5522-a087-25606a4d0abf",
+            True,
+            "hfs",
+        )
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            MaStDiscoveryResult((volume,), 1, ""),
+            payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+            run_remote_actions_side_effect=SshError("process manager did not stop"),
+        )
+
+        self.assertEqual(rc, 1)
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "manager_stop_timeout")
+        self.assertIn("A service on the device is stuck", error["message"])
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "pre_upload_actions")
+
+    def test_deploy_reports_payload_upload_timeout_code(self) -> None:
+        volume = MaStVolume(
+            "wd0",
+            "dk2",
+            "/Volumes/dk2",
+            "Data",
+            "f42bdb83-c265-5522-a087-25606a4d0abf",
+            True,
+            "hfs",
+        )
+
+        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if on_uploading is not None:
+                on_uploading(plan.uploads[0])
+            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
+
+        rc, collector = self.run_confirmed_deploy_with_mast(
+            MaStDiscoveryResult((volume,), 1, ""),
+            payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+            run_remote_actions_side_effect=lambda *args, **kwargs: None,
+            upload_side_effect=timeout_upload,
+        )
+
+        self.assertEqual(rc, 1)
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "payload_upload_timeout")
+        self.assertIn("The disk did not respond while copying the SMB payload.", error["message"])
+        self.assertEqual(error["debug"]["cause"], "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
+        finished = self._telemetry_client.emit.call_args_list[-1].kwargs
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["stage"], "upload_smbd")
+        self.assertIn("Caused by: Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp", finished["error"])
 
     def test_activate_requires_explicit_confirmation(self) -> None:
         collector = CollectingSink()

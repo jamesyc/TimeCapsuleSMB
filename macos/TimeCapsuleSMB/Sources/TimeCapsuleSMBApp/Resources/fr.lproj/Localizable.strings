@@ -737,6 +737,9 @@
 "backend.error.deploy.deploy_no_hfs_partition" = "Un disque a été trouvé, mais aucune partition HFS valide n'a été détectée. Effacez le disque avec Utilitaire AirPort (Erase Disk) pour le formater pour la Time Capsule. Remarque : certains appareils ne peuvent pas détecter certaines partitions de plus de 2 To.";
 "backend.error.deploy.deploy_disk_not_writable" = "Un disque HFS valide a été trouvé, mais TimeCapsuleSMB n'a pas pu y écrire la charge utile. Réveillez ou remontez le disque, vérifiez l'espace libre, puis réessayez.";
 "backend.error.ssh_enable_timeout" = "L'appareil a accepté le réglage, mais SSH n'est pas encore disponible. Patientez quelques minutes (ou redémarrez l'appareil), puis réessayez.";
+"backend.error.disk_write_test_unresponsive" = "Le disque n'a pas répondu pendant le test. Il est peut-être défaillant ou incapable de démarrer. Lancez Réparer le disque ; si cela continue, le disque devra peut-être être remplacé.";
+"backend.error.manager_stop_timeout" = "Un service de l'appareil est bloqué, souvent à cause d'un disque défaillant. Débranchez l'appareil, rebranchez-le, puis réessayez.";
+"backend.error.payload_upload_timeout" = "Le disque n'a pas répondu pendant la copie du payload SMB. Il est peut-être défaillant ou incapable de démarrer. Lancez Réparer le disque ; si cela continue, le disque devra peut-être être remplacé.";
 "backend.recovery.auth_failed.title" = "Authentification échouée";
 "backend.recovery.auth_failed.message" = "L'appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.recovery.auth_failed.action.1" = "Saisissez à nouveau le mot de passe administrateur AirPort.";

@@ -39,6 +39,7 @@ from timecapsulesmb.services.deploy import (
     uploaded_file_message,
     upload_and_verify_deployment_payload,
 )
+from timecapsulesmb.services.context import message_with_exception_cause
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.runtime import load_env_config
 
@@ -48,7 +49,11 @@ def _target_family_display_name(target) -> str:
     return airport_family_display_name_from_identity(
         model=None if probe is None else probe.airport_model,
         syap=None if probe is None else probe.airport_syap,
-    )
+)
+
+
+def fail_device_error(command_context: CommandContext, exc: DeviceError) -> None:
+    command_context.fail_with_error(message_with_exception_cause(str(exc), exc))
 
 
 def _non_negative_int(value: str) -> int:
@@ -180,6 +185,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         except DeployArtifactValidationError as exc:
             raise SystemExit(str(exc)) from exc
         except DeviceError as exc:
+            fail_device_error(command_context, exc)
             raise SystemExit(str(exc)) from exc
         payload_context = preflight.payload_context
         payload_family = preflight.payload_family
@@ -201,6 +207,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 wait_after_reboot=not no_wait,
             )
         except DeviceError as exc:
+            fail_device_error(command_context, exc)
             raise SystemExit(str(exc)) from exc
         payload_home = prepared_plan.payload_home
         plan = prepared_plan.plan
@@ -261,6 +268,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 on_before_flush=lambda: print("Flushing payload to disk...", flush=True),
             )
         except DeviceError as exc:
+            fail_device_error(command_context, exc)
             raise SystemExit(str(exc)) from exc
 
         print("Verified uploaded payload.", flush=True)
@@ -313,7 +321,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         except DeviceError as exc:
             print(str(exc))
-            command_context.fail_with_error(str(exc))
+            fail_device_error(command_context, exc)
             return 1
 
         if completion.message:

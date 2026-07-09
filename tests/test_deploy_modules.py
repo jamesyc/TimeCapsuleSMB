@@ -116,6 +116,7 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.deploy import (
     DeployArtifactPaths,
     DeployCompletionMessages,
+    DeployDeviceError,
     DeployPayloadContext,
     DeployRuntimeConfig,
     PreparedDeployPlan,
@@ -7292,6 +7293,49 @@ int main(void) {{
         self.assertEqual(upload_measurements[0]["result"], "success")
         self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
         self.assertEqual(batch_measurements[0]["result"], "success")
+
+    def test_upload_and_verify_deployment_payload_codes_manager_stop_timeout(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        connection = SshConnection("host", "pw", "-o foo")
+
+        with self.assertRaises(DeployDeviceError) as raised:
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                connection,
+                prepared_plan,
+                DeployRuntimeConfig(nbns_enabled=True),
+                callbacks=OperationCallbacks(),
+                run_remote_actions_func=mock.Mock(side_effect=SshError("process manager did not stop")),
+                upload_payload_func=mock.Mock(),
+            )
+
+        self.assertEqual(raised.exception.code, "manager_stop_timeout")
+        self.assertIn("A service on the device is stuck", str(raised.exception))
+        self.assertIsInstance(raised.exception.__cause__, SshError)
+
+    def test_upload_and_verify_deployment_payload_codes_payload_upload_timeout(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        connection = SshConnection("host", "pw", "-o foo")
+
+        def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if on_uploading is not None:
+                on_uploading(plan.uploads[0])
+            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
+
+        with self.assertRaises(DeployDeviceError) as raised:
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                connection,
+                prepared_plan,
+                DeployRuntimeConfig(nbns_enabled=True),
+                callbacks=OperationCallbacks(),
+                run_remote_actions_func=mock.Mock(),
+                upload_payload_func=timeout_upload,
+            )
+
+        self.assertEqual(raised.exception.code, "payload_upload_timeout")
+        self.assertIn("The disk did not respond while copying the SMB payload.", str(raised.exception))
+        self.assertIsInstance(raised.exception.__cause__, SshCommandTimeout)
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

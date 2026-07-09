@@ -5579,7 +5579,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("stage=upload_boot_files", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_deploy_ssh_timeout_uses_airport_extreme_device_name(self) -> None:
+    def test_deploy_payload_upload_timeout_shows_disk_guidance(self) -> None:
         timeout = "Timed out waiting for ssh command to finish: runtime probe"
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
@@ -5596,9 +5596,12 @@ class CliTests(unittest.TestCase):
             raises=SystemExit,
         )
 
-        slow_message = ssh_timeout_slow_device_message("AirPort Extreme 6th generation")
-        self.assertIn(f"{ANSI_RED}{slow_message}{ANSI_RESET}", str(result.exception))
-        self.assertIn(timeout, str(result.exception))
+        self.assertIn("The disk did not respond while copying the SMB payload.", str(result.exception))
+        self.assertNotIn(timeout, str(result.exception))
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("The disk did not respond while copying the SMB payload.", finished["error"])
+        self.assertIn(f"Caused by: {timeout}", finished["error"])
 
     def test_deploy_finished_telemetry_includes_scp_upload_transport(self) -> None:
         def fake_scp_upload_transport(connection):

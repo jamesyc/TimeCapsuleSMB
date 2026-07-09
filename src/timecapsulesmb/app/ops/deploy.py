@@ -26,6 +26,7 @@ from timecapsulesmb.services.app import (
     int_param,
     optional_bool_param,
 )
+from timecapsulesmb.services.context import exception_cause_detail, message_with_exception_cause
 from timecapsulesmb.services.deploy import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
@@ -72,6 +73,26 @@ def optional_unsigned_int_override_param(params: dict[str, object], name: str) -
 def _device_error_code(exc: DeviceError) -> str:
     code = getattr(exc, "code", "")
     return code if isinstance(code, str) and code else "remote_error"
+
+
+def _device_operation_error(
+    context: AppOperationContext,
+    exc: DeviceError,
+    *,
+    default_code: str | None = None,
+) -> AppOperationError:
+    message = str(exc)
+    diagnostic_message = message_with_exception_cause(message, exc)
+    context.set_error(diagnostic_message)
+    cause = exception_cause_detail(exc)
+    code = _device_error_code(exc)
+    if code == "remote_error" and default_code is not None:
+        code = default_code
+    return AppOperationError(
+        message,
+        code=code,
+        debug={"cause": cause} if cause else None,
+    )
 
 
 def confirmation_presentation_for_startup_mode(
@@ -248,7 +269,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except DeployArtifactValidationError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code="unsupported_device") from exc
+        raise _device_operation_error(context, exc, default_code="unsupported_device") from exc
     payload_context = preflight.payload_context
     payload_family = preflight.payload_family
     is_netbsd4 = preflight.is_netbsd4
@@ -308,7 +329,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             wait_after_reboot=not no_wait,
         )
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code=_device_error_code(exc)) from exc
+        raise _device_operation_error(context, exc) from exc
     plan = prepared_plan.plan
     if dry_run:
         return OperationResult(True, deploy_plan_payload(
@@ -357,7 +378,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code=_device_error_code(exc)) from exc
+        raise _device_operation_error(context, exc) from exc
 
     try:
         completion = complete_deployment_after_upload(
@@ -371,7 +392,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except RebootFlowError as exc:
         raise AppOperationError(str(exc), code="remote_error") from exc
     except DeviceError as exc:
-        raise AppOperationError(str(exc), code=_device_error_code(exc)) from exc
+        raise _device_operation_error(context, exc) from exc
     return OperationResult(True, _deploy_completion_payload(completion))
 
 
@@ -393,7 +414,4 @@ def verify_runtime(
             failure_message=failure_message,
         )
     except DeviceError as exc:
-        raise AppOperationError(
-            str(exc),
-            code=_device_error_code(exc),
-        ) from exc
+        raise _device_operation_error(context, exc) from exc

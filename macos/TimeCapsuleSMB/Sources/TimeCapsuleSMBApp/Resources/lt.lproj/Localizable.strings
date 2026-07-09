@@ -737,6 +737,9 @@
 "backend.error.deploy.deploy_no_hfs_partition" = "Diskas rastas, bet tinkamas HFS skaidinys neaptiktas. Ištrinkite diską naudodami AirPort Utility (Erase Disk), kad jis būtų suformatuotas Time Capsule. Pastaba: kai kurie įrenginiai negali aptikti kai kurių didesnių nei 2 TB skaidinių.";
 "backend.error.deploy.deploy_disk_not_writable" = "Rastas tinkamas HFS diskas, bet TimeCapsuleSMB negalėjo į jį įrašyti paketo. Pažadinkite arba iš naujo prijunkite diską, patikrinkite laisvą vietą ir bandykite dar kartą.";
 "backend.error.ssh_enable_timeout" = "Įrenginys priėmė nustatymą, bet SSH dar nepasiekiama. Palaukite kelias minutes (arba paleiskite įrenginį iš naujo) ir bandykite dar kartą.";
+"backend.error.disk_write_test_unresponsive" = "Diskas neatsakė atliekant testą. Jis gali gesti arba negalėti įsisukti. Paleiskite Disk Repair; jei tai kartojasi, diską gali reikėti pakeisti.";
+"backend.error.manager_stop_timeout" = "Įrenginio paslauga užstrigo, dažnai dėl gendančio disko. Atjunkite įrenginį nuo maitinimo, vėl prijunkite ir bandykite dar kartą.";
+"backend.error.payload_upload_timeout" = "Diskas neatsakė kopijuojant SMB paketą. Jis gali gesti arba negalėti įsisukti. Paleiskite Disk Repair; jei tai kartojasi, diską gali reikėti pakeisti.";
 "backend.recovery.auth_failed.title" = "Autentifikacija nepavyko";
 "backend.recovery.auth_failed.message" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.recovery.auth_failed.action.1" = "Pakartotinai įveskite AirPort administratoriaus slaptažodį.";

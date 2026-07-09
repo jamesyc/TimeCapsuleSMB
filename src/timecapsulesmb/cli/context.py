@@ -16,6 +16,7 @@ from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
+    message_with_exception_cause,
     OperationContext,
 )
 from timecapsulesmb.services import runtime as service_runtime
@@ -141,7 +142,7 @@ class CommandContext:
         elif isinstance(exc, (TransportError, ConfigError, DeviceError)):
             message = str(exc)
             display_message = message
-            telemetry_message = message
+            telemetry_message = message_with_exception_cause(message, exc)
             if isinstance(exc, TransportError) and is_ssh_timeout_error(exc):
                 device_name = self.known_airport_display_name()
                 slow_message = ssh_timeout_slow_device_message(device_name)

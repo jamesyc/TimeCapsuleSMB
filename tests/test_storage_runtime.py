@@ -26,6 +26,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.device.storage import (
     MAST_PROBE_COMMAND,
     PayloadVerificationResult,
+    StorageDeviceError,
     MaStProbeDiagnostics,
     MaStReadResult,
     MaStVolume,
@@ -41,9 +42,10 @@ from timecapsulesmb.device.storage import (
     render_ensure_volume_root_mounted_script,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
+    volume_root_is_writable_conn,
     wait_for_mast_volumes_conn,
 )
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 from tests.storage_fixtures import EXTERNAL_BACKUP, INTERNAL_DATA, MAST_FIXTURES, SHELL_MAST_FIXTURES, MaStFixture
 
 
@@ -1123,6 +1125,19 @@ MaSt = (
         self.assertIsNone(selection.payload_home)
         self.assertEqual([check.mounted for check in selection.checks], [True, True])
         self.assertEqual([check.writable for check in selection.checks], [False, False])
+
+    def test_volume_root_writable_timeout_raises_coded_disk_write_error(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch(
+            "timecapsulesmb.device.storage.run_ssh",
+            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: mkdir write test"),
+        ):
+            with self.assertRaises(StorageDeviceError) as raised:
+                volume_root_is_writable_conn(connection, "/Volumes/dk2")
+
+        self.assertEqual(raised.exception.code, "disk_write_test_unresponsive")
+        self.assertIn("The disk did not respond when tested.", str(raised.exception))
+        self.assertIsInstance(raised.exception.__cause__, SshCommandTimeout)
 
     def test_select_payload_home_records_unmountable_candidates(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")

@@ -57,6 +57,43 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(setSSHError.message, configureError.message)
     }
 
+    func testBackendErrorViewModelLocalizesFailingDiskSymptoms() {
+        let writeTest = BackendErrorViewModel(
+            operation: "deploy",
+            code: "disk_write_test_unresponsive",
+            message: "Timed out waiting for ssh command to finish: write test"
+        )
+        let managerStop = BackendErrorViewModel(
+            operation: "deploy",
+            code: "manager_stop_timeout",
+            message: "process manager did not stop"
+        )
+        let upload = BackendErrorViewModel(
+            operation: "deploy",
+            code: "payload_upload_timeout",
+            message: "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp"
+        )
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(
+            writeTest.message,
+            "The disk did not respond when tested. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing."
+        )
+        XCTAssertEqual(
+            managerStop.message,
+            "A service on the device is stuck, often due to a failing disk. Unplug the device, plug it back in, and try again."
+        )
+        XCTAssertEqual(
+            upload.message,
+            "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing."
+        )
+
+        L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(writeTest.message, "磁盘在测试时没有响应。它可能正在故障，或无法启动旋转。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
+        XCTAssertEqual(managerStop.message, "设备上的某项服务卡住了，通常是因为磁盘正在故障。请拔掉设备电源，重新接通，然后重试。")
+        XCTAssertEqual(upload.message, "复制 SMB 负载时磁盘没有响应。它可能正在故障，或无法启动旋转。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
+    }
+
     func testRecoveryGuidancePresentationLocalizesConfigureAuthFailure() throws {
         let recovery = try recoveryValue(
             title: "AirPort password rejected",

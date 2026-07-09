@@ -80,6 +80,7 @@ from timecapsulesmb.transport.ssh import (
     local_scp_supports_legacy_option,
     scp_upload_transport,
 )
+from timecapsulesmb.transport.errors import is_ssh_timeout_error
 
 
 DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
@@ -106,6 +107,15 @@ DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_BOOT_SOURCE,
     PACKAGED_MANAGER_SOURCE,
 })
+MANAGER_STOP_TIMEOUT_MESSAGE = (
+    "A service on the device is stuck, often due to a failing disk. "
+    "Unplug the device, plug it back in, and try again."
+)
+PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
+    "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. "
+    "Run Disk Repair; if this keeps happening, the disk may need replacing."
+)
+MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
 
 
 @dataclass(frozen=True)
@@ -355,6 +365,18 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
     if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
         return "upload_runtime_config"
     return "upload_payload"
+
+
+def _manager_stop_timed_out(exc: BaseException) -> bool:
+    return MANAGER_STOP_TIMEOUT_SENTINEL in str(exc)
+
+
+def _payload_upload_timed_out(exc: BaseException, transfer: FileTransfer | None, plan: DeploymentPlan) -> bool:
+    return (
+        transfer is not None
+        and _upload_destination_kind(transfer, plan) == "payload"
+        and is_ssh_timeout_error(exc)
+    )
 
 
 def deploy_artifact_failures(distribution_root, *, validate=validate_artifacts) -> list[str]:
@@ -736,7 +758,12 @@ def upload_and_verify_deployment_payload(
         )
 
     callbacks.stage("pre_upload_actions")
-    run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
+    try:
+        run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
+    except Exception as exc:
+        if _manager_stop_timed_out(exc):
+            raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code="manager_stop_timeout") from exc
+        raise
     callbacks.stage("prepare_deployment_files")
     flash_config_text = render_flash_config_func(
         config,
@@ -820,6 +847,8 @@ def upload_and_verify_deployment_payload(
                     result="failure",
                     error_type=type(exc).__name__,
                 )
+            if _payload_upload_timed_out(exc, active_upload, plan):
+                raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc
             raise
         finally:
             callbacks.measurement(

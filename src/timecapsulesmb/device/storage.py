@@ -9,7 +9,8 @@ import shlex
 import time
 import uuid
 
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 
 
 MAST_DISCOVERY_ATTEMPTS = 10
@@ -22,6 +23,16 @@ DISKD_USE_VOLUME_GUARD_ATTEMPTS = 2
 DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at deploy time"
 DRY_RUN_DEVICE_PATH_PLACEHOLDER = "resolved from MaSt at deploy time"
 UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at uninstall time"
+DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE = (
+    "The disk did not respond when tested. It may be failing or unable to spin up. "
+    "Run Disk Repair; if this keeps happening, the disk may need replacing."
+)
+
+
+class StorageDeviceError(DeviceError):
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -688,7 +699,13 @@ def volume_root_is_writable_conn(connection: SshConnection, volume_root: str) ->
         "fi; "
         "exit 1"
     )
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    try:
+        proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    except SshCommandTimeout as exc:
+        raise StorageDeviceError(
+            DISK_WRITE_TEST_UNRESPONSIVE_MESSAGE,
+            code="disk_write_test_unresponsive",
+        ) from exc
     return proc.returncode == 0
 
 
