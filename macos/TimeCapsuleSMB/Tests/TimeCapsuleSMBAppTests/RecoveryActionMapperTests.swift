@@ -253,7 +253,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             title: "Reboot did not finish",
             actions: [
                 "Wait a few more minutes.",
-                "If the device is reachable at a new IP, update TC_HOST or rerun configure.",
+                "The device may have a new IP address. Run Discover and reselect it.",
                 "Make sure you are connected to the same network or Wi-Fi as the device.",
                 "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.",
                 "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
@@ -277,7 +277,7 @@ final class RecoveryActionMapperTests: XCTestCase {
             "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address."
         )
         XCTAssertEqual(english.steps.count, 5)
-        XCTAssertEqual(english.steps[1], "If the device is reachable at a new IP, update TC_HOST or rerun configure.")
+        XCTAssertEqual(english.steps[1], "The device may have a new IP address. Run Discover and reselect it.")
         XCTAssertEqual(
             english.steps[4],
             "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177."
@@ -287,6 +287,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         let chinese = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(chinese.title, "重启未完成")
         XCTAssertEqual(chinese.steps[0], "再等待几分钟。")
+        XCTAssertEqual(chinese.steps[1], "设备可能有新的 IP 地址。运行 Discover 并重新选择它。")
         XCTAssertEqual(chinese.steps.count, 5)
         XCTAssertEqual(
             chinese.steps[4],

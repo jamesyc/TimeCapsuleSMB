@@ -721,7 +721,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.title" = "Le redémarrage n'a pas terminé";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.message" = "Le payload a été téléchargé et la demande de redémarrage a réussi, mais l'appareil n'a pas accepté à nouveau SSH avant le délai d'expiration de 4 minutes. Il est peut-être encore en train de démarrer ou il est peut-être revenu avec un IP address différent.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "Attendez encore quelques minutes.";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "Si l'appareil est accessible sur un nouveau IP, mettez à jour TC_HOST ou réexécutez la configuration.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "L’appareil a peut-être une nouvelle adresse IP. Lancez Discover et sélectionnez-le à nouveau.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Assurez-vous que vous êtes connecté au même réseau ou Wi-Fi que l'appareil.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "Sur les appareils NetBSD 4, exécutez tcapsule activate une fois que SSH est accessible ; Le déploiement n'est pas allé assez loin pour activer Samba après le redémarrage.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Si votre appareil se réinitialise, consultez https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";

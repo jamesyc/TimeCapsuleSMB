@@ -317,7 +317,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ),
         (
             "Wait a few more minutes.",
-            "If the device is reachable at a new IP, update TC_HOST or rerun configure.",
+            "The device may have a new IP address. Run Discover and reselect it.",
             "Make sure you are connected to the same network or Wi-Fi as the device.",
             (
                 "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far "

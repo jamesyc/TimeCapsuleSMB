@@ -721,7 +721,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.title" = "A reinicialização não foi concluída";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.message" = "O payload foi carregado e a solicitação de reinicialização foi bem-sucedida, mas o dispositivo não aceitou SSH novamente antes do tempo limite de 4 minutos. Ele ainda pode estar inicializando ou pode ter retornado com um IP address diferente.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "Aguarde mais alguns minutos.";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "Se o dispositivo estiver acessível em um novo IP, atualize TC_HOST ou execute novamente a configuração.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "O dispositivo pode ter um novo endereço IP. Execute Discover e selecione-o novamente.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Certifique-se de estar conectado à mesma rede ou Wi-Fi do dispositivo.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "Em dispositivos NetBSD 4, execute tcapsule activate assim que SSH estiver acessível; a implantação não foi longe o suficiente para ativar Samba após a reinicialização.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Se o seu dispositivo for reiniciado, consulte https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";

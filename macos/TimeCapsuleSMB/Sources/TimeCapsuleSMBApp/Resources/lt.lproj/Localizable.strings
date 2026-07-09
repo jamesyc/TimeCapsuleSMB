@@ -721,7 +721,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.title" = "Paleidimas iš naujo nebaigtas";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.message" = "Apkrova buvo įkelta ir paleidimo iš naujo užklausa pavyko, tačiau įrenginys nepriėmė SSH iš naujo iki 4 minučių skirtojo laiko. Gali būti, kad jis vis dar kraunasi arba grįžo su kitu IP adresu.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "Palaukite dar kelias minutes.";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "Jei įrenginys pasiekiamas nauju IP, atnaujinkite TC_HOST arba paleiskite konfigūravimą iš naujo.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "Įrenginys gali turėti naują IP adresą. Paleiskite Discover ir pasirinkite jį iš naujo.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Įsitikinkite, kad esate prisijungę prie to paties tinklo ar Wi-Fi kaip ir įrenginys.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "NetBSD 4 įrenginiuose paleiskite tcapsule activate, kai SSH bus pasiekiama; diegimas nebuvo pakankamai atliktas, kad po paleidimo iš naujo aktyvuotų Samba.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Jei jūsų įrenginys atsistatė, žiūrėkite https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";

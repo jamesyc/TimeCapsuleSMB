@@ -3564,6 +3564,70 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("ssh command failed with rc=255", errors[0]["message"])
         self.assertEqual(collector.events_of_type("result"), [])
 
+    def test_deploy_reboot_up_timeout_uses_app_recovery_guidance(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+        }
+        payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+        params = {"dry_run": False, "no_wait": False}
+        params["confirmation_id"] = self.confirmation_id_for(
+            "deploy",
+            params,
+            {
+                "host": "root@10.0.0.2",
+                "payload_family": "netbsd6_samba4",
+                "netbsd4": False,
+                "requires_reboot": True,
+                "no_reboot": False,
+                "no_wait": False,
+                "startup_mode": "reboot_then_verify",
+            },
+        )
+
+        def reboot_timeout(*_args, callbacks=None, **_kwargs):
+            if callbacks is not None:
+                callbacks.stage("wait_for_reboot_up")
+                callbacks.update(device_came_back_after_reboot=False)
+            raise RebootFlowError("Timed out waiting for SSH after reboot.", "did_not_come_back_up")
+
+        with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
+                            with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
+                                with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                    with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
+                                        with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload"):
+                                            with mock.patch("timecapsulesmb.services.deploy.run_remote_actions"):
+                                                with mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"):
+                                                    with mock.patch("timecapsulesmb.services.deploy.request_reboot_and_wait", side_effect=reboot_timeout) as reboot_wait:
+                                                        rc = service.run_api_request(
+                                                            {
+                                                                "operation": "deploy",
+                                                                "params": params,
+                                                            },
+                                                            collector.sink,
+                                                        )
+
+        self.assertEqual(rc, 1)
+        reboot_wait.assert_called_once()
+        errors = collector.events_of_type("error")
+        self.assertEqual(errors[0]["code"], "remote_error")
+        self.assertEqual(errors[0]["message"], "Timed out waiting for SSH after reboot.")
+        self.assertNotIn("Run Discover and reselect it", errors[0]["message"])
+        self.assertEqual(errors[0]["recovery"]["localization_key"], "deploy.remote_error.wait_for_reboot_up")
+        self.assertIn(
+            "The device may have a new IP address. Run Discover and reselect it.",
+            errors[0]["recovery"]["actions"],
+        )
+        self.assertEqual(collector.events_of_type("result"), [])
+
     def test_deploy_request_reboot_and_wait_records_lifecycle_fields(self) -> None:
         from timecapsulesmb.services.reboot import request_reboot_and_wait
 

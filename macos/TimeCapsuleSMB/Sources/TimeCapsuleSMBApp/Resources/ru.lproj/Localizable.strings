@@ -721,7 +721,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.title" = "Перезагрузка не завершилась";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.message" = " payload был загружен, и запрос на перезагрузку был выполнен успешно, но устройство не приняло SSH снова до истечения 4-минутного тайм-аута. Возможно, он все еще загружается или вернулся с другим IP address.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "Подождите еще несколько минут.";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "Если устройство доступно по новому адресу IP, обновите TC_HOST или повторно запустите настройку.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "У устройства может быть новый IP-адрес. Запустите Discover и выберите его снова.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Убедитесь, что вы подключены к той же сети или Wi-Fi, что и устройство.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "На устройствах NetBSD 4 запустите tcapsule activate, как только SSH станет доступен; развертывание не зашло достаточно далеко, чтобы активировать Samba после перезагрузки.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Если ваше устройство выполняет перезагрузку, см. https://github.com/jamesyc/TimeCapsuleSMB/issues/177..";

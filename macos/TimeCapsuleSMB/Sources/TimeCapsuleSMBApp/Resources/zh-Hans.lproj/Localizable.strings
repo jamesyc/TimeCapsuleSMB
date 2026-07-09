@@ -721,7 +721,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.title" = "重启未完成";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.message" = "载荷已上传，重启请求也已成功发送，但设备未能在 4 分钟超时前重新接受 SSH 连接。它可能仍在启动，也可能已使用新的 IP 地址重新上线。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "再等待几分钟。";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "如果设备可通过新的 IP 访问，请更新 TC_HOST 或重新运行配置。";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "设备可能有新的 IP 地址。运行 Discover 并重新选择它。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "确认你连接在与设备相同的网络或 Wi-Fi 上。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "在 NetBSD 4 设备上，SSH 可用后请运行 tcapsule activate；部署尚未走到重启后激活 Samba 的步骤。";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "如果设备自行重置，请参见 https://github.com/jamesyc/TimeCapsuleSMB/issues/177。";

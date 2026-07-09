@@ -721,7 +721,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.title" = "Het opnieuw opstarten is niet voltooid";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.message" = "De payload is geüpload en het herstartverzoek is gelukt, maar het apparaat heeft SSH niet opnieuw geaccepteerd vóór de time-out van 4 minuten. Mogelijk is de computer nog steeds aan het opstarten, of is deze teruggekomen met een andere IP address.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "Wacht nog een paar minuten.";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "Als het apparaat bereikbaar is op een nieuwe IP, update dan TC_HOST of voer de configuratie opnieuw uit.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "Het apparaat heeft mogelijk een nieuw IP-adres. Voer Discover uit en selecteer het opnieuw.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Zorg ervoor dat u verbonden bent met hetzelfde netwerk of Wi-Fi als het apparaat.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "Op NetBSD 4-apparaten voert u tcapsule activate uit zodra SSH bereikbaar is; De implementatie is niet ver genoeg gekomen om Samba te activeren na het opnieuw opstarten.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "Als uw apparaat zichzelf reset, zie https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";

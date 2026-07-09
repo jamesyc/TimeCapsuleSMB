@@ -721,7 +721,7 @@
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.title" = "Reboot did not finish";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.message" = "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.1" = "Wait a few more minutes.";
-"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "If the device is reachable at a new IP, update TC_HOST or rerun configure.";
+"backend.recovery.deploy.remote_error.wait_for_reboot_up.action.2" = "The device may have a new IP address. Run Discover and reselect it.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.3" = "Make sure you are connected to the same network or Wi-Fi as the device.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.4" = "On NetBSD 4 devices, run tcapsule activate once SSH is reachable; deploy did not get far enough to activate Samba after reboot.";
 "backend.recovery.deploy.remote_error.wait_for_reboot_up.action.5" = "If your device resets itself, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177.";
