@@ -225,12 +225,67 @@ def _parse_reached_line(line: str) -> tuple[str, str, int, int | None] | None:
     return fullname.strip(), host.strip().rstrip("."), port, interface_index
 
 
-def _parse_dns_sd_lookup_output(service_type: str, name: str, stdout: str) -> tuple[str, str, int, int | None]:
+def _decode_dns_sd_text(value: str) -> str:
+    return re.sub(r"\\(\d{3})", lambda match: chr(int(match.group(1), 10)), value)
+
+
+def _split_dns_sd_txt_fields(value: str) -> list[str]:
+    fields: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for char in value:
+        if escaped:
+            if char.isspace() or char in {'\\', '"'}:
+                current.append(char)
+            else:
+                current.extend(('\\', char))
+            escaped = False
+        elif char == '\\':
+            escaped = True
+        elif char.isspace():
+            if current:
+                fields.append("".join(current))
+                current = []
+        elif char != '"':
+            current.append(char)
+    if escaped:
+        current.append('\\')
+    if current:
+        fields.append("".join(current))
+    return fields
+
+
+def _parse_dns_sd_txt_output(stdout: str) -> dict[str, str]:
+    properties: dict[str, str] = {}
+    reached_service = False
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if _parse_reached_line(stripped) is not None:
+            reached_service = True
+            continue
+        if not reached_service or not stripped:
+            continue
+        # dns-sd prints each TXT string as key=value after the SRV target line
+        # and backslash-escapes whitespace inside values.
+        for field in _split_dns_sd_txt_fields(stripped):
+            if "=" not in field:
+                continue
+            key, value = field.split("=", 1)
+            properties[_decode_dns_sd_text(key)] = _decode_dns_sd_text(value)
+    return properties
+
+
+def _parse_dns_sd_lookup_output(
+    service_type: str,
+    name: str,
+    stdout: str,
+) -> tuple[str, str, int, int | None, dict[str, str]]:
+    properties = _parse_dns_sd_txt_output(stdout)
     for line in stdout.splitlines():
         parsed = _parse_reached_line(line.strip())
         if parsed is not None:
-            return parsed
-    return f"{name}.{_dns_sd_service_type_domain(service_type)}", "", 0, None
+            return (*parsed, properties)
+    return f"{name}.{_dns_sd_service_type_domain(service_type)}", "", 0, None, properties
 
 
 def _append_ip(values: list[str], candidate: str) -> None:
@@ -295,7 +350,11 @@ def resolve_native_dns_sd_service_instance(
     if start_error:
         return None, NativeDnsSdResolveResult(service_type=normalized_service_type, name=name, error=start_error)
 
-    fullname, hostname, port, interface_index = _parse_dns_sd_lookup_output(normalized_service_type, name, stdout)
+    fullname, hostname, port, interface_index, properties = _parse_dns_sd_lookup_output(
+        normalized_service_type,
+        name,
+        stdout,
+    )
     result = NativeDnsSdResolveResult(
         service_type=normalized_service_type,
         name=name,
@@ -343,6 +402,7 @@ def resolve_native_dns_sd_service_instance(
         port=port,
         ipv4=ipv4,
         ipv6=ipv6,
+        properties=properties,
         fullname=fullname,
     )
     return record, result

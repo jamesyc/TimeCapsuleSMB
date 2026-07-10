@@ -130,6 +130,35 @@ Timestamp     A/R    Flags if Hostname                               Address    
             ],
         )
 
+    def test_resolve_native_dns_sd_service_instance_parses_txt_properties(self) -> None:
+        lookup_proc = FakeDnsSdProc(
+            r"""
+10:20:07.456  Time Capsule._adisk._tcp.local. can be reached at time-capsule.local.:9 (interface 14)
+ sys=waMA=80:EA:96:E6:58:68,adVF=0x1010
+ dk2=adVF=0x83,adVN=Time\ Machine,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852
+"""
+        )
+        address_proc = FakeDnsSdProc("10:20:07.789  Add 2 14 time-capsule.local. 10.0.0.2 120\n")
+
+        with mock.patch(
+            "timecapsulesmb.discovery.native_dns_sd.subprocess.Popen",
+            side_effect=[lookup_proc, address_proc],
+        ):
+            record, _diagnostics = resolve_native_dns_sd_service_instance(
+                "_adisk._tcp.local.",
+                "Time Capsule",
+                timeout_sec=0,
+                family="ipv4",
+            )
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.properties["sys"], "waMA=80:EA:96:E6:58:68,adVF=0x1010")
+        self.assertEqual(
+            record.properties["dk2"],
+            "adVF=0x83,adVN=Time Machine,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852",
+        )
+
     def test_resolve_native_dns_sd_service_instance_reports_lookup_miss_without_address_lookup(self) -> None:
         lookup_proc = FakeDnsSdProc(
             """
