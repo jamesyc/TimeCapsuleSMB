@@ -41,6 +41,7 @@ from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_STARTUP_GRACE_SECONDS,
     STARTUP_GRACE_DETAIL_KEY,
     STARTUP_GRACE_MASK,
+    _add_config_validation_results,
     _apply_startup_grace,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
@@ -477,6 +478,16 @@ class CheckTests(unittest.TestCase):
         smb_port.assert_not_called()
         bonjour.assert_not_called()
         smb_listing.assert_not_called()
+
+    def test_config_validation_warns_when_ssh_host_key_checking_disabled(self) -> None:
+        config = self.doctor_config(
+            self.valid_doctor_values(TC_SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"),
+            exists=True,
+        )
+        results: list[CheckResult] = []
+        _add_config_validation_results(config, repo_root=REPO_ROOT, add_result=results.append)
+        warnings = [r for r in results if r.status == "WARN" and "host-key checking" in r.message]
+        self.assertTrue(warnings)
 
     def test_run_doctor_checks_passes_when_deployed_version_matches_current_cli(self) -> None:
         run = self.run_doctor_with_mocks(

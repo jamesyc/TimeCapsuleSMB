@@ -25,6 +25,7 @@ from timecapsulesmb.core.config import (
     parse_env_file,
     parse_env_value,
     preserved_env_file_values,
+    ssh_opts_disable_host_key_checking,
     require_valid_app_config,
     render_env_text,
     validate_app_config,
@@ -150,6 +151,19 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
         self.assertIn("TC_ATA_STANDBY=''", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
+
+    def test_default_ssh_opts_pin_host_key(self) -> None:
+        opts = DEFAULTS["TC_SSH_OPTS"]
+        self.assertIn("StrictHostKeyChecking=accept-new", opts)
+        self.assertIn("UserKnownHostsFile=~/.tcapsule_known_hosts", opts)
+        self.assertNotIn("StrictHostKeyChecking=no", opts)
+        self.assertNotIn("/dev/null", opts)
+
+    def test_ssh_opts_disable_host_key_checking_detection(self) -> None:
+        self.assertTrue(ssh_opts_disable_host_key_checking("-o StrictHostKeyChecking=no"))
+        self.assertTrue(ssh_opts_disable_host_key_checking("-o UserKnownHostsFile=/dev/null"))
+        self.assertFalse(ssh_opts_disable_host_key_checking(DEFAULTS["TC_SSH_OPTS"]))
+        self.assertFalse(ssh_opts_disable_host_key_checking("-o ProxyJump=bastion"))
 
     def test_render_env_text_preserves_custom_settings_but_omits_deprecated_keys(self) -> None:
         values = dict(DEFAULTS)

@@ -893,7 +893,7 @@ Current defaults:
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
 - `TC_ATA_IDLE_SECONDS=300`
 - `TC_ATA_STANDBY=` leaves the standby timer unchanged; set `0` to disable standby
-- `TC_SSH_OPTS` includes the legacy SSH algorithms required by AirPort firmware
+- `TC_SSH_OPTS` includes the legacy SSH algorithms required by AirPort firmware and pins the device host key on first use in `~/.tcapsule_known_hosts`
 - docs and examples use SMB username `admin`
 - the managed payload directory is fixed at `.samba4`
 
@@ -902,7 +902,7 @@ Samba NetBIOS, Samba server string, Bonjour instance, and Bonjour host labels ar
 Current validation behavior:
 - `TC_HOST`: must be non-empty.
 - `TC_PASSWORD`: must be present for commands that authenticate to the device.
-- `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
+- `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware. It now pins the device host key on first use (`StrictHostKeyChecking=accept-new`) in `~/.tcapsule_known_hosts` instead of disabling host-key checking, so a later key change is detected. `doctor` warns if a saved `.env` still uses `StrictHostKeyChecking=no`. If the device is factory-reset and its key legitimately changes, remove its entry from `~/.tcapsule_known_hosts` (or delete the file) and rerun.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: hidden boolean; internal disks use `ShareRoot` by default, and external disks always use the disk root.
 - `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
 - `TC_ATA_STANDBY`: optional non-negative integer; blank leaves standby unchanged, and `0` disables standby through `atactl setstandby 0`.

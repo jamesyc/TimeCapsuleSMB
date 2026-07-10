@@ -61,7 +61,7 @@ from timecapsulesmb.checks.smb_config import (
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
-from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
+from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, ssh_opts_disable_host_key_checking, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
@@ -342,6 +342,13 @@ def _add_config_validation_results(
         return False
 
     add_result(CheckResult("PASS", f"{config.path} contains all required settings"))
+
+    if ssh_opts_disable_host_key_checking(config.get("TC_SSH_OPTS")):
+        add_result(CheckResult(
+            "WARN",
+            "TC_SSH_OPTS disables SSH host-key checking (StrictHostKeyChecking=no / "
+            "UserKnownHostsFile=/dev/null); rerun `tcapsule configure` to pin the device host key",
+        ))
 
     for result in check_required_local_tools():
         add_result(result)

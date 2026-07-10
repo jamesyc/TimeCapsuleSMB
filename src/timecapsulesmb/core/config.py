@@ -60,7 +60,7 @@ DEFAULT_SSH_TARGET_PLACEHOLDER = "root@192.168.x.x"
 
 DEFAULTS = {
     "TC_HOST": DEFAULT_SSH_TARGET_PLACEHOLDER,
-    "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.tcapsule_known_hosts",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
     "TC_SMB_BIND_LAN_ONLY": "false",
     "TC_SMB_BROWSE_COMPATIBILITY": "false",
@@ -646,6 +646,11 @@ def render_env_text(values: dict[str, str]) -> str:
 
 def preserved_env_file_values(values: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in values.items() if key not in ENV_FILE_OMIT_KEYS}
+
+
+def ssh_opts_disable_host_key_checking(ssh_opts: str) -> bool:
+    lowered = ssh_opts.lower()
+    return "stricthostkeychecking=no" in lowered.replace(" ", "") or "userknownhostsfile=/dev/null" in lowered.replace(" ", "")
 
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
