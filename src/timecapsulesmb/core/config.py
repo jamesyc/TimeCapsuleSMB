@@ -681,7 +681,6 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
             os.fsync(tmp.fileno())
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
-        os.chmod(path, 0o600)
     finally:
         if tmp_name is not None:
             try:
