@@ -5360,8 +5360,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             str(result.exception),
             "A disk was found, but no valid HFS partition was detected. "
-            "Erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
-            "Note: some devices cannot detect some partitions larger than 2TB.",
+            "Retry again, or erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
+            "Note: some devices cannot detect some partitions larger than 2 TB.",
         )
         result.mocks.wait_for_mast_volumes_conn.assert_called_once()
         result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()

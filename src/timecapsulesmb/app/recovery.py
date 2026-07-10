@@ -184,11 +184,12 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "No valid HFS partition",
         "A disk was found, but it does not expose a valid HFS partition that TimeCapsuleSMB can deploy to.",
         (
+            "Retry deploy.",
             "Erase the disk with AirPort Utility using Erase Disk.",
             "Retry deploy after the Time Capsule formats the disk.",
-            "Some devices cannot detect some partitions larger than 2TB.",
+            "Some devices cannot detect some partitions larger than 2 TB.",
         ),
-        retryable=False,
+        retryable=True,
         suggested_operation="deploy",
     ),
     ("deploy", "deploy_disk_not_writable"): RecoveryInfo(

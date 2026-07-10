@@ -286,8 +286,8 @@ def no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
 def no_hfs_partition_message() -> str:
     return (
         "A disk was found, but no valid HFS partition was detected. "
-        "Erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
-        "Note: some devices cannot detect some partitions larger than 2TB."
+        "Retry again, or erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. "
+        "Note: some devices cannot detect some partitions larger than 2 TB."
     )
 
 

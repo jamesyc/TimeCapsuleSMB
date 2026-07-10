@@ -736,7 +736,7 @@
 "backend.error.auth_failed" = "设备拒绝了提供的密码或 SSH 凭据。";
 "backend.error.configure.auth_failed" = "AirPort 管理员密码无效。";
 "backend.error.deploy.deploy_no_disk_detected" = "未检测到内部磁盘。请检查磁盘是否已连接并正确安装。注意：某些设备无法完整检测部分大于 2 TB 的磁盘。";
-"backend.error.deploy.deploy_no_hfs_partition" = "已找到磁盘，但未检测到有效的 HFS 分区。请使用 AirPort 实用工具（Erase Disk）抹掉磁盘，以便为 Time Capsule 格式化。注意：某些设备无法检测部分大于 2 TB 的分区。";
+"backend.error.deploy.deploy_no_hfs_partition" = "已找到磁盘，但未检测到有效的 HFS 分区。请重试，或使用 AirPort 实用工具（Erase Disk）抹掉磁盘，以便为 Time Capsule 格式化。注意：某些设备无法检测部分大于 2 TB 的分区。";
 "backend.error.deploy.deploy_disk_not_writable" = "已找到有效的 HFS 磁盘，但 TimeCapsuleSMB 无法向其中写入负载。请唤醒或重新挂载磁盘，检查可用空间，然后重试。";
 "backend.error.ssh_enable_timeout" = "设备已接受该设置，但 SSH 尚未启动。请等待几分钟（或重启设备），然后重试。";
 "backend.error.disk_write_test_unresponsive" = "磁盘在测试时没有响应。它可能正在故障，或无法启动旋转。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。";

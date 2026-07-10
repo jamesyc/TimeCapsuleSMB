@@ -3929,6 +3929,8 @@ MaSt = (
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "deploy_no_hfs_partition")
         self.assertEqual(error["recovery"]["title"], "No valid HFS partition")
+        self.assertTrue(error["recovery"]["retryable"])
+        self.assertEqual(error["recovery"]["actions"][0], "Retry deploy.")
         self.assertEqual(error["recovery"]["action_ids"], [])
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")

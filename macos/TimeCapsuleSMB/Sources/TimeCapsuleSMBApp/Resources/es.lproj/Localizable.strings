@@ -736,7 +736,7 @@
 "backend.error.auth_failed" = "El dispositivo rechazó la contraseña o las credenciales SSH proporcionadas.";
 "backend.error.configure.auth_failed" = "La contraseña de administrador de AirPort no funcionó.";
 "backend.error.deploy.deploy_no_disk_detected" = "No se detectó ningún disco interno. Compruebe que el disco esté conectado y bien colocado. Nota: algunos dispositivos no pueden detectar completamente algunos discos de más de 2 TB.";
-"backend.error.deploy.deploy_no_hfs_partition" = "Se encontró un disco, pero no se detectó ninguna partición HFS válida. Borre el disco con AirPort Utility (Erase Disk) para formatearlo para Time Capsule. Nota: algunos dispositivos no pueden detectar algunas particiones de más de 2 TB.";
+"backend.error.deploy.deploy_no_hfs_partition" = "Se encontró un disco, pero no se detectó ninguna partición HFS válida. Inténtelo de nuevo o borre el disco con AirPort Utility (Erase Disk) para formatearlo para Time Capsule. Nota: algunos dispositivos no pueden detectar algunas particiones de más de 2 TB.";
 "backend.error.deploy.deploy_disk_not_writable" = "Se encontró un disco HFS válido, pero TimeCapsuleSMB no pudo escribir la carga útil en él. Active o vuelva a montar el disco, compruebe el espacio libre e inténtelo de nuevo.";
 "backend.error.ssh_enable_timeout" = "El dispositivo aceptó el ajuste, pero SSH aún no está disponible. Espera unos minutos (o reinicia el dispositivo) e inténtalo de nuevo.";
 "backend.error.disk_write_test_unresponsive" = "El disco no respondió durante la prueba. Puede estar fallando o no poder ponerse en marcha. Ejecuta Reparar disco; si esto sigue ocurriendo, es posible que haya que sustituir el disco.";

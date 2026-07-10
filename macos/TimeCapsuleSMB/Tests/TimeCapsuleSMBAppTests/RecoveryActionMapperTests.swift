@@ -65,6 +65,11 @@ final class RecoveryActionMapperTests: XCTestCase {
     }
 
     func testBackendErrorViewModelLocalizesFailingDiskSymptoms() {
+        let noHFS = BackendErrorViewModel(
+            operation: "deploy",
+            code: "deploy_no_hfs_partition",
+            message: "A disk was found, but no valid HFS partition was detected."
+        )
         let writeTest = BackendErrorViewModel(
             operation: "deploy",
             code: "disk_write_test_unresponsive",
@@ -83,6 +88,10 @@ final class RecoveryActionMapperTests: XCTestCase {
 
         L10n.apply(language: .english)
         XCTAssertEqual(
+            noHFS.message,
+            "A disk was found, but no valid HFS partition was detected. Retry again, or erase the disk with AirPort Utility (Erase Disk) to format it for the Time Capsule. Note: some devices cannot detect some partitions larger than 2 TB."
+        )
+        XCTAssertEqual(
             writeTest.message,
             "The disk did not respond when tested. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing."
         )
@@ -96,6 +105,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         )
 
         L10n.apply(language: .simplifiedChinese)
+        XCTAssertEqual(noHFS.message, "已找到磁盘，但未检测到有效的 HFS 分区。请重试，或使用 AirPort 实用工具（Erase Disk）抹掉磁盘，以便为 Time Capsule 格式化。注意：某些设备无法检测部分大于 2 TB 的分区。")
         XCTAssertEqual(writeTest.message, "磁盘在测试时没有响应。它可能正在故障，或无法启动旋转。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
         XCTAssertEqual(managerStop.message, "设备上的某项服务卡住了，通常是因为磁盘正在故障。请拔掉设备电源，重新接通，然后重试。")
         XCTAssertEqual(upload.message, "复制 SMB 负载时磁盘没有响应。它可能正在故障，或无法启动旋转。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
