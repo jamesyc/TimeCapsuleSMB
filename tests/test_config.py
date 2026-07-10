@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ from timecapsulesmb.core.config import (
     ConfigValidationError,
     build_mdns_device_model_txt,
     DEFAULTS,
+    env_file_permission_warning,
     load_app_config,
     parse_bool,
     parse_env_file,
@@ -224,6 +226,33 @@ class ConfigTests(unittest.TestCase):
             write_env_file(path, values)
             reparsed = parse_env_file(path)
         self.assertNotIn("TC_AIRPORT_SYAP", reparsed)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
+    def test_write_env_file_is_owner_only(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_PASSWORD"] = "secret"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("stale")
+            os.chmod(path, 0o644)
+            write_env_file(path, values)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
+    def test_env_file_permission_warning_flags_loose_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("TC_PASSWORD=secret\n")
+            os.chmod(path, 0o600)
+            self.assertIsNone(env_file_permission_warning(path))
+            os.chmod(path, 0o644)
+            warning = env_file_permission_warning(path)
+            self.assertIsNotNone(warning)
+            self.assertIn("chmod 600", warning or "")
+
+    def test_env_file_permission_warning_missing_file_is_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(env_file_permission_warning(Path(tmp) / "absent.env"))
 
     def test_validate_airport_syap_accepts_known_codes(self) -> None:
         for value in ("104", "105", "106", "108", "109", "113", "114", "116", "117", "119", "120"):

@@ -120,7 +120,7 @@ At the start of `configure`, the tool first tries to discover your Time Capsule 
 
 `configure` also checks whether SSH is reachable. If SSH is closed, it enables SSH using the built-in Python 3 ACP client, reboots the device, waits for SSH to come up, and then continues the normal probing flow. If the password is wrong, it asks again instead of writing a broken `.env` file.
 
-The password you enter here is stored locally as `TC_PASSWORD` so the tool can keep using SSH and ACP. The managed Samba runtime reads the current device password on the Time Capsule at boot. In other words, after setup, you normally connect with:
+The password you enter here is stored locally as `TC_PASSWORD` so the tool can keep using SSH and ACP. The `.env` file is written with owner-only (`0600`) permissions, and `doctor` warns if it later becomes readable by other users. Do not sync the repo folder to a cloud service after `configure`. The managed Samba runtime reads the current device password on the Time Capsule at boot. In other words, after setup, you normally connect with:
 
 - username: `admin` (or any other password)
 - password: the same Time Capsule password you entered during configuration

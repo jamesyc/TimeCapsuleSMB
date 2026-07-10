@@ -61,7 +61,7 @@ from timecapsulesmb.checks.smb_config import (
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
-from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
+from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, env_file_permission_warning, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
@@ -335,6 +335,9 @@ def _add_config_validation_results(
         return False
 
     add_result(CheckResult("PASS", f"configuration file exists: {config.path}"))
+    permission_warning = env_file_permission_warning(config.path)
+    if permission_warning:
+        add_result(CheckResult("WARN", permission_warning))
     validation_errors = validate_app_config(config, profile="doctor")
     if validation_errors:
         for error in validation_errors:

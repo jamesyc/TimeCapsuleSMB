@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import socket
 import tempfile
@@ -41,6 +42,7 @@ from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_STARTUP_GRACE_SECONDS,
     STARTUP_GRACE_DETAIL_KEY,
     STARTUP_GRACE_MASK,
+    _add_config_validation_results,
     _apply_startup_grace,
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
@@ -477,6 +479,23 @@ class CheckTests(unittest.TestCase):
         smb_port.assert_not_called()
         bonjour.assert_not_called()
         smb_listing.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
+    def test_config_validation_warns_on_loose_env_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("TC_HOST=root@10.0.0.2\nTC_PASSWORD=secret\n")
+            os.chmod(env_path, 0o644)
+            config = AppConfig.from_values(
+                self.valid_doctor_values(),
+                path=env_path,
+                exists=True,
+                file_values=self.valid_doctor_values(),
+            )
+            results: list[CheckResult] = []
+            _add_config_validation_results(config, repo_root=REPO_ROOT, add_result=results.append)
+        warnings = [r for r in results if r.status == "WARN" and "chmod 600" in r.message]
+        self.assertTrue(warnings)
 
     def test_run_doctor_checks_passes_when_deployed_version_matches_current_cli(self) -> None:
         run = self.run_doctor_with_mocks(

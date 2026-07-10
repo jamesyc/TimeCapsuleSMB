@@ -648,6 +648,21 @@ def preserved_env_file_values(values: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in values.items() if key not in ENV_FILE_OMIT_KEYS}
 
 
+def env_file_permission_warning(path: Path) -> str | None:
+    if os.name != "posix":
+        return None
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return None
+    if mode & 0o077:
+        return (
+            f"{path} is accessible to other users (mode {mode & 0o777:03o}); "
+            f"it stores TC_PASSWORD. Run: chmod 600 {path}"
+        )
+    return None
+
+
 def write_env_file(path: Path, values: dict[str, str]) -> None:
     text = render_env_text(values)
     tmp_name: str | None = None
@@ -664,7 +679,9 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
             tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())
+        os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
     finally:
         if tmp_name is not None:
             try:
