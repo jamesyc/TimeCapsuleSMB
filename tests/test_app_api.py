@@ -2305,6 +2305,57 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["message"], "Failed to enable SSH via ACP: SSH did not open after enabling via ACP.")
         self.assertNotIn("secret", json.dumps(collector.events))
 
+    def test_set_ssh_rejected_admin_password_uses_auth_failed_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\n")
+            initial_status = SetSshStatusResult(
+                host="10.0.0.2",
+                acp_port_reachable=True,
+                ssh_port_reachable=False,
+            )
+            first_collector = CollectingSink()
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
+                rc = service.run_api_request(
+                    {
+                        "operation": "set-ssh",
+                        "params": {
+                            "config": str(config_path),
+                            "action": "enable",
+                            "password": "secret",
+                        },
+                    },
+                    first_collector.sink,
+                )
+            self.assertEqual(rc, 1)
+            confirmation_id = self.assert_confirmation(first_collector, "ssh_access.enable_reboot")["confirmation_id"]
+
+            collector = CollectingSink()
+            with mock.patch("timecapsulesmb.app.ops.set_ssh.probe_set_ssh_status", return_value=initial_status):
+                with mock.patch(
+                    "timecapsulesmb.app.ops.set_ssh.enable_set_ssh",
+                    side_effect=ACPAuthError("ACP command failed with error_code -0x10"),
+                ):
+                    rc = service.run_api_request(
+                        {
+                            "operation": "set-ssh",
+                            "params": {
+                                "config": str(config_path),
+                                "action": "enable",
+                                "password": "secret",
+                                "confirmation_id": confirmation_id,
+                            },
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "auth_failed")
+        self.assertEqual(error["message"], "The AirPort admin password did not work.")
+        self.assertEqual(error["recovery"]["action_ids"], ["replace_password"])
+        self.assertNotIn("secret", json.dumps(collector.events))
+
     def test_ssh_access_operation_is_removed(self) -> None:
         collector = CollectingSink()
 

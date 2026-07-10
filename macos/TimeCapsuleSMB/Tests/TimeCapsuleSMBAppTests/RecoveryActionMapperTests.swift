@@ -23,14 +23,21 @@ final class RecoveryActionMapperTests: XCTestCase {
             code: "auth_failed",
             message: "The AirPort admin password did not work."
         )
+        let setSSHError = BackendErrorViewModel(
+            operation: "set-ssh",
+            code: "auth_failed",
+            message: "The AirPort admin password did not work."
+        )
 
         L10n.apply(language: .english)
         XCTAssertEqual(doctorError.message, "The device rejected the supplied password or SSH credentials.")
         XCTAssertEqual(configureError.message, "The AirPort admin password did not work.")
+        XCTAssertEqual(setSSHError.message, doctorError.message)
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(doctorError.message, "设备拒绝了提供的密码或 SSH 凭据。")
         XCTAssertEqual(configureError.message, "AirPort 管理员密码无效。")
+        XCTAssertEqual(setSSHError.message, doctorError.message)
     }
 
     func testBackendErrorViewModelLocalizesSSHEnableTimeoutAcrossFlows() {

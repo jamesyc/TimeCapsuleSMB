@@ -5,6 +5,7 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import set_ssh_payload
 from timecapsulesmb.app.ops.common import load_request_config
 from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.services.app import AppOperationError, OperationResult, bool_param, string_param
 from timecapsulesmb.services.runtime import resolve_env_connection
 from timecapsulesmb.services.set_ssh import (
@@ -46,6 +47,12 @@ def set_ssh_operation(params: dict[str, object], context: AppOperationContext) -
                 callbacks=context.to_operation_callbacks(),
                 initial=initial,
             )
+        except ACPAuthError as exc:
+            raise AppOperationError(
+                "The AirPort admin password did not work.",
+                code="auth_failed",
+                debug=str(exc),
+            ) from exc
         except SetSshVerificationError as exc:
             raise AppOperationError(f"Failed to enable SSH via ACP: {exc}", code="ssh_enable_timeout") from exc
         except Exception as exc:
