@@ -677,6 +677,8 @@
 "password.error.missing" = "Slaptažodžio nėra.";
 "password.error.required" = "Reikalingas slaptažodis.";
 "password.error.unreadable_keychain_item" = "Keychain grąžino neįskaitomą slaptažodį.";
+"password.hide" = "Slėpti slaptažodį";
+"password.show" = "Rodyti slaptažodį";
 "profile_editor.advanced" = "Išplėstiniai";
 "profile_editor.advanced.deploy_notice" = "Atlikite diegimą, kad šiuos nustatymus atnaujintumėte savo įrenginyje";
 "profile_editor.display_name" = "Rodomas pavadinimas";

@@ -677,6 +677,8 @@
 "password.error.missing" = "Falta la contraseña.";
 "password.error.required" = "Se requiere contraseña.";
 "password.error.unreadable_keychain_item" = "Keychain devolvió una contraseña ilegible.";
+"password.hide" = "Ocultar contraseña";
+"password.show" = "Mostrar contraseña";
 "profile_editor.advanced" = "Avanzado";
 "profile_editor.advanced.deploy_notice" = "Realice una implementación para actualizar estas configuraciones en su dispositivo";
 "profile_editor.display_name" = "Nombre para mostrar";

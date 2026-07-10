@@ -233,6 +233,7 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         let session = fixture.dashboardSession(for: profile)
 
         session.runCheckup(profile: profile)
+        session.profileEditorStore.replacementPassword = "new-password"
 
         XCTAssertEqual(session.selectedTab, .settings)
         try assertRendersNonBlank(dashboardView(fixture: fixture, profile: profile, session: session))

@@ -9,6 +9,7 @@ final class AddDeviceViewSmokeTests: XCTestCase {
         try assertRendersNonBlank(AddDeviceView(store: fixture.store), size: CGSize(width: 900, height: 700))
 
         fixture.store.startManualEntry()
+        fixture.store.password = "secret"
         try assertRendersNonBlank(AddDeviceView(store: fixture.store), size: CGSize(width: 900, height: 700))
 
         fixture.store.bonjourTimeout = "-1"

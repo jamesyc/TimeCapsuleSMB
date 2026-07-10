@@ -677,6 +677,8 @@
 "password.error.missing" = "Пароль отсутствует.";
 "password.error.required" = "Необходим пароль.";
 "password.error.unreadable_keychain_item" = "Keychain вернул нечитаемый пароль.";
+"password.hide" = "Скрыть пароль";
+"password.show" = "Показать пароль";
 "profile_editor.advanced" = "Расширенный";
 "profile_editor.advanced.deploy_notice" = "Выполните развертывание, чтобы обновить эти настройки на вашем устройстве.";
 "profile_editor.display_name" = "Отображаемое имя";

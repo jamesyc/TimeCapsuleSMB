@@ -677,6 +677,8 @@
 "password.error.missing" = "密码缺失。";
 "password.error.required" = "需要密码。";
 "password.error.unreadable_keychain_item" = "Keychain 返回了不可读取的密码。";
+"password.hide" = "隐藏密码";
+"password.show" = "显示密码";
 "profile_editor.advanced" = "高级";
 "profile_editor.advanced.deploy_notice" = "请执行 Deploy，将这些设置更新到你的设备";
 "profile_editor.display_name" = "显示名称";

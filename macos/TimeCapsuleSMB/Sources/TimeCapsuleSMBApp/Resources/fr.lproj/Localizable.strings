@@ -677,6 +677,8 @@
 "password.error.missing" = "Le mot de passe est manquant.";
 "password.error.required" = "Un mot de passe est requis.";
 "password.error.unreadable_keychain_item" = "Keychain a renvoyé un mot de passe illisible.";
+"password.hide" = "Masquer le mot de passe";
+"password.show" = "Afficher le mot de passe";
 "profile_editor.advanced" = "Avancé";
 "profile_editor.advanced.deploy_notice" = "Veuillez effectuer un déploiement pour mettre à jour ces paramètres sur votre appareil.";
 "profile_editor.display_name" = "Nom d'affichage";

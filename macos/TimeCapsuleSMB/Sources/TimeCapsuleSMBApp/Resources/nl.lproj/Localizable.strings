@@ -677,6 +677,8 @@
 "password.error.missing" = "Wachtwoord ontbreekt.";
 "password.error.required" = "Wachtwoord is vereist.";
 "password.error.unreadable_keychain_item" = "Keychain heeft een onleesbaar wachtwoord geretourneerd.";
+"password.hide" = "Wachtwoord verbergen";
+"password.show" = "Wachtwoord tonen";
 "profile_editor.advanced" = "Geavanceerd";
 "profile_editor.advanced.deploy_notice" = "Voer een implementatie uit om deze instellingen op uw apparaat bij te werken";
 "profile_editor.display_name" = "Weergavenaam";

@@ -110,13 +110,12 @@ struct AddDeviceView: View {
                     set: { store.manualHost = $0 }
                 ))
                 .disabled(!store.isHostFieldEditable)
-                SecureField(L10n.string("add_device.password"), text: $store.password)
-                    .onSubmit {
-                        guard store.canConfigure else {
-                            return
-                        }
-                        store.runConfigure()
+                RevealablePasswordField(L10n.string("add_device.password"), text: $store.password) {
+                    guard store.canConfigure else {
+                        return
                     }
+                    store.runConfigure()
+                }
             }
 
             HStack {

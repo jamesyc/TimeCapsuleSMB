@@ -53,14 +53,16 @@ private struct DeviceProfileEditorView: View {
                 GridRow {
                     Text(L10n.string("dashboard.password.title"))
                         .foregroundStyle(.secondary)
-                    SecureField(L10n.string("dashboard.replacement_password"), text: $store.replacementPassword)
-                        .frame(maxWidth: 360)
-                        .onSubmit {
-                            guard store.canSave else { return }
-                            Task { @MainActor in
-                                await store.save(profile: profile)
-                            }
+                    RevealablePasswordField(
+                        L10n.string("dashboard.replacement_password"),
+                        text: $store.replacementPassword
+                    ) {
+                        guard store.canSave else { return }
+                        Task { @MainActor in
+                            await store.save(profile: profile)
                         }
+                    }
+                    .frame(maxWidth: 360)
                 }
             }
 

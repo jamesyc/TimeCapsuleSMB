@@ -677,6 +677,8 @@
 "password.error.missing" = "Password is missing.";
 "password.error.required" = "Password is required.";
 "password.error.unreadable_keychain_item" = "Keychain returned an unreadable password.";
+"password.hide" = "Hide Password";
+"password.show" = "Show Password";
 "profile_editor.advanced" = "Advanced";
 "profile_editor.advanced.deploy_notice" = "Please do a Deploy to update these settings to your device";
 "profile_editor.display_name" = "Display Name";
