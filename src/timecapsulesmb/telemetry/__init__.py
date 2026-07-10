@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.redaction import scrub_telemetry_mapping
 from timecapsulesmb.core.release import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
 from timecapsulesmb.identity import load_install_identity
 
@@ -21,6 +22,7 @@ SCHEMA_VERSION = 5
 DEFAULT_TELEMETRY_URL = "https://timecapsulesmb.jamesyc.com/v1/events"
 TELEMETRY_URL_ENV = "TCAPSULE_TELEMETRY_URL"
 TELEMETRY_TOKEN_ENV = "TCAPSULE_TELEMETRY_TOKEN"
+TELEMETRY_ANONYMOUS_ENV = "TCAPSULE_TELEMETRY_ANONYMOUS"
 DEFAULT_TELEMETRY_TOKEN = "d65373762e893ae18c8aaa95a8f1b3a3464611f33b30983909543535fa8b0733"
 REQUEST_TIMEOUT_SECONDS = 10.0
 MAX_SEND_ATTEMPTS = 2
@@ -61,14 +63,15 @@ class TelemetryClient:
         token = os.getenv(TELEMETRY_TOKEN_ENV, DEFAULT_TELEMETRY_TOKEN).strip() or None
         if not identity.install_id:
             return cls(endpoint=endpoint, token=token, context=None, enabled=False)
+        anonymous = _anonymous_mode_enabled()
         context = TelemetryContext(
-            install_id=identity.install_id,
+            install_id=str(uuid.uuid4()) if anonymous else identity.install_id,
             cli_version=CLI_VERSION,
             release_tag=RELEASE_TAG,
             samba_version=SAMBA_VERSION,
             host_os=detect_host_os(),
             host_os_version=detect_host_os_version(),
-            configure_id=config.get("TC_CONFIGURE_ID") or None,
+            configure_id=None if anonymous else (config.get("TC_CONFIGURE_ID") or None),
             device_model=None,
             device_syap=None,
             nbns_enabled=nbns_enabled,
@@ -132,6 +135,7 @@ class TelemetryClient:
             for key, value in fields.items():
                 if value is not None:
                     payload[key] = value
+            payload = scrub_telemetry_mapping(payload)
             if synchronous:
                 self._send_payload(payload)
                 return
@@ -169,6 +173,10 @@ class TelemetryClient:
                     return
             except Exception:
                 return
+
+
+def _anonymous_mode_enabled() -> bool:
+    return os.getenv(TELEMETRY_ANONYMOUS_ENV, "").strip().lower() in {"true", "1", "yes", "on"}
 
 
 def build_device_os_version(os_name: str | None, os_release: str | None, arch: str | None) -> str | None:

@@ -9,9 +9,14 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.identity import (
+    default_bootstrap_path,
+    ensure_install_id,
+    load_install_identity,
+    set_telemetry_enabled,
+)
 from timecapsulesmb.services.runtime import load_optional_env_config
-from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.telemetry import DEFAULT_TELEMETRY_URL, TelemetryClient
 from timecapsulesmb.transport.local import find_command
 
 
@@ -407,12 +412,44 @@ def install_required_host_tools() -> None:
     print(f"Installed required host tools: {_format_tools(missing_tools)}", flush=True)
 
 
+TELEMETRY_DISCLOSURE = (
+    "\nOptional anonymous usage telemetry\n"
+    "  What: install id, CLI/Samba version, host OS, device model, command + result.\n"
+    f"  Where: {DEFAULT_TELEMETRY_URL} (override with TCAPSULE_TELEMETRY_URL)\n"
+    "  Default: OFF. Change any time with `tcapsule set-telemetry --enable/--disable`.\n"
+)
+
+
+def _prompt_telemetry_choice(no_input: bool) -> bool:
+    if no_input or not sys.stdin.isatty():
+        return False
+    print(TELEMETRY_DISCLOSURE, flush=True)
+    try:
+        answer = input("Enable telemetry to help the project? [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return answer in {"y", "yes"}
+
+
+def _apply_first_run_telemetry_choice(no_input: bool) -> None:
+    try:
+        bootstrap_path = default_bootstrap_path()
+        first_run = load_install_identity(bootstrap_path).install_id is None
+    except Exception:
+        ensure_install_id()
+        return
+    ensure_install_id(bootstrap_path)
+    if first_run:
+        set_telemetry_enabled(_prompt_telemetry_choice(no_input), bootstrap_path)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare the local host for TimeCapsuleSMB user workflows.")
     parser.add_argument("--python", default=sys.executable or "python3", help="Python interpreter to use for the repo .venv")
+    parser.add_argument("--no-input", action="store_true", help="Do not prompt; leave telemetry disabled")
     args = parser.parse_args(argv)
 
-    ensure_install_id()
+    _apply_first_run_telemetry_choice(args.no_input)
     config = load_optional_env_config()
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(

@@ -37,21 +37,25 @@ def parse_bootstrap_values(path: Path | None = None) -> dict[str, str]:
     return values
 
 
+TELEMETRY_ENABLED_VALUES = frozenset({"true", "1", "yes", "on"})
+
+
 def load_install_identity(path: Path | None = None) -> InstallIdentity:
     values = parse_bootstrap_values(path)
     telemetry_raw = values.get("TELEMETRY", "").strip().lower()
-    telemetry_enabled = telemetry_raw != "false"
+    telemetry_enabled = telemetry_raw in TELEMETRY_ENABLED_VALUES
     return InstallIdentity(
         install_id=values.get("INSTALL_ID") or None,
         telemetry_enabled=telemetry_enabled,
     )
 
 
-def render_bootstrap_text(install_id: str, *, telemetry_enabled: bool = True) -> str:
-    lines = [f"INSTALL_ID={install_id}"]
-    if not telemetry_enabled:
-        lines.append("TELEMETRY=false")
-    lines.append("")
+def render_bootstrap_text(install_id: str, *, telemetry_enabled: bool = False) -> str:
+    lines = [
+        f"INSTALL_ID={install_id}",
+        f"TELEMETRY={'true' if telemetry_enabled else 'false'}",
+        "",
+    ]
     return "\n".join(lines)
 
 

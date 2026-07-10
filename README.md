@@ -367,7 +367,9 @@ This should be treated as a LAN-only setup. Do not expose this SMB service direc
 
 Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware, as the version of NetBSD 6 running on the Time Capsule errors when Samba tries to switch users.
 
-The commands have logging and telemetry enabled by default. Errors and exceptions are logged so they can be easily investigated later.
+The commands log errors and exceptions locally so they can be investigated later.
+
+Anonymous usage telemetry is **off by default**. Nothing is sent to a remote endpoint unless you opt in during `bootstrap` or with `tcapsule set-telemetry --enable` (disable again with `--disable`). Even when enabled, payloads never include your device LAN IP, SSH/SMB host targets, local filesystem paths, or the device password.
 
 ## For Developers And Maintainers
 

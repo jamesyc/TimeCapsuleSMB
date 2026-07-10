@@ -1177,7 +1177,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished.kwargs["risk"], "destructive")
         self.assertEqual(finished.kwargs["details"]["volume"], "Data")
         self.assertEqual(finished.kwargs["details"]["fsck_device"], "/dev/dk2")
-        self.assertEqual(finished.kwargs["details"]["fsck_mountpoint"], "/Volumes/Data")
+        self.assertNotIn("fsck_mountpoint", finished.kwargs["details"])
         self.assertEqual(finished.kwargs["details"]["returncode"], 0)
         self.assertTrue(finished.kwargs["details"]["reboot_requested"])
         self.assertTrue(finished.kwargs["details"]["waited"])

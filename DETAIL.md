@@ -605,7 +605,7 @@ Current important `.env` values include:
 
 Current `.bootstrap` values include:
 - `INSTALL_ID`
-- optional `TELEMETRY=false`
+- `TELEMETRY` (`false` by default; set `true` to opt in)
 
 ## CLI Command Reference
 
@@ -1192,10 +1192,13 @@ Current identity model:
 - `.env` stores a rotating `TC_CONFIGURE_ID`
 
 Current transport behavior:
-- events are sent to the configured HTTPS telemetry endpoint
+- telemetry is **opt-in**: disabled unless `.bootstrap` contains `TELEMETRY=true`
+- `bootstrap` prompts once on first run; `tcapsule set-telemetry --enable/--disable/--status` changes it later
+- when enabled, events are sent to the configured HTTPS telemetry endpoint
 - started events are sent asynchronously
 - finished events are sent synchronously so they are not lost at process exit
-- if `.bootstrap` contains `TELEMETRY=false`, telemetry is disabled
+- payloads are scrubbed before send: LAN IPv4/IPv6 addresses, SSH/SMB host targets, and local `/Volumes`, `/mnt`, `/Users`, `/home`, `/private` paths are dropped or redacted
+- `TCAPSULE_TELEMETRY_ANONYMOUS=1` replaces the stable `INSTALL_ID` with a per-run id and drops `TC_CONFIGURE_ID`
 
 ## Uninstall
 

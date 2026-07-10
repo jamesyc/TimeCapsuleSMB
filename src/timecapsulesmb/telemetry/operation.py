@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.redaction import SENSITIVE_KEY_PARTS
+from timecapsulesmb.core.redaction import SENSITIVE_KEY_PARTS, scrub_telemetry_mapping
 from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -171,7 +171,7 @@ def telemetry_options_from_params(params: Mapping[str, object]) -> dict[str, obj
             value = params.get(key)
             if value is not None:
                 options[key] = _jsonable(value)
-    return options
+    return scrub_telemetry_mapping(options)
 
 
 def telemetry_options_from_args(args: object | None) -> dict[str, object]:
@@ -192,7 +192,7 @@ def telemetry_details_from_payload(
     payload: object | None,
 ) -> dict[str, object]:
     extractor = DETAIL_EXTRACTORS.get(operation, _details_common)
-    return extractor(params, payload)
+    return scrub_telemetry_mapping(extractor(params, payload))
 
 
 DetailExtractor = Callable[[Mapping[str, object], Optional[object]], dict[str, object]]
