@@ -162,6 +162,11 @@ class ConfigTests(unittest.TestCase):
     def test_ssh_opts_disable_host_key_checking_detection(self) -> None:
         self.assertTrue(ssh_opts_disable_host_key_checking("-o StrictHostKeyChecking=no"))
         self.assertTrue(ssh_opts_disable_host_key_checking("-o UserKnownHostsFile=/dev/null"))
+        self.assertTrue(ssh_opts_disable_host_key_checking("-o StrictHostKeyChecking\t=\tno"))
+        self.assertTrue(ssh_opts_disable_host_key_checking('-o UserKnownHostsFile="/dev/null"'))
+        self.assertTrue(ssh_opts_disable_host_key_checking("-o StrictHostKeyChecking='no'"))
+        self.assertFalse(ssh_opts_disable_host_key_checking(None))
+        self.assertFalse(ssh_opts_disable_host_key_checking(""))
         self.assertFalse(ssh_opts_disable_host_key_checking(DEFAULTS["TC_SSH_OPTS"]))
         self.assertFalse(ssh_opts_disable_host_key_checking("-o ProxyJump=bastion"))
 

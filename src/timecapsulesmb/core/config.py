@@ -648,9 +648,11 @@ def preserved_env_file_values(values: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in values.items() if key not in ENV_FILE_OMIT_KEYS}
 
 
-def ssh_opts_disable_host_key_checking(ssh_opts: str) -> bool:
-    lowered = ssh_opts.lower()
-    return "stricthostkeychecking=no" in lowered.replace(" ", "") or "userknownhostsfile=/dev/null" in lowered.replace(" ", "")
+def ssh_opts_disable_host_key_checking(ssh_opts: str | None) -> bool:
+    if not ssh_opts:
+        return False
+    normalized = "".join(ssh_opts.lower().split()).replace('"', "").replace("'", "")
+    return "stricthostkeychecking=no" in normalized or "userknownhostsfile=/dev/null" in normalized
 
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
