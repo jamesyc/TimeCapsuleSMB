@@ -93,11 +93,11 @@ def configure_ssh_target(
     label: str = "Device SSH target",
     validate_config_value: bool = False,
 ) -> str:
+    target = canonical_ssh_target(value)
     if validate_config_value:
-        validation_error = CONFIG_VALIDATORS["TC_HOST"](value, label)
+        validation_error = CONFIG_VALIDATORS["TC_HOST"](target, label)
         if validation_error is not None:
             raise ValueError(validation_error)
-    target = canonical_ssh_target(value)
     resolution_error = ssh_target_link_local_resolution_error(target, ssh_opts)
     if resolution_error is not None:
         raise ValueError(resolution_error)

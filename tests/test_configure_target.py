@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.services.configure_target import (
@@ -23,6 +24,51 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertEqual(target.host, "root@10.0.0.9")
         self.assertEqual(target.source, "explicit_host")
         self.assertIs(target.selected_record, record)
+
+    def test_explicit_bare_host_is_canonicalized_before_validation(self) -> None:
+        target = resolve_configure_target(
+            explicit_host="10.0.0.9",
+            selected_record=None,
+            existing={},
+            ssh_opts="",
+        )
+
+        self.assertEqual(target.host, "root@10.0.0.9")
+        self.assertEqual(target.source, "explicit_host")
+
+    def test_explicit_link_local_host_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            resolve_configure_target(
+                explicit_host="root@169.254.44.9",
+                selected_record=None,
+                existing={},
+                ssh_opts="",
+            )
+
+        self.assertIn("Device SSH target host must not be a link-local address", str(raised.exception))
+
+    def test_explicit_hostname_that_resolves_link_local_is_rejected(self) -> None:
+        with mock.patch("timecapsulesmb.services.runtime.resolve_host_ipv4s", return_value=("169.254.44.9",)):
+            with self.assertRaises(ValueError) as raised:
+                resolve_configure_target(
+                    explicit_host="root@capsule.local",
+                    selected_record=None,
+                    existing={},
+                    ssh_opts="",
+                )
+
+        self.assertIn("capsule.local resolves to link-local address 169.254.44.9", str(raised.exception))
+
+    def test_existing_link_local_host_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            resolve_configure_target(
+                explicit_host="",
+                selected_record=None,
+                existing={"TC_HOST": "root@169.254.44.9"},
+                ssh_opts="",
+            )
+
+        self.assertIn("Device SSH target host must not be a link-local address", str(raised.exception))
 
     def test_selected_record_refreshes_stale_existing_ip(self) -> None:
         record = BonjourResolvedService(

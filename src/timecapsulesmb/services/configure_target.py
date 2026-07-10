@@ -70,7 +70,7 @@ def resolve_configure_target(
             source = "existing_config"
 
     return ConfigureTargetResolution(
-        host=configure_service.configure_ssh_target(target, ssh_opts),
+        host=configure_service.configure_ssh_target(target, ssh_opts, validate_config_value=True),
         source=source,
         selected_record=record,
         discovered_airport_syap=discovered_airport_syap,

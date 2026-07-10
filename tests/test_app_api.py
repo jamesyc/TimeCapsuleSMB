@@ -1623,6 +1623,32 @@ class AppApiTests(unittest.TestCase):
             serialized_events = json.dumps(collector.events)
             self.assertNotIn("goodpw", serialized_events)
 
+    def test_configure_rejects_link_local_host_before_writing_env(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch(
+                "timecapsulesmb.app.ops.configure.probe_connection_state",
+                side_effect=AssertionError("link-local host should fail before probing"),
+            ):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@169.254.189.7",
+                            "password": "goodpw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertIn("Device SSH target host must not be a link-local address", error["message"])
+        self.assertFalse(config_path.exists())
+
     def test_configure_selected_record_refreshes_stale_existing_host(self) -> None:
         collector = CollectingSink()
         captured_connections: list[SshConnection] = []
