@@ -19,6 +19,7 @@ TELEMETRY_DROP_KEYS = frozenset({
     "backup_dir",
 })
 
+_SENSITIVE_PATH_PREFIXES = ("/Volumes", "/mnt", "/Users", "/home", "/private")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _IPV6_RE = re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F]{1,4}\b")
 _ABS_PATH_RE = re.compile(r"(?:/Volumes|/mnt|/Users|/home|/private)(?:/[^\s\"']*)?")
@@ -43,10 +44,15 @@ def scrub_telemetry_value(value: object) -> object:
     if isinstance(value, (list, tuple, set)):
         return [scrub_telemetry_value(item) for item in value]
     if isinstance(value, Path):
-        return scrub_network_and_paths(str(value))
+        path_str = str(value)
+        if path_str.startswith(_SENSITIVE_PATH_PREFIXES):
+            return REDACTED
+        return scrub_network_and_paths(path_str)
     if isinstance(value, str):
         return scrub_network_and_paths(value)
-    return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return scrub_network_and_paths(str(value))
 
 
 def scrub_telemetry_mapping(mapping: Mapping[str, object]) -> dict[str, object]:

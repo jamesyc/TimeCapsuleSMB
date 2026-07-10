@@ -10,6 +10,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.core.redaction import REDACTED, scrub_telemetry_value
 from timecapsulesmb.telemetry.operation import (
     telemetry_details_from_payload,
     telemetry_options_from_params,
@@ -89,6 +90,25 @@ class TelemetryExposureTests(unittest.TestCase):
         options = telemetry_options_from_params({"yes": True, "dry_run": False, "mount_wait": 30})
         self._assert_no_network_or_path_leak(options)
         self.assertTrue(options.get("yes"))
+
+    def test_custom_objects_are_stringified_and_scrubbed(self) -> None:
+        # A non-primitive (e.g. an exception) must be scrubbed before json.dumps
+        # can stringify it and bypass redaction.
+        error = RuntimeError(f"connect failed at {LAN_IP} while opening {LOCAL_PATH}")
+        scrubbed = scrub_telemetry_value(error)
+        self.assertIsInstance(scrubbed, str)
+        self.assertNotIn(LAN_IP, scrubbed)
+        self.assertNotIn(LOCAL_PATH, scrubbed)
+
+    def test_path_with_spaces_is_fully_redacted(self) -> None:
+        scrubbed = scrub_telemetry_value(Path("/Volumes/Data/My Backup Folder/file.txt"))
+        self.assertEqual(scrubbed, REDACTED)
+
+    def test_primitives_are_preserved(self) -> None:
+        self.assertEqual(scrub_telemetry_value(42), 42)
+        self.assertIs(scrub_telemetry_value(True), True)
+        self.assertIsNone(scrub_telemetry_value(None))
+        self.assertEqual(scrub_telemetry_value(1.5), 1.5)
 
 
 if __name__ == "__main__":

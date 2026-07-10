@@ -39,6 +39,16 @@ class TelemetryPromptTests(unittest.TestCase):
             self.assertFalse(load_install_identity(path).telemetry_enabled)
             self.assertIsNotNone(load_install_identity(path).install_id)
 
+    def test_interrupt_during_first_run_prompt_does_not_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".bootstrap"
+            with mock.patch("timecapsulesmb.cli.bootstrap.default_bootstrap_path", return_value=path):
+                with mock.patch("timecapsulesmb.cli.bootstrap._prompt_telemetry_choice", side_effect=KeyboardInterrupt):
+                    with self.assertRaises(KeyboardInterrupt):
+                        bootstrap._apply_first_run_telemetry_choice(no_input=False)
+            # Nothing was written, so a later run still treats it as a first run.
+            self.assertFalse(path.exists())
+
 
 class SetTelemetryCommandTests(unittest.TestCase):
     def _run(self, argv: list[str], path: Path) -> tuple[int, str]:

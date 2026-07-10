@@ -438,9 +438,12 @@ def _apply_first_run_telemetry_choice(no_input: bool) -> None:
     except Exception:
         ensure_install_id()
         return
-    ensure_install_id(bootstrap_path)
     if first_run:
+        # Prompt before writing .bootstrap so an interrupted first run can be
+        # retried and re-prompted instead of being silently left disabled.
         set_telemetry_enabled(_prompt_telemetry_choice(no_input), bootstrap_path)
+    else:
+        ensure_install_id(bootstrap_path)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
