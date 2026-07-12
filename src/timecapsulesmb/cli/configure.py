@@ -53,7 +53,7 @@ from timecapsulesmb.discovery.bonjour import (
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPError
+from timecapsulesmb.integrations.acp import ACPError
 from timecapsulesmb.cli.util import color_cyan, color_red
 
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect")
@@ -356,16 +356,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     ) as command_context:
         command_context.update_fields(configure_id=configure_id)
 
-        def fail_configure(message: str) -> int:
+        def fail_configure(
+            message: str,
+            *,
+            code: str | None = None,
+            debug: str | None = None,
+        ) -> int:
             if args.json:
-                print_json({
+                payload = {
                     "ok": False,
                     "configure_id": configure_id,
                     "path": str(env_path),
                     "error": message,
-                })
+                }
+                if code is not None:
+                    payload["code"] = code
+                print_json(payload)
             else:
                 print(message)
+            if code is not None:
+                command_context.add_debug_fields(configure_error_code=code)
+            if debug:
+                command_context.add_debug_fields(configure_error_debug=debug)
             command_context.fail_with_error(message)
             return 1
 
@@ -554,16 +566,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             except ConfigureRetry:
                 continue
-            except ACPAuthError as exc:
-                if no_input_enabled(args):
-                    message = f"Failed to enable SSH via ACP: {exc}"
-                    return fail_configure(message)
-                print("\nThe AirPort admin password did not work.")
-                print(str(exc))
-                print("Please enter the SSH target and password again.\n")
-                command_context.set_stage("prompt_host_password")
-                prompt_host_and_password(existing, values, discovered_host, ssh_opts)
-                continue
             except ACPError as exc:
                 label = "Failed to enable SSH via ACP"
                 message = f"{label}: {exc}"
@@ -573,7 +575,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return fail_configure(message)
             except configure_service.ConfigureFlowError as exc:
                 if exc.code == "auth_failed":
-                    return fail_configure("The provided AirPort SSH target and password did not work.")
+                    if no_input_enabled(args):
+                        return fail_configure(
+                            str(exc),
+                            code=exc.code,
+                            debug=exc.debug,
+                        )
+                    print(f"\n{exc}")
+                    if exc.debug:
+                        print(exc.debug)
+                    print("Please enter the SSH target and password again.\n")
+                    command_context.set_stage("prompt_host_password")
+                    prompt_host_and_password(existing, values, discovered_host, ssh_opts)
+                    continue
                 if exc.code == "unsupported_device":
                     raise SystemExit(str(exc))
                 if exc.code == "ssh_enable_timeout":

@@ -26,10 +26,20 @@ from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_err
 from timecapsulesmb.transport.ssh import SshConnection
 
 
+AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
+
+
 class ConfigureFlowError(Exception):
-    def __init__(self, message: str, *, code: str = "configure_failed") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "configure_failed",
+        debug: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.debug = debug
 
 
 @dataclass(frozen=True)
@@ -228,13 +238,20 @@ def run_configure_flow(
             raise ConfigureFlowError("SSH is not reachable and enable_ssh is false.", code="ssh_unreachable")
         if hooks.before_enable_ssh is not None:
             hooks.before_enable_ssh(connection, probed_state)
-        probed_state = enable_ssh_and_reprobe(
-            connection,
-            timeout_seconds=request.ssh_wait_timeout,
-            verbose_wait=request.verbose_wait,
-            callbacks=callbacks,
-            probe=probe_connection,
-        )
+        try:
+            probed_state = enable_ssh_and_reprobe(
+                connection,
+                timeout_seconds=request.ssh_wait_timeout,
+                verbose_wait=request.verbose_wait,
+                callbacks=callbacks,
+                probe=probe_connection,
+            )
+        except ACPAuthError as exc:
+            raise ConfigureFlowError(
+                AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
+                code="auth_failed",
+                debug=str(exc),
+            ) from exc
         if probed_state is None:
             raise ConfigureFlowError("SSH did not open after enabling via ACP.", code="ssh_enable_timeout")
         if hooks.after_probe is not None:
@@ -250,8 +267,9 @@ def run_configure_flow(
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)
         if hooks.save_without_authentication is None or not hooks.save_without_authentication(probed_state):
             raise ConfigureFlowError(
-                probe.error or "The provided AirPort SSH target and password did not work.",
+                AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
                 code="auth_failed",
+                debug=probe.error,
             )
     elif probe.ssh_status == SshAccessStatus.ALGORITHM_NEGOTIATION_FAILED:
         callbacks.update(ssh_final_reachable=probe.ssh_port_reachable)

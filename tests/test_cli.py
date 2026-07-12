@@ -2147,8 +2147,46 @@ class CliTests(unittest.TestCase):
         payload = json.loads(result.text)
         self.assertEqual(result.rc, 1)
         self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"], "The provided AirPort SSH target and password did not work.")
+        self.assertEqual(payload["code"], "auth_failed")
+        self.assertEqual(payload["error"], "The AirPort admin password did not work.")
+        telemetry_error = self.configure_finished_error()
+        self.assertTrue(telemetry_error.startswith("The AirPort admin password did not work."))
+        self.assertIn("configure_error_code=auth_failed", telemetry_error)
+        self.assertIn("configure_error_debug=SSH authentication failed.", telemetry_error)
         self.assertNotIn(password, result.text)
+        self.assertNotIn(password, telemetry_error)
+
+    def test_configure_no_input_json_reports_acp_auth_failure_with_shared_contract(self) -> None:
+        password = "super-secret-configure-password"
+        acp_error = "ACP command failed with error_code -0x10 (likely wrong AirPort admin password)"
+        self._configure_acp_probe_mock.side_effect = ACPAuthError(acp_error)
+
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": password}):
+            result = self.run_configure_cli(
+                [
+                    "--no-input",
+                    "--json",
+                    "--host",
+                    "root@10.0.0.2",
+                    "--password-env",
+                    "TCAPSULE_TEST_PASSWORD",
+                    "--enable-ssh",
+                    "--yes",
+                ],
+                probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            )
+
+        payload = json.loads(result.text)
+        self.assertEqual(result.rc, 1)
+        self.assertEqual(payload["code"], "auth_failed")
+        self.assertEqual(payload["error"], "The AirPort admin password did not work.")
+        telemetry_error = self.configure_finished_error()
+        self.assertTrue(telemetry_error.startswith("The AirPort admin password did not work."))
+        self.assertIn("configure_error_code=auth_failed", telemetry_error)
+        self.assertIn(f"configure_error_debug={acp_error}", telemetry_error)
+        self.assertNotIn(password, result.text)
+        self.assertNotIn(password, telemetry_error)
+        result.mocks.write_env_file.assert_not_called()
 
     def test_configure_preserves_existing_ata_settings(self) -> None:
         result = self.run_configure_cli(

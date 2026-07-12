@@ -18,6 +18,7 @@ from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAcces
 from timecapsulesmb.integrations.acp import ACP_PORT, ACPAuthError, ACPConnectionError
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.configure import (
+    AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     ConfigureFlowError,
     ConfigureFlowHooks,
     ConfigureFlowRequest,
@@ -451,6 +452,70 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(written["TC_PASSWORD"], "badpw")
         self.assertEqual(written["TC_AIRPORT_SYAP"], "119")
         self.assertEqual(written["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+
+    def test_run_configure_flow_normalizes_acp_authentication_failure(self) -> None:
+        probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_status=SshAccessStatus.CLOSED,
+                error="SSH is not reachable yet.",
+                os_name="",
+                os_release="",
+                arch="",
+                elf_endianness="unknown",
+            ),
+            compatibility=None,
+        )
+        acp_error = ACPAuthError("ACP command failed with error_code -0x10")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with mock.patch(
+                "timecapsulesmb.services.configure.enable_ssh_and_reprobe",
+                side_effect=acp_error,
+            ):
+                with self.assertRaises(ConfigureFlowError) as raised:
+                    run_configure_flow(
+                        ConfigureFlowRequest(
+                            existing={},
+                            env_path=env_path,
+                            host="root@10.0.0.2",
+                            password="badpw",
+                            ssh_opts="-o foo",
+                            configure_id="config-id",
+                            persist_password=True,
+                            probe=mock.Mock(return_value=probe_state),
+                        )
+                    )
+
+        self.assertEqual(raised.exception.code, "auth_failed")
+        self.assertEqual(str(raised.exception), AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE)
+        self.assertEqual(raised.exception.debug, str(acp_error))
+        self.assertIs(raised.exception.__cause__, acp_error)
+        self.assertFalse(env_path.exists())
+
+    def test_run_configure_flow_normalizes_ssh_authentication_failure(self) -> None:
+        probe_state = self.make_auth_failed_probe_state()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with self.assertRaises(ConfigureFlowError) as raised:
+                run_configure_flow(
+                    ConfigureFlowRequest(
+                        existing={},
+                        env_path=env_path,
+                        host="root@10.0.0.2",
+                        password="badpw",
+                        ssh_opts="-o foo",
+                        configure_id="config-id",
+                        persist_password=True,
+                        probe=mock.Mock(return_value=probe_state),
+                    )
+                )
+
+        self.assertEqual(raised.exception.code, "auth_failed")
+        self.assertEqual(str(raised.exception), AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE)
+        self.assertEqual(raised.exception.debug, "SSH authentication failed.")
+        self.assertFalse(env_path.exists())
 
     def test_run_configure_flow_reports_ssh_algorithm_failure_without_auth_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -16,7 +16,7 @@ from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.device.probe import probe_connection_state
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
+from timecapsulesmb.integrations.acp import ACPConnectionError, ACPError
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -29,6 +29,7 @@ from timecapsulesmb.services.app import (
 )
 from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.configure import (
+    AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
     ConfigureFlowError,
     ConfigureFlowHooks,
     ConfigureFlowRequest,
@@ -43,7 +44,6 @@ LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
     "macos_local_network_preflight_service",
     "macos_local_network_preflight_error",
 )
-AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE = "The AirPort admin password did not work."
 
 
 def add_local_network_preflight_debug_fields(params: dict[str, object], context: AppOperationContext) -> None:
@@ -230,7 +230,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
             raise AppOperationError(
                 AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
                 code="auth_failed",
-                debug=str(exc),
+                debug=exc.debug,
             ) from exc
         if exc.code == "ssh_compatibility_failed":
             raise AppOperationError(str(exc), code="ssh_compatibility_failed") from exc
@@ -241,8 +241,6 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         raise AppOperationError(str(exc), code="remote_error") from exc
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
-    except ACPAuthError as exc:
-        raise AppOperationError(AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE, code="auth_failed", debug=str(exc)) from exc
     except ACPConnectionError as exc:
         if context.current_stage == "acp_port_probe":
             if is_macos_gui_local_network_privacy_signal(exc):
