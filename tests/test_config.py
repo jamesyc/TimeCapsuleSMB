@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 import tempfile
 import unittest
@@ -19,7 +20,9 @@ from timecapsulesmb.core.config import (
     ConfigError,
     ConfigValidationError,
     build_mdns_device_model_txt,
+    DEFAULT_ENV_FILE_MODE,
     DEFAULTS,
+    env_file_target_mode,
     load_app_config,
     parse_bool,
     parse_env_file,
@@ -204,6 +207,36 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(validate_bool("false", "Flag"))
         self.assertIsNone(validate_bool("", "Flag"))
         self.assertEqual(validate_bool("yes", "Flag"), "Flag must be true or false.")
+
+    def test_env_file_target_mode_defaults_and_overrides(self) -> None:
+        self.assertEqual(env_file_target_mode({}), DEFAULT_ENV_FILE_MODE)
+        self.assertEqual(env_file_target_mode({}), 0o600)
+        self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "640"}), 0o640)
+        self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "0640"}), 0o640)
+        # Invalid or out-of-range values fall back to the safe default.
+        self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "not-octal"}), 0o600)
+        self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "99999"}), 0o600)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
+    def test_write_env_file_defaults_to_0600(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_PASSWORD"] = "secret"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("TCAPSULE_ENV_FILE_MODE", None)
+                write_env_file(path, values)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
+    def test_write_env_file_honors_mode_override(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_PASSWORD"] = "secret"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            with mock.patch.dict(os.environ, {"TCAPSULE_ENV_FILE_MODE": "640"}):
+                write_env_file(path, values)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
 
     def test_write_env_file_omits_mdns_device_model(self) -> None:
         values = dict(DEFAULTS)

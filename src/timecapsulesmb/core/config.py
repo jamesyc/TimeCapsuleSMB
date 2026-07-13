@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Callable, Optional
 import os
 import re
@@ -648,8 +649,27 @@ def preserved_env_file_values(values: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in values.items() if key not in ENV_FILE_OMIT_KEYS}
 
 
+ENV_FILE_MODE_ENV = "TCAPSULE_ENV_FILE_MODE"
+DEFAULT_ENV_FILE_MODE = 0o600
+
+
+def env_file_target_mode(env: Mapping[str, str] | None = None) -> int:
+    environ = os.environ if env is None else env
+    raw = environ.get(ENV_FILE_MODE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_ENV_FILE_MODE
+    try:
+        mode = int(raw, 8)
+    except ValueError:
+        return DEFAULT_ENV_FILE_MODE
+    if 0 <= mode <= 0o777:
+        return mode
+    return DEFAULT_ENV_FILE_MODE
+
+
 def write_env_file(path: Path, values: dict[str, str]) -> None:
     text = render_env_text(values)
+    mode = env_file_target_mode()
     tmp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -664,6 +684,7 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
             tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())
+        os.chmod(tmp_name, mode)
         os.replace(tmp_name, path)
     finally:
         if tmp_name is not None:
