@@ -696,6 +696,7 @@ Arguments:
 - `--enable-ssh`: enable SSH via ACP if SSH is closed
 - `--no-enable-ssh`: fail instead of enabling SSH via ACP if SSH is closed
 - `--json`: emit a machine-readable result; requires `--no-input`
+- `--no-persist-password`: write the config without saving `TC_PASSWORD`; later commands then prompt or read the password from `--password-env`/`--password-stdin`
 
 Hidden advanced arguments:
 - `--internal-share-use-disk-root`: writes `TC_INTERNAL_SHARE_USE_DISK_ROOT=true`; internal disks use the disk root instead of the safer `ShareRoot`

@@ -2076,6 +2076,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_PASSWORD"], "pw")
         result.mocks.discover_snapshot_merged_detailed.assert_not_called()
 
+    def test_configure_no_persist_password_omits_password_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"TCAPSULE_TEST_PASSWORD": "pw"}):
+            result = self.run_configure_cli(
+                [
+                    "--no-input",
+                    "--host",
+                    "root@10.0.0.2",
+                    "--password-env",
+                    "TCAPSULE_TEST_PASSWORD",
+                    "--no-persist-password",
+                ],
+                probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self.assertNotIn("TC_PASSWORD", result.values)
+
     def test_configure_no_input_requires_password_before_probe_or_write(self) -> None:
         result = self.run_configure_cli(
             ["--no-input", "--host", "root@10.0.0.2"],
