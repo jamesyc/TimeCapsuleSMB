@@ -639,6 +639,7 @@ The top-level command dispatcher supports:
 
 Shared command behavior:
 - all commands except `api` perform the client version check before running, unless the invocation is only asking for `-h` or `--help`
+- setting `TCAPSULE_NO_VERSION_CHECK=1` skips the remote version check entirely (no outbound request); the check already fails open when the endpoint is unreachable
 - commands that read the device config accept `--config PATH`, which overrides `TCAPSULE_CONFIG` and the repo-local `.env`
 - commands that can prompt usually accept `--no-input`; in that mode they fail instead of asking for missing input or confirmation
 - commands that can make destructive or rebooting changes use `--yes` to skip confirmation in interactive and non-interactive runs
