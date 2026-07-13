@@ -283,6 +283,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ssh_group.add_argument("--enable-ssh", action="store_true", help="Enable SSH via ACP if SSH is closed")
     ssh_group.add_argument("--no-enable-ssh", action="store_true", help="Fail instead of enabling SSH via ACP if SSH is closed")
     parser.add_argument("--json", action="store_true", help="Output a machine-readable configure result")
+    parser.add_argument(
+        "--no-persist-password",
+        action="store_true",
+        help="Write the config without saving the device password to .env",
+    )
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     smb_bind_group = parser.add_mutually_exclusive_group()
     smb_bind_group.add_argument("--smb-bind-lan-only", action="store_true", help=argparse.SUPPRESS)
@@ -303,6 +308,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.json and not no_input_enabled(args):
         parser.error("--json requires --no-input")
+    persist_password = not args.no_persist_password
 
     ensure_install_id()
     env_path = resolve_app_paths(config_path=args.config).config_path
@@ -527,7 +533,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         password=values["TC_PASSWORD"],
                         ssh_opts=ssh_opts,
                         configure_id=configure_id,
-                        persist_password=True,
+                        persist_password=persist_password,
                         discovered_airport_syap=target.discovered_airport_syap,
                         enable_ssh=True,
                         verbose_wait=not args.json,
@@ -549,7 +555,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         ata_idle_seconds=args.ata_idle_seconds,
                         ata_standby=args.ata_standby,
                         probe=probe_for_context,
-                        write_env=lambda path, output: write_configure_env_file(path, output, persist_password=True),
+                        write_env=lambda path, output: write_configure_env_file(path, output, persist_password=persist_password),
                         infer_model_from_syap=infer_mdns_device_model_from_airport_syap,
                     ),
                     callbacks=OperationCallbacks(
