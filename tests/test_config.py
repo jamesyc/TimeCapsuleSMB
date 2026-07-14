@@ -213,6 +213,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(env_file_target_mode({}), 0o600)
         self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "640"}), 0o640)
         self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "0640"}), 0o640)
+        self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "0o640"}), 0o640)
         # Invalid or out-of-range values fall back to the safe default.
         self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "not-octal"}), 0o600)
         self.assertEqual(env_file_target_mode({"TCAPSULE_ENV_FILE_MODE": "99999"}), 0o600)
