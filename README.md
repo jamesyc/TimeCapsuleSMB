@@ -24,6 +24,8 @@ The current authentication model accepts any user as the username, and the Samba
 
 AirPort Extreme devices are not officially supported. Unofficially, they work fine. Note that this is installed to the hard drive, so it will not work for an Airport Extreme without a hard drive (as there is not enough space to store the binaries on the flash memory).   
 
+If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buymeacoffee.com/jamesyc) to support the project.
+
 ## Requirements
 
 You will need:  
