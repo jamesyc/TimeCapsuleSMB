@@ -19,6 +19,12 @@ Yep. This doesn't touch anything that will permanently brick a Time Capsule for 
 
 The `flash` boot hook install (for 1-4th gen devices) is the only risky part. It backs up a copy of your flash, but be careful- if the device loses power while flashing, it can brick the device. 
 
+#### Will installing TimeCapsuleSMB overwrite my existing backups?
+
+No. The normal Install/Update or `deploy` flow adds managed files in `/mnt/Flash` and a `.samba4` folder on the hard drive. It does not erase or format the disk, and it does not delete existing Time Machine `.sparsebundle` backups.
+
+Time Machine may still create a new backup bundle if it cannot find or reuse the old one. That is different from TimeCapsuleSMB overwriting data.
+
 ## Setup and Configuration
 
 #### What is the "Device Password" mode?
@@ -55,6 +61,18 @@ Once deployment is complete, you can connect via:
 **Credentials:**
 - Username: `admin` in the docs/examples. The managed Samba config maps incoming SMB usernames to Unix `root`.
 - Password: Your Time Capsule password
+
+#### Can I keep using an existing Time Machine backup?
+
+Yes. Install with the standard settings first and confirm the SMB connection works. Then move the existing `.sparsebundle` into the root of the SMB share Time Machine sees. With standard internal-disk settings, that is the `ShareRoot` folder. If you intentionally enabled "Internal Share Uses Disk Root", that is the disk root.
+
+After the bundle is in the right place, reconnect Time Machine to the new SMB share and choose the existing backup when macOS offers it.
+
+#### What if my old backup was inside a user folder?
+
+Old Time Capsule setups could store backups under separate user folders. TimeCapsuleSMB uses one device-password SMB share, so move any `.sparsebundle` backups you want to keep out of those user folders and into the root of the SMB share.
+
+If macOS still cannot reuse the backup, make sure the backup is not mounted, then reboot the Time Capsule first and your Mac second. After both are back up, reconnect Time Machine to the SMB share again.
 
 #### Do I need to `uninstall` before updating?
 
@@ -180,6 +198,12 @@ Alternatively, you can `flash` the boot hook. Use the macOS app, or run the `fla
 #### Is this secure?
 
 It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.24.3 currently.
+
+#### Can I keep separate private folders for different Time Capsule users?
+
+Not in the same way as the original Time Capsule user-folder mode. TimeCapsuleSMB currently uses the Time Capsule device password for SMB access, and anyone who can connect to the share can see and delete the backup bundles.
+
+For privacy, turn on Time Machine encryption for each Mac. Other household members may still see or delete the `.sparsebundle` file if they have SMB access, but they should not be able to open the backup contents without the encryption password.
 
 #### What files are added to the Time Capsule?
 
