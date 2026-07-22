@@ -2012,7 +2012,7 @@ class CliTests(unittest.TestCase):
 
     def test_configure_force_disable_smb_signing_and_encryption_arg_writes_true(self) -> None:
         result = self.run_configure_cli(
-            ["--force-disable-smb-signing-and-encryption"],
+            ["--disable-smb-security"],
             prompt_side_effect=self.configure_prompt_defaults(),
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
@@ -2024,10 +2024,23 @@ class CliTests(unittest.TestCase):
     def test_configure_rejects_required_and_disabled_smb_encryption(self) -> None:
         with redirect_stderr(io.StringIO()):
             result = self.run_configure_cli(
-                ["--require-smb-encryption", "--force-disable-smb-signing-and-encryption"],
+                ["--require-smb-encryption", "--disable-smb-security"],
                 raises=SystemExit,
             )
         self.assertEqual(result.exception.code, 2)
+
+    def test_configure_force_disable_smb_security_args_are_mutually_exclusive(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            result = self.run_configure_cli(
+                [
+                    "--disable-smb-security",
+                    "--no-disable-smb-security",
+                ],
+                raises=SystemExit,
+            )
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn("not allowed with argument", stderr.getvalue())
 
     def test_configure_rejects_any_protocol_with_smb_encryption(self) -> None:
         with redirect_stderr(io.StringIO()):

@@ -283,6 +283,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     ssh_group.add_argument("--enable-ssh", action="store_true", help="Enable SSH via ACP if SSH is closed")
     ssh_group.add_argument("--no-enable-ssh", action="store_true", help="Fail instead of enabling SSH via ACP if SSH is closed")
     parser.add_argument("--json", action="store_true", help="Output a machine-readable configure result")
+    # Python 3.9 argparse can fail while formatting usage when a visible option
+    # follows fully suppressed mutually exclusive groups. Keep this public flag
+    # before the internal-only groups below.
+    force_disable_smb_security_group = parser.add_mutually_exclusive_group()
+    force_disable_smb_security_group.add_argument(
+        "--disable-smb-security",
+        dest="force_disable_smb_signing_and_encryption",
+        action="store_true",
+        help="Force the Samba server to disable SMB signing and encryption",
+    )
+    force_disable_smb_security_group.add_argument(
+        "--no-disable-smb-security",
+        dest="no_force_disable_smb_signing_and_encryption",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     smb_bind_group = parser.add_mutually_exclusive_group()
     smb_bind_group.add_argument("--smb-bind-lan-only", action="store_true", help=argparse.SUPPRESS)
@@ -297,17 +313,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     require_smb_encryption_group = parser.add_mutually_exclusive_group()
     require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
     require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
-    force_disable_smb_security_group = parser.add_mutually_exclusive_group()
-    force_disable_smb_security_group.add_argument(
-        "--force-disable-smb-signing-and-encryption",
-        action="store_true",
-        help="Force the Samba server to disable SMB signing and encryption",
-    )
-    force_disable_smb_security_group.add_argument(
-        "--no-force-disable-smb-signing-and-encryption",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
     parser.add_argument("--netatalk", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
