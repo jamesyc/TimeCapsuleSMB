@@ -34,7 +34,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline[0].state, .succeeded)
         XCTAssertEqual(timeline[1].state, .warning)
         XCTAssertEqual(timeline[2].state, .succeeded)
-        XCTAssertEqual(timeline[2].detail, "Deployment completed.")
+        XCTAssertEqual(timeline[2].detail, "Samba installation or update completed.")
     }
 
     func testStageBecomesSucceededWhenLaterStageForSameOperationAppears() {

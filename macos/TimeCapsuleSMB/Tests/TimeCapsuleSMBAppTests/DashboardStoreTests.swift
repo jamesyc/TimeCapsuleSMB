@@ -223,7 +223,7 @@ final class DashboardStoreTests: XCTestCase {
             profile: installed
         )
         XCTAssertEqual(afterRefresh.timeline?.items.map(\.title), ["Upload smbd", "Done"])
-        XCTAssertEqual(afterRefresh.timeline?.items.last?.detail, "Deployment completed.")
+        XCTAssertEqual(afterRefresh.timeline?.items.last?.detail, "Samba installation or update completed.")
         XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "deploy", "reachability"])
     }
 
@@ -1131,7 +1131,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.selectedTab, .checkup)
 
         XCTAssertTrue(session.handleRecoveryAction(
-            RecoveryAction(title: "Install SMB", kind: .installSMB),
+            RecoveryAction(title: "Install Samba", kind: .installSMB),
             error: error,
             profile: profile
         ))

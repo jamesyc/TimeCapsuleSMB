@@ -196,9 +196,9 @@ final class PendingConfirmationTests: XCTestCase {
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
 
-        XCTAssertEqual(confirmation.title, "Deploy And Reboot?")
-        XCTAssertEqual(confirmation.message, "Deploy TimeCapsuleSMB and reboot this Time Capsule?")
-        XCTAssertEqual(confirmation.actionTitle, "Deploy and Reboot")
+        XCTAssertEqual(confirmation.title, "Install / Update Samba and Reboot?")
+        XCTAssertEqual(confirmation.message, "Install or update Samba and reboot this Time Capsule?")
+        XCTAssertEqual(confirmation.actionTitle, "Install / Update Samba and Reboot")
     }
 
     func testPendingConfirmationUsesLocalizedConfigureEnableSSHCopy() throws {
@@ -245,9 +245,9 @@ final class PendingConfirmationTests: XCTestCase {
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
 
-        XCTAssertEqual(confirmation.title, "Deploy And Start SMB?")
-        XCTAssertEqual(confirmation.message, "Deploy TimeCapsuleSMB to this Time Capsule and start SMB without rebooting it?")
-        XCTAssertEqual(confirmation.actionTitle, "Deploy and Start SMB")
+        XCTAssertEqual(confirmation.title, "Install / Update Samba and Start?")
+        XCTAssertEqual(confirmation.message, "Install or update Samba on this Time Capsule and start it without rebooting the device?")
+        XCTAssertEqual(confirmation.actionTitle, "Install / Update Samba and Start")
     }
 
     func testPendingConfirmationUsesRestoreWriteRebootCopy() throws {
@@ -297,12 +297,12 @@ final class PendingConfirmationTests: XCTestCase {
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
 
-        XCTAssertEqual(confirmation.title, "Deploy And Request NetBSD4 Reboot?")
+        XCTAssertEqual(confirmation.title, "Install / Update Samba and Request NetBSD4 Reboot?")
         XCTAssertEqual(
             confirmation.message,
-            "Deploy TimeCapsuleSMB to this Time Capsule, request reboot, and return immediately without running Samba activation after SSH returns?"
+            "Install or update Samba on this Time Capsule, request reboot, and return immediately without starting Samba after SSH returns?"
         )
-        XCTAssertEqual(confirmation.actionTitle, "Deploy and Request Reboot")
+        XCTAssertEqual(confirmation.actionTitle, "Install / Update Samba and Request Reboot")
     }
 
     func testPendingConfirmationUsesLocalizedQuestionForUninstallWithoutReboot() throws {

@@ -564,7 +564,8 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertEqual(
             run.results[-1].message,
-            "deployed payload config not found; please run deploy to install on your device",
+            "installed Samba configuration not found; run \"Install / Update Samba\" in the macOS app, "
+            "or run tcapsule deploy from the command line",
         )
         self.assertEqual(run.results[-1].details["code"], "runtime_not_installed")
         self.assertEqual(debug_fields["deployed_config_present"], False)
@@ -611,7 +612,8 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertEqual(
             run.results[-1].message,
-            f"deployed payload has no version metadata; current version is {RELEASE_TAG}; please run deploy to update your device",
+            f"installed Samba payload has no version metadata; current version is {RELEASE_TAG}; "
+            "run \"Install / Update Samba\" in the macOS app, or run tcapsule deploy from the command line",
         )
         run.mocks.flash_runtime_config_present_conn.assert_called_once()
         run.mocks.read_deployed_version_conn.assert_called_once()
@@ -647,7 +649,8 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertEqual(
             run.results[-1].message,
-            f"deployed version v2.1.0-rc3 is older than current {RELEASE_TAG}; please run deploy to update your device",
+            f"installed Samba version v2.1.0-rc3 is older than current {RELEASE_TAG}; "
+            "run \"Install / Update Samba\" in the macOS app, or run tcapsule deploy from the command line",
         )
         managed_smbd.assert_not_called()
 

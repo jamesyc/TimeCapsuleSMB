@@ -213,7 +213,7 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(DeployWorkflowState.planStale.title, "Plan Stale")
         XCTAssertEqual(MaintenanceWorkflow.fsck.title, "Disk Repair")
         XCTAssertEqual(FlashWorkflowState.writeLocked.title, "Ready")
-        XCTAssertEqual(error.message, "Review and regenerate the deploy plan before deploying.")
+        XCTAssertEqual(error.message, "Review and regenerate the Install / Update plan before continuing.")
         XCTAssertEqual(issue.message, "The bundled TimeCapsuleSMB helper is missing.")
         XCTAssertEqual(issue.recovery, "Reinstall TimeCapsuleSMB.")
         XCTAssertEqual(checkup.localizedSummary, "PASS 2, WARN 1, FAIL 0")

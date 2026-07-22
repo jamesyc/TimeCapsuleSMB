@@ -35,7 +35,7 @@ final class ActivityStoreTests: XCTestCase {
         runner.finishAll()
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
         XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["Upload Payload", "Done"])
-        XCTAssertEqual(activity.snapshot.latestMessage, "Deployment completed.")
+        XCTAssertEqual(activity.snapshot.latestMessage, "Samba installation or update completed.")
     }
 
     func testAppLanguageChangeRefreshesCachedActivityPresentation() async throws {

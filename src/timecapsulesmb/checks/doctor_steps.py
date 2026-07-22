@@ -1598,7 +1598,8 @@ def _doctor_check_deployed_config(target: DoctorTarget, remote: RemoteAccess, si
         sink.add(
             CheckResult(
                 "FAIL",
-                "deployed payload config not found; please run deploy to install on your device",
+                "installed Samba configuration not found; run \"Install / Update Samba\" in the macOS app, "
+                "or run tcapsule deploy from the command line",
                 details={"code": DOCTOR_CODE_RUNTIME_NOT_INSTALLED},
             )
         )
@@ -1628,7 +1629,8 @@ def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, s
         sink.add(
             CheckResult(
                 "FAIL",
-                f"deployed payload has no version metadata; current version is {RELEASE_TAG}; please run deploy to update your device",
+                f"installed Samba payload has no version metadata; current version is {RELEASE_TAG}; "
+                "run \"Install / Update Samba\" in the macOS app, or run tcapsule deploy from the command line",
             )
         )
         return StepDecision(stop=True)
@@ -1637,7 +1639,8 @@ def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, s
         sink.add(
             CheckResult(
                 "FAIL",
-                f"deployed version {deployed_release_tag} is older than current {RELEASE_TAG}; please run deploy to update your device",
+                f"installed Samba version {deployed_release_tag} is older than current {RELEASE_TAG}; "
+                "run \"Install / Update Samba\" in the macOS app, or run tcapsule deploy from the command line",
             )
         )
         return StepDecision(stop=True)

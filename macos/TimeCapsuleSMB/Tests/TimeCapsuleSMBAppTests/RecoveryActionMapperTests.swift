@@ -163,7 +163,7 @@ final class RecoveryActionMapperTests: XCTestCase {
 
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Run Disk Repair", kind: .diskRepair)))
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Open Finder", kind: .openFinder)))
-        XCTAssertTrue(actions.contains(RecoveryAction(title: "Install SMB", kind: .installSMB)))
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Install Samba", kind: .installSMB)))
     }
 
     func testDeployRecoveryDoesNotShowFinderOrInstallSMBActions() throws {

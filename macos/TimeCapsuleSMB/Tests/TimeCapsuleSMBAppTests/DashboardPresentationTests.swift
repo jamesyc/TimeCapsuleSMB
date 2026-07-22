@@ -39,7 +39,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.domain, .smbAuth)
         XCTAssertEqual(
             row.message,
-            "SMB is bound to the Time Capsule LAN, but this Mac is on another network. Turn off Bind SMB to LAN Only for this device and run Install / Update SMB, or connect from the Time Capsule LAN side."
+            "SMB is bound to the Time Capsule LAN, but this Mac is on another network. Turn off Bind SMB to LAN Only for this device and run Install / Update Samba, or connect from the Time Capsule LAN side."
         )
         XCTAssertFalse(row.message.contains("configured to bind"))
     }
@@ -87,7 +87,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.domain, .runtime)
         XCTAssertEqual(
             row.message,
-            "The SMB folder is missing from the data disk; the disk may have been erased. Run \"Install / Update SMB\" to reinstall."
+            "The Samba folder is missing from the data disk; the disk may have been erased. Run \"Install / Update Samba\" to reinstall."
         )
         XCTAssertFalse(row.message.contains("xattr_tdb"))
     }
@@ -627,7 +627,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallPlanPresentation(plan: plan, profile: profile, hostWarning: warning)
 
-        XCTAssertEqual(presentation.title, "Install / Update SMB, Reboot, and Start Runtime")
+        XCTAssertEqual(presentation.title, "Install / Update Samba, Reboot, and Start Runtime")
         XCTAssertFalse(presentation.sections.contains { $0.title == "Files" })
         let target = try XCTUnwrap(presentation.sections.first { $0.title == "Target" })
         XCTAssertTrue(target.rows.contains(PresentationRow(label: "Payload", value: "netbsd4_samba4")))
@@ -648,7 +648,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallPlanPresentation(plan: plan, profile: profile)
 
-        XCTAssertEqual(presentation.title, "Install / Update SMB and Start Runtime")
+        XCTAssertEqual(presentation.title, "Install / Update Samba and Start Runtime")
         XCTAssertTrue(presentation.sections.contains { section in
             section.rows.contains(PresentationRow(
                 label: "Expected Downtime",
@@ -674,7 +674,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallPlanPresentation(plan: plan, profile: profile, options: options)
 
-        XCTAssertEqual(presentation.title, "Install / Update SMB and Request Reboot")
+        XCTAssertEqual(presentation.title, "Install / Update Samba and Request Reboot")
         XCTAssertTrue(presentation.sections.contains { section in
             section.rows.contains(PresentationRow(
                 label: "Expected Downtime",
@@ -723,7 +723,7 @@ final class DashboardPresentationTests: XCTestCase {
             profile: profile
         )
 
-        XCTAssertEqual(presentation.stateTitle, "Deploy Failed")
+        XCTAssertEqual(presentation.stateTitle, "Install / Update Failed")
         XCTAssertEqual(presentation.statusMessage, "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.")
         XCTAssertEqual(presentation.error?.recovery?.title, "No HFS volumes found")
         XCTAssertNil(presentation.failureGuidance)
@@ -759,8 +759,8 @@ final class DashboardPresentationTests: XCTestCase {
             profile: profile
         )
 
-        XCTAssertEqual(presentation.stateTitle, "Deploy Failed")
-        XCTAssertEqual(presentation.statusMessage, "Deploy was interrupted before it completed.")
+        XCTAssertEqual(presentation.stateTitle, "Install / Update Failed")
+        XCTAssertEqual(presentation.statusMessage, "The Samba installation or update was interrupted before it completed.")
         XCTAssertEqual(presentation.error?.code, "operation_interrupted")
         XCTAssertEqual(presentation.timeline?.items.first?.title, "Find Payload Volume")
         XCTAssertEqual(presentation.timeline?.items.first?.state, .failed)
@@ -825,7 +825,7 @@ final class DashboardPresentationTests: XCTestCase {
         )
 
         let completion = try XCTUnwrap(presentation.completion)
-        XCTAssertEqual(presentation.stateTitle, "Deployed")
+        XCTAssertEqual(presentation.stateTitle, "Installed / Updated")
         XCTAssertEqual(presentation.statusMessage, "Install / Update completed.")
         XCTAssertEqual(presentation.actions, [])
         XCTAssertEqual(completion.title, "Install / Update Verified")
@@ -834,7 +834,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(completion.actions, [.reinstall, .openFinder, .runCheckup, .viewDiagnostics])
         let timeline = try XCTUnwrap(presentation.timeline)
         XCTAssertEqual(timeline.items.map(\.title), ["Done"])
-        XCTAssertEqual(timeline.items.first?.detail, "Deployment completed.")
+        XCTAssertEqual(timeline.items.first?.detail, "Samba installation or update completed.")
         XCTAssertEqual(timeline.items.first?.state, .succeeded)
     }
 
@@ -929,7 +929,7 @@ final class DashboardPresentationTests: XCTestCase {
             currentStage: nil,
             profile: profile
         )
-        XCTAssertEqual(deployFailed.stateTitle, "Deploy Failed")
+        XCTAssertEqual(deployFailed.stateTitle, "Install / Update Failed")
         XCTAssertEqual(deployFailed.actions, [.installUpdate])
         XCTAssertNotNil(deployFailed.timeline)
         XCTAssertNil(deployFailed.completion)
@@ -949,7 +949,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.actions, [.reinstall, .openFinder, .runCheckup, .viewDiagnostics])
         XCTAssertEqual(InstallUserAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
         XCTAssertEqual(InstallUserAction.reinstall.systemImage, "arrow.clockwise")
-        XCTAssertEqual(InstallUserAction.reinstall.title, "Reinstall")
+        XCTAssertEqual(InstallUserAction.reinstall.title, "Reinstall Samba")
     }
 
     func testInstallCompletionPresentationReplacesRunCheckupWithViewCheckupWhileChecking() throws {
@@ -996,7 +996,7 @@ final class DashboardPresentationTests: XCTestCase {
         let deploying = InstallProgressPresentation(state: .deploying, currentStage: stage)
 
         XCTAssertEqual(deploying?.title, "Installing / Updating")
-        XCTAssertEqual(deploying?.message, "Uploading and applying the managed SMB runtime. This can take a few minutes...")
+        XCTAssertEqual(deploying?.message, "Uploading and applying the managed Samba runtime. This can take a few minutes...")
         XCTAssertEqual(deploying?.detail, "Uploading managed SMB payload files.")
         for state in DeployWorkflowState.allCases where state != .deploying {
             XCTAssertNil(InstallProgressPresentation(state: state, currentStage: stage), "\(state) should not show a blocking progress modal.")

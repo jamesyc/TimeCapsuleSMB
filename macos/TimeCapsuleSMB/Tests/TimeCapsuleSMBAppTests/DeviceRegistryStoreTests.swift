@@ -434,12 +434,12 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(deployState.finishedAt, interruptedAt)
         XCTAssertEqual(deployState.stage, "read_mast")
         XCTAssertEqual(deployState.errorCode, "operation_interrupted")
-        XCTAssertEqual(deployState.localizedSummary, "Deploy was interrupted before it completed.")
+        XCTAssertEqual(deployState.localizedSummary, "The Samba installation or update was interrupted before it completed.")
         let runtimeState = try XCTUnwrap(reloaded.profile(id: profile.id)?.runtimeState)
         XCTAssertEqual(runtimeState.state, .installInterrupted)
         XCTAssertEqual(runtimeState.stage, "read_mast")
         XCTAssertEqual(runtimeState.errorCode, "operation_interrupted")
-        XCTAssertEqual(runtimeState.localizedSummary, "Deploy was interrupted before it completed.")
+        XCTAssertEqual(runtimeState.localizedSummary, "The Samba installation or update was interrupted before it completed.")
     }
 
     func testInterruptedRuntimeStateOverridesSuccessfulCheckupAfterReload() async throws {
