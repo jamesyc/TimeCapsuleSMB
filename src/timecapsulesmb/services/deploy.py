@@ -151,6 +151,7 @@ class DeployRuntimeConfig:
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
     require_smb_encryption: bool | None = None
+    force_disable_smb_signing_and_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     ata_idle_seconds: str | int | None = None
     ata_standby: str | int | None = None
@@ -776,6 +777,7 @@ def upload_and_verify_deployment_payload(
         mdns_advertise_afp=runtime_config.mdns_advertise_afp,
         any_protocol=runtime_config.any_protocol,
         require_smb_encryption=runtime_config.require_smb_encryption,
+        force_disable_smb_signing_and_encryption=runtime_config.force_disable_smb_signing_and_encryption,
         fruit_metadata_netatalk=runtime_config.fruit_metadata_netatalk,
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
@@ -1128,6 +1130,7 @@ def render_flash_runtime_config(
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
     require_smb_encryption: bool | None = None,
+    force_disable_smb_signing_and_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     ata_idle_seconds: str | int | None = None,
     ata_standby: str | int | None = None,
@@ -1150,6 +1153,10 @@ def render_flash_runtime_config(
     require_smb_encryption_default = config.get(
         "TC_REQUIRE_SMB_ENCRYPTION",
         DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"],
+    )
+    force_disable_smb_signing_and_encryption_default = config.get(
+        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
     )
     fruit_metadata_netatalk_default = config.get(
         "TC_FRUIT_METADATA_NETATALK",
@@ -1186,9 +1193,15 @@ def render_flash_runtime_config(
         if require_smb_encryption is None
         else require_smb_encryption
     )
+    effective_force_disable_smb_signing_and_encryption = (
+        parse_bool(force_disable_smb_signing_and_encryption_default)
+        if force_disable_smb_signing_and_encryption is None
+        else force_disable_smb_signing_and_encryption
+    )
     validate_smb_protocol_options(
         any_protocol=effective_any_protocol,
         require_smb_encryption=effective_require_smb_encryption,
+        force_disable_smb_signing_and_encryption=effective_force_disable_smb_signing_and_encryption,
     )
     effective_smb_browse_compatibility = (
         parse_bool(smb_browse_compatibility_default)
@@ -1217,6 +1230,10 @@ def render_flash_runtime_config(
         ("MDNS_ADVERTISE_AFP", 1 if effective_mdns_advertise_afp else 0),
         ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
         ("REQUIRE_SMB_ENCRYPTION", 1 if effective_require_smb_encryption else 0),
+        (
+            "FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+            1 if effective_force_disable_smb_signing_and_encryption else 0,
+        ),
         ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),

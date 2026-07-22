@@ -181,6 +181,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 mdnsAdvertiseAFP: settings.mdnsAdvertiseAFP,
                 anyProtocol: settings.anyProtocol,
                 requireSMBEncryption: settings.requireSMBEncryption,
+                forceDisableSMBSigningAndEncryption: settings.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,

@@ -28,6 +28,7 @@ final class AppSettingsStoreTests: XCTestCase {
                 smbBrowseCompatibility: true,
                 mdnsAdvertiseAFP: true,
                 anyProtocol: true,
+                forceDisableSMBSigningAndEncryption: true,
                 fruitMetadataNetatalk: true,
                 debugLogging: true,
                 mountWaitSeconds: 45,
@@ -240,6 +241,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "toggle.enable_debug_logging": "启用调试日志",
             "toggle.smb_browse_compatibility": "允许浏览 SMB 共享",
             "toggle.mdns_advertise_afp": "通过 Bonjour 广播 AFP",
+            "toggle.force_disable_smb_signing_and_encryption": "强制停用 SMB 签名和加密",
             "toggle.use_netatalk_metadata": "使用 Netatalk 存储元数据",
             "value.never": "从未",
             "workflow.state.deploying": "正在部署"

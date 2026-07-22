@@ -405,6 +405,7 @@ struct AppSettingsDraft: Equatable {
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
     var requireSMBEncryption: Bool
+    var forceDisableSMBSigningAndEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
@@ -428,6 +429,7 @@ struct AppSettingsDraft: Equatable {
         mdnsAdvertiseAFP = settings.defaultDeviceSettings.mdnsAdvertiseAFP
         anyProtocol = settings.defaultDeviceSettings.anyProtocol
         requireSMBEncryption = settings.defaultDeviceSettings.requireSMBEncryption
+        forceDisableSMBSigningAndEncryption = settings.defaultDeviceSettings.forceDisableSMBSigningAndEncryption
         fruitMetadataNetatalk = settings.defaultDeviceSettings.fruitMetadataNetatalk
         debugLogging = settings.defaultDeviceSettings.debugLogging
         mountWaitSeconds = String(settings.defaultDeviceSettings.mountWaitSeconds)
@@ -478,6 +480,7 @@ struct AppSettingsDraft: Equatable {
                 mdnsAdvertiseAFP: mdnsAdvertiseAFP,
                 anyProtocol: anyProtocol,
                 requireSMBEncryption: requireSMBEncryption,
+                forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: fruitMetadataNetatalk,
                 debugLogging: debugLogging,
                 mountWaitSeconds: mountWait,

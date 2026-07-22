@@ -41,6 +41,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
     var requireSMBEncryption: Bool
+    var forceDisableSMBSigningAndEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
@@ -55,6 +56,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         mdnsAdvertiseAFP: false,
         anyProtocol: false,
         requireSMBEncryption: false,
+        forceDisableSMBSigningAndEncryption: false,
         fruitMetadataNetatalk: true,
         debugLogging: false,
         mountWaitSeconds: 30,
@@ -70,6 +72,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         mdnsAdvertiseAFP: Bool = false,
         anyProtocol: Bool = false,
         requireSMBEncryption: Bool = false,
+        forceDisableSMBSigningAndEncryption: Bool = false,
         fruitMetadataNetatalk: Bool = true,
         debugLogging: Bool,
         mountWaitSeconds: Int,
@@ -86,6 +89,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         if self.requireSMBEncryption {
             self.anyProtocol = false
         }
+        self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption && !requireSMBEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
@@ -101,6 +105,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         case mdnsAdvertiseAFP
         case anyProtocol
         case requireSMBEncryption
+        case forceDisableSMBSigningAndEncryption
         case fruitMetadataNetatalk
         case debugLogging
         case mountWaitSeconds
@@ -120,6 +125,10 @@ struct DeviceProfileSettings: Codable, Equatable {
         if requireSMBEncryption {
             anyProtocol = false
         }
+        forceDisableSMBSigningAndEncryption = (
+            try container.decodeIfPresent(Bool.self, forKey: .forceDisableSMBSigningAndEncryption)
+            ?? Self.default.forceDisableSMBSigningAndEncryption
+        ) && !requireSMBEncryption
         fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
         mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds

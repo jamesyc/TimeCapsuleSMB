@@ -130,6 +130,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.smbBrowseCompatibility = true
         store.draft.mdnsAdvertiseAFP = true
         store.draft.anyProtocol = true
+        store.draft.forceDisableSMBSigningAndEncryption = true
         store.draft.fruitMetadataNetatalk = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "45"
@@ -148,6 +149,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
+            forceDisableSMBSigningAndEncryption: true,
             fruitMetadataNetatalk: true,
             debugLogging: true,
             mountWaitSeconds: 45,
@@ -401,6 +403,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.smbBrowseCompatibility = true
         store.draft.mdnsAdvertiseAFP = true
         store.draft.anyProtocol = true
+        store.draft.forceDisableSMBSigningAndEncryption = true
         store.draft.fruitMetadataNetatalk = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "60"
@@ -426,6 +429,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(call.params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(call.params["any_protocol"], .bool(true))
+        XCTAssertEqual(call.params["force_disable_smb_signing_and_encryption"], .bool(true))
         XCTAssertEqual(call.params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(call.params["debug_logging"], .bool(true))
         XCTAssertEqual(call.params["ata_idle_seconds"], .number(0))
@@ -445,6 +449,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
+            forceDisableSMBSigningAndEncryption: true,
             fruitMetadataNetatalk: true,
             debugLogging: true,
             mountWaitSeconds: 60,

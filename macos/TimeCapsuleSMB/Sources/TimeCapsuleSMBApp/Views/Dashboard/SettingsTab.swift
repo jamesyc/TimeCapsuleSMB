@@ -163,9 +163,28 @@ private struct DeviceProfileAdvancedSettingsView: View {
                         Toggle(L10n.string("toggle.any_protocol"), isOn: anyProtocolBinding)
                             .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: store.draft.requireSMBEncryption))
                         Toggle(L10n.string("toggle.require_smb_encryption"), isOn: requireSMBEncryptionBinding)
-                            .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(anyProtocol: store.draft.anyProtocol))
+                            .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(
+                                anyProtocol: store.draft.anyProtocol,
+                                forceDisableSMBSigningAndEncryption: store.draft.forceDisableSMBSigningAndEncryption
+                            ))
                     }
-                    Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+                    GridRow {
+                        Toggle(
+                            L10n.string("toggle.force_disable_smb_signing_and_encryption"),
+                            isOn: forceDisableSMBSigningAndEncryptionBinding
+                        )
+                        .disabled(!SMBProtocolOptionPolicy.allowsForceDisableSMBSigningAndEncryption(
+                            requireSMBEncryption: store.draft.requireSMBEncryption
+                        ))
+                        Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+                    }
+                    GridRow {
+                        Text(L10n.string("toggle.force_disable_smb_signing_and_encryption.note"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .gridCellColumns(2)
+                    }
                 }
             }
         }
@@ -190,6 +209,19 @@ private struct DeviceProfileAdvancedSettingsView: View {
                 store.draft.requireSMBEncryption = value
                 if value {
                     store.draft.anyProtocol = false
+                    store.draft.forceDisableSMBSigningAndEncryption = false
+                }
+            }
+        )
+    }
+
+    private var forceDisableSMBSigningAndEncryptionBinding: Binding<Bool> {
+        Binding(
+            get: { store.draft.forceDisableSMBSigningAndEncryption },
+            set: { value in
+                store.draft.forceDisableSMBSigningAndEncryption = value
+                if value {
+                    store.draft.requireSMBEncryption = false
                 }
             }
         )

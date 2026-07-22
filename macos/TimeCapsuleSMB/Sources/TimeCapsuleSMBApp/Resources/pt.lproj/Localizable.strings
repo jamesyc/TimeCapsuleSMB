@@ -909,6 +909,8 @@
 "toggle.mdns_advertise_afp" = "Anunciar AFP via Bonjour";
 "toggle.any_protocol" = "Permitir qualquer protocolo SMB";
 "toggle.require_smb_encryption" = "Exigir criptografia SMB";
+"toggle.force_disable_smb_signing_and_encryption" = "Forçar a desativação da assinatura e da criptografia SMB";
+"toggle.force_disable_smb_signing_and_encryption.note" = "Pode melhorar a velocidade quando um cliente exige assinatura, mas reduz a segurança do transporte SMB.";
 "toggle.use_netatalk_metadata" = "Use Netatalk para metadata";
 "toggle.force_debug_logging" = "Forçar registro de depuração";
 "toggle.no_reboot" = "Sem reinicialização";

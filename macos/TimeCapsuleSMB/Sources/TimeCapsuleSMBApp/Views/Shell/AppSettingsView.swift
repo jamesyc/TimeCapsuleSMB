@@ -52,7 +52,20 @@ struct AppSettingsView: View {
                     Toggle(L10n.string("toggle.any_protocol"), isOn: anyProtocolBinding)
                         .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: editor.draft.requireSMBEncryption))
                     Toggle(L10n.string("toggle.require_smb_encryption"), isOn: requireSMBEncryptionBinding)
-                        .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(anyProtocol: editor.draft.anyProtocol))
+                        .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(
+                            anyProtocol: editor.draft.anyProtocol,
+                            forceDisableSMBSigningAndEncryption: editor.draft.forceDisableSMBSigningAndEncryption
+                        ))
+                    Toggle(
+                        L10n.string("toggle.force_disable_smb_signing_and_encryption"),
+                        isOn: forceDisableSMBSigningAndEncryptionBinding
+                    )
+                    .disabled(!SMBProtocolOptionPolicy.allowsForceDisableSMBSigningAndEncryption(
+                        requireSMBEncryption: editor.draft.requireSMBEncryption
+                    ))
+                    Text(L10n.string("toggle.force_disable_smb_signing_and_encryption.note"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $editor.draft.fruitMetadataNetatalk)
                     Toggle(L10n.string("toggle.force_debug_logging"), isOn: $editor.draft.debugLogging)
                     SettingsFormRow(title: L10n.string("field.mount_wait")) {
@@ -144,6 +157,19 @@ struct AppSettingsView: View {
                 editor.draft.requireSMBEncryption = value
                 if value {
                     editor.draft.anyProtocol = false
+                    editor.draft.forceDisableSMBSigningAndEncryption = false
+                }
+            }
+        )
+    }
+
+    private var forceDisableSMBSigningAndEncryptionBinding: Binding<Bool> {
+        Binding(
+            get: { editor.draft.forceDisableSMBSigningAndEncryption },
+            set: { value in
+                editor.draft.forceDisableSMBSigningAndEncryption = value
+                if value {
+                    editor.draft.requireSMBEncryption = false
                 }
             }
         )

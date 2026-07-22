@@ -387,6 +387,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.mdnsAdvertiseAFP = settings.mdnsAdvertiseAFP
         deployStore.anyProtocol = settings.anyProtocol
         deployStore.requireSMBEncryption = settings.requireSMBEncryption
+        deployStore.forceDisableSMBSigningAndEncryption = settings.forceDisableSMBSigningAndEncryption
         deployStore.fruitMetadataNetatalk = settings.fruitMetadataNetatalk
         deployStore.debugLogging = settings.debugLogging
         deployStore.ataIdleSeconds = String(settings.ataIdleSeconds)

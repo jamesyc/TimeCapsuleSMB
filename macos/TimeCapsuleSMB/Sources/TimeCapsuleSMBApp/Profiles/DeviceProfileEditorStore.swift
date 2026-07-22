@@ -82,6 +82,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
     var requireSMBEncryption: Bool
+    var forceDisableSMBSigningAndEncryption: Bool
     var fruitMetadataNetatalk: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
@@ -98,6 +99,7 @@ struct DeviceProfileEditorDraft: Equatable {
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool = false,
         requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
+        forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
         fruitMetadataNetatalk: Bool = true,
         debugLogging: Bool,
         mountWaitSeconds: String,
@@ -113,6 +115,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
         self.requireSMBEncryption = requireSMBEncryption
+        self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
@@ -131,6 +134,7 @@ struct DeviceProfileEditorDraft: Equatable {
             mdnsAdvertiseAFP: profile.settings.mdnsAdvertiseAFP,
             anyProtocol: profile.settings.anyProtocol,
             requireSMBEncryption: profile.settings.requireSMBEncryption,
+            forceDisableSMBSigningAndEncryption: profile.settings.forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: profile.settings.fruitMetadataNetatalk,
             debugLogging: profile.settings.debugLogging,
             mountWaitSeconds: String(profile.settings.mountWaitSeconds),
@@ -186,6 +190,7 @@ struct DeviceProfileEditorDraft: Equatable {
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
             requireSMBEncryption: requireSMBEncryption,
+            forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait,
@@ -478,6 +483,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             mdnsAdvertiseAFP: draft.mdnsAdvertiseAFP,
             anyProtocol: draft.anyProtocol,
             requireSMBEncryption: draft.requireSMBEncryption,
+            forceDisableSMBSigningAndEncryption: draft.forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,

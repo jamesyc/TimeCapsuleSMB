@@ -321,6 +321,7 @@ tc_generate_smb_conf_from_share_rows() {
     smbd_max_log_size=$(tc_smbd_max_log_size)
     smbd_log_level_line=
     smbd_protocol_lines=
+    smbd_security_lines=
     smbd_restrict_anonymous=2
     smbd_fruit_model=$(tc_smbd_fruit_model)
     smbd_conf_tmp="$TC_SMBD_CONF.tmp.$$"
@@ -336,13 +337,19 @@ tc_generate_smb_conf_from_share_rows() {
         tc_prepare_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES" || return 1
     fi
     if [ "$REQUIRE_SMB_ENCRYPTION" = "1" ]; then
-        smbd_protocol_lines="    server smb encrypt = required
-    server min protocol = SMB3_00
+        smbd_security_lines="    server smb encrypt = required
+"
+        smbd_protocol_lines="    server min protocol = SMB3_00
     server max protocol = SMB3
 "
     elif [ "$ANY_PROTOCOL" != "1" ]; then
         smbd_protocol_lines="    min protocol = SMB2
     max protocol = SMB3
+"
+    fi
+    if [ "$FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION" = "1" ]; then
+        smbd_security_lines="    server signing = disabled
+    server smb encrypt = off
 "
     fi
     if [ "$SMB_BROWSE_COMPATIBILITY" = "1" ]; then
@@ -375,7 +382,7 @@ tc_generate_smb_conf_from_share_rows() {
     passdb backend = smbpasswd:$RAM_PRIVATE/smbpasswd
     username map = $RAM_PRIVATE/username.map
     dos charset = ASCII
-${smbd_protocol_lines}    server multi channel support = no
+${smbd_security_lines}${smbd_protocol_lines}    server multi channel support = no
     load printers = no
     disable spoolss = yes
     dfree command = /mnt/Flash/dfree.sh

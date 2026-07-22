@@ -93,6 +93,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     require_smb_encryption_group = parser.add_mutually_exclusive_group()
     require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
     require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
+    force_disable_smb_security_group = parser.add_mutually_exclusive_group()
+    force_disable_smb_security_group.add_argument(
+        "--force-disable-smb-signing-and-encryption",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    force_disable_smb_security_group.add_argument(
+        "--no-force-disable-smb-signing-and-encryption",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--mount-wait",
         type=_non_negative_int,
@@ -122,6 +133,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         else False if args.no_require_smb_encryption
         else None
     )
+    force_disable_smb_signing_and_encryption = (
+        True if args.force_disable_smb_signing_and_encryption
+        else False if args.no_force_disable_smb_signing_and_encryption
+        else None
+    )
     deploy_options = DeployOptions(
         dry_run=args.dry_run,
         no_reboot=args.no_reboot,
@@ -144,6 +160,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 parse_bool(config.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
                 if require_smb_encryption is None
                 else require_smb_encryption
+            ),
+            force_disable_smb_signing_and_encryption=(
+                parse_bool(
+                    config.get(
+                        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+                        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
+                    )
+                )
+                if force_disable_smb_signing_and_encryption is None
+                else force_disable_smb_signing_and_encryption
             ),
         )
     except ValueError as exc:
@@ -256,6 +282,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     mdns_advertise_afp=mdns_advertise_afp,
                     any_protocol=any_protocol,
                     require_smb_encryption=require_smb_encryption,
+                    force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
                 ),
                 callbacks=command_context.to_operation_callbacks(),
                 on_pre_upload_action_done=report_pre_upload_action,

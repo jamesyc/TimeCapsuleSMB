@@ -106,6 +106,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.mdnsAdvertiseAFP, false)
         XCTAssertEqual(settings.anyProtocol, false)
         XCTAssertEqual(settings.requireSMBEncryption, false)
+        XCTAssertEqual(settings.forceDisableSMBSigningAndEncryption, false)
         XCTAssertEqual(settings.fruitMetadataNetatalk, true)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
@@ -128,6 +129,42 @@ final class DeviceProfileTests: XCTestCase {
 
         XCTAssertEqual(settings.anyProtocol, false)
         XCTAssertEqual(settings.requireSMBEncryption, true)
+    }
+
+    func testProfileSettingsDecodeForcedSmbSecurityDisableAndDefaultsOlderProfilesOff() throws {
+        let enabled = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+        {
+          "nbnsEnabled": true,
+          "forceDisableSMBSigningAndEncryption": true,
+          "debugLogging": false,
+          "mountWaitSeconds": 45
+        }
+        """.utf8))
+        let older = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+        {
+          "nbnsEnabled": true,
+          "debugLogging": false,
+          "mountWaitSeconds": 45
+        }
+        """.utf8))
+
+        XCTAssertTrue(enabled.forceDisableSMBSigningAndEncryption)
+        XCTAssertFalse(older.forceDisableSMBSigningAndEncryption)
+    }
+
+    func testProfileSettingsRequireEncryptionWinsOverForcedDisableDuringDecode() throws {
+        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: Data("""
+        {
+          "nbnsEnabled": true,
+          "requireSMBEncryption": true,
+          "forceDisableSMBSigningAndEncryption": true,
+          "debugLogging": false,
+          "mountWaitSeconds": 45
+        }
+        """.utf8))
+
+        XCTAssertTrue(settings.requireSMBEncryption)
+        XCTAssertFalse(settings.forceDisableSMBSigningAndEncryption)
     }
 
     func testProfileSettingsDecodeSmbBrowseCompatibility() throws {

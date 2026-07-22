@@ -297,6 +297,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     require_smb_encryption_group = parser.add_mutually_exclusive_group()
     require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
     require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
+    force_disable_smb_security_group = parser.add_mutually_exclusive_group()
+    force_disable_smb_security_group.add_argument(
+        "--force-disable-smb-signing-and-encryption",
+        action="store_true",
+        help="Force the Samba server to disable SMB signing and encryption",
+    )
+    force_disable_smb_security_group.add_argument(
+        "--no-force-disable-smb-signing-and-encryption",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--netatalk", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
@@ -318,6 +329,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         else False if args.no_require_smb_encryption
         else None
     )
+    force_disable_smb_signing_and_encryption = (
+        True if args.force_disable_smb_signing_and_encryption
+        else False if args.no_force_disable_smb_signing_and_encryption
+        else None
+    )
     try:
         validate_smb_protocol_options(
             any_protocol=(
@@ -329,6 +345,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"]))
                 if require_smb_encryption is None
                 else require_smb_encryption
+            ),
+            force_disable_smb_signing_and_encryption=(
+                parse_bool(
+                    existing.get(
+                        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+                        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
+                    )
+                )
+                if force_disable_smb_signing_and_encryption is None
+                else force_disable_smb_signing_and_encryption
             ),
         )
     except ValueError as exc:
@@ -545,6 +571,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         ),
                         any_protocol=any_protocol,
                         require_smb_encryption=require_smb_encryption,
+                        force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
                         fruit_metadata_netatalk=True if args.netatalk else None,
                         ata_idle_seconds=args.ata_idle_seconds,
                         ata_standby=args.ata_standby,

@@ -81,6 +81,38 @@ class ConfigureServiceTests(unittest.TestCase):
                 require_smb_encryption=True,
             )
 
+    def test_build_configure_env_values_preserves_and_enables_forced_smb_security_disable(self) -> None:
+        preserved = build_configure_env_values(
+            {"TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "true"},
+            host="root@10.0.0.2",
+            password="pw",
+            ssh_opts="-o foo",
+            configure_id="config-id",
+        )
+        enabled = build_configure_env_values(
+            {},
+            host="root@10.0.0.2",
+            password="pw",
+            ssh_opts="-o foo",
+            configure_id="config-id",
+            force_disable_smb_signing_and_encryption=True,
+        )
+
+        self.assertEqual(preserved["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+        self.assertEqual(enabled["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+
+    def test_build_configure_env_values_rejects_required_and_disabled_smb_encryption(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be used with Force Disable"):
+            build_configure_env_values(
+                {},
+                host="root@10.0.0.2",
+                password="pw",
+                ssh_opts="-o foo",
+                configure_id="config-id",
+                require_smb_encryption=True,
+                force_disable_smb_signing_and_encryption=True,
+            )
+
     def make_connection(self) -> SshConnection:
         return SshConnection("root@10.0.0.2", "pw", "-o foo")
 
@@ -420,6 +452,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(written["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(written["TC_REQUIRE_SMB_ENCRYPTION"], "false")
+        self.assertEqual(written["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "false")
         self.assertEqual(written["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertNotIn("TC_PASSWORD", written)
         self.assertEqual(stages, ["ssh_probe", "write_env"])

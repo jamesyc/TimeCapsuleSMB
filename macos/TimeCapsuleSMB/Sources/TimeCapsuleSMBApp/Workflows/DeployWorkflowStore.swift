@@ -11,6 +11,7 @@ struct DeployOptions: Equatable {
     let mdnsAdvertiseAFP: Bool
     let anyProtocol: Bool
     let requireSMBEncryption: Bool
+    let forceDisableSMBSigningAndEncryption: Bool
     let fruitMetadataNetatalk: Bool
     let debugLogging: Bool
     let ataIdleSeconds: Int
@@ -27,6 +28,7 @@ struct DeployOptions: Equatable {
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool,
         requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
+        forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
         fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
         debugLogging: Bool,
         ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
@@ -42,6 +44,7 @@ struct DeployOptions: Equatable {
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
         self.requireSMBEncryption = requireSMBEncryption
+        self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.debugLogging = debugLogging
         self.ataIdleSeconds = ataIdleSeconds
@@ -147,6 +150,17 @@ final class DeployWorkflowStore: ObservableObject {
         didSet {
             if requireSMBEncryption && anyProtocol {
                 anyProtocol = false
+            }
+            if requireSMBEncryption && forceDisableSMBSigningAndEncryption {
+                forceDisableSMBSigningAndEncryption = false
+            }
+            reconcilePlanFreshness()
+        }
+    }
+    @Published var forceDisableSMBSigningAndEncryption = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption {
+        didSet {
+            if forceDisableSMBSigningAndEncryption && requireSMBEncryption {
+                requireSMBEncryption = false
             }
             reconcilePlanFreshness()
         }
@@ -274,6 +288,7 @@ final class DeployWorkflowStore: ObservableObject {
                 mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
                 requireSMBEncryption: options.requireSMBEncryption,
+                forceDisableSMBSigningAndEncryption: options.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
@@ -329,6 +344,7 @@ final class DeployWorkflowStore: ObservableObject {
                 mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
                 requireSMBEncryption: options.requireSMBEncryption,
+                forceDisableSMBSigningAndEncryption: options.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
@@ -392,6 +408,7 @@ final class DeployWorkflowStore: ObservableObject {
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
             requireSMBEncryption: requireSMBEncryption,
+            forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             debugLogging: debugLogging,
             ataIdleSeconds: ataIdleSecondsValue,

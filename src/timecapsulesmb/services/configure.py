@@ -69,6 +69,7 @@ class ConfigureFlowRequest:
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
     require_smb_encryption: bool | None = None
+    force_disable_smb_signing_and_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     debug_logging: bool | None = None
     ata_idle_seconds: object | None = None
@@ -219,6 +220,7 @@ def run_configure_flow(
         mdns_advertise_afp=request.mdns_advertise_afp,
         any_protocol=request.any_protocol,
         require_smb_encryption=request.require_smb_encryption,
+        force_disable_smb_signing_and_encryption=request.force_disable_smb_signing_and_encryption,
         fruit_metadata_netatalk=request.fruit_metadata_netatalk,
         debug_logging=request.debug_logging,
         ata_idle_seconds=request.ata_idle_seconds,
@@ -358,6 +360,7 @@ def build_configure_env_values(
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
     require_smb_encryption: bool | None = None,
+    force_disable_smb_signing_and_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     debug_logging: bool | None = None,
     ata_idle_seconds: object | None = None,
@@ -373,9 +376,20 @@ def build_configure_env_values(
         if require_smb_encryption is None
         else require_smb_encryption
     )
+    effective_force_disable_smb_signing_and_encryption = (
+        parse_bool(
+            existing.get(
+                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+                DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
+            )
+        )
+        if force_disable_smb_signing_and_encryption is None
+        else force_disable_smb_signing_and_encryption
+    )
     validate_smb_protocol_options(
         any_protocol=effective_any_protocol,
         require_smb_encryption=effective_require_smb_encryption,
+        force_disable_smb_signing_and_encryption=effective_force_disable_smb_signing_and_encryption,
     )
 
     values = preserved_env_file_values(existing)
@@ -405,6 +419,9 @@ def build_configure_env_values(
         ) else "false",
         "TC_ANY_PROTOCOL": "true" if effective_any_protocol else "false",
         "TC_REQUIRE_SMB_ENCRYPTION": "true" if effective_require_smb_encryption else "false",
+        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": (
+            "true" if effective_force_disable_smb_signing_and_encryption else "false"
+        ),
         "TC_FRUIT_METADATA_NETATALK": "true" if (
             parse_bool(existing.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"]))
             if fruit_metadata_netatalk is None

@@ -10,7 +10,7 @@ import tempfile
 
 from timecapsulesmb.core.net import ipv4_literal, ipv6_literal, is_link_local_ip, parse_endpoint
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
-from timecapsulesmb.core.smb_policy import SMB_PROTOCOL_ENCRYPTION_ERROR, validate_smb_protocol_options
+from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 
 REPO_ROOT = package_project_root()
 ENV_PATH = REPO_ROOT / ".env"
@@ -67,6 +67,7 @@ DEFAULTS = {
     "TC_MDNS_ADVERTISE_AFP": "false",
     "TC_ANY_PROTOCOL": "false",
     "TC_REQUIRE_SMB_ENCRYPTION": "false",
+    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "false",
     "TC_FRUIT_METADATA_NETATALK": "true",
     "TC_DEBUG_LOGGING": "false",
     "TC_ATA_IDLE_SECONDS": "300",
@@ -83,6 +84,7 @@ ENV_FILE_KEYS = [
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
     "TC_REQUIRE_SMB_ENCRYPTION",
+    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
     "TC_DEBUG_LOGGING",
     "TC_ATA_IDLE_SECONDS",
@@ -440,6 +442,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_MDNS_ADVERTISE_AFP": validate_bool,
     "TC_ANY_PROTOCOL": validate_bool,
     "TC_REQUIRE_SMB_ENCRYPTION": validate_bool,
+    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": validate_bool,
     "TC_FRUIT_METADATA_NETATALK": validate_bool,
     "TC_DEBUG_LOGGING": validate_bool,
     "TC_ATA_IDLE_SECONDS": validate_unsigned_integer,
@@ -463,6 +466,7 @@ CONFIGURE_VALIDATED_KEYS = (
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
     "TC_REQUIRE_SMB_ENCRYPTION",
+    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
     "TC_DEBUG_LOGGING",
     "TC_ATA_IDLE_SECONDS",
@@ -476,6 +480,7 @@ MANAGED_VALIDATED_KEYS = (
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
     "TC_REQUIRE_SMB_ENCRYPTION",
+    "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
     "TC_FRUIT_METADATA_NETATALK",
     "TC_DEBUG_LOGGING",
     "TC_ATA_IDLE_SECONDS",
@@ -598,13 +603,13 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
                 message=syap_model_error,
                 path=config.path,
             ))
-    if (
-        "TC_ANY_PROTOCOL" in profile_config.validated_keys
-        and "TC_REQUIRE_SMB_ENCRYPTION" in profile_config.validated_keys
-        and "TC_ANY_PROTOCOL" not in missing_keys
-        and "TC_REQUIRE_SMB_ENCRYPTION" not in missing_keys
-        and "TC_ANY_PROTOCOL" not in invalid_keys
-        and "TC_REQUIRE_SMB_ENCRYPTION" not in invalid_keys
+    smb_policy_keys = {
+        "TC_ANY_PROTOCOL",
+        "TC_REQUIRE_SMB_ENCRYPTION",
+        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+    }
+    if smb_policy_keys.issubset(profile_config.validated_keys) and not (
+        smb_policy_keys & missing_keys or smb_policy_keys & invalid_keys
     ):
         try:
             validate_smb_protocol_options(
@@ -612,12 +617,18 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
                 require_smb_encryption=parse_bool(
                     config.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"])
                 ),
+                force_disable_smb_signing_and_encryption=parse_bool(
+                    config.get(
+                        "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+                        DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
+                    )
+                ),
             )
-        except ValueError:
+        except ValueError as exc:
             errors.append(ConfigIssue(
                 kind="inconsistent_values",
                 key="TC_REQUIRE_SMB_ENCRYPTION",
-                message=SMB_PROTOCOL_ENCRYPTION_ERROR,
+                message=str(exc),
                 path=config.path,
             ))
     return errors

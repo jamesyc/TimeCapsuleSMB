@@ -143,10 +143,21 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
         "require_smb_encryption",
         parse_bool(existing.get("TC_REQUIRE_SMB_ENCRYPTION", DEFAULTS["TC_REQUIRE_SMB_ENCRYPTION"])),
     )
+    force_disable_smb_signing_and_encryption = bool_param(
+        params,
+        "force_disable_smb_signing_and_encryption",
+        parse_bool(
+            existing.get(
+                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION",
+                DEFAULTS["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"],
+            )
+        ),
+    )
     try:
         validate_smb_protocol_options(
             any_protocol=any_protocol,
             require_smb_encryption=require_smb_encryption,
+            force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
@@ -200,6 +211,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                 ),
                 any_protocol=any_protocol,
                 require_smb_encryption=require_smb_encryption,
+                force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
                 fruit_metadata_netatalk=bool_param(
                     params,
                     "fruit_metadata_netatalk",

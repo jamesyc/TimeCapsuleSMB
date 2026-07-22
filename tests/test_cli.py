@@ -1862,6 +1862,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
         self.assertEqual(fake_values["TC_REQUIRE_SMB_ENCRYPTION"], "false")
+        self.assertEqual(fake_values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "false")
         self.assertEqual(fake_values["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
         self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
@@ -2008,6 +2009,25 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_REQUIRE_SMB_ENCRYPTION"], "true")
+
+    def test_configure_force_disable_smb_signing_and_encryption_arg_writes_true(self) -> None:
+        result = self.run_configure_cli(
+            ["--force-disable-smb-signing-and-encryption"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+
+    def test_configure_rejects_required_and_disabled_smb_encryption(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            result = self.run_configure_cli(
+                ["--require-smb-encryption", "--force-disable-smb-signing-and-encryption"],
+                raises=SystemExit,
+            )
+        self.assertEqual(result.exception.code, 2)
 
     def test_configure_rejects_any_protocol_with_smb_encryption(self) -> None:
         with redirect_stderr(io.StringIO()):

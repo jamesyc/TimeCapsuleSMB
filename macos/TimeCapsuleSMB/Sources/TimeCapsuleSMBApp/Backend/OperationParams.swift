@@ -63,6 +63,7 @@ enum OperationParams {
             mdnsAdvertiseAFP: Bool? = nil,
             anyProtocol: Bool? = nil,
             requireSMBEncryption: Bool? = nil,
+            forceDisableSMBSigningAndEncryption: Bool? = nil,
             fruitMetadataNetatalk: Bool? = nil,
             ataIdleSeconds: Int? = nil,
             ataStandby: Int? = nil,
@@ -96,6 +97,9 @@ enum OperationParams {
             }
             if let requireSMBEncryption {
                 params["require_smb_encryption"] = .bool(requireSMBEncryption)
+            }
+            if let forceDisableSMBSigningAndEncryption {
+                params["force_disable_smb_signing_and_encryption"] = .bool(forceDisableSMBSigningAndEncryption)
             }
             if let fruitMetadataNetatalk {
                 params["fruit_metadata_netatalk"] = .bool(fruitMetadataNetatalk)
@@ -143,6 +147,7 @@ enum OperationParams {
             mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
             anyProtocol: Bool = false,
             requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
+            forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
             debugLogging: Bool,
             ataIdleSeconds: Int,
@@ -160,6 +165,7 @@ enum OperationParams {
                 "mdns_advertise_afp": .bool(mdnsAdvertiseAFP),
                 "any_protocol": .bool(anyProtocol),
                 "require_smb_encryption": .bool(requireSMBEncryption),
+                "force_disable_smb_signing_and_encryption": .bool(forceDisableSMBSigningAndEncryption),
                 "fruit_metadata_netatalk": .bool(fruitMetadataNetatalk),
                 "debug_logging": .bool(debugLogging),
                 "mount_wait": .number(mountWait)

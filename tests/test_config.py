@@ -145,6 +145,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_MDNS_ADVERTISE_AFP=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
         self.assertIn("TC_REQUIRE_SMB_ENCRYPTION=false", rendered)
+        self.assertIn("TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=false", rendered)
         self.assertIn("TC_FRUIT_METADATA_NETATALK=true", rendered)
         self.assertIn("TC_DEBUG_LOGGING=false", rendered)
         self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
@@ -456,6 +457,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "inconsistent_values")
         self.assertEqual(errors[0].key, "TC_REQUIRE_SMB_ENCRYPTION")
         values["TC_ANY_PROTOCOL"] = "false"
+        values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"] = "true"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "inconsistent_values")
+        self.assertIn("Force Disable", errors[0].message)
         values["TC_REQUIRE_SMB_ENCRYPTION"] = "false"
         values["TC_SMB_BIND_LAN_ONLY"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)

@@ -909,6 +909,8 @@
 "toggle.mdns_advertise_afp" = "Skelbti AFP per Bonjour";
 "toggle.any_protocol" = "Leisti bet kurį SMB protokolą";
 "toggle.require_smb_encryption" = "Reikalauti SMB šifravimo";
+"toggle.force_disable_smb_signing_and_encryption" = "Priverstinai išjungti SMB pasirašymą ir šifravimą";
+"toggle.force_disable_smb_signing_and_encryption.note" = "Gali padidinti spartą, kai klientas reikalauja pasirašymo, tačiau sumažina SMB perdavimo saugumą.";
 "toggle.use_netatalk_metadata" = "Naudoti Netatalk metaduomenims";
 "toggle.force_debug_logging" = "Priverstiniai derinimo žurnalai";
 "toggle.no_reboot" = "Be paleidimo iš naujo";

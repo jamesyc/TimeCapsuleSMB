@@ -909,6 +909,8 @@
 "toggle.mdns_advertise_afp" = "通过 Bonjour 广播 AFP";
 "toggle.any_protocol" = "允许任意 SMB 协议";
 "toggle.require_smb_encryption" = "要求 SMB 加密";
+"toggle.force_disable_smb_signing_and_encryption" = "强制停用 SMB 签名和加密";
+"toggle.force_disable_smb_signing_and_encryption.note" = "当客户端要求签名时可能提高传输速度，但会降低 SMB 传输安全性。";
 "toggle.use_netatalk_metadata" = "使用 Netatalk 存储元数据";
 "toggle.force_debug_logging" = "强制调试日志";
 "toggle.no_reboot" = "不重启";

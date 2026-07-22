@@ -1206,6 +1206,7 @@ MaSt = (
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
+        self.assertIn("FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
@@ -1291,6 +1292,35 @@ MaSt = (
 
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
         self.assertIn("REQUIRE_SMB_ENCRYPTION=1\n", rendered)
+
+    def test_flash_runtime_config_forces_smb_signing_and_encryption_off(self) -> None:
+        config = AppConfig.from_values(
+            {"TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "true"}
+        )
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+        )
+
+        self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
+        self.assertIn("FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=1\n", rendered)
+
+    def test_flash_runtime_config_rejects_required_and_disabled_smb_encryption(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_REQUIRE_SMB_ENCRYPTION": "true",
+                "TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION": "true",
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "cannot be used with Force Disable"):
+            render_flash_runtime_config(
+                config,
+                PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+                nbns_enabled=True,
+            )
 
     def test_flash_runtime_config_rejects_any_protocol_with_smb_encryption(self) -> None:
         config = AppConfig.from_values(
@@ -5263,6 +5293,8 @@ MaSt = (
         self.assertIn("deadtime = 15", proc.stdout)
         self.assertIn("max smbd processes = 8", proc.stdout)
         self.assertNotIn("log level = 10", proc.stdout)
+        self.assertNotIn("server signing = disabled", proc.stdout)
+        self.assertNotIn("server smb encrypt = off", proc.stdout)
         self.assertTrue(smbd_core_dir_exists)
         self.assertEqual(smbd_core_parent_mode, 0o700)
         self.assertEqual(smbd_core_dir_mode, 0o700)
@@ -5342,6 +5374,44 @@ MaSt = (
         self.assertIn("server min protocol = SMB3_00", proc.stdout)
         self.assertIn("server max protocol = SMB3", proc.stdout)
         self.assertNotIn("min protocol = SMB2", proc.stdout)
+
+    def test_common_generate_smb_conf_forces_signing_and_encryption_off_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-disable-security.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    share_rows=$(cat <<'EOF'
+                    Data\t{volumes}/dk2/ShareRoot\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
+                    cat "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("server signing = disabled", proc.stdout)
+        self.assertIn("server smb encrypt = off", proc.stdout)
+        self.assertIn("min protocol = SMB2", proc.stdout)
+        self.assertIn("max protocol = SMB3", proc.stdout)
+        self.assertNotIn("server smb encrypt = required", proc.stdout)
 
     def test_common_generate_smb_conf_uses_browse_compatibility_restrict_anonymous(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

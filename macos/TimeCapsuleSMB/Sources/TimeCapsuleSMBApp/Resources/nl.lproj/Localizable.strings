@@ -909,6 +909,8 @@
 "toggle.mdns_advertise_afp" = "AFP via Bonjour adverteren";
 "toggle.any_protocol" = "Elk SMB-protocol toestaan";
 "toggle.require_smb_encryption" = "SMB-versleuteling vereisen";
+"toggle.force_disable_smb_signing_and_encryption" = "SMB-ondertekening en -versleuteling geforceerd uitschakelen";
+"toggle.force_disable_smb_signing_and_encryption.note" = "Kan overdrachten versnellen wanneer een client ondertekening vereist, maar verzwakt de SMB-transportbeveiliging.";
 "toggle.use_netatalk_metadata" = "Gebruik Netatalk voor metadata";
 "toggle.force_debug_logging" = "Forceer logboekregistratie voor foutopsporing";
 "toggle.no_reboot" = "Geen herstart";
