@@ -46,6 +46,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
+from timecapsulesmb.checks.network_plan import RouteSelection
 from timecapsulesmb.checks.nbns import build_nbns_query, check_nbns_name_resolution, extract_nbns_response_ip
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
@@ -287,6 +288,12 @@ class CheckTests(unittest.TestCase):
                 mock.patch(
                     "timecapsulesmb.checks.doctor_steps.runtime_ram_root_present_conn",
                     return_value=runtime_ram_root_present,
+                )
+            )
+            mocks.select_route_to_address = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.checks.doctor_steps.select_route_to_address",
+                    return_value=RouteSelection("unknown"),
                 )
             )
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
@@ -723,6 +730,83 @@ class CheckTests(unittest.TestCase):
 
         self.assertEqual(debug_fields["remote_service_sockets"], socket_debug)
         socket_debug_mock.assert_called_once()
+
+    def test_run_doctor_checks_reports_unroutable_ipv6_as_info_and_checks_other_ipv6_prefix(self) -> None:
+        routes = {
+            "10.0.0.2": RouteSelection("available", source="10.0.0.9"),
+            "fdbb::2": RouteSelection("unavailable", error="[Errno 65] No route to host", error_number=65),
+            "fda3::2": RouteSelection("available", source="fda3::9"),
+        }
+        port_results = {
+            "10.0.0.2": CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+            "fda3::2": CheckResult("PASS", "SMB reachable at fda3::2:445"),
+        }
+        port_mock = mock.Mock(side_effect=port_results.__getitem__)
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=CheckResult("PASS", "ssh ok"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+            smb_port=REAL_SMB_PORT_CHECK,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24 fdbb::2/64 fda3::2/64",
+                        mdns_families=("ipv4", "ipv6"),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
+                    return_value=("10.0.0.9", "fda3::9")
+                ),
+                "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
+                "timecapsulesmb.checks.doctor_steps.check_smb_port": port_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        self.assertEqual(port_mock.call_args_list, [mock.call("10.0.0.2"), mock.call("fda3::2")])
+        ipv6_info = next(result for result in run.results if result.details.get("code") == "smb_ipv6_no_client_route")
+        self.assertEqual(ipv6_info.status, "INFO")
+        self.assertIn("fdbb::2", ipv6_info.message)
+        self.assertFalse(any(result.status == "WARN" and "fdbb::2" in result.message for result in run.results))
+
+    def test_run_doctor_checks_warns_when_routable_ipv6_smb_fails(self) -> None:
+        routes = {
+            "10.0.0.2": RouteSelection("available", source="10.0.0.9"),
+            "fd00::2": RouteSelection("available", source="fd00::9"),
+        }
+        port_results = {
+            "10.0.0.2": CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+            "fd00::2": CheckResult("WARN", "SMB not reachable at fd00::2:445 (Connection refused)"),
+        }
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=CheckResult("PASS", "ssh ok"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+            smb_port=REAL_SMB_PORT_CHECK,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
+                        mdns_families=("ipv4", "ipv6"),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
+                    return_value=("10.0.0.9", "fd00::9")
+                ),
+                "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
+                "timecapsulesmb.checks.doctor_steps.check_smb_port": mock.Mock(side_effect=port_results.__getitem__),
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        ipv6_result = next(result for result in run.results if "fd00::2:445" in result.message)
+        self.assertEqual(ipv6_result.status, "WARN")
 
     def test_run_doctor_checks_reports_info_when_optional_nbns_fails(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -4914,6 +4998,18 @@ class CheckTests(unittest.TestCase):
                 "mdns_expected": True,
                 "samba_expected": True,
                 "nbns_expected": True,
+                "endpoints": [
+                    {
+                        "address": "192.168.1.1",
+                        "cidr": "192.168.1.0/24",
+                        "on_link_sources": [],
+                        "local_sources": [],
+                        "route_state": "unknown",
+                        "route_source": None,
+                        "route_error": None,
+                        "route_errno": None,
+                    }
+                ],
             },
         )
         self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
@@ -4953,7 +5049,17 @@ class CheckTests(unittest.TestCase):
         )
 
     def test_run_doctor_checks_pins_authenticated_smb_to_runtime_addresses(self) -> None:
-        listing_result = CheckResult(
+        listing_result_v4 = CheckResult(
+            "PASS",
+            "authenticated SMB listing works for admin@timecapsulesamba4.local via 10.0.0.2",
+            {
+                "server": "timecapsulesamba4.local",
+                "ip_address": "10.0.0.2",
+                "disk_shares": ["Data"],
+                "attempts": [],
+            },
+        )
+        listing_result_v6 = CheckResult(
             "PASS",
             "authenticated SMB listing works for admin@timecapsulesamba4.local via fd00::2",
             {
@@ -4963,7 +5069,7 @@ class CheckTests(unittest.TestCase):
                 "attempts": [],
             },
         )
-        listing_mock = mock.Mock(return_value=listing_result)
+        listing_mock = mock.Mock(side_effect=[listing_result_v4, listing_result_v6])
         file_ops_mock = mock.Mock(return_value=[mock.Mock(status="PASS", message="file ops ok")])
 
         run = self.run_doctor_with_mocks(
@@ -4987,13 +5093,131 @@ class CheckTests(unittest.TestCase):
 
         self.assertFalse(run.fatal)
         self.assertEqual(
-            listing_mock.call_args.args[2][:2],
+            [call.args[2] for call in listing_mock.call_args_list],
             [
-                SmbClientTarget("timecapsulesamba4.local", "10.0.0.2"),
-                SmbClientTarget("timecapsulesamba4.local", "fd00::2"),
+                [SmbClientTarget("timecapsulesamba4.local", "10.0.0.2")],
+                [SmbClientTarget("timecapsulesamba4.local", "fd00::2")],
             ],
         )
-        self.assertEqual(listing_mock.call_args.kwargs["port"], 445)
+        self.assertTrue(all(call.kwargs["port"] == 445 for call in listing_mock.call_args_list))
+        file_ops_mock.assert_called_once_with(
+            "admin",
+            "pw",
+            "timecapsulesamba4.local",
+            "Data",
+            port=445,
+            ip_address="10.0.0.2",
+        )
+
+    def test_run_doctor_checks_warns_when_only_routable_ipv6_authenticated_listing_fails(self) -> None:
+        listing_v4 = CheckResult(
+            "PASS",
+            "authenticated SMB listing works over IPv4",
+            {
+                "server": "timecapsulesamba4.local",
+                "ip_address": "10.0.0.2",
+                "disk_shares": ["Data"],
+                "attempts": [],
+            },
+        )
+        listing_v6 = CheckResult(
+            "FAIL",
+            "authenticated SMB listing failed over IPv6: NT_STATUS_INVALID_NETWORK_RESPONSE",
+            {
+                "attempts": [
+                    {
+                        "server": "timecapsulesamba4.local",
+                        "ip_address": "fd00::2",
+                        "outcome": "error",
+                        "failure": "NT_STATUS_INVALID_NETWORK_RESPONSE",
+                    }
+                ]
+            },
+        )
+        listing_mock = mock.Mock(side_effect=[listing_v4, listing_v6])
+        file_ops_mock = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=CheckResult("PASS", "ssh ok"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+            skip_bonjour=True,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
+                        mdns_families=("ipv4", "ipv6"),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
+                    return_value=("10.0.0.9", "fd00::9")
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        ipv6_warning = next(result for result in run.results if "authenticated SMB IPv6 listing failed" in result.message)
+        self.assertEqual(ipv6_warning.status, "WARN")
+        self.assertEqual(listing_mock.call_count, 2)
+        file_ops_mock.assert_called_once_with(
+            "admin",
+            "pw",
+            "timecapsulesamba4.local",
+            "Data",
+            port=445,
+            ip_address="10.0.0.2",
+        )
+
+    def test_run_doctor_checks_uses_working_ipv6_when_client_has_no_ipv4_route(self) -> None:
+        routes = {
+            "10.0.0.2": RouteSelection("unavailable", error="no route", error_number=51),
+            "fd00::2": RouteSelection("available", source="fd00::9"),
+        }
+        port_mock = mock.Mock(return_value=CheckResult("PASS", "SMB reachable at fd00::2:445"))
+        listing_result = CheckResult(
+            "PASS",
+            "authenticated SMB listing works over IPv6",
+            {
+                "server": "timecapsulesamba4.local",
+                "ip_address": "fd00::2",
+                "disk_shares": ["Data"],
+                "attempts": [],
+            },
+        )
+        listing_mock = mock.Mock(return_value=listing_result)
+        file_ops_mock = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=CheckResult("PASS", "ssh ok"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+            skip_bonjour=True,
+            smb_port=REAL_SMB_PORT_CHECK,
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
+                        mdns_families=("ipv4", "ipv6"),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("fd00::9",)),
+                "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
+                "timecapsulesmb.checks.doctor_steps.check_smb_port": port_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
+            },
+        )
+
+        self.assertFalse(run.fatal)
+        port_mock.assert_called_once_with("fd00::2")
+        self.assertEqual(
+            listing_mock.call_args.args[2],
+            [SmbClientTarget("timecapsulesamba4.local", "fd00::2")],
+        )
         file_ops_mock.assert_called_once_with(
             "admin",
             "pw",

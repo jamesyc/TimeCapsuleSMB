@@ -23,6 +23,7 @@ from timecapsulesmb.checks.bonjour import (
 )
 from timecapsulesmb.checks.doctor_debug import _add_remote_service_socket_debug
 from timecapsulesmb.checks.doctor_state import (
+    DirectSmbState,
     DoctorBonjourResult,
     DoctorInputs,
     DoctorOptions,
@@ -39,10 +40,12 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
 from timecapsulesmb.checks.network_plan import (
     NetworkCheckPlan,
+    NetworkEndpointPlan,
     NetworkFamilyPlan,
     bind_interface_families,
     build_network_check_plan,
     local_interface_addresses,
+    select_route_to_address,
 )
 from timecapsulesmb.checks.nbns import check_nbns_name_resolution
 from timecapsulesmb.checks.smb import (
@@ -124,6 +127,7 @@ STARTUP_GRACE_PRESERVE = "preserve"
 STARTUP_GRACE_DETAIL_KEY = "startup_grace"
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
 DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE = "smb_bind_lan_only_unreachable"
+DOCTOR_CODE_SMB_IPV6_NO_CLIENT_ROUTE = "smb_ipv6_no_client_route"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
 DOCTOR_PAYLOAD_MISSING_FROM_DISK_MESSAGE = "active smb.conf xattr_tdb:file parent is missing"
@@ -703,6 +707,19 @@ def _network_plan_debug(plan: NetworkCheckPlan) -> dict[str, object]:
             "mdns_expected": family_plan.mdns_expected,
             "samba_expected": family_plan.samba_expected,
             "nbns_expected": family_plan.nbns_expected,
+            "endpoints": [
+                {
+                    "address": endpoint.address,
+                    "cidr": endpoint.cidr,
+                    "on_link_sources": list(endpoint.on_link_sources),
+                    "local_sources": list(endpoint.local_sources),
+                    "route_state": endpoint.route.state,
+                    "route_source": endpoint.route.source,
+                    "route_error": endpoint.route.error,
+                    "route_errno": endpoint.route.error_number,
+                }
+                for endpoint in family_plan.endpoints
+            ],
         }
 
     return {
@@ -734,13 +751,21 @@ def _bonjour_family_attempts(
         if not family_plan.mdns_expected:
             continue
         family_label = _family_label(family_plan.family)
-        if not family_plan.remote_addresses:
+        if not family_plan.endpoints:
             add_result(CheckResult("SKIP", f"Bonjour {family_label} check skipped; runtime has no advertised {family_plan.family} address"))
             continue
-        if not family_plan.local_sources:
-            add_result(CheckResult("SKIP", f"Bonjour {family_label} check skipped; local host has no address on the remote {family_plan.family} network"))
+        endpoint = next(
+            (
+                candidate
+                for candidate in family_plan.applicable_endpoints
+                if candidate.local_sources
+            ),
+            None,
+        )
+        if endpoint is None:
+            add_result(CheckResult("SKIP", f"Bonjour {family_label} check skipped; local host has no usable route to the remote {family_plan.family} network"))
             continue
-        attempts.append((family_plan, family_plan.remote_addresses[0], list(family_plan.local_sources)))
+        attempts.append((family_plan, endpoint.address, list(endpoint.local_sources)))
     return attempts
 
 
@@ -1223,14 +1248,22 @@ def _add_nbns_results(
                 checked = False
                 for family_plan in family_targets:
                     family_label = _family_label(family_plan.family)
-                    if not family_plan.remote_addresses:
+                    if not family_plan.endpoints:
                         add_result(CheckResult("SKIP", f"NBNS {family_label} check skipped; runtime has no advertised {family_plan.family} address"))
                         continue
-                    if not family_plan.local_sources:
-                        add_result(CheckResult("SKIP", f"NBNS {family_label} check skipped; local host has no address on the remote {family_plan.family} network"))
+                    endpoint = next(
+                        (
+                            candidate
+                            for candidate in family_plan.applicable_endpoints
+                            if candidate.local_sources
+                        ),
+                        None,
+                    )
+                    if endpoint is None:
+                        add_result(CheckResult("SKIP", f"NBNS {family_label} check skipped; local host has no usable route to the remote {family_plan.family} network"))
                         continue
                     checked = True
-                    expected_ip = family_plan.remote_addresses[0]
+                    expected_ip = endpoint.address
                     nbns_result = check_nbns_name_resolution(expected_name, expected_ip, expected_ip)
                     if nbns_result.status == "FAIL":
                         nbns_result = CheckResult(
@@ -1283,21 +1316,27 @@ def _doctor_smb_client_targets(
             targets.append(target)
 
     pinned_server = next((server for server in servers if _ip_literal(server) is None), None)
-    if network_plan is not None:
+    bind_lan_only_unreachable = (
+        network_plan is not None
+        and config.get("TC_SMB_BIND_LAN_ONLY").strip().lower() in {"1", "true", "yes", "on"}
+        and not any(family_plan.on_link_sources for family_plan in network_plan.families())
+    )
+    if network_plan is not None and not bind_lan_only_unreachable:
         for family_plan in network_plan.families():
-            if not family_plan.samba_expected or not family_plan.remote_addresses or not family_plan.local_sources:
+            if not family_plan.samba_expected:
                 continue
-            remote_address = family_plan.remote_addresses[0]
-            server = pinned_server
-            if server is None and _ip_literal(remote_address) is not None and ":" not in remote_address:
-                server = remote_address
-            if server is not None:
-                add(
-                    SmbClientTarget(
-                        server=server,
-                        ip_address=remote_address,
+            for endpoint in family_plan.applicable_endpoints:
+                remote_address = endpoint.address
+                server = pinned_server
+                if server is None and _ip_literal(remote_address) is not None and ":" not in remote_address:
+                    server = remote_address
+                if server is not None:
+                    add(
+                        SmbClientTarget(
+                            server=server,
+                            ip_address=remote_address,
+                        )
                     )
-                )
 
     if targets:
         return targets
@@ -1305,6 +1344,36 @@ def _doctor_smb_client_targets(
     for server in servers:
         add(server)
     return targets
+
+
+def _smb_target_family(target: SmbClientTargetInput) -> str | None:
+    value = target.ip_address if isinstance(target, SmbClientTarget) else target
+    ip = _ip_literal(value)
+    if ip is None:
+        return None
+    return "ipv6" if ":" in ip else "ipv4"
+
+
+def _authenticated_smb_target_groups(
+    targets: list[SmbClientTargetInput],
+    reachable_addresses: tuple[str, ...],
+) -> list[tuple[str | None, list[SmbClientTargetInput]]]:
+    if not reachable_addresses:
+        return [(None, targets)]
+
+    reachable = set(reachable_addresses)
+    groups: list[tuple[str, list[SmbClientTargetInput]]] = []
+    for family in ("ipv4", "ipv6"):
+        family_targets = [
+            target
+            for target in targets
+            if _smb_target_family(target) == family
+            and isinstance(target, SmbClientTarget)
+            and target.ip_address in reachable
+        ]
+        if family_targets:
+            groups.append((family, family_targets))
+    return groups or [(None, targets)]
 
 
 def _config_bool_enabled(config: AppConfig, key: str) -> bool:
@@ -1333,7 +1402,7 @@ def _lan_only_smb_bind_unreachable_result(
     ]
     if not samba_families:
         return None
-    if any(family_plan.local_sources for family_plan in samba_families):
+    if any(family_plan.on_link_sources for family_plan in samba_families):
         return None
 
     bound_addresses = [
@@ -1347,10 +1416,13 @@ def _lan_only_smb_bind_unreachable_result(
         for cidr in family_plan.remote_cidrs
     ]
     target_displays = [_smb_client_target_debug(target) for target in smb_targets]
+    configured_host = endpoint_host(config.get("TC_HOST"))
+    if configured_host and configured_host not in target_displays:
+        target_displays.append(configured_host)
     target_ips = [
         ip
-        for target in smb_targets
-        for ip in [_ip_literal(target.ip_address if isinstance(target, SmbClientTarget) else target)]
+        for target in target_displays
+        for ip in [_ip_literal(target)]
         if ip is not None
     ]
     outside_targets = [ip for ip in target_ips if ip not in bound_addresses]
@@ -1467,6 +1539,7 @@ def _add_authenticated_smb_results(
     active_smb_conf: str | None,
     active_smb_conf_reason: str,
     network_plan: NetworkCheckPlan | None,
+    direct_smb: DirectSmbState,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
@@ -1486,19 +1559,56 @@ def _add_authenticated_smb_results(
         return
 
     smb_servers = _doctor_smb_client_targets(config, bonjour_target, runtime_naming_identity, network_plan)
+    target_groups = _authenticated_smb_target_groups(smb_servers, direct_smb.reachable_addresses)
+    checked_servers = [target for _, targets in target_groups for target in targets]
     if debug_fields is not None:
-        debug_fields["authenticated_smb_listing_servers"] = [_smb_client_target_debug(target) for target in smb_servers]
+        debug_fields["authenticated_smb_listing_servers"] = [_smb_client_target_debug(target) for target in checked_servers]
         debug_fields["authenticated_smb_listing_active_shares"] = active_share_names
-    listing_result = _authenticated_smb_listing_with_doctor_retries(
-        DEFAULT_SAMBA_AUTH_USER,
-        smb_password,
-        smb_servers,
-        port=445,
-    )
-    if debug_fields is not None and listing_result.details.get("attempts"):
-        debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
+    listing_outcomes = [
+        (
+            family,
+            _authenticated_smb_listing_with_doctor_retries(
+                DEFAULT_SAMBA_AUTH_USER,
+                smb_password,
+                targets,
+                port=445,
+            ),
+        )
+        for family, targets in target_groups
+    ]
+    all_attempts = [
+        attempt
+        for _, result in listing_outcomes
+        for attempt in authenticated_smb_listing_attempts(result)
+    ]
+    if debug_fields is not None and all_attempts:
+        debug_fields["authenticated_smb_listing_attempts"] = all_attempts
+    successful_outcomes = [(family, result) for family, result in listing_outcomes if result.status == "PASS"]
+    if len(listing_outcomes) > 1 and successful_outcomes:
+        for family, result in listing_outcomes:
+            if result.status == "PASS":
+                add_result(result)
+            else:
+                add_result(
+                    CheckResult(
+                        "WARN",
+                        f"authenticated SMB {_family_label(family or '')} listing failed while another network family works: "
+                        f"{result.message}",
+                        result.details,
+                    )
+                )
+        listing_result = successful_outcomes[0][1]
+    elif len(listing_outcomes) > 1:
+        status = "FAIL" if any(result.status == "FAIL" for _, result in listing_outcomes) else "WARN"
+        listing_result = CheckResult(
+            status,
+            "authenticated SMB listing failed for all applicable network families",
+            {"attempts": all_attempts},
+        )
+    else:
+        listing_result = listing_outcomes[0][1]
     if listing_result.status != "PASS":
-        bind_result = _lan_only_smb_bind_unreachable_result(config, network_plan, smb_servers)
+        bind_result = _lan_only_smb_bind_unreachable_result(config, network_plan, checked_servers)
         if bind_result is not None:
             add_result(bind_result)
         if _smb_listing_looks_like_local_route_failure(listing_result):
@@ -1523,7 +1633,8 @@ def _add_authenticated_smb_results(
                 return
         add_result(_tag_smb_startup_transient_if_connection_shaped(listing_result))
         return
-    add_result(listing_result)
+    if len(listing_outcomes) == 1:
+        add_result(listing_result)
     share_name = _select_smb_file_ops_share(
         listing_result,
         active_share_names,
@@ -1963,6 +2074,7 @@ def _doctor_check_network_plan(target: DoctorTarget, remote: RemoteAccess, smb_c
         mdns_families=mdns_families,
         nbns_families=nbns_families,
         local_addresses=local_interface_addresses(),
+        route_selector=select_route_to_address,
     )
     if sink.debug_fields is not None:
         sink.debug_fields["runtime_network_capabilities"] = {
@@ -1975,32 +2087,73 @@ def _doctor_check_network_plan(target: DoctorTarget, remote: RemoteAccess, smb_c
     return NetworkPlanState(plan=plan)
 
 
-def _doctor_check_direct_smb_port(target: DoctorTarget, remote: RemoteAccess, network_plan: NetworkPlanState, sink: DoctorSink) -> None:
+def _ipv6_no_client_route_result(endpoint: NetworkEndpointPlan) -> CheckResult:
+    details: dict[str, object] = {
+        "code": DOCTOR_CODE_SMB_IPV6_NO_CLIENT_ROUTE,
+        "domain": "SMB Connectivity",
+        "address": endpoint.address,
+        "cidr": endpoint.cidr,
+        "route_state": endpoint.route.state,
+    }
+    if endpoint.route.error:
+        details["route_error"] = endpoint.route.error
+    if endpoint.route.error_number is not None:
+        details["route_errno"] = endpoint.route.error_number
+    return CheckResult(
+        "INFO",
+        f"IPv6 SMB connectivity not tested for {endpoint.address}:445; this client has no usable route "
+        "to that address. Dual-stack connectivity was not validated for this address; "
+        "if the Time Capsule is behind another router, set AirPort Utility Configure IPv6 to Link-local only.",
+        details,
+    )
+
+
+def _doctor_check_direct_smb_port(
+    target: DoctorTarget,
+    remote: RemoteAccess,
+    network_plan: NetworkPlanState,
+    sink: DoctorSink,
+) -> DirectSmbState:
     if target.proxied_ssh:
         sink.add(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {target.host}"))
-        return
+        return DirectSmbState()
 
     results: list[CheckResult] = []
+    reachable_addresses: list[str] = []
     if network_plan.plan is not None:
         for family_plan in network_plan.plan.families():
             if not family_plan.samba_expected:
                 continue
             family_label = _family_label(family_plan.family)
-            if not family_plan.remote_addresses:
+            if not family_plan.endpoints:
                 result = CheckResult("SKIP", f"direct SMB {family_label} port check skipped; runtime has no advertised {family_plan.family} address")
-            elif not family_plan.local_sources:
-                result = CheckResult("SKIP", f"direct SMB {family_label} port check skipped; local host has no address on the remote {family_plan.family} network")
-            else:
-                result = check_smb_port(family_plan.remote_addresses[0])
-            sink.add(result)
-            results.append(result)
+                sink.add(result)
+                results.append(result)
+                continue
+            for endpoint in family_plan.endpoints:
+                if endpoint.route.state == "unavailable":
+                    if endpoint.family == "ipv6":
+                        result = _ipv6_no_client_route_result(endpoint)
+                    else:
+                        result = CheckResult(
+                            "SKIP",
+                            f"direct SMB {family_label} port check skipped for {endpoint.address}; "
+                            "local host has no usable route to that address",
+                        )
+                else:
+                    result = check_smb_port(endpoint.address)
+                    if result.status == "PASS":
+                        reachable_addresses.append(endpoint.address)
+                sink.add(result)
+                results.append(result)
     else:
         result = check_smb_port(target.host)
         sink.add(result)
         results.append(result)
 
-    if any(result.status != "PASS" and result.status != "SKIP" for result in results):
+    if any(result.status in {"WARN", "FAIL"} for result in results):
         _add_remote_service_socket_debug(target, remote, sink)
+    return DirectSmbState(tuple(reachable_addresses))
 
 
 def _doctor_add_bonjour_naming_info(bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
@@ -2047,6 +2200,7 @@ def _doctor_check_authenticated_smb(
     naming: RuntimeNamingState,
     bonjour_result: DoctorBonjourResult,
     network_plan: NetworkPlanState,
+    direct_smb: DirectSmbState,
     sink: DoctorSink,
 ) -> None:
     if inputs.options.skip_smb:
@@ -2063,6 +2217,7 @@ def _doctor_check_authenticated_smb(
         active_smb_conf=smb_config.text,
         active_smb_conf_reason=smb_config.reason,
         network_plan=network_plan.plan,
+        direct_smb=direct_smb,
         debug_fields=sink.debug_fields,
         add_result=sink.add,
     )

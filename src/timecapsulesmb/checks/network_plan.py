@@ -1,23 +1,80 @@
 from __future__ import annotations
 
+import errno
 import ipaddress
+import socket
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 
 NetworkFamily = Literal["ipv4", "ipv6"]
+RouteState = Literal["available", "unavailable", "unknown"]
+
+
+@dataclass(frozen=True)
+class RouteSelection:
+    state: RouteState
+    source: str | None = None
+    error: str | None = None
+    error_number: int | None = None
+
+
+@dataclass(frozen=True)
+class NetworkEndpointPlan:
+    address: str
+    cidr: str
+    family: NetworkFamily
+    on_link_sources: tuple[str, ...] = ()
+    local_sources: tuple[str, ...] = ()
+    route: RouteSelection = field(default_factory=lambda: RouteSelection("unknown"))
+
+    @property
+    def applicable(self) -> bool:
+        return self.route.state != "unavailable"
 
 
 @dataclass(frozen=True)
 class NetworkFamilyPlan:
     family: NetworkFamily
-    remote_addresses: tuple[str, ...] = ()
-    remote_cidrs: tuple[str, ...] = ()
-    local_sources: tuple[str, ...] = ()
+    endpoints: tuple[NetworkEndpointPlan, ...] = ()
     mdns_expected: bool = False
     samba_expected: bool = False
     nbns_expected: bool = False
+
+    @property
+    def remote_addresses(self) -> tuple[str, ...]:
+        return tuple(endpoint.address for endpoint in self.endpoints)
+
+    @property
+    def remote_cidrs(self) -> tuple[str, ...]:
+        cidrs: list[str] = []
+        for endpoint in self.endpoints:
+            if endpoint.cidr not in cidrs:
+                cidrs.append(endpoint.cidr)
+        return tuple(cidrs)
+
+    @property
+    def local_sources(self) -> tuple[str, ...]:
+        sources: list[str] = []
+        for endpoint in self.endpoints:
+            for source in endpoint.local_sources:
+                if source not in sources:
+                    sources.append(source)
+        return tuple(sources)
+
+    @property
+    def on_link_sources(self) -> tuple[str, ...]:
+        sources: list[str] = []
+        for endpoint in self.endpoints:
+            for source in endpoint.on_link_sources:
+                if source not in sources:
+                    sources.append(source)
+        return tuple(sources)
+
+    @property
+    def applicable_endpoints(self) -> tuple[NetworkEndpointPlan, ...]:
+        return tuple(endpoint for endpoint in self.endpoints if endpoint.applicable)
 
     @property
     def locally_reachable(self) -> bool:
@@ -139,6 +196,40 @@ def local_interface_addresses() -> tuple[str, ...]:
     return tuple(addresses)
 
 
+_ROUTE_UNAVAILABLE_ERRNOS = {
+    errno.EADDRNOTAVAIL,
+    errno.EAFNOSUPPORT,
+    errno.EHOSTUNREACH,
+    errno.ENETDOWN,
+    errno.ENETUNREACH,
+}
+
+
+def select_route_to_address(address: str, *, port: int = 445) -> RouteSelection:
+    try:
+        ip_obj = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError as exc:
+        return RouteSelection("unknown", error=str(exc))
+
+    family = socket.AF_INET6 if ip_obj.version == 6 else socket.AF_INET
+    destination = (address, port, 0, 0) if family == socket.AF_INET6 else (address, port)
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as sock:
+            sock.connect(destination)
+            source = _adapter_ip_text(sock.getsockname()[0])
+    except OSError as exc:
+        state: RouteState = "unavailable" if exc.errno in _ROUTE_UNAVAILABLE_ERRNOS else "unknown"
+        return RouteSelection(
+            state,
+            error=str(exc) or exc.__class__.__name__,
+            error_number=exc.errno,
+        )
+
+    if source is None or ipaddress.ip_address(source).is_unspecified:
+        return RouteSelection("unknown", error="kernel did not select a source address")
+    return RouteSelection("available", source=source)
+
+
 def local_sources_for_remote_cidrs(
     remote_cidrs: Sequence[str],
     *,
@@ -177,30 +268,50 @@ def build_network_check_plan(
     mdns_families: Iterable[str],
     nbns_families: Iterable[str],
     local_addresses: Sequence[str] | None = None,
+    route_selector: Callable[[str], RouteSelection] | None = None,
 ) -> NetworkCheckPlan:
     bind_interfaces = parse_bind_interfaces(smb_bind_interfaces)
+    candidate_local_addresses = tuple(local_addresses) if local_addresses is not None else local_interface_addresses()
+    select_route = route_selector or select_route_to_address
     mdns = set(normalize_family_tokens(mdns_families))
     # RFC NBNS NB records carry only IPv4 addresses. Keep this independent
     # from Samba/mDNS, which can be dual-stack.
     nbns = {family for family in normalize_family_tokens(nbns_families) if family == "ipv4"}
 
     def family_plan(family: NetworkFamily) -> NetworkFamilyPlan:
-        remote_addresses: list[str] = []
-        remote_cidrs: list[str] = []
+        endpoints: list[NetworkEndpointPlan] = []
         for interface in bind_interfaces:
             if interface.family != family:
                 continue
-            if interface.address not in remote_addresses:
-                remote_addresses.append(interface.address)
-            if interface.cidr not in remote_cidrs:
-                remote_cidrs.append(interface.cidr)
+            try:
+                route = select_route(interface.address)
+            except Exception as exc:
+                route = RouteSelection("unknown", error=f"{type(exc).__name__}: {exc}")
+            matching_sources = local_sources_for_remote_cidrs(
+                (interface.cidr,),
+                family=family,
+                local_addresses=candidate_local_addresses,
+            )
+            endpoint_sources: list[str] = []
+            if route.state == "available" and route.source:
+                endpoint_sources.append(route.source)
+            elif route.state == "unknown":
+                endpoint_sources.extend(matching_sources)
+            endpoint = NetworkEndpointPlan(
+                address=interface.address,
+                cidr=interface.cidr,
+                family=family,
+                on_link_sources=matching_sources,
+                local_sources=tuple(endpoint_sources),
+                route=route,
+            )
+            if endpoint not in endpoints:
+                endpoints.append(endpoint)
         return NetworkFamilyPlan(
             family=family,
-            remote_addresses=tuple(remote_addresses),
-            remote_cidrs=tuple(remote_cidrs),
-            local_sources=local_sources_for_remote_cidrs(remote_cidrs, family=family, local_addresses=local_addresses),
+            endpoints=tuple(endpoints),
             mdns_expected=family in mdns,
-            samba_expected=bool(remote_addresses),
+            samba_expected=bool(endpoints),
             nbns_expected=family in nbns,
         )
 

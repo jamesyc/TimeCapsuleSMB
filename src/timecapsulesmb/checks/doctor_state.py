@@ -97,5 +97,10 @@ class NetworkPlanState:
 
 
 @dataclass(frozen=True)
+class DirectSmbState:
+    reachable_addresses: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class StepDecision:
     stop: bool = False
