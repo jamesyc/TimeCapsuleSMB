@@ -6,6 +6,7 @@ tc_cleanup_old_runtime() {
     stop_runtime_process_by_ucomm "smbd" "smbd" || cleanup_status=1
     stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || cleanup_status=1
     stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || cleanup_status=1
+    stop_runtime_process_by_ucomm "$RSYNC_PROC_NAME" "$RSYNC_PROC_NAME" || cleanup_status=1
 
     if [ "$cleanup_status" -ne 0 ]; then
         tc_log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"

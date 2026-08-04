@@ -188,12 +188,14 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     dry_run = bool_param(params, "dry_run")
     no_reboot = bool_param(params, "no_reboot")
     no_wait = bool_param(params, "no_wait")
+    rsync_enabled = bool_param(params, "rsync_enabled")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     allow_unsupported = bool_param(params, "allow_unsupported")
     deploy_options = DeployOptions(
         dry_run=dry_run,
         no_reboot=no_reboot,
         no_wait=no_wait,
+        rsync_enabled=rsync_enabled,
         mount_wait_seconds=mount_wait,
         allow_unsupported=allow_unsupported,
     )
@@ -207,6 +209,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
     context.update_fields(
         nbns_enabled=nbns_enabled,
+        rsync_enabled=rsync_enabled,
         reboot_was_attempted=False,
         device_came_back_after_reboot=False,
     )
@@ -303,6 +306,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             "no_reboot": no_reboot,
             "no_wait": no_wait,
             "startup_mode": startup_mode,
+            "rsync_enabled": rsync_enabled,
         }
         require_confirmation(
             params,
@@ -338,6 +342,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             callbacks=context.to_operation_callbacks(),
             artifacts=preflight.artifacts,
             wait_after_reboot=not no_wait,
+            rsync_enabled=rsync_enabled,
         )
     except DeviceError as exc:
         raise _device_operation_error(context, exc) from exc
@@ -369,6 +374,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             prepared_plan=prepared_plan,
             runtime_config=DeployRuntimeConfig(
                 nbns_enabled=nbns_enabled,
+                rsync_enabled=rsync_enabled,
                 debug_logging=debug_logging,
                 internal_share_use_disk_root=internal_share_use_disk_root,
                 smb_bind_lan_only=smb_bind_lan_only,

@@ -201,12 +201,14 @@ final class DeviceRegistryStore: ObservableObject {
     func updateInstallOperationState(
         deployState: DeviceDeployStateSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot,
+        rsyncEnabled: Bool? = nil,
         for profileID: DeviceProfile.ID
     ) async {
         await applyBackgroundMutation {
             try await repository.updateInstallOperationState(
                 deployState: deployState,
                 runtimeState: runtimeState,
+                rsyncEnabled: rsyncEnabled,
                 for: profileID
             )
         }
@@ -522,6 +524,7 @@ private actor DeviceRegistryRepository {
     func updateInstallOperationState(
         deployState: DeviceDeployStateSnapshot,
         runtimeState: DeviceRuntimeStateSnapshot,
+        rsyncEnabled: Bool? = nil,
         for profileID: DeviceProfile.ID
     ) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
@@ -530,6 +533,9 @@ private actor DeviceRegistryRepository {
         var updatedProfiles = profiles
         updatedProfiles[index].lastDeployState = deployState
         updatedProfiles[index].runtimeState = runtimeState
+        if let rsyncEnabled {
+            updatedProfiles[index].settings.rsyncEnabled = rsyncEnabled
+        }
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
         profiles = updatedProfiles

@@ -387,6 +387,7 @@ final class DashboardStoreTests: XCTestCase {
         )
         profile.settings = DeviceProfileSettings(
             nbnsEnabled: false,
+            rsyncEnabled: true,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
@@ -402,6 +403,7 @@ final class DashboardStoreTests: XCTestCase {
         let session = dashboard.session(for: profile)
 
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
+        XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
@@ -438,6 +440,7 @@ final class DashboardStoreTests: XCTestCase {
         let session = dashboard.session(for: profile)
 
         session.profileEditorStore.draft.nbnsEnabled = false
+        session.profileEditorStore.draft.rsyncEnabled = true
         session.profileEditorStore.draft.internalShareUseDiskRoot = true
         session.profileEditorStore.draft.smbBrowseCompatibility = true
         session.profileEditorStore.draft.mdnsAdvertiseAFP = true
@@ -452,6 +455,7 @@ final class DashboardStoreTests: XCTestCase {
 
         XCTAssertEqual(session.profileEditorStore.state, .saved)
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
+        XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
@@ -565,7 +569,12 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+                BackendEvent(
+                    type: "result",
+                    operation: "deploy",
+                    ok: true,
+                    payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4", rsyncEnabled: true)
+                )
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
@@ -581,6 +590,7 @@ final class DashboardStoreTests: XCTestCase {
         fixture.appStore.select(profile)
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: profile)
+        session.deployStore.rsyncEnabled = true
 
         session.runCheckup(profile: profile)
 
@@ -620,8 +630,12 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(installed.runtimeState?.state, .installedVerified)
         XCTAssertEqual(installed.runtimeState?.payloadFamily, "netbsd6_samba4")
         XCTAssertEqual(installed.runtimeState?.verified, true)
+        XCTAssertEqual(installed.settings.rsyncEnabled, true)
+        let reopenedSession = DeviceDashboardSession(profile: installed, appStore: fixture.appStore)
+        XCTAssertEqual(reopenedSession.deployStore.rsyncEnabled, true)
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[2].params["dry_run"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[2].params["rsync_enabled"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[2].context?.profileID, profile.id)
     }
 
@@ -802,12 +816,14 @@ final class DashboardStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: failed.keychainAccount)
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: failed)
+        session.deployStore.rsyncEnabled = true
 
         session.runInstallPlan(profile: failed)
 
         try await waitUntilStoreState { session.deployStore.state == .planReady }
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.lastDeployState, failedState)
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.runtimeState, failedRuntimeState)
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.settings.rsyncEnabled, false)
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
     }
 

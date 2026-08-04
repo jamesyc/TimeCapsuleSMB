@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
 RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
 RUNTIME_NBNS_BIN = f"{RUNTIME_RAM_ROOT}/sbin/nbns-advertiser"
+RUNTIME_RSYNC_BIN = f"{RUNTIME_RAM_ROOT}/sbin/rsync"
+RUNTIME_RSYNC_CONF = f"{RUNTIME_RAM_ROOT}/etc/rsyncd.conf"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
 REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 30
 REMOTE_LOG_TAIL_LINES = 80
@@ -55,6 +57,7 @@ NETBSD4_LOGIN_PATH = "/etc/rc.d/LOGIN"
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
     "remote_manager_log_tail": "/mnt/Memory/samba4/var/manager.log",
+    "remote_rsync_log_tail": "/mnt/Memory/samba4/var/rsync.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
     "remote_smbd_log_tail": "log.smbd",
@@ -1485,6 +1488,131 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
     )
 
 
+def probe_managed_rsync_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+) -> ReadinessProbeResult:
+    payload_dir = read_runtime_payload_dir_conn(connection, timeout_seconds=timeout_seconds) or ""
+    script = rf'''
+RUNTIME_CONFIG_FILE=${{RUNTIME_CONFIG_FILE:-{FLASH_RUNTIME_CONFIG}}}
+RUNTIME_RSYNC_BIN=${{RUNTIME_RSYNC_BIN:-{RUNTIME_RSYNC_BIN}}}
+RUNTIME_RSYNC_CONF=${{RUNTIME_RSYNC_CONF:-{RUNTIME_RSYNC_CONF}}}
+RSYNC_ENABLED=0
+RUNTIME_PAYLOAD_DIR={shlex.quote(payload_dir)}
+if [ -f "$RUNTIME_CONFIG_FILE" ]; then
+    . "$RUNTIME_CONFIG_FILE"
+fi
+case "$RSYNC_ENABLED" in
+    1|true|TRUE|yes|YES) RSYNC_ENABLED=1 ;;
+    *) RSYNC_ENABLED=0 ;;
+esac
+
+status=0
+if [ -n "$RUNTIME_PAYLOAD_DIR" ] && [ -x "$RUNTIME_PAYLOAD_DIR/rsync" ]; then
+    echo "PASS:persistent rsync binary is executable"
+else
+    echo "FAIL:persistent rsync binary is missing"
+    status=1
+fi
+if [ -n "$RUNTIME_PAYLOAD_DIR" ] && [ -r "$RUNTIME_PAYLOAD_DIR/rsyncd.conf" ]; then
+    echo "PASS:persistent rsync config is present"
+else
+    echo "FAIL:persistent rsync config is missing"
+    status=1
+fi
+
+rsync_pids=
+if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
+    old_ifs=$IFS
+    IFS='
+'
+    for line in $ps_out; do
+        [ -n "$line" ] || continue
+        line_ifs=$IFS
+        IFS=' 	'
+        set -- $line
+        IFS=$line_ifs
+        [ "$#" -ge 3 ] || continue
+        case "$2" in Z*) continue ;; esac
+        [ "$3" = rsync ] || continue
+        rsync_pids="$rsync_pids $1"
+    done
+    IFS=$old_ifs
+fi
+
+if [ "$RSYNC_ENABLED" != "1" ]; then
+    if [ -n "$rsync_pids" ]; then
+        echo "FAIL:rsync daemon is disabled but an rsync process is running"
+        status=1
+    else
+        echo "SKIP:rsync daemon is disabled and not running"
+    fi
+    exit "$status"
+fi
+
+if [ -x "$RUNTIME_RSYNC_BIN" ]; then
+    echo "PASS:managed rsync binary is executable in RAM"
+else
+    echo "FAIL:managed rsync binary is missing from RAM"
+    status=1
+fi
+if [ -r "$RUNTIME_RSYNC_CONF" ]; then
+    echo "PASS:managed rsync config is present in RAM"
+else
+    echo "FAIL:managed rsync config is missing from RAM"
+    status=1
+fi
+if [ -n "$rsync_pids" ]; then
+    echo "PASS:managed rsync process is running"
+else
+    echo "FAIL:managed rsync process is not running"
+    status=1
+fi
+
+rsync_bound=0
+for rsync_pid in $rsync_pids; do
+    if fstat_out=$(/usr/bin/fstat -p "$rsync_pid" 2>/dev/null); then
+        fstat_ifs=$IFS
+        IFS='
+'
+        for fstat_line in $fstat_out; do
+            case "$fstat_line" in
+                *" internet stream tcp "*":873"*|*" internet6 stream tcp "*":873"*) rsync_bound=1 ;;
+            esac
+        done
+        IFS=$fstat_ifs
+    fi
+done
+if [ "$rsync_bound" -eq 1 ]; then
+    echo "PASS:managed rsync is bound to TCP 873"
+else
+    echo "FAIL:managed rsync is not bound to TCP 873"
+    status=1
+fi
+exit "$status"
+'''
+    try:
+        proc = run_ssh(
+            connection,
+            f"/bin/sh -c {shlex.quote(script)}",
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except SshCommandTimeout:
+        return _readiness_result_from_lines(
+            ready=False,
+            lines=("FAIL:managed rsync readiness probe timed out",),
+            default_detail="managed rsync not ready",
+        )
+    lines = _probe_lines(proc.stdout)
+    return _readiness_result_from_lines(
+        ready=proc.returncode == 0,
+        lines=lines,
+        default_detail="managed rsync ready" if proc.returncode == 0 else "managed rsync not ready",
+    )
+
+
 def _capability_family_tokens(value: str) -> tuple[str, ...]:
     tokens: list[str] = []
     for token in value.split():
@@ -1594,8 +1722,12 @@ def probe_netbsd4_rc_local_autostart_conn(
     return RcLocalAutostartProbeResult(enabled=enabled, detail=detail, login_size=len(login))
 
 
-def _managed_runtime_detail(smbd: ReadinessProbeResult, mdns: ReadinessProbeResult) -> str:
-    details = tuple(detail for detail in (smbd.detail, mdns.detail) if detail)
+def _managed_runtime_detail(
+    smbd: ReadinessProbeResult,
+    mdns: ReadinessProbeResult,
+    rsync: ReadinessProbeResult | None = None,
+) -> str:
+    details = tuple(detail for detail in (smbd.detail, mdns.detail, None if rsync is None else rsync.detail) if detail)
     return "; ".join(details) if details else "managed runtime not ready"
 
 
@@ -1656,8 +1788,9 @@ def probe_managed_runtime_once_conn(
     if not smbd.ready and smbd_mdns_stagger_seconds > 0:
         time.sleep(smbd_mdns_stagger_seconds)
     mdns = probe_managed_mdns_takeover_conn(connection)
+    rsync = probe_managed_rsync_conn(connection)
 
-    if smbd.ready and mdns.ready:
+    if smbd.ready and mdns.ready and rsync.ready:
         time.sleep(mdns_settle_seconds)
         settled_mdns = probe_managed_mdns_takeover_conn(connection)
         if settled_mdns.ready:
@@ -1666,7 +1799,7 @@ def probe_managed_runtime_once_conn(
                 detail="managed runtime is ready",
                 smbd=smbd,
                 mdns=settled_mdns,
-                extra_steps=(
+                extra_steps=rsync.steps + (
                     ProbeStepResult(
                         id="mdns_settle",
                         status="pass",
@@ -1688,9 +1821,10 @@ def probe_managed_runtime_once_conn(
 
     return ManagedRuntimeProbeResult(
         ready=False,
-        detail=_managed_runtime_detail(smbd, mdns),
+        detail=_managed_runtime_detail(smbd, mdns, rsync),
         smbd=smbd,
         mdns=mdns,
+        extra_steps=rsync.steps,
     )
 
 
@@ -2147,7 +2281,7 @@ if [ ! -x /usr/bin/fstat ]; then
     exit 0
 fi
 ps_out="$(capture_ps_out)"
-for proc_name in smbd nbns-advertiser; do
+for proc_name in smbd nbns-advertiser rsync; do
     echo "$proc_name:"
     socket_lines=$(capture_fstat_for_ucomm "$ps_out" "$proc_name" | /usr/bin/sed -n '/internet/p' | /usr/bin/sed -n '1,40p')
     if [ -n "$socket_lines" ]; then
@@ -2186,9 +2320,13 @@ for runtime_path in \
     "$RUNTIME_RAM_SBIN/smbd" \
     $RUNTIME_RAM_SBIN/smbd.tmp.* \
     "$RUNTIME_RAM_SBIN/nbns-advertiser" \
+    "$RUNTIME_RAM_SBIN/rsync" \
+    $RUNTIME_RAM_SBIN/rsync.tmp.* \
     "$RUNTIME_RAM_PRIVATE/smbpasswd" \
     "$RUNTIME_RAM_PRIVATE/username.map" \
-    "$RUNTIME_RAM_ETC/smb.conf"
+    "$RUNTIME_RAM_ETC/smb.conf" \
+    "$RUNTIME_RAM_ETC/rsyncd.conf" \
+    "$RUNTIME_RAM_VAR/rsync.log"
 do
     case "$runtime_path" in
         *"*"*) continue ;;

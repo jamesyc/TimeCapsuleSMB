@@ -26,12 +26,14 @@ DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate", "a
 BINARY_SMBD_SOURCE = "binary:smbd"
 BINARY_MDNS_SOURCE = "binary:mdns-advertiser"
 BINARY_NBNS_SOURCE = "binary:nbns-advertiser"
+BINARY_RSYNC_SOURCE = "binary:rsync"
 PACKAGED_RC_LOCAL_SOURCE = "packaged:rc.local"
 PACKAGED_COMMON_SH_SOURCE = "packaged:common.sh"
 PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
 PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
 PACKAGED_MANAGER_SOURCE = "packaged:manager.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
+GENERATED_RSYNC_CONFIG_SOURCE = "generated:rsyncd.conf"
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
 DEFAULT_ATA_IDLE_SECONDS = 300
 DEFAULT_DISKD_USE_VOLUME_ATTEMPTS = 2
@@ -67,6 +69,8 @@ class DeploymentPlan:
     smbd_path: Path
     mdns_path: Path
     nbns_path: Path
+    rsync_path: Path
+    rsync_enabled: bool
     flash_targets: dict[str, str]
     payload_targets: dict[str, str]
     private_dir: str
@@ -172,16 +176,32 @@ def _deploy_activation_actions(startup_mode: DeploymentStartupMode, *, wait_afte
     return []
 
 
-def _deploy_post_checks(startup_mode: DeploymentStartupMode, *, wait_after_reboot: bool) -> list[PlannedCheck]:
+def _deploy_post_checks(
+    startup_mode: DeploymentStartupMode,
+    *,
+    wait_after_reboot: bool,
+    rsync_enabled: bool,
+) -> list[PlannedCheck]:
     if startup_mode in {DEPLOY_STARTUP_REBOOT_THEN_VERIFY, DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE} and not wait_after_reboot:
         return []
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
-        return NETBSD6_REBOOT_DEPLOY_CHECKS
+        checks = NETBSD6_REBOOT_DEPLOY_CHECKS
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-        return REBOOT_THEN_ACTIVATION_CHECKS
+        checks = REBOOT_THEN_ACTIVATION_CHECKS
     if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        return RUNTIME_ACTIVATION_CHECKS
-    raise ValueError(f"Unsupported deployment startup mode: {startup_mode!r}")
+        checks = RUNTIME_ACTIVATION_CHECKS
+    if startup_mode not in {
+        DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
+        DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+        DEPLOY_STARTUP_ACTIVATE_NOW,
+    }:
+        raise ValueError(f"Unsupported deployment startup mode: {startup_mode!r}")
+    rsync_check = (
+        PlannedCheck("managed_rsync_ready", "managed rsync daemon is running and bound to TCP 873")
+        if rsync_enabled
+        else PlannedCheck("managed_rsync_disabled", "rsync daemon is disabled and not running")
+    )
+    return [*checks, rsync_check]
 
 
 def build_deployment_plan(
@@ -191,6 +211,8 @@ def build_deployment_plan(
     mdns_path: Path,
     nbns_path: Path,
     *,
+    rsync_path: Path,
+    rsync_enabled: bool = False,
     startup_mode: DeploymentStartupMode = DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     wait_after_reboot: bool = True,
@@ -214,6 +236,8 @@ def build_deployment_plan(
         "smbd": f"{payload_dir}/smbd",
         "mdns-advertiser": f"{payload_dir}/mdns-advertiser",
         "nbns-advertiser": f"{payload_dir}/nbns-advertiser",
+        "rsync": f"{payload_dir}/rsync",
+        "rsyncd.conf": f"{payload_dir}/rsyncd.conf",
     }
     private_dir = f"{payload_dir}/private"
     cache_dir = f"{payload_dir}/cache"
@@ -237,6 +261,8 @@ def build_deployment_plan(
         RemotePermission(payload_targets["smbd"], "755"),
         RemotePermission(payload_targets["mdns-advertiser"], "755"),
         RemotePermission(payload_targets["nbns-advertiser"], "755"),
+        RemotePermission(payload_targets["rsync"], "755"),
+        RemotePermission(payload_targets["rsyncd.conf"], "600"),
         RemotePermission(flash_targets["rc.local"], "755"),
         RemotePermission(flash_targets["common.sh"], "755"),
         RemotePermission(flash_targets["boot.sh"], "755"),
@@ -256,6 +282,8 @@ def build_deployment_plan(
         smbd_path=smbd_path,
         mdns_path=mdns_path,
         nbns_path=nbns_path,
+        rsync_path=rsync_path,
+        rsync_enabled=rsync_enabled,
         flash_targets=flash_targets,
         payload_targets=payload_targets,
         private_dir=private_dir,
@@ -267,6 +295,8 @@ def build_deployment_plan(
             FileTransfer(BINARY_MDNS_SOURCE, payload_targets["mdns-advertiser"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in mdns-advertiser"),
             FileTransfer(BINARY_MDNS_SOURCE, flash_targets["mdns-advertiser"], "flash_atomic", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "flash mdns-advertiser"),
             FileTransfer(BINARY_NBNS_SOURCE, payload_targets["nbns-advertiser"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in nbns-advertiser"),
+            FileTransfer(BINARY_RSYNC_SOURCE, payload_targets["rsync"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in rsync"),
+            FileTransfer(GENERATED_RSYNC_CONFIG_SOURCE, payload_targets["rsyncd.conf"], "generated", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated rsync daemon config"),
             FileTransfer(PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged rc.local"),
             FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
             FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
@@ -283,6 +313,7 @@ def build_deployment_plan(
             StopProcessAction("smbd"),
             StopProcessAction("mdns-advertiser"),
             StopProcessAction("nbns-advertiser"),
+            StopProcessAction("rsync"),
             RemovePathAction("/mnt/Flash/start-samba.sh"),
             RemovePathAction("/mnt/Flash/watchdog.sh"),
             ensure_payload_volume,
@@ -299,7 +330,11 @@ def build_deployment_plan(
         activation_actions=_deploy_activation_actions(startup_mode, wait_after_reboot=wait_after_reboot),
         reboot_required=reboot_required,
         wait_after_reboot=wait_after_reboot,
-        post_deploy_checks=_deploy_post_checks(startup_mode, wait_after_reboot=wait_after_reboot),
+        post_deploy_checks=_deploy_post_checks(
+            startup_mode,
+            wait_after_reboot=wait_after_reboot,
+            rsync_enabled=rsync_enabled,
+        ),
         apple_mount_wait_seconds=apple_mount_wait_seconds,
     )
 
@@ -358,6 +393,7 @@ def build_uninstall_plan(
             StopProcessAction("smbd"),
             StopProcessAction("mdns-advertiser"),
             StopProcessAction("nbns-advertiser"),
+            StopProcessAction("rsync"),
             *(RemovePathAction(payload_dir) for payload_dir in payload_dirs),
             RemovePathAction(flash_targets["rc.local"]),
             RemovePathAction(flash_targets["common.sh"]),

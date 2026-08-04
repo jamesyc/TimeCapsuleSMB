@@ -38,18 +38,21 @@ def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> d
             "smbd": "smbd-netbsd4le",
             "mdns-advertiser": "mdns-advertiser-netbsd4le",
             "nbns-advertiser": "nbns-advertiser-netbsd4le",
+            "rsync": "rsync-netbsd4le",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD4BE:
         names = {
             "smbd": "smbd-netbsd4be",
             "mdns-advertiser": "mdns-advertiser-netbsd4be",
             "nbns-advertiser": "nbns-advertiser-netbsd4be",
+            "rsync": "rsync-netbsd4be",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD6:
         names = {
             "smbd": "smbd",
             "mdns-advertiser": "mdns-advertiser",
             "nbns-advertiser": "nbns-advertiser",
+            "rsync": "rsync",
         }
     else:
         raise KeyError(f"Unknown payload family: {payload_family}")

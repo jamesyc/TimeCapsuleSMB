@@ -245,6 +245,7 @@ final class DeviceDashboardStateSynchronizer {
             await appStore.deviceRegistry.updateInstallOperationState(
                 deployState: snapshots.deployState,
                 runtimeState: snapshots.runtimeState,
+                rsyncEnabled: deployStore.plannedOptions?.rsyncEnabled ?? deployStore.plan?.rsyncEnabled,
                 for: profile.id
             )
         }

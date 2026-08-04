@@ -662,6 +662,8 @@ def verify_payload_home_conn(
         "add_missing() { if [ -z \"$missing\" ]; then missing=\"$1\"; else missing=\"$missing; $1\"; fi; }; "
         f"[ -d {payload_dir} ] || add_missing 'missing payload directory'; "
         f"[ -x {payload_dir}/smbd ] || [ -x {payload_dir}/sbin/smbd ] || add_missing 'missing smbd'; "
+        f"[ -x {payload_dir}/rsync ] || add_missing 'missing rsync'; "
+        f"[ -r {payload_dir}/rsyncd.conf ] || add_missing 'missing rsyncd.conf'; "
         f"[ -d {payload_dir}/private ] || add_missing 'missing private directory'; "
         "if [ -z \"$missing\" ]; then echo ok; exit 0; fi; "
         "echo \"$missing\"; exit 1"

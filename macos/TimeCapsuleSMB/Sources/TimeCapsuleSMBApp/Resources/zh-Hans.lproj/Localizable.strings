@@ -935,3 +935,9 @@
 "value.required" = "需要";
 "value.unknown" = "未知";
 "value.yes" = "是";
+"install.advanced_options.rsync_note" = "rsync 二进制文件和配置始终安装在磁盘上。启用后，会在 TCP 873 端口启动一个可写且无需身份验证的 rsync 守护进程。";
+"install.plan.row.rsync" = "rsync 守护进程";
+"install.plan.warning.rsync" = "rsync 通过 TCP 873 端口将 ShareRoot 公开为可写且无需身份验证的模块。";
+"timeline.deploy.detail.upload_rsync" = "正在将 rsync 及其守护进程配置复制到有效负载卷。";
+"timeline.deploy.title.upload_rsync" = "上传 rsync";
+"toggle.enable_rsync" = "启用 rsync";

@@ -41,6 +41,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.mountWait = "45"
         store.noWait = true
         store.nbnsEnabled = false
+        store.rsyncEnabled = true
         store.internalShareUseDiskRoot = true
         store.smbBrowseCompatibility = true
         store.mdnsAdvertiseAFP = true
@@ -64,6 +65,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["nbns_enabled"], .bool(false))
+        XCTAssertEqual(runner.calls[0].params["rsync_enabled"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["mdns_advertise_afp"], .bool(true))
@@ -241,6 +243,16 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertTrue(store.canDeploy)
 
         store.internalShareUseDiskRoot = false
+
+        XCTAssertEqual(store.state, .planReady)
+        XCTAssertTrue(store.canDeploy)
+
+        store.rsyncEnabled = true
+
+        XCTAssertEqual(store.state, .planStale)
+        XCTAssertTrue(store.canDeploy)
+
+        store.rsyncEnabled = false
 
         XCTAssertEqual(store.state, .planReady)
         XCTAssertTrue(store.canDeploy)

@@ -101,6 +101,7 @@ final class DeviceProfileTests: XCTestCase {
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
         XCTAssertEqual(settings.nbnsEnabled, false)
+        XCTAssertEqual(settings.rsyncEnabled, false)
         XCTAssertEqual(settings.internalShareUseDiskRoot, false)
         XCTAssertEqual(settings.smbBrowseCompatibility, false)
         XCTAssertEqual(settings.mdnsAdvertiseAFP, false)

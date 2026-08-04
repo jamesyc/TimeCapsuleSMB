@@ -24,6 +24,7 @@ final class AppSettingsStoreTests: XCTestCase {
             defaultBonjourTimeoutSeconds: 12.5,
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: false,
+                rsyncEnabled: true,
                 internalShareUseDiskRoot: true,
                 smbBrowseCompatibility: true,
                 mdnsAdvertiseAFP: true,
@@ -75,6 +76,7 @@ final class AppSettingsStoreTests: XCTestCase {
 
         XCTAssertFalse(settings.smbBindLanOnly)
         XCTAssertFalse(settings.mdnsAdvertiseAFP)
+        XCTAssertFalse(settings.rsyncEnabled)
     }
 
     func testCorruptSettingsFailsWithoutReplacingDefaults() async throws {

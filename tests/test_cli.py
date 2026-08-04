@@ -104,6 +104,7 @@ from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     GENERATED_FLASH_CONFIG_SOURCE,
+    GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_MANAGER_SOURCE,
 )
@@ -5041,6 +5042,7 @@ class CliTests(unittest.TestCase):
                 "managed_smbd_bound_445",
                 "managed_mdns_takeover_ready",
                 "managed_mdns_settle_healthy",
+                "managed_rsync_disabled",
             ],
         )
 
@@ -5168,6 +5170,27 @@ class CliTests(unittest.TestCase):
         self.assertIn("NBNS_ENABLED=0\n", captured["flash_config"])
         finished = self.telemetry_payload("deploy_finished")
         self.assertFalse(finished["nbns_enabled"])
+
+    def test_deploy_enable_rsync_writes_flag_and_always_uploads_daemon_config(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+            captured["rsync_config"] = source_resolver[GENERATED_RSYNC_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--enable-rsync", "--no-reboot"],
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("RSYNC_ENABLED=1\n", captured["flash_config"])
+        self.assertIn("port = 873\n", captured["rsync_config"])
+        self.assertIn("path = /Volumes/dk2/ShareRoot\n", captured["rsync_config"])
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertTrue(finished["rsync_enabled"])
 
     def test_deploy_debug_logging_arg_writes_enabled_flash_config(self) -> None:
         captured: dict[str, str] = {}
@@ -5742,6 +5765,7 @@ class CliTests(unittest.TestCase):
                 "managed_smbd_bound_445",
                 "managed_mdns_takeover_ready",
                 "managed_mdns_settle_healthy",
+                "managed_rsync_disabled",
             ],
         )
 

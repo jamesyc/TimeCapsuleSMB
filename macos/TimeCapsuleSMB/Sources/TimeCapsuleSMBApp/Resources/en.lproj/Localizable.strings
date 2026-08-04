@@ -935,3 +935,9 @@
 "value.required" = "Required";
 "value.unknown" = "Unknown";
 "value.yes" = "yes";
+"install.advanced_options.rsync_note" = "The rsync binary and configuration are always installed on disk. Enabling starts a writable, unauthenticated rsync daemon on TCP 873.";
+"install.plan.row.rsync" = "rsync daemon";
+"install.plan.warning.rsync" = "rsync exposes ShareRoot as a writable, unauthenticated module on TCP 873.";
+"timeline.deploy.detail.upload_rsync" = "Copying rsync and its daemon configuration to the payload volume.";
+"timeline.deploy.title.upload_rsync" = "Upload rsync";
+"toggle.enable_rsync" = "Enable rsync";

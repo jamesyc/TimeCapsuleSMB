@@ -935,3 +935,9 @@
 "value.required" = "Verplicht";
 "value.unknown" = "Onbekend";
 "value.yes" = "ja";
+"install.advanced_options.rsync_note" = "Het rsync-programma en de configuratie worden altijd op de schijf geïnstalleerd. Inschakelen start een schrijfbare rsync-daemon zonder authenticatie op TCP 873.";
+"install.plan.row.rsync" = "rsync-daemon";
+"install.plan.warning.rsync" = "rsync stelt ShareRoot beschikbaar als een schrijfbare module zonder authenticatie op TCP 873.";
+"timeline.deploy.detail.upload_rsync" = "Bezig met kopiëren van rsync en de daemonconfiguratie naar het payloadvolume.";
+"timeline.deploy.title.upload_rsync" = "rsync uploaden";
+"toggle.enable_rsync" = "rsync inschakelen";

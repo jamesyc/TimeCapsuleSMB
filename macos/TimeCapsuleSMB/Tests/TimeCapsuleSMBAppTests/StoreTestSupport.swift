@@ -790,6 +790,7 @@ func testSSHAccessPayload(
 func testDeployPlanPayload(
     payloadFamily: String = "netbsd6_samba4",
     netbsd4: Bool? = nil,
+    rsyncEnabled: Bool = false,
     requiresReboot: Bool = true,
     startupMode: DeployStartupMode? = nil
 ) -> JSONValue {
@@ -805,6 +806,7 @@ func testDeployPlanPayload(
         "payload_dir": .string("/Volumes/dk2/.samba4"),
         "payload_family": .string(payloadFamily),
         "netbsd4": .bool(isNetBSD4),
+        "rsync_enabled": .bool(rsyncEnabled),
         "requires_reboot": .bool(requiresReboot),
         "reboot_required": .bool(requiresReboot),
         "startup_mode": .string(resolvedStartupMode.rawValue),

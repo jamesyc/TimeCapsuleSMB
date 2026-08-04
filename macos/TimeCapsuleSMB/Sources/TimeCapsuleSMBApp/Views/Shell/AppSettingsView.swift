@@ -45,6 +45,7 @@ struct AppSettingsView: View {
                             .frame(width: 120)
                     }
                     Toggle(L10n.string("toggle.enable_nbns"), isOn: $editor.draft.nbnsEnabled)
+                    Toggle(L10n.string("toggle.enable_rsync"), isOn: $editor.draft.rsyncEnabled)
                     Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $editor.draft.internalShareUseDiskRoot)
                     Toggle(L10n.string("toggle.smb_bind_lan_only"), isOn: $editor.draft.smbBindLanOnly)
                     Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $editor.draft.smbBrowseCompatibility)

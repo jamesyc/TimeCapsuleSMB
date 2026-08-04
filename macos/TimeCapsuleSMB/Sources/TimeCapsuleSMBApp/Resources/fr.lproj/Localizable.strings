@@ -935,3 +935,9 @@
 "value.required" = "Obligatoire";
 "value.unknown" = "Inconnu";
 "value.yes" = "oui";
+"install.advanced_options.rsync_note" = "Le binaire et la configuration rsync sont toujours installés sur le disque. L’activation démarre un démon rsync accessible en écriture et sans authentification sur TCP 873.";
+"install.plan.row.rsync" = "Démon rsync";
+"install.plan.warning.rsync" = "rsync expose ShareRoot comme module accessible en écriture et sans authentification sur TCP 873.";
+"timeline.deploy.detail.upload_rsync" = "Copie de rsync et de la configuration de son démon vers le volume de payload.";
+"timeline.deploy.title.upload_rsync" = "Téléverser rsync";
+"toggle.enable_rsync" = "Activer rsync";

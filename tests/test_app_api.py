@@ -2929,6 +2929,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({
@@ -2944,7 +2945,7 @@ class AppApiTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
                             with mock.patch("timecapsulesmb.services.deploy.run_remote_actions", side_effect=AssertionError("dry run should not run remote actions")):
                                 rc = service.run_api_request(
-                                    {"operation": "deploy", "params": {"dry_run": True}},
+                                    {"operation": "deploy", "params": {"dry_run": True, "rsync_enabled": True}},
                                     collector.sink,
                                 )
 
@@ -2955,6 +2956,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["requires_reboot"], True)
         self.assertEqual(result["payload"]["startup_mode"], "reboot_then_verify")
         self.assertEqual(result["payload"]["payload_family"], "netbsd6_samba4")
+        self.assertEqual(result["payload"]["rsync_enabled"], True)
         self.assertEqual(result["payload"]["schema_version"], 1)
 
     def test_deploy_dry_run_no_wait_returns_request_only_plan(self) -> None:
@@ -2965,6 +2967,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -2993,6 +2996,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3020,6 +3024,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3055,6 +3060,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3092,6 +3098,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3129,6 +3136,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3168,6 +3176,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3204,6 +3213,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3242,6 +3252,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
         with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
@@ -3281,6 +3292,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         base_params = {"dry_run": False, "no_reboot": True, "mount_wait": 30}
@@ -3375,6 +3387,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         params = {
@@ -3459,6 +3472,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         params = {"dry_run": False, "no_reboot": True}
@@ -3510,6 +3524,7 @@ class AppApiTests(unittest.TestCase):
                 "upload_smbd",
                 "upload_mdns_advertiser",
                 "upload_nbns_advertiser",
+                "upload_rsync",
                 "upload_boot_files",
                 "upload_runtime_config",
             ],
@@ -3523,6 +3538,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         params = {"dry_run": False, "no_wait": True}
@@ -3582,6 +3598,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         params = {"dry_run": False, "no_wait": True}
@@ -3637,6 +3654,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         params = {"dry_run": False, "no_wait": True}
@@ -3693,6 +3711,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         params = {"dry_run": False, "no_wait": False}
@@ -3869,6 +3888,7 @@ class AppApiTests(unittest.TestCase):
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         params = {"dry_run": False}
         params["confirmation_id"] = self.confirmation_id_for(

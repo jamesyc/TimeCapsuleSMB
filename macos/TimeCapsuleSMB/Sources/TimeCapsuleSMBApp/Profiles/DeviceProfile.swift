@@ -35,6 +35,7 @@ enum DevicePasswordState: String, Codable, CaseIterable, Equatable {
 
 struct DeviceProfileSettings: Codable, Equatable {
     var nbnsEnabled: Bool
+    var rsyncEnabled: Bool
     var internalShareUseDiskRoot: Bool
     var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
@@ -50,6 +51,7 @@ struct DeviceProfileSettings: Codable, Equatable {
 
     static let `default` = DeviceProfileSettings(
         nbnsEnabled: true,
+        rsyncEnabled: false,
         internalShareUseDiskRoot: false,
         smbBindLanOnly: false,
         smbBrowseCompatibility: false,
@@ -66,6 +68,7 @@ struct DeviceProfileSettings: Codable, Equatable {
 
     init(
         nbnsEnabled: Bool,
+        rsyncEnabled: Bool = false,
         internalShareUseDiskRoot: Bool = false,
         smbBindLanOnly: Bool = false,
         smbBrowseCompatibility: Bool = false,
@@ -80,6 +83,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         ataStandby: Int? = nil
     ) {
         self.nbnsEnabled = nbnsEnabled
+        self.rsyncEnabled = rsyncEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
@@ -99,6 +103,7 @@ struct DeviceProfileSettings: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case nbnsEnabled
+        case rsyncEnabled
         case internalShareUseDiskRoot
         case smbBindLanOnly
         case smbBrowseCompatibility
@@ -116,6 +121,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         nbnsEnabled = try container.decodeIfPresent(Bool.self, forKey: .nbnsEnabled) ?? Self.default.nbnsEnabled
+        rsyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .rsyncEnabled) ?? Self.default.rsyncEnabled
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
         smbBindLanOnly = try container.decodeIfPresent(Bool.self, forKey: .smbBindLanOnly) ?? Self.default.smbBindLanOnly
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility

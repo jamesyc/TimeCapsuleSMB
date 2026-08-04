@@ -14,7 +14,7 @@ What is working now:
 - static tiny SMB / Time Machine mDNS advertiser
 - static NBNS responder for NetBIOS name discovery
 - boot-time runtime staging via `/mnt/Flash/rc.local`
-- boot-time manager for `smbd`, the mDNS helper, and the NBNS helper when enabled
+- boot-time manager for `smbd`, the mDNS helper, and the optional NBNS and rsync services when enabled
 - direct SMB service on port `445`
 - Bonjour advertisement for:
   - managed `_smb._tcp`
@@ -122,6 +122,8 @@ The actual working split is:
   - `/Volumes/dkX/.samba4/smbd`
   - `/Volumes/dkX/.samba4/mdns-advertiser`
   - `/Volumes/dkX/.samba4/nbns-advertiser`
+  - `/Volumes/dkX/.samba4/rsync`
+  - `/Volumes/dkX/.samba4/rsyncd.conf`
   - `/Volumes/dkX/.samba4/private/`
   - `/Volumes/dkX/.samba4/private/xattr.tdb`
   - `/Volumes/dkX/.samba4/cache`
@@ -392,12 +394,13 @@ Current behavior:
   - internal `ShareRoot` is created when needed
 - resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `.samba4`
 - writes current `adisk.tsv` under `/mnt/Memory/samba4/var`
-- copies `smbd`, auth files, and optional `nbns-advertiser` into RAM when inputs change
+- copies `smbd`, auth files, optional `nbns-advertiser`, and enabled rsync files into RAM when inputs change
 - generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
 - starts or reloads `smbd` as needed and keeps it bound to the current interfaces
 - starts generated mDNS advertisement from `/mnt/Flash/mdns-advertiser`
 - starts NBNS when `NBNS_ENABLED=1`
-- if the payload volume is unavailable, stops managed Samba/mDNS/NBNS and retries later
+- starts rsync from RAM when `RSYNC_ENABLED=1`
+- if the payload volume is unavailable, stops managed Samba/NBNS/rsync, keeps only the applicable diskless mDNS identity service, and retries later
 - if disk, identity, network, or USB printer state changes, refreshes the affected generated config and service state
 
 This is intentionally simple:
@@ -416,12 +419,41 @@ Important implementation detail:
 NetBSD 4-specific shell note:
 - backgrounded jobs redirect stdin from `/dev/null` so they do not hold the SSH session open during manual activation
 
+## Optional rsync Daemon
+
+Deploy always installs the device-family rsync binary and its generated daemon configuration in the selected HDD payload:
+
+- `/Volumes/dkX/.samba4/rsync`
+- `/Volumes/dkX/.samba4/rsyncd.conf`
+
+Installation and enablement are separate. The macOS app exposes **Enable rsync** in both the Install options and saved device settings, while the CLI uses:
+
+```bash
+.venv/bin/tcapsule deploy --enable-rsync
+```
+
+That selection is persisted as `RSYNC_ENABLED=0|1` in `/mnt/Flash/tcapsulesmb.conf`. The binary and configuration stay on the HDD either way. On a successful app deploy, the selected value is also saved to the device profile and restored into later Install sessions. Existing profiles that predate this setting default to disabled.
+
+When rsync is enabled, the manager:
+
+1. discovers the currently mounted payload volume and creates its `ShareRoot` if needed
+2. copies the rsync binary to `/mnt/Memory/samba4/sbin/rsync`
+3. stages `/mnt/Memory/samba4/etc/rsyncd.conf`, rewriting the module path to the payload volume's current `/Volumes/dkN/ShareRoot` mount rather than trusting its deploy-time device number
+4. starts the RAM copy with `--daemon --no-detach`
+5. verifies the live `rsync` process owns TCP port `873`
+
+The daemon exposes a writable, unauthenticated module named `shareroot`. Only enable it on a trusted network. Its log lives at `/mnt/Memory/samba4/var/rsync.log` and uses the same shared runtime log bounding helper as the other managed services, with the normal `32768`-byte limit.
+
+Disabling rsync on a later deploy leaves the persistent HDD files installed, but the manager stops the daemon and removes the RAM binary and configuration. No rsync PID file is used: the manager relies on live process and socket probes and stops the exact `rsync` process name. This deliberately avoids stale runtime state files.
+
 ## SMB Runtime Layout
 
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `sbin/smbd`
 - optionally `sbin/nbns-advertiser`
+- optionally `sbin/rsync`
 - `etc/smb.conf`
+- optionally `etc/rsyncd.conf`
 - `var/`
 - `locks/`
 - `private/`
@@ -741,6 +773,7 @@ Arguments:
 - `--json`: emit the dry-run deployment plan as JSON; requires `--dry-run`
 - `--allow-unsupported`: continue when the detected device compatibility check is unsupported
 - `--no-nbns`: write `NBNS_ENABLED=0` so the bundled NBNS responder is disabled on the next boot
+- `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager stages and starts the bundled rsync daemon from RAM; the binary and config are uploaded even when this flag is omitted
 - `--mount-wait SECONDS`: per-attempt wait for deployment-time `diskd.useVolume` mount guards; default is `30`
 
 Hidden advanced argument:
@@ -1078,6 +1111,9 @@ Current deploy flow:
   - `smbd`
   - `mdns-advertiser`
   - `nbns-advertiser`
+  - `rsync`
+- generates and uploads the persistent rsync daemon configuration:
+  - `/Volumes/dkX/.samba4/rsyncd.conf`
 - renders and uploads the packaged boot/runtime files:
   - `rc.local`
   - `common.sh`
@@ -1089,12 +1125,15 @@ Current deploy flow:
 - does not upload password-derived Samba auth files; runtime staging generates RAM auth from live AirPort `syPW`
 - enables NBNS by default:
   - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used
+- disables rsync by default while keeping its HDD payload installed:
+  - `RSYNC_ENABLED=0` in flash config unless `--enable-rsync` is used
 - applies the required permissions on files and directories
 - reboots by default
 - if the reboot confirmation is rejected, deploy intentionally stops after upload without activating the runtime so the device can be inspected before a later manual reboot
 - verifies managed runtime readiness after reboot:
   - managed `smbd` on TCP `445`
   - managed mDNS takeover on UDP `5353`
+  - enabled rsync from RAM on TCP `873`, or disabled rsync with no live daemon
 - on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and then runs `/mnt/Flash/rc.local`
 
 Full Bonjour browse/resolve checks, authenticated SMB listings, SMB CRUD checks, share checks, NBNS checks, xattr persistence checks, and deployed-version checks are handled by `doctor`.
@@ -1234,17 +1273,23 @@ Current important outputs:
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 - [bin/nbns-netbsd4le/nbns-advertiser](bin/nbns-netbsd4le/nbns-advertiser)
 - [bin/nbns-netbsd4be/nbns-advertiser](bin/nbns-netbsd4be/nbns-advertiser)
+- [bin/rsync/rsync](bin/rsync/rsync)
+- [bin/rsync-netbsd4le/rsync](bin/rsync-netbsd4le/rsync)
+- [bin/rsync-netbsd4be/rsync](bin/rsync-netbsd4be/rsync)
 
 Current active deploy artifact sizes:
 - NetBSD 6 `smbd`: about `9.7M`
 - NetBSD 6 `mdns-advertiser`: about `310K`
 - NetBSD 6 `nbns-advertiser`: about `210K`
+- NetBSD 6 `rsync`: about `1.0M`
 - NetBSD 4 little-endian `smbd`: about `9.7M`
 - NetBSD 4 big-endian `smbd`: about `9.7M`
 - NetBSD 4 little-endian `mdns-advertiser`: about `255K`
 - NetBSD 4 big-endian `mdns-advertiser`: about `253K`
 - NetBSD 4 little-endian `nbns-advertiser`: about `155K`
 - NetBSD 4 big-endian `nbns-advertiser`: about `155K`
+- NetBSD 4 little-endian `rsync`: about `878K`
+- NetBSD 4 big-endian `rsync`: about `872K`
 
 It assumes:
 - a NetBSD VM

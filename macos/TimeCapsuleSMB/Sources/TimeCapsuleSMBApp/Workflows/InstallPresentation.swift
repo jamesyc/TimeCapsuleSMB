@@ -28,6 +28,7 @@ struct InstallPlanPresentation: Equatable {
             ]),
             InstallPlanSection(title: L10n.string("install.plan.section.device_actions"), rows: [
                 PresentationRow(label: L10n.string("install.plan.row.uploads"), value: "\(plan.uploads.count)"),
+                PresentationRow(label: L10n.string("install.plan.row.rsync"), value: plan.rsyncEnabled ? L10n.string("value.yes") : L10n.string("value.no")),
                 PresentationRow(label: L10n.string("deploy.presentation.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
                 PresentationRow(label: L10n.string("install.plan.row.expected_downtime"), value: Self.expectedDowntime(plan: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)),
                 PresentationRow(label: L10n.string("install.plan.row.remote_actions"), value: "\(plan.preUploadActions.count + plan.postUploadActions.count + plan.activationActions.count)"),
@@ -40,6 +41,9 @@ struct InstallPlanPresentation: Equatable {
         }
         if plan.netbsd4 && !returnsAfterRebootRequest {
             warnings.append(Self.netbsd4Warning(for: plan))
+        }
+        if plan.rsyncEnabled {
+            warnings.append(L10n.string("install.plan.warning.rsync"))
         }
         if let hostWarning {
             warnings.append(hostWarning.message)

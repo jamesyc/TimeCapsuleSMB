@@ -84,6 +84,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "upload_smbd"): StagePolicy(REMOTE_WRITE, False, "Upload smbd."),
     ("deploy", "upload_mdns_advertiser"): StagePolicy(REMOTE_WRITE, False, "Upload mdns-advertiser."),
     ("deploy", "upload_nbns_advertiser"): StagePolicy(REMOTE_WRITE, False, "Upload nbns-advertiser."),
+    ("deploy", "upload_rsync"): StagePolicy(REMOTE_WRITE, False, "Upload rsync runtime files."),
     ("deploy", "upload_boot_files"): StagePolicy(REMOTE_WRITE, False, "Upload boot files."),
     ("deploy", "upload_runtime_config"): StagePolicy(REMOTE_WRITE, False, "Upload runtime config."),
     ("deploy", "post_upload_actions"): StagePolicy(REMOTE_WRITE, False, "Install flash hooks and payload permissions."),

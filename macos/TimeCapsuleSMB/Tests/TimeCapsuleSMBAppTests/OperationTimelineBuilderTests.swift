@@ -155,6 +155,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_mdns_advertiser"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_nbns_advertiser"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_rsync"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_boot_files"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_runtime_config")
         ])
@@ -163,6 +164,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "Upload smbd",
             "Upload mdns-advertiser",
             "Upload nbns-advertiser",
+            "Upload rsync",
             "Upload Boot Files",
             "Upload Runtime Config"
         ])
@@ -202,6 +204,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "upload_smbd",
             "upload_mdns_advertiser",
             "upload_nbns_advertiser",
+            "upload_rsync",
             "upload_boot_files",
             "upload_runtime_config",
             "post_upload_actions",

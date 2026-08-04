@@ -226,6 +226,8 @@ class ProbeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
             if "manager.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
+            if "rsync.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
                 return subprocess.CompletedProcess(
                     args=["ssh"],
@@ -247,10 +249,11 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
         self.assertEqual(logs["remote_manager_log_tail"], "manager log")
+        self.assertEqual(logs["remote_rsync_log_tail"], "rsync log")
         self.assertEqual(logs["remote_mdns_log_tail"], "mdns log")
         self.assertEqual(logs["remote_nbns_log_tail"], "nbns log")
         self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
-        self.assertEqual(run_ssh_mock.call_count, 6)
+        self.assertEqual(run_ssh_mock.call_count, 7)
         commands = [call.args[1] for call in run_ssh_mock.call_args_list]
         self.assertTrue(any("/Volumes/dk2/.samba4/logs/mdns.log" in command for command in commands))
         self.assertTrue(any("/Volumes/dk2/.samba4/logs/nbns.log" in command for command in commands))
@@ -274,6 +277,8 @@ class ProbeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
             if "manager.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
+            if "rsync.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="[global]\n[Data]\n    path = /Volumes/dk2/ShareRoot\n", stderr="")
             if "/mnt/Memory/samba4/var/mdns.log" in remote_cmd:
@@ -287,13 +292,18 @@ class ProbeTests(unittest.TestCase):
 
         self.assertEqual(logs["remote_payload_log_dir"], f"(unavailable from active {probe.RUNTIME_SMB_CONF})")
         self.assertEqual(logs["remote_manager_log_tail"], "manager log")
+        self.assertEqual(logs["remote_rsync_log_tail"], "rsync log")
         self.assertEqual(logs["remote_mdns_log_tail"], "ram mdns log")
         self.assertEqual(logs["remote_nbns_log_tail"], "ram nbns log")
-        self.assertEqual(run_ssh_mock.call_count, 5)
+        self.assertEqual(run_ssh_mock.call_count, 6)
 
     def test_read_remote_service_socket_diagnostics_conn_scopes_fstat_to_service_processes(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        stdout = "smbd:\nroot smbd 101 10 internet stream tcp 0x0 *:445\nnbns-advertiser:\n(no internet sockets reported)\n"
+        stdout = (
+            "smbd:\nroot smbd 101 10 internet stream tcp 0x0 *:445\n"
+            "nbns-advertiser:\n(no internet sockets reported)\n"
+            "rsync:\nroot rsync 103 10 internet stream tcp 0x0 *:873\n"
+        )
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=stdout)
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
@@ -303,7 +313,7 @@ class ProbeTests(unittest.TestCase):
         args, kwargs = run_ssh_mock.call_args
         self.assertEqual(args[0], connection)
         self.assertIn('capture_fstat_for_ucomm "$ps_out" "$proc_name"', args[1])
-        self.assertIn("for proc_name in smbd nbns-advertiser", args[1])
+        self.assertIn("for proc_name in smbd nbns-advertiser rsync", args[1])
         self.assertIn("/internet/p", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
@@ -321,6 +331,9 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(args[0], connection)
         self.assertIn("/bin/df -k /mnt/Memory", args[1])
         self.assertIn("$RUNTIME_RAM_SBIN/smbd.tmp.*", args[1])
+        self.assertIn("$RUNTIME_RAM_SBIN/rsync.tmp.*", args[1])
+        self.assertIn("$RUNTIME_RAM_ETC/rsyncd.conf", args[1])
+        self.assertIn("$RUNTIME_RAM_VAR/rsync.log", args[1])
         self.assertIn("$RUNTIME_RAM_PRIVATE/smbpasswd", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)

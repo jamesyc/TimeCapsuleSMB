@@ -406,6 +406,7 @@ struct DeployPlanPayload: Decodable, Equatable {
     let payloadDir: String
     let payloadFamily: String?
     let netbsd4: Bool
+    let rsyncEnabled: Bool
     let requiresReboot: Bool
     let rebootRequired: Bool?
     let startupMode: DeployStartupMode
@@ -423,6 +424,7 @@ struct DeployPlanPayload: Decodable, Equatable {
         case payloadDir = "payload_dir"
         case payloadFamily = "payload_family"
         case netbsd4
+        case rsyncEnabled = "rsync_enabled"
         case requiresReboot = "requires_reboot"
         case rebootRequired = "reboot_required"
         case startupMode = "startup_mode"
@@ -442,6 +444,7 @@ struct DeployPlanPayload: Decodable, Equatable {
         self.payloadDir = try container.decode(String.self, forKey: .payloadDir)
         self.payloadFamily = try container.decodeIfPresent(String.self, forKey: .payloadFamily)
         self.netbsd4 = try container.decode(Bool.self, forKey: .netbsd4)
+        self.rsyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .rsyncEnabled) ?? false
         self.requiresReboot = try container.decode(Bool.self, forKey: .requiresReboot)
         self.rebootRequired = try container.decodeIfPresent(Bool.self, forKey: .rebootRequired)
         self.startupMode = try container.decodeIfPresent(DeployStartupMode.self, forKey: .startupMode)

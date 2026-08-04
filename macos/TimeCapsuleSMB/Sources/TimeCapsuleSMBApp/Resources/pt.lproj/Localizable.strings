@@ -935,3 +935,9 @@
 "value.required" = "Obrigatório";
 "value.unknown" = "Desconhecido";
 "value.yes" = "sim";
+"install.advanced_options.rsync_note" = "O binário e a configuração do rsync são sempre instalados no disco. A ativação inicia um daemon rsync gravável e sem autenticação em TCP 873.";
+"install.plan.row.rsync" = "Daemon rsync";
+"install.plan.warning.rsync" = "O rsync expõe o ShareRoot como um módulo gravável e sem autenticação em TCP 873.";
+"timeline.deploy.detail.upload_rsync" = "Copiando o rsync e a configuração do daemon para o volume de payload.";
+"timeline.deploy.title.upload_rsync" = "Carregar rsync";
+"toggle.enable_rsync" = "Ativar rsync";

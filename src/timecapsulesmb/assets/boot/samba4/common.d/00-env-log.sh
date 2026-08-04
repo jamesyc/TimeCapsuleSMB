@@ -11,6 +11,7 @@ LOCKS_ROOT=/mnt/Locks
 
 MDNS_PROC_NAME=mdns-advertiser
 NBNS_PROC_NAME=nbns-advertiser
+RSYNC_PROC_NAME=rsync
 
 TC_CONFIG_FILE=/mnt/Flash/tcapsulesmb.conf
 TC_STATE_DIR="$RAM_VAR"
@@ -22,10 +23,13 @@ TC_LOG_PREFIX=runtime
 TC_LOG_MAX_BYTES=32768
 TC_MDNS_BIN=/mnt/Flash/mdns-advertiser
 TC_NBNS_BIN="$RAM_SBIN/nbns-advertiser"
+TC_RSYNC_BIN="$RAM_SBIN/rsync"
+TC_RSYNC_CONF="$RAM_ETC/rsyncd.conf"
 TC_SMBD_BIN="$RAM_SBIN/smbd"
 TC_SMBD_CONF="$RAM_ETC/smb.conf"
 TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
 TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
+TC_RSYNC_LOG_FILE="$RAM_VAR/rsync.log"
 TC_PAYLOAD_LOG_DIR=
 TC_PAYLOAD_LOG_VOLUME=
 TC_RUNTIME_LOG_MAX_BYTES=32768
@@ -140,6 +144,7 @@ tc_init_runtime_env() {
     FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=${FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION:-0}
     FRUIT_METADATA_NETATALK=${FRUIT_METADATA_NETATALK:-1}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
+    RSYNC_ENABLED=${RSYNC_ENABLED:-0}
     TC_SMBD_DISK_LOGGING_ENABLED=${SMBD_DEBUG_LOGGING:-0}
 
     case "$SMB_BIND_LAN_ONLY" in
@@ -164,6 +169,15 @@ tc_init_runtime_env() {
             tc_add_runtime_env_warning "runtime config: invalid MDNS_ADVERTISE_AFP=$MDNS_ADVERTISE_AFP; using 0"
             MDNS_ADVERTISE_AFP=0
             TC_ADISK_DISK_ADVF=0x82
+            ;;
+    esac
+
+    case "$RSYNC_ENABLED" in
+        1|true|TRUE|yes|YES) RSYNC_ENABLED=1 ;;
+        0|false|FALSE|no|NO) RSYNC_ENABLED=0 ;;
+        *)
+            tc_add_runtime_env_warning "runtime config: invalid RSYNC_ENABLED=$RSYNC_ENABLED; using 0"
+            RSYNC_ENABLED=0
             ;;
     esac
 }

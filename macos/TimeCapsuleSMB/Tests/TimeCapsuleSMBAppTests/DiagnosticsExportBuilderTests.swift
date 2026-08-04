@@ -9,6 +9,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("Generated: 2026-05-26T12:00:00Z"))
         XCTAssertTrue(text.contains("- Version: 2.1.4"))
         XCTAssertTrue(text.contains("- Appearance: system"))
+        XCTAssertTrue(text.contains("- Default rsync: false"))
         XCTAssertTrue(text.contains("- Default SMB Browse Compatibility: false"))
         XCTAssertTrue(text.contains("- Default mDNS Advertise AFP: false"))
         XCTAssertTrue(text.contains("- State: Ready"))

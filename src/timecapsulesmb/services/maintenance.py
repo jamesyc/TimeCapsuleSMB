@@ -119,6 +119,7 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
         render_direct_pkill9_manager(),
         render_direct_pkill9_watchdog(),
         render_direct_pkill9_by_ucomm("smbd"),
+        render_direct_pkill9_by_ucomm("rsync"),
         render_direct_pkill9_by_ucomm("afpserver"),
         render_direct_pkill9_by_ucomm("wcifsnd"),
         render_direct_pkill9_by_ucomm("wcifsfs"),

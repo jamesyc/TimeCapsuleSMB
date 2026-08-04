@@ -43,6 +43,7 @@ enum OperationTimelineBuilder {
         "upload_smbd": .init(titleKey: "timeline.deploy.title.upload_smbd", detailKey: "timeline.deploy.detail.upload_smbd"),
         "upload_mdns_advertiser": .init(titleKey: "timeline.deploy.title.upload_mdns_advertiser", detailKey: "timeline.deploy.detail.upload_mdns_advertiser"),
         "upload_nbns_advertiser": .init(titleKey: "timeline.deploy.title.upload_nbns_advertiser", detailKey: "timeline.deploy.detail.upload_nbns_advertiser"),
+        "upload_rsync": .init(titleKey: "timeline.deploy.title.upload_rsync", detailKey: "timeline.deploy.detail.upload_rsync"),
         "upload_boot_files": .init(titleKey: "timeline.deploy.title.upload_boot_files", detailKey: "timeline.deploy.detail.upload_boot_files"),
         "upload_runtime_config": .init(titleKey: "timeline.deploy.title.upload_runtime_config", detailKey: "timeline.deploy.detail.upload_runtime_config"),
         "post_upload_actions": .init(titleKey: "timeline.deploy.title.post_upload_actions", detailKey: "timeline.deploy.detail.post_upload_actions"),

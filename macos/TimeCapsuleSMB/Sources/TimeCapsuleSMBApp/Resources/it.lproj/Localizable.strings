@@ -935,3 +935,9 @@
 "value.required" = "Obbligatorio";
 "value.unknown" = "Sconosciuto";
 "value.yes" = "sì";
+"install.advanced_options.rsync_note" = "Il binario e la configurazione di rsync vengono sempre installati sul disco. L’abilitazione avvia un demone rsync scrivibile e senza autenticazione sulla porta TCP 873.";
+"install.plan.row.rsync" = "Demone rsync";
+"install.plan.warning.rsync" = "rsync espone ShareRoot come modulo scrivibile e senza autenticazione sulla porta TCP 873.";
+"timeline.deploy.detail.upload_rsync" = "Copia di rsync e della configurazione del demone sul volume payload.";
+"timeline.deploy.title.upload_rsync" = "Carica rsync";
+"toggle.enable_rsync" = "Abilita rsync";

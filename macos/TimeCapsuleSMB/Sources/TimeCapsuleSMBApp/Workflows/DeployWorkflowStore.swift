@@ -3,6 +3,7 @@ import Foundation
 
 struct DeployOptions: Equatable {
     let nbnsEnabled: Bool
+    let rsyncEnabled: Bool
     let noReboot: Bool
     let noWait: Bool
     let internalShareUseDiskRoot: Bool
@@ -20,6 +21,7 @@ struct DeployOptions: Equatable {
 
     init(
         nbnsEnabled: Bool,
+        rsyncEnabled: Bool = false,
         noReboot: Bool,
         noWait: Bool,
         internalShareUseDiskRoot: Bool,
@@ -36,6 +38,7 @@ struct DeployOptions: Equatable {
         mountWait: Int
     ) {
         self.nbnsEnabled = nbnsEnabled
+        self.rsyncEnabled = rsyncEnabled
         self.noReboot = noReboot
         self.noWait = noWait
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
@@ -108,6 +111,9 @@ enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
 @MainActor
 final class DeployWorkflowStore: ObservableObject {
     @Published var nbnsEnabled = true {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var rsyncEnabled = false {
         didSet { reconcilePlanFreshness() }
     }
     @Published var noReboot = false {
@@ -282,6 +288,7 @@ final class DeployWorkflowStore: ObservableObject {
                 noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
+                rsyncEnabled: options.rsyncEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
@@ -338,6 +345,7 @@ final class DeployWorkflowStore: ObservableObject {
                 noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
+                rsyncEnabled: options.rsyncEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
@@ -400,6 +408,7 @@ final class DeployWorkflowStore: ObservableObject {
         let rebootOptions = DeployExecutionOptionPolicy.effectiveRebootOptions(noReboot: noReboot, noWait: noWait)
         return DeployOptions(
             nbnsEnabled: nbnsEnabled,
+            rsyncEnabled: rsyncEnabled,
             noReboot: rebootOptions.noReboot,
             noWait: rebootOptions.noWait,
             internalShareUseDiskRoot: internalShareUseDiskRoot,

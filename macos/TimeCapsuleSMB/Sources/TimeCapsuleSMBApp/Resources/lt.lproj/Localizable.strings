@@ -935,3 +935,9 @@
 "value.required" = "Reikalinga";
 "value.unknown" = "Nežinoma";
 "value.yes" = "taip";
+"install.advanced_options.rsync_note" = "„rsync“ dvejetainis failas ir konfigūracija visada įdiegiami diske. Įjungus paleidžiama rašoma, autentifikavimo nereikalaujanti „rsync“ tarnyba TCP 873 prievade.";
+"install.plan.row.rsync" = "„rsync“ tarnyba";
+"install.plan.warning.rsync" = "„rsync“ pateikia „ShareRoot“ kaip rašomą, autentifikavimo nereikalaujantį modulį TCP 873 prievade.";
+"timeline.deploy.detail.upload_rsync" = "„rsync“ ir jo tarnybos konfigūracija kopijuojami į apkrovos tomą.";
+"timeline.deploy.title.upload_rsync" = "Įkelti rsync";
+"toggle.enable_rsync" = "Įjungti rsync";

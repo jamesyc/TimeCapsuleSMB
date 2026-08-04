@@ -84,6 +84,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
     parser.add_argument("--no-nbns", action="store_true", help="Disable the bundled NBNS responder on the next boot")
+    parser.add_argument(
+        "--enable-rsync",
+        action="store_true",
+        help="Enable the bundled writable rsync daemon on TCP port 873",
+    )
     mdns_afp_group = parser.add_mutually_exclusive_group()
     mdns_afp_group.add_argument("--mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
     mdns_afp_group.add_argument("--no-mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
@@ -118,6 +123,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--json currently requires --dry-run")
 
     nbns_enabled = not args.no_nbns
+    rsync_enabled = bool(args.enable_rsync)
     mdns_advertise_afp = (
         True if args.mdns_advertise_afp
         else False if args.no_mdns_advertise_afp
@@ -142,6 +148,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         dry_run=args.dry_run,
         no_reboot=args.no_reboot,
         no_wait=args.no_wait,
+        rsync_enabled=rsync_enabled,
         mount_wait_seconds=args.mount_wait,
         allow_unsupported=args.allow_unsupported,
     )
@@ -178,6 +185,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
             nbns_enabled=nbns_enabled,
+            rsync_enabled=rsync_enabled,
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
@@ -231,6 +239,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 callbacks=command_context.to_operation_callbacks(),
                 artifacts=preflight.artifacts,
                 wait_after_reboot=not no_wait,
+                rsync_enabled=deploy_options.rsync_enabled,
             )
         except DeviceError as exc:
             fail_device_error(command_context, exc)
@@ -278,6 +287,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 prepared_plan=prepared_plan,
                 runtime_config=DeployRuntimeConfig(
                     nbns_enabled=nbns_enabled,
+                    rsync_enabled=deploy_options.rsync_enabled,
                     debug_logging=args.debug_logging,
                     mdns_advertise_afp=mdns_advertise_afp,
                     any_protocol=any_protocol,

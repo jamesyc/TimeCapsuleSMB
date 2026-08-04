@@ -45,6 +45,7 @@ struct DiagnosticsExportBuilder {
             append("Version Check URL", value: context.appSettings.versionCheckURL.isEmpty ? "auto" : context.appSettings.versionCheckURL, to: &lines)
             append("Time Machine Warnings", value: context.appSettings.timeMachineWarningsEnabled, to: &lines)
             append("Default NBNS", value: context.appSettings.defaultDeviceSettings.nbnsEnabled, to: &lines)
+            append("Default rsync", value: context.appSettings.defaultDeviceSettings.rsyncEnabled, to: &lines)
             append("Default SMB Bind LAN Only", value: context.appSettings.defaultDeviceSettings.smbBindLanOnly, to: &lines)
             append("Default SMB Browse Compatibility", value: context.appSettings.defaultDeviceSettings.smbBrowseCompatibility, to: &lines)
             append("Default mDNS Advertise AFP", value: context.appSettings.defaultDeviceSettings.mdnsAdvertiseAFP, to: &lines)

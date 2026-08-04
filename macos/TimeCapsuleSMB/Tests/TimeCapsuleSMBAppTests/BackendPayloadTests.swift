@@ -160,6 +160,7 @@ final class BackendPayloadTests: XCTestCase {
           "payload_dir": "/Volumes/dk2/.samba4",
           "payload_family": "netbsd6_samba4",
           "netbsd4": false,
+          "rsync_enabled": true,
           "requires_reboot": true,
           "reboot_required": true,
           "startup_mode": "reboot_then_verify",
@@ -174,6 +175,7 @@ final class BackendPayloadTests: XCTestCase {
 
         XCTAssertEqual(deployPlan.payloadFamily, "netbsd6_samba4")
         XCTAssertTrue(deployPlan.requiresReboot)
+        XCTAssertTrue(deployPlan.rsyncEnabled)
         XCTAssertEqual(deployPlan.startupMode, .rebootThenVerify)
         XCTAssertEqual(deployPlan.uploads.count, 1)
 

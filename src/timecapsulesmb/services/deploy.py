@@ -24,9 +24,11 @@ from timecapsulesmb.deploy.commands import RemoteAction, StopProcessAction
 from timecapsulesmb.deploy.planner import (
     BINARY_MDNS_SOURCE,
     BINARY_NBNS_SOURCE,
+    BINARY_RSYNC_SOURCE,
     BINARY_SMBD_SOURCE,
     DeploymentPlan,
     GENERATED_FLASH_CONFIG_SOURCE,
+    GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
@@ -131,6 +133,7 @@ class DeployArtifactPaths:
     smbd: Path
     mdns_advertiser: Path
     nbns_advertiser: Path
+    rsync: Path
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,7 @@ class PreparedDeployPlan:
 @dataclass(frozen=True)
 class DeployRuntimeConfig:
     nbns_enabled: bool
+    rsync_enabled: bool = False
     debug_logging: bool | None = None
     internal_share_use_disk_root: bool | None = None
     smb_bind_lan_only: bool | None = None
@@ -189,6 +193,7 @@ class DeployOptions:
     dry_run: bool
     no_reboot: bool
     no_wait: bool
+    rsync_enabled: bool = False
     mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS
     allow_unsupported: bool = False
     payload_dir_name: str = MANAGED_PAYLOAD_DIR_NAME
@@ -361,6 +366,8 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
         return "upload_mdns_advertiser"
     if transfer.source_id == BINARY_NBNS_SOURCE:
         return "upload_nbns_advertiser"
+    if transfer.source_id in {BINARY_RSYNC_SOURCE, GENERATED_RSYNC_CONFIG_SOURCE}:
+        return "upload_rsync"
     if transfer.source_id in DEPLOY_UPLOAD_BOOT_SOURCES:
         return "upload_boot_files"
     if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
@@ -399,6 +406,8 @@ def uploaded_file_message(transfer: FileTransfer) -> str | None:
         return "Uploaded mdns-advertiser."
     if transfer.source_id == BINARY_NBNS_SOURCE:
         return "Uploaded nbns-advertiser."
+    if transfer.source_id == GENERATED_RSYNC_CONFIG_SOURCE:
+        return "Uploaded rsync runtime files."
     if transfer.source_id == PACKAGED_DFREE_SH_SOURCE:
         return "Uploaded boot files."
     if transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
@@ -455,6 +464,7 @@ def resolve_deploy_artifact_paths(
         smbd=resolved_artifacts["smbd"].absolute_path,
         mdns_advertiser=resolved_artifacts["mdns-advertiser"].absolute_path,
         nbns_advertiser=resolved_artifacts["nbns-advertiser"].absolute_path,
+        rsync=resolved_artifacts["rsync"].absolute_path,
     )
 
 
@@ -494,6 +504,8 @@ def prepare_deploy_preflight(
         artifacts.smbd,
         artifacts.mdns_advertiser,
         artifacts.nbns_advertiser,
+        rsync_path=artifacts.rsync,
+        rsync_enabled=options.rsync_enabled,
         startup_mode=payload_context.startup_mode,
         apple_mount_wait_seconds=options.mount_wait_seconds,
         wait_after_reboot=not options.effective_no_wait,
@@ -607,6 +619,7 @@ def prepare_deployment_plan(
     payload_dir_name: str,
     mount_wait_seconds: int,
     wait_after_reboot: bool = True,
+    rsync_enabled: bool = False,
     callbacks: OperationCallbacks | None = None,
     resolver=None,
     wait_for_mast_volumes: Callable[..., MaStDiscoveryResult] | None = None,
@@ -642,6 +655,8 @@ def prepare_deployment_plan(
         artifacts.smbd,
         artifacts.mdns_advertiser,
         artifacts.nbns_advertiser,
+        rsync_path=artifacts.rsync,
+        rsync_enabled=rsync_enabled,
         startup_mode=payload_context.startup_mode,
         apple_mount_wait_seconds=mount_wait_seconds,
         wait_after_reboot=wait_after_reboot,
@@ -663,6 +678,7 @@ def prepare_deployment_plan(
 def _deployment_upload_sources(
     plan: DeploymentPlan,
     flash_config_text: str,
+    rsync_config_text: str,
     tmpdir: Path,
     boot_assets: ExitStack,
     *,
@@ -674,11 +690,15 @@ def _deployment_upload_sources(
         boot_asset_path_func = dependencies.boot_asset_path
     generated_flash_config = tmpdir / "tcapsulesmb.conf"
     generated_flash_config.write_text(flash_config_text)
+    generated_rsync_config = tmpdir / "rsyncd.conf"
+    generated_rsync_config.write_text(rsync_config_text)
     return {
         BINARY_SMBD_SOURCE: plan.smbd_path,
         BINARY_MDNS_SOURCE: plan.mdns_path,
         BINARY_NBNS_SOURCE: plan.nbns_path,
+        BINARY_RSYNC_SOURCE: plan.rsync_path,
         GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
+        GENERATED_RSYNC_CONFIG_SOURCE: generated_rsync_config,
         PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path_func("rc.local")),
         PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("common.sh")),
         PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("dfree.sh")),
@@ -730,6 +750,7 @@ def upload_and_verify_deployment_payload(
     on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
     run_remote_actions_func=None,
     render_flash_config_func=None,
+    render_rsync_config_func=None,
     boot_asset_path_func=None,
     upload_payload_func=None,
     verify_payload_home=None,
@@ -742,6 +763,8 @@ def upload_and_verify_deployment_payload(
         run_remote_actions_func = dependencies.run_remote_actions
     if render_flash_config_func is None:
         render_flash_config_func = dependencies.render_flash_config
+    if render_rsync_config_func is None:
+        render_rsync_config_func = render_rsync_daemon_config
     if upload_payload_func is None:
         upload_payload_func = dependencies.upload_deployment_payload
     if flush_remote_writes is None:
@@ -770,6 +793,7 @@ def upload_and_verify_deployment_payload(
         config,
         payload_home,
         nbns_enabled=runtime_config.nbns_enabled,
+        rsync_enabled=runtime_config.rsync_enabled,
         debug_logging=runtime_config.debug_logging,
         internal_share_use_disk_root=runtime_config.internal_share_use_disk_root,
         smb_bind_lan_only=runtime_config.smb_bind_lan_only,
@@ -782,10 +806,12 @@ def upload_and_verify_deployment_payload(
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
     )
+    rsync_config_text = render_rsync_config_func(payload_home)
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
         upload_sources = _deployment_upload_sources(
             plan,
             flash_config_text,
+            rsync_config_text,
             Path(tmp),
             boot_assets,
             boot_asset_path_func=boot_asset_path_func,
@@ -1123,6 +1149,7 @@ def render_flash_runtime_config(
     payload_home: PayloadHome,
     *,
     nbns_enabled: bool,
+    rsync_enabled: bool = False,
     debug_logging: bool | None = None,
     internal_share_use_disk_root: bool | None = None,
     smb_bind_lan_only: bool | None = None,
@@ -1239,7 +1266,23 @@ def render_flash_runtime_config(
         ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
         ("ATA_STANDBY", runtime_ata_standby),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),
+        ("RSYNC_ENABLED", 1 if rsync_enabled else 0),
         ("SMBD_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
         ("MDNS_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
     ]
     return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
+
+
+def render_rsync_daemon_config(payload_home: PayloadHome) -> str:
+    share_root = f"{payload_home.volume_root.rstrip('/')}/ShareRoot"
+    return (
+        "port = 873\n"
+        "log file = /mnt/Memory/samba4/var/rsync.log\n"
+        "uid = root\n"
+        "gid = wheel\n"
+        "read only = false\n"
+        "list = true\n"
+        "\n"
+        "[shareroot]\n"
+        f"path = {share_root}\n"
+    )

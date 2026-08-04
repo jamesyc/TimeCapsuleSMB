@@ -935,3 +935,9 @@
 "value.required" = "Обязательно";
 "value.unknown" = "Неизвестно";
 "value.yes" = "да";
+"install.advanced_options.rsync_note" = "Двоичный файл и конфигурация rsync всегда устанавливаются на диск. При включении запускается доступный для записи демон rsync без аутентификации на TCP-порту 873.";
+"install.plan.row.rsync" = "Демон rsync";
+"install.plan.warning.rsync" = "rsync открывает ShareRoot как доступный для записи модуль без аутентификации на TCP-порту 873.";
+"timeline.deploy.detail.upload_rsync" = "Копирование rsync и конфигурации его демона на том полезной нагрузки.";
+"timeline.deploy.title.upload_rsync" = "Загрузить rsync";
+"toggle.enable_rsync" = "Включить rsync";

@@ -23,6 +23,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_device_compatibility,
     _doctor_check_direct_smb_port,
     _doctor_check_managed_mdns,
+    _doctor_check_managed_rsync,
     _doctor_check_managed_smbd,
     _doctor_check_network_plan,
     _doctor_check_nbns,
@@ -91,6 +92,7 @@ def run_doctor_checks(
     _doctor_check_device_compatibility(inputs, target, remote, sink)
     _doctor_check_managed_smbd(target, remote, sink)
     _doctor_check_managed_mdns(target, remote, sink)
+    _doctor_check_managed_rsync(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
     network_plan = _doctor_check_network_plan(target, remote, smb_config, sink)
     _doctor_check_direct_smb_port(target, remote, network_plan, sink)

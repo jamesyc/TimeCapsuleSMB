@@ -935,3 +935,9 @@
 "value.required" = "Erforderlich";
 "value.unknown" = "Unbekannt";
 "value.yes" = "ja";
+"install.advanced_options.rsync_note" = "Die rsync-Binärdatei und -Konfiguration werden immer auf dem Datenträger installiert. Bei Aktivierung wird ein schreibbarer, nicht authentifizierter rsync-Daemon auf TCP-Port 873 gestartet.";
+"install.plan.row.rsync" = "rsync-Daemon";
+"install.plan.warning.rsync" = "rsync stellt ShareRoot als schreibbares, nicht authentifiziertes Modul auf TCP-Port 873 bereit.";
+"timeline.deploy.detail.upload_rsync" = "rsync und seine Daemon-Konfiguration werden auf das Payload-Volume kopiert.";
+"timeline.deploy.title.upload_rsync" = "rsync hochladen";
+"toggle.enable_rsync" = "rsync aktivieren";

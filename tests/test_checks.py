@@ -439,6 +439,20 @@ class CheckTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(
             mock.patch(
+                "timecapsulesmb.checks.doctor_steps.probe_managed_rsync_conn",
+                return_value=mock.Mock(
+                    ready=True,
+                    detail="managed rsync disabled",
+                    lines=(
+                        "PASS:persistent rsync binary is executable",
+                        "PASS:persistent rsync config is present",
+                        "SKIP:rsync daemon is disabled and not running",
+                    ),
+                ),
+            )
+        )
+        self._exit_stack.enter_context(
+            mock.patch(
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip",
                 return_value=mock.Mock(
                     status="PASS",

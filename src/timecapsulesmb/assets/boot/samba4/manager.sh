@@ -288,6 +288,7 @@ tc_manager_clear_payload_state() {
     TC_MANAGER_RUNTIME_STAGED=0
     TC_MANAGER_LAST_BINARY_SIGNATURE=
     TC_MANAGER_LAST_CONFIG_SIGNATURE=
+    TC_MANAGER_LAST_RSYNC_SIGNATURE=
     TC_MANAGER_PENDING_CONFIG_SIGNATURE=
     tc_manager_materialize_adisk_state || true
 }
@@ -857,6 +858,10 @@ tc_manager_reset_samba_runtime_after_stage_failure() {
         tc_log "manager Samba staging recovery: stopping nbns responder before RAM runtime reset"
         stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || reset_status=1
     fi
+    if runtime_process_present_by_ucomm "$RSYNC_PROC_NAME"; then
+        tc_log "manager Samba staging recovery: stopping rsync before RAM runtime reset"
+        stop_runtime_process_by_ucomm "$RSYNC_PROC_NAME" "$RSYNC_PROC_NAME" || reset_status=1
+    fi
 
     if [ "$reset_status" -ne 0 ]; then
         tc_log "manager Samba staging recovery: process cleanup failed; refusing to delete $RAM_ROOT"
@@ -878,6 +883,7 @@ tc_manager_reset_samba_runtime_after_stage_failure() {
     TC_MANAGER_RUNTIME_STAGED=0
     TC_MANAGER_LAST_BINARY_SIGNATURE=
     TC_MANAGER_LAST_CONFIG_SIGNATURE=
+    TC_MANAGER_LAST_RSYNC_SIGNATURE=
     TC_MANAGER_PENDING_CONFIG_SIGNATURE=
     TC_MANAGER_SMBD_RESTART_REQUIRED=0
     TC_MANAGER_SMBD_RELOAD_REQUIRED=0
@@ -1469,6 +1475,25 @@ tc_manager_run_nbns_reconcile_before_mdns() {
     return 1
 }
 
+tc_manager_run_rsync_step() {
+    manager_step_start_seconds=$(tc_now_seconds)
+    tc_manager_debug_log "manager pass $manager_iteration_id step=rsync start"
+    if tc_manager_reconcile_rsync; then
+        if tc_rsync_enabled; then
+            manager_rsync_status=ok
+        else
+            manager_rsync_status=disabled
+        fi
+        tc_manager_log_step_end "$manager_iteration_id" rsync "$manager_step_start_seconds" ok
+        return 0
+    fi
+
+    manager_status=1
+    manager_rsync_status=failed
+    tc_manager_log_step_end "$manager_iteration_id" rsync "$manager_step_start_seconds" failed
+    return 1
+}
+
 tc_manager_run_mdns_step() {
     manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=mdns start"
@@ -1526,8 +1551,10 @@ tc_manager_run_full_service_steps() {
     tc_manager_update_payload_status
     if [ "$manager_payload_expected" -eq 1 ]; then
         tc_manager_run_samba_full_step || service_step_status=1
+        tc_manager_run_rsync_step || service_step_status=1
     else
         tc_manager_run_no_payload_step || service_step_status=1
+        manager_rsync_status=no_payload
     fi
 
     if [ "$manager_payload_expected" -eq 1 ]; then
@@ -1560,6 +1587,7 @@ TC_MANAGER_ITERATION=0
 TC_MANAGER_RUNTIME_STAGED=0
 TC_MANAGER_LAST_BINARY_SIGNATURE=
 TC_MANAGER_LAST_CONFIG_SIGNATURE=
+TC_MANAGER_LAST_RSYNC_SIGNATURE=
 TC_MANAGER_PENDING_CONFIG_SIGNATURE=
 TC_MANAGER_SMBD_RESTART_REQUIRED=0
 TC_MANAGER_SMBD_RELOAD_REQUIRED=0
@@ -1602,6 +1630,7 @@ while ! tc_manager_stop_requested; do
     manager_bind_status=skipped
     manager_mdns_status=skipped
     manager_nbns_status=skipped
+    manager_rsync_status=skipped
     manager_services_status=skipped
     manager_scheduler_status=disk_only
     TC_MANAGER_RECOVERY_IDENTITY_REFRESHED=0
@@ -1686,7 +1715,7 @@ while ! tc_manager_stop_requested; do
         [ "${TC_MANAGER_PRINTER_CHANGED:-0}" = "1" ] ||
         [ "$manager_bind_status" = "changed" ] ||
         [ "$manager_bind_status" = "deferred_no_ip" ]; then
-        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} printer=$manager_printer_status printer_probe=${TC_MANAGER_PRINTER_PROBE_RESULT:-unknown} printer_refresh=${TC_MANAGER_PRINTER_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_seconds=$manager_iteration_duration_seconds"
+        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} printer=$manager_printer_status printer_probe=${TC_MANAGER_PRINTER_PROBE_RESULT:-unknown} printer_refresh=${TC_MANAGER_PRINTER_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status rsync=$manager_rsync_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_seconds=$manager_iteration_duration_seconds"
     fi
     tc_manager_debug_log "manager sleeping ${MANAGER_DISK_POLL_SECONDS}s after $manager_pass_status pass next_service=${manager_next_service_seconds}s next_bind=${manager_next_bind_seconds}s"
     if ! tc_manager_sleep_until_due "$MANAGER_DISK_POLL_SECONDS"; then

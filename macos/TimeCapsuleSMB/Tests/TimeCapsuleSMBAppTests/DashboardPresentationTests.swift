@@ -658,6 +658,20 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.warnings, [])
     }
 
+    func testInstallPlanPresentationShowsEnabledRsyncAndExposureWarning() throws {
+        let plan = try testDeployPlanPayload(rsyncEnabled: true).decode(DeployPlanPayload.self)
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+
+        let presentation = InstallPlanPresentation(plan: plan, profile: profile)
+
+        XCTAssertTrue(presentation.sections.contains { section in
+            section.rows.contains(PresentationRow(label: "rsync daemon", value: "yes"))
+        })
+        XCTAssertTrue(presentation.warnings.contains(
+            "rsync exposes ShareRoot as a writable, unauthenticated module on TCP 873."
+        ))
+    }
+
     func testInstallPlanPresentationShowsNoWaitPostRebootImpact() throws {
         let plan = try netbsd4DeployPlan().decode(DeployPlanPayload.self)
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")

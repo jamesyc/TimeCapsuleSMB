@@ -399,6 +399,7 @@ struct AppSettingsDraft: Equatable {
     var appearance: AppAppearance
     var defaultBonjourTimeoutSeconds: String
     var nbnsEnabled: Bool
+    var rsyncEnabled: Bool
     var internalShareUseDiskRoot: Bool
     var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
@@ -423,6 +424,7 @@ struct AppSettingsDraft: Equatable {
         appearance = settings.appearance
         defaultBonjourTimeoutSeconds = Self.formatDouble(settings.defaultBonjourTimeoutSeconds)
         nbnsEnabled = settings.defaultDeviceSettings.nbnsEnabled
+        rsyncEnabled = settings.defaultDeviceSettings.rsyncEnabled
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
         smbBindLanOnly = settings.defaultDeviceSettings.smbBindLanOnly
         smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
@@ -474,6 +476,7 @@ struct AppSettingsDraft: Equatable {
             defaultBonjourTimeoutSeconds: bonjourTimeout,
             defaultDeviceSettings: DeviceProfileSettings(
                 nbnsEnabled: nbnsEnabled,
+                rsyncEnabled: rsyncEnabled,
                 internalShareUseDiskRoot: internalShareUseDiskRoot,
                 smbBindLanOnly: smbBindLanOnly,
                 smbBrowseCompatibility: smbBrowseCompatibility,

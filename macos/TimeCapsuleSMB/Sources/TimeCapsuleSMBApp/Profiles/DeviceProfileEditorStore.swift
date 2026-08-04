@@ -76,6 +76,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var displayName: String
     var host: String
     var nbnsEnabled: Bool
+    var rsyncEnabled: Bool
     var internalShareUseDiskRoot: Bool
     var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
@@ -93,6 +94,7 @@ struct DeviceProfileEditorDraft: Equatable {
         displayName: String,
         host: String,
         nbnsEnabled: Bool,
+        rsyncEnabled: Bool = false,
         internalShareUseDiskRoot: Bool = false,
         smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
         smbBrowseCompatibility: Bool = false,
@@ -109,6 +111,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.displayName = displayName
         self.host = host
         self.nbnsEnabled = nbnsEnabled
+        self.rsyncEnabled = rsyncEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
@@ -128,6 +131,7 @@ struct DeviceProfileEditorDraft: Equatable {
             displayName: profile.displayName,
             host: profile.host,
             nbnsEnabled: profile.settings.nbnsEnabled,
+            rsyncEnabled: profile.settings.rsyncEnabled,
             internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
             smbBindLanOnly: profile.settings.smbBindLanOnly,
             smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
@@ -184,6 +188,7 @@ struct DeviceProfileEditorDraft: Equatable {
         }
         let settings = DeviceProfileSettings(
             nbnsEnabled: nbnsEnabled,
+            rsyncEnabled: rsyncEnabled,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             smbBindLanOnly: smbBindLanOnly,
             smbBrowseCompatibility: smbBrowseCompatibility,

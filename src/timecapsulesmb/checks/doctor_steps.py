@@ -77,6 +77,7 @@ from timecapsulesmb.device.probe import (
     nbns_flash_config_enabled_conn,
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
+    probe_managed_rsync_conn,
     probe_managed_smbd_conn,
     probe_manager_startup_age_conn,
     probe_remote_network_capabilities_conn,
@@ -110,6 +111,14 @@ TRANSIENT_MDNS_READINESS_FAILURES = {
     "mdns-advertiser process is not running",
     "mdns-advertiser is not bound to required UDP 5353 listener",
 }
+TRANSIENT_RSYNC_READINESS_FAILURES = {
+    "persistent rsync binary is missing",
+    "persistent rsync config is missing",
+    "managed rsync binary is missing from RAM",
+    "managed rsync config is missing from RAM",
+    "managed rsync process is not running",
+    "managed rsync is not bound to TCP 873",
+}
 STARTUP_GRACE_MASK = "mask"
 STARTUP_GRACE_PRESERVE = "preserve"
 STARTUP_GRACE_DETAIL_KEY = "startup_grace"
@@ -137,6 +146,12 @@ STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
     "mdns-advertiser is waiting for a usable address",
     "mdns-advertiser is not bound to required UDP 5353 listener",
     "Apple mDNSResponder is still running",
+    "persistent rsync binary is missing",
+    "persistent rsync config is missing",
+    "managed rsync binary is missing from RAM",
+    "managed rsync config is missing from RAM",
+    "managed rsync process is not running",
+    "managed rsync is not bound to TCP 873",
 }
 SMB_CONNECTION_SHAPED_FAILURE_TOKENS = (
     "NT_STATUS_CONNECTION_REFUSED",
@@ -300,6 +315,9 @@ def _add_probe_line_results(
         elif line.startswith("FAIL:"):
             message = line.removeprefix("FAIL:")
             add_result(CheckResult("FAIL", message, _probe_failure_details(message)))
+            emitted = True
+        elif line.startswith("SKIP:"):
+            add_result(CheckResult("SKIP", line.removeprefix("SKIP:")))
             emitted = True
 
     if emitted:
@@ -1860,6 +1878,26 @@ def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink:
         fallback_ready=mdns_probe.ready,
         fallback_pass_message="managed mDNS takeover is active",
         fallback_fail_message=f"managed mDNS takeover is not active ({mdns_probe.detail})",
+    )
+
+
+def _doctor_check_managed_rsync(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if not remote.remote_checks_enabled:
+        return
+
+    rsync_probe = _run_doctor_retryable_check(
+        lambda: probe_managed_rsync_conn(target.connection),
+        lambda probe: _readiness_probe_retryable(probe, TRANSIENT_RSYNC_READINESS_FAILURES),
+    )
+    rsync_probe_lines = getattr(rsync_probe, "lines", ())
+    if not isinstance(rsync_probe_lines, (list, tuple)):
+        rsync_probe_lines = ()
+    _add_probe_line_results(
+        sink.add,
+        rsync_probe_lines,
+        fallback_ready=rsync_probe.ready,
+        fallback_pass_message="managed rsync state matches runtime configuration",
+        fallback_fail_message=f"managed rsync is not ready ({rsync_probe.detail})",
     )
 
 
