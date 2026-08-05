@@ -1,28 +1,28 @@
 {
   "artifacts": {
-    "mdns-advertiser": {
+    "mdns": {
       "path": "bin/mdns/mdns-advertiser",
-      "sha256": "2f4fbd63194cab57bdc0cfe8063c19144593528629b4fed249392426ae4ae9a0"
+      "sha256": "1a2b58c71d0759a0ac46386435b9cc97d64ce1b134087f57bd4316f9e3b9ad33"
     },
-    "mdns-advertiser-netbsd4le": {
+    "mdns-netbsd4le": {
       "path": "bin/mdns-netbsd4le/mdns-advertiser",
-      "sha256": "fd2bbc43c6d8dd51d04deb50294bf9ddf389296cce78e08783d27d9e1976d6f3"
+      "sha256": "3e64845ff48902b196a0726e2c93eb0ea976836604a93fad3d81d152a7ce0421"
     },
-    "mdns-advertiser-netbsd4be": {
+    "mdns-netbsd4be": {
       "path": "bin/mdns-netbsd4be/mdns-advertiser",
-      "sha256": "9d4e12ae107251809539cb86135e0fe74d796580533fe802c1205f5ab4569b14"
+      "sha256": "a3a2afbcd999b66e1e36517242d077b4565a911a7599b276530a9bf1fcaa0aa0"
     },
-    "nbns-advertiser": {
+    "nbns": {
       "path": "bin/nbns/nbns-advertiser",
-      "sha256": "620509f738d2a30fb06353ab91a76e066d012d80fe5348d00372a130382d3609"
+      "sha256": "d264eb02db5740ca85a57aefe4c584f7042a7f41e792c8c09fc253df6b1a2027"
     },
-    "nbns-advertiser-netbsd4le": {
+    "nbns-netbsd4le": {
       "path": "bin/nbns-netbsd4le/nbns-advertiser",
-      "sha256": "77353ef061d938fcbb82bdaace4773eed54ee38d23611b3b018d3965ba4efce2"
+      "sha256": "6b54b9b672d13c2c4d2b55031021093c3ed1d7d63df0f5b7b904ab01e690641a"
     },
-    "nbns-advertiser-netbsd4be": {
+    "nbns-netbsd4be": {
       "path": "bin/nbns-netbsd4be/nbns-advertiser",
-      "sha256": "788b27df06f9a3b6c62751a9bb0a7c1a8f4f86a540b3b8753e7a4a4a3c24780e"
+      "sha256": "f0a05bdf0bc899f9b232d5be1d78241a9ca5baee0196bdcfd1699baebc124a34"
     },
     "rsync": {
       "path": "bin/rsync/rsync",
@@ -47,6 +47,30 @@
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
       "sha256": "046e6af2390a6b28d93fefab537bd679bfa83a5248255540f7cb1592ec5f763a"
+    },
+    "service": {
+      "path": "bin/service/service",
+      "sha256": "d0be36908d6f6fa5b8a1ac53ee4601942f089ecc2d247ab0d42bf46a69d74d8e"
+    },
+    "telemetry": {
+      "path": "bin/telemetry/telemetry",
+      "sha256": "fc0206f7c7c82408304bf5b2093ca22f4c30b4e47be56c8bf20f76895e5ea985"
+    },
+    "service-netbsd4le": {
+      "path": "bin/service-netbsd4le/service",
+      "sha256": "48db64be3add60f4c619f84e5c111ea302709fc9a66782a80ee90b65bcf85576"
+    },
+    "telemetry-netbsd4le": {
+      "path": "bin/telemetry-netbsd4le/telemetry",
+      "sha256": "e34c90434a1354e3940c34f33cda25a1438eca56849fc039d6bbc3c1fe3b03d5"
+    },
+    "service-netbsd4be": {
+      "path": "bin/service-netbsd4be/service",
+      "sha256": "37615f327a49edd78ef4d4210238637b2599f7ecc14464de3d9f79c56acbb2ce"
+    },
+    "telemetry-netbsd4be": {
+      "path": "bin/telemetry-netbsd4be/telemetry",
+      "sha256": "046a4f6876b850b300a60f00f84b0a6c773d32eb936d5d6a347fad74717582f8"
     }
   }
 }

@@ -7,6 +7,7 @@ tc_cleanup_old_runtime() {
     stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || cleanup_status=1
     stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || cleanup_status=1
     stop_runtime_process_by_ucomm "$RSYNC_PROC_NAME" "$RSYNC_PROC_NAME" || cleanup_status=1
+    tc_prepare_telemetry_reset || cleanup_status=1
 
     if [ "$cleanup_status" -ne 0 ]; then
         tc_log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"
@@ -467,7 +468,6 @@ tc_launch_mdns_advertiser() {
         tc_log "$context: starting mdns advertiser in auto-ip mode"
     fi
     set -- "$TC_MDNS_BIN" \
-        --generated-airport-services \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}"
@@ -530,7 +530,7 @@ tc_launch_mdns_advertiser() {
         else
             tc_log "$context: logging at $TC_MDNS_LOG_FILE"
         fi
-        printf '%s %s: launching mdns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
+        printf '%s %s: launching mdns\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
         "$@" >>"$TC_MDNS_LOG_FILE" 2>&1 &
     else
         tc_log "$context: log unavailable at $TC_MDNS_LOG_FILE"
@@ -584,7 +584,7 @@ tc_launch_nbns() {
         else
             tc_log "$context: nbns logging at $TC_NBNS_LOG_FILE"
         fi
-        printf '%s %s: launching nbns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_NBNS_LOG_FILE"
+        printf '%s %s: launching nbns\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_NBNS_LOG_FILE"
         "$@" >>"$TC_NBNS_LOG_FILE" 2>&1 &
     else
         tc_log "$context: nbns log unavailable at $TC_NBNS_LOG_FILE"

@@ -411,10 +411,10 @@ describe_managed_mdns_status() {{
     mdns_health_family_supported=1
     if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
         mdns_auto_ip_state=failed
-        mdns_auto_ip_failure="mdns-advertiser binary missing at $RUNTIME_MDNS_BIN"
+        mdns_auto_ip_failure="mdns binary missing at $RUNTIME_MDNS_BIN"
     elif [ ! -x "$RUNTIME_MDNS_BIN" ]; then
         mdns_auto_ip_state=failed
-        mdns_auto_ip_failure="mdns-advertiser binary is not executable at $RUNTIME_MDNS_BIN"
+        mdns_auto_ip_failure="mdns binary is not executable at $RUNTIME_MDNS_BIN"
     else
         mdns_socket_families=$("$RUNTIME_MDNS_BIN" --print-mdns-socket-families 2>/dev/null)
         mdns_auto_ip_rc=$?
@@ -423,7 +423,7 @@ describe_managed_mdns_status() {{
             11) mdns_auto_ip_state=waiting ;;
             *)
                 mdns_auto_ip_state=failed
-                mdns_auto_ip_failure="mdns-advertiser mDNS socket family probe failed with exit code $mdns_auto_ip_rc"
+                mdns_auto_ip_failure="mdns mDNS socket family probe failed with exit code $mdns_auto_ip_rc"
                 ;;
         esac
     fi
@@ -439,32 +439,32 @@ describe_managed_mdns_status() {{
     fi
 
     if mdns_process_present "$ps_out"; then
-        echo "PASS:mdns-advertiser process is running"
+        echo "PASS:mdns process is running"
     else
         if [ "$mdns_auto_ip_state" = "waiting" ]; then
             echo "FAIL:mDNS startup deferred; no usable address has appeared yet"
         else
-            echo "FAIL:mdns-advertiser process is not running"
+            echo "FAIL:mdns process is not running"
         fi
         status=1
     fi
     if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_required_5353 "$fstat_out" "$mdns_socket_families"; then
-        echo "PASS:mdns-advertiser bound to required UDP 5353 listeners"
+        echo "PASS:mdns bound to required UDP 5353 listeners"
         if [ "$mdns_auto_ip_state" = "active" ]; then
-            echo "PASS:mdns-advertiser bind address active"
+            echo "PASS:mdns bind address active"
         else
-            echo "FAIL:mdns-advertiser bound to UDP 5353 but bind address is not active"
+            echo "FAIL:mdns bound to UDP 5353 but bind address is not active"
             status=1
         fi
     else
         if mdns_process_present "$ps_out" && [ "$mdns_auto_ip_state" = "waiting" ]; then
-            echo "FAIL:mdns-advertiser is waiting for a usable address"
+            echo "FAIL:mdns is waiting for a usable address"
             status=1
         else
             if [ "$mdns_health_family_supported" -eq 1 ]; then
-                echo "FAIL:mdns-advertiser is not bound to required UDP 5353 listener"
+                echo "FAIL:mdns is not bound to required UDP 5353 listener"
             else
-                echo "FAIL:mdns-advertiser mDNS socket family probe returned no supported family"
+                echo "FAIL:mdns mDNS socket family probe returned no supported family"
             fi
             status=1
         fi
@@ -1356,7 +1356,7 @@ echo "$RUNTIME_MDNS_BIN"
     binary_step, binary_proc = _run_timed_probe_step(
         connection,
         step_id="mdns_binary_probe",
-        timeout_detail="mdns-advertiser binary probe",
+        timeout_detail="mdns binary probe",
         script=binary_script,
         timeout_seconds=binary_timeout_seconds,
     )
@@ -1366,7 +1366,7 @@ echo "$RUNTIME_MDNS_BIN"
         binary_step, binary_proc = _run_timed_probe_step(
             connection,
             step_id="mdns_binary_probe",
-            timeout_detail="mdns-advertiser binary probe",
+            timeout_detail="mdns binary probe",
             script=binary_script,
             timeout_seconds=binary_timeout_seconds,
         )
@@ -1376,15 +1376,15 @@ echo "$RUNTIME_MDNS_BIN"
     if binary_proc is None or binary_proc.returncode != 0:
         stdout = ("" if binary_proc is None else binary_proc.stdout).strip()
         if stdout == "missing":
-            detail = "mdns-advertiser binary missing at /mnt/Flash/mdns-advertiser"
+            detail = "mdns binary missing at /mnt/Flash/mdns-advertiser"
         elif stdout == "not_executable":
-            detail = "mdns-advertiser binary is not executable at /mnt/Flash/mdns-advertiser"
+            detail = "mdns binary is not executable at /mnt/Flash/mdns-advertiser"
         else:
             rc = "unknown" if binary_proc is None else str(binary_proc.returncode)
-            detail = f"mdns-advertiser binary probe failed with exit code {rc}"
+            detail = f"mdns binary probe failed with exit code {rc}"
         _append_step(steps, "mdns_binary", "fail", detail)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    _append_step(steps, "mdns_binary", "pass", "mdns-advertiser binary is executable")
+    _append_step(steps, "mdns_binary", "pass", "mdns binary is executable")
 
     ps_step, ps_proc = _run_timed_probe_step(
         connection,
@@ -1401,7 +1401,7 @@ echo "$RUNTIME_MDNS_BIN"
     apple_mdns_running = _process_present_for_ucomm(ps_out, "mDNSResponder")
 
     if mdns_pids:
-        _append_step(steps, "mdns_process", "pass", "mdns-advertiser process is running")
+        _append_step(steps, "mdns_process", "pass", "mdns process is running")
 
     families_script = r'''
 RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
@@ -1410,7 +1410,7 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
     families_step, families_proc = _run_timed_probe_step(
         connection,
         step_id="mdns_socket_families_probe",
-        timeout_detail="mdns-advertiser socket family probe",
+        timeout_detail="mdns socket family probe",
         script=families_script,
         timeout_seconds=socket_families_timeout_seconds,
     )
@@ -1423,7 +1423,7 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
     mdns_families = _capability_family_tokens(families_out)
     if family_rc == 11:
         if mdns_pids:
-            _append_step(steps, "mdns_auto_ip", "fail", "mdns-advertiser is waiting for a usable address")
+            _append_step(steps, "mdns_auto_ip", "fail", "mdns is waiting for a usable address")
         else:
             _append_step(steps, "mdns_process", "fail", "mDNS startup deferred; no usable address has appeared yet")
         if apple_mdns_running:
@@ -1436,16 +1436,16 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
             steps,
             "mdns_socket_families",
             "fail",
-            f"mdns-advertiser mDNS socket family probe failed with exit code {family_rc}",
+            f"mdns mDNS socket family probe failed with exit code {family_rc}",
         )
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
     if not mdns_families:
-        _append_step(steps, "mdns_socket_families", "fail", "mdns-advertiser mDNS socket family probe returned no supported family")
+        _append_step(steps, "mdns_socket_families", "fail", "mdns mDNS socket family probe returned no supported family")
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    _append_step(steps, "mdns_socket_families", "pass", f"mdns-advertiser socket families active: {' '.join(mdns_families)}")
+    _append_step(steps, "mdns_socket_families", "pass", f"mdns socket families active: {' '.join(mdns_families)}")
 
     if not mdns_pids:
-        _append_step(steps, "mdns_process", "fail", "mdns-advertiser process is not running")
+        _append_step(steps, "mdns_process", "fail", "mdns process is not running")
         if apple_mdns_running:
             _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
         else:
@@ -1458,7 +1458,7 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
     fstat_step, fstat_proc = _run_timed_probe_step(
         connection,
         step_id="mdns_fstat_probe",
-        timeout_detail="mdns-advertiser fstat probe",
+        timeout_detail="mdns fstat probe",
         script=fstat_script,
         timeout_seconds=fstat_timeout_seconds,
     )
@@ -1470,10 +1470,10 @@ RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
     fstat_out = "" if fstat_proc is None else fstat_proc.stdout
     if _mdns_bound_required_5353(fstat_out, mdns_families):
-        _append_step(steps, "mdns_udp_5353", "pass", "mdns-advertiser bound to required UDP 5353 listeners")
-        _append_step(steps, "mdns_bind_address", "pass", "mdns-advertiser bind address active")
+        _append_step(steps, "mdns_udp_5353", "pass", "mdns bound to required UDP 5353 listeners")
+        _append_step(steps, "mdns_bind_address", "pass", "mdns bind address active")
     else:
-        _append_step(steps, "mdns_udp_5353", "fail", "mdns-advertiser is not bound to required UDP 5353 listener")
+        _append_step(steps, "mdns_udp_5353", "fail", "mdns is not bound to required UDP 5353 listener")
 
     if apple_mdns_running:
         _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
@@ -1629,6 +1629,7 @@ RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
 RUNTIME_CONFIG_FILE=${{RUNTIME_CONFIG_FILE:-/mnt/Flash/tcapsulesmb.conf}}
 RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
 RUNTIME_NBNS_BIN=${{RUNTIME_NBNS_BIN:-$RUNTIME_RAM_SBIN/nbns-advertiser}}
+RUNTIME_SERVICE_BIN=${{RUNTIME_SERVICE_BIN:-$RUNTIME_RAM_SBIN/service}}
 SMB_BIND_LAN_ONLY=${{SMB_BIND_LAN_ONLY:-1}}
 
 if [ -f "$RUNTIME_CONFIG_FILE" ]; then
@@ -1657,7 +1658,7 @@ tc_probe_cap() {{
     fi
 }}
 
-tc_probe_cap smb "$RUNTIME_MDNS_BIN" "$SMB_BIND_ARG"
+tc_probe_cap smb "$RUNTIME_SERVICE_BIN" "$SMB_BIND_ARG"
 tc_probe_cap mdns "$RUNTIME_MDNS_BIN" --print-mdns-socket-families
 tc_probe_cap nbns "$RUNTIME_NBNS_BIN" --print-nbns-socket-families
 '''
@@ -1803,18 +1804,18 @@ def probe_managed_runtime_once_conn(
                     ProbeStepResult(
                         id="mdns_settle",
                         status="pass",
-                        detail="mdns-advertiser remained healthy after settle delay",
+                        detail="mdns remained healthy after settle delay",
                     ),
                 ),
             )
         mdns = ReadinessProbeResult(
             ready=False,
-            detail=f"{settled_mdns.detail}; mdns-advertiser did not survive settle delay",
+            detail=f"{settled_mdns.detail}; mdns did not survive settle delay",
             steps=settled_mdns.steps + (
                 ProbeStepResult(
                     id="mdns_settle",
                     status="fail",
-                    detail="mdns-advertiser did not remain healthy after settle delay",
+                    detail="mdns did not remain healthy after settle delay",
                 ),
             ),
         )
@@ -2179,8 +2180,8 @@ def runtime_startup_failure_debug_fields(
         for marker in (
             "mDNS startup deferred; no usable IPv4 has appeared yet",
             "mDNS startup deferred; no usable address has appeared yet",
-            "mdns-advertiser is waiting for auto-IP",
-            "mdns-advertiser is waiting for a usable address",
+            "mdns is waiting for auto-IP",
+            "mdns is waiting for a usable address",
         )
     ):
         return {

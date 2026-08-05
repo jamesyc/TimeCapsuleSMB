@@ -13,8 +13,10 @@ What is working now:
 - static Samba 4.24.3 built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
 - static tiny SMB / Time Machine mDNS advertiser
 - static NBNS responder for NetBIOS name discovery
+- static `service` helper for NT hashing and network probes
+- static `telemetry` helper for heartbeat reporting and signed debug execution
 - boot-time runtime staging via `/mnt/Flash/rc.local`
-- boot-time manager for `smbd`, the mDNS helper, and the optional NBNS and rsync services when enabled
+- boot-time manager for `smbd`, the mDNS and telemetry helpers, and the optional NBNS and rsync services when enabled
 - direct SMB service on port `445`
 - Bonjour advertisement for:
   - managed `_smb._tcp`
@@ -122,6 +124,8 @@ The actual working split is:
   - `/Volumes/dkX/.samba4/smbd`
   - `/Volumes/dkX/.samba4/mdns-advertiser`
   - `/Volumes/dkX/.samba4/nbns-advertiser`
+  - `/Volumes/dkX/.samba4/service`
+  - `/Volumes/dkX/.samba4/telemetry`
   - `/Volumes/dkX/.samba4/rsync`
   - `/Volumes/dkX/.samba4/rsyncd.conf`
   - `/Volumes/dkX/.samba4/private/`
@@ -137,6 +141,7 @@ The actual working split is:
   - `/mnt/Flash/tcapsulesmb.conf`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
+  - `/mnt/Memory/debug` and `/mnt/Memory/debug.sig` for temporary signed debug execution
   - `/mnt/Locks`
 
 This gives:
@@ -304,7 +309,7 @@ Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.disc
 Current behavior:
 - `boot.sh` prepares the RAM runtime and launches `manager.sh`
 - `manager.sh` waits for usable network addresses, payload state, and AirPort identity data
-- the manager launches `mdns-advertiser` from `/mnt/Flash` with `--generated-airport-services`
+- the manager launches `mdns-advertiser` from `/mnt/Flash` with generated AirPort identity fields
 - `mdns-advertiser` generates managed `_smb._tcp`, `_adisk._tcp`, `_device-info._tcp`, and `_airport._tcp` records from live runtime state
 - when a USB printer is attached and discoverable through AirPort metadata, the manager also passes `_riousbprint._tcp` and `_pdl-datastream._tcp` arguments
 - if the disk payload is unavailable, the manager can launch the advertiser in diskless mode so AirPort identity remains visible while SMB/ADISK records are suppressed
@@ -340,7 +345,7 @@ This matters because:
 5. prepares compatibility symlinks under `/root`
 6. starts `manager.sh` if it is not already running
 
-The manager owns disk discovery, Samba staging, service startup, mDNS takeover, NBNS startup, and later recovery. This keeps boot short and puts all recurring runtime reconciliation in one process.
+The manager owns disk discovery, Samba staging, service startup, mDNS takeover, NBNS startup, and later recovery. Telemetry schedules its own heartbeat cycles.
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
@@ -394,13 +399,14 @@ Current behavior:
   - internal `ShareRoot` is created when needed
 - resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `.samba4`
 - writes current `adisk.tsv` under `/mnt/Memory/samba4/var`
-- copies `smbd`, auth files, optional `nbns-advertiser`, and enabled rsync files into RAM when inputs change
+- copies `smbd`, `service`, `telemetry`, optional `nbns-advertiser`, and enabled rsync files into RAM when inputs change
 - generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
 - starts or reloads `smbd` as needed and keeps it bound to the current interfaces
 - starts generated mDNS advertisement from `/mnt/Flash/mdns-advertiser`
 - starts NBNS when `NBNS_ENABLED=1`
+- starts `telemetry --daemon` from RAM
 - starts rsync from RAM when `RSYNC_ENABLED=1`
-- if the payload volume is unavailable, stops managed Samba/NBNS/rsync, keeps only the applicable diskless mDNS identity service, and retries later
+- if the payload volume is unavailable, stops managed Samba/NBNS/rsync, keeps the applicable diskless mDNS identity service and staged telemetry, and retries later
 - if disk, identity, network, or USB printer state changes, refreshes the affected generated config and service state
 
 This is intentionally simple:
@@ -450,6 +456,8 @@ Disabling rsync on a later deploy leaves the persistent HDD files installed, but
 
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `sbin/smbd`
+- `sbin/service`
+- `sbin/telemetry`
 - optionally `sbin/nbns-advertiser`
 - optionally `sbin/rsync`
 - `etc/smb.conf`
@@ -539,7 +547,7 @@ The mDNS helper is:
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 It is built from:
-- [build/mdns-advertiser.c](build/mdns-advertiser.c)
+- [build/native/mdns/](build/native/mdns/)
 - [build/mdns.sh](build/mdns.sh)
 
 Important properties:
@@ -567,8 +575,6 @@ Current validation and behavior notes:
 - service types are validated as dotted DNS names
 - `_adisk._tcp` TXT payload sizing is validated before advertisement
 - `_airport._tcp` fields are all optional; missing fields are simply omitted from the TXT payload
-- snapshot replay preserves non-ASCII or binary hostnames using `HOST_HEX`
-- managed `_device-info._tcp` is generated even in snapshot mode; snapshot `_device-info._tcp` records are ignored
 
 ## NBNS Responder Details
 
@@ -576,7 +582,7 @@ The NBNS helper is:
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 
 It is built from:
-- [build/nbns-advertiser.c](build/nbns-advertiser.c)
+- [build/native/nbns/](build/native/nbns/)
 - [build/nbns.sh](build/nbns.sh)
 
 Important properties:
@@ -602,6 +608,10 @@ Enablement model:
 - `--no-nbns` writes `NBNS_ENABLED=0`
 - `--no-nbns` is supported on both NetBSD 6 and NetBSD 4
 - `uninstall` removes both the binary and flash runtime config
+
+## Service and Telemetry Helpers
+
+The RAM-staged `service` helper provides NT hashing and live network probes previously bundled into `mdns-advertiser`. The `telemetry` helper posts a heartbeat at startup and every 12 hours, and downloads and runs a signed debug executable only after verifying signed server authorization. See [build/native/README.md](build/native/README.md) for sources, commands, protocol, and cleanup behavior.
 
 ## Current User-Facing Workflow
 
@@ -917,6 +927,7 @@ Coverage entry points:
 - `make test` runs C compile checks plus the pytest suite
 - `make coverage` runs the pytest suite with branch coverage and prints missing source lines
 - `make coverage-html` writes the browsable report to `htmlcov/index.html`
+- `make coverage-native` reports native C coverage; see [native checks](build/native/README.md#builds-and-checks)
 
 Optional deploy flag:
 - `--no-nbns`
@@ -1111,6 +1122,8 @@ Current deploy flow:
   - `smbd`
   - `mdns-advertiser`
   - `nbns-advertiser`
+  - `service`
+  - `telemetry`
   - `rsync`
 - generates and uploads the persistent rsync daemon configuration:
   - `/Volumes/dkX/.samba4/rsyncd.conf`
@@ -1154,7 +1167,7 @@ NetBSD 4 activation behavior:
 
 The current password flow is:
 - `TC_PASSWORD` is retained for app/CLI SSH and ACP access
-- runtime staging reads `/usr/bin/acp -q syPW`, generates an NT hash through `mdns-advertiser`, and writes RAM-only `smbpasswd`
+- runtime staging reads `/usr/bin/acp -q syPW`, generates an NT hash through `service`, and writes RAM-only `smbpasswd`
 - no deploy-time password-derived auth file is persisted to the hard disk
 
 This gives a near-enough user experience:
@@ -1273,21 +1286,27 @@ Current important outputs:
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 - [bin/nbns-netbsd4le/nbns-advertiser](bin/nbns-netbsd4le/nbns-advertiser)
 - [bin/nbns-netbsd4be/nbns-advertiser](bin/nbns-netbsd4be/nbns-advertiser)
+- [bin/service/service](bin/service/service)
+- [bin/service-netbsd4le/service](bin/service-netbsd4le/service)
+- [bin/service-netbsd4be/service](bin/service-netbsd4be/service)
+- [bin/telemetry/telemetry](bin/telemetry/telemetry)
+- [bin/telemetry-netbsd4le/telemetry](bin/telemetry-netbsd4le/telemetry)
+- [bin/telemetry-netbsd4be/telemetry](bin/telemetry-netbsd4be/telemetry)
 - [bin/rsync/rsync](bin/rsync/rsync)
 - [bin/rsync-netbsd4le/rsync](bin/rsync-netbsd4le/rsync)
 - [bin/rsync-netbsd4be/rsync](bin/rsync-netbsd4be/rsync)
 
 Current active deploy artifact sizes:
 - NetBSD 6 `smbd`: about `9.7M`
-- NetBSD 6 `mdns-advertiser`: about `310K`
-- NetBSD 6 `nbns-advertiser`: about `210K`
+- NetBSD 6 `mdns-advertiser`: about `299K`
+- NetBSD 6 `nbns-advertiser`: about `207K`
 - NetBSD 6 `rsync`: about `1.0M`
 - NetBSD 4 little-endian `smbd`: about `9.7M`
 - NetBSD 4 big-endian `smbd`: about `9.7M`
-- NetBSD 4 little-endian `mdns-advertiser`: about `255K`
-- NetBSD 4 big-endian `mdns-advertiser`: about `253K`
-- NetBSD 4 little-endian `nbns-advertiser`: about `155K`
-- NetBSD 4 big-endian `nbns-advertiser`: about `155K`
+- NetBSD 4 little-endian `mdns-advertiser`: about `243K`
+- NetBSD 4 big-endian `mdns-advertiser`: about `242K`
+- NetBSD 4 little-endian `nbns-advertiser`: about `150K`
+- NetBSD 4 big-endian `nbns-advertiser`: about `149K`
 - NetBSD 4 little-endian `rsync`: about `878K`
 - NetBSD 4 big-endian `rsync`: about `872K`
 
@@ -1308,6 +1327,8 @@ Current validated maintainer flows:
   - [build/samba4x.sh](build/samba4x.sh)
   - [build/mdns.sh](build/mdns.sh)
   - [build/nbns.sh](build/nbns.sh)
+  - [build/service.sh](build/service.sh)
+  - [build/telemetry.sh](build/telemetry.sh)
 - NetBSD 4 path:
   - [build/downloadoldle.sh](build/downloadoldle.sh)
   - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
@@ -1323,6 +1344,10 @@ Current validated maintainer flows:
   - [build/mdnsoldbe.sh](build/mdnsoldbe.sh)
   - [build/nbnsoldle.sh](build/nbnsoldle.sh)
   - [build/nbnsoldbe.sh](build/nbnsoldbe.sh)
+  - [build/serviceoldle.sh](build/serviceoldle.sh)
+  - [build/serviceoldbe.sh](build/serviceoldbe.sh)
+  - [build/telemetryoldle.sh](build/telemetryoldle.sh)
+  - [build/telemetryoldbe.sh](build/telemetryoldbe.sh)
 
 Current path split:
 - NetBSD 7 SDK output defaults under `/root/tc-earmv4-netbsd7`

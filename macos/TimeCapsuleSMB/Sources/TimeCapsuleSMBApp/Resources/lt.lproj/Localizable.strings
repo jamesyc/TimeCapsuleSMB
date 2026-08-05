@@ -826,8 +826,8 @@
 "timeline.deploy.detail.resolve_managed_target" = "Nustatomas diegimo tikslas ir tikrinamas SSH.";
 "timeline.deploy.detail.select_payload_home" = "Pasirenkamas įrašomas apkrovos katalogas.";
 "timeline.deploy.detail.upload_boot_files" = "Kopijuojami paleisties scenarijai į /mnt/Flash.";
-"timeline.deploy.detail.upload_mdns_advertiser" = "Kopijuojamas mdns-advertiser į apkrovos tomą ir flash.";
-"timeline.deploy.detail.upload_nbns_advertiser" = "Kopijuojamas nbns-advertiser į apkrovos tomą.";
+"timeline.deploy.detail.upload_mdns_advertiser" = "Kopijuojamas mdns į apkrovos tomą ir flash.";
+"timeline.deploy.detail.upload_nbns_advertiser" = "Kopijuojamas nbns į apkrovos tomą.";
 "timeline.deploy.detail.upload_payload" = "Įkeliami valdomi SMB apkrovos failai.";
 "timeline.deploy.detail.upload_runtime_config" = "Aplinkos nustatymai įrašomi į /mnt/Flash.";
 "timeline.deploy.detail.upload_smbd" = "Kopijuojamas smbd į apkrovos tomą.";
@@ -857,8 +857,8 @@
 "timeline.deploy.title.resolve_managed_target" = "Prisijungti prie įrenginio";
 "timeline.deploy.title.select_payload_home" = "Pasirinkti apkrovos aplanką";
 "timeline.deploy.title.upload_boot_files" = "Įkelti paleisties failus";
-"timeline.deploy.title.upload_mdns_advertiser" = "Įkelti mdns-advertiser";
-"timeline.deploy.title.upload_nbns_advertiser" = "Įkelti nbns-advertiser";
+"timeline.deploy.title.upload_mdns_advertiser" = "Įkelti mdns";
+"timeline.deploy.title.upload_nbns_advertiser" = "Įkelti nbns";
 "timeline.deploy.title.upload_payload" = "Įkelti apkrovą";
 "timeline.deploy.title.upload_runtime_config" = "Įkelti aplinkos konfigūraciją";
 "timeline.deploy.title.upload_smbd" = "Įkelti smbd";

@@ -826,8 +826,8 @@
 "timeline.deploy.detail.resolve_managed_target" = "Résolution de la cible de déploiement et sondage SSH.";
 "timeline.deploy.detail.select_payload_home" = "Sélection d'un répertoire payload inscriptible.";
 "timeline.deploy.detail.upload_boot_files" = "Copie des scripts de démarrage vers /mnt/Flash.";
-"timeline.deploy.detail.upload_mdns_advertiser" = "Copie de mdns-advertiser vers les payload volume et flash.";
-"timeline.deploy.detail.upload_nbns_advertiser" = "Copie de nbns-advertiser vers le payload volume.";
+"timeline.deploy.detail.upload_mdns_advertiser" = "Copie de mdns vers les payload volume et flash.";
+"timeline.deploy.detail.upload_nbns_advertiser" = "Copie de nbns vers le payload volume.";
 "timeline.deploy.detail.upload_payload" = "Téléchargement des fichiers managed SMB payload.";
 "timeline.deploy.detail.upload_runtime_config" = "Écrit les paramètres runtime dans /mnt/Flash.";
 "timeline.deploy.detail.upload_smbd" = "Copie de smbd vers le payload volume.";
@@ -857,8 +857,8 @@
 "timeline.deploy.title.resolve_managed_target" = "Se connecter à l'appareil";
 "timeline.deploy.title.select_payload_home" = "Sélectionner le dossier Payload";
 "timeline.deploy.title.upload_boot_files" = "Télécharger les fichiers de démarrage";
-"timeline.deploy.title.upload_mdns_advertiser" = "Télécharger mdns-advertiser";
-"timeline.deploy.title.upload_nbns_advertiser" = "Télécharger nbns-advertiser";
+"timeline.deploy.title.upload_mdns_advertiser" = "Télécharger mdns";
+"timeline.deploy.title.upload_nbns_advertiser" = "Télécharger nbns";
 "timeline.deploy.title.upload_payload" = "Télécharger Payload";
 "timeline.deploy.title.upload_runtime_config" = "Télécharger Runtime Config";
 "timeline.deploy.title.upload_smbd" = "Télécharger smbd";

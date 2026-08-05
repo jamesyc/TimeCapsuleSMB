@@ -826,8 +826,8 @@
 "timeline.deploy.detail.resolve_managed_target" = "正在解析部署目标并探测 SSH。";
 "timeline.deploy.detail.select_payload_home" = "正在选择可写入的 payload 目录。";
 "timeline.deploy.detail.upload_boot_files" = "正在复制启动脚本到 /mnt/Flash。";
-"timeline.deploy.detail.upload_mdns_advertiser" = "正在复制 mdns-advertiser 到 payload 卷和 flash。";
-"timeline.deploy.detail.upload_nbns_advertiser" = "正在复制 nbns-advertiser 到 payload 卷。";
+"timeline.deploy.detail.upload_mdns_advertiser" = "正在复制 mdns 到 payload 卷和 flash。";
+"timeline.deploy.detail.upload_nbns_advertiser" = "正在复制 nbns 到 payload 卷。";
 "timeline.deploy.detail.upload_payload" = "正在上传托管 SMB payload 文件。";
 "timeline.deploy.detail.upload_runtime_config" = "正在写入运行时设置到 /mnt/Flash。";
 "timeline.deploy.detail.upload_smbd" = "正在复制 smbd 到 payload 卷。";
@@ -857,8 +857,8 @@
 "timeline.deploy.title.resolve_managed_target" = "连接设备";
 "timeline.deploy.title.select_payload_home" = "选择 Payload 目录";
 "timeline.deploy.title.upload_boot_files" = "上传启动文件";
-"timeline.deploy.title.upload_mdns_advertiser" = "上传 mdns-advertiser";
-"timeline.deploy.title.upload_nbns_advertiser" = "上传 nbns-advertiser";
+"timeline.deploy.title.upload_mdns_advertiser" = "上传 mdns";
+"timeline.deploy.title.upload_nbns_advertiser" = "上传 nbns";
 "timeline.deploy.title.upload_payload" = "上传 Payload";
 "timeline.deploy.title.upload_runtime_config" = "上传运行时配置";
 "timeline.deploy.title.upload_smbd" = "上传 smbd";

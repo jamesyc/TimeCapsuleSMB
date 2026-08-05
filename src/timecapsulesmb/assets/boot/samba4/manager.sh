@@ -193,6 +193,8 @@ tc_manager_samba_file_signature() {
 
     printf 'payload\t%s\n' "$payload_dir"
     tc_manager_file_metadata_signature "$smbd_src"
+    tc_manager_file_metadata_signature "$payload_dir/service"
+    tc_manager_file_metadata_signature "$payload_dir/telemetry"
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ]; then
         tc_manager_file_metadata_signature "$nbns_src"
     else
@@ -806,6 +808,8 @@ tc_manager_select_samba_sources() {
 
 tc_manager_samba_runtime_files_missing() {
     [ -x "$TC_SMBD_BIN" ] || return 0
+    [ -x "$TC_SERVICE_BIN" ] || return 0
+    [ -x "$TC_TELEMETRY_BIN" ] || return 0
     [ -f "$RAM_PRIVATE/smbpasswd" ] || return 0
     [ -f "$RAM_PRIVATE/username.map" ] || return 0
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "${manager_nbns_src:-}" ]; then
@@ -849,6 +853,8 @@ tc_manager_restore_log_after_runtime_reset() {
 tc_manager_reset_samba_runtime_after_stage_failure() {
     reset_status=0
 
+    tc_prepare_telemetry_reset || return $?
+    TC_MANAGER_TELEMETRY_PID=
     tc_log "manager Samba staging recovery: resetting RAM runtime after staging failure"
     if runtime_process_present_by_ucomm smbd; then
         tc_log "manager Samba staging recovery: stopping smbd before RAM runtime reset"
@@ -925,6 +931,11 @@ tc_manager_stage_samba_runtime_files_if_needed() {
         fi
         tc_log "manager Samba runtime file staging will retry on next manager pass after RAM runtime reset"
         return "$stage_status"
+    fi
+    if [ "$manager_binary_changed" -eq 1 ] && [ -n "${TC_MANAGER_TELEMETRY_PID:-}" ]; then
+        # TERM stops scheduling without killing an active signed debug job.
+        kill -TERM "$TC_MANAGER_TELEMETRY_PID" 2>/dev/null || true
+        TC_MANAGER_TELEMETRY_PID=
     fi
     TC_MANAGER_LAST_BINARY_SIGNATURE=$fresh_binary_signature
     TC_MANAGER_RUNTIME_STAGED=1
@@ -1614,9 +1625,25 @@ tc_manager_clear_payload_state
 tc_log "manager startup beginning"
 tc_log "manager intervals: disk=${MANAGER_DISK_POLL_SECONDS}s bind=${MANAGER_BIND_POLL_SECONDS}s services=${MANAGER_SERVICE_POLL_SECONDS}s mast_retry=${MANAGER_MAST_RETRY_SECONDS}s topology_debounce=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}s printer_debounce=${MANAGER_PRINTER_DEBOUNCE_SECONDS}s stop_poll=${MANAGER_STOP_POLL_SECONDS}s"
 
-trap 'TC_MANAGER_STOP_REQUESTED=1' TERM INT
+# Keep the scheduler PID in this shell, not a stale runtime marker. The helper
+# owns its debug child and RAM files; TERM stops future cycles but lets an
+# already running signed debug program finish and clean up.
+TC_MANAGER_TELEMETRY_PID=
+tc_prepare_telemetry_reset || exit $?
+tc_manager_stop_telemetry() {
+    if [ -n "$TC_MANAGER_TELEMETRY_PID" ]; then
+        kill -TERM "$TC_MANAGER_TELEMETRY_PID" 2>/dev/null || true
+    fi
+}
+trap 'TC_MANAGER_STOP_REQUESTED=1; tc_manager_stop_telemetry' TERM INT
+trap 'tc_manager_stop_telemetry' EXIT
 
 while ! tc_manager_stop_requested; do
+    if [ -x "$TC_TELEMETRY_BIN" ] &&
+        { [ -z "$TC_MANAGER_TELEMETRY_PID" ] || ! kill -0 "$TC_MANAGER_TELEMETRY_PID" 2>/dev/null; }; then
+        "$TC_TELEMETRY_BIN" --daemon </dev/null >/dev/null 2>&1 &
+        TC_MANAGER_TELEMETRY_PID=$!
+    fi
     TC_MANAGER_ITERATION=$((TC_MANAGER_ITERATION + 1))
     manager_iteration_id=$TC_MANAGER_ITERATION
     manager_iteration_start_seconds=$(tc_now_seconds)

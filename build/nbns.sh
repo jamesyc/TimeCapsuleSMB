@@ -6,10 +6,9 @@ set -eu
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(select_tool_triple)"
-NBNS_SRC="$SCRIPT_DIR/nbns-advertiser.c"
+NBNS_SRC="$SCRIPT_DIR/native/nbns.sources"
 NBNS_CFLAGS="${NBNS_CFLAGS:--Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident}"
 NBNS_LDFLAGS="${NBNS_LDFLAGS:--static -Wl,--gc-sections}"
-
 if [ "$SDK_FAMILY" = "netbsd4" ]; then
     # NetBSD 4's arm--netbsdelf linker was not configured for --sysroot.
     # Keep this helper on the conservative no-GC link path so crt note
@@ -52,6 +51,14 @@ if ! {
     echo "NBNS_CFLAGS=$NBNS_CFLAGS"
     echo "NBNS_LDFLAGS=$NBNS_LDFLAGS"
 
+    # Explicit failures are necessary here: sh suppresses errexit inside the
+    # enclosing if condition, otherwise a failed compile could copy stale output.
+    # Compile separate modules into a single static executable. Explicit lists
+    # avoid pulling every helper into NetBSD 4's deliberately no-GC link.
+    set --
+    while IFS= read -r source; do
+        set -- "$@" "$SCRIPT_DIR/$source"
+    done <"$NBNS_SRC"
     "$TOOLDIR/bin/$TRIPLE-gcc" \
         $NBNS_CC_SYSROOT_FLAGS \
         $NBNS_CFLAGS \
@@ -60,12 +67,12 @@ if ! {
         -D_LARGEFILE_SOURCE \
         -D_FILE_OFFSET_BITS=64 \
         -D_LARGE_FILES \
-        "$NBNS_SRC" \
+        "$@" \
         -o "$NBNS_STAGE/$NBNS_BIN_NAME" \
-        $NBNS_LDFLAGS
+        $NBNS_LDFLAGS || exit 1
 
-    cp "$NBNS_STAGE/$NBNS_BIN_NAME" "$NBNS_STAGE/$NBNS_BIN_NAME.stripped"
-    "$TOOLDIR/bin/$TRIPLE-strip" --strip-unneeded "$NBNS_STAGE/$NBNS_BIN_NAME.stripped"
+    cp "$NBNS_STAGE/$NBNS_BIN_NAME" "$NBNS_STAGE/$NBNS_BIN_NAME.stripped" || exit 1
+    "$TOOLDIR/bin/$TRIPLE-strip" --strip-unneeded "$NBNS_STAGE/$NBNS_BIN_NAME.stripped" || exit 1
 
     "$TOOLDIR/bin/nbfile" "$NBNS_STAGE/$NBNS_BIN_NAME"
     "$TOOLDIR/bin/nbfile" "$NBNS_STAGE/$NBNS_BIN_NAME.stripped"

@@ -14,6 +14,8 @@
 .PHONY: require-build-tree preflight
 .PHONY: mdns mdns-netbsd7 mdns-netbsd4le mdns-netbsd4be mdns-all
 .PHONY: nbns nbns-netbsd7 nbns-netbsd4le nbns-netbsd4be nbns-all
+.PHONY: telemetry telemetry-netbsd7 telemetry-netbsd4le telemetry-netbsd4be telemetry-all
+.PHONY: service service-netbsd7 service-netbsd4le service-netbsd4be service-all
 .PHONY: advertisers advertisers-netbsd7 advertisers-netbsd4le advertisers-netbsd4be advertisers-all
 .PHONY: samba4 samba4-netbsd7 samba4-netbsd4le samba4-netbsd4be samba4-all
 .PHONY: samba4x samba4x-netbsd7 samba4x-netbsd4le samba4x-netbsd4be samba4x-all
@@ -33,6 +35,7 @@ help:
 	@printf '%s\n' '  make advertisers-all       # mdns + nbns for NetBSD 6/7, NetBSD 4 LE, NetBSD 4 BE'
 	@printf '%s\n' '  make mdns-all              # mdns for all three lanes'
 	@printf '%s\n' '  make nbns-all              # nbns for all three lanes'
+	@printf '%s\n' '  make telemetry-all         # router telemetry for all three lanes'
 	@printf '%s\n' '  make samba4-netbsd7        # download Samba 4 source, then build NetBSD 6/7 lane'
 	@printf '%s\n' '  make samba4-netbsd4le      # download Samba 4 source, then build NetBSD 4 LE lane'
 	@printf '%s\n' '  make samba4-netbsd4be      # download Samba 4 source, then build NetBSD 4 BE lane'
@@ -55,8 +58,13 @@ require-build-tree:
 		_patch_helpers.sh \
 		_downloadrsync.sh \
 		_rsync.sh \
-		mdns-advertiser.c \
-		nbns-advertiser.c \
+		native/common/network.h \
+		native/mdns.sources \
+		native/nbns.sources \
+		native/telemetry.sources \
+		native/service.sources \
+		native/vendor/tweetnacl.c \
+		native/vendor/tweetnacl.h \
 		samba4-cross-exec.sh \
 		patches/rsync/series \
 		patches/samba4x/series \
@@ -111,19 +119,63 @@ nbns-all: require-build-tree
 
 advertisers: require-build-tree advertisers-netbsd7
 
+telemetry: require-build-tree telemetry-netbsd7
+
+telemetry-netbsd7: require-build-tree
+	./telemetry.sh
+
+telemetry-netbsd4le: require-build-tree
+	./telemetryoldle.sh
+
+telemetry-netbsd4be: require-build-tree
+	./telemetryoldbe.sh
+
+telemetry-all: require-build-tree
+	./telemetry.sh
+	./telemetryoldle.sh
+	./telemetryoldbe.sh
+
+service: require-build-tree service-netbsd7
+
+service-netbsd7: require-build-tree
+	./service.sh
+
+service-netbsd4le: require-build-tree
+	./serviceoldle.sh
+
+service-netbsd4be: require-build-tree
+	./serviceoldbe.sh
+
+service-all: require-build-tree
+	./service.sh
+	./serviceoldle.sh
+	./serviceoldbe.sh
+
 advertisers-netbsd7: require-build-tree
 	./mdns.sh
 	./nbns.sh
+	./service.sh
+	./telemetry.sh
 
 advertisers-netbsd4le: require-build-tree
 	./mdnsoldle.sh
 	./nbnsoldle.sh
+	./serviceoldle.sh
+	./telemetryoldle.sh
 
 advertisers-netbsd4be: require-build-tree
 	./mdnsoldbe.sh
 	./nbnsoldbe.sh
+	./serviceoldbe.sh
+	./telemetryoldbe.sh
 
 advertisers-all: require-build-tree
+	./service.sh
+	./serviceoldle.sh
+	./serviceoldbe.sh
+	./telemetry.sh
+	./telemetryoldle.sh
+	./telemetryoldbe.sh
 	./mdns.sh
 	./mdnsoldle.sh
 	./mdnsoldbe.sh

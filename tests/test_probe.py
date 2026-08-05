@@ -301,7 +301,7 @@ class ProbeTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         stdout = (
             "smbd:\nroot smbd 101 10 internet stream tcp 0x0 *:445\n"
-            "nbns-advertiser:\n(no internet sockets reported)\n"
+            "nbns:\n(no internet sockets reported)\n"
             "rsync:\nroot rsync 103 10 internet stream tcp 0x0 *:873\n"
         )
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=stdout)
@@ -359,7 +359,7 @@ class ProbeTests(unittest.TestCase):
     def test_runtime_startup_failure_debug_fields_classifies_probe_auto_ip_waiting_detail(self) -> None:
         fields = runtime_startup_failure_debug_fields(
             {},
-            verification_detail="runtime verification timed out; mdns-advertiser is waiting for auto-IP",
+            verification_detail="runtime verification timed out; mdns is waiting for auto-IP",
         )
 
         self.assertEqual(fields["runtime_startup_failure"], "network_auto_ip_unavailable")

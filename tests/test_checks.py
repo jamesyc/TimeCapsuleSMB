@@ -714,7 +714,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_adds_socket_debug_when_direct_smb_is_unreachable(self) -> None:
         debug_fields: dict[str, object] = {}
-        socket_debug = "smbd:\nroot smbd 101 10 internet stream tcp 0x0 *:445\nnbns-advertiser:\n(no internet sockets reported)"
+        socket_debug = "smbd:\nroot smbd 101 10 internet stream tcp 0x0 *:445\nnbns:\n(no internet sockets reported)"
         socket_debug_mock = mock.Mock(return_value=socket_debug)
 
         self.run_doctor_with_mocks(
@@ -810,7 +810,7 @@ class CheckTests(unittest.TestCase):
 
     def test_run_doctor_checks_reports_info_when_optional_nbns_fails(self) -> None:
         debug_fields: dict[str, object] = {}
-        socket_debug_mock = mock.Mock(return_value="smbd:\n(no internet sockets reported)\nnbns-advertiser:\nroot nbns-advertiser 201 7 internet dgram udp 0x0 *:137")
+        socket_debug_mock = mock.Mock(return_value="smbd:\n(no internet sockets reported)\nnbns:\nroot nbns-advertiser 201 7 internet dgram udp 0x0 *:137")
 
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -3019,13 +3019,13 @@ class CheckTests(unittest.TestCase):
     def test_run_doctor_checks_retries_transient_mdns_process_failure(self) -> None:
         transient = mock.Mock(
             ready=False,
-            detail="mdns-advertiser process is not running",
-            lines=("FAIL:mdns-advertiser process is not running",),
+            detail="mdns process is not running",
+            lines=("FAIL:mdns process is not running",),
         )
         ready = mock.Mock(
             ready=True,
             detail="managed mDNS takeover active",
-            lines=("PASS:mdns-advertiser process is running", "PASS:mdns-advertiser bound to required UDP 5353 listeners"),
+            lines=("PASS:mdns process is running", "PASS:mdns bound to required UDP 5353 listeners"),
         )
         mdns_mock = mock.Mock(side_effect=[transient, ready])
 
@@ -3040,24 +3040,24 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         self.assertEqual(mdns_mock.call_count, 2)
         sleep_mock.assert_called_once_with(10)
-        self.assertFalse(any(result.message == "mdns-advertiser process is not running" for result in run.results))
-        self.assertTrue(any(result.status == "PASS" and result.message == "mdns-advertiser bound to required UDP 5353 listeners" for result in run.results))
+        self.assertFalse(any(result.message == "mdns process is not running" for result in run.results))
+        self.assertTrue(any(result.status == "PASS" and result.message == "mdns bound to required UDP 5353 listeners" for result in run.results))
 
     def test_run_doctor_checks_retries_transient_mdns_udp_binding_failure(self) -> None:
         transient = mock.Mock(
             ready=False,
-            detail="mdns-advertiser is not bound to required UDP 5353 listener",
+            detail="mdns is not bound to required UDP 5353 listener",
             lines=(
-                "PASS:mdns-advertiser process is running",
-                "FAIL:mdns-advertiser is not bound to required UDP 5353 listener",
+                "PASS:mdns process is running",
+                "FAIL:mdns is not bound to required UDP 5353 listener",
             ),
         )
         ready = mock.Mock(
             ready=True,
             detail="managed mDNS takeover active",
             lines=(
-                "PASS:mdns-advertiser process is running",
-                "PASS:mdns-advertiser bound to required UDP 5353 listeners",
+                "PASS:mdns process is running",
+                "PASS:mdns bound to required UDP 5353 listeners",
             ),
         )
         mdns_mock = mock.Mock(side_effect=[transient, ready])
@@ -3073,14 +3073,14 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         self.assertEqual(mdns_mock.call_count, 2)
         sleep_mock.assert_called_once_with(10)
-        self.assertFalse(any(result.message == "mdns-advertiser is not bound to required UDP 5353 listener" for result in run.results))
-        self.assertTrue(any(result.status == "PASS" and result.message == "mdns-advertiser bound to required UDP 5353 listeners" for result in run.results))
+        self.assertFalse(any(result.message == "mdns is not bound to required UDP 5353 listener" for result in run.results))
+        self.assertTrue(any(result.status == "PASS" and result.message == "mdns bound to required UDP 5353 listeners" for result in run.results))
 
     def test_run_doctor_checks_exhausts_transient_mdns_udp_binding_retries(self) -> None:
         mdns_probe = mock.Mock(
             ready=False,
-            detail="mdns-advertiser is not bound to required UDP 5353 listener",
-            lines=("FAIL:mdns-advertiser is not bound to required UDP 5353 listener",),
+            detail="mdns is not bound to required UDP 5353 listener",
+            lines=("FAIL:mdns is not bound to required UDP 5353 listener",),
         )
         mdns_mock = mock.Mock(return_value=mdns_probe)
 
@@ -3095,15 +3095,15 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertEqual(mdns_mock.call_count, 3)
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [10, 15])
-        self.assertTrue(any(result.status == "FAIL" and result.message == "mdns-advertiser is not bound to required UDP 5353 listener" for result in run.results))
+        self.assertTrue(any(result.status == "FAIL" and result.message == "mdns is not bound to required UDP 5353 listener" for result in run.results))
 
     def test_run_doctor_checks_does_not_retry_structural_mdns_failure_mixed_with_transient_failure(self) -> None:
         mdns_probe = mock.Mock(
             ready=False,
-            detail="mdns-advertiser binary missing at /mnt/Flash/mdns-advertiser; mdns-advertiser process is not running",
+            detail="mdns binary missing at /mnt/Flash/mdns-advertiser; mdns process is not running",
             lines=(
-                "FAIL:mdns-advertiser binary missing at /mnt/Flash/mdns-advertiser",
-                "FAIL:mdns-advertiser process is not running",
+                "FAIL:mdns binary missing at /mnt/Flash/mdns-advertiser",
+                "FAIL:mdns process is not running",
             ),
         )
         mdns_mock = mock.Mock(return_value=mdns_probe)

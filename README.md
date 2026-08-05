@@ -127,7 +127,7 @@ The password you enter here is stored locally as `TC_PASSWORD` so the tool can k
 - username: `admin` (or any other password)
 - password: the same Time Capsule password you entered during configuration
 
-Samba does not use Apple’s internal password backend directly. The boot script reads the AirPort `syPW` setting, asks `mdns-advertiser` to generate the NT hash, and writes the RAM-only Samba auth files before `smbd` starts.
+Samba does not use Apple’s internal password backend directly. The boot script reads the AirPort `syPW` setting, asks `service` to generate the NT hash, and writes the RAM-only Samba auth files before `smbd` starts.
 
 ## Step 3: Deploy It
 
@@ -284,7 +284,7 @@ Unfortunately, it was not an option to "copy one binary somewhere and call it a 
 1. Keep the full `smbd` payload on the big internal hard disk.
 2. Keep only a very small `rc.local` boot script on flash.
 3. At boot, wait for the internal disk to appear and mount.
-4. Copy the runtime binaries into `/mnt/Memory`.
+4. Copy the runtime binaries, including `service` and `telemetry`, into `/mnt/Memory`.
 5. Start Samba from the `/mnt/Memory`, not from the big disk Apple may later decide to unmount.
 6. Advertise `_smb._tcp` with a separate tiny mDNS helper.
 
@@ -375,6 +375,8 @@ The commands have logging and telemetry enabled by default. Errors and exception
 
 The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](build) and depends on a NetBSD VM.
 
+The native helpers are `mdns-advertiser`, `nbns-advertiser`, `service` (hashing and network probes), and `telemetry` (heartbeat reporting and signed debug execution). Each links into one static executable; see [build/native/README.md](build/native/README.md).
+
 The main build outputs are:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
@@ -386,3 +388,9 @@ The main build outputs are:
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 - [bin/nbns-netbsd4le/nbns-advertiser](bin/nbns-netbsd4le/nbns-advertiser)
 - [bin/nbns-netbsd4be/nbns-advertiser](bin/nbns-netbsd4be/nbns-advertiser)
+- [bin/service/service](bin/service/service)
+- [bin/service-netbsd4le/service](bin/service-netbsd4le/service)
+- [bin/service-netbsd4be/service](bin/service-netbsd4be/service)
+- [bin/telemetry/telemetry](bin/telemetry/telemetry)
+- [bin/telemetry-netbsd4le/telemetry](bin/telemetry-netbsd4le/telemetry)
+- [bin/telemetry-netbsd4be/telemetry](bin/telemetry-netbsd4be/telemetry)
