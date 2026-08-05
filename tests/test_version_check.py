@@ -312,6 +312,28 @@ class VersionCheckTests(unittest.TestCase):
         self.assertIn("Update required.", text)
         self.assertIn(f"Client version is out of date, download the latest version from: {DEFAULT_DOWNLOAD_URL}", text)
 
+    def test_env_opt_out_skips_check_without_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "version-cache.json"
+            calls: list[tuple[object, float]] = []
+
+            def opener(_request, _timeout):
+                calls.append((_request, _timeout))
+                raise AssertionError("network must not be used when the check is disabled")
+
+            result = check_client_version(
+                local_version_code=20004,
+                cache_path=cache_path,
+                now=1000.0,
+                opener=opener,
+                env={"TCAPSULE_NO_VERSION_CHECK": "1"},
+            )
+
+            self.assertFalse(result.should_block)
+            self.assertEqual(result.source, "disabled")
+            self.assertEqual(calls, [])
+            self.assertFalse(cache_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
