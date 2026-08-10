@@ -28,9 +28,11 @@ xcuserdata/
 .deps/
 .airpyrt-venv/
 
-# Installer logs
+# Installer and device logs (never commit device logs — see AGENTS.md)
 pip-log.txt
 pip-delete-this-directory.txt
+*.log
+*.log.*
 
 # Test / coverage
 .pytest_cache/
@@ -57,3 +59,6 @@ coverage.xml
 .env.backup*
 .bootstrap
 .version-check-cache.json
+
+# Generated knowledge graph (regenerate with the /graphify skill)
+graphify-out/
