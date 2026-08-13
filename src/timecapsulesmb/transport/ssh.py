@@ -67,7 +67,17 @@ SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/n
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
-SSH_CONFIG_ISOLATION_ARGS = ("-F", "/dev/null")
+SSH_CONFIG_ISOLATION_ARGS = (
+    "-F", "/dev/null",
+    # The transport is password-only (SshConnection carries no identity), so keep
+    # ssh from touching the user's default keys or agent. An encrypted default key
+    # otherwise prints "Enter passphrase for key ...", which the pexpect password
+    # matcher never answers, hanging until the command times out.
+    "-o", "IdentitiesOnly=yes",
+    "-o", "IdentityAgent=none",
+    "-o", "PubkeyAuthentication=no",
+    "-o", "PreferredAuthentications=password",
+)
 
 
 def _summarize_remote_command(remote_cmd: str) -> str:
