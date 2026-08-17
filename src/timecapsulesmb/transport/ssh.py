@@ -67,17 +67,45 @@ SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/n
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
-SSH_CONFIG_ISOLATION_ARGS = (
-    "-F", "/dev/null",
-    # The transport is password-only (SshConnection carries no identity), so keep
-    # ssh from touching the user's default keys or agent. An encrypted default key
-    # otherwise prints "Enter passphrase for key ...", which the pexpect password
-    # matcher never answers, hanging until the command times out.
-    "-o", "IdentitiesOnly=yes",
-    "-o", "IdentityAgent=none",
-    "-o", "PubkeyAuthentication=no",
-    "-o", "PreferredAuthentications=password",
-)
+def _tokens_include_identity_file(tokens: list[str]) -> bool:
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        lowered = token.lower()
+        if token == "-i" or (token.startswith("-i") and len(token) > 2):
+            return True
+        if lowered.startswith("-oidentityfile="):
+            return True
+        if token == "-o" and i + 1 < len(tokens) and tokens[i + 1].lower().startswith("identityfile="):
+            return True
+        i += 1
+    return False
+
+
+def _ssh_isolation_args(ssh_opts: str) -> list[str]:
+    """Base ssh args prepended before the caller's ssh_opts.
+
+    Always isolates from the user's ssh_config (``-F /dev/null``). The transport
+    otherwise authenticates by password (an ``SshConnection`` carries no key), so
+    by default it also stops ssh from offering the user's default keys or agent:
+    an encrypted default key triggers an ``Enter passphrase for key ...`` prompt
+    that the pexpect password matcher never answers, hanging until timeout.
+
+    When the caller deliberately supplies an identity through ``TC_SSH_OPTS``
+    (``-i`` / ``IdentityFile``), that intent is respected: pubkey auth stays
+    enabled and only ``IdentitiesOnly=yes`` is added, so the provided key is used
+    while the agent's other keys can't sneak in a passphrase prompt.
+    """
+    args = ["-F", "/dev/null"]
+    try:
+        tokens = shlex.split(ssh_opts)
+    except ValueError:
+        tokens = ssh_opts.split()
+    if _tokens_include_identity_file(tokens):
+        args += ["-o", "IdentitiesOnly=yes"]
+    else:
+        args += ["-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password"]
+    return args
 
 
 def _summarize_remote_command(remote_cmd: str) -> str:
@@ -316,7 +344,7 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
 
 
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    cmd = ["ssh", *SSH_CONFIG_ISOLATION_ARGS, *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    cmd = ["ssh", *_ssh_isolation_args(connection.ssh_opts), *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
     timeout_message = (
         "Timed out waiting for ssh command to finish: "
         f"{_summarize_remote_command(remote_cmd)}"
@@ -356,7 +384,7 @@ def _run_sshpass_ssh(
         raise SshError(missing_tool_message)
     env = dict(os.environ)
     env["SSHPASS"] = connection.password
-    cmd = ["sshpass", "-e", "ssh", *SSH_CONFIG_ISOLATION_ARGS, *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    cmd = ["sshpass", "-e", "ssh", *_ssh_isolation_args(connection.ssh_opts), *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
     proc: subprocess.CompletedProcess[bytes] | None = None
     for attempt in range(3):
         try:
@@ -438,7 +466,7 @@ def ssh_local_forward(
 
     cmd = [
         "ssh",
-        *SSH_CONFIG_ISOLATION_ARGS,
+        *_ssh_isolation_args(connection.ssh_opts),
         "-N",
         "-o",
         "ExitOnForwardFailure=yes",
@@ -582,7 +610,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
         cmd = [
             scp,
             *legacy_option,
-            *SSH_CONFIG_ISOLATION_ARGS,
+            *_ssh_isolation_args(connection.ssh_opts),
             *_normalize_ssh_tokens(connection.ssh_opts),
             str(src),
             _scp_remote_target(connection.host, dest),

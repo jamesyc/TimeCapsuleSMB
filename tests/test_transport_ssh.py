@@ -111,6 +111,10 @@ class SSHTransportTests(unittest.TestCase):
                 "-F",
                 "/dev/null",
                 "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PreferredAuthentications=password",
+                "-o",
                 "PubkeyAcceptedKeyTypes=+ssh-rsa",
                 "root@192.168.1.67",
                 "/bin/echo ok",
@@ -500,6 +504,10 @@ class SSHTransportTests(unittest.TestCase):
                 "ssh",
                 "-F",
                 "/dev/null",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PreferredAuthentications=password",
                 "-J",
                 "jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123",
                 "-o",
@@ -508,6 +516,55 @@ class SSHTransportTests(unittest.TestCase):
                 "/bin/echo ok",
             ],
         )
+
+    def test_run_ssh_respects_identity_file_option(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(0, "ok\n"),
+            ) as spawn_mock:
+                ssh_transport.run_ssh(
+                    ssh_transport.SshConnection(
+                        "root@192.168.1.67",
+                        "pw",
+                        "-i /home/tc/.ssh/id_tc -o HostKeyAlgorithms=+ssh-rsa",
+                    ),
+                    "/bin/echo ok",
+                    check=False,
+                    timeout=10,
+                )
+        cmd = spawn_mock.call_args.args[0]
+        # An explicit identity must be honored: keys stay enabled and scoped to
+        # the provided one, and password-only forcing must NOT be injected.
+        self.assertIn("IdentitiesOnly=yes", cmd)
+        self.assertNotIn("PubkeyAuthentication=no", cmd)
+        self.assertNotIn("PreferredAuthentications=password", cmd)
+        self.assertIn("-i", cmd)
+        self.assertIn("/home/tc/.ssh/id_tc", cmd)
+
+    def test_ssh_isolation_args_toggle_on_identity_file(self) -> None:
+        # Without an identity: password-only, default keys and agent disabled.
+        password_only = ssh_transport._ssh_isolation_args("-o HostKeyAlgorithms=+ssh-rsa")
+        self.assertEqual(password_only[:2], ["-F", "/dev/null"])
+        self.assertIn("PubkeyAuthentication=no", password_only)
+        self.assertIn("PreferredAuthentications=password", password_only)
+        self.assertNotIn("IdentitiesOnly=yes", password_only)
+
+        # With an identity (any accepted spelling): respect it, don't force password.
+        for opts in (
+            "-i ~/.ssh/id_tc",
+            "-o IdentityFile=/home/tc/id_tc",
+            "-oIdentityFile=/home/tc/id_tc",
+        ):
+            with self.subTest(opts=opts):
+                args = ssh_transport._ssh_isolation_args(opts)
+                self.assertEqual(args[:2], ["-F", "/dev/null"])
+                self.assertIn("IdentitiesOnly=yes", args)
+                self.assertNotIn("PubkeyAuthentication=no", args)
+                self.assertNotIn("PreferredAuthentications=password", args)
 
     def test_ssh_option_supported_returns_false_for_bad_configuration_option(self) -> None:
         with mock.patch(
