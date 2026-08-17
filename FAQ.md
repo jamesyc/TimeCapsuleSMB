@@ -85,6 +85,47 @@ See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-br
 
 **Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article. See also this [community discussion regarding Error 80](https://community.qnap.com/t/time-machine-backup-fails-with-authentication-error-80-on-tbs-h574tx/5613/9).
 
+#### Time Machine says the backup disk is full
+
+This can happen when Time Machine needs to free space but cannot delete an incomplete backup. The logs may contain `BACKUP_FAILED_TARGETVOL_DISK_FULL (56)`, `Operation not permitted`, or `afpAccessDenied`. One known cause is an immutable file-provider entry under `~/Library/CloudStorage`, such as Google Drive's `My Drive` link.
+
+If you are comfortable relying on your cloud provider for the contents of `~/Library/CloudStorage`, exclude that directory from future Time Machine backups. The fixed-path exclusion remains effective if a provider recreates its managed files:
+
+```bash
+sudo tmutil addexclusion -p "$HOME/Library/CloudStorage"
+tmutil isexcluded "$HOME/Library/CloudStorage"
+```
+
+To clean up the existing backups:
+
+1. Stop Time Machine and confirm that it is no longer running:
+2. Find the mounted backup volume under `/Volumes`. Its name is normally similar to `Backups of Your Mac`.
+3. List the incomplete histories at the top level of that volume. Replace the example path with the real mounted volume name:
+
+   ```bash
+   sudo find "/Volumes/Backups of Your Mac" -mindepth 1 -maxdepth 1 -type d \
+     \( -name '*.interrupted' -o -name '*.inprogress' \) -print
+   ```
+
+4. Check the list carefully, then delete those same incomplete histories:
+
+   ```bash
+   sudo find "/Volumes/Backups of Your Mac" -mindepth 1 -maxdepth 1 -type d \
+     \( -name '*.interrupted' -o -name '*.inprogress' \) -exec rm -rf -- {} +
+   ```
+
+If a specific incomplete history fails with `Operation not permitted`, clear its immutable flags and delete it again:
+
+```bash
+bad_backup="/Volumes/Backups of Your Mac/YYYY-MM-DD-HHMMSS.interrupted"
+sudo find "$bad_backup" -flags +uchg -exec chflags -h nouchg {} +
+sudo rm -rf -- "$bad_backup"
+```
+
+Delete only top-level timestamped directories ending in `.interrupted` or `.inprogress`. Do **not** delete the sparsebundle, its `bands` directory, or completed histories ending in `.previous`.
+
+Restart the backup after enough space has been recovered.
+
 #### If you have the OSStatus Error 80
 
 OSStatus Error 80 can happen when macOS is trying to reuse an existing Time Machine backup and stale local backup state gets in the way.
