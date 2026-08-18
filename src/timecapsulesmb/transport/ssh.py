@@ -305,71 +305,69 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
     return expanded
 
 
+_KEY_SOURCE_OPTIONS = {
+    "identityfile",
+    "identityagent",
+    "certificatefile",
+    "pkcs11provider",
+    "securitykeyprovider",
+}
+_PUBKEY_ENABLED_VALUES = {"yes", "unbound", "host-bound"}
+
+
 def _ssh_option_assignments(tokens: list[str]) -> Iterator[tuple[str, str]]:
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token == "-o" and i + 1 < len(tokens):
-            assignment = tokens[i + 1]
-            i += 2
-        elif token.startswith("-o") and len(token) > 2:
-            assignment = token[2:]
-            i += 1
+    tokens = iter(tokens)
+    for token in tokens:
+        if token == "-o":
+            option = next(tokens, "")
+        elif token.startswith("-o"):
+            option = token[2:]
         else:
-            i += 1
             continue
-        if "=" in assignment:
-            name, value = assignment.split("=", 1)
-        else:
-            parts = assignment.split(None, 1)
-            if len(parts) != 2:
-                continue
-            name, value = parts
-        name = name.strip().lower()
-        value = value.strip().lower()
-        if not name:
-            continue
-        yield name, value
+
+        parts = option.casefold().replace("=", " ", 1).split(None, 1)
+        if len(parts) == 2:
+            yield parts[0], parts[1]
 
 
 def _tokens_request_public_key_auth(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
-        if token == "-i":
-            if index + 1 < len(tokens) and tokens[index + 1].lower() != "none":
-                return True
-        elif token.startswith("-i") and len(token) > 2 and token[2:].lower() != "none":
+        if token in {"-i", "-I"}:
+            value = tokens[index + 1] if index + 1 < len(tokens) else ""
+        elif token[:2] in {"-i", "-I"}:
+            value = token[2:]
+        else:
+            continue
+
+        if value and value.casefold() != "none":
             return True
 
-    key_source_options = {
-        "identityfile",
-        "identityagent",
-        "certificatefile",
-        "pkcs11provider",
-        "securitykeyprovider",
-    }
-    for name, value in _ssh_option_assignments(tokens):
-        if name in key_source_options and value != "none":
-            return True
-        if name == "pubkeyauthentication" and value in {"yes", "unbound", "host-bound"}:
-            return True
-        if name == "preferredauthentications" and "publickey" in value.split(","):
-            return True
-        if name == "batchmode" and value == "yes":
-            return True
-    return False
+    return any(
+        (name in _KEY_SOURCE_OPTIONS and value != "none")
+        or (name == "pubkeyauthentication" and value in _PUBKEY_ENABLED_VALUES)
+        or (
+            name == "preferredauthentications"
+            and "publickey" in re.split(r"\s*,\s*", value)
+        )
+        or (name == "batchmode" and value == "yes")
+        for name, value in _ssh_option_assignments(tokens)
+    )
 
 
 def _connection_ssh_args(connection: SshConnection) -> list[str]:
     """Return config-isolated SSH args with authentication derived per connection."""
     tokens = _normalize_ssh_tokens(connection.ssh_opts)
-    args = ["-F", "/dev/null"]
+
     if not connection.password:
-        args.extend(["-o", "BatchMode=yes"])
-    elif not _tokens_request_public_key_auth(tokens):
+        auth_args = ["-o", "BatchMode=yes"]
+    elif _tokens_request_public_key_auth(tokens):
+        auth_args = []
+    else:
         # Avoid passphrase prompts from unintended default keys while preserving
         # explicit key configuration and keyboard-interactive password servers.
-        args.extend(["-o", "PubkeyAuthentication=no"])
-    return [*args, *tokens]
+        auth_args = ["-o", "PubkeyAuthentication=no"]
+
+    return ["-F", "/dev/null", *auth_args, *tokens]
 
 
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:

@@ -546,6 +546,8 @@ class SSHTransportTests(unittest.TestCase):
             "-i ~/.ssh/id_tc",
             "-i~/.ssh/id_tc",
             "-i none -i ~/.ssh/id_tc",
+            "-I /usr/local/lib/pkcs11.so",
+            "-I/usr/local/lib/pkcs11.so",
             "-o IdentityFile=/home/tc/id_tc",
             "-oIdentityFile=/home/tc/id_tc",
             "-o 'IdentityFile /home/tc/id_tc'",
@@ -559,6 +561,7 @@ class SSHTransportTests(unittest.TestCase):
             "-o PubkeyAuthentication=host-bound",
             "-o PreferredAuthentications=publickey,password",
             "-o 'PreferredAuthentications publickey,password'",
+            "-o 'PreferredAuthentications password, publickey'",
             "-o BatchMode=yes",
         ):
             with self.subTest(opts=opts):
@@ -576,6 +579,7 @@ class SSHTransportTests(unittest.TestCase):
             "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa",
             "-o IdentityFile=none",
             "-o IdentityAgent=none",
+            "-I none",
             "-o PubkeyAuthentication=no",
             "-o PreferredAuthentications=keyboard-interactive,password",
             "-o BatchMode=no",
