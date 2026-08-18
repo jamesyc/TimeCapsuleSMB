@@ -243,8 +243,6 @@ def check_ssh_auth(
 ) -> ReachabilityCheck:
     if not ssh_target:
         return ReachabilityCheck(id="ssh_auth", status="SKIP", message="No SSH target is configured.")
-    if not password:
-        return ReachabilityCheck(id="ssh_auth", status="SKIP", message="SSH authentication skipped because no password is available.")
     if port_check.status == "FAIL":
         return ReachabilityCheck(id="ssh_auth", status="SKIP", message="SSH authentication skipped because the SSH port is closed.")
 

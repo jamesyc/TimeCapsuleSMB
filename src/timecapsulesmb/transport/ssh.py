@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
@@ -67,45 +68,6 @@ SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/n
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
 SSH_ERROR_STDERR_LIMIT_BYTES = 65536
 SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
-def _tokens_include_identity_file(tokens: list[str]) -> bool:
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        lowered = token.lower()
-        if token == "-i" or (token.startswith("-i") and len(token) > 2):
-            return True
-        if lowered.startswith("-oidentityfile="):
-            return True
-        if token == "-o" and i + 1 < len(tokens) and tokens[i + 1].lower().startswith("identityfile="):
-            return True
-        i += 1
-    return False
-
-
-def _ssh_isolation_args(ssh_opts: str) -> list[str]:
-    """Base ssh args prepended before the caller's ssh_opts.
-
-    Always isolates from the user's ssh_config (``-F /dev/null``). The transport
-    otherwise authenticates by password (an ``SshConnection`` carries no key), so
-    by default it also stops ssh from offering the user's default keys or agent:
-    an encrypted default key triggers an ``Enter passphrase for key ...`` prompt
-    that the pexpect password matcher never answers, hanging until timeout.
-
-    When the caller deliberately supplies an identity through ``TC_SSH_OPTS``
-    (``-i`` / ``IdentityFile``), that intent is respected: pubkey auth stays
-    enabled and only ``IdentitiesOnly=yes`` is added, so the provided key is used
-    while the agent's other keys can't sneak in a passphrase prompt.
-    """
-    args = ["-F", "/dev/null"]
-    try:
-        tokens = shlex.split(ssh_opts)
-    except ValueError:
-        tokens = ssh_opts.split()
-    if _tokens_include_identity_file(tokens):
-        args += ["-o", "IdentitiesOnly=yes"]
-    else:
-        args += ["-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password"]
-    return args
 
 
 def _summarize_remote_command(remote_cmd: str) -> str:
@@ -343,8 +305,75 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
     return expanded
 
 
+def _ssh_option_assignments(tokens: list[str]) -> Iterator[tuple[str, str]]:
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "-o" and i + 1 < len(tokens):
+            assignment = tokens[i + 1]
+            i += 2
+        elif token.startswith("-o") and len(token) > 2:
+            assignment = token[2:]
+            i += 1
+        else:
+            i += 1
+            continue
+        if "=" in assignment:
+            name, value = assignment.split("=", 1)
+        else:
+            parts = assignment.split(None, 1)
+            if len(parts) != 2:
+                continue
+            name, value = parts
+        name = name.strip().lower()
+        value = value.strip().lower()
+        if not name:
+            continue
+        yield name, value
+
+
+def _tokens_request_public_key_auth(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token == "-i":
+            if index + 1 < len(tokens) and tokens[index + 1].lower() != "none":
+                return True
+        elif token.startswith("-i") and len(token) > 2 and token[2:].lower() != "none":
+            return True
+
+    key_source_options = {
+        "identityfile",
+        "identityagent",
+        "certificatefile",
+        "pkcs11provider",
+        "securitykeyprovider",
+    }
+    for name, value in _ssh_option_assignments(tokens):
+        if name in key_source_options and value != "none":
+            return True
+        if name == "pubkeyauthentication" and value in {"yes", "unbound", "host-bound"}:
+            return True
+        if name == "preferredauthentications" and "publickey" in value.split(","):
+            return True
+        if name == "batchmode" and value == "yes":
+            return True
+    return False
+
+
+def _connection_ssh_args(connection: SshConnection) -> list[str]:
+    """Return config-isolated SSH args with authentication derived per connection."""
+    tokens = _normalize_ssh_tokens(connection.ssh_opts)
+    args = ["-F", "/dev/null"]
+    if not connection.password:
+        args.extend(["-o", "BatchMode=yes"])
+    elif not _tokens_request_public_key_auth(tokens):
+        # Avoid passphrase prompts from unintended default keys while preserving
+        # explicit key configuration and keyboard-interactive password servers.
+        args.extend(["-o", "PubkeyAuthentication=no"])
+    return [*args, *tokens]
+
+
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    cmd = ["ssh", *_ssh_isolation_args(connection.ssh_opts), *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    cmd = ["ssh", *_connection_ssh_args(connection), connection.host, remote_cmd]
     timeout_message = (
         "Timed out waiting for ssh command to finish: "
         f"{_summarize_remote_command(remote_cmd)}"
@@ -370,7 +399,7 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
 
 
-def _run_sshpass_ssh(
+def _run_piped_ssh(
     connection: SshConnection,
     remote_cmd: str,
     *,
@@ -380,11 +409,15 @@ def _run_sshpass_ssh(
     timeout_message: str,
     stdout_is_text: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
-    if find_command("sshpass") is None:
-        raise SshError(missing_tool_message)
     env = dict(os.environ)
-    env["SSHPASS"] = connection.password
-    cmd = ["sshpass", "-e", "ssh", *_ssh_isolation_args(connection.ssh_opts), *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    if connection.password:
+        if find_command("sshpass") is None:
+            raise SshError(missing_tool_message)
+        env["SSHPASS"] = connection.password
+        command_prefix = ["sshpass", "-e", "ssh"]
+    else:
+        command_prefix = ["ssh"]
+    cmd = [*command_prefix, *_connection_ssh_args(connection), connection.host, remote_cmd]
     proc: subprocess.CompletedProcess[bytes] | None = None
     for attempt in range(3):
         try:
@@ -406,7 +439,7 @@ def _run_sshpass_ssh(
             break
         time.sleep(1)
     if proc is None:
-        raise SshError("sshpass ssh command did not run")
+        raise SshError("piped ssh command did not run")
     combined_text = _decode_ssh_error_output(
         proc.stderr,
         b"" if proc.returncode == 0 else proc.stdout,
@@ -430,7 +463,7 @@ def run_ssh_capture_bytes(
     This intentionally uses a pipe instead of the pexpect PTY path because
     firmware bank reads are binary and a PTY can transform byte streams.
     """
-    proc = _run_sshpass_ssh(
+    proc = _run_piped_ssh(
         connection,
         remote_cmd,
         timeout=timeout,
@@ -466,13 +499,12 @@ def ssh_local_forward(
 
     cmd = [
         "ssh",
-        *_ssh_isolation_args(connection.ssh_opts),
+        *_connection_ssh_args(connection),
         "-N",
         "-o",
         "ExitOnForwardFailure=yes",
         "-L",
         f"{local_port}:{remote_host}:{remote_port}",
-        *_normalize_ssh_tokens(connection.ssh_opts),
         connection.host,
     ]
     child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=ready_timeout)
@@ -610,8 +642,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
         cmd = [
             scp,
             *legacy_option,
-            *_ssh_isolation_args(connection.ssh_opts),
-            *_normalize_ssh_tokens(connection.ssh_opts),
+            *_connection_ssh_args(connection),
             str(src),
             _scp_remote_target(connection.host, dest),
         ]
@@ -640,7 +671,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
 
     remote_cmd = f"/bin/sh -c {shlex.quote('cat > ' + shlex.quote(dest))}"
     try:
-        proc = _run_sshpass_ssh(
+        proc = _run_piped_ssh(
             connection,
             remote_cmd,
             input_bytes=src.read_bytes(),
