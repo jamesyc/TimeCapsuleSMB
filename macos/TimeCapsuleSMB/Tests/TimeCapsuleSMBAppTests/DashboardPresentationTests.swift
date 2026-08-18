@@ -452,6 +452,15 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(partialRow.status, .warning)
         XCTAssertEqual(partialRow.detail, "SSH reachable, SMB port closed.")
 
+        let authFailed = DeviceReachabilitySnapshot(
+            refreshedAt: Date(timeIntervalSince1970: 2),
+            payload: try testReachabilityPayload(status: "partial", summary: "SSH authentication failed.")
+                .decode(ReachabilityPayload.self)
+        )
+        let authFailedRow = try row(.connection, in: DeviceDashboardOverviewPresentation(summary: summary, reachabilitySnapshot: authFailed))
+        XCTAssertEqual(authFailedRow.status, .warning)
+        XCTAssertEqual(authFailedRow.detail, "The device rejected the supplied password or SSH credentials.")
+
         let unreachable = DeviceReachabilitySnapshot(
             refreshedAt: Date(timeIntervalSince1970: 3),
             payload: try testReachabilityPayload(status: "unreachable", summary: "Could not reach SSH or SMB.")

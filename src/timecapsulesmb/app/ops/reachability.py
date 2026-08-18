@@ -4,7 +4,6 @@ from timecapsulesmb.app.context import AppOperationContext
 from timecapsulesmb.app.contracts import reachability_payload
 from timecapsulesmb.app.ops.common import load_optional_request_config
 from timecapsulesmb.services.app import OperationResult
-from timecapsulesmb.services.credentials import request_password
 from timecapsulesmb.services.reachability import run_reachability
 
 
@@ -14,7 +13,7 @@ def reachability_operation(params: dict[str, object], context: AppOperationConte
     result = run_reachability(
         config,
         params,
-        password=request_password(params),
+        password=config.get("TC_PASSWORD"),
         stage=context.stage,
     )
     for check in result.checks:

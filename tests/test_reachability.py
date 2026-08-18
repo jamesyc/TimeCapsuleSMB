@@ -9,6 +9,7 @@ from timecapsulesmb.app import service
 from timecapsulesmb.core.config import AppConfig, DEFAULTS
 from timecapsulesmb.core.net import endpoint_host
 from timecapsulesmb.services import reachability
+from timecapsulesmb.transport.errors import SshAuthenticationError, SshNetworkError
 
 
 class CollectingSink:
@@ -312,6 +313,78 @@ class ReachabilityTests(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "PASS")
+
+    def test_ssh_auth_rejection_downgrades_reachability_to_partial(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+
+        with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
+            with mock.patch(
+                "timecapsulesmb.services.reachability.subprocess.run",
+                return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
+            ):
+                with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
+                    with mock.patch(
+                        "timecapsulesmb.services.reachability.run_ssh",
+                        side_effect=SshAuthenticationError("Permission denied"),
+                    ):
+                        result = reachability.run_reachability(config, {}, password="bad")
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.summary, "SSH authentication failed.")
+        self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "FAIL")
+
+    def test_ssh_network_failure_makes_auth_check_unavailable(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
+        port_check = reachability.ReachabilityCheck("ssh_port", "SKIP", "proxied", host="10.0.0.2")
+
+        with mock.patch(
+            "timecapsulesmb.services.reachability.run_ssh",
+            side_effect=SshNetworkError("proxy unavailable"),
+        ):
+            result = reachability.check_ssh_auth(
+                "root@10.0.0.2",
+                config,
+                password="pw",
+                port_check=port_check,
+                timeout=8,
+            )
+
+        self.assertEqual(result.status, "SKIP")
+        self.assertEqual(result.message, "SSH authentication could not be checked.")
+        self.assertEqual(result.detail, "proxy unavailable")
+
+    def test_app_operation_uses_effective_config_password(self) -> None:
+        base = AppConfig.from_values(
+            {
+                "TC_HOST": "root@10.0.0.2",
+                "TC_PASSWORD": "saved-password",
+                "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"],
+            },
+            file_values={"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "saved-password"},
+        )
+
+        for params, expected in (
+            ({}, "saved-password"),
+            ({"credentials": {"password": "keychain-password"}}, "keychain-password"),
+        ):
+            with self.subTest(expected=expected):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.common.load_optional_env_config", return_value=base):
+                    with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
+                        with mock.patch(
+                            "timecapsulesmb.services.reachability.subprocess.run",
+                            return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
+                        ):
+                            with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
+                                with self.ssh_auth_succeeds() as ssh:
+                                    rc = service.run_api_request(
+                                        {"operation": "reachability", "params": params},
+                                        collector.sink,
+                                    )
+
+                self.assertEqual(rc, 0)
+                self.assertEqual(ssh.call_args.args[0].password, expected)
+                self.assertNotIn(expected, str(collector.events))
 
     def test_app_operation_emits_stages_checks_and_payload(self) -> None:
         collector = CollectingSink()

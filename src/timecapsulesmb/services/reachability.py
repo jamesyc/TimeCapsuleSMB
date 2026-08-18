@@ -9,9 +9,9 @@ from typing import Callable
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host, parse_endpoint, resolve_host_ips
-from timecapsulesmb.transport.errors import TransportError
+from timecapsulesmb.transport.errors import SshAuthenticationError, TransportError
 from timecapsulesmb.transport.local import tcp_connect_error
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
 
 
 REACHABILITY_OK_TOKEN = "timecapsulesmb-reachability-ok"
@@ -258,11 +258,19 @@ def check_ssh_auth(
             check=False,
             timeout=timeout,
         )
-    except (TransportError, SshCommandTimeout) as exc:
+    except SshAuthenticationError as exc:
         return ReachabilityCheck(
             id="ssh_auth",
             status="FAIL",
             message="SSH authentication failed.",
+            host=endpoint_host(ssh_target),
+            detail=str(exc),
+        )
+    except TransportError as exc:
+        return ReachabilityCheck(
+            id="ssh_auth",
+            status="SKIP",
+            message="SSH authentication could not be checked.",
             host=endpoint_host(ssh_target),
             detail=str(exc),
         )
@@ -309,12 +317,17 @@ def result_from_checks(
     checks: Sequence[ReachabilityCheck],
 ) -> ReachabilityResult:
     by_id = {check.id: check for check in checks}
-    ssh_signal = by_id.get("ssh_auth") and by_id["ssh_auth"].status == "PASS"
+    ssh_auth = by_id.get("ssh_auth")
+    ssh_auth_failed = ssh_auth is not None and ssh_auth.status == "FAIL"
+    ssh_signal = ssh_auth is not None and ssh_auth.status == "PASS"
     if not ssh_signal:
         ssh_signal = by_id.get("ssh_port") and by_id["ssh_port"].status == "PASS"
     smb_signal = by_id.get("smb_port") and by_id["smb_port"].status == "PASS"
 
-    if ssh_signal and smb_signal:
+    if ssh_auth_failed:
+        status = "partial"
+        summary = "SSH authentication failed."
+    elif ssh_signal and smb_signal:
         status = "reachable"
         summary = "SSH reachable; SMB port reachable."
     elif ssh_signal and not smb_signal:

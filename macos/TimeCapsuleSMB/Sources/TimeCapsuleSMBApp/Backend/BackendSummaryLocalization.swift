@@ -79,6 +79,8 @@ enum BackendSummaryLocalization {
             return L10n.string("backend.summary.reachability.ssh_only")
         case "smb port reachable, ssh closed.":
             return L10n.string("backend.summary.reachability.smb_only")
+        case "ssh authentication failed.":
+            return L10n.string("backend.error.auth_failed")
         case "could not reach ssh or smb.":
             return L10n.string("backend.summary.reachability.unreachable")
         default:
