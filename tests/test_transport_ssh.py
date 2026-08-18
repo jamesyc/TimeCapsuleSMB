@@ -251,6 +251,24 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(spawn_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
 
+    def test_run_ssh_does_not_retry_passwordless_auth_rejection(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(255, "Permission denied (publickey).\n"),
+            ) as spawn_mock:
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
+                    with self.assertRaises(ssh_transport.SshAuthenticationError):
+                        ssh_transport.run_ssh(
+                            ssh_transport.SshConnection("root@192.168.1.118", "", "-o StrictHostKeyChecking=no"),
+                            "/bin/echo ok",
+                            check=False,
+                            timeout=10,
+                        )
+
+        spawn_mock.assert_called_once()
+        sleep_mock.assert_not_called()
+
     def test_run_ssh_check_false_returns_nonzero_process(self) -> None:
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
             with mock.patch(
@@ -882,6 +900,20 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(subprocess_run_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
 
+    def test_run_ssh_capture_bytes_does_not_retry_passwordless_auth_rejection(self) -> None:
+        connection = ssh_transport.SshConnection("root@192.168.1.118", "", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh.subprocess.run",
+                return_value=subprocess.CompletedProcess(["ssh"], 255, stdout=b"", stderr=b"Permission denied (publickey).\n"),
+            ) as subprocess_run_mock:
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
+                    with self.assertRaises(ssh_transport.SshAuthenticationError):
+                        ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10)
+
+        subprocess_run_mock.assert_called_once()
+        sleep_mock.assert_not_called()
+
     def test_run_scp_scp_timeout_reports_remote_destination(self) -> None:
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
@@ -900,6 +932,28 @@ class SSHTransportTests(unittest.TestCase):
             str(exc.exception),
             f"Timed out copying {src.name} to remote path /tmp/test-upload via scp",
         )
+
+    def test_run_scp_does_not_retry_passwordless_auth_rejection(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection(
+                "root@192.168.1.118",
+                "",
+                "-o StrictHostKeyChecking=no",
+                remote_has_scp=True,
+            )
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh._spawn_with_password",
+                    return_value=(255, "Permission denied (publickey).\n"),
+                ) as spawn_mock:
+                    with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
+                        with self.assertRaises(ssh_transport.ScpError):
+                            ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+
+        spawn_mock.assert_called_once()
+        sleep_mock.assert_not_called()
 
     def test_run_scp_brackets_ipv6_literal_destination(self) -> None:
         with NamedTemporaryFile() as tmp:

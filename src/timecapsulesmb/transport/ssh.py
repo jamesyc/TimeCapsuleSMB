@@ -104,6 +104,10 @@ def _looks_like_transient_ssh_auth_failure(output: str) -> bool:
     return "permission denied" in lowered or "please try again" in lowered
 
 
+def _should_retry_password_auth(connection: SshConnection, output: str, attempt: int) -> bool:
+    return bool(connection.password) and attempt < 2 and _looks_like_transient_ssh_auth_failure(output)
+
+
 def _decode_ssh_error_output(stderr: bytes, stdout: bytes = b"", *, include_stdout: bool = True) -> str:
     stderr_text = stderr[:SSH_ERROR_STDERR_LIMIT_BYTES].decode("utf-8", errors="replace")
     stdout_text = stdout[:SSH_ERROR_STDOUT_PREFIX_BYTES].decode("utf-8", errors="replace") if include_stdout else ""
@@ -385,7 +389,7 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
             timeout=timeout,
             timeout_message=timeout_message,
         )
-        if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
+        if rc == 0 or not _should_retry_password_auth(connection, stdout, attempt):
             break
         time.sleep(1)
     client_error = classify_ssh_client_error(stdout)
@@ -433,7 +437,7 @@ def _run_piped_ssh(
         if proc.returncode == 0:
             break
         combined_text = _decode_ssh_error_output(proc.stderr, proc.stdout, include_stdout=stdout_is_text)
-        if not _looks_like_transient_ssh_auth_failure(combined_text) or attempt == 2:
+        if not _should_retry_password_auth(connection, combined_text, attempt):
             break
         time.sleep(1)
     if proc is None:
@@ -656,7 +660,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 )
             except SshCommandTimeout as e:
                 raise ScpError(str(e)) from e
-            if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
+            if rc == 0 or not _should_retry_password_auth(connection, stdout, attempt):
                 break
             time.sleep(1)
         if rc != 0:
