@@ -21,6 +21,14 @@ class CollectingSink:
 
 
 class ReachabilityTests(unittest.TestCase):
+    def ssh_auth_succeeds(self):
+        return mock.patch(
+            "timecapsulesmb.services.reachability.run_ssh",
+            return_value=subprocess.CompletedProcess(
+                ["ssh"], 0, stdout=reachability.REACHABILITY_OK_TOKEN, stderr=""
+            ),
+        )
+
     def test_reachability_passes_when_ssh_and_smb_work(self) -> None:
         config = AppConfig.from_values({
             "TC_HOST": "root@tc.local",
@@ -54,7 +62,7 @@ class ReachabilityTests(unittest.TestCase):
             "smb_port": "PASS",
         })
 
-    def test_missing_password_skips_auth_but_checks_ports(self) -> None:
+    def test_missing_password_attempts_key_auth_and_checks_ports(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
 
         with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
@@ -63,13 +71,14 @@ class ReachabilityTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ):
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
-                    with mock.patch("timecapsulesmb.services.reachability.run_ssh") as ssh:
+                    with self.ssh_auth_succeeds() as ssh:
                         result = reachability.run_reachability(config, {}, password="")
 
-        ssh.assert_not_called()
+        ssh.assert_called_once()
+        self.assertEqual(ssh.call_args.args[0].password, "")
         self.assertEqual(result.status, "reachable")
         self.assertEqual(result.summary, "SSH reachable; SMB port reachable.")
-        self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "SKIP")
+        self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "PASS")
 
     def test_reachability_strips_ports_from_host_candidates(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2:22", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
@@ -85,11 +94,12 @@ class ReachabilityTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ):
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
-                    result = reachability.run_reachability(
-                        config,
-                        {"smb_hosts": ["capsule.local:445"]},
-                        password="",
-                    )
+                    with self.ssh_auth_succeeds():
+                        result = reachability.run_reachability(
+                            config,
+                            {"smb_hosts": ["capsule.local:445"]},
+                            password="",
+                        )
 
         self.assertEqual(result.status, "reachable")
         self.assertIn(("10.0.0.2", 22), tcp_calls)
@@ -107,7 +117,8 @@ class ReachabilityTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ):
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
-                    result = reachability.run_reachability(config, {}, password="")
+                    with self.ssh_auth_succeeds():
+                        result = reachability.run_reachability(config, {}, password="")
 
         self.assertEqual(result.status, "partial")
         self.assertEqual(result.summary, "SSH reachable, SMB port closed.")
@@ -172,11 +183,12 @@ class ReachabilityTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ) as ping:
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None) as tcp:
-                    result = reachability.run_reachability(
-                        config,
-                        {"tcp_timeout": "not-a-number", "ssh_timeout": "not-a-number"},
-                        password="",
-                    )
+                    with self.ssh_auth_succeeds():
+                        result = reachability.run_reachability(
+                            config,
+                            {"tcp_timeout": "not-a-number", "ssh_timeout": "not-a-number"},
+                            password="",
+                        )
 
         self.assertEqual(result.status, "reachable")
         self.assertEqual(ping.call_args.kwargs["timeout"], 3.0)
@@ -194,7 +206,8 @@ class ReachabilityTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["ping6"], 0, stderr=b""),
             ) as ping:
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None):
-                    reachability.run_reachability(config, {}, password="")
+                    with self.ssh_auth_succeeds():
+                        reachability.run_reachability(config, {}, password="")
 
         self.assertEqual(ping.call_args.args[0][0], "/sbin/ping6")
         self.assertIn("fd00::2", ping.call_args.args[0])
@@ -248,11 +261,12 @@ class ReachabilityTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
             ) as ping:
                 with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", return_value=None) as tcp:
-                    reachability.run_reachability(
-                        config,
-                        {"tcp_timeout": -1, "ssh_timeout": -1},
-                        password="",
-                    )
+                    with self.ssh_auth_succeeds():
+                        reachability.run_reachability(
+                            config,
+                            {"tcp_timeout": -1, "ssh_timeout": -1},
+                            password="",
+                        )
 
         self.assertEqual(ping.call_args.kwargs["timeout"], 3.0)
         self.assertEqual(tcp.call_args.kwargs["timeout"], 2.0)

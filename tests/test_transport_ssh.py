@@ -111,6 +111,8 @@ class SSHTransportTests(unittest.TestCase):
                 "-F",
                 "/dev/null",
                 "-o",
+                "PubkeyAuthentication=no",
+                "-o",
                 "PubkeyAcceptedKeyTypes=+ssh-rsa",
                 "root@192.168.1.67",
                 "/bin/echo ok",
@@ -500,6 +502,8 @@ class SSHTransportTests(unittest.TestCase):
                 "ssh",
                 "-F",
                 "/dev/null",
+                "-o",
+                "PubkeyAuthentication=no",
                 "-J",
                 "jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123",
                 "-o",
@@ -508,6 +512,106 @@ class SSHTransportTests(unittest.TestCase):
                 "/bin/echo ok",
             ],
         )
+
+    def test_run_ssh_respects_explicit_identity_without_restricting_agent(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(0, "ok\n"),
+            ) as spawn_mock:
+                ssh_transport.run_ssh(
+                    ssh_transport.SshConnection(
+                        "root@192.168.1.67",
+                        "pw",
+                        "-i /home/tc/.ssh/id_tc -o HostKeyAlgorithms=+ssh-rsa",
+                    ),
+                    "/bin/echo ok",
+                    check=False,
+                    timeout=10,
+                )
+        cmd = spawn_mock.call_args.args[0]
+        # Explicit key configuration keeps the caller's existing OpenSSH
+        # behavior, including agent fallback.
+        self.assertNotIn("IdentitiesOnly=yes", cmd)
+        self.assertNotIn("PubkeyAuthentication=no", cmd)
+        self.assertNotIn("PreferredAuthentications=password", cmd)
+        self.assertIn("-i", cmd)
+        self.assertIn("/home/tc/.ssh/id_tc", cmd)
+
+    def test_connection_ssh_args_preserve_explicit_key_authentication_intent(self) -> None:
+        for opts in (
+            "-i ~/.ssh/id_tc",
+            "-i~/.ssh/id_tc",
+            "-i none -i ~/.ssh/id_tc",
+            "-I /usr/local/lib/pkcs11.so",
+            "-I/usr/local/lib/pkcs11.so",
+            "-o IdentityFile=/home/tc/id_tc",
+            "-oIdentityFile=/home/tc/id_tc",
+            "-o 'IdentityFile /home/tc/id_tc'",
+            "-o IdentityAgent=/tmp/ssh-agent.sock",
+            "-o CertificateFile=/home/tc/id_tc-cert.pub",
+            "-o PKCS11Provider=/usr/local/lib/pkcs11.so",
+            "-o SecurityKeyProvider=internal",
+            "-o PubkeyAuthentication=yes",
+            "-o 'PubkeyAuthentication yes'",
+            "-o PubkeyAuthentication=unbound",
+            "-o PubkeyAuthentication=host-bound",
+            "-o PreferredAuthentications=publickey,password",
+            "-o 'PreferredAuthentications publickey,password'",
+            "-o 'PreferredAuthentications password, publickey'",
+            "-o BatchMode=yes",
+        ):
+            with self.subTest(opts=opts):
+                with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                    args = ssh_transport._connection_ssh_args(
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", opts)
+                    )
+                self.assertEqual(args[:2], ["-F", "/dev/null"])
+                self.assertNotIn("IdentitiesOnly=yes", args)
+                self.assertNotIn("PubkeyAuthentication=no", args)
+                self.assertNotIn("PreferredAuthentications=password", args)
+
+    def test_connection_ssh_args_force_password_without_explicit_key_intent(self) -> None:
+        for opts in (
+            "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa",
+            "-o IdentityFile=none",
+            "-o IdentityAgent=none",
+            "-I none",
+            "-o PubkeyAuthentication=no",
+            "-o PreferredAuthentications=keyboard-interactive,password",
+            "-o BatchMode=no",
+        ):
+            with self.subTest(opts=opts):
+                with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                    args = ssh_transport._connection_ssh_args(
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", opts)
+                    )
+                self.assertEqual(args[:2], ["-F", "/dev/null"])
+                self.assertIn("PubkeyAuthentication=no", args)
+                self.assertNotIn("PreferredAuthentications=password", args)
+                self.assertNotIn("IdentitiesOnly=yes", args)
+
+    def test_connection_ssh_args_use_batch_mode_without_password(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            args = ssh_transport._connection_ssh_args(
+                ssh_transport.SshConnection("root@192.168.1.118", "", "-o HostKeyAlgorithms=+ssh-rsa")
+            )
+
+        self.assertEqual(args[:2], ["-F", "/dev/null"])
+        self.assertIn("BatchMode=yes", args)
+        self.assertNotIn("PubkeyAuthentication=no", args)
+
+    def test_connection_ssh_args_ignore_identity_inside_proxycommand(self) -> None:
+        opts = "-o 'ProxyCommand=ssh -i ~/.ssh/jump -W %h:%p jump.example'"
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            args = ssh_transport._connection_ssh_args(
+                ssh_transport.SshConnection("root@192.168.1.118", "pw", opts)
+            )
+
+        self.assertIn("PubkeyAuthentication=no", args)
 
     def test_ssh_option_supported_returns_false_for_bad_configuration_option(self) -> None:
         with mock.patch(
@@ -716,6 +820,27 @@ class SSHTransportTests(unittest.TestCase):
                     self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10), payload)
         cmd = subprocess_run_mock.call_args.args[0]
         self.assertEqual(cmd[:5], ["sshpass", "-e", "ssh", "-F", "/dev/null"])
+
+    def test_run_ssh_capture_bytes_without_password_uses_plain_ssh(self) -> None:
+        payload = b"\x00firmware\xff\n"
+        connection = ssh_transport.SshConnection("root@192.168.1.118", "", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh.find_command",
+                side_effect=AssertionError("passwordless key auth must not require sshpass"),
+            ):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh.subprocess.run",
+                    return_value=subprocess.CompletedProcess(["ssh"], 0, stdout=payload, stderr=b""),
+                ) as subprocess_run_mock:
+                    self.assertEqual(
+                        ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10),
+                        payload,
+                    )
+
+        cmd = subprocess_run_mock.call_args.args[0]
+        self.assertEqual(cmd[:3], ["ssh", "-F", "/dev/null"])
+        self.assertIn("BatchMode=yes", cmd)
 
     def test_run_ssh_capture_bytes_does_not_decode_successful_binary_stdout(self) -> None:
         payload = DecodeTrapBytes(b"\x00firmware\xff" * 4096)
