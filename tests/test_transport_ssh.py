@@ -1062,8 +1062,29 @@ class SSHTransportTests(unittest.TestCase):
         self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
-            f"Timed out copying {src.name} to remote path /tmp/test-upload via sshpass cat fallback",
+            f"Timed out copying {src.name} to remote path /tmp/test-upload via SSH cat fallback",
         )
+
+    def test_run_scp_cat_fallback_failure_uses_transport_neutral_message(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection(
+                "root@192.168.1.118",
+                "",
+                "-o StrictHostKeyChecking=no",
+                remote_has_scp=False,
+            )
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh.subprocess.run",
+                    return_value=subprocess.CompletedProcess(["ssh"], 1, stdout=b"", stderr=b""),
+                ):
+                    with self.assertRaises(ssh_transport.ScpError) as exc:
+                        ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+
+        self.assertIn("SSH cat fallback upload failed", str(exc.exception))
+        self.assertNotIn("sshpass cat fallback", str(exc.exception))
 
     def test_run_scp_caches_remote_scp_capability(self) -> None:
         with NamedTemporaryFile() as tmp:

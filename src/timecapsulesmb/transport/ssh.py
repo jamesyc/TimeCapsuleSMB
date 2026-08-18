@@ -682,7 +682,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 "Remote scp is unavailable and local sshpass is missing. "
                 "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."
             ),
-            timeout_message=f"Timed out copying {src.name} to remote path {dest} via sshpass cat fallback",
+            timeout_message=f"Timed out copying {src.name} to remote path {dest} via SSH cat fallback",
         )
     except SshCommandTimeout as exc:
         raise ScpError(str(exc)) from exc
@@ -690,5 +690,5 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
         raise ScpError(str(exc)) from exc
     if proc.returncode != 0:
         stdout = _decode_ssh_error_output(proc.stderr, proc.stdout).strip()
-        raise ScpError(stdout or f"sshpass cat fallback upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
+        raise ScpError(stdout or f"SSH cat fallback upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
     _verify_remote_size(connection, src, dest, timeout=30)
