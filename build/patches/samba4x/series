@@ -51,6 +51,10 @@
 # aio_fork reports worker read failures through rw_ret. Keep the original errno
 # instead of treating ssize_t -1 as an oversized successful read after casting.
 0030-vfs-aio-fork-error-preservation.patch|preserve aio_fork worker read errors
+# Limit aio_fork helpers without turning overload into an SMB I/O error. A
+# bounded FIFO keeps accepted requests asynchronous; excess work runs in the
+# client smbd process so the helper count cannot grow without limit.
+0031-vfs-aio-fork-max-children.patch|bounded aio_fork helpers with FIFO backpressure
 
 # Static build compile fixes.
 # This reduced nonshared build can expose duplicate typedefs through multiple

@@ -1,0 +1,781 @@
+diff --git a/docs-xml/manpages/vfs_aio_fork.8.xml b/docs-xml/manpages/vfs_aio_fork.8.xml
+index d55af32..94a97b9 100644
+--- a/docs-xml/manpages/vfs_aio_fork.8.xml
++++ b/docs-xml/manpages/vfs_aio_fork.8.xml
+@@ -43,15 +43,32 @@
+ 	<para>To work around all these limitations, the aio_fork module
+ 	was written. It uses forked helper processes instead of the
+ 	internal Posix AIO interface to create asynchronousity for
+-	read and write calls. It has no parameters, it will create
+-	helper processes when async requests come in as needed. Idle
+-	helper processes will be removed every 30 seconds.
++	read and write calls. It creates helper processes when async
++	requests come in as needed. Idle helper processes will be removed
++	every 30 seconds.
+ 	</para>
+ 
+ 	<para>This module is stackable.</para>
+ 
+ </refsect1>
+ 
++<refsect1>
++	<title>OPTIONS</title>
++
++	<variablelist>
++		<varlistentry>
++			<term>aio_fork:max_children = INTEGER</term>
++			<listitem>
++				<para>Limit the number of helper processes for this
++				share connection. When all helpers are busy, the module
++				queues at most one request per helper and then performs
++				additional requests synchronously. The default value of
++				zero leaves the number of helpers unlimited.</para>
++			</listitem>
++		</varlistentry>
++	</variablelist>
++</refsect1>
++
+ 
+ <refsect1>
+ 	<title>EXAMPLES</title>
+diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
+index de81d1c..ef12b58 100644
+--- a/source3/modules/vfs_aio_fork.c
++++ b/source3/modules/vfs_aio_fork.c
+@@ -46,6 +46,7 @@ struct aio_child_list;
+ 
+ struct aio_fork_config {
+ 	bool erratic_testing_mode;
++	unsigned int max_children;
+ 	struct aio_child_list *children;
+ };
+ 
+@@ -141,6 +142,7 @@ struct rw_ret {
+ };
+ 
+ struct aio_child_list;
++struct aio_fork_state;
+ 
+ struct aio_child {
+ 	struct aio_child *prev, *next;
+@@ -154,6 +156,11 @@ struct aio_child {
+ 
+ struct aio_child_list {
+ 	struct aio_child *children;
++	struct aio_fork_state *pending;
++	struct smbd_server_connection *sconn;
++	unsigned int max_children;
++	unsigned int num_children;
++	unsigned int num_pending;
+ 	struct tevent_timer *cleanup_event;
+ };
+ 
+@@ -281,6 +288,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+ 		if (config->children == NULL) {
+ 			return NULL;
+ 		}
++		config->children->sconn = handle->conn->sconn;
++		config->children->max_children = config->max_children;
+ 	}
+ 	children = config->children;
+ 
+@@ -417,6 +426,7 @@ static int aio_child_destructor(struct aio_child *child)
+ 	sys_write_v(child->sockfd, &c, sizeof(c));
+ 	close(child->sockfd);
+ 	DLIST_REMOVE(child->list->children, child);
++	child->list->num_children -= 1;
+ 	return 0;
+ }
+ 
+@@ -494,6 +504,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+ 
+ 	result->list = children;
+ 	DLIST_ADD(children->children, result);
++	children->num_children += 1;
+ 
+ 	talloc_set_destructor(result, aio_child_destructor);
+ 
+@@ -509,268 +520,285 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+ 	return ret;
+ }
+ 
+-static int get_idle_child(struct vfs_handle_struct *handle,
+-			  struct aio_child **pchild)
+-{
+-	struct aio_child_list *children;
++struct aio_fork_state {
++	struct aio_fork_state *prev, *next;
++	struct aio_child_list *list;
+ 	struct aio_child *child;
++	struct tevent_req *req;
++	struct tevent_context *ev;
++	struct files_struct *fsp;
++	void *data;
++	size_t n;
++	off_t offset;
++	enum cmd_type cmd;
++	bool erratic_testing_mode;
++	bool queued;
++	bool active;
++	ssize_t ret;
++	struct vfs_aio_state vfs_aio_state;
++};
+ 
+-	children = init_aio_children(handle);
+-	if (children == NULL) {
+-		return ENOMEM;
+-	}
++static void aio_fork_schedule_pending(struct aio_child_list *list);
++static void aio_fork_done(struct tevent_req *subreq);
+ 
+-	for (child = children->children; child != NULL; child = child->next) {
++static struct aio_child *aio_fork_find_idle_child(
++	struct aio_child_list *list)
++{
++	struct aio_child *child;
++
++	for (child = list->children; child != NULL; child = child->next) {
+ 		if (!child->busy) {
+-			break;
++			return child;
+ 		}
+ 	}
++	return NULL;
++}
+ 
+-	if (child == NULL) {
+-		int ret;
+-
+-		DEBUG(10, ("no idle child found, creating new one\n"));
+-
+-		ret = create_aio_child(handle->conn->sconn, children,
+-					  128*1024, &child);
+-		if (ret != 0) {
+-			DEBUG(10, ("create_aio_child failed: %s\n",
+-				   strerror(errno)));
+-			return ret;
+-		}
++static void aio_fork_unqueue(struct aio_fork_state *state)
++{
++	if (!state->queued) {
++		return;
+ 	}
++	DLIST_REMOVE(state->list->pending, state);
++	state->list->num_pending -= 1;
++	state->queued = false;
++}
+ 
+-	child->dont_delete = true;
+-	child->busy = true;
++static void aio_fork_run_sync(struct aio_fork_state *state)
++{
++	struct timespec start, end;
++	int saved_errno = 0;
++	int fd = fsp_get_io_fd(state->fsp);
+ 
+-	*pchild = child;
+-	return 0;
++	PROFILE_TIMESTAMP(&start);
++	switch (state->cmd) {
++	case READ_CMD:
++		state->ret = sys_pread_full(
++			fd, state->data, state->n, state->offset);
++		break;
++	case PWRITE_CMD:
++		state->ret = sys_pwrite_full(
++			fd, state->data, state->n, state->offset);
++		break;
++	case WRITE_CMD:
++		state->ret = sys_write_full(fd, state->data, state->n);
++		break;
++	case FSYNC_CMD:
++		state->ret = fsync(fd);
++		break;
++	default:
++		state->ret = -1;
++		errno = EINVAL;
++	}
++	if (state->ret == -1) {
++		saved_errno = errno;
++	}
++	PROFILE_TIMESTAMP(&end);
++	state->vfs_aio_state.error = saved_errno;
++	state->vfs_aio_state.duration = nsec_time_diff(&end, &start);
++	tevent_req_done(state->req);
+ }
+ 
+-struct aio_fork_pread_state {
+-	struct aio_child *child;
+-	size_t n;
+-	void *data;
+-	ssize_t ret;
+-	struct vfs_aio_state vfs_aio_state;
+-};
++static void aio_fork_release_child(struct aio_fork_state *state,
++				   bool failed)
++{
++	struct aio_child_list *list = state->list;
++	struct aio_child *child = state->child;
+ 
+-static void aio_fork_pread_done(struct tevent_req *subreq);
++	state->active = false;
++	state->child = NULL;
++	child->busy = false;
++	if (failed) {
++		TALLOC_FREE(child);
++	}
++	aio_fork_schedule_pending(list);
++}
+ 
+-static struct tevent_req *aio_fork_pread_send(struct vfs_handle_struct *handle,
+-					      TALLOC_CTX *mem_ctx,
+-					      struct tevent_context *ev,
+-					      struct files_struct *fsp,
+-					      void *data,
+-					      size_t n, off_t offset)
++static bool aio_fork_dispatch(struct aio_fork_state *state,
++			      struct aio_child *child)
+ {
+-	struct tevent_req *req, *subreq;
+-	struct aio_fork_pread_state *state;
++	struct tevent_req *subreq;
+ 	struct rw_cmd cmd;
+ 	ssize_t written;
+ 	int err;
+-	struct aio_fork_config *config;
+-
+-	SMB_VFS_HANDLE_GET_DATA(handle, config,
+-				struct aio_fork_config,
+-				return NULL);
+-
+-	req = tevent_req_create(mem_ctx, &state, struct aio_fork_pread_state);
+-	if (req == NULL) {
+-		return NULL;
+-	}
+-	state->n = n;
+-	state->data = data;
+ 
+-	if (n > 128*1024) {
+-		/* TODO: support variable buffers */
+-		tevent_req_error(req, EINVAL);
+-		return tevent_req_post(req, ev);
+-	}
++	state->child = child;
++	state->active = true;
++	child->dont_delete = true;
++	child->busy = true;
+ 
+-	err = get_idle_child(handle, &state->child);
+-	if (err != 0) {
+-		tevent_req_error(req, err);
+-		return tevent_req_post(req, ev);
++	if (state->cmd == PWRITE_CMD || state->cmd == WRITE_CMD) {
++		memcpy(child->map->ptr, state->data, state->n);
+ 	}
+ 
+ 	ZERO_STRUCT(cmd);
+-	cmd.n = n;
+-	cmd.offset = offset;
+-	cmd.cmd = READ_CMD;
+-	cmd.erratic_testing_mode = config->erratic_testing_mode;
++	cmd.n = state->n;
++	cmd.offset = state->offset;
++	cmd.cmd = state->cmd;
++	cmd.erratic_testing_mode = state->erratic_testing_mode;
+ 
+-	DEBUG(10, ("sending fd %d to child %d\n", fsp_get_io_fd(fsp),
+-		   (int)state->child->pid));
++	DEBUG(10, ("sending fd %d to child %d\n",
++		   fsp_get_io_fd(state->fsp), (int)child->pid));
+ 
+ 	/*
+-	 * Not making this async. We're writing into an empty unix
+-	 * domain socket. This should never block.
++	 * Not making this async. We're writing into an empty unix domain
++	 * socket. This should never block.
+ 	 */
+-	written = write_fd(state->child->sockfd, &cmd, sizeof(cmd),
+-			   fsp_get_io_fd(fsp));
++	written = write_fd(child->sockfd, &cmd, sizeof(cmd),
++			   fsp_get_io_fd(state->fsp));
+ 	if (written == -1) {
+ 		err = errno;
+-
+-		TALLOC_FREE(state->child);
+-
+ 		DEBUG(10, ("write_fd failed: %s\n", strerror(err)));
+-		tevent_req_error(req, err);
+-		return tevent_req_post(req, ev);
++		aio_fork_release_child(state, true);
++		tevent_req_error(state->req, err);
++		return false;
+ 	}
+ 
+-	subreq = read_packet_send(state, ev, state->child->sockfd,
++	subreq = read_packet_send(state, state->ev, child->sockfd,
+ 				  sizeof(struct rw_ret), NULL, NULL);
+-	if (tevent_req_nomem(subreq, req)) {
+-		TALLOC_FREE(state->child); /* we sent sth down */
+-		return tevent_req_post(req, ev);
++	if (subreq == NULL) {
++		aio_fork_release_child(state, true); /* we sent sth down */
++		tevent_req_error(state->req, ENOMEM);
++		return false;
+ 	}
+-	tevent_req_set_callback(subreq, aio_fork_pread_done, req);
+-	return req;
++	tevent_req_set_callback(subreq, aio_fork_done, state->req);
++	return true;
+ }
+ 
+-static void aio_fork_pread_done(struct tevent_req *subreq)
++static void aio_fork_schedule_pending(struct aio_child_list *list)
+ {
+-	struct tevent_req *req = tevent_req_callback_data(
+-		subreq, struct tevent_req);
+-	struct aio_fork_pread_state *state = tevent_req_data(
+-		req, struct aio_fork_pread_state);
+-	ssize_t nread;
+-	uint8_t *buf;
+-	int err;
+-	struct rw_ret *retbuf;
+-
+-	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
+-	TALLOC_FREE(subreq);
+-	if (nread == -1) {
+-		TALLOC_FREE(state->child);
+-		tevent_req_error(req, err);
+-		return;
+-	}
+-
+-	retbuf = (struct rw_ret *)buf;
+-	state->ret = retbuf->size;
+-	state->vfs_aio_state.error = retbuf->ret_errno;
+-	state->vfs_aio_state.duration = retbuf->duration;
++	while (list->pending != NULL) {
++		struct aio_fork_state *state;
++		struct aio_child *child;
++		int ret;
+ 
+-	/*
+-	 * Preserve the worker's errno when pread returns -1 instead of casting
+-	 * the negative result to a huge size or using it as a memcpy length.
+-	 */
+-	if (state->ret >= 0) {
+-		if ((size_t)state->ret > state->n) {
+-			tevent_req_error(req, EIO);
+-			state->child->busy = false;
++		child = aio_fork_find_idle_child(list);
++		if (child == NULL && list->max_children != 0 &&
++		    list->num_children >= list->max_children) {
+ 			return;
+ 		}
+-		memcpy(state->data, state->child->map->ptr, state->ret);
+-	}
+-
+-	state->child->busy = false;
++		if (child == NULL) {
++			ret = create_aio_child(
++				list->sconn, list, 128*1024, &child);
++			if (ret != 0) {
++				/*
++				 * A failed fork must not strand an already accepted
++				 * request with no worker capable of releasing it.
++				 */
++				state = list->pending;
++				aio_fork_unqueue(state);
++				aio_fork_run_sync(state);
++				continue;
++			}
++		}
+ 
+-	tevent_req_done(req);
++		state = list->pending;
++		aio_fork_unqueue(state);
++		aio_fork_dispatch(state, child);
++	}
+ }
+ 
+-static ssize_t aio_fork_pread_recv(struct tevent_req *req,
+-				   struct vfs_aio_state *vfs_aio_state)
++static int aio_fork_state_destructor(struct aio_fork_state *state)
+ {
+-	struct aio_fork_pread_state *state = tevent_req_data(
+-		req, struct aio_fork_pread_state);
+-
+-	if (tevent_req_is_unix_error(req, &vfs_aio_state->error)) {
+-		return -1;
++	if (state->queued) {
++		aio_fork_unqueue(state);
+ 	}
+-	*vfs_aio_state = state->vfs_aio_state;
+-	return state->ret;
++	if (state->active) {
++		/*
++		 * The caller may free a submitted request if later setup fails.
++		 * Retire the worker and its mapping before another job can use it.
++		 */
++		aio_fork_release_child(state, true);
++	}
++	return 0;
+ }
+ 
+-struct aio_fork_pwrite_state {
+-	struct aio_child *child;
+-	ssize_t ret;
+-	struct vfs_aio_state vfs_aio_state;
+-};
+-
+-static void aio_fork_pwrite_done(struct tevent_req *subreq);
+-
+-static struct tevent_req *aio_fork_pwrite_send(
++static struct tevent_req *aio_fork_send(
+ 	struct vfs_handle_struct *handle, TALLOC_CTX *mem_ctx,
+ 	struct tevent_context *ev, struct files_struct *fsp,
+-	const void *data, size_t n, off_t offset)
++	void *data, size_t n, off_t offset, enum cmd_type cmd)
+ {
+-	struct tevent_req *req, *subreq;
+-	struct aio_fork_pwrite_state *state;
+-	struct rw_cmd cmd;
+-	ssize_t written;
+-	int err;
+ 	struct aio_fork_config *config;
++	struct aio_child_list *list;
++	struct aio_fork_state *state;
++	struct aio_child *child;
++	struct tevent_req *req;
++	int ret;
++
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct aio_fork_config,
+ 				return NULL);
+ 
+-	req = tevent_req_create(mem_ctx, &state, struct aio_fork_pwrite_state);
++	req = tevent_req_create(mem_ctx, &state, struct aio_fork_state);
+ 	if (req == NULL) {
+ 		return NULL;
+ 	}
++	state->req = req;
++	state->ev = ev;
++	state->fsp = fsp;
++	state->data = data;
++	state->n = n;
++	state->offset = offset;
++	state->cmd = cmd;
++	state->erratic_testing_mode = config->erratic_testing_mode;
++	talloc_set_destructor(state, aio_fork_state_destructor);
+ 
+-	if (n > 128*1024) {
++	if (cmd != FSYNC_CMD && n > 128*1024) {
+ 		/* TODO: support variable buffers */
+ 		tevent_req_error(req, EINVAL);
+ 		return tevent_req_post(req, ev);
+ 	}
+ 
+-	err = get_idle_child(handle, &state->child);
+-	if (err != 0) {
+-		tevent_req_error(req, err);
++	list = init_aio_children(handle);
++	if (list == NULL) {
++		tevent_req_error(req, ENOMEM);
+ 		return tevent_req_post(req, ev);
+ 	}
++	state->list = list;
+ 
+-	memcpy(state->child->map->ptr, data, n);
+-
+-	ZERO_STRUCT(cmd);
+-	cmd.n = n;
+-	cmd.offset = offset;
+-	if (fsp->fsp_flags.posix_append) {
+-		cmd.cmd = WRITE_CMD;
+-	} else {
+-		cmd.cmd = PWRITE_CMD;
++	child = aio_fork_find_idle_child(list);
++	if (child == NULL &&
++	    (list->max_children == 0 ||
++	     list->num_children < list->max_children)) {
++		DEBUG(10, ("no idle child found, creating new one\n"));
++		ret = create_aio_child(list->sconn, list, 128*1024, &child);
++		if (ret != 0) {
++			DEBUG(10, ("create_aio_child failed: %s\n",
++				   strerror(ret)));
++			aio_fork_run_sync(state);
++			return tevent_req_post(req, ev);
++		}
+ 	}
+-	cmd.erratic_testing_mode = config->erratic_testing_mode;
+ 
+-	DEBUG(10, ("sending fd %d to child %d\n", fsp_get_io_fd(fsp),
+-		   (int)state->child->pid));
++	if (child != NULL) {
++		if (!aio_fork_dispatch(state, child)) {
++			return tevent_req_post(req, ev);
++		}
++		return req;
++	}
+ 
+ 	/*
+-	 * Not making this async. We're writing into an empty unix
+-	 * domain socket. This should never block.
++	 * Keep one pending request per allowed worker. Beyond that small bound,
++	 * synchronous execution applies backpressure without surfacing EAGAIN as
++	 * an SMB I/O error.
+ 	 */
+-	written = write_fd(state->child->sockfd, &cmd, sizeof(cmd),
+-			   fsp_get_io_fd(fsp));
+-	if (written == -1) {
+-		err = errno;
+-
+-		TALLOC_FREE(state->child);
+-
+-		DEBUG(10, ("write_fd failed: %s\n", strerror(err)));
+-		tevent_req_error(req, err);
+-		return tevent_req_post(req, ev);
++	if (list->num_pending < list->max_children) {
++		state->queued = true;
++		DLIST_ADD_END(list->pending, state);
++		list->num_pending += 1;
++		return req;
+ 	}
+ 
+-	subreq = read_packet_send(state, ev, state->child->sockfd,
+-				  sizeof(struct rw_ret), NULL, NULL);
+-	if (tevent_req_nomem(subreq, req)) {
+-		TALLOC_FREE(state->child); /* we sent sth down */
+-		return tevent_req_post(req, ev);
+-	}
+-	tevent_req_set_callback(subreq, aio_fork_pwrite_done, req);
+-	return req;
++	aio_fork_run_sync(state);
++	return tevent_req_post(req, ev);
+ }
+ 
+-static void aio_fork_pwrite_done(struct tevent_req *subreq)
++static void aio_fork_done(struct tevent_req *subreq)
+ {
+ 	struct tevent_req *req = tevent_req_callback_data(
+ 		subreq, struct tevent_req);
+-	struct aio_fork_pwrite_state *state = tevent_req_data(
+-		req, struct aio_fork_pwrite_state);
++	struct aio_fork_state *state = tevent_req_data(
++		req, struct aio_fork_state);
+ 	ssize_t nread;
+ 	uint8_t *buf;
+ 	int err;
+@@ -779,25 +807,38 @@ static void aio_fork_pwrite_done(struct tevent_req *subreq)
+ 	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
+ 	TALLOC_FREE(subreq);
+ 	if (nread == -1) {
+-		TALLOC_FREE(state->child);
++		aio_fork_release_child(state, true);
+ 		tevent_req_error(req, err);
+ 		return;
+ 	}
+ 
+-	state->child->busy = false;
+-
+ 	retbuf = (struct rw_ret *)buf;
+ 	state->ret = retbuf->size;
+ 	state->vfs_aio_state.error = retbuf->ret_errno;
+ 	state->vfs_aio_state.duration = retbuf->duration;
++
++	/*
++	 * Preserve the worker's errno when pread returns -1 instead of casting
++	 * the negative result to a huge size or using it as a memcpy length.
++	 */
++	if (state->cmd == READ_CMD && state->ret >= 0) {
++		if ((size_t)state->ret > state->n) {
++			aio_fork_release_child(state, false);
++			tevent_req_error(req, EIO);
++			return;
++		}
++		memcpy(state->data, state->child->map->ptr, state->ret);
++	}
++
++	aio_fork_release_child(state, false);
+ 	tevent_req_done(req);
+ }
+ 
+-static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
+-				    struct vfs_aio_state *vfs_aio_state)
++static ssize_t aio_fork_recv(struct tevent_req *req,
++			     struct vfs_aio_state *vfs_aio_state)
+ {
+-	struct aio_fork_pwrite_state *state = tevent_req_data(
+-		req, struct aio_fork_pwrite_state);
++	struct aio_fork_state *state = tevent_req_data(
++		req, struct aio_fork_state);
+ 
+ 	if (tevent_req_is_unix_error(req, &vfs_aio_state->error)) {
+ 		return -1;
+@@ -806,117 +847,59 @@ static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
+ 	return state->ret;
+ }
+ 
+-struct aio_fork_fsync_state {
+-	struct aio_child *child;
+-	ssize_t ret;
+-	struct vfs_aio_state vfs_aio_state;
+-};
++static struct tevent_req *aio_fork_pread_send(struct vfs_handle_struct *handle,
++					      TALLOC_CTX *mem_ctx,
++					      struct tevent_context *ev,
++					      struct files_struct *fsp,
++					      void *data,
++					      size_t n, off_t offset)
++{
++	return aio_fork_send(
++		handle, mem_ctx, ev, fsp, data, n, offset, READ_CMD);
++}
+ 
+-static void aio_fork_fsync_done(struct tevent_req *subreq);
++static ssize_t aio_fork_pread_recv(struct tevent_req *req,
++				   struct vfs_aio_state *vfs_aio_state)
++{
++	return aio_fork_recv(req, vfs_aio_state);
++}
+ 
+-static struct tevent_req *aio_fork_fsync_send(
++static struct tevent_req *aio_fork_pwrite_send(
+ 	struct vfs_handle_struct *handle, TALLOC_CTX *mem_ctx,
+-	struct tevent_context *ev, struct files_struct *fsp)
++	struct tevent_context *ev, struct files_struct *fsp,
++	const void *data, size_t n, off_t offset)
+ {
+-	struct tevent_req *req, *subreq;
+-	struct aio_fork_fsync_state *state;
+-	struct rw_cmd cmd;
+-	ssize_t written;
+-	int err;
+-	struct aio_fork_config *config;
+-
+-	SMB_VFS_HANDLE_GET_DATA(handle, config,
+-				struct aio_fork_config,
+-				return NULL);
+-
+-	req = tevent_req_create(mem_ctx, &state, struct aio_fork_fsync_state);
+-	if (req == NULL) {
+-		return NULL;
+-	}
+-
+-	err = get_idle_child(handle, &state->child);
+-	if (err != 0) {
+-		tevent_req_error(req, err);
+-		return tevent_req_post(req, ev);
+-	}
+-
+-	ZERO_STRUCT(cmd);
+-	cmd.cmd = FSYNC_CMD;
+-	cmd.erratic_testing_mode = config->erratic_testing_mode;
++	enum cmd_type cmd = fsp->fsp_flags.posix_append
++		? WRITE_CMD : PWRITE_CMD;
+ 
+-	DEBUG(10, ("sending fd %d to child %d\n", fsp_get_io_fd(fsp),
+-		   (int)state->child->pid));
+-
+-	/*
+-	 * Not making this async. We're writing into an empty unix
+-	 * domain socket. This should never block.
+-	 */
+-	written = write_fd(state->child->sockfd, &cmd, sizeof(cmd),
+-			   fsp_get_io_fd(fsp));
+-	if (written == -1) {
+-		err = errno;
+-
+-		TALLOC_FREE(state->child);
+-
+-		DEBUG(10, ("write_fd failed: %s\n", strerror(err)));
+-		tevent_req_error(req, err);
+-		return tevent_req_post(req, ev);
+-	}
+-
+-	subreq = read_packet_send(state, ev, state->child->sockfd,
+-				  sizeof(struct rw_ret), NULL, NULL);
+-	if (tevent_req_nomem(subreq, req)) {
+-		TALLOC_FREE(state->child); /* we sent sth down */
+-		return tevent_req_post(req, ev);
+-	}
+-	tevent_req_set_callback(subreq, aio_fork_fsync_done, req);
+-	return req;
++	return aio_fork_send(handle, mem_ctx, ev, fsp,
++			     discard_const(data), n, offset, cmd);
+ }
+ 
+-static void aio_fork_fsync_done(struct tevent_req *subreq)
++static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
++				    struct vfs_aio_state *vfs_aio_state)
+ {
+-	struct tevent_req *req = tevent_req_callback_data(
+-		subreq, struct tevent_req);
+-	struct aio_fork_fsync_state *state = tevent_req_data(
+-		req, struct aio_fork_fsync_state);
+-	ssize_t nread;
+-	uint8_t *buf;
+-	int err;
+-	struct rw_ret *retbuf;
+-
+-	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
+-	TALLOC_FREE(subreq);
+-	if (nread == -1) {
+-		TALLOC_FREE(state->child);
+-		tevent_req_error(req, err);
+-		return;
+-	}
+-
+-	state->child->busy = false;
++	return aio_fork_recv(req, vfs_aio_state);
++}
+ 
+-	retbuf = (struct rw_ret *)buf;
+-	state->ret = retbuf->size;
+-	state->vfs_aio_state.error = retbuf->ret_errno;
+-	state->vfs_aio_state.duration = retbuf->duration;
+-	tevent_req_done(req);
++static struct tevent_req *aio_fork_fsync_send(
++	struct vfs_handle_struct *handle, TALLOC_CTX *mem_ctx,
++	struct tevent_context *ev, struct files_struct *fsp)
++{
++	return aio_fork_send(
++		handle, mem_ctx, ev, fsp, NULL, 0, 0, FSYNC_CMD);
+ }
+ 
+ static int aio_fork_fsync_recv(struct tevent_req *req,
+ 			       struct vfs_aio_state *vfs_aio_state)
+ {
+-	struct aio_fork_fsync_state *state = tevent_req_data(
+-		req, struct aio_fork_fsync_state);
+-
+-	if (tevent_req_is_unix_error(req, &vfs_aio_state->error)) {
+-		return -1;
+-	}
+-	*vfs_aio_state = state->vfs_aio_state;
+-	return state->ret;
++	return aio_fork_recv(req, vfs_aio_state);
+ }
+ 
+ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+ 			    const char *user)
+ {
++	int max_children;
+ 	int ret;
+ 	struct aio_fork_config *config;
+ 	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
+@@ -934,6 +917,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+ 
+ 	config->erratic_testing_mode = lp_parm_bool(SNUM(handle->conn), "vfs_aio_fork",
+ 						    "erratic_testing_mode", false);
++	max_children = lp_parm_int(
++		SNUM(handle->conn), "aio_fork", "max_children", 0);
++	if (max_children < 0) {
++		DBG_ERR("aio_fork:max_children must not be negative\n");
++		TALLOC_FREE(config);
++		SMB_VFS_NEXT_DISCONNECT(handle);
++		errno = EINVAL;
++		return -1;
++	}
++	config->max_children = max_children;
+ 	
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config,
+ 				NULL, struct aio_fork_config,
