@@ -1000,7 +1000,7 @@ if [ "$SAMBA4X_REFRESH_CROSS_ANSWERS" = "1" ]; then
 fi
 SAMBA4X_CROSS_ANSWER_LANE="$(samba4x_cross_answer_lane)" || exit 1
 export SAMBA4X_CROSS_ANSWER_LANE
-SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
+SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr,vfs_aio_fork'
 
 mkdir -p "$(dirname "$SAMBA4X_LOG")"
 

@@ -1,0 +1,27 @@
+diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
+index 7510ab7..62477eb 100644
+--- a/source3/modules/vfs_aio_fork.c
++++ b/source3/modules/vfs_aio_fork.c
+@@ -648,11 +648,17 @@ static void aio_fork_pread_done(struct tevent_req *subreq)
+ 	state->vfs_aio_state.error = retbuf->ret_errno;
+ 	state->vfs_aio_state.duration = retbuf->duration;
+ 
+-	if ((size_t)state->ret > state->n) {
+-		tevent_req_error(req, EIO);
+-		state->child->busy = false;
+-		return;
++	/*
++	 * Preserve the worker's errno when pread returns -1 instead of casting
++	 * the negative result to a huge size or using it as a memcpy length.
++	 */
++	if (state->ret >= 0) {
++		if ((size_t)state->ret > state->n) {
++			tevent_req_error(req, EIO);
++			state->child->busy = false;
++			return;
++		}
++		memcpy(state->data, state->child->map->ptr, state->ret);
+ 	}
+-	memcpy(state->data, state->child->map->ptr, state->ret);
+ 
+ 	state->child->busy = false;

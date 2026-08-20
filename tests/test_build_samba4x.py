@@ -272,6 +272,11 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             args = self.configure_args(capture)
             self.assertIn("--cross-compile", args)
+            self.assertIn(
+                "--with-static-modules="
+                "vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr,vfs_aio_fork",
+                args,
+            )
             self.assertEqual(self.cross_execute_args(args), [])
             cross_answers = self.cross_answer_arg(args)
             self.assertTrue(cross_answers.endswith("/samba4x-4.24.3-netbsd7.answers"))
