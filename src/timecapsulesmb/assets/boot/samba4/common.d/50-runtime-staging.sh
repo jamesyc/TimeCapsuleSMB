@@ -399,8 +399,9 @@ $smbd_log_level_line
     # aio_fork uses one 128 KiB shared mapping per helper and rejects larger requests.
     smb2 max read = 131072
     smb2 max write = 131072
-    aio read size = 1
-    aio write size = 1
+    # Keep reads and writes synchronous; aio_fork remains available for SMB2 flush/fsync.
+    aio read size = 0
+    aio write size = 0
     deadtime = 15
     max open files = 512
     max smbd processes = 8

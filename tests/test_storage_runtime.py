@@ -5327,8 +5327,8 @@ MaSt = (
         self.assertIn("smb2 max read = 131072", proc.stdout)
         self.assertIn("smb2 max write = 131072", proc.stdout)
         self.assertNotIn("smb2 max credits", proc.stdout)
-        self.assertIn("aio read size = 1", proc.stdout)
-        self.assertIn("aio write size = 1", proc.stdout)
+        self.assertIn("aio read size = 0", proc.stdout)
+        self.assertIn("aio write size = 0", proc.stdout)
         self.assertEqual(
             proc.stdout.count("vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb aio_fork"),
             2,
