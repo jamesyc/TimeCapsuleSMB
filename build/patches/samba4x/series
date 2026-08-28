@@ -45,8 +45,11 @@
 # make the final no-pthread build use process-global storage for __thread uses.
 0013-no-pthread-tls-fallbacks.patch|no-pthread TLS configure and __thread fallback
 # The no-pthread talloc stack is process-global, so forked smbd children inherit
-# parent event-loop stack tracking. Drop inherited tracking after fork and
-# disarm normal-exit diagnostics once smbd has completed clean shutdown.
+# parent event-loop stack tracking. Empty that inherited stack in place after
+# fork, keeping the stackframe itself valid because talloc_pop() indexes it
+# without checking, and guard talloc_pop() against a frame that outlives its
+# stack. Also disarm normal-exit diagnostics once smbd has completed clean
+# shutdown.
 0022-no-pthread-talloc-stack-fork-exit-cleanup.patch|no-pthread talloc stack fork and exit cleanup
 # aio_fork reports worker read failures through rw_ret. Keep the original errno
 # instead of treating ssize_t -1 as an oversized successful read after casting.
