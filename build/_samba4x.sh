@@ -772,6 +772,21 @@ install_samba4x_target_gmp() {
         return 1
     fi
 
+    # nettle needs __gmpn_zero_p for its public-key half; without it we must
+    # build our own GMP instead of adopting the one from the NetBSD tree.
+    # Only reject on a successful nm run, so a missing or renamed nm leaves
+    # the existing behaviour untouched.
+    if gmp_syms="$("$TOOLDIR/bin/$TRIPLE-nm" "$gmp_lib" 2>/dev/null)"; then
+        case "$gmp_syms" in
+            *__gmpn_zero_p*) ;;
+            *)
+                echo "NetBSD target libgmp.a lacks __gmpn_zero_p; nettle would"
+                echo "build without public-key support."
+                return 1
+                ;;
+        esac
+    fi
+
     mkdir -p "$SAMBA4X_DEPS/lib" "$SAMBA4X_DEPS/include" "$SAMBA4X_DEPS/lib/pkgconfig"
     cp "$gmp_lib" "$SAMBA4X_DEPS/lib/libgmp.a"
     cp "$gmp_header" "$SAMBA4X_DEPS/include/gmp.h"
