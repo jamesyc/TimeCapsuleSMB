@@ -21,6 +21,24 @@ case "$SDK_FAMILY" in
         ;;
 esac
 
+# pkgin is not in the base system, but pkg_add is. The URL follows the formula
+# NetBSD ships commented out in /root/.profile.
+if [ ! -x /usr/pkg/bin/pkgin ]; then
+    echo "Installing pkgin on the VM."
+    sdk_release=$(uname -r)
+    case "$sdk_release" in
+        *.99.*) sdk_osversion="${sdk_release%.99.*}.0" ;;
+        *)      sdk_osversion="${sdk_release%%_*}"     ;;
+    esac
+    PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$sdk_osversion/All" \
+        /usr/sbin/pkg_add -U pkgin
+fi
+
+if ! /usr/sbin/pkg_info git-base >/dev/null 2>&1; then
+    echo "Installing git-base on the VM."
+    /usr/pkg/bin/pkgin -4 -y install git-base
+fi
+
 mkdir -p "$BUILD_ROOT"
 mkdir -p "$OUT"
 cd "$BUILD_ROOT"
