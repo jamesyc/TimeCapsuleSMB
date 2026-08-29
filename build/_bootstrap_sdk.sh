@@ -47,7 +47,7 @@ run_tools() {
     env HOST_CC="$HOST_CC" HOST_CXX="$HOST_CXX" \
         HOST_CFLAGS="$HOST_CFLAGS" HOST_CXXFLAGS="$HOST_CXXFLAGS" \
         HOST_CPPFLAGS="$HOST_CPPFLAGS" \
-        ./build.sh -U -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
+        ./build.sh -U -j "$SDK_JOBS" -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
         -V NO_PTHREADS="$NO_PTHREADS" \
         -O "$OBJ" -T "$TOOLS" tools \
         >"$TOOLS_LOG" 2>&1
@@ -67,7 +67,7 @@ run_distribution() {
     env HOST_CC="$HOST_CC" HOST_CXX="$HOST_CXX" \
         HOST_CFLAGS="$HOST_CFLAGS" HOST_CXXFLAGS="$HOST_CXXFLAGS" \
         HOST_CPPFLAGS="$HOST_CPPFLAGS" \
-        ./build.sh -U -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
+        ./build.sh -U -j "$SDK_JOBS" -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
         -V NO_PTHREADS="$NO_PTHREADS" \
         -O "$OBJ" -T "$TOOLS" distribution \
         >"$DIST_LOG" 2>&1
