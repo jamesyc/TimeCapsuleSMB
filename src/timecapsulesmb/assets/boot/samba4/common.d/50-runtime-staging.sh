@@ -396,10 +396,6 @@ ${smbd_security_lines}${smbd_protocol_lines}    server multi channel support = n
     max log size = $smbd_max_log_size
 $smbd_log_level_line
     smb ports = 445
-    # aio_fork uses one 128 KiB shared mapping per helper and rejects larger requests.
-    smb2 max read = 131072
-    smb2 max write = 131072
-    # Keep reads and writes synchronous; aio_fork remains available for SMB2 flush/fsync.
     aio read size = 0
     aio write size = 0
     deadtime = 15
@@ -427,9 +423,7 @@ EOF
     guest ok = no
     valid users = root
     veto files = /$PAYLOAD_DIR_NAME/
-    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb aio_fork
-    # Bound this share connection's helper pool without throttling SMB credits.
-    aio_fork:max_children = 8
+    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
     acl_xattr:ignore system acls = yes
     streams_xattr:max xattrs per stream = 2
     fruit:resource = file

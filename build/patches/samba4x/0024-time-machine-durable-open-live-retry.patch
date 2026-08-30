@@ -72,17 +72,21 @@ index c33508f..1f8e29b 100644
  		DBG_WARNING("smbXsrv_open_global_verify_record for %s "
  			    "failed: %s\n",
  			    tdb_data_dbg(key),
-@@ -1367,6 +1428,9 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1367,6 +1428,13 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  	TDB_DATA key = smbXsrv_open_global_id_to_key(
  		persistent_id & UINT32_MAX, &key_buf);
  	int ret, local_id;
 +	const int live_open_retry_delay_msec = 150;
-+	const int live_open_retry_max = 10;
++	/*
++	 * Time Machine can leave dozens of durable handles for the old smbd to
++	 * disconnect. Allow that teardown to finish before rejecting reconnect.
++	 */
++	const int live_open_retry_max = 34;
 +	int live_open_retries = 0;
  	NTSTATUS status;
  
  	if (session_info == NULL) {
-@@ -1414,6 +1478,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1414,6 +1482,7 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  
  	state.op->idle_time = now;
  	state.op->status = NT_STATUS_FILE_CLOSED;
@@ -90,7 +94,7 @@ index c33508f..1f8e29b 100644
  
  	status = dbwrap_do_locked(
  		table->global.db_ctx, key, smb2srv_open_recreate_fn, &state);
-@@ -1424,6 +1489,46 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
+@@ -1424,6 +1493,46 @@ NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
  		goto fail;
  	}
  

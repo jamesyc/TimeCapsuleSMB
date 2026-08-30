@@ -1,5 +1,5 @@
 diff --git a/docs-xml/manpages/vfs_aio_fork.8.xml b/docs-xml/manpages/vfs_aio_fork.8.xml
-index d55af32..94a97b9 100644
+index d55af32..a1066b6 100644
 --- a/docs-xml/manpages/vfs_aio_fork.8.xml
 +++ b/docs-xml/manpages/vfs_aio_fork.8.xml
 @@ -43,15 +43,32 @@
@@ -10,8 +10,8 @@ index d55af32..94a97b9 100644
 -	helper processes when async requests come in as needed. Idle
 -	helper processes will be removed every 30 seconds.
 +	read and write calls. It creates helper processes when async
-+	requests come in as needed. Idle helper processes will be removed
-+	every 30 seconds.
++	requests come in as needed. This Time Capsule build checks for idle
++	helper processes every three hours.
  	</para>
  
  	<para>This module is stackable.</para>
@@ -27,7 +27,7 @@ index d55af32..94a97b9 100644
 +			<listitem>
 +				<para>Limit the number of helper processes for this
 +				share connection. When all helpers are busy, the module
-+				queues at most one request per helper and then performs
++				queues at most 16 requests and then performs
 +				additional requests synchronously. The default value of
 +				zero leaves the number of helpers unlimited.</para>
 +			</listitem>
@@ -39,10 +39,22 @@ index d55af32..94a97b9 100644
  <refsect1>
  	<title>EXAMPLES</title>
 diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
-index de81d1c..ef12b58 100644
+index de81d1c..4f8e320 100644
 --- a/source3/modules/vfs_aio_fork.c
 +++ b/source3/modules/vfs_aio_fork.c
-@@ -46,6 +46,7 @@ struct aio_child_list;
+@@ -42,10 +42,19 @@
+ #define MAP_FILE 0
+ #endif
+ 
++/*
++ * Time Machine backups run for hours on the Time Capsule. Keep helpers alive
++ * across the session to avoid repeated fork and allocator churn.
++ * Hold short bursts in a bounded FIFO so they do not block the smbd event loop.
++ */
++#define AIO_CHILD_CLEANUP_SECONDS (3 * 60 * 60)
++#define AIO_FORK_MAX_PENDING 16
++
+ struct aio_child_list;
  
  struct aio_fork_config {
  	bool erratic_testing_mode;
@@ -50,7 +62,7 @@ index de81d1c..ef12b58 100644
  	struct aio_child_list *children;
  };
  
-@@ -141,6 +142,7 @@ struct rw_ret {
+@@ -141,6 +148,7 @@ struct rw_ret {
  };
  
  struct aio_child_list;
@@ -58,7 +70,7 @@ index de81d1c..ef12b58 100644
  
  struct aio_child {
  	struct aio_child *prev, *next;
-@@ -154,6 +156,11 @@ struct aio_child {
+@@ -154,6 +162,11 @@ struct aio_child {
  
  struct aio_child_list {
  	struct aio_child *children;
@@ -70,7 +82,28 @@ index de81d1c..ef12b58 100644
  	struct tevent_timer *cleanup_event;
  };
  
-@@ -281,6 +288,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+@@ -250,7 +263,7 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
+ 			continue;
+ 		}
+ 
+-		DEBUG(10, ("Child %d idle for more than 30 seconds, "
++		DEBUG(10, ("Child %d idle since the previous cleanup sweep, "
+ 			   "deleting\n", (int)child->pid));
+ 
+ 		TALLOC_FREE(child);
+@@ -262,7 +275,10 @@ static void aio_child_cleanup(struct tevent_context *event_ctx,
+ 		 * Re-schedule the next cleanup round
+ 		 */
+ 		list->cleanup_event = tevent_add_timer(global_event_context(), list,
+-						      timeval_add(&now, 30, 0),
++						      timeval_add(
++							      &now,
++							      AIO_CHILD_CLEANUP_SECONDS,
++							      0),
+ 						      aio_child_cleanup, list);
+ 
+ 	}
+@@ -281,6 +297,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
  		if (config->children == NULL) {
  			return NULL;
  		}
@@ -79,7 +112,17 @@ index de81d1c..ef12b58 100644
  	}
  	children = config->children;
  
-@@ -417,6 +426,7 @@ static int aio_child_destructor(struct aio_child *child)
+@@ -293,7 +311,8 @@ static struct aio_child_list *init_aio_children(struct vfs_handle_struct *handle
+ 	if (children->cleanup_event == NULL) {
+ 		children->cleanup_event =
+ 			tevent_add_timer(global_event_context(), children,
+-					 timeval_current_ofs(30, 0),
++					 timeval_current_ofs(
++						 AIO_CHILD_CLEANUP_SECONDS, 0),
+ 					 aio_child_cleanup, children);
+ 		if (children->cleanup_event == NULL) {
+ 			TALLOC_FREE(config->children);
+@@ -417,6 +436,7 @@ static int aio_child_destructor(struct aio_child *child)
  	sys_write_v(child->sockfd, &c, sizeof(c));
  	close(child->sockfd);
  	DLIST_REMOVE(child->list->children, child);
@@ -87,7 +130,7 @@ index de81d1c..ef12b58 100644
  	return 0;
  }
  
-@@ -494,6 +504,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -494,6 +514,7 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  
  	result->list = children;
  	DLIST_ADD(children->children, result);
@@ -95,7 +138,7 @@ index de81d1c..ef12b58 100644
  
  	talloc_set_destructor(result, aio_child_destructor);
  
-@@ -509,268 +520,285 @@ static int create_aio_child(struct smbd_server_connection *sconn,
+@@ -509,268 +530,290 @@ static int create_aio_child(struct smbd_server_connection *sconn,
  	return ret;
  }
  
@@ -247,14 +290,14 @@ index de81d1c..ef12b58 100644
 -	SMB_VFS_HANDLE_GET_DATA(handle, config,
 -				struct aio_fork_config,
 -				return NULL);
--
+ 
 -	req = tevent_req_create(mem_ctx, &state, struct aio_fork_pread_state);
 -	if (req == NULL) {
 -		return NULL;
 -	}
 -	state->n = n;
 -	state->data = data;
- 
+-
 -	if (n > 128*1024) {
 -		/* TODO: support variable buffers */
 -		tevent_req_error(req, EINVAL);
@@ -533,13 +576,8 @@ index de81d1c..ef12b58 100644
 -		DEBUG(10, ("write_fd failed: %s\n", strerror(err)));
 -		tevent_req_error(req, err);
 -		return tevent_req_post(req, ev);
-+	if (list->num_pending < list->max_children) {
-+		state->queued = true;
-+		DLIST_ADD_END(list->pending, state);
-+		list->num_pending += 1;
-+		return req;
- 	}
- 
+-	}
+-
 -	subreq = read_packet_send(state, ev, state->child->sockfd,
 -				  sizeof(struct rw_ret), NULL, NULL);
 -	if (tevent_req_nomem(subreq, req)) {
@@ -548,6 +586,18 @@ index de81d1c..ef12b58 100644
 -	}
 -	tevent_req_set_callback(subreq, aio_fork_pwrite_done, req);
 -	return req;
++	if (list->num_pending < AIO_FORK_MAX_PENDING) {
++		state->queued = true;
++		DLIST_ADD_END(list->pending, state);
++		list->num_pending += 1;
++		return req;
++	}
++
++	DBG_WARNING("aio_fork saturated with %u children and %u pending "
++		    "requests; running %s synchronously\n",
++		    list->num_children,
++		    list->num_pending,
++		    cmd_type_str(state->cmd));
 +	aio_fork_run_sync(state);
 +	return tevent_req_post(req, ev);
  }
@@ -564,7 +614,7 @@ index de81d1c..ef12b58 100644
  	ssize_t nread;
  	uint8_t *buf;
  	int err;
-@@ -779,25 +807,38 @@ static void aio_fork_pwrite_done(struct tevent_req *subreq)
+@@ -779,25 +822,38 @@ static void aio_fork_pwrite_done(struct tevent_req *subreq)
  	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
  	TALLOC_FREE(subreq);
  	if (nread == -1) {
@@ -610,7 +660,7 @@ index de81d1c..ef12b58 100644
  
  	if (tevent_req_is_unix_error(req, &vfs_aio_state->error)) {
  		return -1;
-@@ -806,117 +847,59 @@ static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
+@@ -806,117 +862,59 @@ static ssize_t aio_fork_pwrite_recv(struct tevent_req *req,
  	return state->ret;
  }
  
@@ -669,12 +719,12 @@ index de81d1c..ef12b58 100644
 -	ZERO_STRUCT(cmd);
 -	cmd.cmd = FSYNC_CMD;
 -	cmd.erratic_testing_mode = config->erratic_testing_mode;
+-
+-	DEBUG(10, ("sending fd %d to child %d\n", fsp_get_io_fd(fsp),
+-		   (int)state->child->pid));
 +	enum cmd_type cmd = fsp->fsp_flags.posix_append
 +		? WRITE_CMD : PWRITE_CMD;
  
--	DEBUG(10, ("sending fd %d to child %d\n", fsp_get_io_fd(fsp),
--		   (int)state->child->pid));
--
 -	/*
 -	 * Not making this async. We're writing into an empty unix
 -	 * domain socket. This should never block.
@@ -762,7 +812,7 @@ index de81d1c..ef12b58 100644
  	int ret;
  	struct aio_fork_config *config;
  	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
-@@ -934,6 +917,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
+@@ -934,6 +932,16 @@ static int aio_fork_connect(vfs_handle_struct *handle, const char *service,
  
  	config->erratic_testing_mode = lp_parm_bool(SNUM(handle->conn), "vfs_aio_fork",
  						    "erratic_testing_mode", false);
