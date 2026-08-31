@@ -21,7 +21,7 @@ What is working now:
   - managed `_adisk._tcp`
   - generated `_device-info._tcp`
   - generated `_airport._tcp`
-  - generated `_afpovertcp._tcp`
+  - optional generated `_afpovertcp._tcp` when AFP advertisement is enabled
   - generated USB printer records when applicable
 - authenticated SMB access using:
   - examples and docs use Samba username `admin`
@@ -32,22 +32,22 @@ What is working now:
 - deploy-time device compatibility detection
 - manual NetBSD 4 activation via `tcapsule activate`
 - manual disk repair via `tcapsule fsck`
-- clean uninstall via `tcapsule uninstall`
+- managed-file uninstall via `tcapsule uninstall`; firmware boot-hook patches are restored separately with `tcapsule flash --restore`
 
 Current validation status:
 - NetBSD 6 is validated end to end with reboot-persistent startup
-- tested NetBSD 4 gen1 hardware is validated with manual `tcapsule activate` after reboot
-- other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet confirmed
+- tested NetBSD 4 gen1 hardware without the firmware boot-hook patch is validated with manual `tcapsule activate` after reboot
+- other unpatched NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet confirmed
 
 Current user experience:
 - the Time Capsule advertises `_smb._tcp`
 - the Time Capsule advertises `_adisk._tcp` for Time Machine
-- the Time Capsule replays Apple `_airport._tcp` for AirPort Utility compatibility
+- the Time Capsule generates an Apple-compatible `_airport._tcp` record from live AirPort identity fields for AirPort Utility compatibility
 - the Time Capsule can optionally answer NBNS name queries for the active runtime NetBIOS name
 - the Bonjour instance name and Samba server string are derived from Apple `syNm`
 - the Bonjour host label and Samba NetBIOS name are derived from `/bin/hostname`, with `syNm` fallbacks
 - shares are derived from Apple `MaSt` volume metadata and are available as:
-  - `smb://<advertised-host>.local/<volume name>`
+  - `smb://<advertised-host>.local/<sanitized and de-duplicated volume share name>`
 
 Current auth model:
 - the docs and examples use SMB login user `admin`
@@ -87,11 +87,11 @@ Current live storage numbers observed during development:
 
 These constraints drive almost every design decision in this repo.
 
-Current compatibility classification in the repo is:
-- NetBSD 6.x `evbarm`: current supported deploy target, corresponding to 5th generation Time Capsules
-- NetBSD 4.x `evbarm`: supported as older 3rd-4th generation hardware, with a separate artifact set and activation path
-- NetBSD 4.x `armeb`: supported as older 1st-2nd generation hardware, with a separate artifact set and activation path
-  - tested gen1-4 hardware needs manual `activate` after reboot
+Current deploy compatibility classification uses the NetBSD major version and detected ELF endianness; the reported architecture and AirPort identity narrow the displayed device candidates but do not select the payload by themselves:
+- little-endian NetBSD 6.x: current `netbsd6_samba4` target, corresponding to 5th-generation Time Capsules and same-era AirPort devices
+- little-endian NetBSD 4.x: `netbsd4le_samba4`, covering 3rd-4th-generation Time Capsules and 3rd-5th-generation AirPort Extreme hardware
+- big-endian NetBSD 4.x: `netbsd4be_samba4`, covering 1st-2nd-generation Time Capsules and 1st-2nd-generation AirPort Extreme hardware
+  - tested gen1 hardware without the firmware boot-hook patch needs manual `activate` after reboot
   - other generations may auto-start if their firmware runs `/mnt/Flash/rc.local`, but that is not yet confirmed
 
 ## Why The Current Architecture Exists
@@ -303,7 +303,7 @@ Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.disc
 
 Current behavior:
 - `boot.sh` prepares the RAM runtime and launches `manager.sh`
-- `manager.sh` waits for usable network addresses, payload state, and AirPort identity data
+- `manager.sh` continuously reconciles usable network addresses, payload state, and AirPort identity data; it can continue in diskless mode when no payload is available and can omit `_airport._tcp` when optional clone identity fields are unavailable
 - the manager launches `mdns-advertiser` from `/mnt/Flash` with `--generated-airport-services`
 - `mdns-advertiser` generates managed `_smb._tcp`, `_adisk._tcp`, `_device-info._tcp`, and `_airport._tcp` records from live runtime state
 - when a USB printer is attached and discoverable through AirPort metadata, the manager also passes `_riousbprint._tcp` and `_pdl-datastream._tcp` arguments
@@ -345,10 +345,11 @@ The manager owns disk discovery, Samba staging, service startup, mDNS takeover, 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
 
-Long-running process logs are written under:
-- `<payload>/logs/manager.log`
-- `<payload>/logs/mdns.log`
-- `<payload>/logs/nbns.log`
+Long-running process logs are split between RAM and the selected payload:
+- `/mnt/Memory/samba4/var/manager.log`
+- `/mnt/Memory/samba4/var/rsync.log`
+- `<payload>/logs/mdns.log`, with a RAM fallback in diskless state
+- `<payload>/logs/nbns.log`, with a RAM fallback in diskless state
 - `<payload>/logs/log.smbd`
 
 Important bug lessons from getting this stable:
@@ -367,8 +368,8 @@ Samba lock state now lives on a dedicated second ramdisk:
 - `lock directory = /mnt/Locks`
 
 Current mount behavior:
-- NetBSD 6 mounts a `9 MiB` `tmpfs` at `/mnt/Locks` with `mount_tmpfs -s 9m`
-- NetBSD 4 mounts an `mfs` ramdisk at `/mnt/Locks` with `mount_mfs -s 18432`
+- NetBSD 6 mounts a `4 MiB` `tmpfs` at `/mnt/Locks` with `mount_tmpfs -s 4m`
+- NetBSD 4 mounts a `4 MiB` `mfs` ramdisk at `/mnt/Locks` with `mount_mfs -s 8192`
 - if the NetBSD 6 tmpfs mount fails, startup falls back to a plain `/mnt/Locks` directory on the root filesystem
 - if the NetBSD 4 mfs mount fails, startup aborts instead of falling back to the tiny root filesystem
 
@@ -403,18 +404,17 @@ Current behavior:
 - if the payload volume is unavailable, stops managed Samba/NBNS/rsync, keeps only the applicable diskless mDNS identity service, and retries later
 - if disk, identity, network, or USB printer state changes, refreshes the affected generated config and service state
 
-This is intentionally simple:
-- SMB transfers are not interrupted because `smbd` is only restarted when absent
-- the mDNS helper is also only restarted when absent
-- disk topology changes restart through the same path as boot, so share generation, mDNS, and smbd config stay coherent
+The manager prefers the least disruptive reconciliation that is safe:
+- config-only Samba changes normally use a parent-only SIGHUP so active sessions can survive
+- `smbd` is restarted when its binary or bind interfaces change, required TCP `445` listeners disappear, or a SIGHUP reload fails
+- disk, identity, network, or printer changes can replace the mDNS advertiser so its generated records remain coherent
+- topology changes are reconciled in the running manager rather than literally repeating the one-shot boot path
 
-The manager log is written to:
-- `<payload>/logs/manager.log` when the payload volume is mounted
-- `/mnt/Memory/samba4/var/manager.log` as a RAM fallback while the payload volume is unavailable
+The manager log is always written to `/mnt/Memory/samba4/var/manager.log` and is therefore ephemeral.
 
 Important implementation detail:
-- `mdns-advertiser` is short enough to match directly with `pkill`
-- the manager therefore uses the truncated process name for liveness checks and restarts
+- `mdns-advertiser` fits the target `ucomm` limit and is matched by its full exact process name
+- liveness and restart helpers ignore zombie processes and use anchored process-name matching
 
 NetBSD 4-specific shell note:
 - backgrounded jobs redirect stdin from `/dev/null` so they do not hold the SSH session open during manual activation
@@ -485,8 +485,8 @@ Current rendered Samba config characteristics:
 - `netbios name = <runtime hostname-derived name>`
 - `server string = <runtime Apple syNm-derived name>`
 - `security = user`
-- `min protocol = SMB2`
-- `max protocol = SMB3`
+- `min protocol = SMB2` and `max protocol = SMB3` by default
+- protocol and signing/encryption override modes can omit or replace those defaults
 - `guest ok = no`
 - `valid users = root`
 - `force user = root`
@@ -503,7 +503,7 @@ Current rendered Samba config characteristics:
 - `private dir = /mnt/Memory/samba4/private`
 - `log file = /Volumes/dkX/.samba4/logs/log.smbd`
 - `max log size = 128` in the normal generated config
-- `deadtime = 60`
+- `deadtime = 15`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 8`, set 128 KiB SMB2 read/write limits, and enable AIO for requests of at least one byte
 - `fruit:resource = file`
@@ -555,7 +555,7 @@ At runtime it can:
 - advertise managed `_smb._tcp.local.`
 - advertise managed `_adisk._tcp.local.`
 - advertise managed `_device-info._tcp.local.`
-- advertise generated `_afpovertcp._tcp.local.` on port `548`
+- advertise generated `_afpovertcp._tcp.local.` on port `548` when `MDNS_ADVERTISE_AFP=1`; this is off by default
 - advertise generated `_airport._tcp.local.` records from local AirPort identity fields
 - optionally advertise `_riousbprint._tcp.local.` and `_pdl-datastream._tcp.local.` for an attached USB printer
 - suppress SMB/ADISK records in diskless mode while preserving generated AirPort identity records
@@ -614,18 +614,20 @@ The intended user flow is:
    - [src/timecapsulesmb/cli/configure.py](src/timecapsulesmb/cli/configure.py)
 3. deploy and reboot
    - [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py)
-4. activate older NetBSD 4 devices if they do not auto-start Samba after reboot
+4. on NetBSD 4, optionally back up and inspect the firmware, then install the persistent boot hook with `tcapsule flash --patch` and manually power-cycle after a successful write
+   - [src/timecapsulesmb/cli/flash.py](src/timecapsulesmb/cli/flash.py)
+5. activate older NetBSD 4 devices that do not have the persistent hook or do not auto-start Samba after reboot
    - [src/timecapsulesmb/cli/activate.py](src/timecapsulesmb/cli/activate.py)
-5. run local diagnostics
+6. run local diagnostics
    - [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py)
-6. optionally repair the HDD before redeploying
+7. optionally repair the HDD before redeploying
    - [src/timecapsulesmb/cli/fsck.py](src/timecapsulesmb/cli/fsck.py)
-7. remove the payload later if needed
+8. remove the payload later if needed
    - [src/timecapsulesmb/cli/uninstall.py](src/timecapsulesmb/cli/uninstall.py)
 
 `tcapsule set-ssh` still exists as an advanced SSH toggle helper, but it is no longer part of the normal setup flow.
 
-`tcapsule configure` writes repo-root `.env`.
+`tcapsule configure` writes repo-root `.env` by default; `--config` or `TCAPSULE_CONFIG` can select another path.
 
 Current important `.env` values include:
 - `TC_HOST`
@@ -683,7 +685,7 @@ Shared command behavior:
 `tcapsule bootstrap` prepares the local host. It validates the selected Python, creates or reuses `.venv`, installs `requirements.txt`, installs the repo into the virtualenv, and verifies required host tools. If `smbclient` or `sshpass` is missing, it attempts host-tool installation through Homebrew on supported macOS versions or through the detected Linux package manager.
 
 Arguments:
-- `--python PYTHON`: Python interpreter used to create or update `.venv`; defaults to the Python running the command. The selected interpreter must be Python 3.9 or newer.
+- `--python PYTHON`: Python interpreter validated and used when creating a new `.venv`; defaults to the Python running the command. An existing `.venv` is reused with its existing interpreter. The selected interpreter must be Python 3.9 or newer.
 
 This command does not read `.env` for device credentials, but it does create or preserve the local install identity in `.bootstrap`.
 
@@ -767,7 +769,7 @@ Use `configure` for normal first-time setup. Use `set-ssh` only when you intenti
 
 ### `deploy`
 
-`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs Samba auth files, applies permissions, and reboots by default. On NetBSD 4 devices, a deploy reboot is followed by activation after SSH returns.
+`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs the scripts and configuration that generate Samba auth files in RAM during boot or activation, applies permissions, and reboots by default. On NetBSD 4 devices, deploy checks the runtime after SSH returns and activates it only when firmware startup has not already done so.
 
 Arguments:
 - `--config PATH`: use a non-default config
@@ -809,21 +811,21 @@ This command is only supported for NetBSD 4 AirPort storage devices. NetBSD 6 de
 
 ### `flash`
 
-`tcapsule flash` is the NetBSD 4 firmware-bank helper. By default it is read-only: it backs up and analyzes both flash banks, saves a manifest, and prints the firmware state. Write modes are explicit. `--patch` installs the persistent TimeCapsuleSMB boot hook into the primary bank, while `--restore` writes Apple stock firmware to the active bank selected from the analysis and Apple firmware template.
+`tcapsule flash` is the NetBSD 4 firmware-bank helper. By default it is read-only: it backs up and analyzes both flash banks, saves a manifest, and prints the firmware state. Write modes are explicit. `--patch` installs the persistent TimeCapsuleSMB boot hook into the primary bank. `--restore` writes Apple stock firmware to the uniquely selected active bank, or to the primary bank with a warning when both candidates pass active selection.
 
 Arguments:
 - `--config PATH`: use a non-default config
 - `--read-only`: dump and back up firmware banks without patch planning; this is also the default when no mode is provided
 - `--patch`: build and write the TimeCapsuleSMB LOGIN hook patch to the primary bank
-- `--restore`: restore the active bank from Apple stock firmware
-- `--check-apple`: check whether the active bank matches Apple stock firmware
-- `--download-only`: download and validate Apple firmware without writing
+- `--restore`: restore the selected candidate bank from Apple stock firmware; when both candidates pass active selection, target the primary bank
+- `--check-apple`: check whether the candidate bank or banks match Apple stock firmware
+- `--download-only`: connect to the configured NetBSD 4 device, back up and analyze its banks, then download and validate Apple firmware without writing firmware
 - `--yes`: do not prompt before `--patch` or `--restore` writes; only valid for write modes
 - `--no-input`: fail instead of prompting; write modes require `--yes`
 - `--reboot`: after a validated `--restore` write, request a software reboot
 - `--no-wait`: with `--restore --reboot`, return after the reboot request without waiting for the device
 - `--json`: emit flash analysis and plan JSON; only valid for read-only modes, not `--patch` or `--restore`
-- `--backup-dir PATH`: save this run's flash backup under the selected directory instead of the default backup root
+- `--backup-dir PATH`: use `PATH` as this run's exact backup directory instead of creating a timestamped directory under the default backup root
 - `--force`: with `--patch`, bypass backup/active-candidate preflight and target the primary bank
 - `--firmware-template PATH`: use a local Apple `.basebinary` firmware template instead of auto-selecting from Apple's catalog
 - `--firmware-version VERSION`: select an Apple firmware version, for example `7.8.1`
@@ -840,7 +842,7 @@ Important mode restrictions:
 
 ### `doctor`
 
-`tcapsule doctor` runs non-destructive local and remote diagnostics. It validates config and local tools, checks artifact presence and checksums, probes SSH/network/runtime state, checks Bonjour and NBNS visibility, runs authenticated SMB listing and CRUD checks, and verifies that Samba xattr state points at persistent storage.
+`tcapsule doctor` runs local and remote diagnostics without deploying, rebooting, or changing managed configuration. It validates config and local tools, checks artifact presence and checksums, probes SSH/network/runtime state, checks Bonjour and NBNS visibility, runs authenticated SMB listing and temporary CRUD checks, and verifies that Samba xattr state points at persistent storage.
 
 Arguments:
 - `--config PATH`: use a non-default config
@@ -849,7 +851,7 @@ Arguments:
 - `--skip-smb`: skip authenticated SMB listing and file-operation checks
 - `--json`: emit one structured final doctor payload
 
-`doctor` is the preferred post-deploy and post-reboot verification command. It does not deploy, reboot, or change the device.
+`doctor` is the preferred post-deploy and post-reboot verification command. Its default SMB CRUD checks temporarily create, modify, and remove a hidden `.doctor-fileops-*` directory on a share. A timeout, interruption, or early failure can leave that directory behind; use `--skip-smb` when the diagnostic run must not write through SMB.
 
 ### `fsck`
 
@@ -867,7 +869,7 @@ Use this only when the disk needs repair before deploy or when doctor/troublesho
 
 ### `repair-xattrs`
 
-`tcapsule repair-xattrs` is a macOS-side mounted-share repair helper. It scans files on a local SMB mount for broken extended-attribute metadata where `xattr -l` fails and the macOS `arch` flag is present, then repairs by clearing that flag. It is a targeted cleanup tool, not a general metadata migration.
+`tcapsule repair-xattrs` is a macOS-side mounted-share repair helper. It scans files and directories on a local SMB mount, diagnoses broken extended-attribute metadata, and safely repairs the known case where `xattr -l` fails and the macOS `arch` flag is present by clearing that flag. Other metadata failures are reported without being treated as the same repair case. It is a targeted cleanup tool, not a general metadata migration.
 
 Arguments:
 - `--config PATH`: use a non-default config when auto-detecting the mounted share
@@ -880,7 +882,7 @@ Arguments:
 - `--max-depth DEPTH`: maximum recursive directory depth; must be non-negative
 - `--include-hidden`: include hidden dot paths that are normally skipped
 - `--include-time-machine`: include Time Machine and bundle-like paths that are normally skipped
-- `--fix-permissions`: also repair missing write permissions on scanned files and directories
+- `--fix-permissions`: additionally apply `ugo+rw` to files or `ugo+rwx` to directories that do not already have all corresponding permission bits
 - `--verbose`: print detailed diagnostics for detected issues
 - `--json`: emit app-event NDJSON; when not using `--dry-run`, this requires `--yes`
 
@@ -891,7 +893,7 @@ Argument restrictions:
 
 ### `uninstall`
 
-`tcapsule uninstall` removes managed TimeCapsuleSMB files from the configured device. It stops the manager, removes the payload directories from mounted HFS volumes, removes flash hooks and runtime state, and reboots by default so Apple services and the root filesystem return to their clean state. After a waited reboot it verifies that managed files are gone.
+`tcapsule uninstall` removes managed TimeCapsuleSMB files from the configured device. It stops the manager, removes the payload directories from mounted HFS volumes, removes loader files under `/mnt/Flash` and runtime state, and reboots by default so Apple services and the root filesystem return to their clean state. After a waited reboot it verifies that managed files are gone. It does not restore a firmware bank changed by `flash --patch`; use `flash --restore` for that separate operation.
 
 Arguments:
 - `--config PATH`: use a non-default config
@@ -903,7 +905,7 @@ Arguments:
 - `--dry-run`: print the uninstall plan without changing the device
 - `--json`: emit the dry-run uninstall plan as JSON; requires `--dry-run`
 
-`uninstall` does not re-enable Apple AFP or SMB settings; it only removes TimeCapsuleSMB-managed files and runtime state.
+`uninstall` does not re-enable Apple AFP or SMB settings or restore a patched firmware bank; it only removes TimeCapsuleSMB-managed files and runtime state.
 
 ### `api`
 
@@ -919,7 +921,7 @@ Known app operations are `activate`, `capabilities`, `configure`, `deploy`, `dis
 
 ## Local Test Coverage
 
-Fresh clones install `coverage.py` through `requirements.txt` during `./tcapsule bootstrap` or `make install`.
+`make install` installs `coverage.py` through the `dev` optional dependency. `./tcapsule bootstrap` installs `requirements.txt` and the normal editable package, but does not install the development-only coverage dependency.
 
 Coverage entry points:
 - `make test` runs C compile checks plus the pytest suite
@@ -942,7 +944,7 @@ Samba NetBIOS, Samba server string, Bonjour instance, and Bonjour host labels ar
 
 Current validation behavior:
 - `TC_HOST`: must be non-empty.
-- `TC_PASSWORD`: must be present for commands that authenticate to the device.
+- `TC_PASSWORD`: Doctor, flash, and non-status `set-ssh` operations require a configured value; deploy and activate can prompt interactively when it is absent, while fsck and uninstall allow passwordless SSH key/agent authentication.
 - `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: hidden boolean; internal disks use `ShareRoot` by default, and external disks always use the disk root.
 - `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
@@ -980,7 +982,7 @@ Current important package areas:
 
 Developer note:
 - [src/timecapsulesmb/cli/context.py](src/timecapsulesmb/cli/context.py) owns shared per-command lifecycle state such as timing, command IDs, result state, and finish handling.
-- [src/timecapsulesmb/cli/runtime.py](src/timecapsulesmb/cli/runtime.py) owns shared runtime helpers for `.env` loading, SSH connection resolution, validation entrypoints, and compatibility probing.
+- [src/timecapsulesmb/services/runtime.py](src/timecapsulesmb/services/runtime.py) owns shared `.env` loading, SSH connection resolution, managed-target validation, and compatibility probing; [src/timecapsulesmb/cli/runtime.py](src/timecapsulesmb/cli/runtime.py) provides CLI argument, prompting, rendering, and compatibility-display helpers.
 - Normal users should not need these details; they mostly keep command entrypoints smaller and more consistent.
 
 Practical consequence:
@@ -991,7 +993,7 @@ Practical consequence:
 
 ## Doctor Command
 
-[src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py) is a non-destructive local diagnostic helper.
+[src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py) is a local diagnostic helper that does not deploy, reboot, or change managed configuration.
 
 It checks:
 - `.env` completeness and invalid `.env` values
@@ -1015,7 +1017,9 @@ It checks:
 It does not:
 - deploy
 - reboot
-- change the device
+- change managed device configuration
+
+Its authenticated SMB CRUD checks do temporarily write to a share. They normally remove their hidden `.doctor-fileops-*` test directory, but an interruption, timeout, or early failure can leave it behind. Use `--skip-smb` when the diagnostic run must not perform SMB writes.
 
 Current output behavior:
 - in normal human-readable mode, checks are printed as they complete rather than being buffered until the end
@@ -1052,7 +1056,7 @@ Current doctor caveats:
 
 ## Repair Xattrs Command
 
-[src/timecapsulesmb/cli/repair_xattrs.py](src/timecapsulesmb/cli/repair_xattrs.py) is a macOS-side repair helper for files whose SMB extended-attribute metadata became unreadable.
+[src/timecapsulesmb/cli/repair_xattrs.py](src/timecapsulesmb/cli/repair_xattrs.py) is a macOS-side repair and diagnostic helper for files and directories whose SMB extended-attribute metadata became unreadable.
 
 This was added after observing files on the mounted Samba share where:
 - normal POSIX permissions looked fine
@@ -1060,7 +1064,7 @@ This was added after observing files on the mounted Samba share where:
 - `xattr -l <file>` failed with `Invalid argument`
 - `ls -lO@ <file>` showed the macOS `arch` file flag
 
-The repair is intentionally narrow. It scans regular files, identifies files where `xattr -l` fails and the `arch` flag is present, then repairs by running:
+The automatic xattr repair is intentionally narrow. The command scans files and directories, reports broader xattr and file-data failures, and automatically clears the `arch` flag only when `xattr -l` fails and that flag is present:
 
 ```bash
 chflags noarch <file>
@@ -1094,6 +1098,7 @@ Default safety behavior:
 - skips symlinks
 - skips hidden dot paths unless `--include-hidden` is passed
 - skips Time Machine and bundle-like paths unless `--include-time-machine` is passed
+- when `--fix-permissions` is selected, adds `ugo+rw` to affected files or `ugo+rwx` to affected directories
 
 This command should be treated as a targeted cleanup tool for user files, not as a general metadata migration command. Do not run it over Time Machine backup bundles unless you are deliberately investigating that path.
 
@@ -1142,13 +1147,13 @@ Current deploy flow:
   - managed `smbd` on TCP `445`
   - managed mDNS takeover on UDP `5353`
   - enabled rsync from RAM on TCP `873`, or disabled rsync with no live daemon
-- on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and then runs `/mnt/Flash/rc.local`
+- on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and runs `/mnt/Flash/rc.local` only when the firmware has not already started or begun starting the managed runtime
 
 Full Bonjour browse/resolve checks, authenticated SMB listings, SMB CRUD checks, share checks, NBNS checks, xattr persistence checks, and deployed-version checks are handled by `doctor`.
 
 Current compatibility behavior:
-- NetBSD 6 `evbarm` devices are accepted for the current `samba4` payload family
-- NetBSD 4 `evbarm` devices are accepted as older hardware and use either the `netbsd4le_samba4` or `netbsd4be_samba4` payload family
+- little-endian NetBSD 6 devices are accepted for the current `netbsd6_samba4` payload family
+- NetBSD 4 devices use `netbsd4le_samba4` or `netbsd4be_samba4` according to detected ELF endianness
 - `configure` reuses the same classification logic for compatibility and displayed device identity
 
 NetBSD 4 activation behavior:
@@ -1156,7 +1161,7 @@ NetBSD 4 activation behavior:
 - `tcapsule deploy --no-reboot` uploads the payload, stops the manager plus any legacy watchdog process and `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies managed `smbd` plus mDNS takeover on both NetBSD 4 and NetBSD 6 devices
 - `tcapsule activate` repeats the no-reboot activation sequence without re-uploading files
 - Apple `mDNSResponder` takeover is handled inside `mdns-advertiser` during normal generated-advertisement startup
-- tested 1st-generation NetBSD 4 hardware does not persist an `/etc` boot hook and therefore needs manual activation after reboot
+- tested 1st-generation NetBSD 4 hardware without a firmware boot-hook patch does not persist an `/etc` hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
 - `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, or if `/mnt/Flash/rc.local`, `/mnt/Flash/boot.sh`, or `/mnt/Flash/manager.sh` is already running, it skips running `/mnt/Flash/rc.local`
 
@@ -1183,7 +1188,7 @@ The dry-run modes are intended for users who want to inspect the exact remote ac
 
 Hidden operator mode:
 - `tcapsule deploy --debug-logging` writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to flash config.
-- at runtime, Samba writes `log.smbd` under `<payload>/logs/`, sets `max log size = 0`, and enables `log level = 5 vfs:8 fruit:8`.
+- at runtime, Samba writes `log.smbd` under `<payload>/logs/`, sets `max log size = 0`, and enables `log level = 10`.
 - managed runtime logs under `<payload>/logs/` are normally capped around `128 KiB`; `--debug-logging` leaves them unbounded.
 - this flag is intentionally not documented in the normal command help because it is for active debugging, not normal installs.
 
@@ -1248,7 +1253,7 @@ Current transport behavior:
 
 Current uninstall behavior:
 - stops the manager first so it cannot restart `smbd` during teardown
-- removes the managed payload, flash hooks, runtime tree, and compatibility symlinks
+- removes the managed payload, loader files under `/mnt/Flash`, runtime tree, and compatibility symlinks; it does not restore a firmware bank changed by `flash --patch`
 - runs remote uninstall actions sequentially over SSH
 - prompts before reboot by default
 - supports `--no-reboot`
@@ -1385,8 +1390,8 @@ That is why the current authenticated design still maps to `root`.
 - `/mnt/Memory` is tight; only about `1-2 MiB` may remain free after staging.
 - The repo still assumes AirPort storage firmware behavior such as:
   - AirPort-style IPv4/interface layout
-  - `dk1` / `dk2` / `dk3`
-  - `ShareRoot` / `Shared`
+  - HFS partition identifiers beginning with `dk`, discovered through Apple `MaSt` metadata
+  - the internal-volume `ShareRoot` layout
 - Apple firmware behavior may still change runtime mount timing or disk state in edge cases.
 
 ## Verification Commands
@@ -1440,7 +1445,7 @@ The current system is no longer just an experiment:
 - it builds reproducibly
 - deploys from checked-in artifacts
 - survives reboot on the NetBSD 6 path
-- can be manually reactivated after reboot on tested NetBSD 4 gen1 hardware
+- can use the persistent firmware boot-hook patch on NetBSD 4, or be manually reactivated after reboot on tested unpatched gen1 hardware
 - advertises itself over Bonjour
 - authenticates with the configured password; docs and examples use SMB username `admin`
 - serves the internal disk through Samba 4.24.3
