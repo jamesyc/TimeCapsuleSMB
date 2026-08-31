@@ -468,7 +468,6 @@ tc_launch_mdns_advertiser() {
         tc_log "$context: starting mdns advertiser in auto-ip mode"
     fi
     set -- "$TC_MDNS_BIN" \
-        --generated-airport-services \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}"

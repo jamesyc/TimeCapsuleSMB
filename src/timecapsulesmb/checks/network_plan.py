@@ -97,6 +97,19 @@ class BindInterface:
     family: NetworkFamily
 
 
+def _canonicalize_netbsd_ipv6_interface(
+    interface: ipaddress.IPv4Interface | ipaddress.IPv6Interface,
+) -> ipaddress.IPv4Interface | ipaddress.IPv6Interface:
+    if interface.version != 6 or not interface.ip.is_link_local:
+        return interface
+    packed = bytearray(interface.ip.packed)
+    if packed[2] == 0 and packed[3] == 0:
+        return interface
+    packed[2] = 0
+    packed[3] = 0
+    return ipaddress.ip_interface(f"{ipaddress.IPv6Address(bytes(packed))}/{interface.network.prefixlen}")
+
+
 def normalize_family_tokens(tokens: Iterable[str]) -> tuple[NetworkFamily, ...]:
     families: list[NetworkFamily] = []
     for raw in tokens:
@@ -119,6 +132,7 @@ def parse_bind_interfaces(bind_interfaces: str | None) -> tuple[BindInterface, .
             interface = ipaddress.ip_interface(token)
         except ValueError:
             continue
+        interface = _canonicalize_netbsd_ipv6_interface(interface)
         network = interface.network
         if network.is_loopback:
             continue
@@ -157,15 +171,23 @@ def cidr_family(cidr: str) -> NetworkFamily | None:
 
 
 def _adapter_ip_text(value: object) -> str | None:
+    scope = ""
     if isinstance(value, tuple):
+        if len(value) >= 3 and value[2]:
+            scope = str(value[2])
         value = value[0] if value else ""
     if not isinstance(value, str):
         return None
-    value = value.split("%", 1)[0]
+    if "%" in value:
+        value, explicit_scope = value.split("%", 1)
+        scope = explicit_scope or scope
     try:
-        return str(ipaddress.ip_address(value))
+        parsed = ipaddress.ip_address(value)
     except ValueError:
         return None
+    if parsed.version == 6 and parsed.is_link_local and scope:
+        return f"{parsed}%{scope}"
+    return str(parsed)
 
 
 def local_interface_addresses() -> tuple[str, ...]:
@@ -181,16 +203,21 @@ def local_interface_addresses() -> tuple[str, ...]:
 
     addresses: list[str] = []
     for adapter in adapters:
+        adapter_name = str(getattr(adapter, "name", "") or getattr(adapter, "nice_name", ""))
+        if adapter_name in {"lo", "lo0"}:
+            continue
         for adapter_ip in getattr(adapter, "ips", []):
             ip_text = _adapter_ip_text(getattr(adapter_ip, "ip", None))
             if not ip_text:
                 continue
             try:
-                ip_obj = ipaddress.ip_address(ip_text)
+                ip_obj = ipaddress.ip_address(ip_text.split("%", 1)[0])
             except ValueError:
                 continue
             if ip_obj.is_loopback:
                 continue
+            if ip_obj.version == 6 and ip_obj.is_link_local and adapter_name:
+                ip_text = f"{ip_obj}%{adapter_name}"
             if ip_text not in addresses:
                 addresses.append(ip_text)
     return tuple(addresses)
@@ -206,17 +233,34 @@ _ROUTE_UNAVAILABLE_ERRNOS = {
 
 
 def select_route_to_address(address: str, *, port: int = 445) -> RouteSelection:
+    address_base, _, scope = address.partition("%")
     try:
-        ip_obj = ipaddress.ip_address(address.split("%", 1)[0])
+        ip_obj = ipaddress.ip_address(address_base)
     except ValueError as exc:
         return RouteSelection("unknown", error=str(exc))
 
     family = socket.AF_INET6 if ip_obj.version == 6 else socket.AF_INET
-    destination = (address, port, 0, 0) if family == socket.AF_INET6 else (address, port)
+    scope_id = 0
+    if family == socket.AF_INET6 and scope:
+        try:
+            scope_id = int(scope, 10)
+        except ValueError:
+            try:
+                scope_id = socket.if_nametoindex(scope)
+            except OSError:
+                scope_id = 0
+    destination = (address_base, port, 0, scope_id) if family == socket.AF_INET6 else (address_base, port)
     try:
         with socket.socket(family, socket.SOCK_DGRAM) as sock:
             sock.connect(destination)
-            source = _adapter_ip_text(sock.getsockname()[0])
+            sockname = sock.getsockname()
+            source = _adapter_ip_text(sockname[0])
+            if family == socket.AF_INET6 and source and len(sockname) >= 4 and sockname[3]:
+                try:
+                    source_scope = socket.if_indextoname(sockname[3])
+                except OSError:
+                    source_scope = str(sockname[3])
+                source = f"{source}%{source_scope}"
     except OSError as exc:
         state: RouteState = "unavailable" if exc.errno in _ROUTE_UNAVAILABLE_ERRNOS else "unknown"
         return RouteSelection(
@@ -283,22 +327,27 @@ def build_network_check_plan(
         for interface in bind_interfaces:
             if interface.family != family:
                 continue
-            try:
-                route = select_route(interface.address)
-            except Exception as exc:
-                route = RouteSelection("unknown", error=f"{type(exc).__name__}: {exc}")
             matching_sources = local_sources_for_remote_cidrs(
                 (interface.cidr,),
                 family=family,
                 local_addresses=candidate_local_addresses,
             )
+            endpoint_address = interface.address
+            if family == "ipv6" and ipaddress.ip_address(interface.address).is_link_local:
+                scoped_source = next((source for source in matching_sources if "%" in source), None)
+                if scoped_source is not None:
+                    endpoint_address = f"{interface.address}%{scoped_source.split('%', 1)[1]}"
+            try:
+                route = select_route(endpoint_address)
+            except Exception as exc:
+                route = RouteSelection("unknown", error=f"{type(exc).__name__}: {exc}")
             endpoint_sources: list[str] = []
             if route.state == "available" and route.source:
                 endpoint_sources.append(route.source)
             elif route.state == "unknown":
                 endpoint_sources.extend(matching_sources)
             endpoint = NetworkEndpointPlan(
-                address=interface.address,
+                address=endpoint_address,
                 cidr=interface.cidr,
                 family=family,
                 on_link_sources=matching_sources,

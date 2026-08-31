@@ -40,7 +40,7 @@
 #define AUTO_IP_STABILIZE_SECONDS 3
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
-#define ADVERTISER_VERSION_CODE 2104
+#define ADVERTISER_VERSION_CODE 2107
 #define EXIT_OK 0
 #define EXIT_RUNTIME_ERROR 1
 #define EXIT_USAGE 2
@@ -200,6 +200,15 @@ static int link_contexts_need_nbns_ipv4_socket(const struct link_context_set *se
     return 0;
 }
 
+static void filter_nbns_link_contexts(struct link_context_set *out,
+                                      const struct link_context_set *all_links) {
+    filter_smb_bind_link_contexts(out, all_links, 1, 0);
+    if (out->count == 0) {
+        filter_smb_bind_link_contexts(out, all_links, 1, 1);
+    }
+    keep_only_nbns_ipv4_link_contexts(out);
+}
+
 static int collect_usable_nbns_link_contexts(struct link_context_set *out) {
     struct link_context_set all_links;
 
@@ -208,8 +217,7 @@ static int collect_usable_nbns_link_contexts(struct link_context_set *out) {
     if (collect_usable_link_contexts(&all_links) != 0) {
         return -1;
     }
-    filter_advertise_link_contexts(out, &all_links);
-    keep_only_nbns_ipv4_link_contexts(out);
+    filter_nbns_link_contexts(out, &all_links);
     if (all_links.truncated || out->truncated) {
         fprintf(stderr, "auto-ip: NBNS link list exceeded static capacity\n");
         return -1;

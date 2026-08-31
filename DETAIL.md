@@ -312,13 +312,11 @@ Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.disc
 Current behavior:
 - `boot.sh` prepares the RAM runtime and launches `manager.sh`
 - `manager.sh` continuously reconciles usable network addresses, payload state, and AirPort identity data; it can continue in diskless mode when no payload is available and can omit `_airport._tcp` when optional clone identity fields are unavailable
-- the manager launches `mdns-advertiser` from `/mnt/Flash` with `--generated-airport-services`
+- the manager launches `mdns-advertiser` from `/mnt/Flash` with generated AirPort identity fields
 - `mdns-advertiser` generates managed `_smb._tcp`, `_adisk._tcp`, `_device-info._tcp`, and `_airport._tcp` records from live runtime state
 - when a USB printer is attached and discoverable through AirPort metadata, the manager also passes `_riousbprint._tcp` and `_pdl-datastream._tcp` arguments
 - if the disk payload is unavailable, the manager can launch the advertiser in diskless mode so AirPort identity remains visible while SMB/ADISK records are suppressed
 - `mdns-advertiser` kills Apple `mDNSResponder` during takeover and keeps UDP `5353` owned by the managed helper
-
-The old snapshot files `/mnt/Flash/allmdns.txt` and `/mnt/Flash/applemdns.txt` are not part of the active runtime path. Deploy and uninstall deliberately leave those files alone if they exist from older experiments because they are diagnostic artifacts, not current managed state.
 
 ## Boot Flow In Detail
 
@@ -576,8 +574,6 @@ Current validation and behavior notes:
 - service types are validated as dotted DNS names
 - `_adisk._tcp` TXT payload sizing is validated before advertisement
 - `_airport._tcp` fields are all optional; missing fields are simply omitted from the TXT payload
-- snapshot replay preserves non-ASCII or binary hostnames using `HOST_HEX`
-- managed `_device-info._tcp` is generated even in snapshot mode; snapshot `_device-info._tcp` records are ignored
 
 ## NBNS Responder Details
 
@@ -668,7 +664,7 @@ The Advanced panel stores these choices in the local device profile. Run **Insta
 
 ### Enable NBNS
 
-Default: on. Enables `NBNS_ENABLED=1`, causing the manager to stage `nbns-advertiser` into RAM and answer IPv4 NetBIOS name and node-status queries on UDP `137`. This helps older Windows-style discovery; Bonjour-capable clients do not require it.
+Default: on. Enables `NBNS_ENABLED=1`, causing the manager to stage `nbns-advertiser` into RAM and answer IPv4 NetBIOS name and node-status queries on UDP `137`. The responder uses the same LAN-owner interface selection as LAN-only Samba and does not answer through WAN links. This helps older Windows-style discovery; Bonjour-capable clients do not require it.
 
 ### Enable rsync
 
@@ -689,6 +685,8 @@ Default: off. Changes Samba's global `restrict anonymous` value from `2` to `0` 
 ### Advertise AFP over Bonjour
 
 Default: off. Adds a generated `_afpovertcp._tcp` record on port `548` and changes generated ADISK flags from SMB-only `adVF=0x82` to AFP+SMB `adVF=0x83`. This only changes managed Bonjour advertisement; it does not configure or authenticate an AFP server.
+
+Managed Bonjour records are link-scoped. LAN-owner links receive the complete generated service set. Other addressed links receive only the `_airport._tcp` service and the host-address records it needs for AirPort Utility discovery; SMB, AFP, ADISK, device-info, printer, and unknown captured services are not published there. The runtime identifies routed WAN links from the active PF NAT egress plus IPv4 and IPv6 default routes, then maps those interfaces back to live `ifconfig` addresses when NetBSD 4 omits `getifaddrs` owner names. NetBSD's embedded link-local IPv6 scope is retained for local Samba binding but removed from DNS AAAA records. If routing evidence is unavailable, the runtime preserves the prior fail-open private-address fallback rather than disabling working LAN discovery.
 
 ### Use Netatalk for metadata
 

@@ -1990,6 +1990,20 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "PASS")
         self.assertIn("from service record", result.message)
 
+    def test_check_bonjour_host_ip_matches_numeric_and_named_ipv6_scopes(self) -> None:
+        with (
+            mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=()),
+            mock.patch("timecapsulesmb.checks.bonjour.socket.if_nametoindex", return_value=17),
+        ):
+            result = check_bonjour_host_ip(
+                "home.local",
+                expected_ip="fe80::2%en0",
+                record_ips=["fe80::2%17"],
+            )
+
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("from service record", result.message)
+
     def test_check_bonjour_host_ip_fails_when_dns_resolves_wrong_ip(self) -> None:
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.1.99", 0))]
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):

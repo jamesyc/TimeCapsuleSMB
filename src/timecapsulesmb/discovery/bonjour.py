@@ -415,8 +415,9 @@ def _source_ipv4_for_target(target_ip: str | None) -> str | None:
 def _source_ipv6_for_target(target_ip: str | None) -> str | None:
     if not target_ip:
         return None
+    target_base, _, target_scope = target_ip.partition("%")
     try:
-        parsed = ipaddress.ip_address(target_ip)
+        parsed = ipaddress.ip_address(target_base)
     except ValueError:
         return None
     if parsed.version != 6:
@@ -427,8 +428,24 @@ def _source_ipv6_for_target(target_ip: str | None) -> str | None:
     except OSError:
         return None
     try:
-        sock.connect((target_ip, MDNS_PORT))
-        source_ip = sock.getsockname()[0]
+        scope_id = 0
+        if target_scope:
+            try:
+                scope_id = int(target_scope, 10)
+            except ValueError:
+                scope_id = socket.if_nametoindex(target_scope)
+        sock.connect((target_base, MDNS_PORT, 0, scope_id))
+        sockname = sock.getsockname()
+        source_ip = sockname[0]
+        source_base, _, source_text_scope = source_ip.partition("%")
+        if len(sockname) >= 4 and sockname[3]:
+            try:
+                source_scope = socket.if_indextoname(sockname[3])
+            except OSError:
+                source_scope = str(sockname[3])
+            source_ip = f"{source_base}%{source_scope}"
+        elif source_text_scope:
+            source_ip = f"{source_base}%{source_text_scope}"
     except OSError:
         return None
     finally:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import socket
 from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
@@ -298,8 +299,9 @@ def check_bonjour_host_ip(
             known_ips.append(ip)
 
     if expected_ip:
-        if expected_ip in known_ips:
-            suffix = " from service record" if expected_ip in (record_ips or []) else ""
+        matching_ip = next((ip for ip in known_ips if _same_scoped_ip(ip, expected_ip)), None)
+        if matching_ip is not None:
+            suffix = " from service record" if any(_same_scoped_ip(ip, expected_ip) for ip in (record_ips or [])) else ""
             return CheckResult("PASS", f"resolved Bonjour host {hostname} to {expected_ip}{suffix}")
         if known_ips:
             return CheckResult(
@@ -311,3 +313,33 @@ def check_bonjour_host_ip(
     if known_ips:
         return CheckResult("PASS", f"resolved Bonjour host {hostname} to {', '.join(known_ips)}")
     return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}")
+
+
+def _same_scoped_ip(left: str, right: str) -> bool:
+    left_base, _, left_scope = left.partition("%")
+    right_base, _, right_scope = right.partition("%")
+    left_v4 = ipv4_literal(left_base)
+    right_v4 = ipv4_literal(right_base)
+    if left_v4 is not None or right_v4 is not None:
+        return left_v4 is not None and left_v4 == right_v4
+    left_v6 = ipv6_literal(left_base)
+    right_v6 = ipv6_literal(right_base)
+    if left_v6 is None or left_v6 != right_v6:
+        return False
+    if not left_scope or not right_scope:
+        return True
+
+    def scope_index(scope: str) -> int | None:
+        try:
+            return int(scope, 10)
+        except ValueError:
+            try:
+                return socket.if_nametoindex(scope)
+            except OSError:
+                return None
+
+    left_index = scope_index(left_scope)
+    right_index = scope_index(right_scope)
+    if left_index is not None and right_index is not None:
+        return left_index == right_index
+    return left_scope == right_scope

@@ -3203,7 +3203,7 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
@@ -3274,13 +3274,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
         self.assertEqual(events_text.count("--print-mdns-socket-families"), 1, events_text)
-        self.assertEqual(events_text.count("--generated-airport-services"), 1, events_text)
-        self.assertNotIn("--skip-capture-if-snapshot-newer-than-boot", events_text)
-        self.assertNotIn("--snapshot-newer-than-boot", events_text)
-        self.assertNotIn("--save-all-snapshot", events_text)
-        self.assertNotIn("--save-snapshot", events_text)
-        self.assertNotIn("--save-airport-snapshot", events_text)
-        self.assertNotIn("--load-snapshot", events_text)
+        self.assertEqual(events_text.count("--instance AirPort"), 1, events_text)
         self.assertIn("mDNS auto-ip is available; starting advertiser", log_text)
 
     def test_manager_mdns_healthy_advertiser_does_not_probe_or_relaunch(self) -> None:
@@ -3418,7 +3412,7 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
@@ -3487,15 +3481,10 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("--generated-airport-services", events_text)
+        self.assertIn("--instance ", events_text)
         self.assertNotIn("--afp", events_text)
         self.assertIn("--auto-ip", events_text)
         self.assertIn("--airport-wama 80:EA:96:E6:58:68", events_text)
-        self.assertNotIn("--snapshot-newer-than-boot", events_text)
-        self.assertNotIn("--save-all-snapshot", events_text)
-        self.assertNotIn("--save-snapshot", events_text)
-        self.assertNotIn("--save-airport-snapshot", events_text)
-        self.assertNotIn("--load-snapshot", events_text)
 
     def test_manager_mdns_generated_launch_passes_attached_usb_printer_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3510,7 +3499,7 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
@@ -3598,7 +3587,7 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("--generated-airport-services", events_text)
+        self.assertIn("--instance ", events_text)
         self.assertIn("--riousbprint-name Canon MP490 series", events_text)
         self.assertIn("--riousbprint-note James's AirPort Time Capsule", events_text)
         self.assertIn("--riousbprint-mfg Canon", events_text)
@@ -3608,7 +3597,6 @@ MaSt = (
         self.assertIn("--riousbprint-product-id 5948", events_text)
         self.assertIn("--pdl-datastream-port 9100", events_text)
         self.assertNotIn("--riousbprint-cmd", events_text)
-        self.assertNotIn("--load-snapshot", events_text)
         self.assertIn("USB printer advertisement prepared name=Canon MP490 series", log_text)
 
     def test_manager_mdns_generated_launch_skips_unplugged_usb_printer(self) -> None:
@@ -3624,7 +3612,7 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
@@ -3708,13 +3696,9 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("--generated-airport-services", events_text)
+        self.assertIn("--instance ", events_text)
         self.assertNotIn("--riousbprint-", events_text)
         self.assertNotIn("--pdl-datastream-", events_text)
-        self.assertNotIn("--snapshot-newer-than-boot", events_text)
-        self.assertNotIn("--save-all-snapshot", events_text)
-        self.assertNotIn("--save-airport-snapshot", events_text)
-        self.assertNotIn("--load-snapshot", events_text)
 
     def test_manager_mdns_refreshes_when_usb_printer_plugs_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3731,7 +3715,7 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
@@ -3824,7 +3808,7 @@ MaSt = (
             events_text = events.read_text()
             log_text = (memory / "samba4/var/manager.log").read_text()
 
-        generated_lines = [line for line in events_text.splitlines() if "--generated-airport-services" in line]
+        generated_lines = [line for line in events_text.splitlines() if "--instance " in line]
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
         self.assertEqual(len(generated_lines), 2, events_text)
@@ -3850,7 +3834,7 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
@@ -3942,7 +3926,7 @@ MaSt = (
             )
             events_text = events.read_text()
 
-        generated_lines = [line for line in events_text.splitlines() if "--generated-airport-services" in line]
+        generated_lines = [line for line in events_text.splitlines() if "--instance " in line]
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
         self.assertEqual(len(generated_lines), 2, events_text)
@@ -3963,7 +3947,7 @@ MaSt = (
                 f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "  *) echo unexpected-mdns-command; exit 9 ;;\n"
                 "esac\n"
@@ -4036,11 +4020,7 @@ MaSt = (
         self.assertIn("stop mdns-advertiser\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
         self.assertEqual(events_text.count("--print-mdns-socket-families"), 1, events_text)
-        self.assertIn("--generated-airport-services", events_text)
-        self.assertNotIn("--snapshot-newer-than-boot", events_text)
-        self.assertNotIn("--save-airport-snapshot", events_text)
-        self.assertNotIn("--save-all-snapshot", events_text)
-        self.assertNotIn("--load-snapshot", events_text)
+        self.assertIn("--instance ", events_text)
         self.assertIn("manager mDNS recovery: killing prior mdns-advertiser processes", log_text)
 
     def test_manager_diskless_state_resets_advertiser_logs_to_ram(self) -> None:
@@ -4055,7 +4035,7 @@ MaSt = (
                 "#!/bin/sh\n"
                 "case \"$1\" in\n"
                 "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --generated-airport-services) "
+                "  --instance) "
                 f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
                 "esac\n"
                 "exit 0\n"
@@ -6234,51 +6214,6 @@ MaSt = (
         self.assertIn("manager NBNS recovery: auto-ip check failed with exit code 13", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
-    def test_common_mdns_capture_has_no_async_wait_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "mdns-capture-no-async-state.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    if command -v tc_wait_for_mdns_capture >/dev/null 2>&1; then
-                        echo wait-function-present
-                    else
-                        echo wait-function-missing
-                    fi
-                    if command -v tc_finish_mdns_capture_wait >/dev/null 2>&1; then
-                        echo finish-function-present
-                    else
-                        echo finish-function-missing
-                    fi
-                    case "${{TC_MDNS_CAPTURE_PID+set}}" in
-                        set) echo pid-var-set ;;
-                        *) echo pid-var-unset ;;
-                    esac
-                    case "${{MDNS_CAPTURE_WAIT_SECONDS+set}}" in
-                        set) echo timeout-var-set ;;
-                        *) echo timeout-var-unset ;;
-                    esac
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("wait-function-missing\n", proc.stdout)
-        self.assertIn("finish-function-missing\n", proc.stdout)
-        self.assertIn("pid-var-unset\n", proc.stdout)
-        self.assertIn("timeout-var-unset\n", proc.stdout)
 
     def test_common_mdns_launch_uses_single_generated_advertiser_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6336,13 +6271,9 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("launching mdns-advertiser", proc.stdout)
-        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertIn("--instance ", proc.stdout)
         self.assertNotIn("--afp", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
-        self.assertNotIn("--save-all-snapshot", proc.stdout)
-        self.assertNotIn("--save-snapshot", proc.stdout)
-        self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertNotIn("--load-snapshot", proc.stdout)
 
     def test_common_mdns_launch_passes_afp_when_advertise_afp_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6464,7 +6395,7 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertIn("--instance ", proc.stdout)
         self.assertIn("--riousbprint-name Canon MP490 series", proc.stdout)
         self.assertIn("--riousbprint-note James's AirPort Time Capsule", proc.stdout)
         self.assertIn("--riousbprint-mfg Canon", proc.stdout)
@@ -6474,9 +6405,6 @@ MaSt = (
         self.assertIn("--riousbprint-product-id 5948", proc.stdout)
         self.assertIn("--pdl-datastream-port 9100", proc.stdout)
         self.assertNotIn("--riousbprint-cmd", proc.stdout)
-        self.assertNotIn("--save-all-snapshot", proc.stdout)
-        self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertNotIn("--load-snapshot", proc.stdout)
         self.assertNotIn("--debug-logging", proc.stdout)
         self.assertIn("USB printer advertisement prepared name=Canon MP490 series", proc.stdout)
 
@@ -6538,12 +6466,9 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertIn("--instance ", proc.stdout)
         self.assertNotIn("--riousbprint-", proc.stdout)
         self.assertNotIn("--pdl-datastream-", proc.stdout)
-        self.assertNotIn("--save-all-snapshot", proc.stdout)
-        self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertNotIn("--load-snapshot", proc.stdout)
 
     def test_common_mdns_diskless_start_omits_stale_adisk_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6739,12 +6664,9 @@ MaSt = (
         self.assertIn("/.samba4/logs/nbns.log", proc.stdout)
         self.assertIn("mdns\n", proc.stdout)
         self.assertIn("launching mdns-advertiser", proc.stdout)
-        self.assertIn("--generated-airport-services", proc.stdout)
+        self.assertIn("--instance ", proc.stdout)
         self.assertIn("James's AirPort Time Capsule", proc.stdout)
         self.assertIn("--airport-syfl 0xA0C", proc.stdout)
-        self.assertNotIn("--save-all-snapshot", proc.stdout)
-        self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertNotIn("--load-snapshot", proc.stdout)
         self.assertIn("mdns-stdout", proc.stdout)
         self.assertIn("mdns-stderr", proc.stdout)
         self.assertIn("nbns\n", proc.stdout)
@@ -6753,61 +6675,6 @@ MaSt = (
         self.assertIn("nbns-stdout", proc.stdout)
         self.assertIn("nbns-stderr", proc.stdout)
 
-    def test_common_mdns_generated_launch_failure_does_not_run_snapshot_capture(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                "printf 'mdns-args:%s\\n' \"$*\"\n"
-                "if [ \"$1\" = \"--generated-airport-services\" ]; then\n"
-                "  echo generated-fail >&2\n"
-                "  exit 2\n"
-                "fi\n"
-                "echo unexpected-capture\n"
-                "exit 9\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-generation-failure.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    mkdir -p "$RAM_VAR"
-                    get_radio_mac() {{ return 1; }}
-                    get_airport_acp_value() {{
-                        case "$1" in
-                            syNm) echo "James's AirPort Time Capsule" ;;
-                            syVs) echo 7.9.1 ;;
-                            srcv) echo 79100.2 ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_set_log "$RAM_VAR/test.log" test
-                    tc_launch_mdns_advertiser "mdns test" 0 0
-                    wait "$mdns_launch_pid" || true
-                    cat "$TC_MDNS_LOG_FILE"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("launching mdns-advertiser", proc.stdout)
-        self.assertIn("--generated-airport-services", proc.stdout)
-        self.assertIn("generated-fail", proc.stdout)
-        self.assertNotIn("launching mdns-advertiser capture", proc.stdout)
-        self.assertNotIn("--save-all-snapshot", proc.stdout)
-        self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertNotIn("--load-snapshot", proc.stdout)
-        self.assertNotIn("unexpected-capture", proc.stdout)
 
     def test_common_wake_or_mount_uses_diskd_without_mount_hfs_fallback_when_it_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

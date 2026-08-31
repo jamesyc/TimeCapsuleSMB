@@ -1,3 +1,7 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
@@ -12,15 +16,12 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#if defined(__APPLE__) || defined(__NetBSD__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-#include <sys/sysctl.h>
-#endif
+#include <sys/uio.h>
 #if defined(__NetBSD__)
 #include <dev/usb/usb.h>
 #endif
@@ -60,19 +61,6 @@
 #define ADISK_DISK_TXT_ADVF_PREFIX "=adVF="
 #define ADISK_DISK_TXT_ADVN_MID ",adVN="
 #define ADISK_DISK_TXT_SUFFIX ",adVU="
-#define SNAPSHOT_MAX_RECORDS 64
-#define SNAPSHOT_MAX_TXT_ITEMS 16
-#define SNAPSHOT_LINE_MAX 1024
-#define SNAPSHOT_MAX_SERVICE_TYPES 64
-#ifndef SNAPSHOT_CAPTURE_TIMEOUT_SECONDS
-#define SNAPSHOT_CAPTURE_TIMEOUT_SECONDS 60
-#endif
-#ifndef SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS
-#define SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS 5
-#endif
-#ifndef SNAPSHOT_CAPTURE_STEP_SECONDS
-#define SNAPSHOT_CAPTURE_STEP_SECONDS 5
-#endif
 #define TAKEOVER_RETRY_COUNT 6
 #define MAX_IFACE_CONTEXTS 16
 #define AUTO_IP_STABILIZE_SECONDS 3
@@ -81,7 +69,7 @@
 #define MDNS_DEGRADED_RETRY_SECONDS 5
 #define MDNS_MDNSRESPONDER_GUARD_SECONDS 5
 #define MDNS_COUNTER_LOG_INTERVAL_MS 30000
-#define ADVERTISER_VERSION_CODE 2220
+#define ADVERTISER_VERSION_CODE 2224
 #define NT_HASH_MAX_PASSWORD_BYTES 4096
 #define DNS_SD_SERVICE_ENUMERATION_NAME "_services._dns-sd._udp.local."
 
@@ -108,6 +96,11 @@
 #define MDNS_MULTICAST_RESPONSE_DELAY_MAX_MS 120
 #define PLANNED_RR_MAX 192
 #define PLANNED_RDATA_MAX 1024
+
+enum mdns_service_scope {
+    MDNS_SERVICE_SCOPE_LAN = 0,
+    MDNS_SERVICE_SCOPE_WAN = 1
+};
 
 #if !defined(IPV6_JOIN_GROUP) && defined(IPV6_ADD_MEMBERSHIP)
 #define IPV6_JOIN_GROUP IPV6_ADD_MEMBERSHIP
@@ -236,9 +229,7 @@ enum exit_code {
     EXIT_INVALID_DEVICE_MODEL = 9,
     EXIT_INVALID_AIRPORT_TXT = 10,
     EXIT_AUTO_IP_UNAVAILABLE = 11,
-    EXIT_SNAPSHOT_CAPTURE_FAILED = 12,
-    EXIT_AUTO_IP_PROBE_FAILED = 13,
-    EXIT_SNAPSHOT_NOT_FRESH = 14
+    EXIT_AUTO_IP_PROBE_FAILED = 13
 };
 
 struct adisk_disk {
@@ -254,8 +245,6 @@ struct adisk_disk_set {
 };
 
 struct config {
-    char save_all_snapshot_path[MAX_NAME];
-    char save_airport_snapshot_path[MAX_NAME];
     char service_type[MAX_NAME];
     char instance_name[MAX_NAME];
     char host_label[MAX_LABEL + 1];
@@ -295,34 +284,6 @@ struct config {
     uint32_t ttl;
     int diskless;
     int advertise_afp;
-    int generated_airport_services;
-    char load_snapshot_path[MAX_NAME];
-    char save_snapshot_path[MAX_NAME];
-    char skip_capture_if_snapshot_newer_than_boot_path[MAX_NAME];
-    char snapshot_newer_than_boot_path[MAX_NAME];
-};
-
-struct service_record {
-    char service_type[MAX_NAME];
-    char instance_name[MAX_NAME];
-    char instance_fqdn[MAX_NAME];
-    char host_label[MAX_LABEL + 1];
-    char host_fqdn[MAX_NAME];
-    uint16_t port;
-    char txt[SNAPSHOT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
-    uint8_t txt_len[SNAPSHOT_MAX_TXT_ITEMS];
-    size_t txt_count;
-};
-
-struct service_record_set {
-    struct service_record records[SNAPSHOT_MAX_RECORDS];
-    size_t count;
-    int truncated;
-};
-
-struct service_type_set {
-    char types[SNAPSHOT_MAX_SERVICE_TYPES][MAX_NAME];
-    size_t count;
 };
 
 struct mdns_socket_pair {
@@ -372,7 +333,6 @@ struct deferred_response {
     int sockfd;
     long long due_ms;
     uint16_t response_id;
-    int use_snapshot_records;
     struct sockaddr_storage multicast_dest;
     socklen_t multicast_dest_len;
     struct sockaddr_storage source;
@@ -429,17 +389,14 @@ static const unsigned int g_startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 
 static long long monotonic_millis(void);
 static int name_equals(const char *a, const char *b);
 static int escape_dns_label(char *out, size_t out_len, const char *label);
-static int unescape_dns_label(char *out, size_t out_len, const char *label);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
 static int build_host_fqdn(char *out, size_t out_len, const char *host_label);
 static int is_airport_enabled(const struct config *cfg);
 static int is_riousbprint_enabled(const struct config *cfg);
 static int is_pdl_datastream_enabled(const struct config *cfg);
-static int snapshot_record_overridden_by_generated(const struct config *cfg, const struct service_record *record);
 static int smb_enabled(const struct config *cfg);
 static int adisk_enabled(const struct config *cfg);
 static int afp_enabled(const struct config *cfg);
-static int cfg_has_airport_identity_macs(const struct config *cfg);
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
 static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl);
 static int add_rr_txt_items(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl,
@@ -538,14 +495,6 @@ static int wait_for_auto_link_contexts_with_provider(struct link_context_set *ou
     return -1;
 }
 
-static int wait_for_auto_link_contexts(struct link_context_set *out, const char *role) {
-    return wait_for_auto_link_contexts_with_provider(out,
-                                                    role,
-                                                    collect_usable_link_contexts_provider,
-                                                    mdns_sleep_provider,
-                                                    NULL);
-}
-
 static int wait_for_auto_advertise_link_contexts(struct link_context_set *out, const char *role) {
     return wait_for_auto_link_contexts_with_provider(out,
                                                     role,
@@ -626,35 +575,6 @@ static int print_auto_ip_cidrs_with_provider(FILE *stream,
 
 static int link_contexts_need_ipv4_socket(const struct link_context_set *set);
 static int link_contexts_need_ipv6_socket(const struct link_context_set *set);
-
-static void filter_smb_bind_link_contexts(struct link_context_set *out,
-                                          const struct link_context_set *in,
-                                          int lan_only,
-                                          int unnamed_lan_fallback) {
-    size_t i;
-
-    memset(out, 0, sizeof(*out));
-    for (i = 0; i < in->count; i++) {
-        if (lan_only) {
-            if (unnamed_lan_fallback) {
-                if (!link_context_is_unnamed_private_lan_fallback(&in->links[i])) {
-                    continue;
-                }
-            } else if (!iface_name_is_strong_lan(in->links[i].name)) {
-                continue;
-            }
-        }
-        if (!link_context_has_samba_address(&in->links[i])) {
-            continue;
-        }
-        if (out->count >= MAX_IFACE_CONTEXTS) {
-            out->truncated = 1;
-            break;
-        }
-        out->links[out->count++] = in->links[i];
-    }
-    sort_link_contexts(out);
-}
 
 static int print_smb_bind_interfaces_with_policy(FILE *stream,
                                                  mdns_collect_link_contexts_fn collect_contexts,
@@ -791,9 +711,6 @@ static void log_startup_config(const struct config *cfg) {
             cfg->device_model[0] != '\0' ? cfg->device_model : "(empty)",
             is_airport_enabled(cfg) ? "enabled" : "disabled",
             cfg->diskless ? "diskless" : "diskful");
-    if (cfg->generated_airport_services) {
-        fprintf(stderr, "mdns startup: generated AirPort services enabled\n");
-    }
     if (is_riousbprint_enabled(cfg)) {
         fprintf(stderr,
                 "mdns startup: USB printer instance=%s mfg=%s mdl=%s cmd=%s riousbprint_port=%u pdl_datastream_port=%u\n",
@@ -806,16 +723,14 @@ static void log_startup_config(const struct config *cfg) {
     }
 }
 
-static void log_send_failure(const char *stage, const struct sockaddr_in *dest, int use_snapshot_records,
-                             const char *detail) {
+static void log_send_failure(const char *stage, const struct sockaddr_in *dest, const char *detail) {
     char dest_ip[INET_ADDRSTRLEN];
 
     fprintf(stderr,
-            "mdns send failure: stage=%s dest=%s:%u records=%s detail=%s\n",
+            "mdns send failure: stage=%s dest=%s:%u detail=%s\n",
             stage,
             ipv4_to_string(dest->sin_addr.s_addr, dest_ip, sizeof(dest_ip)),
             (unsigned int)ntohs(dest->sin_port),
-            use_snapshot_records ? "snapshot" : "generated",
             detail);
     fprintf(stderr,
             "mdns send failure: listener remains active; discovery may still work via received queries even though unsolicited announcements failed\n");
@@ -1032,6 +947,7 @@ static int link_context_topology_equal(const struct link_context *a, const struc
     if (strcmp(a->name, b->name) != 0 ||
         a->flags != b->flags ||
         a->ifindex != b->ifindex ||
+        a->is_wan != b->is_wan ||
         a->ipv4_count != b->ipv4_count ||
         a->ipv6_count != b->ipv6_count) {
         return 0;
@@ -1080,9 +996,25 @@ static int link_context_topology_sets_equal(const struct link_context_set *a,
     return 1;
 }
 
-static void log_served_records(const struct config *cfg, const struct service_record_set *snapshot_records,
-                               int use_snapshot_records) {
-    fprintf(stderr, "serving summary: source=%s\n", use_snapshot_records ? "generated+snapshot" : "generated");
+static enum mdns_service_scope mdns_service_scope_for_link(const struct link_context_set *links,
+                                                           const struct link_context *link) {
+    struct link_context_set lan_links;
+
+    filter_smb_bind_link_contexts(&lan_links, links, 1, 0);
+    if (lan_links.count == 0) {
+        filter_smb_bind_link_contexts(&lan_links, links, 1, 1);
+    }
+    return link_context_set_contains_topology(&lan_links, link)
+               ? MDNS_SERVICE_SCOPE_LAN
+               : MDNS_SERVICE_SCOPE_WAN;
+}
+
+static const char *mdns_service_scope_name(enum mdns_service_scope scope) {
+    return scope == MDNS_SERVICE_SCOPE_LAN ? "lan" : "wan";
+}
+
+static void log_served_records(const struct config *cfg) {
+    fprintf(stderr, "serving summary: source=generated\n");
     if (smb_enabled(cfg)) {
         fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
                 cfg->service_type, cfg->instance_name, (unsigned int)cfg->port, cfg->host_fqdn);
@@ -1126,222 +1058,6 @@ static void log_served_records(const struct config *cfg, const struct service_re
                 cfg->host_fqdn,
                 cfg->riousbprint_cmd[0] != '\0' ? cfg->riousbprint_cmd : "(none)");
     }
-    if (use_snapshot_records) {
-        size_t i;
-        for (i = 0; i < snapshot_records->count; i++) {
-            const struct service_record *record = &snapshot_records->records[i];
-            if (snapshot_record_overridden_by_generated(cfg, record)) {
-                continue;
-            }
-            fprintf(stderr, "serving snapshot record[%lu]: type=%s instance=%s host=%s port=%u txt=%lu\n",
-                    (unsigned long)i,
-                    record->service_type,
-                    record->instance_fqdn,
-                    record->host_fqdn,
-                    (unsigned int)record->port,
-                    (unsigned long)record->txt_count);
-        }
-    }
-}
-
-static int is_suppressed_snapshot_service_type(const char *service_type) {
-    return name_equals(service_type, "_smb._tcp.local.") ||
-           name_equals(service_type, "_adisk._tcp.local.") ||
-           name_equals(service_type, "_device-info._tcp.local.") ||
-           name_equals(service_type, "_afpovertcp._tcp.local.");
-}
-
-static int snapshot_record_overridden_by_generated(const struct config *cfg, const struct service_record *record) {
-    char generated_instance_fqdn[MAX_NAME];
-
-    if (is_airport_enabled(cfg) && name_equals(record->service_type, cfg->airport_service_type)) {
-        if (build_instance_fqdn(generated_instance_fqdn,
-                                sizeof(generated_instance_fqdn),
-                                cfg->instance_name,
-                                cfg->airport_service_type) == 0 &&
-            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
-            return 1;
-        }
-    }
-    if (is_riousbprint_enabled(cfg) && name_equals(record->service_type, RIOUSBPRINT_SERVICE_TYPE)) {
-        if (build_instance_fqdn(generated_instance_fqdn,
-                                sizeof(generated_instance_fqdn),
-                                cfg->riousbprint_instance_name,
-                                RIOUSBPRINT_SERVICE_TYPE) == 0 &&
-            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
-            return 1;
-        }
-    }
-    if (is_pdl_datastream_enabled(cfg) && name_equals(record->service_type, PDL_DATASTREAM_SERVICE_TYPE)) {
-        if (build_instance_fqdn(generated_instance_fqdn,
-                                sizeof(generated_instance_fqdn),
-                                cfg->riousbprint_instance_name,
-                                PDL_DATASTREAM_SERVICE_TYPE) == 0 &&
-            name_equals(record->instance_fqdn, generated_instance_fqdn)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static void trim_trailing_dot(char *value) {
-    size_t len = strlen(value);
-    while (len > 0 && value[len - 1] == '.') {
-        value[--len] = '\0';
-    }
-}
-
-static int extract_instance_name(char *out, size_t out_len, const char *instance_fqdn, const char *service_type) {
-    char fqdn_copy[MAX_NAME];
-    char service_copy[MAX_NAME];
-    char escaped_instance[MAX_NAME];
-    size_t fqdn_len;
-    size_t service_len;
-    size_t instance_len;
-
-    if (strlen(instance_fqdn) >= sizeof(fqdn_copy) || strlen(service_type) >= sizeof(service_copy)) {
-        return -1;
-    }
-    strcpy(fqdn_copy, instance_fqdn);
-    strcpy(service_copy, service_type);
-    trim_trailing_dot(fqdn_copy);
-    trim_trailing_dot(service_copy);
-
-    fqdn_len = strlen(fqdn_copy);
-    service_len = strlen(service_copy);
-    if (fqdn_len <= service_len + 1) {
-        return -1;
-    }
-    if (strncasecmp(fqdn_copy + fqdn_len - service_len, service_copy, service_len) != 0) {
-        return -1;
-    }
-    if (fqdn_copy[fqdn_len - service_len - 1] != '.') {
-        return -1;
-    }
-    instance_len = fqdn_len - service_len - 1;
-    if (instance_len >= sizeof(escaped_instance)) {
-        return -1;
-    }
-    memcpy(escaped_instance, fqdn_copy, instance_len);
-    escaped_instance[instance_len] = '\0';
-    return unescape_dns_label(out, out_len, escaped_instance);
-}
-
-static int build_host_label_from_fqdn(char *out, size_t out_len, const char *host_fqdn) {
-    size_t i;
-    size_t label_len = 0;
-    char escaped_label[MAX_NAME];
-
-    if (host_fqdn == NULL || host_fqdn[0] == '\0') {
-        return -1;
-    }
-    for (i = 0; host_fqdn[i] != '\0'; i++) {
-        if (host_fqdn[i] == '\\') {
-            if (host_fqdn[i + 1] == '\0' || label_len + 2 >= sizeof(escaped_label)) {
-                return -1;
-            }
-            escaped_label[label_len++] = host_fqdn[i++];
-            escaped_label[label_len++] = host_fqdn[i];
-            continue;
-        }
-        if (host_fqdn[i] == '.') {
-            break;
-        }
-        if (label_len + 1 >= sizeof(escaped_label)) {
-            return -1;
-        }
-        escaped_label[label_len++] = host_fqdn[i];
-    }
-    if (label_len == 0 || label_len >= sizeof(escaped_label)) {
-        return -1;
-    }
-    escaped_label[label_len] = '\0';
-    return unescape_dns_label(out, out_len, escaped_label);
-}
-
-static struct service_record *find_record(struct service_record_set *set, const char *service_type, const char *instance_name) {
-    size_t i;
-
-    for (i = 0; i < set->count; i++) {
-        if (name_equals(set->records[i].service_type, service_type) &&
-            strcmp(set->records[i].instance_name, instance_name) == 0) {
-            return &set->records[i];
-        }
-    }
-    return NULL;
-}
-
-static struct service_record *find_or_add_record(struct service_record_set *set, const char *service_type, const char *instance_name) {
-    struct service_record *record;
-
-    record = find_record(set, service_type, instance_name);
-    if (record != NULL) {
-        return record;
-    }
-    if (set->count >= SNAPSHOT_MAX_RECORDS) {
-        set->truncated = 1;
-        return NULL;
-    }
-    record = &set->records[set->count++];
-    memset(record, 0, sizeof(*record));
-    strncpy(record->service_type, service_type, sizeof(record->service_type) - 1);
-    strncpy(record->instance_name, instance_name, sizeof(record->instance_name) - 1);
-    if (build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), record->instance_name, record->service_type) != 0) {
-        set->count--;
-        return NULL;
-    }
-    return record;
-}
-
-static int has_transport_suffix(const char *service_type) {
-    return strstr(service_type, "._tcp.local.") != NULL ||
-           strstr(service_type, "._udp.local.") != NULL ||
-           strstr(service_type, "._tcp.local") != NULL ||
-           strstr(service_type, "._udp.local") != NULL;
-}
-
-static int find_service_type_for_instance_fqdn(char *out, size_t out_len, const char *instance_fqdn) {
-    const char *service_start = strstr(instance_fqdn, "._");
-
-    if (service_start == NULL) {
-        return -1;
-    }
-    if (!has_transport_suffix(service_start + 1)) {
-        return -1;
-    }
-    if (strlen(service_start + 1) >= out_len) {
-        return -1;
-    }
-    strncpy(out, service_start + 1, out_len - 1);
-    out[out_len - 1] = '\0';
-    return 0;
-}
-
-static int service_type_set_contains(const struct service_type_set *set, const char *service_type) {
-    size_t i;
-
-    for (i = 0; i < set->count; i++) {
-        if (name_equals(set->types[i], service_type)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int service_type_set_add(struct service_type_set *set, const char *service_type) {
-    if (!has_transport_suffix(service_type)) {
-        return 0;
-    }
-    if (service_type_set_contains(set, service_type)) {
-        return 0;
-    }
-    if (set->count >= SNAPSHOT_MAX_SERVICE_TYPES) {
-        return -1;
-    }
-    strncpy(set->types[set->count], service_type, sizeof(set->types[set->count]) - 1);
-    set->types[set->count][sizeof(set->types[set->count]) - 1] = '\0';
-    set->count++;
-    return 0;
 }
 
 struct tc_md4_ctx {
@@ -1673,9 +1389,6 @@ static int print_nt_hash_from_stdin(void) {
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s --instance <name> --host <label> --auto-ip [options]\n"
-            "       %s --save-snapshot <path> [--save-all-snapshot <path>] --auto-ip [airport identity options]\n"
-            "       %s --save-airport-snapshot <path> --instance <name> --host <label> [airport identity options]\n"
-            "       %s --snapshot-newer-than-boot <path>\n"
             "       %s --print-nt-hash-from-stdin\n"
             "       %s --print-auto-ip-cidrs\n"
             "       %s --print-smb-bind-interfaces\n"
@@ -1691,14 +1404,7 @@ static void usage(const char *prog) {
             "  --print-mdns-socket-families Print required mDNS UDP socket families for live advertise links\n"
             "  --version          Print advertiser version code and exit\n"
             "  --debug-logging    Enable verbose mDNS traffic counter diagnostics\n"
-            "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
-            "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file; without --load-snapshot, capture and exit\n"
-            "  --skip-capture-if-snapshot-newer-than-boot <path> Reuse an existing snapshot created after boot\n"
-            "  --snapshot-newer-than-boot <path> Exit 0 when snapshot exists, is non-empty, and is newer than boot\n"
-            "  --save-airport-snapshot <path> Generate an AirPort-only Apple snapshot file and exit unless loading\n"
-            "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
-            "  --generated-airport-services Generate AirPort-owned services directly instead of snapshot replay\n"
-            "  --diskless        Suppress generated _smb and _adisk records while replaying other snapshot records\n"
+            "  --diskless        Suppress generated _smb and _adisk records\n"
             "  --afp             Also advertise generated _afpovertcp._tcp on port 548\n"
             "  --adisk-shares-file <p> Tab-separated share,disk-key,uuid,adVF rows\n"
             "  --adisk-sys-wama <m> MAC address for _adisk sys TXT\n"
@@ -1724,7 +1430,7 @@ static void usage(const char *prog) {
             "  --airport-srcv <v> Source/build version for _airport._tcp\n"
             "  --airport-bjsd <n> Bonjour seed/build field for _airport._tcp\n"
             "  --airport-port <p> _airport._tcp service port (default: 5009)\n",
-            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+            prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int append_bytes(uint8_t *buf, size_t *off, size_t cap, const void *src, size_t len) {
@@ -1805,31 +1511,6 @@ static int escape_dns_label(char *out, size_t out_len, const char *label) {
             }
             out[out_i++] = (char)ch;
         }
-    }
-    out[out_i] = '\0';
-    return 0;
-}
-
-static int unescape_dns_label(char *out, size_t out_len, const char *label) {
-    size_t in_i;
-    size_t out_i = 0;
-
-    if (label == NULL || label[0] == '\0') {
-        return -1;
-    }
-    for (in_i = 0; label[in_i] != '\0'; in_i++) {
-        unsigned char ch = (unsigned char)label[in_i];
-        if (ch == '\\') {
-            in_i++;
-            if (label[in_i] == '\0') {
-                return -1;
-            }
-            ch = (unsigned char)label[in_i];
-        }
-        if (out_i + 1 >= out_len) {
-            return -1;
-        }
-        out[out_i++] = (char)ch;
     }
     out[out_i] = '\0';
     return 0;
@@ -2171,6 +1852,24 @@ static int is_riousbprint_enabled(const struct config *cfg) {
 
 static int is_pdl_datastream_enabled(const struct config *cfg) {
     return is_airport_usb_printer_enabled(cfg);
+}
+
+static const struct config *mdns_config_for_scope(struct config *scoped,
+                                                  const struct config *cfg,
+                                                  enum mdns_service_scope scope) {
+    if (scope == MDNS_SERVICE_SCOPE_LAN) {
+        return cfg;
+    }
+
+    *scoped = *cfg;
+    scoped->diskless = 1;
+    scoped->advertise_afp = 0;
+    scoped->device_model[0] = '\0';
+    scoped->riousbprint_instance_name[0] = '\0';
+    if (!is_airport_enabled(scoped)) {
+        scoped->host_fqdn[0] = '\0';
+    }
+    return scoped;
 }
 
 static int validate_airport_ascii_field(const char *value, const char *field_name) {
@@ -2931,55 +2630,6 @@ static int name_equals(const char *a, const char *b) {
     return a_len == b_len && strncasecmp(a, b, a_len) == 0;
 }
 
-static int add_service_record_answers(uint8_t *buf, size_t *off, size_t cap, const struct service_record *record, uint32_t ttl, int *answers) {
-    const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
-    uint8_t txt_lengths[SNAPSHOT_MAX_TXT_ITEMS];
-    size_t i;
-
-    for (i = 0; i < record->txt_count; i++) {
-        txts[i] = record->txt[i];
-        txt_lengths[i] = record->txt_len[i];
-    }
-
-    if (add_rr_ptr(buf, off, cap, record->service_type, record->instance_fqdn, ttl) != 0) {
-        fprintf(stderr,
-                "mdns snapshot rr failure: rr=PTR type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu\n",
-                record->service_type, record->instance_fqdn, record->host_fqdn,
-                (unsigned int)record->port, (unsigned long)record->txt_count, (unsigned long)*off);
-        return -1;
-    }
-    if (add_rr_srv(buf, off, cap, record->instance_fqdn, record->host_fqdn, record->port, ttl) != 0) {
-        fprintf(stderr,
-                "mdns snapshot rr failure: rr=SRV type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu\n",
-                record->service_type, record->instance_fqdn, record->host_fqdn,
-                (unsigned int)record->port, (unsigned long)record->txt_count, (unsigned long)*off);
-        return -1;
-    }
-    *answers += 2;
-
-    if (record->txt_count > 0) {
-        if (add_rr_txt_items(buf, off, cap, record->instance_fqdn, ttl, txts, txt_lengths, record->txt_count) != 0) {
-            fprintf(stderr,
-                    "mdns snapshot rr failure: rr=TXT type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu\n",
-                    record->service_type, record->instance_fqdn, record->host_fqdn,
-                    (unsigned int)record->port, (unsigned long)record->txt_count, (unsigned long)*off);
-            return -1;
-        }
-        *answers += 1;
-    } else {
-        if (add_rr_txt_empty(buf, off, cap, record->instance_fqdn, ttl) != 0) {
-            fprintf(stderr,
-                    "mdns snapshot rr failure: rr=TXT_EMPTY type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu\n",
-                    record->service_type, record->instance_fqdn, record->host_fqdn,
-                    (unsigned int)record->port, (unsigned long)record->txt_count, (unsigned long)*off);
-            return -1;
-        }
-        *answers += 1;
-    }
-
-    return 0;
-}
-
 static int append_host_address_records(uint8_t *buf,
                                        size_t *off,
                                        size_t cap,
@@ -3004,36 +2654,19 @@ static int append_host_address_records(uint8_t *buf,
     }
     if (include_aaaa) {
         for (i = 0; i < link->ipv6_count; i++) {
+            struct in6_addr canonical;
             if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
                 continue;
             }
-            if (add_rr_aaaa(buf, off, cap, owner, &link->ipv6[i].addr, ttl) != 0) {
+            if (link->ipv6[i].link_local && link->ifindex == 0) {
+                continue;
+            }
+            ipv6_canonicalize_scoped_address(&canonical, &link->ipv6[i].addr);
+            if (add_rr_aaaa(buf, off, cap, owner, &canonical, ttl) != 0) {
                 return -1;
             }
             *answers += 1;
         }
-    }
-    return 0;
-}
-
-static int add_snapshot_host_address_records(uint8_t *buf,
-                                             size_t *off,
-                                             size_t cap,
-                                             const struct service_record *record,
-                                             const struct link_context *link,
-                                             int include_a,
-                                             int include_aaaa,
-                                             uint32_t ttl,
-                                             int *answers) {
-    if (record->host_fqdn[0] == '\0') {
-        return 0;
-    }
-    if (append_host_address_records(buf, off, cap, record->host_fqdn, link, include_a, include_aaaa, ttl, answers) != 0) {
-        fprintf(stderr,
-                "mdns snapshot rr failure: rr=ADDR type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu\n",
-                record->service_type, record->instance_fqdn, record->host_fqdn,
-                (unsigned int)record->port, (unsigned long)record->txt_count, (unsigned long)*off);
-        return -1;
     }
     return 0;
 }
@@ -3170,619 +2803,6 @@ static int add_rr_aaaa(uint8_t *buf, size_t *off, size_t cap, const char *owner,
     return 0;
 }
 
-static int hex_encode_bytes_len(char *out, size_t out_len, const char *bytes, size_t src_len) {
-    static const char hex[] = "0123456789abcdef";
-    size_t i;
-
-    if (bytes == NULL) {
-        return -1;
-    }
-    if ((src_len * 2) + 1 > out_len) {
-        return -1;
-    }
-    for (i = 0; i < src_len; i++) {
-        unsigned char ch = (unsigned char)bytes[i];
-        out[i * 2] = hex[ch >> 4];
-        out[i * 2 + 1] = hex[ch & 0x0f];
-    }
-    out[src_len * 2] = '\0';
-    return 0;
-}
-
-static int hex_encode_bytes(char *out, size_t out_len, const char *bytes) {
-    return hex_encode_bytes_len(out, out_len, bytes, strlen(bytes));
-}
-
-static int hex_decode_bytes(char *out, size_t out_len, const char *hex) {
-    size_t i;
-    size_t hex_len;
-
-    if (hex == NULL) {
-        return -1;
-    }
-    hex_len = strlen(hex);
-    if ((hex_len % 2) != 0 || (hex_len / 2) + 1 > out_len) {
-        return -1;
-    }
-    for (i = 0; i < hex_len; i += 2) {
-        char byte_str[3];
-        char *endptr = NULL;
-        long value;
-
-        byte_str[0] = hex[i];
-        byte_str[1] = hex[i + 1];
-        byte_str[2] = '\0';
-        value = strtol(byte_str, &endptr, 16);
-        if (endptr == NULL || *endptr != '\0' || value < 0 || value > 255) {
-            return -1;
-        }
-        out[i / 2] = (char)value;
-    }
-    out[hex_len / 2] = '\0';
-    return 0;
-}
-
-static int hex_decode_raw_bytes(uint8_t *out, size_t out_len, const char *hex, size_t *decoded_len) {
-    size_t hex_len = strlen(hex);
-    size_t i;
-
-    if ((hex_len % 2) != 0 || (hex_len / 2) > out_len) {
-        return -1;
-    }
-    for (i = 0; i < hex_len; i += 2) {
-        unsigned int value;
-        if (sscanf(hex + i, "%2x", &value) != 1) {
-            return -1;
-        }
-        out[i / 2] = (uint8_t)value;
-    }
-    *decoded_len = hex_len / 2;
-    return 0;
-}
-
-static int snapshot_txt_is_safe_text(const char *bytes, size_t len) {
-    size_t i;
-
-    for (i = 0; i < len; i++) {
-        unsigned char ch = (unsigned char)bytes[i];
-        if (ch < 0x20 || ch > 0x7e) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int write_snapshot_file_atomic(const char *path, const struct service_record_set *set) {
-    char tmp_path[MAX_NAME * 2];
-    char host_hex[(MAX_NAME * 2) + 1];
-    char txt_hex[((MAX_TXT_STRING + 1) * 2) + 1];
-    FILE *fp;
-    size_t i;
-    size_t j;
-
-    if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path) >= (int)sizeof(tmp_path)) {
-        return -1;
-    }
-
-    fp = fopen(tmp_path, "w");
-    if (fp == NULL) {
-        return -1;
-    }
-
-    for (i = 0; i < set->count; i++) {
-        const struct service_record *record = &set->records[i];
-        if (hex_encode_bytes(host_hex, sizeof(host_hex), record->host_fqdn) != 0) {
-            fclose(fp);
-            unlink(tmp_path);
-            return -1;
-        }
-        if (fprintf(fp, "BEGIN\nTYPE=%s\nINSTANCE=%s\nHOST_HEX=%s\nPORT=%u\n",
-                    record->service_type,
-                    record->instance_name,
-                    host_hex,
-                    (unsigned)record->port) < 0) {
-            fclose(fp);
-            unlink(tmp_path);
-            return -1;
-        }
-        for (j = 0; j < record->txt_count; j++) {
-            if (snapshot_txt_is_safe_text(record->txt[j], record->txt_len[j])) {
-                if (fprintf(fp, "TXT=%.*s\n", (int)record->txt_len[j], record->txt[j]) < 0) {
-                    fclose(fp);
-                    unlink(tmp_path);
-                    return -1;
-                }
-            } else {
-                if (hex_encode_bytes_len(txt_hex, sizeof(txt_hex), record->txt[j], record->txt_len[j]) != 0) {
-                    fclose(fp);
-                    unlink(tmp_path);
-                    return -1;
-                }
-                if (fprintf(fp, "TXT_HEX=%s\n", txt_hex) < 0) {
-                    fclose(fp);
-                    unlink(tmp_path);
-                    return -1;
-                }
-            }
-        }
-        if (fprintf(fp, "END\n") < 0) {
-            fclose(fp);
-            unlink(tmp_path);
-            return -1;
-        }
-    }
-
-    if (fclose(fp) != 0) {
-        unlink(tmp_path);
-        return -1;
-    }
-    if (rename(tmp_path, path) != 0) {
-        unlink(tmp_path);
-        return -1;
-    }
-    return 0;
-}
-
-static int build_airport_snapshot_set(const struct config *cfg, struct service_record_set *out) {
-    struct service_record *record;
-    char airport_txt[256];
-
-    if (cfg->instance_name[0] == '\0' || cfg->host_label[0] == '\0' ||
-        !cfg_has_airport_identity_macs(cfg)) {
-        return -1;
-    }
-    if (build_airport_txt(airport_txt, sizeof(airport_txt), cfg) != 0) {
-        return -1;
-    }
-
-    memset(out, 0, sizeof(*out));
-    record = &out->records[out->count++];
-    strncpy(record->service_type, AIRPORT_SERVICE_TYPE, sizeof(record->service_type) - 1);
-    strncpy(record->instance_name, cfg->instance_name, sizeof(record->instance_name) - 1);
-    if (build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn),
-                            record->instance_name, record->service_type) != 0) {
-        return -1;
-    }
-    strncpy(record->host_label, cfg->host_label, sizeof(record->host_label) - 1);
-    if (build_host_fqdn(record->host_fqdn, sizeof(record->host_fqdn), record->host_label) != 0) {
-        return -1;
-    }
-    record->port = cfg->airport_port;
-    strncpy(record->txt[0], airport_txt, sizeof(record->txt[0]) - 1);
-    record->txt[0][sizeof(record->txt[0]) - 1] = '\0';
-    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-    record->txt_count = 1;
-    return 0;
-}
-
-static int load_snapshot_file(const char *path, struct service_record_set *out) {
-    FILE *fp;
-    char line[SNAPSHOT_LINE_MAX];
-    struct service_record current;
-    int in_record = 0;
-
-    memset(out, 0, sizeof(*out));
-    fp = fopen(path, "r");
-    if (fp == NULL) {
-        return -1;
-    }
-
-    memset(&current, 0, sizeof(current));
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') {
-            line[len - 1] = '\0';
-        }
-
-        if (strcmp(line, "BEGIN") == 0) {
-            memset(&current, 0, sizeof(current));
-            in_record = 1;
-            continue;
-        }
-        if (strcmp(line, "END") == 0) {
-            if (!in_record || current.service_type[0] == '\0' || current.instance_name[0] == '\0' ||
-                current.host_fqdn[0] == '\0') {
-                fclose(fp);
-                return -1;
-            }
-            if (out->count >= SNAPSHOT_MAX_RECORDS) {
-                out->truncated = 1;
-                fclose(fp);
-                return -1;
-            }
-            if (build_instance_fqdn(current.instance_fqdn, sizeof(current.instance_fqdn), current.instance_name, current.service_type) != 0 ||
-                build_host_label_from_fqdn(current.host_label, sizeof(current.host_label), current.host_fqdn) != 0) {
-                fclose(fp);
-                return -1;
-            }
-            out->records[out->count++] = current;
-            memset(&current, 0, sizeof(current));
-            in_record = 0;
-            continue;
-        }
-        if (!in_record) {
-            continue;
-        }
-        if (strncmp(line, "TYPE=", 5) == 0) {
-            strncpy(current.service_type, line + 5, sizeof(current.service_type) - 1);
-        } else if (strncmp(line, "INSTANCE=", 9) == 0) {
-            strncpy(current.instance_name, line + 9, sizeof(current.instance_name) - 1);
-        } else if (strncmp(line, "HOST_HEX=", 9) == 0) {
-            if (hex_decode_bytes(current.host_fqdn, sizeof(current.host_fqdn), line + 9) != 0) {
-                fclose(fp);
-                return -1;
-            }
-        } else if (strncmp(line, "HOST=", 5) == 0) {
-            strncpy(current.host_label, line + 5, sizeof(current.host_label) - 1);
-            if (build_host_fqdn(current.host_fqdn, sizeof(current.host_fqdn), current.host_label) != 0) {
-                fclose(fp);
-                return -1;
-            }
-        } else if (strncmp(line, "PORT=", 5) == 0) {
-            current.port = (uint16_t)atoi(line + 5);
-        } else if (strncmp(line, "TXT_HEX=", 8) == 0) {
-            size_t decoded_len;
-            if (current.txt_count >= SNAPSHOT_MAX_TXT_ITEMS) {
-                fclose(fp);
-                return -1;
-            }
-            if (hex_decode_raw_bytes((uint8_t *)current.txt[current.txt_count], MAX_TXT_STRING, line + 8, &decoded_len) != 0) {
-                fclose(fp);
-                return -1;
-            }
-            current.txt[current.txt_count][decoded_len] = '\0';
-            current.txt_len[current.txt_count] = (uint8_t)decoded_len;
-            current.txt_count++;
-        } else if (strncmp(line, "TXT=", 4) == 0) {
-            size_t txt_len;
-            if (current.txt_count >= SNAPSHOT_MAX_TXT_ITEMS) {
-                fclose(fp);
-                return -1;
-            }
-            strncpy(current.txt[current.txt_count++], line + 4, MAX_TXT_STRING);
-            txt_len = strlen(line + 4);
-            if (txt_len > MAX_TXT_STRING) {
-                txt_len = MAX_TXT_STRING;
-            }
-            current.txt[current.txt_count - 1][MAX_TXT_STRING] = '\0';
-            current.txt_len[current.txt_count - 1] = (uint8_t)txt_len;
-        }
-    }
-
-    fclose(fp);
-    return out->count > 0 ? 0 : -1;
-}
-
-static int send_query_question_any(int sockfd,
-                                   const struct sockaddr *dest,
-                                   socklen_t dest_len,
-                                   const char *qname,
-                                   uint16_t qtype) {
-    uint8_t packet[BUF_SIZE];
-    struct dns_header hdr;
-    size_t off = sizeof(hdr);
-
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.qdcount = htons(1);
-    memcpy(packet, &hdr, sizeof(hdr));
-    if (encode_name(packet, &off, sizeof(packet), qname) != 0 ||
-        append_u16(packet, &off, sizeof(packet), qtype) != 0 ||
-        append_u16(packet, &off, sizeof(packet), DNS_CLASS_IN) != 0) {
-        return -1;
-    }
-    return sendto_retry(sockfd, packet, off, 0, dest, dest_len) >= 0 ? 0 : -1;
-}
-
-static void parse_txt_rdata(struct service_record *record, const uint8_t *rdata, size_t rdlength) {
-    size_t pos = 0;
-    record->txt_count = 0;
-    while (pos < rdlength && record->txt_count < SNAPSHOT_MAX_TXT_ITEMS) {
-        uint8_t len = rdata[pos++];
-        if (pos + len > rdlength) {
-            return;
-        }
-        memcpy(record->txt[record->txt_count], rdata + pos, len);
-        record->txt[record->txt_count][len] = '\0';
-        record->txt_len[record->txt_count] = len;
-        record->txt_count++;
-        pos += len;
-    }
-}
-
-static int parse_snapshot_rrs(const uint8_t *packet, size_t packet_len, struct service_record_set *set,
-                              struct service_type_set *service_types) {
-    struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
-    uint16_t sections[3];
-    size_t s;
-    uint16_t i;
-
-    if (packet_len < sizeof(hdr)) {
-        return -1;
-    }
-    memcpy(&hdr, packet, sizeof(hdr));
-    sections[0] = ntohs(hdr.qdcount);
-    sections[1] = ntohs(hdr.ancount);
-    sections[2] = (uint16_t)(ntohs(hdr.nscount) + ntohs(hdr.arcount));
-
-    for (i = 0; i < sections[0]; i++) {
-        char qname[MAX_NAME];
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
-            return -1;
-        }
-        cursor += 4;
-    }
-
-    for (s = 1; s < 3; s++) {
-        for (i = 0; i < sections[s]; i++) {
-            char owner[MAX_NAME];
-            uint16_t type;
-            uint16_t rdlength;
-            size_t rdata_cursor;
-
-            if (decode_name(packet, packet_len, &cursor, owner, sizeof(owner)) != 0 || cursor + 10 > packet_len) {
-                return -1;
-            }
-            memcpy(&type, packet + cursor, 2);
-            memcpy(&rdlength, packet + cursor + 8, 2);
-            cursor += 10;
-            rdlength = ntohs(rdlength);
-            if (cursor + rdlength > packet_len) {
-                return -1;
-            }
-            rdata_cursor = cursor;
-
-            type = ntohs(type);
-
-            if (type == DNS_TYPE_PTR && name_equals(owner, "_services._dns-sd._udp.local.")) {
-                char target[MAX_NAME];
-                if (decode_name(packet, packet_len, &rdata_cursor, target, sizeof(target)) == 0) {
-                    (void)service_type_set_add(service_types, target);
-                }
-            } else if (type == DNS_TYPE_PTR && has_transport_suffix(owner)) {
-                char target[MAX_NAME];
-                char service_type[MAX_NAME];
-                char instance_name[MAX_NAME];
-                struct service_record *record;
-
-                if (decode_name(packet, packet_len, &rdata_cursor, target, sizeof(target)) == 0 &&
-                    find_service_type_for_instance_fqdn(service_type, sizeof(service_type), target) == 0 &&
-                    extract_instance_name(instance_name, sizeof(instance_name), target, service_type) == 0) {
-                    (void)service_type_set_add(service_types, service_type);
-                    record = find_or_add_record(set, service_type, instance_name);
-                    if (record != NULL) {
-                        strncpy(record->instance_fqdn, target, sizeof(record->instance_fqdn) - 1);
-                    }
-                }
-            } else if (type == DNS_TYPE_SRV) {
-                char service_type[MAX_NAME];
-                if (find_service_type_for_instance_fqdn(service_type, sizeof(service_type), owner) == 0 && rdlength >= 6) {
-                    char instance_name[MAX_NAME];
-                    char host_fqdn[MAX_NAME];
-                    struct service_record *record;
-                    uint16_t port;
-                    size_t tmp_cursor = rdata_cursor + 6;
-                    memcpy(&port, packet + rdata_cursor + 4, 2);
-                    port = ntohs(port);
-                    if (extract_instance_name(instance_name, sizeof(instance_name), owner, service_type) == 0 &&
-                        decode_name(packet, packet_len, &tmp_cursor, host_fqdn, sizeof(host_fqdn)) == 0) {
-                        record = find_or_add_record(set, service_type, instance_name);
-                        if (record != NULL) {
-                            record->port = port;
-                            strncpy(record->host_fqdn, host_fqdn, sizeof(record->host_fqdn) - 1);
-                            trim_trailing_dot(record->host_fqdn);
-                            strncat(record->host_fqdn, ".", sizeof(record->host_fqdn) - strlen(record->host_fqdn) - 1);
-                            (void)build_host_label_from_fqdn(record->host_label, sizeof(record->host_label), host_fqdn);
-                        }
-                    }
-                }
-            } else if (type == DNS_TYPE_TXT) {
-                char service_type[MAX_NAME];
-                if (find_service_type_for_instance_fqdn(service_type, sizeof(service_type), owner) == 0) {
-                    char instance_name[MAX_NAME];
-                    struct service_record *record;
-                    if (extract_instance_name(instance_name, sizeof(instance_name), owner, service_type) == 0) {
-                        record = find_or_add_record(set, service_type, instance_name);
-                        if (record != NULL) {
-                            parse_txt_rdata(record, packet + rdata_cursor, rdlength);
-                        }
-                    }
-                }
-            }
-
-            cursor += rdlength;
-        }
-    }
-
-    return 0;
-}
-
-static int collect_mdns_responses_pair(const struct mdns_socket_pair *sockets,
-                                       int seconds,
-                                       struct service_record_set *set,
-                                       struct service_type_set *service_types) {
-    time_t deadline = time(NULL) + seconds;
-
-    while (time(NULL) < deadline) {
-        fd_set rfds;
-        struct timeval tv;
-        uint8_t packet[BUF_SIZE];
-        int maxfd = -1;
-        int selected;
-
-        FD_ZERO(&rfds);
-        if (sockets->ipv4_fd >= 0) {
-            FD_SET(sockets->ipv4_fd, &rfds);
-            if (sockets->ipv4_fd > maxfd) {
-                maxfd = sockets->ipv4_fd;
-            }
-        }
-        if (sockets->ipv6_fd >= 0) {
-            FD_SET(sockets->ipv6_fd, &rfds);
-            if (sockets->ipv6_fd > maxfd) {
-                maxfd = sockets->ipv6_fd;
-            }
-        }
-        if (maxfd < 0) {
-            return -1;
-        }
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        selected = select(maxfd + 1, &rfds, NULL, NULL, &tv);
-        if (selected <= 0) {
-            continue;
-        }
-        if (sockets->ipv4_fd >= 0 && FD_ISSET(sockets->ipv4_fd, &rfds)) {
-            ssize_t nread = recvfrom(sockets->ipv4_fd, packet, sizeof(packet), 0, NULL, NULL);
-            if (nread > 0) {
-                (void)parse_snapshot_rrs(packet, (size_t)nread, set, service_types);
-            }
-        }
-        if (sockets->ipv6_fd >= 0 && FD_ISSET(sockets->ipv6_fd, &rfds)) {
-            ssize_t nread = recvfrom(sockets->ipv6_fd, packet, sizeof(packet), 0, NULL, NULL);
-            if (nread > 0) {
-                (void)parse_snapshot_rrs(packet, (size_t)nread, set, service_types);
-            }
-        }
-    }
-
-    return 0;
-}
-
-static int mac_equals(const char *a, const char *b) {
-    size_t ai = 0;
-    size_t bi = 0;
-
-    if (a == NULL || b == NULL || a[0] == '\0' || b[0] == '\0') {
-        return 0;
-    }
-
-    while (a[ai] != '\0' || b[bi] != '\0') {
-        while (a[ai] == ':' || a[ai] == '-' || a[ai] == '.') {
-            ai++;
-        }
-        while (b[bi] == ':' || b[bi] == '-' || b[bi] == '.') {
-            bi++;
-        }
-        if (a[ai] == '\0' || b[bi] == '\0') {
-            break;
-        }
-        if (tolower((unsigned char)a[ai]) != tolower((unsigned char)b[bi])) {
-            return 0;
-        }
-        ai++;
-        bi++;
-    }
-
-    while (a[ai] == ':' || a[ai] == '-' || a[ai] == '.') {
-        ai++;
-    }
-    while (b[bi] == ':' || b[bi] == '-' || b[bi] == '.') {
-        bi++;
-    }
-    return a[ai] == '\0' && b[bi] == '\0';
-}
-
-static int cfg_has_airport_identity_macs(const struct config *cfg) {
-    return cfg->airport_wama[0] != '\0' ||
-           cfg->airport_rama[0] != '\0' ||
-           cfg->airport_ram2[0] != '\0';
-}
-
-static int local_airport_mac_matches(const struct config *cfg, const char *value) {
-    return mac_equals(value, cfg->airport_wama) ||
-           mac_equals(value, cfg->airport_rama) ||
-           mac_equals(value, cfg->airport_ram2);
-}
-
-static int airport_txt_key_matches_local_mac(const char *txt, const struct config *cfg) {
-    const char *segment = txt;
-
-    while (segment != NULL && *segment != '\0') {
-        const char *next = strchr(segment, ',');
-        size_t len = next != NULL ? (size_t)(next - segment) : strlen(segment);
-
-        if (len > 5 &&
-            (strncasecmp(segment, "waMA=", 5) == 0 ||
-             strncasecmp(segment, "raMA=", 5) == 0 ||
-             strncasecmp(segment, "raM2=", 5) == 0)) {
-            char value[32];
-
-            if (len - 5 >= sizeof(value)) {
-                return 0;
-            }
-            memcpy(value, segment + 5, len - 5);
-            value[len - 5] = '\0';
-            if (local_airport_mac_matches(cfg, value)) {
-                return 1;
-            }
-        }
-        segment = next != NULL ? next + 1 : NULL;
-    }
-
-    return 0;
-}
-
-static int airport_record_matches_local_identity(const struct service_record *record, const struct config *cfg) {
-    size_t i;
-
-    if (!name_equals(record->service_type, AIRPORT_SERVICE_TYPE)) {
-        return 0;
-    }
-    for (i = 0; i < record->txt_count; i++) {
-        if (airport_txt_key_matches_local_mac(record->txt[i], cfg)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int find_matching_airport_host(char *out, size_t out_len, const struct service_record_set *set,
-                                      const struct config *cfg) {
-    size_t i;
-    int found = 0;
-
-    for (i = 0; i < set->count; i++) {
-        const struct service_record *record = &set->records[i];
-        if (!airport_record_matches_local_identity(record, cfg) || record->host_label[0] == '\0') {
-            continue;
-        }
-        if (!found) {
-            if (strlen(record->host_label) >= out_len) {
-                return -1;
-            }
-            strcpy(out, record->host_label);
-            found = 1;
-            continue;
-        }
-        if (strcmp(out, record->host_label) != 0) {
-            return -1;
-        }
-    }
-
-    return found ? 0 : -1;
-}
-
-static int filter_records_by_host(struct service_record_set *out, const struct service_record_set *in,
-                                  const char *host_label) {
-    size_t i;
-
-    memset(out, 0, sizeof(*out));
-    for (i = 0; i < in->count; i++) {
-        const struct service_record *record = &in->records[i];
-        if (record->host_label[0] == '\0' || strcmp(record->host_label, host_label) != 0) {
-            continue;
-        }
-        if (out->count >= SNAPSHOT_MAX_RECORDS) {
-            out->truncated = 1;
-            break;
-        }
-        out->records[out->count++] = *record;
-    }
-
-    return out->count > 0 ? 0 : -1;
-}
-
 static void scoped_mdns_dest6_for_link(struct sockaddr_in6 *out,
                                        const struct sockaddr_in6 *base,
                                        const struct link_context *link) {
@@ -3792,154 +2812,18 @@ static void scoped_mdns_dest6_for_link(struct sockaddr_in6 *out,
     }
 }
 
-static void send_capture_query_to_all_links(const struct mdns_socket_pair *sockets,
-                                            const struct link_context_set *links,
-                                            const struct sockaddr_in *dest4,
-                                            const struct sockaddr_in6 *dest6,
-                                            const char *qname,
-                                            uint16_t qtype) {
-    size_t i;
-
-    for (i = 0; i < links->count; i++) {
-        uint32_t ipv4_source = link_preferred_ipv4_source(&links->links[i]);
-        if (sockets->ipv4_fd >= 0 && link_context_has_mdns_ipv4_transport(&links->links[i]) &&
-            ipv4_source != 0 &&
-            set_outbound_multicast_interface(sockets->ipv4_fd, ipv4_source, "capture", 0, 0) == 0) {
-            (void)send_query_question_any(sockets->ipv4_fd,
-                                          (const struct sockaddr *)dest4,
-                                          sizeof(*dest4),
-                                          qname,
-                                          qtype);
-        }
-        if (sockets->ipv6_fd >= 0 && link_context_has_mdns_ipv6_transport(&links->links[i]) &&
-            set_outbound_multicast_interface6(sockets->ipv6_fd, links->links[i].ifindex, "capture", 0, 0) == 0) {
-            struct sockaddr_in6 scoped_dest;
-            scoped_mdns_dest6_for_link(&scoped_dest, dest6, &links->links[i]);
-            (void)send_query_question_any(sockets->ipv6_fd,
-                                          (const struct sockaddr *)&scoped_dest,
-                                          sizeof(scoped_dest),
-                                          qname,
-                                          qtype);
-        }
-    }
-}
-
-static int capture_mdns_snapshot_links_raw(struct service_record_set *out,
-                                           const struct link_context_set *links) {
-    struct mdns_socket_pair sockets;
-    struct link_context_set socket_links;
-    struct sockaddr_in mdns_dest4;
-    struct sockaddr_in6 mdns_dest6;
-    size_t i;
-    struct service_type_set service_types;
-
-    memset(out, 0, sizeof(*out));
-    memset(&service_types, 0, sizeof(service_types));
-    socket_links = *links;
-    sockets.ipv4_fd = -1;
-    sockets.ipv6_fd = -1;
-    if (open_dualstack_mdns_sockets(1, &socket_links, 1, &sockets) != 0) {
-        return -1;
-    }
-
-    memset(&mdns_dest4, 0, sizeof(mdns_dest4));
-    mdns_dest4.sin_family = AF_INET;
-    mdns_dest4.sin_port = htons(MDNS_PORT);
-    mdns_dest4.sin_addr.s_addr = inet_addr(MDNS_GROUP);
-
-    memset(&mdns_dest6, 0, sizeof(mdns_dest6));
-    mdns_dest6.sin6_family = AF_INET6;
-    mdns_dest6.sin6_port = htons(MDNS_PORT);
-    (void)inet_pton(AF_INET6, MDNS_GROUP_V6, &mdns_dest6.sin6_addr);
-
-    send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, "_services._dns-sd._udp.local.", DNS_TYPE_PTR);
-    (void)collect_mdns_responses_pair(&sockets, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
-
-    for (i = 0; i < service_types.count; i++) {
-        send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, service_types.types[i], DNS_TYPE_PTR);
-    }
-    (void)collect_mdns_responses_pair(&sockets, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
-
-    for (i = 0; i < out->count; i++) {
-        send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, out->records[i].instance_fqdn, DNS_TYPE_SRV);
-        send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, out->records[i].instance_fqdn, DNS_TYPE_TXT);
-    }
-    (void)collect_mdns_responses_pair(&sockets, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
-    close_mdns_socket_pair(&sockets);
-
-    return out->count > 0 ? 0 : -1;
-}
-
-static int prepare_loaded_snapshot_for_advertising(const struct config *cfg, const struct service_record_set *loaded,
-                                                   struct service_record_set *out) {
-    char matched_host[MAX_LABEL + 1];
-
-    if (!cfg_has_airport_identity_macs(cfg)) {
-        return -1;
-    }
-    if (find_matching_airport_host(matched_host, sizeof(matched_host), loaded, cfg) != 0) {
-        return -1;
-    }
-
-    return filter_records_by_host(out, loaded, matched_host);
-}
-
-static int capture_mdns_snapshot_links_with_retry(struct service_record_set *out,
-                                                  const struct link_context_set *links) {
-    time_t deadline = time(NULL) + SNAPSHOT_CAPTURE_TIMEOUT_SECONDS;
-
-    do {
-        if (capture_mdns_snapshot_links_raw(out, links) == 0) {
-            return 0;
-        }
-        if (time(NULL) >= deadline) {
-            break;
-        }
-        sleep(SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS);
-    } while (time(NULL) < deadline);
-
-    return -1;
-}
-
-static int get_boot_time_seconds(time_t *out) {
-#if defined(CTL_KERN) && defined(KERN_BOOTTIME)
-    int mib[2];
-    struct timeval boot_time;
-    size_t boot_time_len;
-
-    if (out == NULL) {
-        return -1;
-    }
-
-    mib[0] = CTL_KERN;
-    mib[1] = KERN_BOOTTIME;
-    boot_time_len = sizeof(boot_time);
-    memset(&boot_time, 0, sizeof(boot_time));
-    if (sysctl(mib, 2, &boot_time, &boot_time_len, NULL, 0) == 0) {
-        *out = boot_time.tv_sec;
+static unsigned int ipv6_sockaddr_effective_ifindex(const struct sockaddr_in6 *addr) {
+    if (addr == NULL) {
         return 0;
     }
-#else
-    (void)out;
-#endif
-    return -1;
-}
-
-static int snapshot_file_newer_than_boot(const char *path) {
-    struct stat st;
-    time_t boot_time;
-
-    if (path == NULL || path[0] == '\0') {
-        return 0;
+    if (addr->sin6_scope_id != 0) {
+        return (unsigned int)addr->sin6_scope_id;
     }
-    if (stat(path, &st) != 0 || st.st_size <= 0) {
-        return 0;
+    if (ipv6_is_link_local_addr(&addr->sin6_addr)) {
+        return ((unsigned int)addr->sin6_addr.s6_addr[2] << 8) |
+               (unsigned int)addr->sin6_addr.s6_addr[3];
     }
-    if (get_boot_time_seconds(&boot_time) != 0) {
-        return -1;
-    }
-
-    return st.st_mtime > boot_time ? 1 : 0;
+    return 0;
 }
 
 static int mdnsresponder_is_alive(void) {
@@ -4379,6 +3263,11 @@ static int open_bound_mdns_socket6(int shared_bind, int log_bind_errors) {
     if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes)) < 0 && log_bind_errors) {
         perror("setsockopt(IPV6_V6ONLY)");
     }
+#if defined(IPV6_RECVPKTINFO) && defined(IPV6_PKTINFO)
+    if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &yes, sizeof(yes)) < 0 && log_bind_errors) {
+        perror("setsockopt(IPV6_RECVPKTINFO)");
+    }
+#endif
     if (shared_bind) {
         if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
             perror("setsockopt(SO_REUSEADDR ipv6)");
@@ -4402,6 +3291,52 @@ static int open_bound_mdns_socket6(int shared_bind, int log_bind_errors) {
         return -1;
     }
     return sockfd;
+}
+
+static ssize_t receive_ipv6_packet(int sockfd,
+                                   uint8_t *packet,
+                                   size_t packet_len,
+                                   struct sockaddr_in6 *source,
+                                   socklen_t *source_len,
+                                   unsigned int *received_ifindex) {
+#if defined(IPV6_RECVPKTINFO) && defined(IPV6_PKTINFO)
+    struct msghdr message;
+    struct iovec iov;
+    union {
+        struct cmsghdr align;
+        unsigned char bytes[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+    } control;
+    struct cmsghdr *cmsg;
+    ssize_t nread;
+
+    memset(&message, 0, sizeof(message));
+    memset(&control, 0, sizeof(control));
+    iov.iov_base = packet;
+    iov.iov_len = packet_len;
+    message.msg_name = source;
+    message.msg_namelen = *source_len;
+    message.msg_iov = &iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.bytes;
+    message.msg_controllen = sizeof(control.bytes);
+    nread = recvmsg(sockfd, &message, 0);
+    *source_len = message.msg_namelen;
+    if (nread <= 0) {
+        return nread;
+    }
+    for (cmsg = CMSG_FIRSTHDR(&message); cmsg != NULL; cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO &&
+            cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in6_pktinfo))) {
+            const struct in6_pktinfo *pktinfo = (const struct in6_pktinfo *)(const void *)CMSG_DATA(cmsg);
+            *received_ifindex = pktinfo->ipi6_ifindex;
+            break;
+        }
+    }
+    return nread;
+#else
+    (void)received_ifindex;
+    return recvfrom(sockfd, packet, packet_len, 0, (struct sockaddr *)source, source_len);
+#endif
 }
 
 static int join_mdns_multicast_group6(int sockfd, unsigned int ifindex, const char *ifname, const char *socket_role) {
@@ -4921,46 +3856,27 @@ static void format_sockaddr_addr(const struct sockaddr *dest, char *buf, size_t 
     format_dest_addr((const struct sockaddr_in *)dest, buf, buf_size);
 }
 
-static void log_packet_build_failure(const char *stage, const char *step, size_t packet_len, int answers,
-                                     int use_snapshot_records) {
+static void log_packet_build_failure(const char *stage, const char *step, size_t packet_len, int answers) {
     fprintf(stderr,
-            "mdns packet build failure: stage=%s step=%s packet_len=%lu answers=%d records=%s\n",
+            "mdns packet build failure: stage=%s step=%s packet_len=%lu answers=%d\n",
             stage,
             step,
-            (unsigned long)packet_len,
-            answers,
-            use_snapshot_records ? "snapshot" : "generated");
-}
-
-static void log_snapshot_record_build_failure(const char *stage, const char *step, size_t record_index,
-                                              const struct service_record *record, size_t packet_len, int answers) {
-    fprintf(stderr,
-            "mdns snapshot build failure: stage=%s step=%s record_index=%lu type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu answers=%d\n",
-            stage,
-            step,
-            (unsigned long)record_index,
-            record->service_type,
-            record->instance_fqdn,
-            record->host_fqdn,
-            (unsigned int)record->port,
-            (unsigned long)record->txt_count,
             (unsigned long)packet_len,
             answers);
 }
 
 static void log_packet_send_failure_detail_any(const char *stage, const struct sockaddr *dest, size_t packet_len,
-                                               int answers, int use_snapshot_records, int saved_errno) {
+                                               int answers, int saved_errno) {
     char destbuf[96];
 
     remember_last_send_failure(stage, saved_errno);
     format_sockaddr_addr(dest, destbuf, sizeof(destbuf));
     fprintf(stderr,
-            "mdns packet send failure: stage=%s dest=%s packet_len=%lu answers=%d records=%s errno=%d (%s)\n",
+            "mdns packet send failure: stage=%s dest=%s packet_len=%lu answers=%d errno=%d (%s)\n",
             stage,
             destbuf,
             (unsigned long)packet_len,
             answers,
-            use_snapshot_records ? "snapshot" : "generated",
             saved_errno,
             strerror(saved_errno));
     log_mdns_counters_force("send_failure");
@@ -4968,7 +3884,7 @@ static void log_packet_send_failure_detail_any(const char *stage, const struct s
 
 static int send_dns_packet_any(const char *stage, int sockfd, const uint8_t *buf, size_t packet_len,
                                const struct sockaddr *dest, socklen_t dest_len,
-                               int answers, int use_snapshot_records) {
+                               int answers) {
     static int logged_success_announcement = 0;
     static int logged_success_reply = 0;
 
@@ -4980,7 +3896,7 @@ static int send_dns_packet_any(const char *stage, int sockfd, const uint8_t *buf
     saved_errno = errno;
     if (sent < 0) {
         errno = saved_errno;
-        log_packet_send_failure_detail_any(stage, dest, packet_len, answers, use_snapshot_records, saved_errno);
+        log_packet_send_failure_detail_any(stage, dest, packet_len, answers, saved_errno);
         return -1;
     }
 
@@ -4998,9 +3914,8 @@ static int send_dns_packet_any(const char *stage, int sockfd, const uint8_t *buf
         char destbuf[96];
         format_sockaddr_addr(dest, destbuf, sizeof(destbuf));
         fprintf(stderr,
-                "mdns packet send success: stage=%s dest=%s packet_len=%lu answers=%d records=%s\n",
-                stage, destbuf, (unsigned long)packet_len, answers,
-                use_snapshot_records ? "snapshot" : "generated");
+                "mdns packet send success: stage=%s dest=%s packet_len=%lu answers=%d\n",
+                stage, destbuf, (unsigned long)packet_len, answers);
         logged_success_announcement = 1;
     }
 
@@ -5175,8 +4090,7 @@ static int finalize_and_send_announcement_packet_any(int sockfd,
                                                      size_t off,
                                                      int answers,
                                                      const struct sockaddr *dest,
-                                                     socklen_t dest_len,
-                                                     int use_snapshot_records) {
+                                                     socklen_t dest_len) {
     struct dns_header hdr;
 
     if (answers <= 0) {
@@ -5187,7 +4101,7 @@ static int finalize_and_send_announcement_packet_any(int sockfd,
     hdr.flags = htons(DNS_FLAG_QR | DNS_FLAG_AA);
     hdr.ancount = htons((uint16_t)answers);
     memcpy(buf, &hdr, sizeof(hdr));
-    return send_dns_packet_any("announcement", sockfd, buf, off, dest, dest_len, answers, use_snapshot_records);
+    return send_dns_packet_any("announcement", sockfd, buf, off, dest, dest_len, answers);
 }
 
 typedef int (*generated_record_adder)(uint8_t *buf,
@@ -5206,7 +4120,6 @@ static int append_generated_records_with_flush(int sockfd,
                                                socklen_t dest_len,
                                                const struct config *cfg,
                                                uint32_t ttl,
-                                               int use_snapshot_records,
                                                generated_record_adder add_records,
                                                const char *failure_stage) {
     size_t before_off = *off;
@@ -5218,12 +4131,12 @@ static int append_generated_records_with_flush(int sockfd,
 
     *off = before_off;
     *answers = before_answers;
-    if (finalize_and_send_announcement_packet_any(sockfd, buf, *off, *answers, dest, dest_len, use_snapshot_records) != 0) {
+    if (finalize_and_send_announcement_packet_any(sockfd, buf, *off, *answers, dest, dest_len) != 0) {
         return -1;
     }
     init_announcement_packet(off, answers);
     if (add_records(buf, off, cap, cfg, ttl, answers) != 0) {
-        log_packet_build_failure("announcement", failure_stage, *off, *answers, use_snapshot_records);
+        log_packet_build_failure("announcement", failure_stage, *off, *answers);
         return -1;
     }
     return 0;
@@ -5237,8 +4150,7 @@ static int append_generated_apple_records(int sockfd,
                                           const struct sockaddr *dest,
                                           socklen_t dest_len,
                                           const struct config *cfg,
-                                          uint32_t ttl,
-                                          int use_snapshot_records) {
+                                          uint32_t ttl) {
     if (append_generated_records_with_flush(sockfd,
                                             buf,
                                             off,
@@ -5248,7 +4160,6 @@ static int append_generated_apple_records(int sockfd,
                                             dest_len,
                                             cfg,
                                             ttl,
-                                            use_snapshot_records,
                                             add_pdl_datastream_records,
                                             "add_pdl_datastream_records") != 0) {
         return -1;
@@ -5262,7 +4173,6 @@ static int append_generated_apple_records(int sockfd,
                                             dest_len,
                                             cfg,
                                             ttl,
-                                            use_snapshot_records,
                                             add_riousbprint_records,
                                             "add_riousbprint_records") != 0) {
         return -1;
@@ -5276,7 +4186,6 @@ static int append_generated_apple_records(int sockfd,
                                                dest_len,
                                                cfg,
                                                ttl,
-                                               use_snapshot_records,
                                                add_airport_records,
                                                "add_airport_records");
 }
@@ -5307,49 +4216,22 @@ static int append_generated_base_records(uint8_t *buf, size_t *off, size_t cap, 
     return 0;
 }
 
-struct announced_host_set {
-    const char *hosts[SNAPSHOT_MAX_RECORDS];
-    size_t count;
-};
-
-static int host_already_announced(const struct announced_host_set *set, const char *host_fqdn) {
-    size_t i;
-
-    for (i = 0; i < set->count; i++) {
-        if (name_equals(set->hosts[i], host_fqdn)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int remember_announced_host(struct announced_host_set *set, const char *host_fqdn) {
-    if (set->count >= SNAPSHOT_MAX_RECORDS) {
-        return -1;
-    }
-    set->hosts[set->count++] = host_fqdn;
-    return 0;
-}
-
-static int send_announcement_any(int sockfd,
-                                 const struct sockaddr *dest,
-                                 socklen_t dest_len,
-                                 const struct config *cfg,
-                                 const struct link_context *response_link,
-                                 uint32_t ttl,
-                                 const struct service_record_set *snapshot_records,
-                                 int use_snapshot_records) {
+static int send_announcement_any_scoped(int sockfd,
+                                        const struct sockaddr *dest,
+                                        socklen_t dest_len,
+                                        const struct config *cfg,
+                                        const struct link_context *response_link,
+                                        uint32_t ttl,
+                                        enum mdns_service_scope scope) {
     uint8_t buf[BUF_SIZE];
     size_t off;
     int answers;
-    size_t i;
-    struct announced_host_set announced_hosts;
-    static int logged_duplicate_host_suppression = 0;
+    struct config scoped_cfg;
 
-    memset(&announced_hosts, 0, sizeof(announced_hosts));
+    cfg = mdns_config_for_scope(&scoped_cfg, cfg, scope);
     init_announcement_packet(&off, &answers);
     if (append_generated_base_records(buf, &off, sizeof(buf), cfg, response_link, 1, 1, ttl, &answers) != 0) {
-        log_packet_build_failure("announcement", "add_core_records", off, answers, use_snapshot_records);
+        log_packet_build_failure("announcement", "add_core_records", off, answers);
         return -1;
     }
     if (append_generated_apple_records(sockfd,
@@ -5360,86 +4242,35 @@ static int send_announcement_any(int sockfd,
                                        dest,
                                        dest_len,
                                        cfg,
-                                       ttl,
-                                       use_snapshot_records) != 0) {
+                                       ttl) != 0) {
         return -1;
     }
-    if (use_snapshot_records) {
-        if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-            return -1;
-        }
-        for (i = 0; i < snapshot_records->count; i++) {
-            int include_host_a;
-            size_t before_host_a_off;
-            int before_host_a_answers;
-
-            if (is_suppressed_snapshot_service_type(snapshot_records->records[i].service_type)) {
-                continue;
-            }
-            if (snapshot_record_overridden_by_generated(cfg, &snapshot_records->records[i])) {
-                continue;
-            }
-            init_announcement_packet(&off, &answers);
-            if (add_service_record_answers(buf, &off, sizeof(buf), &snapshot_records->records[i], ttl, &answers) != 0) {
-                log_snapshot_record_build_failure("announcement", "add_service_record_answers", i,
-                                                  &snapshot_records->records[i], off, answers);
-                log_packet_build_failure("announcement", "add_service_record_answers", off, answers, use_snapshot_records);
-                return -1;
-            }
-            include_host_a = snapshot_records->records[i].host_fqdn[0] != '\0' &&
-                             !host_already_announced(&announced_hosts, snapshot_records->records[i].host_fqdn);
-            if (include_host_a) {
-                before_host_a_off = off;
-                before_host_a_answers = answers;
-                if (add_snapshot_host_address_records(buf, &off, sizeof(buf), &snapshot_records->records[i], response_link, 1, 1, ttl, &answers) != 0) {
-                    off = before_host_a_off;
-                    answers = before_host_a_answers;
-                    if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-                        return -1;
-                    }
-                    init_announcement_packet(&off, &answers);
-                    if (add_snapshot_host_address_records(buf, &off, sizeof(buf), &snapshot_records->records[i], response_link, 1, 1, ttl, &answers) != 0) {
-                        log_snapshot_record_build_failure("announcement", "add_snapshot_host_address_records", i,
-                                                          &snapshot_records->records[i], off, answers);
-                        log_packet_build_failure("announcement", "add_snapshot_host_address_records", off, answers, use_snapshot_records);
-                        return -1;
-                    }
-                }
-                if (remember_announced_host(&announced_hosts, snapshot_records->records[i].host_fqdn) != 0) {
-                    log_packet_build_failure("announcement", "remember_announced_host", off, answers, use_snapshot_records);
-                    return -1;
-                }
-            } else if (snapshot_records->records[i].host_fqdn[0] != '\0' && !logged_duplicate_host_suppression) {
-                fprintf(stderr,
-                        "mdns snapshot host A suppression: host=%s service=%s instance=%s already announced earlier in this cycle\n",
-                        snapshot_records->records[i].host_fqdn,
-                        snapshot_records->records[i].service_type,
-                        snapshot_records->records[i].instance_fqdn);
-                logged_duplicate_host_suppression = 1;
-            }
-            if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-                return -1;
-            }
-        }
-    } else {
-        if (finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len, use_snapshot_records) != 0) {
-            return -1;
-        }
-    }
-    return 0;
+    return finalize_and_send_announcement_packet_any(sockfd, buf, off, answers, dest, dest_len);
 }
 
-static int send_announcement(int sockfd, const struct sockaddr_in *dest, const struct config *cfg,
-                             const struct link_context *response_link, uint32_t ttl,
-                             const struct service_record_set *snapshot_records, int use_snapshot_records) {
+static int send_announcement_any(int sockfd,
+                                 const struct sockaddr *dest,
+                                 socklen_t dest_len,
+                                 const struct config *cfg,
+                                 const struct link_context *response_link,
+                                 uint32_t ttl) {
+    return send_announcement_any_scoped(sockfd,
+                                        dest,
+                                        dest_len,
+                                        cfg,
+                                        response_link,
+                                        ttl,
+                                        MDNS_SERVICE_SCOPE_LAN);
+}
+
+static int TC_UNUSED send_announcement(int sockfd, const struct sockaddr_in *dest, const struct config *cfg,
+                                       const struct link_context *response_link, uint32_t ttl) {
     return send_announcement_any(sockfd,
                                  (const struct sockaddr *)dest,
                                  sizeof(*dest),
                                  cfg,
                                  response_link,
-                                 ttl,
-                                 snapshot_records,
-                                 use_snapshot_records);
+                                 ttl);
 }
 
 static int known_answer_ttl_is_fresh(uint32_t known_ttl, uint32_t advertised_ttl) {
@@ -5595,10 +4426,15 @@ static int planned_rr_add_link_addresses(struct planned_rr_set *set,
     }
     if (include_aaaa) {
         for (i = 0; i < link->ipv6_count; i++) {
+            struct in6_addr canonical;
             if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
                 continue;
             }
-            if (planned_rr_add_aaaa(set, routes, owner, &link->ipv6[i].addr, ttl) != 0) {
+            if (link->ipv6[i].link_local && link->ifindex == 0) {
+                continue;
+            }
+            ipv6_canonicalize_scoped_address(&canonical, &link->ipv6[i].addr);
+            if (planned_rr_add_aaaa(set, routes, owner, &canonical, ttl) != 0) {
                 return -1;
             }
         }
@@ -5849,42 +4685,6 @@ static int plan_pdl_datastream_records(struct planned_rr_set *set,
     return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
 }
 
-static int plan_snapshot_record(struct planned_rr_set *set,
-                                int routes,
-                                const struct service_record *record,
-                                const struct link_context *link,
-                                int include_ptr,
-                                int include_srv,
-                                int include_txt,
-                                int include_a,
-                                int include_aaaa,
-                                uint32_t ttl) {
-    const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
-    uint8_t txt_lengths[SNAPSHOT_MAX_TXT_ITEMS];
-    size_t i;
-
-    if (is_suppressed_snapshot_service_type(record->service_type)) {
-        return 0;
-    }
-    if (include_ptr &&
-        planned_rr_add_name(set, routes, record->service_type, DNS_TYPE_PTR, DNS_CLASS_IN, ttl, record->instance_fqdn) != 0) {
-        return -1;
-    }
-    if (include_srv && planned_rr_add_srv(set, routes, record->instance_fqdn, record->host_fqdn, record->port, ttl) != 0) {
-        return -1;
-    }
-    if (include_txt) {
-        for (i = 0; i < record->txt_count; i++) {
-            txts[i] = record->txt[i];
-            txt_lengths[i] = record->txt_len[i];
-        }
-        if (planned_rr_add_txt_items(set, routes, record->instance_fqdn, txts, txt_lengths, record->txt_count, ttl) != 0) {
-            return -1;
-        }
-    }
-    return planned_rr_add_link_addresses(set, routes, record->host_fqdn, link, include_a, include_aaaa, ttl);
-}
-
 static int plan_service_type_enumeration_type(struct planned_rr_set *set,
                                               int routes,
                                               const char *service_type,
@@ -5903,10 +4703,7 @@ static int plan_service_type_enumeration_type(struct planned_rr_set *set,
 
 static int plan_service_type_enumeration_records(struct planned_rr_set *set,
                                                  int routes,
-                                                 const struct config *cfg,
-                                                 const struct service_record_set *snapshot_records,
-                                                 int use_snapshot_records) {
-    size_t i;
+                                                 const struct config *cfg) {
 
     if (smb_enabled(cfg) &&
         plan_service_type_enumeration_type(set, routes, cfg->service_type, cfg->ttl) != 0) {
@@ -5935,19 +4732,6 @@ static int plan_service_type_enumeration_records(struct planned_rr_set *set,
     if (is_pdl_datastream_enabled(cfg) &&
         plan_service_type_enumeration_type(set, routes, PDL_DATASTREAM_SERVICE_TYPE, cfg->ttl) != 0) {
         return -1;
-    }
-    if (use_snapshot_records) {
-        for (i = 0; i < snapshot_records->count; i++) {
-            if (is_suppressed_snapshot_service_type(snapshot_records->records[i].service_type)) {
-                continue;
-            }
-            if (plan_service_type_enumeration_type(set,
-                                                   routes,
-                                                   snapshot_records->records[i].service_type,
-                                                   cfg->ttl) != 0) {
-                return -1;
-            }
-        }
     }
     return 0;
 }
@@ -6098,7 +4882,8 @@ static uint16_t sockaddr_port_host(const struct sockaddr *addr) {
 }
 
 static int source_can_receive_unicast_response(const struct sockaddr *source,
-                                               const struct link_context *response_link) {
+                                               const struct link_context *response_link,
+                                               unsigned int ingress_ifindex) {
     if (source == NULL || response_link == NULL) {
         return 0;
     }
@@ -6108,9 +4893,12 @@ static int source_can_receive_unicast_response(const struct sockaddr *source,
     }
     if (source->sa_family == AF_INET6) {
         const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)source;
+        unsigned int source_ifindex = ingress_ifindex != 0
+                                          ? ingress_ifindex
+                                          : ipv6_sockaddr_effective_ifindex(sin6);
         size_t i;
 
-        if (sin6->sin6_scope_id != 0 && sin6->sin6_scope_id == response_link->ifindex) {
+        if (source_ifindex != 0 && source_ifindex == response_link->ifindex) {
             return 1;
         }
         for (i = 0; i < response_link->ipv6_count; i++) {
@@ -6133,8 +4921,6 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                  uint16_t qtype,
                                  const struct config *cfg,
                                  const struct link_context *response_link,
-                                 const struct service_record_set *snapshot_records,
-                                 int use_snapshot_records,
                                  const char *instance_fqdn,
                                  const char *afp_instance_fqdn,
                                  const char *adisk_instance_fqdn,
@@ -6146,11 +4932,7 @@ static int plan_question_answers(struct planned_rr_set *planned,
 
     if (name_equals(qname, DNS_SD_SERVICE_ENUMERATION_NAME) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-        return plan_service_type_enumeration_records(planned,
-                                                     route,
-                                                     cfg,
-                                                     snapshot_records,
-                                                     use_snapshot_records);
+        return plan_service_type_enumeration_records(planned, route, cfg);
     }
     if (smb_enabled(cfg) && name_equals(qname, cfg->service_type) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
@@ -6189,7 +4971,7 @@ static int plan_question_answers(struct planned_rr_set *planned,
         }
         planned_generated_apple_service_type = 1;
     }
-    if (planned_generated_apple_service_type && !use_snapshot_records) {
+    if (planned_generated_apple_service_type) {
         return 0;
     }
     if (smb_enabled(cfg) && name_equals(qname, instance_fqdn)) {
@@ -6256,46 +5038,6 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                              qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY,
                                              qtype == DNS_TYPE_AAAA || qtype == DNS_TYPE_ANY,
                                              cfg->ttl);
-    }
-    if (use_snapshot_records) {
-        size_t j;
-        for (j = 0; j < snapshot_records->count; j++) {
-            const struct service_record *record = &snapshot_records->records[j];
-            if (is_suppressed_snapshot_service_type(record->service_type)) {
-                continue;
-            }
-            if (snapshot_record_overridden_by_generated(cfg, record)) {
-                continue;
-            }
-            if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-                if (plan_snapshot_record(planned, route, record, response_link, 1, 1, 1, 1, 1, cfg->ttl) != 0) {
-                    return -1;
-                }
-            } else if (name_equals(qname, record->instance_fqdn)) {
-                if (plan_snapshot_record(planned,
-                                         route,
-                                         record,
-                                         response_link,
-                                         0,
-                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
-                                         qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
-                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
-                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
-                                         cfg->ttl) != 0) {
-                    return -1;
-                }
-            } else if (name_equals(qname, record->host_fqdn)) {
-                if (planned_rr_add_link_addresses(planned,
-                                                  route,
-                                                  record->host_fqdn,
-                                                  response_link,
-                                                  qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY,
-                                                  qtype == DNS_TYPE_AAAA || qtype == DNS_TYPE_ANY,
-                                                  cfg->ttl) != 0) {
-                    return -1;
-                }
-            }
-        }
     }
     return 0;
 }
@@ -6378,7 +5120,6 @@ static int send_planned_response_route(int sockfd,
                                        const struct response_question_section *questions,
                                        const struct sockaddr *dest,
                                        socklen_t dest_len,
-                                       int use_snapshot_records,
                                        int delay_multicast) {
     uint8_t reply[BUF_SIZE];
     size_t reply_len;
@@ -6408,8 +5149,7 @@ static int send_planned_response_route(int sockfd,
                                reply_len,
                                dest,
                                dest_len,
-                               answers,
-                               use_snapshot_records);
+                               answers);
 }
 
 static void clear_deferred_response(void) {
@@ -6488,7 +5228,6 @@ static int flush_deferred_response_now(void) {
                                         &questions,
                                         (const struct sockaddr *)&g_deferred_response.source,
                                         g_deferred_response.source_len,
-                                        g_deferred_response.use_snapshot_records,
                                         0) != 0) {
             status = -1;
         }
@@ -6501,7 +5240,6 @@ static int flush_deferred_response_now(void) {
                                         &questions,
                                         (const struct sockaddr *)&g_deferred_response.source,
                                         g_deferred_response.source_len,
-                                        g_deferred_response.use_snapshot_records,
                                         0) != 0) {
             status = -1;
         }
@@ -6514,7 +5252,6 @@ static int flush_deferred_response_now(void) {
                                         &questions,
                                         (const struct sockaddr *)&g_deferred_response.multicast_dest,
                                         g_deferred_response.multicast_dest_len,
-                                        g_deferred_response.use_snapshot_records,
                                         0) != 0) {
             status = -1;
         }
@@ -6550,7 +5287,6 @@ static int defer_planned_response(int sockfd,
                                   const struct sockaddr *source,
                                   socklen_t source_len,
                                   const struct response_question_section *questions,
-                                  int use_snapshot_records,
                                   const struct planned_rr_set *planned) {
     if (!planned_set_has_any_route(planned)) {
         clear_deferred_response();
@@ -6561,7 +5297,6 @@ static int defer_planned_response(int sockfd,
     g_deferred_response.sockfd = sockfd;
     g_deferred_response.due_ms = monotonic_millis() + TC_KNOWN_ANSWER_DEFER_MS;
     g_deferred_response.response_id = response_id;
-    g_deferred_response.use_snapshot_records = use_snapshot_records;
     g_deferred_response.planned = *planned;
     if (questions != NULL && questions->count > 0) {
         if (questions->bytes == NULL || questions->len > sizeof(g_deferred_response.questions.bytes)) {
@@ -6586,17 +5321,17 @@ static int defer_planned_response(int sockfd,
     return 0;
 }
 
-static int handle_query_any(int sockfd,
-                            const uint8_t *packet,
-                            size_t packet_len,
-                            const struct sockaddr *multicast_dest,
-                            socklen_t multicast_dest_len,
-                            const struct sockaddr *source,
-                            socklen_t source_len,
-                            const struct config *cfg,
-                            const struct link_context *response_link,
-                            const struct service_record_set *snapshot_records,
-                            int use_snapshot_records) {
+static int handle_query_any_scoped(int sockfd,
+                                   const uint8_t *packet,
+                                   size_t packet_len,
+                                   const struct sockaddr *multicast_dest,
+                                   socklen_t multicast_dest_len,
+                                   const struct sockaddr *source,
+                                   socklen_t source_len,
+                                   unsigned int ingress_ifindex,
+                                   const struct config *cfg,
+                                   const struct link_context *response_link,
+                                   enum mdns_service_scope scope) {
     struct dns_header hdr;
     size_t cursor = sizeof(struct dns_header);
     uint16_t qdcount;
@@ -6617,8 +5352,10 @@ static int handle_query_any(int sockfd,
     int source_allows_unicast;
     size_t question_section_start = sizeof(struct dns_header);
     struct response_question_section questions;
+    struct config scoped_cfg;
     static struct planned_rr_set planned;
 
+    cfg = mdns_config_for_scope(&scoped_cfg, cfg, scope);
     memset(&planned, 0, sizeof(planned));
     memset(&questions, 0, sizeof(questions));
     instance_fqdn[0] = '\0';
@@ -6643,40 +5380,40 @@ static int handle_query_any(int sockfd,
     query_id = hdr.id;
     source_port = sockaddr_port_host(source);
     legacy_unicast_query = source_port != 0 && source_port != MDNS_PORT;
-    source_allows_unicast = source_can_receive_unicast_response(source, response_link);
+    source_allows_unicast = source_can_receive_unicast_response(source, response_link, ingress_ifindex);
     if (smb_enabled(cfg) &&
         build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
-        log_packet_build_failure("query_response", "build_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        log_packet_build_failure("query_response", "build_instance_fqdn", sizeof(struct dns_header), 0);
         return 0;
     }
     if (afp_enabled(cfg) &&
         build_instance_fqdn(afp_instance_fqdn, sizeof(afp_instance_fqdn), cfg->instance_name, cfg->afp_service_type) != 0) {
-        log_packet_build_failure("query_response", "build_afp_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        log_packet_build_failure("query_response", "build_afp_instance_fqdn", sizeof(struct dns_header), 0);
         return 0;
     }
     if (adisk_enabled(cfg) &&
         build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
-        log_packet_build_failure("query_response", "build_adisk_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        log_packet_build_failure("query_response", "build_adisk_instance_fqdn", sizeof(struct dns_header), 0);
         return 0;
     }
     if (cfg->device_model[0] != '\0' &&
         build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
-        log_packet_build_failure("query_response", "build_device_info_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        log_packet_build_failure("query_response", "build_device_info_instance_fqdn", sizeof(struct dns_header), 0);
         return 0;
     }
     if (is_airport_enabled(cfg) &&
         build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
-        log_packet_build_failure("query_response", "build_airport_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        log_packet_build_failure("query_response", "build_airport_instance_fqdn", sizeof(struct dns_header), 0);
         return 0;
     }
     if (is_riousbprint_enabled(cfg) &&
         build_instance_fqdn(riousbprint_instance_fqdn, sizeof(riousbprint_instance_fqdn), cfg->riousbprint_instance_name, RIOUSBPRINT_SERVICE_TYPE) != 0) {
-        log_packet_build_failure("query_response", "build_riousbprint_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        log_packet_build_failure("query_response", "build_riousbprint_instance_fqdn", sizeof(struct dns_header), 0);
         return 0;
     }
     if (is_pdl_datastream_enabled(cfg) &&
         build_instance_fqdn(pdl_datastream_instance_fqdn, sizeof(pdl_datastream_instance_fqdn), cfg->riousbprint_instance_name, PDL_DATASTREAM_SERVICE_TYPE) != 0) {
-        log_packet_build_failure("query_response", "build_pdl_datastream_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        log_packet_build_failure("query_response", "build_pdl_datastream_instance_fqdn", sizeof(struct dns_header), 0);
         return 0;
     }
 
@@ -6731,8 +5468,6 @@ static int handle_query_any(int sockfd,
                                   qtype,
                                   cfg,
                                   response_link,
-                                  snapshot_records,
-                                  use_snapshot_records,
                                   instance_fqdn,
                                   afp_instance_fqdn,
                                   adisk_instance_fqdn,
@@ -6740,7 +5475,7 @@ static int handle_query_any(int sockfd,
                                   airport_instance_fqdn,
                                   riousbprint_instance_fqdn,
                                   pdl_datastream_instance_fqdn) != 0) {
-            log_packet_build_failure("query_response", "plan_question_answers", cursor, 0, use_snapshot_records);
+            log_packet_build_failure("query_response", "plan_question_answers", cursor, 0);
             return -1;
         }
     }
@@ -6761,7 +5496,6 @@ static int handle_query_any(int sockfd,
                                    source,
                                    source_len,
                                    &questions,
-                                   use_snapshot_records,
                                    &planned) != 0) {
             return -1;
         }
@@ -6776,7 +5510,6 @@ static int handle_query_any(int sockfd,
                                         &questions,
                                         source,
                                         source_len,
-                                        use_snapshot_records,
                                         0) != 0) {
             status = -1;
         }
@@ -6790,7 +5523,6 @@ static int handle_query_any(int sockfd,
                                         &questions,
                                         source,
                                         source_len,
-                                        use_snapshot_records,
                                         0) != 0) {
             status = -1;
         }
@@ -6804,7 +5536,6 @@ static int handle_query_any(int sockfd,
                                         &questions,
                                         multicast_dest,
                                         multicast_dest_len,
-                                        use_snapshot_records,
                                         1) != 0) {
             status = -1;
         }
@@ -6813,21 +5544,34 @@ static int handle_query_any(int sockfd,
     return status;
 }
 
-static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
-                        const struct sockaddr_in *multicast_dest, const struct sockaddr_in *source,
-                        const struct config *cfg, const struct link_context *response_link,
-                        const struct service_record_set *snapshot_records, int use_snapshot_records) {
-    return handle_query_any(sockfd,
-                            packet,
-                            packet_len,
-                            (const struct sockaddr *)multicast_dest,
-                            sizeof(*multicast_dest),
-                            (const struct sockaddr *)source,
-                            sizeof(*source),
-                            cfg,
-                            response_link,
-                            snapshot_records,
-                            use_snapshot_records);
+static int handle_query_scoped(int sockfd, const uint8_t *packet, size_t packet_len,
+                               const struct sockaddr_in *multicast_dest, const struct sockaddr_in *source,
+                               const struct config *cfg, const struct link_context *response_link,
+                               enum mdns_service_scope scope) {
+    return handle_query_any_scoped(sockfd,
+                                   packet,
+                                   packet_len,
+                                   (const struct sockaddr *)multicast_dest,
+                                   sizeof(*multicast_dest),
+                                   (const struct sockaddr *)source,
+                                   sizeof(*source),
+                                   0,
+                                   cfg,
+                                   response_link,
+                                   scope);
+}
+
+static int TC_UNUSED handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
+                                  const struct sockaddr_in *multicast_dest, const struct sockaddr_in *source,
+                                  const struct config *cfg, const struct link_context *response_link) {
+    return handle_query_scoped(sockfd,
+                               packet,
+                               packet_len,
+                               multicast_dest,
+                               source,
+                               cfg,
+                               response_link,
+                               MDNS_SERVICE_SCOPE_LAN);
 }
 
 static int source_matches_link_ipv4_subnet(uint32_t source_ipv4_addr, const struct link_context *link) {
@@ -6872,17 +5616,21 @@ static const struct link_context *select_response_link_ipv4(const struct link_co
 }
 
 static const struct link_context *select_response_link_ipv6(const struct link_context_set *links,
-                                                            const struct sockaddr_in6 *source) {
+                                                            const struct sockaddr_in6 *source,
+                                                            unsigned int ingress_ifindex) {
     size_t i;
 
     if (links->count == 0) {
         return NULL;
     }
     if (source != NULL) {
-        if (source->sin6_scope_id != 0) {
+        unsigned int source_ifindex = ingress_ifindex != 0
+                                          ? ingress_ifindex
+                                          : ipv6_sockaddr_effective_ifindex(source);
+        if (source_ifindex != 0) {
             for (i = 0; i < links->count; i++) {
                 if (link_context_has_mdns_ipv6_transport(&links->links[i]) &&
-                    links->links[i].ifindex == source->sin6_scope_id) {
+                    links->links[i].ifindex == source_ifindex) {
                     return &links->links[i];
                 }
             }
@@ -6942,50 +5690,53 @@ static void send_link_announcement_pair(const struct mdns_socket_pair *sockets,
                                         const struct sockaddr_in6 *dest6,
                                         const struct config *cfg,
                                         uint32_t ttl,
-                                        const struct service_record_set *snapshot_records,
-                                        int use_snapshot_records,
+                                        enum mdns_service_scope scope,
                                         const char *stage) {
     if (sockets->ipv4_fd >= 0 && link_context_has_mdns_ipv4_transport(link)) {
         char sourcebuf[INET_ADDRSTRLEN];
         uint32_t source_ipv4 = link_preferred_ipv4_source(link);
         fprintf(stderr,
-                "mdns announce: stage=%s family=ipv4 iface=%s source=%s records=%s\n",
+                "mdns announce: stage=%s family=ipv4 iface=%s scope=%s source=%s\n",
                 stage,
                 link->name,
-                source_ipv4 != 0 ? ipv4_to_string(source_ipv4, sourcebuf, sizeof(sourcebuf)) : "unknown",
-                use_snapshot_records ? "snapshot" : "generated");
+                mdns_service_scope_name(scope),
+                source_ipv4 != 0 ? ipv4_to_string(source_ipv4, sourcebuf, sizeof(sourcebuf)) : "unknown");
         if (set_link_outbound_interface4(sockets->ipv4_fd, link) != 0 ||
-            send_announcement(sockets->ipv4_fd, dest4, cfg, link, ttl, snapshot_records, use_snapshot_records) != 0) {
+            send_announcement_any_scoped(sockets->ipv4_fd,
+                                         (const struct sockaddr *)dest4,
+                                         sizeof(*dest4),
+                                         cfg,
+                                         link,
+                                         ttl,
+                                         scope) != 0) {
             char detail[160];
             snprintf(detail, sizeof(detail), "stage=%s iface=%s family=ipv4", stage, link->name);
-            log_send_failure(stage, dest4, use_snapshot_records, detail);
+            log_send_failure(stage, dest4, detail);
         }
     }
     if (sockets->ipv6_fd >= 0 && link_context_has_mdns_ipv6_transport(link)) {
         struct sockaddr_in6 scoped_dest6;
         fprintf(stderr,
-                "mdns announce: stage=%s family=ipv6 iface=%s source_ifindex=%u records=%s\n",
+                "mdns announce: stage=%s family=ipv6 iface=%s scope=%s source_ifindex=%u\n",
                 stage,
                 link->name,
-                link->ifindex,
-                use_snapshot_records ? "snapshot" : "generated");
+                mdns_service_scope_name(scope),
+                link->ifindex);
         scoped_mdns_dest6_for_link(&scoped_dest6, dest6, link);
         if (set_link_outbound_interface6(sockets->ipv6_fd, link) != 0 ||
-            send_announcement_any(sockets->ipv6_fd,
-                                  (const struct sockaddr *)&scoped_dest6,
-                                  sizeof(scoped_dest6),
-                                  cfg,
-                                  link,
-                                  ttl,
-                                  snapshot_records,
-                                  use_snapshot_records) != 0) {
+            send_announcement_any_scoped(sockets->ipv6_fd,
+                                         (const struct sockaddr *)&scoped_dest6,
+                                         sizeof(scoped_dest6),
+                                         cfg,
+                                         link,
+                                         ttl,
+                                         scope) != 0) {
             char destbuf[96];
             format_sockaddr_addr((const struct sockaddr *)&scoped_dest6, destbuf, sizeof(destbuf));
             fprintf(stderr,
-                    "mdns send failure: stage=%s dest=%s records=%s detail=iface=%s family=ipv6\n",
+                    "mdns send failure: stage=%s dest=%s detail=iface=%s family=ipv6\n",
                     stage,
                     destbuf,
-                    use_snapshot_records ? "snapshot" : "generated",
                     link->name);
         }
     }
@@ -6996,8 +5747,6 @@ static void announce_all_links(const struct mdns_socket_pair *sockets,
                                const struct sockaddr_in *dest4,
                                const struct sockaddr_in6 *dest6,
                                const struct config *cfg,
-                               const struct service_record_set *snapshot_records,
-                               int use_snapshot_records,
                                const char *stage) {
     size_t i;
 
@@ -7008,8 +5757,7 @@ static void announce_all_links(const struct mdns_socket_pair *sockets,
                                     dest6,
                                     cfg,
                                     cfg->ttl,
-                                    snapshot_records,
-                                    use_snapshot_records,
+                                    mdns_service_scope_for_link(links, &links->links[i]),
                                     stage);
     }
 }
@@ -7018,9 +5766,7 @@ static void send_link_goodbyes(const struct mdns_socket_pair *sockets,
                                const struct link_context_set *links,
                                const struct sockaddr_in *dest4,
                                const struct sockaddr_in6 *dest6,
-                               const struct config *cfg,
-                               const struct service_record_set *snapshot_records,
-                               int use_snapshot_records) {
+                               const struct config *cfg) {
     size_t i;
 
     for (i = 0; i < links->count; i++) {
@@ -7030,8 +5776,7 @@ static void send_link_goodbyes(const struct mdns_socket_pair *sockets,
                                     dest6,
                                     cfg,
                                     0,
-                                    snapshot_records,
-                                    use_snapshot_records,
+                                    mdns_service_scope_for_link(links, &links->links[i]),
                                     "goodbye");
     }
 }
@@ -7041,9 +5786,7 @@ static void send_link_goodbyes_for_missing(const struct mdns_socket_pair *socket
                                            const struct link_context_set *new_links,
                                            const struct sockaddr_in *dest4,
                                            const struct sockaddr_in6 *dest6,
-                                           const struct config *cfg,
-                                           const struct service_record_set *snapshot_records,
-                                           int use_snapshot_records) {
+                                           const struct config *cfg) {
     size_t i;
 
     for (i = 0; i < old_links->count; i++) {
@@ -7056,8 +5799,7 @@ static void send_link_goodbyes_for_missing(const struct mdns_socket_pair *socket
                                     dest6,
                                     cfg,
                                     0,
-                                    snapshot_records,
-                                    use_snapshot_records,
+                                    mdns_service_scope_for_link(old_links, &old_links->links[i]),
                                     "goodbye");
     }
 }
@@ -7252,9 +5994,7 @@ static int apply_runtime_link_change(int shared_bind,
                                      const struct link_context_set *new_links,
                                      const struct sockaddr_in *dest4,
                                      const struct sockaddr_in6 *dest6,
-                                     const struct config *cfg,
-                                     const struct service_record_set *snapshot_records,
-                                     int use_snapshot_records) {
+                                     const struct config *cfg) {
     struct link_context_set applied_links;
 
     applied_links = *new_links;
@@ -7266,9 +6006,7 @@ static int apply_runtime_link_change(int shared_bind,
                                    &applied_links,
                                    dest4,
                                    dest6,
-                                   cfg,
-                                   snapshot_records,
-                                   use_snapshot_records);
+                                   cfg);
     retire_runtime_mdns_memberships_for_missing(sockets, active_links, &applied_links);
     close_unused_runtime_mdns_socket_families(sockets, &applied_links);
     *active_links = applied_links;
@@ -7282,8 +6020,6 @@ static int recover_runtime_link_change_with_takeover(int shared_bind,
                                                      const struct sockaddr_in *dest4,
                                                      const struct sockaddr_in6 *dest6,
                                                      const struct config *cfg,
-                                                     const struct service_record_set *snapshot_records,
-                                                     int use_snapshot_records,
                                                      struct mdns_transport_status *status) {
     static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
     size_t i;
@@ -7294,9 +6030,7 @@ static int recover_runtime_link_change_with_takeover(int shared_bind,
                                   desired_links,
                                   dest4,
                                   dest6,
-                                  cfg,
-                                  snapshot_records,
-                                  use_snapshot_records) == 0) {
+                                  cfg) == 0) {
         mdns_transport_status_from_links(desired_links, active_links, sockets, status);
         if (mdns_transport_is_healthy(status)) {
             return 0;
@@ -7314,9 +6048,7 @@ static int recover_runtime_link_change_with_takeover(int shared_bind,
                                       desired_links,
                                       dest4,
                                       dest6,
-                                      cfg,
-                                      snapshot_records,
-                                      use_snapshot_records) == 0) {
+                                      cfg) == 0) {
             mdns_transport_status_from_links(desired_links, active_links, sockets, status);
             if (mdns_transport_is_healthy(status)) {
                 fprintf(stderr, "mDNS runtime required transport recovered after SIGTERM + %ums\n",
@@ -7337,9 +6069,7 @@ static int recover_runtime_link_change_with_takeover(int shared_bind,
                                       desired_links,
                                       dest4,
                                       dest6,
-                                      cfg,
-                                      snapshot_records,
-                                      use_snapshot_records) == 0) {
+                                      cfg) == 0) {
             mdns_transport_status_from_links(desired_links, active_links, sockets, status);
             if (mdns_transport_is_healthy(status)) {
                 fprintf(stderr, "mDNS runtime required transport recovered after SIGKILL + %ums\n",
@@ -7357,11 +6087,9 @@ static int recover_runtime_link_change_with_takeover(int shared_bind,
 
 int main(int argc, char **argv) {
     struct config cfg;
-    struct service_record_set snapshot_records;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in6 mdns_dest6;
     int i;
-    int use_snapshot_records = 0;
     int auto_ip = 0;
     int print_auto_ip_cidrs = 0;
     int print_smb_bind_interfaces = 0;
@@ -7371,15 +6099,10 @@ int main(int argc, char **argv) {
     int auto_contexts_ready = 0;
     struct link_context_set desired_links;
     struct link_context_set active_links;
-    int capture_only = 0;
-    int snapshot_capture_failed = 0;
-    int snapshot_capture_skipped = 0;
-    int trusted_snapshot_written = 0;
     size_t startup_burst_index = 0;
     long long startup_burst_start_ms = 0;
 
     memset(&cfg, 0, sizeof(cfg));
-    memset(&snapshot_records, 0, sizeof(snapshot_records));
     memset(&desired_links, 0, sizeof(desired_links));
     memset(&active_links, 0, sizeof(active_links));
     strcpy(cfg.service_type, "_smb._tcp.local.");
@@ -7396,25 +6119,7 @@ int main(int argc, char **argv) {
     cfg.ttl = 120;
 
     for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--save-all-snapshot") == 0 && i + 1 < argc) {
-            strncpy(cfg.save_all_snapshot_path, argv[++i], sizeof(cfg.save_all_snapshot_path) - 1);
-        } else if (strcmp(argv[i], "--save-airport-snapshot") == 0 && i + 1 < argc) {
-            strncpy(cfg.save_airport_snapshot_path, argv[++i], sizeof(cfg.save_airport_snapshot_path) - 1);
-        } else if (strcmp(argv[i], "--save-snapshot") == 0 && i + 1 < argc) {
-            strncpy(cfg.save_snapshot_path, argv[++i], sizeof(cfg.save_snapshot_path) - 1);
-        } else if (strcmp(argv[i], "--skip-capture-if-snapshot-newer-than-boot") == 0 && i + 1 < argc) {
-            strncpy(cfg.skip_capture_if_snapshot_newer_than_boot_path,
-                    argv[++i],
-                    sizeof(cfg.skip_capture_if_snapshot_newer_than_boot_path) - 1);
-        } else if (strcmp(argv[i], "--snapshot-newer-than-boot") == 0 && i + 1 < argc) {
-            strncpy(cfg.snapshot_newer_than_boot_path,
-                    argv[++i],
-                    sizeof(cfg.snapshot_newer_than_boot_path) - 1);
-        } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
-            strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
-        } else if (strcmp(argv[i], "--generated-airport-services") == 0) {
-            cfg.generated_airport_services = 1;
-        } else if (strcmp(argv[i], "--diskless") == 0) {
+        if (strcmp(argv[i], "--diskless") == 0) {
             cfg.diskless = 1;
         } else if (strcmp(argv[i], "--afp") == 0) {
             cfg.advertise_afp = 1;
@@ -7516,38 +6221,7 @@ int main(int argc, char **argv) {
                                                        collect_usable_link_contexts_provider,
                                                        NULL);
     }
-    if (cfg.snapshot_newer_than_boot_path[0] != '\0') {
-        int snapshot_freshness = snapshot_file_newer_than_boot(cfg.snapshot_newer_than_boot_path);
-        if (snapshot_freshness > 0) {
-            fprintf(stderr,
-                    "mDNS snapshot is newer than current boot: %s\n",
-                    cfg.snapshot_newer_than_boot_path);
-            return EXIT_OK;
-        }
-        if (snapshot_freshness < 0) {
-            fprintf(stderr,
-                    "mDNS snapshot freshness check unavailable for %s\n",
-                    cfg.snapshot_newer_than_boot_path);
-        } else {
-            fprintf(stderr,
-                    "mDNS snapshot is missing, empty, or not newer than current boot: %s\n",
-                    cfg.snapshot_newer_than_boot_path);
-        }
-        return EXIT_SNAPSHOT_NOT_FRESH;
-    }
-
-    capture_only = (cfg.load_snapshot_path[0] == '\0' &&
-                    (cfg.save_all_snapshot_path[0] != '\0' ||
-                     cfg.save_airport_snapshot_path[0] != '\0' ||
-                     cfg.save_snapshot_path[0] != '\0'));
-
-    if (!capture_only && (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || !auto_ip)) {
-        usage(argv[0]);
-        return EXIT_MISSING_REQUIRED_ARGS;
-    }
-    if (cfg.save_airport_snapshot_path[0] != '\0' &&
-        (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || !cfg_has_airport_identity_macs(&cfg))) {
-        fprintf(stderr, "--save-airport-snapshot requires --instance, --host, and at least one AirPort identity MAC\n");
+    if (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || !auto_ip) {
         usage(argv[0]);
         return EXIT_MISSING_REQUIRED_ARGS;
     }
@@ -7555,11 +6229,6 @@ int main(int argc, char **argv) {
     if ((cfg.instance_name[0] != '\0' && validate_generated_dns_label(cfg.instance_name, "instance name") != 0) ||
         (cfg.host_label[0] != '\0' && validate_generated_dns_label(cfg.host_label, "host label") != 0)) {
         return EXIT_INVALID_DNS_LABEL;
-    }
-    if ((cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') && !auto_ip) {
-        fprintf(stderr, "mDNS snapshot capture requires --auto-ip\n");
-        usage(argv[0]);
-        return EXIT_MISSING_REQUIRED_ARGS;
     }
     if (validate_dns_name(cfg.service_type, "service type") != 0) {
         return EXIT_INVALID_SERVICE_TYPE;
@@ -7613,135 +6282,12 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (!capture_only) {
-        if (build_host_fqdn(cfg.host_fqdn, sizeof(cfg.host_fqdn), cfg.host_label) != 0) {
-            return EXIT_INVALID_DNS_LABEL;
-        }
-        log_startup_config(&cfg);
-    } else {
-        fprintf(stderr, "mdns capture-only: save_all=%s save_airport=%s save_trusted=%s airport_identity=%s\n",
-                cfg.save_all_snapshot_path[0] != '\0' ? cfg.save_all_snapshot_path : "(none)",
-                cfg.save_airport_snapshot_path[0] != '\0' ? cfg.save_airport_snapshot_path : "(none)",
-                cfg.save_snapshot_path[0] != '\0' ? cfg.save_snapshot_path : "(none)",
-                cfg_has_airport_identity_macs(&cfg) ? "present" : "missing");
+    if (build_host_fqdn(cfg.host_fqdn, sizeof(cfg.host_fqdn), cfg.host_label) != 0) {
+        return EXIT_INVALID_DNS_LABEL;
     }
+    log_startup_config(&cfg);
 
-    if (cfg.save_airport_snapshot_path[0] != '\0') {
-        struct service_record_set airport_records;
-        memset(&airport_records, 0, sizeof(airport_records));
-        if (build_airport_snapshot_set(&cfg, &airport_records) == 0 &&
-            write_snapshot_file_atomic(cfg.save_airport_snapshot_path, &airport_records) == 0) {
-            fprintf(stderr, "airport snapshot: wrote 1 record to %s\n", cfg.save_airport_snapshot_path);
-        } else {
-            fprintf(stderr, "failed to write airport snapshot file: %s\n", cfg.save_airport_snapshot_path);
-            return EXIT_INVALID_AIRPORT_TXT;
-        }
-    }
-
-    if (cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') {
-        struct service_record_set captured_records;
-        struct service_record_set filtered_records;
-        memset(&captured_records, 0, sizeof(captured_records));
-        memset(&filtered_records, 0, sizeof(filtered_records));
-
-        if (cfg.skip_capture_if_snapshot_newer_than_boot_path[0] != '\0') {
-            int snapshot_freshness = snapshot_file_newer_than_boot(cfg.skip_capture_if_snapshot_newer_than_boot_path);
-            if (snapshot_freshness > 0) {
-                fprintf(stderr,
-                        "mDNS snapshot capture skipped; %s is newer than current boot\n",
-                        cfg.skip_capture_if_snapshot_newer_than_boot_path);
-                snapshot_capture_skipped = 1;
-                trusted_snapshot_written = cfg.save_snapshot_path[0] != '\0';
-            } else {
-                if (snapshot_freshness < 0) {
-                    fprintf(stderr,
-                            "mDNS snapshot freshness check unavailable for %s; capturing snapshot\n",
-                            cfg.skip_capture_if_snapshot_newer_than_boot_path);
-                }
-                if (cfg.save_all_snapshot_path[0] != '\0') {
-                    unlink(cfg.save_all_snapshot_path);
-                }
-                if (cfg.save_snapshot_path[0] != '\0') {
-                    unlink(cfg.save_snapshot_path);
-                }
-            }
-        }
-
-        if (!snapshot_capture_skipped) {
-            struct link_context_set capture_links;
-            int capture_links_ready = 0;
-            memset(&capture_links, 0, sizeof(capture_links));
-            if (auto_ip) {
-                if (wait_for_auto_link_contexts(&capture_links, "mdns capture") == 0) {
-                    capture_links_ready = 1;
-                    log_link_contexts("mdns capture auto-ip", &capture_links);
-                }
-            }
-            if (capture_links_ready &&
-                capture_mdns_snapshot_links_with_retry(&captured_records, &capture_links) == 0) {
-                fprintf(stderr, "snapshot capture: captured %lu records\n", (unsigned long)captured_records.count);
-                if (captured_records.truncated) {
-                    fprintf(stderr,
-                            "snapshot capture: record list truncated; kept first %lu unique records in receive order\n",
-                            (unsigned long)captured_records.count);
-                }
-                if (cfg.save_all_snapshot_path[0] != '\0' &&
-                    write_snapshot_file_atomic(cfg.save_all_snapshot_path, &captured_records) != 0) {
-                    fprintf(stderr, "failed to write all snapshot file: %s\n", cfg.save_all_snapshot_path);
-                    snapshot_capture_failed = 1;
-                }
-                /*
-                 * Keep a raw LAN-wide dump in allmdns.txt for diagnostics, but
-                 * only refresh applemdns.txt when the capture can be tied back to
-                 * this unit's _airport identity.
-                 */
-                if (cfg.save_snapshot_path[0] != '\0') {
-                    if (prepare_loaded_snapshot_for_advertising(&cfg, &captured_records, &filtered_records) == 0) {
-                        fprintf(stderr, "snapshot capture: filtered %lu records for trusted snapshot\n",
-                                (unsigned long)filtered_records.count);
-                        if (write_snapshot_file_atomic(cfg.save_snapshot_path, &filtered_records) != 0) {
-                            fprintf(stderr, "failed to write snapshot file: %s\n", cfg.save_snapshot_path);
-                            snapshot_capture_failed = 1;
-                        } else {
-                            trusted_snapshot_written = 1;
-                        }
-                    } else {
-                        fprintf(stderr, "warning: could not identify local Apple mDNS records for snapshot file: %s\n",
-                                cfg.save_snapshot_path);
-                        snapshot_capture_failed = 1;
-                    }
-                }
-            } else {
-                fprintf(stderr, "warning: could not capture Apple mDNS snapshot\n");
-                snapshot_capture_failed = 1;
-            }
-        }
-    }
-
-    if (capture_only) {
-        fprintf(stderr, "mdns capture-only: exiting without UDP 5353 takeover or advertisement\n");
-        if (snapshot_capture_failed ||
-            (cfg.save_snapshot_path[0] != '\0' && !trusted_snapshot_written)) {
-            return EXIT_SNAPSHOT_CAPTURE_FAILED;
-        }
-        return EXIT_OK;
-    }
-
-    if (cfg.load_snapshot_path[0] != '\0') {
-        struct service_record_set loaded_records;
-        memset(&loaded_records, 0, sizeof(loaded_records));
-        if (load_snapshot_file(cfg.load_snapshot_path, &loaded_records) == 0 &&
-            prepare_loaded_snapshot_for_advertising(&cfg, &loaded_records, &snapshot_records) == 0) {
-            fprintf(stderr, "snapshot load: loaded %lu records, advertising %lu snapshot records\n",
-                    (unsigned long)loaded_records.count, (unsigned long)snapshot_records.count);
-            use_snapshot_records = 1;
-        } else {
-            fprintf(stderr, "warning: could not load trusted snapshot file: %s; falling back to generated records\n",
-                    cfg.load_snapshot_path);
-        }
-    }
-
-    log_served_records(&cfg, &snapshot_records, use_snapshot_records);
+    log_served_records(&cfg);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -7823,8 +6369,6 @@ int main(int argc, char **argv) {
                                                                               &mdns_dest,
                                                                               &mdns_dest6,
                                                                               &cfg,
-                                                                              &snapshot_records,
-                                                                              use_snapshot_records,
                                                                               &transport_status) < 0) {
                                     fprintf(stderr, "mdns auto-ip: could not apply stabilized desired links; keeping existing active transport until next retry\n");
                                     last_iface_poll = time(NULL);
@@ -7832,7 +6376,7 @@ int main(int argc, char **argv) {
                                 }
                             } else {
                                 fprintf(stderr, "mdns auto-ip: no usable address links after stabilization; sending goodbyes and waiting\n");
-                                send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
+                                send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg);
                                 close_mdns_socket_pair(&sockets);
                                 memset(&active_links, 0, sizeof(active_links));
                                 memset(&desired_links, 0, sizeof(desired_links));
@@ -7873,8 +6417,6 @@ int main(int argc, char **argv) {
                                                               &mdns_dest,
                                                               &mdns_dest6,
                                                               &cfg,
-                                                              &snapshot_records,
-                                                              use_snapshot_records,
                                                               &transport_status) >= 0) {
                     log_link_contexts("mdns auto-ip active", &active_links);
                     log_mdns_transport_status("degraded_retry", &active_links, &transport_status);
@@ -7904,7 +6446,7 @@ int main(int argc, char **argv) {
             (void)flush_deferred_response_if_due(now_ms);
             while (startup_burst_index < STARTUP_BURST_COUNT &&
                    now_ms - startup_burst_start_ms >= (long long)g_startup_burst_offsets_ms[startup_burst_index]) {
-                announce_all_links(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records, "startup_announce");
+                announce_all_links(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, "startup_announce");
                 startup_burst_index++;
                 now_ms = monotonic_millis();
             }
@@ -7964,12 +6506,19 @@ int main(int argc, char **argv) {
                         unsigned long query_matches_before = g_mdns_counters.query_packets_matched;
                         if (link != NULL &&
                             (set_link_outbound_interface4_for_peer(sockets.ipv4_fd, link, src.sin_addr.s_addr) != 0 ||
-                             handle_query(sockets.ipv4_fd, packet, (size_t)nread, &mdns_dest, &src, &cfg, link, &snapshot_records, use_snapshot_records) != 0)) {
+                             handle_query_scoped(sockets.ipv4_fd,
+                                                 packet,
+                                                 (size_t)nread,
+                                                 &mdns_dest,
+                                                 &src,
+                                                 &cfg,
+                                                 link,
+                                                 mdns_service_scope_for_link(&active_links, link)) != 0)) {
                             char detail[160];
                             snprintf(detail, sizeof(detail), "iface=%s packet_len=%ld from=%s:%u",
                                      link->name,
                                      (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
-                            log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
+                            log_send_failure("query_response", &mdns_dest, detail);
                         }
                         log_mdns_receive_counters("first_ipv4_packet", first_packet, query_matches_before, now_ms);
                     }
@@ -7977,9 +6526,22 @@ int main(int argc, char **argv) {
                 if (selected > 0 && sockets.ipv6_fd >= 0 && FD_ISSET(sockets.ipv6_fd, &rfds)) {
                     struct sockaddr_in6 src6;
                     socklen_t src6_len = sizeof(src6);
-                    ssize_t nread = recvfrom(sockets.ipv6_fd, packet, sizeof(packet), 0, (struct sockaddr *)&src6, &src6_len);
+                    unsigned int received_ifindex = 0;
+                    ssize_t nread = receive_ipv6_packet(sockets.ipv6_fd,
+                                                        packet,
+                                                        sizeof(packet),
+                                                        &src6,
+                                                        &src6_len,
+                                                        &received_ifindex);
                     if (nread > 0) {
-                        const struct link_context *link = select_response_link_ipv6(&active_links, &src6);
+                        if (ipv6_is_link_local_addr(&src6.sin6_addr) &&
+                            ipv6_sockaddr_effective_ifindex(&src6) == 0 &&
+                            received_ifindex != 0) {
+                            src6.sin6_scope_id = received_ifindex;
+                        }
+                        const struct link_context *link = select_response_link_ipv6(&active_links,
+                                                                                    &src6,
+                                                                                    received_ifindex);
                         int first_packet = note_mdns_ipv6_packet_received();
                         unsigned long query_matches_before = g_mdns_counters.query_packets_matched;
                         if (link != NULL) {
@@ -7988,24 +6550,23 @@ int main(int argc, char **argv) {
                             scoped_mdns_dest6_for_link(&scoped_dest6, &mdns_dest6, link);
                             query_status = set_link_outbound_interface6(sockets.ipv6_fd, link);
                             if (query_status == 0) {
-                                query_status = handle_query_any(sockets.ipv6_fd,
-                                                                packet,
-                                                                (size_t)nread,
-                                                                (const struct sockaddr *)&scoped_dest6,
-                                                                sizeof(scoped_dest6),
-                                                                (const struct sockaddr *)&src6,
-                                                                src6_len,
-                                                                &cfg,
-                                                                link,
-                                                                &snapshot_records,
-                                                                use_snapshot_records);
+                                query_status = handle_query_any_scoped(sockets.ipv6_fd,
+                                                                       packet,
+                                                                       (size_t)nread,
+                                                                       (const struct sockaddr *)&scoped_dest6,
+                                                                       sizeof(scoped_dest6),
+                                                                       (const struct sockaddr *)&src6,
+                                                                       src6_len,
+                                                                       received_ifindex,
+                                                                       &cfg,
+                                                                       link,
+                                                                       mdns_service_scope_for_link(&active_links, link));
                             }
                             if (query_status != 0) {
                                 char srcbuf[96];
                                 format_sockaddr_addr((const struct sockaddr *)&src6, srcbuf, sizeof(srcbuf));
                                 fprintf(stderr,
-                                        "mdns send failure: stage=query_response records=%s detail=iface=%s packet_len=%ld from=%s\n",
-                                        use_snapshot_records ? "snapshot" : "generated",
+                                        "mdns send failure: stage=query_response detail=iface=%s packet_len=%ld from=%s\n",
                                         link->name,
                                         (long)nread,
                                         srcbuf);
@@ -8018,7 +6579,7 @@ int main(int argc, char **argv) {
 
         }
 
-        send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
+        send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg);
         log_mdns_counters_force("shutdown");
         close_mdns_socket_pair(&sockets);
         return 0;

@@ -258,7 +258,7 @@ class DeployModuleTests(unittest.TestCase):
             bin_path = tmp / bin_name
             c_path.write_text(source)
             proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                ["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
                 cwd=REPO_ROOT,
                 capture_output=True,
                 text=True,
@@ -283,9 +283,6 @@ class DeployModuleTests(unittest.TestCase):
                 "-Wall",
                 "-Wextra",
                 "-Werror",
-                "-DSNAPSHOT_CAPTURE_TIMEOUT_SECONDS=0",
-                "-DSNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS=0",
-                "-DSNAPSHOT_CAPTURE_STEP_SECONDS=0",
                 str(REPO_ROOT / "build" / "mdns-advertiser.c"),
                 "-o",
                 str(bin_path),
@@ -370,16 +367,6 @@ class DeployModuleTests(unittest.TestCase):
         stderr = "".join(stderr_chunks) + stderr
         return subprocess.CompletedProcess([str(bin_path), *args], proc.returncode, stdout, stderr)
 
-    def _write_matching_airport_snapshot(self, path: Path) -> None:
-        path.write_text(
-            "BEGIN\n"
-            "TYPE=_airport._tcp.local.\n"
-            "INSTANCE=Home\n"
-            "HOST=Home.local.\n"
-            "PORT=5009\n"
-            "TXT=waMA=80-EA-96-E6-58-68,syAP=119\n"
-            "END\n"
-        )
 
     def test_mdns_print_nt_hash_hashes_utf8_passwords(self) -> None:
         cases = [
@@ -490,8 +477,6 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("LOCKS_ROOT=/mnt/Locks", content)
         self.assertIn("MDNS_PROC_NAME=mdns-advertiser", content)
         self.assertIn("NBNS_PROC_NAME=nbns-advertiser", content)
-        self.assertNotIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
-        self.assertNotIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
         self.assertIn("tc_select_advertise_mac()", content)
         self.assertIn("tc_select_live_iface_mac()", content)
         self.assertIn("get_airport_prni_raw()", content)
@@ -975,7 +960,7 @@ int main(void) {{
             bin_path = tmp / "mdns_test"
             c_path.write_text(source)
             proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                ["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
                 cwd=REPO_ROOT,
                 capture_output=True,
                 text=True,
@@ -1076,12 +1061,26 @@ int main(void) {{
     def test_mdns_advertiser_adisk_argument_validation_respects_diskless_mode(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = r'''
+#include <string.h>
 #define main mdns_advertiser_main
 #include "@MDNS_SOURCE@"
 #undef main
 
 int main(int argc, char **argv) {
-    return mdns_advertiser_main(argc, argv);
+    struct config cfg;
+
+    if (argc != 4) {
+        return 99;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.diskless = strcmp(argv[1], "diskless") == 0;
+    if (strcmp(argv[2], "-") != 0 && parse_adisk_shares_file(&cfg, argv[2]) != 0) {
+        return EXIT_INVALID_ADISK_DISK;
+    }
+    if (adisk_enabled(&cfg) && build_adisk_system_txt((char[128]){0}, 128, argv[3]) != 0) {
+        return EXIT_INVALID_ADISK_SYSTEM;
+    }
+    return EXIT_OK;
 }
 '''.replace("@MDNS_SOURCE@", mdns_source)
         adisk_uuid = "12345678-1234-1234-1234-123456789012"
@@ -1093,58 +1092,46 @@ int main(int argc, char **argv) {
             bad_shares_file = tmp / "bad-adisk.tsv"
             bad_shares_file.write_text("Data\tdk2\tbad\t0x82\n")
 
-            def base_args(snapshot_name: str) -> list[str]:
-                return [
-                    "--save-airport-snapshot",
-                    str(tmp / snapshot_name),
-                    "--instance",
-                    "Capsule",
-                    "--host",
-                    "capsule",
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ]
-
             cases = [
                 (
                     "no_adisk_config_does_not_require_adisk_sys_wama",
-                    [],
+                    ["diskful", "-", ""],
                     0,
                     "",
                 ),
                 (
                     "diskful_adisk_shares_file_requires_adisk_sys_wama",
-                    ["--adisk-shares-file", str(shares_file)],
+                    ["diskful", str(shares_file), ""],
                     7,
                     "",
                 ),
                 (
                     "diskful_adisk_shares_file_rejects_invalid_adisk_sys_wama",
-                    ["--adisk-shares-file", str(shares_file), "--adisk-sys-wama", "not-a-mac"],
+                    ["diskful", str(shares_file), "not-a-mac"],
                     7,
                     "adisk sys waMA must be a MAC address",
                 ),
                 (
                     "diskful_adisk_shares_file_accepts_valid_adisk_sys_wama",
-                    ["--adisk-shares-file", str(shares_file), "--adisk-sys-wama", "80:EA:96:E6:58:68"],
+                    ["diskful", str(shares_file), "80:EA:96:E6:58:68"],
                     0,
                     "",
                 ),
                 (
                     "diskless_adisk_shares_file_suppresses_missing_adisk_sys_wama",
-                    ["--diskless", "--adisk-shares-file", str(shares_file)],
+                    ["diskless", str(shares_file), ""],
                     0,
                     "",
                 ),
                 (
                     "diskless_adisk_shares_file_suppresses_invalid_adisk_sys_wama",
-                    ["--diskless", "--adisk-shares-file", str(shares_file), "--adisk-sys-wama", "not-a-mac"],
+                    ["diskless", str(shares_file), "not-a-mac"],
                     0,
                     "",
                 ),
                 (
                     "diskless_still_validates_configured_adisk_disk_fields",
-                    ["--diskless", "--adisk-shares-file", str(bad_shares_file)],
+                    ["diskless", str(bad_shares_file), ""],
                     8,
                     "adisk uuid must be 36 characters",
                 ),
@@ -1152,17 +1139,14 @@ int main(int argc, char **argv) {
 
             for label, extra_args, expected_rc, expected_stderr in cases:
                 with self.subTest(label=label):
-                    snapshot_name = f"{label}.txt"
                     run = self._compile_and_run_c_helper(
                         source,
                         f"mdns_adisk_args_{label}",
-                        [*base_args(snapshot_name), *extra_args],
+                        extra_args,
                     )
                     self.assertEqual(run.returncode, expected_rc, run.stderr)
                     if expected_stderr:
                         self.assertIn(expected_stderr, run.stderr)
-                    if expected_rc == 0:
-                        self.assertTrue((tmp / snapshot_name).exists())
 
     def test_mdns_advertiser_normalizes_airport_mac_fields_to_apple_style(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -1239,7 +1223,6 @@ int main(void) {{
     char decoded[MAX_NAME];
     char host_fqdn[MAX_NAME];
     char instance_fqdn[MAX_NAME];
-    char extracted[MAX_NAME];
     const char *raw_name = "A.B.'s AirPort Time Capsule";
     const char *expected_host = "A\\.B\\.'s AirPort Time Capsule.local.";
     const char *expected_instance = "A\\.B\\.'s AirPort Time Capsule._smb._tcp.local.";
@@ -1273,22 +1256,12 @@ int main(void) {{
         fprintf(stderr, "decoded=%s cursor=%lu off=%lu\n", decoded, (unsigned long)cursor, (unsigned long)off);
         return 7;
     }}
-    if (build_host_label_from_fqdn(extracted, sizeof(extracted), host_fqdn) != 0 ||
-        strcmp(extracted, raw_name) != 0) {{
-        fprintf(stderr, "host_label=%s\n", extracted);
-        return 8;
-    }}
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), raw_name, "_smb._tcp.local.") != 0) {{
         return 9;
     }}
     if (strcmp(instance_fqdn, expected_instance) != 0) {{
         fprintf(stderr, "instance_fqdn=%s\n", instance_fqdn);
         return 10;
-    }}
-    if (extract_instance_name(extracted, sizeof(extracted), instance_fqdn, "_smb._tcp.local.") != 0 ||
-        strcmp(extracted, raw_name) != 0) {{
-        fprintf(stderr, "instance=%s\n", extracted);
-        return 11;
     }}
     if (build_host_fqdn(host_fqdn, sizeof(host_fqdn), "Time Capsule") != 0 ||
         strcmp(host_fqdn, "Time Capsule.local.") != 0) {{
@@ -1306,31 +1279,9 @@ int main(void) {{
         source = '''
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len);
-
-#define sendto fake_sendto
 #define main mdns_advertiser_main
 #include "{mdns_source}"
 #undef main
-#undef sendto
-
-static unsigned char captured_packet[BUF_SIZE];
-static size_t captured_len = 0;
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len) {{
-    (void)sockfd;
-    (void)flags;
-    (void)dest;
-    (void)dest_len;
-    memcpy(captured_packet, buf, len);
-    captured_len = len;
-    return (ssize_t)len;
-}}
 
 static int read_first_rr_class(const unsigned char *packet, size_t packet_len, unsigned short *out_class) {{
     char name[MAX_NAME];
@@ -1348,33 +1299,12 @@ static int read_first_rr_class(const unsigned char *packet, size_t packet_len, u
     return 0;
 }}
 
-static int read_first_question_class(const unsigned char *packet, size_t packet_len, unsigned short *out_class) {{
-    struct dns_header hdr;
-    char name[MAX_NAME];
-    size_t cursor = sizeof(hdr);
-    unsigned short qtype;
-    unsigned short qclass;
-
-    if (packet_len < sizeof(hdr)) {{
-        return -1;
-    }}
-    if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 4 > packet_len) {{
-        return -1;
-    }}
-    memcpy(&qtype, packet + cursor, 2);
-    memcpy(&qclass, packet + cursor + 2, 2);
-    (void)qtype;
-    *out_class = ntohs(qclass);
-    return 0;
-}}
-
 int main(void) {{
     uint8_t buf[BUF_SIZE];
     size_t off;
     unsigned short rrclass;
     uint32_t ipv4;
     const char *txts[1] = {{"k=v"}};
-    struct sockaddr_in dest;
 
     off = 0;
     if (add_rr_ptr(buf, &off, sizeof(buf), "_smb._tcp.local.", "Home._smb._tcp.local.", 120) != 0 ||
@@ -1414,16 +1344,6 @@ int main(void) {{
         return 6;
     }}
 
-    memset(&dest, 0, sizeof(dest));
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(5353);
-    dest.sin_addr.s_addr = inet_addr("224.0.0.251");
-    if (send_query_question_any(1, (const struct sockaddr *)&dest, sizeof(dest), "home.local.", DNS_TYPE_A) != 0 ||
-        read_first_question_class(captured_packet, captured_len, &rrclass) != 0 ||
-        rrclass != DNS_CLASS_IN) {{
-        return 7;
-    }}
-
     return 0;
 }}
 '''.format(mdns_source=mdns_source)
@@ -1446,7 +1366,7 @@ int main(void) {{
             bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2220\n")
+        self.assertEqual(run.stdout, "2224\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_accepts_debug_logging_before_version(self) -> None:
@@ -1459,7 +1379,7 @@ int main(void) {{
                 check=False,
             )
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2220\n")
+        self.assertEqual(run.stdout, "2224\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_traffic_summary_counters_are_debug_only(self) -> None:
@@ -1522,274 +1442,15 @@ int main(void) {{
         self.assertLess(run.stderr.count("A"), 5000)
         self.assertTrue(run.stderr.endswith("\n"))
 
-    def test_mdns_advertiser_can_skip_capture_when_snapshot_is_newer_than_boot(self) -> None:
-        if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
-            self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            all_snapshot = tmp / "allmdns.txt"
-            apple_snapshot = tmp / "applemdns.txt"
-            apple_snapshot.write_text("trusted\n")
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--auto-ip",
-                    "--save-all-snapshot",
-                    str(all_snapshot),
-                    "--save-snapshot",
-                    str(apple_snapshot),
-                    "--skip-capture-if-snapshot-newer-than-boot",
-                    str(apple_snapshot),
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
-            )
 
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertIn("mDNS snapshot capture skipped;", run.stderr)
-            self.assertIn("is newer than current boot", run.stderr)
-            self.assertIn("exiting without UDP 5353 takeover or advertisement", run.stderr)
-            self.assertFalse(all_snapshot.exists())
-            self.assertEqual(apple_snapshot.read_text(), "trusted\n")
 
-    def test_mdns_advertiser_reports_snapshot_newer_than_boot(self) -> None:
-        if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
-            self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            apple_snapshot = tmp / "applemdns.txt"
-            apple_snapshot.write_text("trusted\n")
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--snapshot-newer-than-boot",
-                    str(apple_snapshot),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
-            )
 
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertIn("mDNS snapshot is newer than current boot:", run.stderr)
-            self.assertEqual(run.stdout, "")
 
-    def test_mdns_advertiser_reports_missing_snapshot_as_not_fresh(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--snapshot-newer-than-boot",
-                    str(tmp / "missing-applemdns.txt"),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
-            )
 
-            self.assertEqual(run.returncode, 14, run.stderr)
-            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
-            self.assertEqual(run.stdout, "")
 
-    def test_mdns_advertiser_reports_empty_snapshot_as_not_fresh(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            apple_snapshot = tmp / "applemdns.txt"
-            apple_snapshot.touch()
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--snapshot-newer-than-boot",
-                    str(apple_snapshot),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
-            )
 
-            self.assertEqual(run.returncode, 14, run.stderr)
-            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
-            self.assertEqual(run.stdout, "")
-
-    def test_mdns_advertiser_reports_stale_snapshot_as_not_fresh(self) -> None:
-        if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
-            self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            apple_snapshot = tmp / "applemdns.txt"
-            apple_snapshot.write_text("trusted\n")
-            os.utime(apple_snapshot, (1, 1))
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--snapshot-newer-than-boot",
-                    str(apple_snapshot),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
-            )
-
-            self.assertEqual(run.returncode, 14, run.stderr)
-            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
-            self.assertEqual(run.stdout, "")
-
-    def test_mdns_advertiser_save_airport_snapshot_generates_one_record_without_takeover(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            apple_snapshot = tmp / "applemdns.txt"
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--save-airport-snapshot",
-                    str(apple_snapshot),
-                    "--instance",
-                    "James's AirPort Time Capsule",
-                    "--host",
-                    "jamess-airport-time-capsule",
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                    "--airport-rama",
-                    "80:EA:96:EB:2E:7D",
-                    "--airport-ram2",
-                    "80:EA:96:EB:2E:7C",
-                    "--airport-rast",
-                    "3",
-                    "--airport-rana",
-                    "0",
-                    "--airport-syfl",
-                    "0xA0C",
-                    "--airport-syap",
-                    "119",
-                    "--airport-syvs",
-                    "7.9.1",
-                    "--airport-srcv",
-                    "79100.2",
-                    "--airport-bjsd",
-                    "16",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
-            )
-            content = apple_snapshot.read_text()
-
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("airport snapshot: wrote 1 record", run.stderr)
-        self.assertIn("mdns capture-only:", run.stderr)
-        self.assertNotIn("mDNS takeover", run.stderr)
-        self.assertEqual(content.count("BEGIN\n"), 1)
-        self.assertIn("TYPE=_airport._tcp.local.\n", content)
-        self.assertIn("INSTANCE=James's AirPort Time Capsule\n", content)
-        self.assertIn(f"HOST_HEX={'jamess-airport-time-capsule.local.'.encode().hex()}\n", content)
-        self.assertIn("PORT=5009\n", content)
-        self.assertIn(
-            "TXT=waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C,"
-            "raSt=3,raNA=0,syFl=0xA0C,syAP=119,syVs=7.9.1,srcv=79100.2,bjSd=16\n",
-            content,
-        )
-
-    def test_mdns_advertiser_load_arg_requires_advertising_identity(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            snapshot = tmp / "applemdns.txt"
-            self._write_matching_airport_snapshot(snapshot)
-            run = subprocess.run(
-                [str(bin_path), "--load-snapshot", str(snapshot)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(run.returncode, 4)
-        self.assertIn("Usage:", run.stderr)
-        self.assertNotIn("snapshot load:", run.stderr)
-
-    def test_mdns_advertiser_capture_only_rejects_invalid_optional_dns_label_text(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--save-snapshot",
-                    str(tmp / "applemdns.txt"),
-                    "--host",
-                    "bad\x01host",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(run.returncode, 5)
-        self.assertIn("host label contains an invalid control character", run.stderr)
-        self.assertNotIn("mdns capture-only:", run.stderr)
-
-    def test_mdns_advertiser_snapshot_capture_requires_auto_ip(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--save-snapshot",
-                    str(tmp / "applemdns.txt"),
-                    "--host",
-                    "timecapsule",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(run.returncode, 4)
-        self.assertIn("mDNS snapshot capture requires --auto-ip", run.stderr)
-        self.assertNotIn("mdns capture-only:", run.stderr)
-
-    def test_mdns_advertiser_auto_ip_airport_snapshot_does_not_require_ipv4(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            snapshot = tmp / "airport.txt"
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--auto-ip",
-                    "--save-airport-snapshot",
-                    str(snapshot),
-                    "--instance",
-                    "TimeCapsule",
-                    "--host",
-                    "timecapsule",
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            snapshot_exists = snapshot.exists()
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("airport snapshot: wrote 1 record", run.stderr)
-        self.assertTrue(snapshot_exists)
 
     def test_mdns_auto_ip_helpers_filter_and_detect_interface_changes(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2330,6 +1991,7 @@ int main(void) {{
     struct in6_addr ula;
     struct in6_addr unknown_prefix;
     struct in6_addr ll;
+    struct in6_addr canonical_ll;
     uint8_t packet[512];
     size_t off;
     int answers;
@@ -2337,7 +1999,8 @@ int main(void) {{
     memset(&set, 0, sizeof(set));
     if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &ula) != 1 ||
         inet_pton(AF_INET6, "fdbb:1111:2222:3333::41", &unknown_prefix) != 1 ||
-        inet_pton(AF_INET6, "fe80::40", &ll) != 1) {{
+        inet_pton(AF_INET6, "fe80:7::40", &ll) != 1 ||
+        inet_pton(AF_INET6, "fe80::40", &canonical_ll) != 1) {{
         return 1;
     }}
     append_link_ipv4(&set, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
@@ -2360,12 +2023,13 @@ int main(void) {{
     if (append_host_address_records(packet, &off, sizeof(packet), "timecapsule.local.", &set.links[0], 1, 1, 120, &answers) != 0) {{
         return 4;
     }}
-    if (answers != 3 ||
+    if (answers != 4 ||
         !buffer_contains(packet, off, &set.links[0].ipv4[0].addr, sizeof(set.links[0].ipv4[0].addr)) ||
         !buffer_contains(packet, off, &set.links[0].ipv4[1].addr, sizeof(set.links[0].ipv4[1].addr)) ||
         !buffer_contains(packet, off, &ula, sizeof(ula)) ||
-        buffer_contains(packet, off, &unknown_prefix, sizeof(unknown_prefix)) ||
-        buffer_contains(packet, off, &ll, sizeof(ll))) {{
+        !buffer_contains(packet, off, &canonical_ll, sizeof(canonical_ll)) ||
+        buffer_contains(packet, off, &ll, sizeof(ll)) ||
+        buffer_contains(packet, off, &unknown_prefix, sizeof(unknown_prefix))) {{
         return 5;
     }}
     return 0;
@@ -2373,9 +2037,9 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_dual_stack_bind_records")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "10.0.1.1/24 fdbb:1111:2222:3333::40/64\n")
+        self.assertEqual(run.stdout, "10.0.1.1/24 fdbb:1111:2222:3333::40/64 fe80:7::40/64\n")
 
-    def test_mdns_advertise_links_exclude_fe80_only_links_but_keep_ipv4_fe80_transport(self) -> None:
+    def test_mdns_advertise_links_keep_link_local_ipv6_only_links(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''
 #include <arpa/inet.h>
@@ -2401,10 +2065,11 @@ int main(void) {{
     append_link_ipv6(&all_links, "bridge1", &ll2, 64, 8, IFF_UP | IFF_RUNNING);
     filter_advertise_link_contexts(&advertise_links, &all_links);
 
-    if (all_links.count != 2 || advertise_links.count != 1) {{
+    if (all_links.count != 2 || advertise_links.count != 2) {{
         return 2;
     }}
-    if (strcmp(advertise_links.links[0].name, "bridge1") != 0) {{
+    if (strcmp(advertise_links.links[0].name, "bridge1") != 0 ||
+        strcmp(advertise_links.links[1].name, "bridge0") != 0) {{
         return 3;
     }}
     if (!link_contexts_need_ipv4_socket(&advertise_links) ||
@@ -2549,7 +2214,7 @@ int main(void) {{
         return 3;
     }}
     plan.mode = 3;
-    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_OK) {{
         return 4;
     }}
     if (print_smb_bind_interfaces_with_provider(stdout, NULL, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
@@ -2560,7 +2225,7 @@ int main(void) {{
         return 6;
     }}
     plan.mode = 5;
-    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_OK) {{
         return 7;
     }}
     return 0;
@@ -2568,9 +2233,14 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_print_smb_bind_status")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "fdbb:1111:2222:3333::40/64\n")
+        self.assertEqual(
+            run.stdout,
+            "fdbb:1111:2222:3333::40/64 fe80::40/64\n"
+            "fe80::40/64\n"
+            "fe80::40/64\n",
+        )
 
-    def test_mdns_print_smb_bind_interfaces_lan_filters_wan_and_link_local(self) -> None:
+    def test_mdns_print_smb_bind_interfaces_lan_filters_wan_and_ipv4_link_local(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''
 #include <arpa/inet.h>
@@ -2701,6 +2371,140 @@ int main(void) {{
             "fdbb:5737:6e53:9bf7::40/64\n",
         )
 
+    def test_auto_ip_routing_evidence_maps_unnamed_wan_without_breaking_bridge_mode(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+static void add_owner(struct ifconfig_address_owner_map *owners, const char *name, const char *address) {{
+    ifconfig_owner_map_add_ipv4(owners, name, address);
+}}
+
+static void add_owner6(struct ifconfig_address_owner_map *owners, const char *name, const char *address) {{
+    ifconfig_owner_map_add_ipv6(owners, name, address);
+}}
+
+int main(void) {{
+    struct network_role_evidence evidence;
+    struct ifconfig_address_owner_map owners;
+    struct ifconfig_address_owner_map scoped_owners;
+    struct link_context_set links;
+    struct link_context_set lan_links;
+    struct link_context_set old_links;
+    struct in6_addr kame_wan;
+    struct in6_addr lan_ula;
+    struct in6_addr wan_ula;
+
+    memset(&evidence, 0, sizeof(evidence));
+    network_role_evidence_parse_route_line(
+        &evidence,
+        "default            192.168.1.1        UGS        13     2885      -  mgi1\\n");
+    network_role_evidence_parse_pf_line(
+        &evidence,
+        "nat on mgi1 inet from 10.0.1.0/24 to any -> (mgi1:0)\\n");
+    network_role_evidence_parse_ipv6_route_line(
+        &evidence,
+        "default                            fe80::1                        UGS         -        -  mgi1\\n");
+    if (strcmp(evidence.default_iface, "mgi1") != 0 ||
+        strcmp(evidence.default_ipv6_iface, "mgi1") != 0 ||
+        strcmp(evidence.nat_iface, "mgi1") != 0) {{
+        return 1;
+    }}
+
+    memset(&owners, 0, sizeof(owners));
+    add_owner(&owners, "bridge0", "10.0.1.1");
+    add_owner(&owners, "mgi1", "192.168.1.218");
+    add_owner6(&owners, "mgi1", "fe80::82ea:96ff:fee6:5868%mgi1");
+    if (inet_pton(AF_INET6, "fe80:1::82ea:96ff:fee6:5868", &kame_wan) != 1 ||
+        ifconfig_owner_for_ipv6(&owners, &kame_wan) == NULL ||
+        strcmp(ifconfig_owner_for_ipv6(&owners, &kame_wan), "mgi1") != 0) {{
+        return 8;
+    }}
+    memset(&scoped_owners, 0, sizeof(scoped_owners));
+    add_owner6(&scoped_owners, "bridge0", "fe80::1%bridge0");
+    add_owner6(&scoped_owners, "mgi1", "fe80::1%mgi1");
+    scoped_owners.entries[0].ipv6_ifindex = 8;
+    scoped_owners.entries[1].ipv6_ifindex = 1;
+    if (inet_pton(AF_INET6, "fe80:1::1", &kame_wan) != 1 ||
+        ifconfig_owner_for_ipv6(&scoped_owners, &kame_wan) == NULL ||
+        strcmp(ifconfig_owner_for_ipv6(&scoped_owners, &kame_wan), "mgi1") != 0) {{
+        return 11;
+    }}
+
+    memset(&links, 0, sizeof(links));
+    append_link_ipv4(&links, "ip4-0a000101", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_link_ipv4(&links, "ip4-c0a801da", inet_addr("192.168.1.218"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    mark_wan_link_contexts_from_evidence(&links, &evidence, &owners);
+    if (links.links[0].is_wan || !links.links[1].is_wan) {{
+        return 2;
+    }}
+    filter_smb_bind_link_contexts(&lan_links, &links, 1, 1);
+    if (lan_links.count != 1 || lan_links.links[0].ipv4[0].addr != inet_addr("10.0.1.1")) {{
+        return 3;
+    }}
+    old_links = links;
+    old_links.links[1].is_wan = 0;
+    if (link_context_sets_equal(&old_links, &links) ||
+        link_context_topology_sets_equal(&old_links, &links)) {{
+        return 6;
+    }}
+
+    memset(&evidence, 0, sizeof(evidence));
+    network_role_evidence_parse_route_line(
+        &evidence,
+        "default            192.168.1.1        UGS        13     2885      -  mgi1\\n");
+    links = old_links;
+    mark_wan_link_contexts_from_evidence(&links, &evidence, &owners);
+    if (links.links[0].is_wan || !links.links[1].is_wan) {{
+        return 7;
+    }}
+
+    memset(&evidence, 0, sizeof(evidence));
+    network_role_evidence_parse_ipv6_route_line(
+        &evidence,
+        "::/0                               fe80::1                        UGS         -        -  mgi1\\n");
+    memset(&links, 0, sizeof(links));
+    if (inet_pton(AF_INET6, "fdbb:1::1", &lan_ula) != 1 ||
+        inet_pton(AF_INET6, "fdcc:2::1", &wan_ula) != 1) {{
+        return 9;
+    }}
+    append_link_ipv6(&links, "bridge0", &lan_ula, 64, 8, IFF_UP | IFF_RUNNING);
+    append_link_ipv6(&links, "mgi1", &wan_ula, 64, 1, IFF_UP | IFF_RUNNING);
+    mark_wan_link_contexts_from_evidence(&links, &evidence, &owners);
+    if (links.links[0].is_wan || !links.links[1].is_wan) {{
+        return 10;
+    }}
+
+    memset(&evidence, 0, sizeof(evidence));
+    network_role_evidence_parse_route_line(
+        &evidence,
+        "default            192.168.1.1        UGS         1       54      -  bridge0\\n");
+    memset(&links, 0, sizeof(links));
+    append_link_ipv4(&links, "bridge0", inet_addr("192.168.1.218"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    mark_wan_link_contexts_from_evidence(&links, &evidence, &owners);
+    if (links.links[0].is_wan) {{
+        return 4;
+    }}
+
+    memset(&evidence, 0, sizeof(evidence));
+    memset(&links, 0, sizeof(links));
+    append_link_ipv4(&links, "ip4-0a000101", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_link_ipv4(&links, "ip4-c0a801da", inet_addr("192.168.1.218"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    mark_wan_link_contexts_from_evidence(&links, &evidence, &owners);
+    filter_smb_bind_link_contexts(&lan_links, &links, 1, 1);
+    if (lan_links.count != 2) {{
+        return 5;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "auto_ip_route_evidence")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_mdns_print_socket_families_uses_advertise_links_not_samba_tokens(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''
@@ -2759,7 +2563,7 @@ int main(void) {{
         return 3;
     }}
     plan.mode = 4;
-    if (print_mdns_socket_families_with_provider(stdout, fake_collect_advertise_links, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+    if (print_mdns_socket_families_with_provider(stdout, fake_collect_advertise_links, &plan) != EXIT_OK) {{
         return 5;
     }}
     plan.mode = 5;
@@ -2775,7 +2579,7 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_print_socket_families")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "ipv4 ipv6\nipv6\nipv4\n")
+        self.assertEqual(run.stdout, "ipv4 ipv6\nipv6\nipv6\nipv4\n")
 
     def test_mdns_scoped_ipv6_multicast_destination_uses_link_ifindex(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2789,11 +2593,20 @@ int main(void) {{
 int main(void) {{
     struct sockaddr_in6 base;
     struct sockaddr_in6 scoped;
+    struct sockaddr_in6 source;
     struct link_context link;
+    struct link_context_set links;
+    struct planned_rr_set planned;
+    struct in6_addr lan_addr;
+    struct in6_addr wan_addr;
+    struct in6_addr canonical_wan;
 
     memset(&base, 0, sizeof(base));
     memset(&scoped, 0, sizeof(scoped));
+    memset(&source, 0, sizeof(source));
     memset(&link, 0, sizeof(link));
+    memset(&links, 0, sizeof(links));
+    memset(&planned, 0, sizeof(planned));
     base.sin6_family = AF_INET6;
     base.sin6_port = htons(5353);
     if (inet_pton(AF_INET6, "ff02::fb", &base.sin6_addr) != 1) {{
@@ -2806,6 +2619,37 @@ int main(void) {{
         scoped.sin6_scope_id != 17 ||
         memcmp(&scoped.sin6_addr, &base.sin6_addr, sizeof(base.sin6_addr)) != 0) {{
         return 2;
+    }}
+    if (inet_pton(AF_INET6, "fe80:8::1", &lan_addr) != 1 ||
+        inet_pton(AF_INET6, "fe80:1::1", &wan_addr) != 1 ||
+        inet_pton(AF_INET6, "fe80::1", &canonical_wan) != 1 ||
+        inet_pton(AF_INET6, "fe80:1::abcd", &source.sin6_addr) != 1) {{
+        return 3;
+    }}
+    source.sin6_family = AF_INET6;
+    append_link_ipv6(&links, "bridge0", &lan_addr, 64, 8, IFF_UP | IFF_RUNNING);
+    append_link_ipv6(&links, "bcmeth1", &wan_addr, 64, 1, IFF_UP | IFF_RUNNING);
+    if (ipv6_sockaddr_effective_ifindex(&source) != 1 ||
+        select_response_link_ipv6(&links, &source, 0) != &links.links[1]) {{
+        return 4;
+    }}
+    if (planned_rr_add_link_addresses(&planned,
+                                      MDNS_REPLY_MULTICAST,
+                                      "timecapsule.local.",
+                                      &links.links[1],
+                                      0,
+                                      1,
+                                      120) != 0 ||
+        planned.count != 1 ||
+        memcmp(planned.records[0].rdata, &canonical_wan, sizeof(canonical_wan)) != 0) {{
+        return 6;
+    }}
+    memset(&source, 0, sizeof(source));
+    source.sin6_family = AF_INET6;
+    if (inet_pton(AF_INET6, "2001:db8::55", &source.sin6_addr) != 1 ||
+        select_response_link_ipv6(&links, &source, 1) != &links.links[1] ||
+        source.sin6_scope_id != 0) {{
+        return 5;
     }}
     return 0;
 }}
@@ -3090,79 +2934,7 @@ int main(void) {
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "ok")
 
-    def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
 
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-int main(void) {{
-    char out[256];
-    if (find_service_type_for_instance_fqdn(out, sizeof(out), "HP Printer._pdl-datastream._tcp.local.") != 0) {{
-        return 1;
-    }}
-    puts(out);
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            c_path = tmp / "mdns_service_type_test.c"
-            bin_path = tmp / "mdns_service_type_test"
-            c_path.write_text(source)
-            proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout.strip(), "_pdl-datastream._tcp.local.")
-
-    def test_mdns_advertiser_extracts_non_hardcoded_udp_service_type(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-int main(void) {{
-    char out[256];
-    if (find_service_type_for_instance_fqdn(out, sizeof(out), "Custom Thing._example-service._udp.local.") != 0) {{
-        return 1;
-    }}
-    puts(out);
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            c_path = tmp / "mdns_udp_service_type_test.c"
-            bin_path = tmp / "mdns_udp_service_type_test"
-            c_path.write_text(source)
-            proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout.strip(), "_example-service._udp.local.")
 
     def test_mdns_dualstack_takeover_keeps_desired_ipv4_after_bind_race(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -3500,302 +3272,10 @@ int main(void) {
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "ok")
 
-    def test_mdns_advertiser_load_snapshot_accepts_host_hex_and_smb_adisk_records(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
 
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
 
-int main(int argc, char **argv) {{
-    struct service_record_set set;
-    if (argc != 2) {{
-        return 2;
-    }}
-    if (load_snapshot_file(argv[1], &set) != 0) {{
-        return 1;
-    }}
-    printf("%zu\\n", set.count);
-    printf("%s\\n", set.records[0].service_type);
-    printf("%s\\n", set.records[0].host_fqdn);
-    printf("%s\\n", set.records[1].service_type);
-    printf("%s\\n", set.records[1].host_fqdn);
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            c_path = tmp / "mdns_snapshot_load_test.c"
-            bin_path = tmp / "mdns_snapshot_load_test"
-            snapshot_path = tmp / "applemdns.txt"
-            snapshot_path.write_text(
-                "BEGIN\n"
-                "TYPE=_smb._tcp.local.\n"
-                "INSTANCE=James's AirPort Time Capsule\n"
-                "HOST_HEX=4a616d6573732d416972506f72742d54696d652d43617073756c652e6c6f63616c2e\n"
-                "PORT=445\n"
-                "TXT=netbios=test\n"
-                "END\n"
-                "BEGIN\n"
-                "TYPE=_adisk._tcp.local.\n"
-                "INSTANCE=James's AirPort Time Capsule\n"
-                "HOST_HEX=4a616d6573732d416972506f72742d54696d652d43617073756c652e6c6f63616c2e\n"
-                "PORT=9\n"
-                "TXT=sys=waMA=80:EA:96:E6:58:68,adVF=0x1010\n"
-                "END\n"
-            )
-            c_path.write_text(source)
-            proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            run = subprocess.run([str(bin_path), str(snapshot_path)], capture_output=True, text=True, check=False)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(
-                run.stdout.splitlines(),
-                [
-                    "2",
-                    "_smb._tcp.local.",
-                    "Jamess-AirPort-Time-Capsule.local.",
-                    "_adisk._tcp.local.",
-                    "Jamess-AirPort-Time-Capsule.local.",
-                ],
-            )
 
-    def test_mdns_advertiser_filters_loaded_snapshot_by_local_airport_identity(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
 
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#include <string.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-static void add_record(struct service_record_set *set, const char *type, const char *instance,
-                       const char *host, const char *txt) {{
-    struct service_record *record = &set->records[set->count++];
-    memset(record, 0, sizeof(*record));
-    strncpy(record->service_type, type, sizeof(record->service_type) - 1);
-    strncpy(record->instance_name, instance, sizeof(record->instance_name) - 1);
-    strncpy(record->host_label, host, sizeof(record->host_label) - 1);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
-    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
-    record->port = 5009;
-    if (txt != NULL) {{
-        strncpy(record->txt[record->txt_count++], txt, MAX_TXT_STRING);
-    }}
-}}
-
-int main(void) {{
-    struct config cfg;
-    struct service_record_set loaded;
-    struct service_record_set filtered;
-
-    memset(&cfg, 0, sizeof(cfg));
-    memset(&loaded, 0, sizeof(loaded));
-    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:EA:96:E6:58:68");
-
-    add_record(&loaded, "_airport._tcp.local.", "Kitchen", "Kitchen", "waMA=AA:BB:CC:DD:EE:FF");
-    add_record(&loaded, "_riousbprint._tcp.local.", "Kitchen Printer", "Kitchen", "rp=usb");
-    add_record(&loaded, "_airport._tcp.local.", "Home", "Home", "raMA=80:ea:96:e6:58:68");
-    add_record(&loaded, "_riousbprint._tcp.local.", "Home Printer", "Home", "rp=usb");
-
-    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) != 0) {{
-        return 1;
-    }}
-    printf("%zu\\n", filtered.count);
-    printf("%s\\n", filtered.records[0].host_label);
-    printf("%s\\n", filtered.records[1].host_label);
-
-    memset(&cfg, 0, sizeof(cfg));
-    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) == 0) {{
-        return 2;
-    }}
-    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "00:11:22:33:44:55");
-    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) == 0) {{
-        return 3;
-    }}
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            c_path = tmp / "mdns_snapshot_identity_test.c"
-            bin_path = tmp / "mdns_snapshot_identity_test"
-            c_path.write_text(source)
-            proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout.splitlines(), ["2", "Home", "Home"])
-
-    def test_mdns_advertiser_matches_comma_delimited_airport_txt(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#include <string.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-static void add_record(struct service_record_set *set, const char *type, const char *instance,
-                       const char *host, const char *txt) {{
-    struct service_record *record = &set->records[set->count++];
-    memset(record, 0, sizeof(*record));
-    strncpy(record->service_type, type, sizeof(record->service_type) - 1);
-    strncpy(record->instance_name, instance, sizeof(record->instance_name) - 1);
-    strncpy(record->host_label, host, sizeof(record->host_label) - 1);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
-    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
-    record->port = 5009;
-    if (txt != NULL) {{
-        strncpy(record->txt[record->txt_count++], txt, MAX_TXT_STRING);
-    }}
-}}
-
-int main(void) {{
-    struct config cfg;
-    struct service_record_set loaded;
-    struct service_record_set filtered;
-
-    memset(&cfg, 0, sizeof(cfg));
-    memset(&loaded, 0, sizeof(loaded));
-    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:EA:96:E6:58:68");
-
-    add_record(&loaded, "_airport._tcp.local.", "Home", "Home",
-               "waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C");
-    add_record(&loaded, "_riousbprint._tcp.local.", "Home Printer", "Home", "rp=usb");
-
-    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) != 0) {{
-        return 1;
-    }}
-    printf("%zu\\n", filtered.count);
-    printf("%s\\n", filtered.records[0].host_label);
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            c_path = tmp / "mdns_snapshot_composite_txt_test.c"
-            bin_path = tmp / "mdns_snapshot_composite_txt_test"
-            c_path.write_text(source)
-            proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout.splitlines(), ["2", "Home"])
-
-    def test_mdns_advertiser_snapshot_txt_round_trips_text_and_binary(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#include <string.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-int main(int argc, char **argv) {{
-    struct service_record_set set;
-    struct service_record_set loaded;
-    struct service_record *record;
-    unsigned char binary_txt[] = {{'n','e','t','b','i','o','s','=','\\xff','\\x80','r'}};
-
-    if (argc != 2) {{
-        return 2;
-    }}
-    memset(&set, 0, sizeof(set));
-    record = &set.records[set.count++];
-    snprintf(record->service_type, sizeof(record->service_type), "%s", "_smb._tcp.local.");
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Disk");
-    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "Disk._smb._tcp.local.");
-    snprintf(record->host_label, sizeof(record->host_label), "%s", "DiskHost");
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "DiskHost.local.");
-    record->port = 445;
-    snprintf(record->txt[0], sizeof(record->txt[0]), "%s", "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010");
-    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-    record->txt_count = 1;
-
-    memcpy(record->txt[1], binary_txt, sizeof(binary_txt));
-    record->txt[1][sizeof(binary_txt)] = '\\0';
-    record->txt_len[1] = (uint8_t)sizeof(binary_txt);
-    record->txt_count = 2;
-
-    if (write_snapshot_file_atomic(argv[1], &set) != 0) {{
-        return 3;
-    }}
-    memset(&loaded, 0, sizeof(loaded));
-    if (load_snapshot_file(argv[1], &loaded) != 0) {{
-        return 4;
-    }}
-    if (loaded.count != 1 || loaded.records[0].txt_count != 2) {{
-        return 5;
-    }}
-    if (loaded.records[0].txt_len[0] != strlen("sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")) {{
-        return 6;
-    }}
-    if (memcmp(loaded.records[0].txt[1], binary_txt, sizeof(binary_txt)) != 0) {{
-        return 7;
-    }}
-    printf("%u\\n%u\\n", (unsigned)loaded.records[0].txt_len[0], (unsigned)loaded.records[0].txt_len[1]);
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            snapshot_path = Path(tmpdir) / "applemdns.txt"
-            run = self._compile_and_run_c_helper(source, "mdns_snapshot_txt_roundtrip", [str(snapshot_path)])
-            self.assertEqual(run.returncode, 0, run.stderr)
-            content = snapshot_path.read_text()
-            self.assertIn("TXT=sys=waMA=80:EA:96:E6:58:68,adVF=0x1010", content)
-            self.assertIn("TXT_HEX=", content)
-            self.assertNotIn("TXT_HEX=7379733d77614d41", content)
-
-    def test_mdns_advertiser_snapshot_suppression_rules_behave(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-int main(void) {{
-    printf("%d\\n", is_suppressed_snapshot_service_type("_smb._tcp.local."));
-    printf("%d\\n", is_suppressed_snapshot_service_type("_adisk._tcp.local."));
-    printf("%d\\n", is_suppressed_snapshot_service_type("_device-info._tcp.local."));
-    printf("%d\\n", is_suppressed_snapshot_service_type("_afpovertcp._tcp.local."));
-    printf("%d\\n", is_suppressed_snapshot_service_type("_airport._tcp.local."));
-    printf("%d\\n", is_suppressed_snapshot_service_type("_sleep-proxy._udp.local."));
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_snapshot_suppression")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.splitlines(), ["1", "1", "1", "1", "0", "0"])
 
     def test_mdns_advertiser_routes_qu_qm_and_mixed_query_responses(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -4021,7 +3501,6 @@ static int legacy_response_repeats_question(const unsigned char *response, size_
 static int run_route_cases(void) {
     struct config cfg;
     struct link_context response_link;
-    struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
@@ -4036,13 +3515,12 @@ static int run_route_cases(void) {
     response_link.ipv4_count = 1;
     response_link.mdns_ipv4_transport = 1;
     response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
-    memset(&snapshot, 0, sizeof(snapshot));
     configure_addrs(&mdns_dest, &source);
 
     reset_captures();
     query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 1;
     }
     if (captured_count != 1 ||
@@ -4058,7 +3536,7 @@ static int run_route_cases(void) {
     reset_captures();
     query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_IN);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 3;
     }
     if (captured_count != 1 ||
@@ -4071,7 +3549,7 @@ static int run_route_cases(void) {
     reset_captures();
     query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 13;
     }
     if (captured_count != 2 ||
@@ -4088,7 +3566,7 @@ static int run_route_cases(void) {
     reset_captures();
     query_len = make_mixed_query(query, cfg.service_type, cfg.host_fqdn);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 5;
     }
     if (captured_count != 2 ||
@@ -4104,7 +3582,7 @@ static int run_route_cases(void) {
     reset_captures();
     query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_ANY);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 7;
     }
     if (captured_count != 1 ||
@@ -4116,7 +3594,7 @@ static int run_route_cases(void) {
     reset_captures();
     query_len = make_query(query, cfg.service_type, DNS_TYPE_ANY, DNS_CLASS_IN);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 9;
     }
     if (captured_count != 1 ||
@@ -4128,7 +3606,7 @@ static int run_route_cases(void) {
     reset_captures();
     query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_CACHE_FLUSH | 2);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 11;
     }
     if (captured_count != 0) {
@@ -4207,10 +3685,16 @@ static void configure_base(struct config *cfg) {
     snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
     snprintf(cfg->device_model, sizeof(cfg->device_model), "%s", "TimeCapsule8,119");
     snprintf(cfg->airport_wama, sizeof(cfg->airport_wama), "%s", "80:EA:96:E6:58:68");
+    snprintf(cfg->afp_service_type, sizeof(cfg->afp_service_type), "%s", AFP_SERVICE_TYPE);
+    snprintf(cfg->riousbprint_instance_name, sizeof(cfg->riousbprint_instance_name), "%s", "USB Printer");
     cfg->adisk_disks.count = 1;
+    cfg->advertise_afp = 1;
     cfg->port = 445;
     cfg->adisk_port = 9;
     cfg->airport_port = 5009;
+    cfg->afp_port = AFP_DEFAULT_PORT;
+    cfg->riousbprint_port = RIOUSBPRINT_DEFAULT_PORT;
+    cfg->pdl_datastream_port = PDL_DATASTREAM_DEFAULT_PORT;
     cfg->ttl = 120;
 }
 
@@ -4237,7 +3721,7 @@ static void configure_addrs(struct sockaddr_in *mdns_dest, struct sockaddr_in *s
     source->sin_addr.s_addr = inet_addr("10.0.1.42");
 }
 
-static size_t make_query(unsigned char *packet, unsigned short qtype) {
+static size_t make_query(unsigned char *packet, const char *qname, unsigned short qtype) {
     struct dns_header hdr;
     size_t off = sizeof(hdr);
 
@@ -4245,22 +3729,12 @@ static size_t make_query(unsigned char *packet, unsigned short qtype) {
     hdr.id = htons(0x4444);
     hdr.qdcount = htons(1);
     memcpy(packet, &hdr, sizeof(hdr));
-    if (encode_name(packet, &off, BUF_SIZE, DNS_SD_SERVICE_ENUMERATION_NAME) != 0 ||
+    if (encode_name(packet, &off, BUF_SIZE, qname) != 0 ||
         append_u16(packet, &off, BUF_SIZE, qtype) != 0 ||
         append_u16(packet, &off, BUF_SIZE, DNS_CLASS_IN) != 0) {
         return 0;
     }
     return off;
-}
-
-static void add_snapshot_service(struct service_record_set *snapshot, const char *service_type) {
-    struct service_record *record = &snapshot->records[snapshot->count++];
-    memset(record, 0, sizeof(*record));
-    snprintf(record->service_type, sizeof(record->service_type), "%s", service_type);
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Snapshot");
-    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s%s", "Snapshot.", service_type);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "snapshot-host.local.");
-    record->port = 1;
 }
 
 static int skip_questions(size_t *cursor) {
@@ -4326,6 +3800,41 @@ static int count_ptr_target(const char *target) {
     return matches;
 }
 
+static int count_ptr_owner(const char *wanted_owner) {
+    struct dns_header hdr;
+    size_t cursor;
+    unsigned short i;
+    int matches = 0;
+
+    memcpy(&hdr, captured, sizeof(hdr));
+    if (skip_questions(&cursor) != 0) {
+        return -1;
+    }
+    for (i = 0; i < ntohs(hdr.ancount); i++) {
+        char owner[MAX_NAME];
+        unsigned short rrtype;
+        unsigned short rdlength;
+
+        if (decode_name(captured, captured_len, &cursor, owner, sizeof(owner)) != 0 ||
+            cursor + 10 > captured_len) {
+            return -1;
+        }
+        memcpy(&rrtype, captured + cursor, 2);
+        memcpy(&rdlength, captured + cursor + 8, 2);
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > captured_len) {
+            return -1;
+        }
+        if (rrtype == DNS_TYPE_PTR && name_equals(owner, wanted_owner)) {
+            matches++;
+        }
+        cursor += rdlength;
+    }
+    return matches;
+}
+
 static int expect_generated_types(void) {
     if (captured_count != 1 ||
         captured_dest.sin_addr.s_addr != inet_addr("10.0.1.42") ||
@@ -4333,20 +3842,24 @@ static int expect_generated_types(void) {
         count_ptr_target("_adisk._tcp.local.") != 1 ||
         count_ptr_target("_device-info._tcp.local.") != 1 ||
         count_ptr_target("_airport._tcp.local.") != 1 ||
+        count_ptr_target("_riousbprint._tcp.local.") != 1 ||
+        count_ptr_target("_pdl-datastream._tcp.local.") != 1 ||
         count_ptr_target("_ipp._tcp.local.") != 0 ||
-        count_ptr_target("_afpovertcp._tcp.local.") != 0) {
+        count_ptr_target("_afpovertcp._tcp.local.") != 1) {
         return 1;
     }
     return 0;
 }
 
-static int expect_snapshot_types(void) {
+static int expect_wan_types(void) {
     if (captured_count != 1 ||
-        count_ptr_target("_smb._tcp.local.") != 1 ||
-        count_ptr_target("_adisk._tcp.local.") != 1 ||
-        count_ptr_target("_device-info._tcp.local.") != 1 ||
         count_ptr_target("_airport._tcp.local.") != 1 ||
-        count_ptr_target("_ipp._tcp.local.") != 1 ||
+        count_ptr_target("_smb._tcp.local.") != 0 ||
+        count_ptr_target("_adisk._tcp.local.") != 0 ||
+        count_ptr_target("_device-info._tcp.local.") != 0 ||
+        count_ptr_target("_riousbprint._tcp.local.") != 0 ||
+        count_ptr_target("_pdl-datastream._tcp.local.") != 0 ||
+        count_ptr_target("_ipp._tcp.local.") != 0 ||
         count_ptr_target("_afpovertcp._tcp.local.") != 0) {
         return 1;
     }
@@ -4356,37 +3869,111 @@ static int expect_snapshot_types(void) {
 int main(void) {
     struct config cfg;
     struct link_context link;
-    struct service_record_set snapshot;
+    struct link_context_set links;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
+    char airport_instance_fqdn[MAX_NAME];
     size_t query_len;
 
     configure_base(&cfg);
     configure_link(&link, inet_addr("10.0.1.77"));
+    memset(&links, 0, sizeof(links));
+    append_link_ipv4(&links, "bridge0", inet_addr("10.0.1.77"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_link_ipv4(&links, "bcmeth1", inet_addr("192.168.1.218"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    if (mdns_service_scope_for_link(&links, &links.links[0]) != MDNS_SERVICE_SCOPE_LAN ||
+        mdns_service_scope_for_link(&links, &links.links[1]) != MDNS_SERVICE_SCOPE_WAN) {
+        return 10;
+    }
+    if (build_instance_fqdn(airport_instance_fqdn,
+                            sizeof(airport_instance_fqdn),
+                            cfg.instance_name,
+                            cfg.airport_service_type) != 0) {
+        return 11;
+    }
     configure_addrs(&mdns_dest, &source);
-    memset(&snapshot, 0, sizeof(snapshot));
 
-    query_len = make_query(query, DNS_TYPE_PTR);
+    query_len = make_query(query, DNS_SD_SERVICE_ENUMERATION_NAME, DNS_TYPE_PTR);
     reset_capture();
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link) != 0 ||
         expect_generated_types() != 0) {
         return 1;
     }
 
-    add_snapshot_service(&snapshot, "_airport._tcp.local.");
-    add_snapshot_service(&snapshot, "_ipp._tcp.local.");
-    add_snapshot_service(&snapshot, "_smb._tcp.local.");
-    add_snapshot_service(&snapshot, "_afpovertcp._tcp.local.");
-
-    query_len = make_query(query, DNS_TYPE_ANY);
+    query_len = make_query(query, DNS_SD_SERVICE_ENUMERATION_NAME, DNS_TYPE_ANY);
     reset_capture();
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link, &snapshot, 1) != 0 ||
-        expect_snapshot_types() != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link) != 0 ||
+        expect_generated_types() != 0) {
         return 2;
     }
+
+    snprintf(link.name, sizeof(link.name), "%s", "bcmeth1");
+    link.ipv4[0].addr = inet_addr("192.168.1.218");
+    link.mdns_ipv4_transport_addr = link.ipv4[0].addr;
+    source.sin_addr.s_addr = inet_addr("192.168.1.42");
+    reset_capture();
+    if (handle_query_scoped(1,
+                            query,
+                            query_len,
+                            &mdns_dest,
+                            &source,
+                            &cfg,
+                            &link,
+                            MDNS_SERVICE_SCOPE_WAN) != 0 ||
+        expect_wan_types() != 0) {
+        return 3;
+    }
+
+    query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR);
+    reset_capture();
+    if (query_len == 0 ||
+        handle_query_scoped(1,
+                            query,
+                            query_len,
+                            &mdns_dest,
+                            &source,
+                            &cfg,
+                            &link,
+                            MDNS_SERVICE_SCOPE_WAN) != 0 ||
+        captured_count != 0) {
+        return 4;
+    }
+
+    query_len = make_query(query, cfg.airport_service_type, DNS_TYPE_PTR);
+    reset_capture();
+    if (query_len == 0 ||
+        handle_query_scoped(1,
+                            query,
+                            query_len,
+                            &mdns_dest,
+                            &source,
+                            &cfg,
+                            &link,
+                            MDNS_SERVICE_SCOPE_WAN) != 0 ||
+        captured_count != 1 ||
+        count_ptr_target(airport_instance_fqdn) != 1) {
+        return 5;
+    }
+
+    reset_capture();
+    if (send_announcement_any_scoped(1,
+                                     (const struct sockaddr *)&mdns_dest,
+                                     sizeof(mdns_dest),
+                                     &cfg,
+                                     &link,
+                                     cfg.ttl,
+                                     MDNS_SERVICE_SCOPE_WAN) != 0) return 60;
+    if (captured_count == 0) return 61;
+    if (count_ptr_owner(cfg.airport_service_type) != 1) return 62;
+    if (count_ptr_owner(cfg.service_type) != 0) return 63;
+    if (count_ptr_owner(cfg.afp_service_type) != 0) return 64;
+    if (count_ptr_owner(cfg.adisk_service_type) != 0) return 65;
+    if (count_ptr_owner(cfg.device_info_service_type) != 0) return 66;
+    if (count_ptr_owner(RIOUSBPRINT_SERVICE_TYPE) != 0) return 67;
+    if (count_ptr_owner(PDL_DATASTREAM_SERVICE_TYPE) != 0) return 68;
+    if (count_ptr_owner("_ipp._tcp.local.") != 0) return 69;
 
     printf("ok\n");
     return 0;
@@ -4558,7 +4145,6 @@ static size_t make_query(unsigned char *packet, const char *qname) {
 static int handle_query_from_port(uint16_t port) {
     struct config cfg;
     struct link_context link;
-    struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
@@ -4566,7 +4152,6 @@ static int handle_query_from_port(uint16_t port) {
 
     configure_base(&cfg);
     configure_link(&link, inet_addr("10.0.1.77"));
-    memset(&snapshot, 0, sizeof(snapshot));
     memset(&mdns_dest, 0, sizeof(mdns_dest));
     mdns_dest.sin_family = AF_INET;
     mdns_dest.sin_port = htons(MDNS_PORT);
@@ -4577,7 +4162,7 @@ static int handle_query_from_port(uint16_t port) {
     source.sin_addr.s_addr = inet_addr("10.0.1.42");
 
     query_len = make_query(query, cfg.service_type);
-    return query_len == 0 ? -1 : handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link, &snapshot, 0);
+    return query_len == 0 ? -1 : handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link);
 }
 
 int main(void) {
@@ -4784,7 +4369,6 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 int main(void) {
     struct config cfg;
     struct link_context response_link;
-    struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
@@ -4799,7 +4383,6 @@ int main(void) {
     response_link.ipv4_count = 1;
     response_link.mdns_ipv4_transport = 1;
     response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
-    memset(&snapshot, 0, sizeof(snapshot));
     memset(&mdns_dest, 0, sizeof(mdns_dest));
     mdns_dest.sin_family = AF_INET;
     mdns_dest.sin_port = htons(MDNS_PORT);
@@ -4812,7 +4395,7 @@ int main(void) {
     reset_captures();
     query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 1;
     }
     if (captured_count != 0) {
@@ -4822,7 +4405,7 @@ int main(void) {
     reset_captures();
     query_len = make_query(query, cfg.host_fqdn, DNS_TYPE_A);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0) {
         return 3;
     }
     if (captured_count != 1 ||
@@ -4973,7 +4556,6 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 int main(void) {
     struct config cfg;
     struct link_context response_link;
-    struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
@@ -4991,7 +4573,6 @@ int main(void) {
     response_link.ipv4_count = 1;
     response_link.mdns_ipv4_transport = 1;
     response_link.mdns_ipv4_transport_addr = primary_addr;
-    memset(&snapshot, 0, sizeof(snapshot));
     memset(&mdns_dest, 0, sizeof(mdns_dest));
     mdns_dest.sin_family = AF_INET;
     mdns_dest.sin_port = htons(MDNS_PORT);
@@ -5004,7 +4585,7 @@ int main(void) {
     reset_captures();
     query_len = make_query_with_known_a(query, &cfg, 100, primary_addr);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 0) {
         return 1;
     }
@@ -5020,7 +4601,7 @@ int main(void) {
     reset_captures();
     query_len = make_query_with_known_a(query, &cfg, 100, primary_addr);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 1 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 1) {
         return 3;
@@ -5029,7 +4610,7 @@ int main(void) {
     reset_captures();
     query_len = make_query_with_known_a_pair(query, &cfg, 100, primary_addr, 1, link_local_addr);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 0) {
         return 4;
     }
@@ -5037,7 +4618,7 @@ int main(void) {
     reset_captures();
     query_len = make_query_with_known_a(query, &cfg, 10, primary_addr);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 1 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 2) {
         return 5;
@@ -5046,7 +4627,7 @@ int main(void) {
     reset_captures();
     query_len = make_query_with_known_a(query, &cfg, 100, inet_addr("10.0.1.88"));
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 1 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 2) {
         return 6;
@@ -5250,7 +4831,6 @@ static size_t make_srv_query_with_known(unsigned char *packet, const struct conf
 int main(void) {
     struct config cfg;
     struct link_context response_link;
-    struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
@@ -5277,7 +4857,6 @@ int main(void) {
     response_link.ipv4[response_link.ipv4_count].netmask = ipv4_link_local_netmask();
     response_link.ipv4_count++;
 
-    memset(&snapshot, 0, sizeof(snapshot));
     memset(&mdns_dest, 0, sizeof(mdns_dest));
     mdns_dest.sin_family = AF_INET;
     mdns_dest.sin_port = htons(MDNS_PORT);
@@ -5290,14 +4869,14 @@ int main(void) {
     reset_captures();
     query_len = make_tc_host_a_query(query, &cfg);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 0 ||
         !g_deferred_response.active) {
         return 2;
     }
     query_len = make_known_a_only(query, &cfg, primary_addr);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 1 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 1 ||
         g_deferred_response.active) {
@@ -5307,13 +4886,13 @@ int main(void) {
     reset_captures();
     query_len = make_txt_query_with_known(query, instance_fqdn, "");
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 0) {
         return 4;
     }
     query_len = make_txt_query_with_known(query, instance_fqdn, "x");
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 1 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_TXT) != 1) {
         return 5;
@@ -5322,7 +4901,7 @@ int main(void) {
     reset_captures();
     query_len = make_srv_query_with_known(query, &cfg, instance_fqdn, cfg.port);
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 1 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_SRV) != 0 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 2) {
@@ -5331,7 +4910,7 @@ int main(void) {
     reset_captures();
     query_len = make_srv_query_with_known(query, &cfg, instance_fqdn, (unsigned short)(cfg.port + 1));
     if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link) != 0 ||
         captured_count != 1 ||
         count_rr_type(captured_packet, captured_len, DNS_TYPE_SRV) != 1) {
         return 7;
@@ -5345,629 +4924,7 @@ int main(void) {
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "ok")
 
-    def test_mdns_advertiser_query_response_preserves_snapshot_suppression(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = r'''
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len);
-
-#define sendto fake_sendto
-#define main mdns_advertiser_main
-#include "@MDNS_SOURCE@"
-#undef main
-#undef sendto
-
-static unsigned char captured_packets[8][BUF_SIZE];
-static size_t captured_lengths[8];
-static size_t captured_count = 0;
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len) {
-    (void)sockfd;
-    (void)flags;
-    (void)dest;
-    (void)dest_len;
-    if (captured_count < 8) {
-        memcpy(captured_packets[captured_count], buf, len);
-        captured_lengths[captured_count] = len;
-        captured_count++;
-    }
-    return (ssize_t)len;
-}
-
-static void reset_captures(void) {
-    memset(captured_packets, 0, sizeof(captured_packets));
-    memset(captured_lengths, 0, sizeof(captured_lengths));
-    captured_count = 0;
-}
-
-static void configure_base(struct config *cfg) {
-    memset(cfg, 0, sizeof(*cfg));
-    snprintf(cfg->instance_name, sizeof(cfg->instance_name), "%s", "Alton Time Capsule");
-    snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
-    snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
-    snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
-    snprintf(cfg->afp_service_type, sizeof(cfg->afp_service_type), "%s", AFP_SERVICE_TYPE);
-    snprintf(cfg->adisk_service_type, sizeof(cfg->adisk_service_type), "%s", "_adisk._tcp.local.");
-    snprintf(cfg->device_info_service_type, sizeof(cfg->device_info_service_type), "%s", "_device-info._tcp.local.");
-    snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
-    snprintf(cfg->airport_syap, sizeof(cfg->airport_syap), "%s", "116");
-    cfg->port = 445;
-    cfg->afp_port = AFP_DEFAULT_PORT;
-    cfg->adisk_port = 9;
-    cfg->airport_port = 5009;
-    cfg->ttl = 120;
-}
-
-static void configure_addrs(struct sockaddr_in *mdns_dest, struct sockaddr_in *source) {
-    memset(mdns_dest, 0, sizeof(*mdns_dest));
-    mdns_dest->sin_family = AF_INET;
-    mdns_dest->sin_port = htons(MDNS_PORT);
-    mdns_dest->sin_addr.s_addr = inet_addr(MDNS_GROUP);
-
-    memset(source, 0, sizeof(*source));
-    source->sin_family = AF_INET;
-    source->sin_port = htons(62001);
-    source->sin_addr.s_addr = inet_addr("10.0.1.42");
-}
-
-static void add_snapshot_record(struct service_record_set *set, const char *type, const char *instance,
-                                const char *host, unsigned short port, const char *txt) {
-    struct service_record *record = &set->records[set->count++];
-    memset(record, 0, sizeof(*record));
-    snprintf(record->service_type, sizeof(record->service_type), "%s", type);
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", instance);
-    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
-    snprintf(record->host_label, sizeof(record->host_label), "%s", host);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
-    record->port = port;
-    if (txt != NULL) {
-        snprintf(record->txt[0], sizeof(record->txt[0]), "%s", txt);
-        record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-        record->txt_count = 1;
-    }
-}
-
-static size_t make_query(unsigned char *packet, const char *qname, unsigned short qtype) {
-    struct dns_header hdr;
-    size_t off = sizeof(hdr);
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.qdcount = htons(1);
-    memcpy(packet, &hdr, sizeof(hdr));
-    if (encode_name(packet, &off, BUF_SIZE, qname) != 0 ||
-        append_u16(packet, &off, BUF_SIZE, qtype) != 0 ||
-        append_u16(packet, &off, BUF_SIZE, DNS_CLASS_IN) != 0) {
-        return 0;
-    }
-    return off;
-}
-
-static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigned short want_type) {
-    struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
-    unsigned short total_answers;
-    int matches = 0;
-    unsigned short i;
-
-    memcpy(&hdr, packet, sizeof(hdr));
-    total_answers = ntohs(hdr.ancount);
-    for (i = 0; i < ntohs(hdr.qdcount); i++) {
-        char qname[MAX_NAME];
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
-            return -1;
-        }
-        cursor += 4;
-    }
-    for (i = 0; i < total_answers; i++) {
-        char name[MAX_NAME];
-        unsigned short rrtype;
-        unsigned short rdlength;
-
-        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
-            return -1;
-        }
-        memcpy(&rrtype, packet + cursor, 2);
-        memcpy(&rdlength, packet + cursor + 8, 2);
-        cursor += 10;
-        rrtype = ntohs(rrtype);
-        rdlength = ntohs(rdlength);
-        if (cursor + rdlength > packet_len) {
-            return -1;
-        }
-        if (rrtype == want_type) {
-            matches++;
-        }
-        cursor += rdlength;
-    }
-    return matches;
-}
-
-static int count_ptr_target(const unsigned char *packet, size_t packet_len, const char *target) {
-    struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
-    unsigned short total_answers;
-    int matches = 0;
-    unsigned short i;
-
-    if (packet_len < sizeof(hdr)) {
-        return -1;
-    }
-    memcpy(&hdr, packet, sizeof(hdr));
-    total_answers = ntohs(hdr.ancount);
-    for (i = 0; i < ntohs(hdr.qdcount); i++) {
-        char qname[MAX_NAME];
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
-            return -1;
-        }
-        cursor += 4;
-    }
-    for (i = 0; i < total_answers; i++) {
-        char name[MAX_NAME];
-        char ptr_target[MAX_NAME];
-        size_t rdata_cursor;
-        size_t rdata_end;
-        unsigned short rrtype;
-        unsigned short rdlength;
-
-        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
-            return -1;
-        }
-        memcpy(&rrtype, packet + cursor, 2);
-        memcpy(&rdlength, packet + cursor + 8, 2);
-        cursor += 10;
-        rrtype = ntohs(rrtype);
-        rdlength = ntohs(rdlength);
-        if (cursor + rdlength > packet_len) {
-            return -1;
-        }
-        rdata_cursor = cursor;
-        rdata_end = cursor + rdlength;
-        if (rrtype == DNS_TYPE_PTR &&
-            decode_name(packet, packet_len, &rdata_cursor, ptr_target, sizeof(ptr_target)) == 0 &&
-            rdata_cursor == rdata_end &&
-            name_equals(ptr_target, target)) {
-            matches++;
-        }
-        cursor += rdlength;
-    }
-    return matches;
-}
-
-static int packet_has_srv_port(const unsigned char *packet, size_t packet_len, unsigned short want_port) {
-    struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
-    unsigned short total_answers;
-    unsigned short i;
-
-    if (packet_len < sizeof(hdr)) {
-        return 0;
-    }
-    memcpy(&hdr, packet, sizeof(hdr));
-    total_answers = ntohs(hdr.ancount);
-    for (i = 0; i < ntohs(hdr.qdcount); i++) {
-        char qname[MAX_NAME];
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
-            return 0;
-        }
-        cursor += 4;
-    }
-    for (i = 0; i < total_answers; i++) {
-        char name[MAX_NAME];
-        unsigned short rrtype;
-        unsigned short rdlength;
-
-        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
-            return 0;
-        }
-        memcpy(&rrtype, packet + cursor, 2);
-        memcpy(&rdlength, packet + cursor + 8, 2);
-        cursor += 10;
-        rrtype = ntohs(rrtype);
-        rdlength = ntohs(rdlength);
-        if (cursor + rdlength > packet_len) {
-            return 0;
-        }
-        if (rrtype == DNS_TYPE_SRV && rdlength >= 6) {
-            unsigned short port;
-            memcpy(&port, packet + cursor + 4, 2);
-            if (ntohs(port) == want_port) {
-                return 1;
-            }
-        }
-        cursor += rdlength;
-    }
-    return 0;
-}
-
-static int packet_has_browse_additionals(const unsigned char *packet, size_t packet_len) {
-    return count_rr_type(packet, packet_len, DNS_TYPE_PTR) == 1 &&
-           count_rr_type(packet, packet_len, DNS_TYPE_SRV) == 1 &&
-           count_rr_type(packet, packet_len, DNS_TYPE_TXT) == 1 &&
-           count_rr_type(packet, packet_len, DNS_TYPE_A) == 1;
-}
-
-int main(void) {
-    struct config cfg;
-    struct link_context response_link;
-    struct service_record_set snapshot;
-    struct sockaddr_in mdns_dest;
-    struct sockaddr_in source;
-    unsigned char query[BUF_SIZE];
-    char afp_instance_fqdn[MAX_NAME];
-    size_t query_len;
-
-    configure_base(&cfg);
-    memset(&response_link, 0, sizeof(response_link));
-    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
-    response_link.flags = IFF_UP | IFF_RUNNING;
-    response_link.ipv4[0].addr = inet_addr("10.0.1.77");
-    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
-    response_link.ipv4_count = 1;
-    response_link.mdns_ipv4_transport = 1;
-    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
-    memset(&snapshot, 0, sizeof(snapshot));
-    configure_addrs(&mdns_dest, &source);
-    add_snapshot_record(&snapshot, "_airport._tcp.local.", "Alton Time Capsule", "Alton-Time-Capsule", 5009, "syAP=116");
-    add_snapshot_record(&snapshot, "_afpovertcp._tcp.local.", "Snapshot AFP", "Stale-Host", 1548, NULL);
-    if (build_instance_fqdn(afp_instance_fqdn, sizeof(afp_instance_fqdn), cfg.instance_name, cfg.afp_service_type) != 0) {
-        return 1;
-    }
-
-    reset_captures();
-    query_len = make_query(query, cfg.afp_service_type, DNS_TYPE_PTR);
-    if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
-        captured_count != 0) {
-        return 1;
-    }
-
-    cfg.advertise_afp = 1;
-    reset_captures();
-    query_len = make_query(query, cfg.afp_service_type, DNS_TYPE_PTR);
-    if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
-        captured_count != 1 ||
-        !packet_has_browse_additionals(captured_packets[0], captured_lengths[0]) ||
-        count_ptr_target(captured_packets[0], captured_lengths[0], afp_instance_fqdn) != 1 ||
-        count_ptr_target(captured_packets[0], captured_lengths[0], "Snapshot AFP._afpovertcp._tcp.local.") != 0 ||
-        !packet_has_srv_port(captured_packets[0], captured_lengths[0], AFP_DEFAULT_PORT)) {
-        return 2;
-    }
-
-    reset_captures();
-    query_len = make_query(query, afp_instance_fqdn, DNS_TYPE_ANY);
-    if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
-        captured_count != 1 ||
-        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_PTR) != 0 ||
-        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_SRV) != 1 ||
-        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_TXT) != 1 ||
-        count_rr_type(captured_packets[0], captured_lengths[0], DNS_TYPE_A) != 1 ||
-        !packet_has_srv_port(captured_packets[0], captured_lengths[0], AFP_DEFAULT_PORT)) {
-        return 3;
-    }
-
-    reset_captures();
-    query_len = make_query(query, DNS_SD_SERVICE_ENUMERATION_NAME, DNS_TYPE_PTR);
-    if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
-        captured_count != 1 ||
-        count_ptr_target(captured_packets[0], captured_lengths[0], cfg.afp_service_type) != 1) {
-        return 4;
-    }
-
-    reset_captures();
-    query_len = make_query(query, "_airport._tcp.local.", DNS_TYPE_PTR);
-    if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
-        captured_count != 1 ||
-        !packet_has_browse_additionals(captured_packets[0], captured_lengths[0])) {
-        return 5;
-    }
-
-    reset_captures();
-    query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR);
-    if (query_len == 0 ||
-        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 1) != 0 ||
-        captured_count != 1 ||
-        !packet_has_browse_additionals(captured_packets[0], captured_lengths[0])) {
-        return 6;
-    }
-
-    printf("ok\n");
-    return 0;
-}
-'''.replace("@MDNS_SOURCE@", mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_query_snapshot_suppression")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_generated_printer_records_overlay_snapshot_records(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = r'''
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len);
-
-#define sendto fake_sendto
-#define main mdns_advertiser_main
-#include "@MDNS_SOURCE@"
-#undef main
-#undef sendto
-
-static unsigned char captured_packets[16][BUF_SIZE];
-static size_t captured_lengths[16];
-static size_t captured_count = 0;
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len) {
-    (void)sockfd;
-    (void)flags;
-    (void)dest;
-    (void)dest_len;
-    if (captured_count < 16) {
-        memcpy(captured_packets[captured_count], buf, len);
-        captured_lengths[captured_count] = len;
-        captured_count++;
-    }
-    return (ssize_t)len;
-}
-
-static void reset_captures(void) {
-    memset(captured_packets, 0, sizeof(captured_packets));
-    memset(captured_lengths, 0, sizeof(captured_lengths));
-    captured_count = 0;
-}
-
-static void configure_base(struct config *cfg) {
-    memset(cfg, 0, sizeof(*cfg));
-    snprintf(cfg->instance_name, sizeof(cfg->instance_name), "%s", "Alton Time Capsule");
-    snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
-    snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
-    snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
-    snprintf(cfg->afp_service_type, sizeof(cfg->afp_service_type), "%s", AFP_SERVICE_TYPE);
-    snprintf(cfg->adisk_service_type, sizeof(cfg->adisk_service_type), "%s", "_adisk._tcp.local.");
-    snprintf(cfg->device_info_service_type, sizeof(cfg->device_info_service_type), "%s", "_device-info._tcp.local.");
-    snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
-    snprintf(cfg->airport_wama, sizeof(cfg->airport_wama), "%s", "80:EA:96:E6:58:68");
-    snprintf(cfg->riousbprint_instance_name, sizeof(cfg->riousbprint_instance_name), "%s", "Canon MP490 series");
-    snprintf(cfg->riousbprint_mfg, sizeof(cfg->riousbprint_mfg), "%s", "Canon");
-    snprintf(cfg->riousbprint_mdl, sizeof(cfg->riousbprint_mdl), "%s", "MP490 series");
-    snprintf(cfg->riousbprint_cmd, sizeof(cfg->riousbprint_cmd), "%s", "BJL,BJRaster3");
-    cfg->port = 445;
-    cfg->afp_port = AFP_DEFAULT_PORT;
-    cfg->adisk_port = 9;
-    cfg->airport_port = 5009;
-    cfg->riousbprint_port = 10000;
-    cfg->pdl_datastream_port = 9100;
-    cfg->ttl = 120;
-}
-
-static void configure_link(struct link_context *link) {
-    memset(link, 0, sizeof(*link));
-    snprintf(link->name, sizeof(link->name), "%s", "bridge0");
-    link->flags = IFF_UP | IFF_RUNNING;
-    link->ipv4[0].addr = inet_addr("10.0.1.77");
-    link->ipv4[0].netmask = inet_addr("255.255.255.0");
-    link->ipv4_count = 1;
-    link->mdns_ipv4_transport = 1;
-    link->mdns_ipv4_transport_addr = link->ipv4[0].addr;
-}
-
-static void add_snapshot_record(struct service_record_set *set, const char *type, const char *instance,
-                                const char *host, unsigned short port, const char *txt) {
-    struct service_record *record = &set->records[set->count++];
-    memset(record, 0, sizeof(*record));
-    snprintf(record->service_type, sizeof(record->service_type), "%s", type);
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", instance);
-    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
-    snprintf(record->host_label, sizeof(record->host_label), "%s", host);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
-    record->port = port;
-    if (txt != NULL) {
-        snprintf(record->txt[0], sizeof(record->txt[0]), "%s", txt);
-        record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-        record->txt_count = 1;
-    }
-}
-
-static int planned_count_ptr_target(const struct planned_rr_set *planned, const char *target) {
-    size_t i;
-    int matches = 0;
-
-    for (i = 0; i < planned->count; i++) {
-        char ptr_target[MAX_NAME];
-        size_t cursor = 0;
-        if (planned->records[i].type == DNS_TYPE_PTR &&
-            decode_name(planned->records[i].rdata, planned->records[i].rdlength, &cursor, ptr_target, sizeof(ptr_target)) == 0 &&
-            cursor == planned->records[i].rdlength &&
-            name_equals(ptr_target, target)) {
-            matches++;
-        }
-    }
-    return matches;
-}
-
-static int planned_has_srv_port(const struct planned_rr_set *planned, unsigned short want_port) {
-    size_t i;
-
-    for (i = 0; i < planned->count; i++) {
-        if (planned->records[i].type == DNS_TYPE_SRV && planned->records[i].rdlength >= 6) {
-            unsigned short port;
-            memcpy(&port, planned->records[i].rdata + 4, 2);
-            if (ntohs(port) == want_port) {
-                return 1;
-            }
-        }
-    }
-    return 0;
-}
-
-static int packet_has_srv_port(const unsigned char *packet, size_t packet_len, unsigned short want_port) {
-    struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
-    unsigned short total_answers;
-    unsigned short i;
-
-    if (packet_len < sizeof(hdr)) {
-        return 0;
-    }
-    memcpy(&hdr, packet, sizeof(hdr));
-    total_answers = ntohs(hdr.ancount);
-    for (i = 0; i < ntohs(hdr.qdcount); i++) {
-        char qname[MAX_NAME];
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
-            return 0;
-        }
-        cursor += 4;
-    }
-    for (i = 0; i < total_answers; i++) {
-        char name[MAX_NAME];
-        unsigned short rrtype;
-        unsigned short rdlength;
-
-        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
-            return 0;
-        }
-        memcpy(&rrtype, packet + cursor, 2);
-        memcpy(&rdlength, packet + cursor + 8, 2);
-        cursor += 10;
-        rrtype = ntohs(rrtype);
-        rdlength = ntohs(rdlength);
-        if (cursor + rdlength > packet_len) {
-            return 0;
-        }
-        if (rrtype == DNS_TYPE_SRV && rdlength >= 6) {
-            unsigned short port;
-            memcpy(&port, packet + cursor + 4, 2);
-            if (ntohs(port) == want_port) {
-                return 1;
-            }
-        }
-        cursor += rdlength;
-    }
-    return 0;
-}
-
-static int captured_has_srv_port(unsigned short want_port) {
-    size_t i;
-
-    for (i = 0; i < captured_count; i++) {
-        if (packet_has_srv_port(captured_packets[i], captured_lengths[i], want_port)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int plan_printer_type(const struct config *cfg,
-                             const struct link_context *link,
-                             const struct service_record_set *snapshot,
-                             const char *service_type,
-                             const char *riousbprint_instance_fqdn,
-                             const char *pdl_datastream_instance_fqdn,
-                             struct planned_rr_set *planned) {
-    memset(planned, 0, sizeof(*planned));
-    return plan_question_answers(planned,
-                                 MDNS_REPLY_MULTICAST,
-                                 service_type,
-                                 DNS_TYPE_PTR,
-                                 cfg,
-                                 link,
-                                 snapshot,
-                                 1,
-                                 "",
-                                 "",
-                                 "",
-                                 "",
-                                 "",
-                                 riousbprint_instance_fqdn,
-                                 pdl_datastream_instance_fqdn);
-}
-
-int main(void) {
-    struct config cfg;
-    struct link_context response_link;
-    struct service_record_set snapshot;
-    struct planned_rr_set planned;
-    struct sockaddr_in announcement_dest;
-    char riousbprint_instance_fqdn[MAX_NAME];
-    char pdl_datastream_instance_fqdn[MAX_NAME];
-
-    configure_base(&cfg);
-    configure_link(&response_link);
-    memset(&snapshot, 0, sizeof(snapshot));
-    add_snapshot_record(&snapshot, RIOUSBPRINT_SERVICE_TYPE, "Canon MP490 series", "stale-printer", 10001, "rp=stale");
-    add_snapshot_record(&snapshot, RIOUSBPRINT_SERVICE_TYPE, "Other Printer", "other-printer", 10002, "rp=other");
-    add_snapshot_record(&snapshot, PDL_DATASTREAM_SERVICE_TYPE, "Canon MP490 series", "stale-printer", 9101, "rp=stale");
-    add_snapshot_record(&snapshot, PDL_DATASTREAM_SERVICE_TYPE, "Other Printer", "other-printer", 9102, "rp=other");
-
-    if (build_instance_fqdn(riousbprint_instance_fqdn,
-                            sizeof(riousbprint_instance_fqdn),
-                            cfg.riousbprint_instance_name,
-                            RIOUSBPRINT_SERVICE_TYPE) != 0 ||
-        build_instance_fqdn(pdl_datastream_instance_fqdn,
-                            sizeof(pdl_datastream_instance_fqdn),
-                            cfg.riousbprint_instance_name,
-                            PDL_DATASTREAM_SERVICE_TYPE) != 0) {
-        return 1;
-    }
-
-    if (plan_printer_type(&cfg, &response_link, &snapshot, RIOUSBPRINT_SERVICE_TYPE,
-                          riousbprint_instance_fqdn, pdl_datastream_instance_fqdn, &planned) != 0 ||
-        planned_count_ptr_target(&planned, "Canon MP490 series._riousbprint._tcp.local.") != 1 ||
-        planned_count_ptr_target(&planned, "Other Printer._riousbprint._tcp.local.") != 1 ||
-        !planned_has_srv_port(&planned, 10000) ||
-        planned_has_srv_port(&planned, 10001) ||
-        !planned_has_srv_port(&planned, 10002)) {
-        return 2;
-    }
-
-    if (plan_printer_type(&cfg, &response_link, &snapshot, PDL_DATASTREAM_SERVICE_TYPE,
-                          riousbprint_instance_fqdn, pdl_datastream_instance_fqdn, &planned) != 0 ||
-        planned_count_ptr_target(&planned, "Canon MP490 series._pdl-datastream._tcp.local.") != 1 ||
-        planned_count_ptr_target(&planned, "Other Printer._pdl-datastream._tcp.local.") != 1 ||
-        !planned_has_srv_port(&planned, 9100) ||
-        planned_has_srv_port(&planned, 9101) ||
-        !planned_has_srv_port(&planned, 9102)) {
-        return 3;
-    }
-
-    memset(&announcement_dest, 0, sizeof(announcement_dest));
-    announcement_dest.sin_family = AF_INET;
-    announcement_dest.sin_port = htons(MDNS_PORT);
-    announcement_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
-    reset_captures();
-    if (send_announcement(1, &announcement_dest, &cfg, &response_link, cfg.ttl, &snapshot, 1) != 0 ||
-        !captured_has_srv_port(10000) ||
-        captured_has_srv_port(10001) ||
-        !captured_has_srv_port(10002) ||
-        !captured_has_srv_port(9100) ||
-        captured_has_srv_port(9101) ||
-        !captured_has_srv_port(9102)) {
-        return 4;
-    }
-
-    printf("ok\n");
-    return 0;
-}
-'''.replace("@MDNS_SOURCE@", mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_generated_printer_snapshot_overlay")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
 
     def test_mdns_advertiser_retries_interrupted_sendto(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -6024,415 +4981,7 @@ int main(void) {{
         run = self._compile_and_run_c_helper(source, "mdns_sendto_eintr")
         self.assertEqual(run.returncode, 0, run.stderr)
 
-    def test_mdns_advertiser_splits_snapshot_announcements_and_keeps_managed_device_info(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len);
-
-#define sendto fake_sendto
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-#undef sendto
-
-static unsigned char captured_packets[16][BUF_SIZE];
-static size_t captured_lengths[16];
-static size_t captured_count = 0;
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len) {{
-    (void)sockfd;
-    (void)flags;
-    (void)dest;
-    (void)dest_len;
-    if (captured_count < 16) {{
-        memcpy(captured_packets[captured_count], buf, len);
-        captured_lengths[captured_count] = len;
-        captured_count++;
-    }}
-    return (ssize_t)len;
-}}
-
-static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigned short want_type) {{
-    struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
-    unsigned short total_answers;
-    int matches = 0;
-    unsigned short i;
-
-    memcpy(&hdr, packet, sizeof(hdr));
-    total_answers = ntohs(hdr.ancount);
-    for (i = 0; i < ntohs(hdr.qdcount); i++) {{
-        char qname[MAX_NAME];
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {{
-            return -1;
-        }}
-        cursor += 4;
-    }}
-    for (i = 0; i < total_answers; i++) {{
-        char name[MAX_NAME];
-        unsigned short rrtype;
-        unsigned short rrclass;
-        unsigned int ttl;
-        unsigned short rdlength;
-
-        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {{
-            return -1;
-        }}
-        memcpy(&rrtype, packet + cursor, 2);
-        memcpy(&rrclass, packet + cursor + 2, 2);
-        memcpy(&ttl, packet + cursor + 4, 4);
-        memcpy(&rdlength, packet + cursor + 8, 2);
-        (void)rrclass;
-        (void)ttl;
-        cursor += 10;
-        rrtype = ntohs(rrtype);
-        rdlength = ntohs(rdlength);
-        if (cursor + rdlength > packet_len) {{
-            return -1;
-        }}
-        if (rrtype == want_type) {{
-            matches++;
-        }}
-        cursor += rdlength;
-    }}
-    return matches;
-}}
-
-int main(void) {{
-    struct config cfg;
-    struct link_context response_link;
-    struct service_record_set snapshot;
-    struct sockaddr_in dest;
-    struct service_record *record;
-    struct service_record_set parsed;
-    struct service_type_set types;
-    int total_a = 0;
-    int saw_device_info = 0;
-    int saw_afp = 0;
-    size_t i;
-
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "Time Capsule Samba 4");
-    snprintf(cfg.host_label, sizeof(cfg.host_label), "%s", "timecapsulesamba4");
-    snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s", "timecapsulesamba4.local.");
-    snprintf(cfg.service_type, sizeof(cfg.service_type), "%s", "_smb._tcp.local.");
-    snprintf(cfg.device_info_service_type, sizeof(cfg.device_info_service_type), "%s", "_device-info._tcp.local.");
-    snprintf(cfg.adisk_service_type, sizeof(cfg.adisk_service_type), "%s", "_adisk._tcp.local.");
-    snprintf(cfg.airport_service_type, sizeof(cfg.airport_service_type), "%s", "_airport._tcp.local.");
-    snprintf(cfg.device_model, sizeof(cfg.device_model), "%s", "TimeCapsule8,119");
-    snprintf(cfg.adisk_sys_wama, sizeof(cfg.adisk_sys_wama), "%s", "80:EA:96:E6:58:68");
-    cfg.port = 445;
-    cfg.adisk_port = 9;
-    cfg.ttl = 120;
-    if (add_adisk_disk_config(&cfg, "Data", "dk2", "c4f673b8-c422-4da7-92a1-54bffe406af2", "0x82") != 0) {{
-        return 1;
-    }}
-    memset(&response_link, 0, sizeof(response_link));
-    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
-    response_link.flags = IFF_UP | IFF_RUNNING;
-    response_link.ipv4[0].addr = inet_addr("192.168.1.217");
-    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
-    response_link.ipv4_count = 1;
-    response_link.mdns_ipv4_transport = 1;
-    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
-
-    memset(&snapshot, 0, sizeof(snapshot));
-
-    record = &snapshot.records[snapshot.count++];
-    snprintf(record->service_type, sizeof(record->service_type), "%s", "_sleep-proxy._udp.local.");
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Sleep");
-    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "Sleep._sleep-proxy._udp.local.");
-    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
-    record->port = 60459;
-
-    record = &snapshot.records[snapshot.count++];
-    snprintf(record->service_type, sizeof(record->service_type), "%s", "_airport._tcp.local.");
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "James's AirPort Time Capsule");
-    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "James's AirPort Time Capsule._airport._tcp.local.");
-    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
-    record->port = 5009;
-    snprintf(record->txt[0], sizeof(record->txt[0]), "%s",
-             "waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C,raSt=3,raNA=0,syFl=0xA0C,syAP=119,syVs=7.9.1,srcv=79100.2,bjSd=99");
-    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-    record->txt_count = 1;
-
-    record = &snapshot.records[snapshot.count++];
-    snprintf(record->service_type, sizeof(record->service_type), "%s", "_afpovertcp._tcp.local.");
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "AFP");
-    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "AFP._afpovertcp._tcp.local.");
-    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
-    record->port = 548;
-
-    record = &snapshot.records[snapshot.count++];
-    snprintf(record->service_type, sizeof(record->service_type), "%s", "_device-info._tcp.local.");
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Snapshot Device");
-    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "Snapshot Device._device-info._tcp.local.");
-    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
-    record->port = 0;
-    snprintf(record->txt[0], sizeof(record->txt[0]), "%s", "model=Wrong");
-    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-    record->txt_count = 1;
-
-    memset(&dest, 0, sizeof(dest));
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(5353);
-    dest.sin_addr.s_addr = inet_addr("224.0.0.251");
-
-    if (send_announcement(1, &dest, &cfg, &response_link, cfg.ttl, &snapshot, 1) != 0) {{
-        return 10;
-    }}
-    if (captured_count < 3) {{
-        return 11;
-    }}
-    for (i = 0; i < captured_count; i++) {{
-        int count_a;
-        memset(&parsed, 0, sizeof(parsed));
-        memset(&types, 0, sizeof(types));
-        if (parse_snapshot_rrs(captured_packets[i], captured_lengths[i], &parsed, &types) != 0) {{
-            return 12;
-        }}
-        if (service_type_set_contains(&types, "_device-info._tcp.local.")) {{
-            saw_device_info = 1;
-        }}
-        if (service_type_set_contains(&types, "_afpovertcp._tcp.local.")) {{
-            saw_afp = 1;
-        }}
-        count_a = count_rr_type(captured_packets[i], captured_lengths[i], DNS_TYPE_A);
-        if (count_a < 0) {{
-            return 13;
-        }}
-        total_a += count_a;
-    }}
-    if (!saw_device_info) {{
-        return 14;
-    }}
-    if (saw_afp) {{
-        return 15;
-    }}
-    if (total_a != 2) {{
-        return 16;
-    }}
-    printf("%lu\\n%d\\n%d\\n", (unsigned long)captured_count, saw_device_info, total_a);
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_announcement_split_test")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        lines = run.stdout.splitlines()
-        self.assertGreaterEqual(int(lines[0]), 3)
-        self.assertEqual(lines[1:], ["1", "2"])
-
-    def test_mdns_advertiser_diskless_replays_unsuppressed_snapshot_records(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = r'''
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len);
-
-#define sendto fake_sendto
-#define main mdns_advertiser_main
-#include "@MDNS_SOURCE@"
-#undef main
-#undef sendto
-
-static unsigned char captured_packets[16][BUF_SIZE];
-static size_t captured_lengths[16];
-static size_t captured_count = 0;
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len) {
-    (void)sockfd;
-    (void)flags;
-    (void)dest;
-    (void)dest_len;
-    if (captured_count < 16) {
-        memcpy(captured_packets[captured_count], buf, len);
-        captured_lengths[captured_count] = len;
-        captured_count++;
-    }
-    return (ssize_t)len;
-}
-
-static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigned short want_type) {
-    struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
-    unsigned short total_answers;
-    int matches = 0;
-    unsigned short i;
-
-    memcpy(&hdr, packet, sizeof(hdr));
-    total_answers = ntohs(hdr.ancount);
-    for (i = 0; i < ntohs(hdr.qdcount); i++) {
-        char qname[MAX_NAME];
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
-            return -1;
-        }
-        cursor += 4;
-    }
-    for (i = 0; i < total_answers; i++) {
-        char name[MAX_NAME];
-        unsigned short rrtype;
-        unsigned short rdlength;
-
-        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
-            return -1;
-        }
-        memcpy(&rrtype, packet + cursor, 2);
-        memcpy(&rdlength, packet + cursor + 8, 2);
-        cursor += 10;
-        rrtype = ntohs(rrtype);
-        rdlength = ntohs(rdlength);
-        if (cursor + rdlength > packet_len) {
-            return -1;
-        }
-        if (rrtype == want_type) {
-            matches++;
-        }
-        cursor += rdlength;
-    }
-    return matches;
-}
-
-static void add_snapshot_record(struct service_record_set *snapshot,
-                                const char *type,
-                                const char *instance,
-                                const char *host,
-                                unsigned short port) {
-    struct service_record *record = &snapshot->records[snapshot->count++];
-    snprintf(record->service_type, sizeof(record->service_type), "%s", type);
-    snprintf(record->instance_name, sizeof(record->instance_name), "%s", instance);
-    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
-    snprintf(record->host_label, sizeof(record->host_label), "%s", host);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
-    record->port = port;
-}
-
-int main(void) {
-    struct config cfg;
-    struct link_context response_link;
-    struct service_record_set snapshot;
-    struct sockaddr_in dest;
-    struct service_record_set parsed;
-    struct service_type_set types;
-    int saw_airport = 0;
-    int saw_device_info = 0;
-    int saw_printer = 0;
-    int saw_smb = 0;
-    int saw_adisk = 0;
-    int saw_afp = 0;
-    int total_a = 0;
-    size_t i;
-
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "Alton Time Capsule");
-    snprintf(cfg.host_label, sizeof(cfg.host_label), "%s", "alton-time-capsule");
-    snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s", "alton-time-capsule.local.");
-    snprintf(cfg.service_type, sizeof(cfg.service_type), "%s", "_smb._tcp.local.");
-    snprintf(cfg.adisk_service_type, sizeof(cfg.adisk_service_type), "%s", "_adisk._tcp.local.");
-    snprintf(cfg.device_info_service_type, sizeof(cfg.device_info_service_type), "%s", "_device-info._tcp.local.");
-    snprintf(cfg.airport_service_type, sizeof(cfg.airport_service_type), "%s", "_airport._tcp.local.");
-    snprintf(cfg.device_model, sizeof(cfg.device_model), "%s", "TimeCapsule8,119");
-    snprintf(cfg.adisk_sys_wama, sizeof(cfg.adisk_sys_wama), "%s", "80:EA:96:E6:58:68");
-    cfg.port = 445;
-    cfg.adisk_port = 9;
-    cfg.airport_port = 5009;
-    cfg.ttl = 120;
-    cfg.diskless = 1;
-    memset(&response_link, 0, sizeof(response_link));
-    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
-    response_link.flags = IFF_UP | IFF_RUNNING;
-    response_link.ipv4[0].addr = inet_addr("10.0.1.77");
-    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
-    response_link.ipv4_count = 1;
-    response_link.mdns_ipv4_transport = 1;
-    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
-    if (add_adisk_disk_config(&cfg, "Data", "dk2", "12345678-1234-1234-1234-123456789012", "0x82") != 0) {
-        return 1;
-    }
-
-    memset(&snapshot, 0, sizeof(snapshot));
-    add_snapshot_record(&snapshot, "_airport._tcp.local.", "Alton Time Capsule", "alton-time-capsule", 5009);
-    add_snapshot_record(&snapshot, "_ipp._tcp.local.", "Printer", "printer-host", 631);
-    add_snapshot_record(&snapshot, "_smb._tcp.local.", "Stale SMB", "alton-time-capsule", 445);
-    add_snapshot_record(&snapshot, "_adisk._tcp.local.", "Stale Disk", "alton-time-capsule", 9);
-    add_snapshot_record(&snapshot, "_afpovertcp._tcp.local.", "Stale AFP", "alton-time-capsule", 548);
-    add_snapshot_record(&snapshot, "_device-info._tcp.local.", "Snapshot Device", "alton-time-capsule", 0);
-
-    memset(&dest, 0, sizeof(dest));
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(5353);
-    dest.sin_addr.s_addr = inet_addr("224.0.0.251");
-
-    if (send_announcement(1, &dest, &cfg, &response_link, cfg.ttl, &snapshot, 1) != 0) {
-        return 2;
-    }
-    if (captured_count < 3) {
-        return 3;
-    }
-    for (i = 0; i < captured_count; i++) {
-        int count_a;
-        memset(&parsed, 0, sizeof(parsed));
-        memset(&types, 0, sizeof(types));
-        if (parse_snapshot_rrs(captured_packets[i], captured_lengths[i], &parsed, &types) != 0) {
-            return 4;
-        }
-        if (service_type_set_contains(&types, "_airport._tcp.local.")) {
-            saw_airport = 1;
-        }
-        if (service_type_set_contains(&types, "_device-info._tcp.local.")) {
-            saw_device_info = 1;
-        }
-        if (service_type_set_contains(&types, "_ipp._tcp.local.")) {
-            saw_printer = 1;
-        }
-        if (service_type_set_contains(&types, "_smb._tcp.local.")) {
-            saw_smb = 1;
-        }
-        if (service_type_set_contains(&types, "_adisk._tcp.local.")) {
-            saw_adisk = 1;
-        }
-        if (service_type_set_contains(&types, "_afpovertcp._tcp.local.")) {
-            saw_afp = 1;
-        }
-        count_a = count_rr_type(captured_packets[i], captured_lengths[i], DNS_TYPE_A);
-        if (count_a < 0) {
-            return 5;
-        }
-        total_a += count_a;
-    }
-    if (!saw_airport || !saw_device_info || !saw_printer) {
-        return 6;
-    }
-    if (saw_smb || saw_adisk || saw_afp) {
-        return 7;
-    }
-    if (total_a < 1) {
-        return 8;
-    }
-    printf("ok\n");
-    return 0;
-}
-'''.replace("@MDNS_SOURCE@", mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_diskless_snapshot_records")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
 
     def test_nbns_advertiser_retries_interrupted_sendto(self) -> None:
         nbns_source = (REPO_ROOT / "build" / "nbns-advertiser.c").as_posix()
@@ -6527,7 +5076,7 @@ int main(void) {{
             bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
             run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stdout, "2107\n")
         self.assertEqual(run.stderr, "")
 
     def test_nbns_advertiser_usage_reports_auto_ip_only(self) -> None:
@@ -6989,6 +5538,7 @@ int main(void) {
 
 int main(void) {{
     struct link_context_set links;
+    struct link_context_set nbns_links;
     struct link_context_set single_link;
     struct link_context_set v6_only_links;
     struct link_context_set links_a;
@@ -7020,6 +5570,10 @@ int main(void) {{
     memset(&links, 0, sizeof(links));
     append_link_ipv4(&links, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
     append_link_ipv4(&links, "bcmeth0", inet_addr("192.168.50.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    filter_nbns_link_contexts(&nbns_links, &links);
+    if (nbns_links.count != 1 || strcmp(nbns_links.links[0].name, "bridge0") != 0) {{
+        return 29;
+    }}
     if (choose_response_ipv4_from_links(&links, inet_addr("192.168.50.99")) != inet_addr("192.168.50.2")) {{
         return 3;
     }}
@@ -8678,14 +7232,8 @@ describe_managed_smbd_status "" ""
     def test_build_uninstall_plan_removes_flash_configuration(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
 
-        self.assertNotIn("allmdns.txt", plan.flash_targets)
-        self.assertNotIn("applemdns.txt", plan.flash_targets)
         self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
-        self.assertNotIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
-        self.assertNotIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
         self.assertIn("/mnt/Flash/tcapsulesmb.conf", plan.verify_absent_targets)
-        self.assertNotIn(RemovePathAction("/mnt/Flash/allmdns.txt"), plan.remote_actions)
-        self.assertNotIn(RemovePathAction("/mnt/Flash/applemdns.txt"), plan.remote_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/tcapsulesmb.conf"), plan.remote_actions)
 
     def test_build_uninstall_plan_removes_each_payload_home_once(self) -> None:

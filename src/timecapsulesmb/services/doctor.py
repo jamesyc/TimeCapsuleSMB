@@ -252,36 +252,6 @@ def build_mdns_boot_context(debug_fields: Mapping[str, object]) -> list[str]:
         return []
 
     lines: list[str] = []
-    capture_failed = any(
-        marker in combined
-        for marker in (
-            "mDNS snapshot capture exited with failure",
-            "mDNS snapshot capture ended without status",
-            "mDNS snapshot capture timed out",
-            "mDNS snapshot capture did not produce trusted Apple snapshot",
-            "warning: could not identify local Apple mDNS records",
-        )
-    )
-    fallback_generated = (
-        "generating AirPort fallback" in combined
-        or "airport snapshot: wrote" in combined
-        or "mDNS AirPort snapshot generated" in combined
-    )
-    generated_fallback = "mdns advertiser will fall back to generated records" in combined
-
-    if capture_failed and fallback_generated:
-        lines.append("INFO trusted Apple mDNS snapshot capture failed; AirPort fallback snapshot was generated")
-    elif capture_failed and generated_fallback:
-        lines.append(
-            "INFO trusted Apple mDNS snapshot capture failed; mdns-advertiser fell back to generated records"
-        )
-    elif capture_failed:
-        lines.append("INFO trusted Apple mDNS snapshot capture failed")
-
-    snapshot_load = _last_regex_group(r"snapshot load: loaded ([^\n]+)", mdns_text)
-    if snapshot_load:
-        lines.append(f"INFO mDNS snapshot load: loaded {snapshot_load}")
-
     source = _last_regex_group(r"serving summary: source=([^\s]+)", mdns_text)
     service_types = _extract_generated_service_types(mdns_text)
     if source and service_types:

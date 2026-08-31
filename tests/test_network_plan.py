@@ -26,11 +26,32 @@ class NetworkPlanTests(unittest.TestCase):
         self.assertEqual(families, ("ipv4", "ipv6"))
 
     def test_parse_bind_interfaces_preserves_remote_addresses(self) -> None:
-        interfaces = parse_bind_interfaces("127.0.0.1/8 ::1/128 10.0.1.2/8 fdbb::1/64")
+        interfaces = parse_bind_interfaces("127.0.0.1/8 ::1/128 10.0.1.2/8 fdbb::1/64 fe80:8::40/64")
         self.assertEqual(tuple((interface.address, interface.cidr, interface.family) for interface in interfaces), (
             ("10.0.1.2", "10.0.0.0/8", "ipv4"),
             ("fdbb::1", "fdbb::/64", "ipv6"),
+            ("fe80::40", "fe80::/64", "ipv6"),
         ))
+
+    def test_network_plan_scopes_netbsd_link_local_bind_address_for_local_interface(self) -> None:
+        selected: list[str] = []
+
+        def select_route(address: str) -> RouteSelection:
+            selected.append(address)
+            return RouteSelection("available", source="fe80::55%17")
+
+        plan = build_network_check_plan(
+            smb_bind_interfaces="fe80:8::40/64",
+            mdns_families=("ipv6",),
+            nbns_families=(),
+            local_addresses=("fe80::55%17",),
+            route_selector=select_route,
+        )
+
+        self.assertEqual(selected, ["fe80::40%17"])
+        self.assertEqual(plan.ipv6.remote_addresses, ("fe80::40%17",))
+        self.assertEqual(plan.ipv6.remote_cidrs, ("fe80::/64",))
+        self.assertEqual(plan.ipv6.local_sources, ("fe80::55%17",))
 
     def test_local_sources_match_remote_ipv4_and_ipv6_cidrs(self) -> None:
         self.assertEqual(
@@ -150,6 +171,21 @@ class NetworkPlanTests(unittest.TestCase):
 
         self.assertEqual(result, RouteSelection("available", source="fda3::9"))
         fake_socket.connect.assert_called_once_with(("fda3::2", 445, 0, 0))
+
+    def test_select_route_to_address_uses_ipv6_scope_id_without_putting_it_in_address(self) -> None:
+        fake_socket = mock.MagicMock()
+        fake_socket.__enter__.return_value = fake_socket
+        fake_socket.getsockname.return_value = ("fe80::9", 43210, 0, 17)
+
+        with (
+            mock.patch("timecapsulesmb.checks.network_plan.socket.socket", return_value=fake_socket),
+            mock.patch("timecapsulesmb.checks.network_plan.socket.if_nametoindex", return_value=17),
+            mock.patch("timecapsulesmb.checks.network_plan.socket.if_indextoname", return_value="en0"),
+        ):
+            result = select_route_to_address("fe80::2%en0")
+
+        self.assertEqual(result, RouteSelection("available", source="fe80::9%en0"))
+        fake_socket.connect.assert_called_once_with(("fe80::2", 445, 0, 17))
 
     def test_select_route_to_address_distinguishes_unavailable_and_unknown_errors(self) -> None:
         unavailable_socket = mock.MagicMock()

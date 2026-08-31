@@ -53,6 +53,7 @@ struct link_context {
     char name[IFNAMSIZ];
     int flags;
     unsigned int ifindex;
+    int is_wan;
     int mdns_ipv4_transport;
     uint32_t mdns_ipv4_transport_addr;
     int mdns_ipv6_transport;
@@ -72,12 +73,19 @@ struct ifconfig_address_owner {
     int family;
     uint32_t ipv4_addr;
     struct in6_addr ipv6_addr;
+    unsigned int ipv6_ifindex;
     char name[IFNAMSIZ];
 };
 
 struct ifconfig_address_owner_map {
     struct ifconfig_address_owner entries[MAX_IFCONFIG_OWNER_ENTRIES];
     size_t count;
+};
+
+struct network_role_evidence {
+    char default_iface[IFNAMSIZ];
+    char default_ipv6_iface[IFNAMSIZ];
+    char nat_iface[IFNAMSIZ];
 };
 
 static int TC_AUTO_IP_UNUSED runtime_ipv4_is_usable(uint32_t ipv4_addr) {
@@ -272,6 +280,23 @@ static int TC_AUTO_IP_UNUSED ipv6_is_ula_addr(const struct in6_addr *addr) {
     return (addr->s6_addr[0] & 0xfe) == 0xfc;
 }
 
+static unsigned int TC_AUTO_IP_UNUSED ipv6_embedded_scope_id(const struct in6_addr *addr) {
+    if (!ipv6_is_link_local_addr(addr)) {
+        return 0;
+    }
+    return ((unsigned int)addr->s6_addr[2] << 8) |
+           (unsigned int)addr->s6_addr[3];
+}
+
+static void TC_AUTO_IP_UNUSED ipv6_canonicalize_scoped_address(struct in6_addr *out,
+                                                               const struct in6_addr *in) {
+    *out = *in;
+    if (ipv6_is_link_local_addr(out)) {
+        out->s6_addr[2] = 0;
+        out->s6_addr[3] = 0;
+    }
+}
+
 static int TC_AUTO_IP_UNUSED runtime_ipv6_is_usable(const struct in6_addr *addr) {
     return !ipv6_is_unspecified_addr(addr) &&
            !ipv6_is_loopback_addr(addr) &&
@@ -279,7 +304,7 @@ static int TC_AUTO_IP_UNUSED runtime_ipv6_is_usable(const struct in6_addr *addr)
 }
 
 static int TC_AUTO_IP_UNUSED runtime_ipv6_is_bindable(const struct in6_addr *addr) {
-    return runtime_ipv6_is_usable(addr) && !ipv6_is_link_local_addr(addr);
+    return runtime_ipv6_is_usable(addr);
 }
 
 static int TC_AUTO_IP_UNUSED ipv6_prefix_length_from_mask(const struct in6_addr *mask) {
@@ -850,7 +875,8 @@ static int TC_AUTO_IP_UNUSED link_context_has_private_lan_samba_address(const st
     }
     for (i = 0; i < ctx->ipv6_count; i++) {
         if (link_ipv6_addr_is_samba_bindable(&ctx->ipv6[i]) &&
-            ipv6_is_ula_addr(&ctx->ipv6[i].addr)) {
+            (ipv6_is_ula_addr(&ctx->ipv6[i].addr) ||
+             ipv6_is_link_local_addr(&ctx->ipv6[i].addr))) {
             return 1;
         }
     }
@@ -866,6 +892,38 @@ static int TC_AUTO_IP_UNUSED iface_name_is_synthetic_from_address(const char *na
 static int TC_AUTO_IP_UNUSED link_context_is_unnamed_private_lan_fallback(const struct link_context *ctx) {
     return iface_name_is_synthetic_from_address(ctx->name) &&
            link_context_has_private_lan_samba_address(ctx);
+}
+
+static void TC_AUTO_IP_UNUSED filter_smb_bind_link_contexts(struct link_context_set *out,
+                                                            const struct link_context_set *in,
+                                                            int lan_only,
+                                                            int unnamed_lan_fallback) {
+    size_t i;
+
+    memset(out, 0, sizeof(*out));
+    for (i = 0; i < in->count; i++) {
+        if (lan_only && in->links[i].is_wan) {
+            continue;
+        }
+        if (lan_only) {
+            if (unnamed_lan_fallback) {
+                if (!link_context_is_unnamed_private_lan_fallback(&in->links[i])) {
+                    continue;
+                }
+            } else if (!iface_name_is_strong_lan(in->links[i].name)) {
+                continue;
+            }
+        }
+        if (!link_context_has_samba_address(&in->links[i])) {
+            continue;
+        }
+        if (out->count >= MAX_IFACE_CONTEXTS) {
+            out->truncated = 1;
+            break;
+        }
+        out->links[out->count++] = in->links[i];
+    }
+    sort_link_contexts(out);
 }
 
 static void TC_AUTO_IP_UNUSED ifconfig_owner_map_add_ipv4(struct ifconfig_address_owner_map *map,
@@ -899,6 +957,8 @@ static void TC_AUTO_IP_UNUSED ifconfig_owner_map_add_ipv6(struct ifconfig_addres
                                                           const char *name,
                                                           const char *addr_text) {
     struct in6_addr parsed;
+    struct in6_addr canonical;
+    unsigned int ifindex = 0;
     char normalized[INET6_ADDRSTRLEN + IFNAMSIZ];
     char *scope;
     size_t i;
@@ -911,13 +971,23 @@ static void TC_AUTO_IP_UNUSED ifconfig_owner_map_add_ipv6(struct ifconfig_addres
     scope = strchr(normalized, '%');
     if (scope != NULL) {
         *scope = '\0';
+        ifindex = if_nametoindex(scope + 1);
     }
     if (inet_pton(AF_INET6, normalized, &parsed) != 1) {
         return;
     }
+    if (ifindex == 0) {
+        ifindex = ipv6_embedded_scope_id(&parsed);
+    }
+    if (ifindex == 0) {
+        ifindex = if_nametoindex(name);
+    }
+    ipv6_canonicalize_scoped_address(&canonical, &parsed);
     for (i = 0; i < map->count; i++) {
         if (map->entries[i].family == AF_INET6 &&
-            memcmp(&map->entries[i].ipv6_addr, &parsed, sizeof(parsed)) == 0) {
+            memcmp(&map->entries[i].ipv6_addr, &canonical, sizeof(canonical)) == 0 &&
+            map->entries[i].ipv6_ifindex == ifindex &&
+            strcmp(map->entries[i].name, name) == 0) {
             return;
         }
     }
@@ -925,7 +995,8 @@ static void TC_AUTO_IP_UNUSED ifconfig_owner_map_add_ipv6(struct ifconfig_addres
         return;
     }
     map->entries[map->count].family = AF_INET6;
-    map->entries[map->count].ipv6_addr = parsed;
+    map->entries[map->count].ipv6_addr = canonical;
+    map->entries[map->count].ipv6_ifindex = ifindex;
     strncpy(map->entries[map->count].name, name, sizeof(map->entries[map->count].name) - 1);
     map->count++;
 }
@@ -956,6 +1027,122 @@ static int TC_AUTO_IP_UNUSED copy_first_token(char *out,
     memcpy(out, text, len);
     out[len] = '\0';
     return 1;
+}
+
+static int TC_AUTO_IP_UNUSED copy_last_token(char *out,
+                                             size_t out_len,
+                                             const char *text) {
+    const char *end;
+    const char *start;
+    size_t len;
+
+    if (out_len == 0 || text == NULL) {
+        return 0;
+    }
+    end = text + strlen(text);
+    while (end > text && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    start = end;
+    while (start > text && !isspace((unsigned char)start[-1])) {
+        start--;
+    }
+    len = (size_t)(end - start);
+    if (len == 0) {
+        return 0;
+    }
+    if (len >= out_len) {
+        len = out_len - 1;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return 1;
+}
+
+static void TC_AUTO_IP_UNUSED network_role_evidence_parse_route_line(struct network_role_evidence *evidence,
+                                                                      const char *line) {
+    const char *cursor = line;
+
+    while (cursor != NULL && *cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (cursor == NULL || strncmp(cursor, "default", 7) != 0 ||
+        (cursor[7] != '\0' && !isspace((unsigned char)cursor[7]))) {
+        return;
+    }
+    (void)copy_last_token(evidence->default_iface, sizeof(evidence->default_iface), cursor);
+}
+
+static void TC_AUTO_IP_UNUSED network_role_evidence_parse_ipv6_route_line(struct network_role_evidence *evidence,
+                                                                           const char *line) {
+    const char *cursor = line;
+
+    while (cursor != NULL && *cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (cursor == NULL ||
+        !((strncmp(cursor, "default", 7) == 0 &&
+           (cursor[7] == '\0' || isspace((unsigned char)cursor[7]))) ||
+          (strncmp(cursor, "::/0", 4) == 0 &&
+           (cursor[4] == '\0' || isspace((unsigned char)cursor[4]))))) {
+        return;
+    }
+    (void)copy_last_token(evidence->default_ipv6_iface,
+                          sizeof(evidence->default_ipv6_iface),
+                          cursor);
+}
+
+static void TC_AUTO_IP_UNUSED network_role_evidence_parse_pf_line(struct network_role_evidence *evidence,
+                                                                   const char *line) {
+    const char *cursor = line;
+
+    while (cursor != NULL && *cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (cursor == NULL || strncmp(cursor, "nat on ", 7) != 0) {
+        return;
+    }
+    (void)copy_first_token(evidence->nat_iface, sizeof(evidence->nat_iface), cursor + 7);
+}
+
+static void TC_AUTO_IP_UNUSED parse_network_role_stream(FILE *stream,
+                                                        struct network_role_evidence *evidence,
+                                                        int mode) {
+    char line[512];
+
+    if (stream == NULL) {
+        return;
+    }
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        if (mode == 1) {
+            network_role_evidence_parse_pf_line(evidence, line);
+        } else if (mode == 2) {
+            network_role_evidence_parse_ipv6_route_line(evidence, line);
+        } else {
+            network_role_evidence_parse_route_line(evidence, line);
+        }
+    }
+}
+
+static void TC_AUTO_IP_UNUSED collect_network_role_evidence(struct network_role_evidence *evidence) {
+    FILE *stream;
+
+    memset(evidence, 0, sizeof(*evidence));
+    stream = popen("/usr/bin/netstat -rn -f inet 2>/dev/null || /bin/netstat -rn -f inet 2>/dev/null", "r");
+    if (stream != NULL) {
+        parse_network_role_stream(stream, evidence, 0);
+        (void)pclose(stream);
+    }
+    stream = popen("/usr/bin/netstat -rn -f inet6 2>/dev/null || /bin/netstat -rn -f inet6 2>/dev/null", "r");
+    if (stream != NULL) {
+        parse_network_role_stream(stream, evidence, 2);
+        (void)pclose(stream);
+    }
+    stream = popen("/sbin/pfctl -sn 2>/dev/null", "r");
+    if (stream != NULL) {
+        parse_network_role_stream(stream, evidence, 1);
+        (void)pclose(stream);
+    }
 }
 
 static void TC_AUTO_IP_UNUSED ifconfig_owner_map_parse_line(struct ifconfig_address_owner_map *map,
@@ -1040,15 +1227,149 @@ static const char TC_AUTO_IP_UNUSED *ifconfig_owner_for_ipv4(const struct ifconf
 
 static const char TC_AUTO_IP_UNUSED *ifconfig_owner_for_ipv6(const struct ifconfig_address_owner_map *map,
                                                             const struct in6_addr *ipv6_addr) {
+    struct in6_addr canonical;
+    unsigned int ifindex = ipv6_embedded_scope_id(ipv6_addr);
     size_t i;
 
+    ipv6_canonicalize_scoped_address(&canonical, ipv6_addr);
     for (i = 0; i < map->count; i++) {
         if (map->entries[i].family == AF_INET6 &&
-            memcmp(&map->entries[i].ipv6_addr, ipv6_addr, sizeof(*ipv6_addr)) == 0) {
+            memcmp(&map->entries[i].ipv6_addr, &canonical, sizeof(canonical)) == 0 &&
+            (ifindex == 0 || map->entries[i].ipv6_ifindex == 0 ||
+             map->entries[i].ipv6_ifindex == ifindex)) {
             return map->entries[i].name;
         }
     }
     return NULL;
+}
+
+static int TC_AUTO_IP_UNUSED owner_map_has_addressed_strong_lan(const struct ifconfig_address_owner_map *owners) {
+    size_t i;
+
+    for (i = 0; i < owners->count; i++) {
+        const struct ifconfig_address_owner *entry = &owners->entries[i];
+        if (!iface_name_is_strong_lan(entry->name)) {
+            continue;
+        }
+        if (entry->family == AF_INET && runtime_ipv4_is_usable(entry->ipv4_addr)) {
+            return 1;
+        }
+        if (entry->family == AF_INET6 && runtime_ipv6_is_bindable(&entry->ipv6_addr)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int TC_AUTO_IP_UNUSED link_set_has_addressed_strong_lan(const struct link_context_set *links) {
+    size_t i;
+
+    for (i = 0; i < links->count; i++) {
+        if (iface_name_is_strong_lan(links->links[i].name) &&
+            link_context_has_samba_address(&links->links[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int TC_AUTO_IP_UNUSED link_context_owned_by_interface(const struct link_context *ctx,
+                                                             const char *iface,
+                                                             const struct ifconfig_address_owner_map *owners) {
+    size_t i;
+
+    if (iface == NULL || iface[0] == '\0') {
+        return 0;
+    }
+    if (strcmp(ctx->name, iface) == 0) {
+        return 1;
+    }
+    for (i = 0; i < ctx->ipv4_count; i++) {
+        const char *owner = ifconfig_owner_for_ipv4(owners, ctx->ipv4[i].addr);
+        if (owner != NULL && strcmp(owner, iface) == 0) {
+            return 1;
+        }
+    }
+    for (i = 0; i < ctx->ipv6_count; i++) {
+        const char *owner = ifconfig_owner_for_ipv6(owners, &ctx->ipv6[i].addr);
+        if (owner != NULL && strcmp(owner, iface) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void TC_AUTO_IP_UNUSED mark_wan_interface(struct link_context_set *links,
+                                                const char *wan_iface,
+                                                const struct ifconfig_address_owner_map *owners) {
+    size_t i;
+
+    if (wan_iface == NULL || wan_iface[0] == '\0') {
+        return;
+    }
+    for (i = 0; i < links->count; i++) {
+        if (link_context_owned_by_interface(&links->links[i], wan_iface, owners)) {
+            links->links[i].is_wan = 1;
+        }
+    }
+}
+
+static void TC_AUTO_IP_UNUSED mark_wan_link_contexts_from_evidence(struct link_context_set *links,
+                                                                  const struct network_role_evidence *evidence,
+                                                                  const struct ifconfig_address_owner_map *owners) {
+    int has_lan;
+    size_t i;
+
+    for (i = 0; i < links->count; i++) {
+        links->links[i].is_wan = 0;
+    }
+    has_lan = link_set_has_addressed_strong_lan(links) ||
+              owner_map_has_addressed_strong_lan(owners);
+    if (evidence->nat_iface[0] != '\0' &&
+        (evidence->default_iface[0] == '\0' ||
+         strcmp(evidence->nat_iface, evidence->default_iface) == 0)) {
+        mark_wan_interface(links, evidence->nat_iface, owners);
+    }
+    if (has_lan && evidence->default_iface[0] != '\0' &&
+        !iface_name_is_strong_lan(evidence->default_iface)) {
+        mark_wan_interface(links, evidence->default_iface, owners);
+    }
+    if (has_lan && evidence->default_ipv6_iface[0] != '\0' &&
+        !iface_name_is_strong_lan(evidence->default_ipv6_iface)) {
+        mark_wan_interface(links, evidence->default_ipv6_iface, owners);
+    }
+}
+
+static int TC_AUTO_IP_UNUSED link_context_set_has_synthetic_names(const struct link_context_set *set);
+
+static void TC_AUTO_IP_UNUSED mark_wan_link_contexts(struct link_context_set *links) {
+    struct network_role_evidence evidence;
+    struct ifconfig_address_owner_map owners;
+    static int logged_ambiguous_private_links = 0;
+    size_t private_synthetic_count = 0;
+    size_t wan_count = 0;
+    size_t i;
+
+    memset(&owners, 0, sizeof(owners));
+    if (link_context_set_has_synthetic_names(links)) {
+        (void)collect_ifconfig_address_owners(&owners);
+    }
+    collect_network_role_evidence(&evidence);
+    mark_wan_link_contexts_from_evidence(links, &evidence, &owners);
+    for (i = 0; i < links->count; i++) {
+        if (links->links[i].is_wan) {
+            wan_count++;
+        }
+        if (link_context_is_unnamed_private_lan_fallback(&links->links[i])) {
+            private_synthetic_count++;
+        }
+    }
+    if (!logged_ambiguous_private_links && wan_count == 0 && private_synthetic_count > 1) {
+        fprintf(stderr,
+                "auto-ip: routing evidence could not distinguish %lu unnamed private links; preserving fail-open LAN fallback\n",
+                (unsigned long)private_synthetic_count);
+        logged_ambiguous_private_links = 1;
+    }
 }
 
 static int TC_AUTO_IP_UNUSED link_context_set_has_synthetic_names(const struct link_context_set *set) {
@@ -1125,6 +1446,9 @@ static int TC_AUTO_IP_UNUSED link_context_has_advertisable_ipv4(const struct lin
 static int TC_AUTO_IP_UNUSED link_context_has_advertisable_ipv6(const struct link_context *ctx) {
     size_t i;
 
+    if (!ctx->mdns_ipv6_transport || ctx->ifindex == 0) {
+        return 0;
+    }
     for (i = 0; i < ctx->ipv6_count; i++) {
         if (link_ipv6_addr_is_samba_bindable(&ctx->ipv6[i])) {
             return 1;
@@ -1192,6 +1516,7 @@ static int TC_AUTO_IP_UNUSED link_context_identity_equal(const struct link_conte
     if (strcmp(a->name, b->name) != 0 ||
         a->flags != b->flags ||
         a->ifindex != b->ifindex ||
+        a->is_wan != b->is_wan ||
         a->mdns_ipv4_transport != b->mdns_ipv4_transport ||
         a->mdns_ipv6_transport != b->mdns_ipv6_transport ||
         a->ipv4_count != b->ipv4_count ||
@@ -1434,6 +1759,7 @@ static int TC_AUTO_IP_UNUSED collect_link_contexts_with_policy(struct link_conte
 
     freeifaddrs(ifaddr_list);
     relabel_synthetic_link_contexts_from_ifconfig(out);
+    mark_wan_link_contexts(out);
     {
         size_t i;
         size_t write_i = 0;
@@ -1479,10 +1805,11 @@ static void TC_AUTO_IP_UNUSED log_link_contexts(const char *prefix, const struct
         size_t j;
         char transport_ip_buf[INET_ADDRSTRLEN];
         const struct link_context *ctx = &set->links[i];
-        fprintf(stderr, "%s: link[%lu] iface=%s flags=0x%x ifindex=%u mdns_ipv4=%d mdns_ipv4_addr=%s mdns_ipv6=%d score=%d ipv4=%lu ipv6=%lu\n",
+        fprintf(stderr, "%s: link[%lu] iface=%s role=%s flags=0x%x ifindex=%u mdns_ipv4=%d mdns_ipv4_addr=%s mdns_ipv6=%d score=%d ipv4=%lu ipv6=%lu\n",
                 prefix,
                 (unsigned long)i,
                 ctx->name,
+                ctx->is_wan ? "wan" : "lan-or-unknown",
                 (unsigned int)ctx->flags,
                 ctx->ifindex,
                 ctx->mdns_ipv4_transport,

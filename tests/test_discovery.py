@@ -454,9 +454,22 @@ class DiscoveryTests(unittest.TestCase):
             source_ip = _source_ipv6_for_target("fd00::77")
 
         socket_mock.assert_called_once_with(socket.AF_INET6, socket.SOCK_DGRAM)
-        fake_sock.connect.assert_called_once_with(("fd00::77", 5353))
+        fake_sock.connect.assert_called_once_with(("fd00::77", 5353, 0, 0))
         fake_sock.close.assert_called_once()
         self.assertEqual(source_ip, "fd00::42")
+
+    def test_source_ipv6_for_target_preserves_link_local_scope(self) -> None:
+        fake_sock = mock.Mock()
+        fake_sock.getsockname.return_value = ("fe80::42%17", 5353, 0, 17)
+
+        with (
+            mock.patch("timecapsulesmb.discovery.bonjour.socket.socket", return_value=fake_sock),
+            mock.patch("timecapsulesmb.discovery.bonjour.socket.if_indextoname", return_value="en0"),
+        ):
+            source_ip = _source_ipv6_for_target("fe80::77%17")
+
+        fake_sock.connect.assert_called_once_with(("fe80::77", 5353, 0, 17))
+        self.assertEqual(source_ip, "fe80::42%en0")
 
     def test_open_zeroconf_reports_missing_dependency_with_bootstrap_guidance(self) -> None:
         real_import = __import__
@@ -623,12 +636,12 @@ class DiscoveryTests(unittest.TestCase):
             addresses = [bytes([192, 168, 1, 217])]
 
             def parsed_scoped_addresses(self, _version) -> list[str]:
-                return ["192.168.1.217", "169.254.155.207", "fdbb:5737:6e53:9bf7::5868"]
+                return ["192.168.1.217", "169.254.155.207", "fdbb:5737:6e53:9bf7::5868", "fe80::5868%17"]
 
         record = resolved_service_from_info("_smb._tcp.local.", FakeInfo())
 
         self.assertEqual(record.ipv4, ["192.168.1.217", "169.254.155.207"])
-        self.assertEqual(record.ipv6, ["fdbb:5737:6e53:9bf7::5868"])
+        self.assertEqual(record.ipv6, ["fdbb:5737:6e53:9bf7::5868", "fe80::5868%17"])
 
     def test_resolved_service_from_info_splits_airport_packed_txt_value(self) -> None:
         class FakeInfo:
