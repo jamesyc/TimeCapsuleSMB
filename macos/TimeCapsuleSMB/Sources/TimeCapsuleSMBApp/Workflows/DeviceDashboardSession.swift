@@ -390,6 +390,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.requireSMBEncryption = settings.requireSMBEncryption
         deployStore.forceDisableSMBSigningAndEncryption = settings.forceDisableSMBSigningAndEncryption
         deployStore.fruitMetadataNetatalk = settings.fruitMetadataNetatalk
+        deployStore.vfsAIOForkEnabled = settings.vfsAIOForkEnabled
         deployStore.debugLogging = settings.debugLogging
         deployStore.ataIdleSeconds = String(settings.ataIdleSeconds)
         deployStore.ataStandby = settings.ataStandby.map { String($0) } ?? ""

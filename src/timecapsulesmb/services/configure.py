@@ -71,6 +71,7 @@ class ConfigureFlowRequest:
     require_smb_encryption: bool | None = None
     force_disable_smb_signing_and_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
+    vfs_aio_fork_enabled: bool | None = None
     debug_logging: bool | None = None
     ata_idle_seconds: object | None = None
     ata_standby: object | None = None
@@ -222,6 +223,7 @@ def run_configure_flow(
         require_smb_encryption=request.require_smb_encryption,
         force_disable_smb_signing_and_encryption=request.force_disable_smb_signing_and_encryption,
         fruit_metadata_netatalk=request.fruit_metadata_netatalk,
+        vfs_aio_fork_enabled=request.vfs_aio_fork_enabled,
         debug_logging=request.debug_logging,
         ata_idle_seconds=request.ata_idle_seconds,
         ata_standby=request.ata_standby,
@@ -362,6 +364,7 @@ def build_configure_env_values(
     require_smb_encryption: bool | None = None,
     force_disable_smb_signing_and_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
+    vfs_aio_fork_enabled: bool | None = None,
     debug_logging: bool | None = None,
     ata_idle_seconds: object | None = None,
     ata_standby: object | None = None,
@@ -426,6 +429,11 @@ def build_configure_env_values(
             parse_bool(existing.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"]))
             if fruit_metadata_netatalk is None
             else fruit_metadata_netatalk
+        ) else "false",
+        "TC_VFS_AIO_FORK_ENABLED": "true" if (
+            parse_bool(existing.get("TC_VFS_AIO_FORK_ENABLED", DEFAULTS["TC_VFS_AIO_FORK_ENABLED"]))
+            if vfs_aio_fork_enabled is None
+            else vfs_aio_fork_enabled
         ) else "false",
         "TC_DEBUG_LOGGING": "true" if (
             parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"]))

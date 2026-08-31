@@ -912,6 +912,7 @@
 "toggle.force_disable_smb_signing_and_encryption" = "Принудительно отключить подпись и шифрование SMB";
 "toggle.force_disable_smb_signing_and_encryption.note" = "Может повысить скорость, если клиент требует подпись, но снижает безопасность транспорта SMB.";
 "toggle.use_netatalk_metadata" = "Используйте Netatalk для metadata";
+"toggle.enable_vfs_aio_fork" = "Включить vfs_aio_fork";
 "toggle.force_debug_logging" = "Принудительное ведение журнала отладки";
 "toggle.no_reboot" = "Без перезагрузки";
 "toggle.no_wait" = "No Wait";

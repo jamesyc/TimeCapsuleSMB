@@ -85,6 +85,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var requireSMBEncryption: Bool
     var forceDisableSMBSigningAndEncryption: Bool
     var fruitMetadataNetatalk: Bool
+    var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
     var ataIdleSeconds: String
@@ -103,6 +104,7 @@ struct DeviceProfileEditorDraft: Equatable {
         requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
         forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
         fruitMetadataNetatalk: Bool = true,
+        vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
         debugLogging: Bool,
         mountWaitSeconds: String,
         ataIdleSeconds: String = String(DeviceProfileSettings.default.ataIdleSeconds),
@@ -120,6 +122,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.requireSMBEncryption = requireSMBEncryption
         self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
+        self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
         self.ataIdleSeconds = ataIdleSeconds
@@ -140,6 +143,7 @@ struct DeviceProfileEditorDraft: Equatable {
             requireSMBEncryption: profile.settings.requireSMBEncryption,
             forceDisableSMBSigningAndEncryption: profile.settings.forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: profile.settings.fruitMetadataNetatalk,
+            vfsAIOForkEnabled: profile.settings.vfsAIOForkEnabled,
             debugLogging: profile.settings.debugLogging,
             mountWaitSeconds: String(profile.settings.mountWaitSeconds),
             ataIdleSeconds: String(profile.settings.ataIdleSeconds),
@@ -197,6 +201,7 @@ struct DeviceProfileEditorDraft: Equatable {
             requireSMBEncryption: requireSMBEncryption,
             forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
+            vfsAIOForkEnabled: vfsAIOForkEnabled,
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait,
             ataIdleSeconds: ataIdle,
@@ -490,6 +495,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             requireSMBEncryption: draft.requireSMBEncryption,
             forceDisableSMBSigningAndEncryption: draft.forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
+            vfsAIOForkEnabled: draft.vfsAIOForkEnabled,
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,
             includeAtaStandby: true,

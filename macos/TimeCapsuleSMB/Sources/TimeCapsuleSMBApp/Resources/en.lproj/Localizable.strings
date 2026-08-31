@@ -912,6 +912,7 @@
 "toggle.force_disable_smb_signing_and_encryption" = "Force Disable SMB Signing and Encryption";
 "toggle.force_disable_smb_signing_and_encryption.note" = "May improve transfer speed when a client requires signing, but weakens SMB transport security.";
 "toggle.use_netatalk_metadata" = "Use Netatalk for metadata";
+"toggle.enable_vfs_aio_fork" = "Enable vfs_aio_fork";
 "toggle.force_debug_logging" = "Force Debug Logging";
 "toggle.no_reboot" = "No Reboot";
 "toggle.no_wait" = "No Wait";

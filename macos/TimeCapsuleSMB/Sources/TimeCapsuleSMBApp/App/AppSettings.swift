@@ -408,6 +408,7 @@ struct AppSettingsDraft: Equatable {
     var requireSMBEncryption: Bool
     var forceDisableSMBSigningAndEncryption: Bool
     var fruitMetadataNetatalk: Bool
+    var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
     var ataIdleSeconds: String
@@ -433,6 +434,7 @@ struct AppSettingsDraft: Equatable {
         requireSMBEncryption = settings.defaultDeviceSettings.requireSMBEncryption
         forceDisableSMBSigningAndEncryption = settings.defaultDeviceSettings.forceDisableSMBSigningAndEncryption
         fruitMetadataNetatalk = settings.defaultDeviceSettings.fruitMetadataNetatalk
+        vfsAIOForkEnabled = settings.defaultDeviceSettings.vfsAIOForkEnabled
         debugLogging = settings.defaultDeviceSettings.debugLogging
         mountWaitSeconds = String(settings.defaultDeviceSettings.mountWaitSeconds)
         ataIdleSeconds = String(settings.defaultDeviceSettings.ataIdleSeconds)
@@ -485,6 +487,7 @@ struct AppSettingsDraft: Equatable {
                 requireSMBEncryption: requireSMBEncryption,
                 forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: fruitMetadataNetatalk,
+                vfsAIOForkEnabled: vfsAIOForkEnabled,
                 debugLogging: debugLogging,
                 mountWaitSeconds: mountWait,
                 ataIdleSeconds: ataIdle,

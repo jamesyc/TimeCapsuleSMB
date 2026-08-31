@@ -12,6 +12,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Default rsync: false"))
         XCTAssertTrue(text.contains("- Default SMB Browse Compatibility: false"))
         XCTAssertTrue(text.contains("- Default mDNS Advertise AFP: false"))
+        XCTAssertTrue(text.contains("- Default vfs_aio_fork: false"))
         XCTAssertTrue(text.contains("- State: Ready"))
         XCTAssertTrue(text.contains("- Helper Version: 2.1.4 (20125)"))
         XCTAssertTrue(text.contains("- Validation Counts: checks=1, fail=0, pass=1"))

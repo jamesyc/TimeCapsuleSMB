@@ -1179,6 +1179,7 @@ MaSt = (
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
+                "TC_VFS_AIO_FORK_ENABLED": "true",
             }
         )
 
@@ -1208,6 +1209,7 @@ MaSt = (
         self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
         self.assertIn("FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
+        self.assertIn("VFS_AIO_FORK_ENABLED=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
         self.assertIn("ATA_STANDBY=''\n", rendered)
@@ -1284,6 +1286,7 @@ MaSt = (
                 "TC_SMB_BROWSE_COMPATIBILITY": "false",
                 "TC_ANY_PROTOCOL": "false",
                 "TC_FRUIT_METADATA_NETATALK": "false",
+                "TC_VFS_AIO_FORK_ENABLED": "false",
             }
         )
 
@@ -1298,6 +1301,7 @@ MaSt = (
             mdns_advertise_afp=True,
             any_protocol=True,
             fruit_metadata_netatalk=True,
+            vfs_aio_fork_enabled=True,
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
@@ -1307,6 +1311,7 @@ MaSt = (
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", rendered)
+        self.assertIn("VFS_AIO_FORK_ENABLED=1\n", rendered)
 
     def test_flash_runtime_config_requires_smb_encryption(self) -> None:
         config = AppConfig.from_values(
@@ -1378,6 +1383,7 @@ MaSt = (
                 "TC_MDNS_ADVERTISE_AFP": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
+                "TC_VFS_AIO_FORK_ENABLED": "true",
             }
         )
 
@@ -1392,6 +1398,7 @@ MaSt = (
             mdns_advertise_afp=False,
             any_protocol=False,
             fruit_metadata_netatalk=False,
+            vfs_aio_fork_enabled=False,
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
@@ -1400,6 +1407,7 @@ MaSt = (
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
         self.assertIn("FRUIT_METADATA_NETATALK=0\n", rendered)
+        self.assertIn("VFS_AIO_FORK_ENABLED=0\n", rendered)
 
     def test_runtime_env_maps_afp_advertising_to_adisk_disk_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5343,6 +5351,53 @@ MaSt = (
         self.assertTrue(smbd_core_dir_exists)
         self.assertEqual(smbd_core_parent_mode, 0o700)
         self.assertEqual(smbd_core_dir_mode, 0o700)
+
+    def test_common_generate_smb_conf_enables_bounded_aio_fork_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-aio-fork.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    VFS_AIO_FORK_ENABLED=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    share_rows=$(cat <<'EOF'
+                    Data\t{volumes}/dk2/ShareRoot\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    USB\t{volumes}/dk3\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
+                    cat "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.count("smb2 max read = 131072"), 1)
+        self.assertEqual(proc.stdout.count("smb2 max write = 131072"), 1)
+        self.assertEqual(proc.stdout.count("aio read size = 1"), 1)
+        self.assertEqual(proc.stdout.count("aio write size = 1"), 1)
+        self.assertNotIn("aio read size = 0", proc.stdout)
+        self.assertNotIn("aio write size = 0", proc.stdout)
+        self.assertEqual(
+            proc.stdout.count("vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb aio_fork"),
+            2,
+        )
+        self.assertEqual(proc.stdout.count("aio_fork:max_children = 8"), 2)
+        self.assertNotIn("smb2 max credits", proc.stdout)
+        self.assertNotIn("strict sync", proc.stdout)
 
     def test_common_generate_smb_conf_omits_protocol_bounds_when_any_protocol_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

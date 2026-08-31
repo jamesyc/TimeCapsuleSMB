@@ -1903,6 +1903,29 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(values["TC_FRUIT_METADATA_NETATALK"], "true")
 
+    def test_configure_vfs_aio_fork_param_writes_true(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "goodpw",
+                            "vfs_aio_fork_enabled": True,
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_VFS_AIO_FORK_ENABLED"], "true")
+
     def test_configure_mdns_advertise_afp_param_writes_true(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3399,6 +3422,7 @@ class AppApiTests(unittest.TestCase):
             "require_smb_encryption": True,
             "force_disable_smb_signing_and_encryption": False,
             "fruit_metadata_netatalk": True,
+            "vfs_aio_fork_enabled": True,
             "debug_logging": False,
             "ata_idle_seconds": 0,
             "ata_standby": 0,
@@ -3458,6 +3482,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(render_runtime.call_args.kwargs["require_smb_encryption"], True)
         self.assertEqual(render_runtime.call_args.kwargs["force_disable_smb_signing_and_encryption"], False)
         self.assertEqual(render_runtime.call_args.kwargs["fruit_metadata_netatalk"], True)
+        self.assertEqual(render_runtime.call_args.kwargs["vfs_aio_fork_enabled"], True)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
         self.assertEqual(render_runtime.call_args.kwargs["ata_idle_seconds"], 0)
         self.assertEqual(render_runtime.call_args.kwargs["ata_standby"], 0)

@@ -56,6 +56,7 @@ struct DiagnosticsExportBuilder {
                 to: &lines
             )
             append("Default Netatalk Metadata", value: context.appSettings.defaultDeviceSettings.fruitMetadataNetatalk, to: &lines)
+            append("Default vfs_aio_fork", value: context.appSettings.defaultDeviceSettings.vfsAIOForkEnabled, to: &lines)
             append("Default Debug Logging", value: context.appSettings.defaultDeviceSettings.debugLogging, to: &lines)
             append("Default Mount Wait", value: context.appSettings.defaultDeviceSettings.mountWaitSeconds, to: &lines)
             append("Default ATA Idle", value: context.appSettings.defaultDeviceSettings.ataIdleSeconds, to: &lines)

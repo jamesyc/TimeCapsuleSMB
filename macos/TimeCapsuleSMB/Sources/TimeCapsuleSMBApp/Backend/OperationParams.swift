@@ -65,6 +65,7 @@ enum OperationParams {
             requireSMBEncryption: Bool? = nil,
             forceDisableSMBSigningAndEncryption: Bool? = nil,
             fruitMetadataNetatalk: Bool? = nil,
+            vfsAIOForkEnabled: Bool? = nil,
             ataIdleSeconds: Int? = nil,
             ataStandby: Int? = nil,
             includeAtaStandby: Bool = false,
@@ -103,6 +104,9 @@ enum OperationParams {
             }
             if let fruitMetadataNetatalk {
                 params["fruit_metadata_netatalk"] = .bool(fruitMetadataNetatalk)
+            }
+            if let vfsAIOForkEnabled {
+                params["vfs_aio_fork_enabled"] = .bool(vfsAIOForkEnabled)
             }
             if let ataIdleSeconds {
                 params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
@@ -150,6 +154,7 @@ enum OperationParams {
             requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
             forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
+            vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
             debugLogging: Bool,
             ataIdleSeconds: Int,
             ataStandby: Int?,
@@ -169,6 +174,7 @@ enum OperationParams {
                 "require_smb_encryption": .bool(requireSMBEncryption),
                 "force_disable_smb_signing_and_encryption": .bool(forceDisableSMBSigningAndEncryption),
                 "fruit_metadata_netatalk": .bool(fruitMetadataNetatalk),
+                "vfs_aio_fork_enabled": .bool(vfsAIOForkEnabled),
                 "debug_logging": .bool(debugLogging),
                 "mount_wait": .number(mountWait)
             ]

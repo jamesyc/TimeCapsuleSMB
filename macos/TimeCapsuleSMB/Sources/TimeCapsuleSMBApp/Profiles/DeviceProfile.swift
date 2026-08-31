@@ -44,6 +44,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     var requireSMBEncryption: Bool
     var forceDisableSMBSigningAndEncryption: Bool
     var fruitMetadataNetatalk: Bool
+    var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
     var ataIdleSeconds: Int
@@ -60,6 +61,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         requireSMBEncryption: false,
         forceDisableSMBSigningAndEncryption: false,
         fruitMetadataNetatalk: true,
+        vfsAIOForkEnabled: false,
         debugLogging: false,
         mountWaitSeconds: 30,
         ataIdleSeconds: 300,
@@ -77,6 +79,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         requireSMBEncryption: Bool = false,
         forceDisableSMBSigningAndEncryption: Bool = false,
         fruitMetadataNetatalk: Bool = true,
+        vfsAIOForkEnabled: Bool = false,
         debugLogging: Bool,
         mountWaitSeconds: Int,
         ataIdleSeconds: Int = 300,
@@ -95,6 +98,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         }
         self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption && !requireSMBEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
+        self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
         self.ataIdleSeconds = ataIdleSeconds
@@ -112,6 +116,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         case requireSMBEncryption
         case forceDisableSMBSigningAndEncryption
         case fruitMetadataNetatalk
+        case vfsAIOForkEnabled
         case debugLogging
         case mountWaitSeconds
         case ataIdleSeconds
@@ -136,6 +141,7 @@ struct DeviceProfileSettings: Codable, Equatable {
             ?? Self.default.forceDisableSMBSigningAndEncryption
         ) && !requireSMBEncryption
         fruitMetadataNetatalk = try container.decodeIfPresent(Bool.self, forKey: .fruitMetadataNetatalk) ?? Self.default.fruitMetadataNetatalk
+        vfsAIOForkEnabled = try container.decodeIfPresent(Bool.self, forKey: .vfsAIOForkEnabled) ?? Self.default.vfsAIOForkEnabled
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
         mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds
         ataIdleSeconds = Self.decodeNonNegativeInteger(

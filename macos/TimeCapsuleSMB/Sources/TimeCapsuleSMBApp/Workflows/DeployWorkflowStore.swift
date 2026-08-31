@@ -14,6 +14,7 @@ struct DeployOptions: Equatable {
     let requireSMBEncryption: Bool
     let forceDisableSMBSigningAndEncryption: Bool
     let fruitMetadataNetatalk: Bool
+    let vfsAIOForkEnabled: Bool
     let debugLogging: Bool
     let ataIdleSeconds: Int
     let ataStandby: Int?
@@ -32,6 +33,7 @@ struct DeployOptions: Equatable {
         requireSMBEncryption: Bool = DeviceProfileSettings.default.requireSMBEncryption,
         forceDisableSMBSigningAndEncryption: Bool = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption,
         fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
+        vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
         debugLogging: Bool,
         ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
         ataStandby: Int? = DeviceProfileSettings.default.ataStandby,
@@ -49,6 +51,7 @@ struct DeployOptions: Equatable {
         self.requireSMBEncryption = requireSMBEncryption
         self.forceDisableSMBSigningAndEncryption = forceDisableSMBSigningAndEncryption
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
+        self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
         self.ataIdleSeconds = ataIdleSeconds
         self.ataStandby = ataStandby
@@ -174,6 +177,9 @@ final class DeployWorkflowStore: ObservableObject {
     @Published var fruitMetadataNetatalk = DeviceProfileSettings.default.fruitMetadataNetatalk {
         didSet { reconcilePlanFreshness() }
     }
+    @Published var vfsAIOForkEnabled = DeviceProfileSettings.default.vfsAIOForkEnabled {
+        didSet { reconcilePlanFreshness() }
+    }
     @Published var debugLogging = false {
         didSet { reconcilePlanFreshness() }
     }
@@ -297,6 +303,7 @@ final class DeployWorkflowStore: ObservableObject {
                 requireSMBEncryption: options.requireSMBEncryption,
                 forceDisableSMBSigningAndEncryption: options.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
+                vfsAIOForkEnabled: options.vfsAIOForkEnabled,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
@@ -354,6 +361,7 @@ final class DeployWorkflowStore: ObservableObject {
                 requireSMBEncryption: options.requireSMBEncryption,
                 forceDisableSMBSigningAndEncryption: options.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
+                vfsAIOForkEnabled: options.vfsAIOForkEnabled,
                 debugLogging: options.debugLogging,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
@@ -419,6 +427,7 @@ final class DeployWorkflowStore: ObservableObject {
             requireSMBEncryption: requireSMBEncryption,
             forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: fruitMetadataNetatalk,
+            vfsAIOForkEnabled: vfsAIOForkEnabled,
             debugLogging: debugLogging,
             ataIdleSeconds: ataIdleSecondsValue,
             ataStandby: ataStandbyValue,

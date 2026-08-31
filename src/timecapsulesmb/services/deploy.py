@@ -157,6 +157,7 @@ class DeployRuntimeConfig:
     require_smb_encryption: bool | None = None
     force_disable_smb_signing_and_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
+    vfs_aio_fork_enabled: bool | None = None
     ata_idle_seconds: str | int | None = None
     ata_standby: str | int | None = None
 
@@ -803,6 +804,7 @@ def upload_and_verify_deployment_payload(
         require_smb_encryption=runtime_config.require_smb_encryption,
         force_disable_smb_signing_and_encryption=runtime_config.force_disable_smb_signing_and_encryption,
         fruit_metadata_netatalk=runtime_config.fruit_metadata_netatalk,
+        vfs_aio_fork_enabled=runtime_config.vfs_aio_fork_enabled,
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
     )
@@ -1159,6 +1161,7 @@ def render_flash_runtime_config(
     require_smb_encryption: bool | None = None,
     force_disable_smb_signing_and_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
+    vfs_aio_fork_enabled: bool | None = None,
     ata_idle_seconds: str | int | None = None,
     ata_standby: str | int | None = None,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
@@ -1188,6 +1191,10 @@ def render_flash_runtime_config(
     fruit_metadata_netatalk_default = config.get(
         "TC_FRUIT_METADATA_NETATALK",
         DEFAULTS["TC_FRUIT_METADATA_NETATALK"],
+    )
+    vfs_aio_fork_enabled_default = config.get(
+        "TC_VFS_AIO_FORK_ENABLED",
+        DEFAULTS["TC_VFS_AIO_FORK_ENABLED"],
     )
     configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
     runtime_ata_idle_seconds = (
@@ -1245,6 +1252,11 @@ def render_flash_runtime_config(
         if fruit_metadata_netatalk is None
         else fruit_metadata_netatalk
     )
+    effective_vfs_aio_fork_enabled = (
+        parse_bool(vfs_aio_fork_enabled_default)
+        if vfs_aio_fork_enabled is None
+        else vfs_aio_fork_enabled
+    )
     effective_debug_logging = parse_bool(configured_debug_logging) if debug_logging is None else debug_logging
 
     values: list[tuple[str, str | int]] = [
@@ -1262,6 +1274,7 @@ def render_flash_runtime_config(
             1 if effective_force_disable_smb_signing_and_encryption else 0,
         ),
         ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),
+        ("VFS_AIO_FORK_ENABLED", 1 if effective_vfs_aio_fork_enabled else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
         ("ATA_STANDBY", runtime_ata_standby),

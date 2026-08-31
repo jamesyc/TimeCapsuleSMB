@@ -217,6 +217,11 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     "fruit_metadata_netatalk",
                     parse_bool(existing.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"])),
                 ),
+                vfs_aio_fork_enabled=bool_param(
+                    params,
+                    "vfs_aio_fork_enabled",
+                    parse_bool(existing.get("TC_VFS_AIO_FORK_ENABLED", DEFAULTS["TC_VFS_AIO_FORK_ENABLED"])),
+                ),
                 debug_logging=bool_param(
                     params,
                     "debug_logging",

@@ -68,6 +68,7 @@ struct AppSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $editor.draft.fruitMetadataNetatalk)
+                    Toggle(L10n.string("toggle.enable_vfs_aio_fork"), isOn: $editor.draft.vfsAIOForkEnabled)
                     Toggle(L10n.string("toggle.force_debug_logging"), isOn: $editor.draft.debugLogging)
                     SettingsFormRow(title: L10n.string("field.mount_wait")) {
                         TextField("", text: $editor.draft.mountWaitSeconds)

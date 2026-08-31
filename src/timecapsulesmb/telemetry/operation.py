@@ -26,6 +26,7 @@ OPTION_KEYS = frozenset({
     "fix_permissions",
     "force",
     "fruit_metadata_netatalk",
+    "vfs_aio_fork_enabled",
     "include_hidden",
     "include_time_machine",
     "internal_share_use_disk_root",

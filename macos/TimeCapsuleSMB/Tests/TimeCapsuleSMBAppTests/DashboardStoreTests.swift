@@ -393,6 +393,7 @@ final class DashboardStoreTests: XCTestCase {
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
+            vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 45,
             ataIdleSeconds: 0,
@@ -409,6 +410,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
         XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
+        XCTAssertEqual(session.deployStore.vfsAIOForkEnabled, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
         XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
         XCTAssertEqual(session.deployStore.ataStandby, "0")
@@ -446,6 +448,7 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.mdnsAdvertiseAFP = true
         session.profileEditorStore.draft.anyProtocol = true
         session.profileEditorStore.draft.fruitMetadataNetatalk = true
+        session.profileEditorStore.draft.vfsAIOForkEnabled = true
         session.profileEditorStore.draft.debugLogging = true
         session.profileEditorStore.draft.mountWaitSeconds = "64"
         session.profileEditorStore.draft.ataIdleSeconds = "0"
@@ -461,6 +464,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
         XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
+        XCTAssertEqual(session.deployStore.vfsAIOForkEnabled, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
         XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
         XCTAssertEqual(session.deployStore.ataStandby, "0")

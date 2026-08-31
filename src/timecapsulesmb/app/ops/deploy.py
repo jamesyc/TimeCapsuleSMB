@@ -271,6 +271,11 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         "fruit_metadata_netatalk",
         parse_bool(config.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"])),
     )
+    vfs_aio_fork_enabled = bool_param(
+        params,
+        "vfs_aio_fork_enabled",
+        parse_bool(config.get("TC_VFS_AIO_FORK_ENABLED", DEFAULTS["TC_VFS_AIO_FORK_ENABLED"])),
+    )
 
     try:
         preflight = prepare_deploy_preflight(
@@ -384,6 +389,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 require_smb_encryption=require_smb_encryption,
                 force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
                 fruit_metadata_netatalk=fruit_metadata_netatalk,
+                vfs_aio_fork_enabled=vfs_aio_fork_enabled,
                 ata_idle_seconds=ata_idle_seconds,
                 ata_standby=ata_standby,
             ),

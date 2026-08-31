@@ -109,6 +109,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.requireSMBEncryption, false)
         XCTAssertEqual(settings.forceDisableSMBSigningAndEncryption, false)
         XCTAssertEqual(settings.fruitMetadataNetatalk, true)
+        XCTAssertEqual(settings.vfsAIOForkEnabled, false)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
         XCTAssertEqual(settings.ataIdleSeconds, 300)
@@ -175,6 +176,7 @@ final class DeviceProfileTests: XCTestCase {
           "smbBrowseCompatibility": true,
           "mdnsAdvertiseAFP": true,
           "fruitMetadataNetatalk": true,
+          "vfsAIOForkEnabled": true,
           "debugLogging": false,
           "mountWaitSeconds": 45
         }
@@ -185,6 +187,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.smbBrowseCompatibility, true)
         XCTAssertEqual(settings.mdnsAdvertiseAFP, true)
         XCTAssertEqual(settings.fruitMetadataNetatalk, true)
+        XCTAssertEqual(settings.vfsAIOForkEnabled, true)
     }
 
     func testProfileSettingsDecodeLegacyStringAtaValues() throws {

@@ -201,7 +201,7 @@ tc_manager_samba_file_signature() {
 }
 
 tc_manager_samba_config_signature() {
-    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
         "${TC_PAYLOAD_DIR:-}" \
         "${TC_PAYLOAD_VOLUME:-}" \
         "${TC_PAYLOAD_DEVICE:-}" \
@@ -210,6 +210,7 @@ tc_manager_samba_config_signature() {
         "${SMB_NETBIOS_NAME:-}" \
         "${SMB_SERVER_STRING:-}" \
         "${ANY_PROTOCOL:-}" \
+        "${VFS_AIO_FORK_ENABLED:-}" \
         "${TC_SMBD_DISK_LOGGING_ENABLED:-}" \
         "${PAYLOAD_DIR_NAME:-}" \
         "${manager_share_rows:-}"

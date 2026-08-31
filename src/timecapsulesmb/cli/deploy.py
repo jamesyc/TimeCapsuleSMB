@@ -95,6 +95,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     any_protocol_group = parser.add_mutually_exclusive_group()
     any_protocol_group.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
     any_protocol_group.add_argument("--no-any-protocol", action="store_true", help=argparse.SUPPRESS)
+    vfs_aio_fork_group = parser.add_mutually_exclusive_group()
+    vfs_aio_fork_group.add_argument("--enable-vfs-aio-fork", action="store_true", help=argparse.SUPPRESS)
+    vfs_aio_fork_group.add_argument("--disable-vfs-aio-fork", action="store_true", help=argparse.SUPPRESS)
     require_smb_encryption_group = parser.add_mutually_exclusive_group()
     require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
     require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
@@ -132,6 +135,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     any_protocol = (
         True if args.any_protocol
         else False if args.no_any_protocol
+        else None
+    )
+    vfs_aio_fork_enabled = (
+        True if args.enable_vfs_aio_fork
+        else False if args.disable_vfs_aio_fork
         else None
     )
     require_smb_encryption = (
@@ -293,6 +301,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     any_protocol=any_protocol,
                     require_smb_encryption=require_smb_encryption,
                     force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+                    vfs_aio_fork_enabled=vfs_aio_fork_enabled,
                 ),
                 callbacks=command_context.to_operation_callbacks(),
                 on_pre_upload_action_done=report_pre_upload_action,

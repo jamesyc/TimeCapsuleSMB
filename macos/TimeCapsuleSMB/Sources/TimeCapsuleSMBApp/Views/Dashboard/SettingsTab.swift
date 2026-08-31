@@ -164,6 +164,10 @@ private struct DeviceProfileAdvancedSettingsView: View {
                         Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
                     }
                     GridRow {
+                        Toggle(L10n.string("toggle.enable_vfs_aio_fork"), isOn: $store.draft.vfsAIOForkEnabled)
+                            .gridCellColumns(2)
+                    }
+                    GridRow {
                         Toggle(L10n.string("toggle.any_protocol"), isOn: anyProtocolBinding)
                             .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: store.draft.requireSMBEncryption))
                         Toggle(L10n.string("toggle.require_smb_encryption"), isOn: requireSMBEncryptionBinding)

@@ -31,6 +31,7 @@ final class AppSettingsStoreTests: XCTestCase {
                 anyProtocol: true,
                 forceDisableSMBSigningAndEncryption: true,
                 fruitMetadataNetatalk: true,
+                vfsAIOForkEnabled: true,
                 debugLogging: true,
                 mountWaitSeconds: 45,
                 ataIdleSeconds: 600,
@@ -245,6 +246,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "toggle.mdns_advertise_afp": "通过 Bonjour 广播 AFP",
             "toggle.force_disable_smb_signing_and_encryption": "强制停用 SMB 签名和加密",
             "toggle.use_netatalk_metadata": "使用 Netatalk 存储元数据",
+            "toggle.enable_vfs_aio_fork": "启用 vfs_aio_fork",
             "value.never": "从未",
             "workflow.state.deploying": "正在部署"
         ]

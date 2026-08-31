@@ -51,6 +51,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["require_smb_encryption"], .bool(false))
         XCTAssertEqual(params["force_disable_smb_signing_and_encryption"], .bool(false))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
+        XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(false))
         XCTAssertNil(params["credentials"])
     }
 
@@ -67,6 +68,7 @@ final class PendingConfirmationTests: XCTestCase {
             requireSMBEncryption: false,
             forceDisableSMBSigningAndEncryption: true,
             fruitMetadataNetatalk: true,
+            vfsAIOForkEnabled: true,
             debugLogging: false,
             ataIdleSeconds: 0,
             ataStandby: nil,
@@ -81,6 +83,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["require_smb_encryption"], .bool(false))
         XCTAssertEqual(params["force_disable_smb_signing_and_encryption"], .bool(true))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
+        XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
@@ -105,6 +108,7 @@ final class PendingConfirmationTests: XCTestCase {
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
+            vfsAIOForkEnabled: true,
             ataIdleSeconds: 0,
             ataStandby: nil,
             includeAtaStandby: true
@@ -119,6 +123,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
+        XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
     }

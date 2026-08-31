@@ -322,6 +322,11 @@ tc_generate_smb_conf_from_share_rows() {
     smbd_log_level_line=
     smbd_protocol_lines=
     smbd_security_lines=
+    smbd_aio_lines="    aio read size = 0
+    aio write size = 0
+"
+    smbd_vfs_objects="catia fruit streams_xattr acl_xattr xattr_tdb"
+    smbd_aio_fork_line=
     smbd_restrict_anonymous=2
     smbd_fruit_model=$(tc_smbd_fruit_model)
     smbd_conf_tmp="$TC_SMBD_CONF.tmp.$$"
@@ -350,6 +355,16 @@ tc_generate_smb_conf_from_share_rows() {
     if [ "$FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION" = "1" ]; then
         smbd_security_lines="    server signing = disabled
     server smb encrypt = off
+"
+    fi
+    if [ "$VFS_AIO_FORK_ENABLED" = "1" ]; then
+        smbd_aio_lines="    smb2 max read = 131072
+    smb2 max write = 131072
+    aio read size = 1
+    aio write size = 1
+"
+        smbd_vfs_objects="$smbd_vfs_objects aio_fork"
+        smbd_aio_fork_line="    aio_fork:max_children = 8
 "
     fi
     if [ "$SMB_BROWSE_COMPATIBILITY" = "1" ]; then
@@ -396,9 +411,7 @@ ${smbd_security_lines}${smbd_protocol_lines}    server multi channel support = n
     max log size = $smbd_max_log_size
 $smbd_log_level_line
     smb ports = 445
-    aio read size = 0
-    aio write size = 0
-    deadtime = 15
+${smbd_aio_lines}    deadtime = 15
     max open files = 512
     max smbd processes = 8
     reset on zero vc = yes
@@ -423,8 +436,8 @@ EOF
     guest ok = no
     valid users = root
     veto files = /$PAYLOAD_DIR_NAME/
-    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
-    acl_xattr:ignore system acls = yes
+    vfs objects = $smbd_vfs_objects
+${smbd_aio_fork_line}    acl_xattr:ignore system acls = yes
     streams_xattr:max xattrs per stream = 2
     fruit:resource = file
     fruit:metadata = $smbd_fruit_metadata

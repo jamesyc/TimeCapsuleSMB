@@ -574,6 +574,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
+            vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 45,
             ataIdleSeconds: 600,
@@ -597,6 +598,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(600))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .number(900))
     }
@@ -621,6 +623,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             mdnsAdvertiseAFP: false,
             anyProtocol: false,
             fruitMetadataNetatalk: false,
+            vfsAIOForkEnabled: false,
             debugLogging: false,
             mountWaitSeconds: 99,
             ataIdleSeconds: 111,
@@ -635,6 +638,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
             fruitMetadataNetatalk: true,
+            vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 1,
             ataIdleSeconds: 2,
@@ -656,6 +660,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["mdns_advertise_afp"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["vfs_aio_fork_enabled"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(111))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .string(""))
     }

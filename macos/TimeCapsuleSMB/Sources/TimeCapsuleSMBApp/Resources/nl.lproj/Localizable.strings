@@ -912,6 +912,7 @@
 "toggle.force_disable_smb_signing_and_encryption" = "SMB-ondertekening en -versleuteling geforceerd uitschakelen";
 "toggle.force_disable_smb_signing_and_encryption.note" = "Kan overdrachten versnellen wanneer een client ondertekening vereist, maar verzwakt de SMB-transportbeveiliging.";
 "toggle.use_netatalk_metadata" = "Gebruik Netatalk voor metadata";
+"toggle.enable_vfs_aio_fork" = "vfs_aio_fork inschakelen";
 "toggle.force_debug_logging" = "Forceer logboekregistratie voor foutopsporing";
 "toggle.no_reboot" = "Geen herstart";
 "toggle.no_wait" = "No Wait";

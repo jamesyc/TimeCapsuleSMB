@@ -2075,6 +2075,28 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_FRUIT_METADATA_NETATALK"], "true")
 
+    def test_configure_vfs_aio_fork_args_enable_and_disable_saved_value(self) -> None:
+        enabled = self.run_configure_cli(
+            ["--enable-vfs-aio-fork"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        disabled = self.run_configure_cli(
+            ["--disable-vfs-aio-fork"],
+            existing_values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="true"),
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+
+        self.assertEqual(enabled.rc, 0)
+        self.assertEqual(enabled.values["TC_VFS_AIO_FORK_ENABLED"], "true")
+        self.assertEqual(disabled.rc, 0)
+        self.assertEqual(disabled.values["TC_VFS_AIO_FORK_ENABLED"], "false")
+
     def test_configure_hidden_ata_args_write_drive_settings(self) -> None:
         result = self.run_configure_cli(
             ["--ata-idle-seconds", "0", "--ata-standby", "0"],
@@ -5142,6 +5164,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
         self.assertIn("NBNS_ENABLED=1\n", flash_config)
         self.assertIn("ANY_PROTOCOL=0\n", flash_config)
+        self.assertIn("VFS_AIO_FORK_ENABLED=0\n", flash_config)
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", flash_config)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)
         self.assertIn("MDNS_DEBUG_LOGGING=1\n", flash_config)
@@ -5319,6 +5342,32 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertIn("FRUIT_METADATA_NETATALK=1\n", captured["flash_config"])
+
+    def test_deploy_vfs_aio_fork_args_override_config(self) -> None:
+        captured: list[str] = []
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
+
+        enabled = self.run_deploy_cli(
+            ["--no-reboot", "--enable-vfs-aio-fork"],
+            values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="false"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+        disabled = self.run_deploy_cli(
+            ["--no-reboot", "--disable-vfs-aio-fork"],
+            values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="true"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(enabled.rc, 0)
+        self.assertEqual(disabled.rc, 0)
+        self.assertIn("VFS_AIO_FORK_ENABLED=1\n", captured[0])
+        self.assertIn("VFS_AIO_FORK_ENABLED=0\n", captured[1])
 
     def test_deploy_leaves_debug_logging_disabled_without_arg(self) -> None:
         captured: dict[str, str] = {}

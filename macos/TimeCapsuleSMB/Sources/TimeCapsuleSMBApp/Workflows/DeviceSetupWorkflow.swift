@@ -183,6 +183,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 requireSMBEncryption: settings.requireSMBEncryption,
                 forceDisableSMBSigningAndEncryption: settings.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
+                vfsAIOForkEnabled: settings.vfsAIOForkEnabled,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,
                 includeAtaStandby: true,

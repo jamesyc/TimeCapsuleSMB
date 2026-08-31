@@ -505,6 +505,7 @@ Current rendered Samba config characteristics:
 - `max log size = 128` in the normal generated config
 - `deadtime = 60`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
+- when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 8`, set 128 KiB SMB2 read/write limits, and enable AIO for requests of at least one byte
 - `fruit:resource = file`
 - `fruit:veto_appledouble = yes`
 - `fruit:metadata = netatalk` by default, or `fruit:metadata = stream` when Netatalk metadata mode is explicitly disabled
@@ -734,6 +735,7 @@ Hidden advanced arguments:
 - `--smb-browse-compatibility`: writes `TC_SMB_BROWSE_COMPATIBILITY=true`; enables the browsing compatibility mode in generated Samba config
 - `--any-protocol`: writes `TC_ANY_PROTOCOL=true`; relaxes Samba protocol selection for compatibility testing
 - `--netatalk`: writes `TC_FRUIT_METADATA_NETATALK=true`; selects Netatalk-compatible fruit metadata behavior
+- `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: writes `TC_VFS_AIO_FORK_ENABLED=true|false`; toggles the bounded `vfs_aio_fork` runtime profile
 - `--ata-idle-seconds SECONDS`: writes `TC_ATA_IDLE_SECONDS`; must be a non-negative integer, with `0` disabling the ATA idle timer
 - `--ata-standby SECONDS`: writes `TC_ATA_STANDBY`; must be a non-negative integer, with `0` disabling standby and a blank saved value leaving standby unchanged
 
@@ -776,8 +778,9 @@ Arguments:
 - `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager stages and starts the bundled rsync daemon from RAM; the binary and config are uploaded even when this flag is omitted
 - `--mount-wait SECONDS`: per-attempt wait for deployment-time `diskd.useVolume` mount guards; default is `30`
 
-Hidden advanced argument:
+Hidden advanced arguments:
 - `--debug-logging`: writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to flash config; this increases runtime logging and disables the normal managed log size cap
+- `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: override the saved bounded `vfs_aio_fork` setting for this deployment
 
 Useful plan modes:
 
