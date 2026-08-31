@@ -127,6 +127,7 @@ The actual working split is:
   - `/Volumes/dkX/.samba4/private/`
   - `/Volumes/dkX/.samba4/private/xattr.tdb`
   - `/Volumes/dkX/.samba4/cache`
+  - `/Volumes/dkX/.samba4/logs/`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/common.sh`
@@ -183,10 +184,12 @@ Samba 4.8 was the first stable target because it gave the project a usable Time 
 Samba 4.24.3 is the current shipped target. It keeps the same static-module deployment model, but uses the newer `samba4x` build lanes and checked-in artifacts.
 
 With the current static-module build, the shipped config supports:
+- `catia`
 - `fruit`
 - `streams_xattr`
 - `acl_xattr`
 - `xattr_tdb`
+- optional `aio_fork`, disabled by default and bounded to eight children per share when enabled
 - `fruit:time machine = yes`
 
 ## NetBSD 6 build path
@@ -212,7 +215,7 @@ That combination:
 
 The current deploy artifacts use Samba 4.24.3 on the same NetBSD 7 / NetBSD 4 SDK split.
 
-The important build logic is now under [build/](build).
+The important build logic is now under [build/](build). The VM-side [build/Makefile](build/Makefile) names the supported per-family and all-lane targets while leaving the expensive SDK download/bootstrap steps explicit rather than making them artifact-build dependencies.
 
 Current maintainer build lanes:
 - NetBSD 7 SDK lane:
@@ -231,6 +234,11 @@ Current maintainer build lanes:
   - [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh)
   - [build/samba4xoldle.sh](build/samba4xoldle.sh)
   - [build/samba4xoldbe.sh](build/samba4xoldbe.sh)
+- current rsync 3.4.4 lanes:
+  - [build/downloadrsync.sh](build/downloadrsync.sh)
+  - [build/rsync.sh](build/rsync.sh)
+  - [build/rsyncoldle.sh](build/rsyncoldle.sh)
+  - [build/rsyncoldbe.sh](build/rsyncoldbe.sh)
 - legacy Samba 4.8 lanes:
   - [build/downloadsamba4.sh](build/downloadsamba4.sh)
   - [build/samba4.sh](build/samba4.sh)
@@ -590,10 +598,13 @@ Important properties:
 Current behavior:
 - binds UDP port `137`
 - answers NBNS name queries for the active runtime NetBIOS name
+- answers NBSTAT/node-status queries, including wildcard node-status requests
 - replies for both NetBIOS suffixes:
   - `0x00`
   - `0x20`
-- returns the current runtime IPv4 selected from the device interfaces
+- chooses a response IPv4 from the interface whose subnet matches the requester
+- declines ambiguous off-subnet requests rather than returning an arbitrary address
+- refreshes its interface topology every `30` seconds so address changes do not require a process restart
 
 Enablement model:
 - the binary is uploaded to `/Volumes/dkX/.samba4/nbns-advertiser` on every deploy
@@ -634,6 +645,15 @@ Current important `.env` values include:
 - `TC_PASSWORD`
 - `TC_SSH_OPTS`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`
+- `TC_SMB_BIND_LAN_ONLY`
+- `TC_SMB_BROWSE_COMPATIBILITY`
+- `TC_MDNS_ADVERTISE_AFP`
+- `TC_ANY_PROTOCOL`
+- `TC_REQUIRE_SMB_ENCRYPTION`
+- `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION`
+- `TC_FRUIT_METADATA_NETATALK`
+- `TC_VFS_AIO_FORK_ENABLED`
+- `TC_DEBUG_LOGGING`
 - `TC_ATA_IDLE_SECONDS`
 - `TC_ATA_STANDBY`
 - `TC_CONFIGURE_ID`
@@ -641,6 +661,58 @@ Current important `.env` values include:
 Current `.bootstrap` values include:
 - `INSTALL_ID`
 - optional `TELEMETRY=false`
+
+## macOS App Advanced Checkboxes
+
+The Advanced panel stores these choices in the local device profile. Run **Install / Update Samba** afterward to write the corresponding runtime values to `/mnt/Flash/tcapsulesmb.conf`; changing a checkbox alone does not reconfigure the device. The defaults below are new-profile defaults, not necessarily the checked state shown for an existing saved profile.
+
+### Enable NBNS
+
+Default: on. Enables `NBNS_ENABLED=1`, causing the manager to stage `nbns-advertiser` into RAM and answer IPv4 NetBIOS name and node-status queries on UDP `137`. This helps older Windows-style discovery; Bonjour-capable clients do not require it.
+
+### Enable rsync
+
+Default: off. Enables `RSYNC_ENABLED=1`, causing the manager to stage the bundled daemon into RAM and expose a writable `shareroot` module on TCP `873`, running as Unix `root:wheel`. The generated rsync configuration has no rsync authentication block, so enable this only on a trusted LAN; **Bind SMB to LAN Only** does not restrict the separate rsync daemon.
+
+### Internal Share Uses Disk Root
+
+Default: off. When off, an internal disk share points at `/Volumes/dkN/ShareRoot`; when on, it exposes the whole `/Volumes/dkN` root instead. External disks always use their volume root, and the `.samba4` payload remains hidden from SMB clients through the share veto rule.
+
+### Bind SMB to LAN Only
+
+Default: off. When enabled, Samba selects LAN-owner interfaces such as bridge, `br`, or `lan` interfaces, with a private-LAN fallback, instead of binding every eligible non-loopback SMB address. This reduces exposure on WAN or tunnel interfaces, but clients outside the selected LAN may no longer reach SMB and Doctor will report that route mismatch.
+
+### Allow SMB Share Browsing
+
+Default: off. Changes Samba's global `restrict anonymous` value from `2` to `0` so clients that need anonymous browse enumeration can list the server's shares. It does not enable guest file access: shares still use `guest ok = no`, require authentication, and map authenticated users to Unix `root`.
+
+### Advertise AFP over Bonjour
+
+Default: off. Adds a generated `_afpovertcp._tcp` record on port `548` and changes generated ADISK flags from SMB-only `adVF=0x82` to AFP+SMB `adVF=0x83`. This only changes managed Bonjour advertisement; it does not configure or authenticate an AFP server.
+
+### Use Netatalk for metadata
+
+Default: on. Selects `fruit:metadata = netatalk`, the Netatalk-compatible metadata format used by Samba's `fruit` module. Turning it off selects `fruit:metadata = stream`; changing this for existing files should be treated as a metadata-compatibility decision rather than a performance toggle.
+
+### Force Debug Logging
+
+Default: off. Enables `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1`, sets Samba to `log level = 10`, and removes the normal managed payload-log size cap. Use it only while troubleshooting because verbose unbounded logs can grow on the disk and add overhead.
+
+### Enable vfs_aio_fork
+
+Default: off. Adds the bounded `aio_fork` VFS module, enables asynchronous I/O for requests of at least one byte, limits SMB2 reads and writes to `128 KiB`, and caps each share at eight forked workers. It is an optional no-pthread I/O profile; leave it off unless testing shows it helps the target workload.
+
+### Allow Any SMB Protocol
+
+Default: off. Omits the generated SMB2-to-SMB3 minimum/maximum protocol lines and leaves protocol selection to Samba's built-in defaults. It is a compatibility escape hatch, not a promise that every historical SMB dialect is available, and it cannot be combined with **Require SMB Encryption**.
+
+### Require SMB Encryption
+
+Default: off. Writes `server smb encrypt = required`, `server min protocol = SMB3_00`, and `server max protocol = SMB3`, so clients must negotiate encrypted SMB3. The app disables **Allow Any SMB Protocol** and **Force Disable SMB Signing and Encryption** when this option is selected.
+
+### Force Disable SMB Signing and Encryption
+
+Default: off. Writes `server signing = disabled` and `server smb encrypt = off`. This may improve throughput when a client would otherwise require signing, but it weakens SMB transport security and cannot be combined with **Require SMB Encryption**.
 
 ## CLI Command Reference
 
@@ -733,17 +805,20 @@ Arguments:
 - `--json`: emit a machine-readable result; requires `--no-input`
 
 Hidden advanced arguments:
-- `--internal-share-use-disk-root`: writes `TC_INTERNAL_SHARE_USE_DISK_ROOT=true`; internal disks use the disk root instead of the safer `ShareRoot`
-- `--no-internal-share-use-disk-root`: writes `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
-- `--smb-browse-compatibility`: writes `TC_SMB_BROWSE_COMPATIBILITY=true`; enables the browsing compatibility mode in generated Samba config
-- `--no-smb-browse-compatibility`: writes `TC_SMB_BROWSE_COMPATIBILITY=false`
-- `--any-protocol`: writes `TC_ANY_PROTOCOL=true`; relaxes Samba protocol selection for compatibility testing
-- `--netatalk`: writes `TC_FRUIT_METADATA_NETATALK=true`; selects Netatalk-compatible fruit metadata behavior
-- `--no-netatalk`: writes `TC_FRUIT_METADATA_NETATALK=false`; selects stream metadata behavior
+- `--internal-share-use-disk-root` / `--no-internal-share-use-disk-root`: write `TC_INTERNAL_SHARE_USE_DISK_ROOT=true|false`
+- `--smb-bind-lan-only` / `--no-smb-bind-lan-only`: write `TC_SMB_BIND_LAN_ONLY=true|false`
+- `--smb-browse-compatibility` / `--no-smb-browse-compatibility`: write `TC_SMB_BROWSE_COMPATIBILITY=true|false`
+- `--mdns-advertise-afp` / `--no-mdns-advertise-afp`: write `TC_MDNS_ADVERTISE_AFP=true|false`
+- `--any-protocol` / `--no-any-protocol`: write `TC_ANY_PROTOCOL=true|false`
+- `--require-smb-encryption` / `--no-require-smb-encryption`: write `TC_REQUIRE_SMB_ENCRYPTION=true|false`
+- `--force-disable-smb-signing-and-encryption` / `--no-force-disable-smb-signing-and-encryption`: write `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true|false`; `--disable-smb-security` and `--no-disable-smb-security` are aliases
+- `--netatalk` / `--no-netatalk`: write `TC_FRUIT_METADATA_NETATALK=true|false`
 - `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: writes `TC_VFS_AIO_FORK_ENABLED=true|false`; toggles the bounded `vfs_aio_fork` runtime profile
 - `--debug-logging` / `--no-debug-logging`: explicitly enable or disable managed runtime debug logging
 - `--ata-idle-seconds SECONDS`: writes `TC_ATA_IDLE_SECONDS`; must be a non-negative integer, with `0` disabling the ATA idle timer
 - `--ata-standby SECONDS`: writes `TC_ATA_STANDBY`; must be a non-negative integer, with `0` disabling standby and a blank saved value leaving standby unchanged
+
+`TC_ANY_PROTOCOL=true` cannot be combined with `TC_REQUIRE_SMB_ENCRYPTION=true`. Required encryption also cannot be combined with `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`; configure rejects either conflict before writing `.env`.
 
 Non-interactive examples:
 
@@ -849,6 +924,7 @@ Arguments:
 - `--skip-ssh`: skip SSH reachability and remote checks
 - `--skip-bonjour`: skip Bonjour browse/resolve checks
 - `--skip-smb`: skip authenticated SMB listing and file-operation checks
+- `--no-startup-grace`: show raw startup-window failures instead of collapsing eligible transient failures into one wait-and-retry result
 - `--json`: emit one structured final doctor payload
 
 `doctor` is the preferred post-deploy and post-reboot verification command. Its default SMB CRUD checks temporarily create, modify, and remove a hidden `.doctor-fileops-*` directory on a share. A timeout, interruption, or early failure can leave that directory behind; use `--skip-smb` when the diagnostic run must not write through SMB.
@@ -917,23 +993,36 @@ Arguments:
 Arguments:
 - `--pretty-error`: also write request parsing errors to stderr for local debugging
 
-Known app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `repair-xattrs`, `set-telemetry`, `uninstall`, `validate-install`, and `version-check`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
+Known public app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `repair-xattrs`, `set-ssh`, `set-telemetry`, `uninstall`, `validate-install`, and `version-check`. The backend also accepts internal non-public operations such as `update-config-settings`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
 
 ## Local Test Coverage
 
 `make install` installs `coverage.py` through the `dev` optional dependency. `./tcapsule bootstrap` installs `requirements.txt` and the normal editable package, but does not install the development-only coverage dependency.
 
-Coverage entry points:
+Test and coverage entry points:
 - `make test` runs C compile checks plus the pytest suite
+- `make test-parallel` runs the same C compile checks and the pytest suite through `pytest-xdist`
 - `make coverage` runs the pytest suite with branch coverage and prints missing source lines
 - `make coverage-html` writes the browsable report to `htmlcov/index.html`
+- `cd macos/TimeCapsuleSMB && swift test` runs the macOS app/helper unit tests; the package supplies the Xcode platform framework search path needed for XCTest/Swift Testing imports
+
+The root `make test` targets do not run the Swift suite; run both the Python/C and Swift entry points when a change crosses the backend/app boundary.
 
 Optional deploy flag:
 - `--no-nbns`
   - disables the bundled NBNS responder on the next boot by writing `NBNS_ENABLED=0` to `/mnt/Flash/tcapsulesmb.conf`
 
-Current defaults:
+Current defaults and fixed values:
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
+- `TC_SMB_BIND_LAN_ONLY=false`
+- `TC_SMB_BROWSE_COMPATIBILITY=false`
+- `TC_MDNS_ADVERTISE_AFP=false`
+- `TC_ANY_PROTOCOL=false`
+- `TC_REQUIRE_SMB_ENCRYPTION=false`
+- `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=false`
+- `TC_FRUIT_METADATA_NETATALK=true`
+- `TC_VFS_AIO_FORK_ENABLED=false`
+- `TC_DEBUG_LOGGING=false`
 - `TC_ATA_IDLE_SECONDS=300`
 - `TC_ATA_STANDBY=` leaves the standby timer unchanged; set `0` to disable standby
 - `TC_SSH_OPTS` includes the legacy SSH algorithms required by AirPort firmware
@@ -946,7 +1035,9 @@ Current validation behavior:
 - `TC_HOST`: must be non-empty.
 - `TC_PASSWORD`: Doctor, flash, and non-status `set-ssh` operations require a configured value; deploy and activate can prompt interactively when it is absent, while fsck and uninstall allow passwordless SSH key/agent authentication.
 - `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
-- `TC_INTERNAL_SHARE_USE_DISK_ROOT`: hidden boolean; internal disks use `ShareRoot` by default, and external disks always use the disk root.
+- the managed share, binding, browsing, AFP, protocol/security, Netatalk metadata, `vfs_aio_fork`, and debug settings listed above must contain recognized boolean values.
+- `TC_INTERNAL_SHARE_USE_DISK_ROOT`: internal disks use `ShareRoot` by default, and external disks always use the disk root.
+- the protocol/security validator rejects required encryption combined with either `TC_ANY_PROTOCOL=true` or `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`.
 - `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
 - `TC_ATA_STANDBY`: optional non-negative integer; blank leaves standby unchanged, and `0` disables standby through `atactl setstandby 0`.
 - `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.
@@ -961,23 +1052,26 @@ Workflow details:
 - `configure` validates managed `.env` inputs before writing `.env`
 - `deploy`, `activate`, and `doctor` fail early when managed `.env` config values are invalid
 - the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
-- the deploy/runtime logic lives under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device)
+- reusable workflows live under [src/timecapsulesmb/services/](src/timecapsulesmb/services), with deployment plans/execution under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and device probes/state under [src/timecapsulesmb/device/](src/timecapsulesmb/device)
 - the checked-in binaries and build tooling are visible in the repo, so advanced users can swap binaries, rebuild artifacts, or trace the exact boot/runtime layout
 
 ## Host-Side Architecture
 
 Current important package areas:
 - [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `flash`, `activate`, `doctor`, `fsck`, `repair-xattrs`, `uninstall`, and the app-facing `api` helper
+- [src/timecapsulesmb/app/](src/timecapsulesmb/app): structured API request handling, operation contracts, progress/result events, confirmations, recovery guidance, and app-specific operation adapters
+- [src/timecapsulesmb/services/](src/timecapsulesmb/services): reusable configure, deploy, activation, maintenance, storage, reboot, Doctor, and runtime workflows shared by the CLI and app/API entrypoints
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
 - [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): self-contained Python 3 ACP client for SSH enable/reboot support
 - [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): reusable local, network, Bonjour, and SMB verification checks
 - [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout, `MaSt` volume parsing, payload-home selection, plus generation / compatibility classification
-- [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): auth generation, deployment planning, flash config generation, execution, dry-run formatting, artifact resolution, and post-deploy verification
+- [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): deployment planning, remote actions, upload execution, dry-run formatting, artifact resolution, and post-deploy verification
 - [src/timecapsulesmb/assets/](src/timecapsulesmb/assets): packaged boot templates and artifact metadata
 - [src/timecapsulesmb/identity.py](src/timecapsulesmb/identity.py): local install identity loaded from `.bootstrap`
 - [src/timecapsulesmb/telemetry/](src/timecapsulesmb/telemetry): best-effort client telemetry for user-facing commands
+- [macos/TimeCapsuleSMB/](macos/TimeCapsuleSMB): the Swift macOS app, helper launcher, saved device profiles, workflow stores, localized UI, and Swift tests
 - [build/](build): maintainer build tooling, including Samba cross-exec record/replay helpers
 
 Developer note:
@@ -987,7 +1081,8 @@ Developer note:
 
 Practical consequence:
 - if you want to modify how the box is discovered, start in `discovery/`
-- if you want to change what gets uploaded, start in `deploy/planner.py`, `deploy/executor.py`, and `cli/deploy.py`
+- if you want to change shared install behavior, start in `services/deploy.py`; for the action plan and transfer mechanics, inspect `deploy/planner.py` and `deploy/executor.py`
+- if you want to change the app contract or progress events, start in `app/` and then follow the matching shared service
 - if you want to change the on-device boot behavior, inspect the packaged boot assets and the runtime layout sections below
 - if you want to replace binaries or rebuild them, inspect the artifact manifest plus the `build/` tree
 
@@ -1000,10 +1095,17 @@ It checks:
 - required local tools
 - whether the required checked-in binaries exist and match the expected checksums
 - deployed release/version metadata in `/mnt/Flash/tcapsulesmb.conf`
+- that the managed RAM runtime directory exists
 - SSH reachability
-- remote network/interface problems
+- detected device compatibility and payload family
+- managed `smbd`, mDNS takeover, and enabled/disabled rsync readiness
+- active Samba version, RAM-staged binary/config/auth paths, manager state, mounted share volumes, and required service sockets
+- remote IPv4/IPv6 capabilities, current bind interfaces, local routes to advertised addresses, and family-specific direct SMB reachability
 - advertised Bonjour instance name
 - advertised Bonjour host label
+- `_smb._tcp`, `_adisk._tcp`, `_device-info._tcp`, and `_airport._tcp` target consistency for the active instance
+- `_adisk._tcp` Time Machine flags, advertised disk rows, active share coverage, and target-host agreement with `_smb._tcp`
+- that advertised host addresses match the reachable runtime target
 - active Samba NetBIOS name
 - active Samba share names
 - SMB reachability
@@ -1024,6 +1126,7 @@ Its authenticated SMB CRUD checks do temporarily write to a share. They normally
 Current output behavior:
 - in normal human-readable mode, checks are printed as they complete rather than being buffered until the end
 - `--json` still emits one structured payload at the end
+- during the first `180` seconds after the manager starts, eligible transient startup failures are demoted to context and replaced by one actionable wait-and-retry failure; `--no-startup-grace` disables that transformation
 
 Typical usage:
 
@@ -1253,10 +1356,13 @@ Current transport behavior:
 
 Current uninstall behavior:
 - stops the manager first so it cannot restart `smbd` during teardown
-- removes the managed payload, loader files under `/mnt/Flash`, runtime tree, and compatibility symlinks; it does not restore a firmware bank changed by `flash --patch`
+- discovers and mounts the current `MaSt` HFS volumes, then removes `.samba4` from every mounted candidate rather than assuming one fixed payload disk
+- if no HFS volume is mounted, still removes loader files and runtime state while reporting that only flash/runtime cleanup was possible
+- removes loader files under `/mnt/Flash`, the RAM runtime tree, and compatibility symlinks; it does not restore a firmware bank changed by `flash --patch`
 - runs remote uninstall actions sequentially over SSH
 - prompts before reboot by default
-- supports `--no-reboot`
+- supports human and JSON dry-run plans, `--mount-wait`, `--no-reboot`, and request-only `--no-wait` reboot behavior
+- after a waited reboot, verifies that every planned payload directory, flash loader, RAM path, and compatibility symlink is absent
 
 ## Artifact Resolution
 
@@ -1319,6 +1425,8 @@ Current validated maintainer flows:
   - [build/bootstrap.sh](build/bootstrap.sh)
   - [build/downloadsamba4x.sh](build/downloadsamba4x.sh)
   - [build/samba4x.sh](build/samba4x.sh)
+  - [build/downloadrsync.sh](build/downloadrsync.sh)
+  - [build/rsync.sh](build/rsync.sh)
   - [build/mdns.sh](build/mdns.sh)
   - [build/nbns.sh](build/nbns.sh)
 - NetBSD 4 path:
@@ -1332,6 +1440,9 @@ Current validated maintainer flows:
   - [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh)
   - [build/samba4xoldle.sh](build/samba4xoldle.sh)
   - [build/samba4xoldbe.sh](build/samba4xoldbe.sh)
+  - [build/downloadrsync.sh](build/downloadrsync.sh)
+  - [build/rsyncoldle.sh](build/rsyncoldle.sh)
+  - [build/rsyncoldbe.sh](build/rsyncoldbe.sh)
   - [build/mdnsoldle.sh](build/mdnsoldle.sh)
   - [build/mdnsoldbe.sh](build/mdnsoldbe.sh)
   - [build/nbnsoldle.sh](build/nbnsoldle.sh)
