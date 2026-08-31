@@ -27,7 +27,7 @@ index c38c58a..fdea82f 100644
  	if (tevent_thread_call_depth_state_g.cb != NULL) {
  		tevent_thread_call_depth_state_g.cb(
 diff --git a/lib/tevent/tevent_internal.h b/lib/tevent/tevent_internal.h
-index 049a3a6..4fbf842 100644
+index 049a3a6..c14a724 100644
 --- a/lib/tevent/tevent_internal.h
 +++ b/lib/tevent/tevent_internal.h
 @@ -567,6 +567,20 @@ static inline void tevent_thread_call_depth_notify(
@@ -36,7 +36,7 @@ index 049a3a6..4fbf842 100644
  {
 +#ifndef HAVE_PTHREAD
 +	/*
-+	 * The Time Capsule appliance build removes pthread support after
++	 * The Time Capsule appliance build disables pthread support during
 +	 * configure. tevent's call-depth tracking is explicitly thread-local
 +	 * diagnostics; on the static no-pthread NetBSD targets the TLS callback
 +	 * state can abort during early smbd startup. Disable the tracking hooks
@@ -52,7 +52,7 @@ index 049a3a6..4fbf842 100644
  		tevent_thread_call_depth_state_g.cb(
  			tevent_thread_call_depth_state_g.cb_private,
 diff --git a/lib/tevent/tevent_req.c b/lib/tevent/tevent_req.c
-index 544f853..daf5d12 100644
+index 544f853..05d29d0 100644
 --- a/lib/tevent/tevent_req.c
 +++ b/lib/tevent/tevent_req.c
 @@ -95,9 +95,22 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
@@ -65,8 +65,8 @@ index 544f853..daf5d12 100644
  		sizeof(struct tevent_immediate) + data_size);
 +#else
 +	/*
-+	 * The Time Capsule smbd build is static and has pthread support removed
-+	 * after configure. Avoid tevent's pooled request allocation in that mode:
++	 * The Time Capsule smbd build is static and has pthread support disabled
++	 * during configure. Avoid tevent's pooled request allocation in that mode:
 +	 * notifyd's first long-lived request aborts in the pool path on these old
 +	 * NetBSD targets, while ordinary talloc children are sufficient here.
 +	 * Samba 4.24 initializes internal.trigger below with tevent_create_immediate()
@@ -94,24 +94,4 @@ index 544f853..daf5d12 100644
 +	}
  
  	talloc_set_name_const(data, type);
- 
-diff --git a/lib/tevent/tevent_threads.c b/lib/tevent/tevent_threads.c
-index 2dc1f17..5cc9e41 100644
---- a/lib/tevent/tevent_threads.c
-+++ b/lib/tevent/tevent_threads.c
-@@ -394,6 +394,7 @@ static int tevent_threaded_context_destructor(
- 		DLIST_REMOVE(main_ev->threaded_contexts, tctx);
- 	}
- 
-+#ifdef HAVE_PTHREAD
- 	/*
- 	 * We have to coordinate with _tevent_threaded_schedule_immediate's
- 	 * unlock of the event_ctx_mutex. We're in the main thread here,
-@@ -416,6 +417,7 @@ static int tevent_threaded_context_destructor(
- 		abort();
- 	}
- 
-+#endif
- 	return 0;
- }
  

@@ -205,21 +205,6 @@ set_waf_cache_empty_values() {
     done
 }
 
-remove_samba4x_pthread_waf_text() {
-    cache_file="$1"
-
-    remove_waf_cache_fixed_text "$cache_file" "'pthread': 'SYSLIB'" "s/'pthread': 'SYSLIB'/'pthread': 'EMPTY'/g" "Samba 4.x waf cache pthread syslib removal"
-    remove_waf_cache_fixed_text "$cache_file" "'-lpthread'" "s/'-lpthread',\\s*//g; s/\\s*'\\-lpthread'\\s*//g" "Samba 4.x waf cache -lpthread removal"
-    remove_waf_cache_fixed_text "$cache_file" "'-pthread'" "s/'-pthread',\\s*//g; s/\\s*'\\-pthread'\\s*//g" "Samba 4.x waf cache -pthread removal"
-    remove_waf_cache_fixed_text "$cache_file" "'-D_REENTRANT'" "s/'-D_REENTRANT',\\s*//g; s/\\s*'\\-D_REENTRANT'\\s*//g" "Samba 4.x waf cache reentrant define removal"
-    remove_waf_cache_fixed_text "$cache_file" "'-D_POSIX_PTHREAD_SEMANTICS'" "s/'-D_POSIX_PTHREAD_SEMANTICS',\\s*//g; s/\\s*'\\-D_POSIX_PTHREAD_SEMANTICS'\\s*//g" "Samba 4.x waf cache pthread semantics define removal"
-    remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD': '1'" "s/'HAVE_PTHREAD': '1'/'HAVE_PTHREAD': ()/g" "Samba 4.x waf cache HAVE_PTHREAD dict removal"
-    remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_CREATE': 1" "s/'HAVE_PTHREAD_CREATE': 1/'HAVE_PTHREAD_CREATE': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_CREATE dict removal"
-    remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_ATTR_INIT': 1" "s/'HAVE_PTHREAD_ATTR_INIT': 1/'HAVE_PTHREAD_ATTR_INIT': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_ATTR_INIT dict removal"
-    remove_waf_cache_fixed_text "$cache_file" "'HAVE_LIBPTHREAD': 1" "s/'HAVE_LIBPTHREAD': 1/'HAVE_LIBPTHREAD': ()/g" "Samba 4.x waf cache HAVE_LIBPTHREAD dict removal"
-    remove_waf_cache_fixed_text "$cache_file" "'WITH_PTHREADPOOL': '1'" "s/'WITH_PTHREADPOOL': '1'/'WITH_PTHREADPOOL': ()/g" "Samba 4.x waf cache WITH_PTHREADPOOL dict removal"
-}
-
 apply_samba4x_static_waf_cache() {
     cache_file="$1"
 
@@ -232,23 +217,10 @@ apply_samba4x_static_waf_cache() {
     set_waf_cache_value "$cache_file" "SMBD_STATIC_LIBPATH" "[]"
     set_waf_cache_value "$cache_file" "SMBD_STATIC_SHLIB_MARKER" "''"
     set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
+    set_waf_cache_value "$cache_file" "TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS" "[$TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS]"
+    set_waf_cache_value "$cache_file" "TC_PTHREADPOOL_TEST_STATIC_LDFLAGS" "[$TC_PTHREADPOOL_TEST_STATIC_LDFLAGS]"
     set_waf_cache_value "$cache_file" "TC_SAMBA4X_EMBEDDED_SRVSVC" "True"
     set_waf_cache_value "$cache_file" "FULLSTATIC" "True"
-}
-
-apply_samba4x_no_pthread_waf_cache() {
-    cache_file="$1"
-
-    set_waf_cache_empty_values "$cache_file" \
-        HAVE_PTHREAD \
-        HAVE_PTHREAD_CREATE \
-        HAVE_PTHREAD_ATTR_INIT \
-        HAVE_LIBPTHREAD \
-        WITH_PTHREADPOOL
-    set_waf_cache_value "$cache_file" "LIB_pthread" "[]"
-    set_waf_cache_value "$cache_file" "LIB_PTHREAD" "''"
-    set_waf_cache_value "$cache_file" "replace_add_global_pthread" "False"
-    remove_samba4x_pthread_waf_text "$cache_file"
 }
 
 apply_samba4x_runtime_waf_cache() {
@@ -275,12 +247,10 @@ apply_samba4x_waf_cache_overrides() {
     cache_file="$1"
 
     # Waf configure runs on the VM while targeting the Time Capsule. Keep the
-    # generated cache deterministic and target-safe: smbd must be static, all
-    # appliance targets are no-pthread, and old NetBSD libc process-title and
-    # backtrace probes must not leak into the static binary.
+    # generated cache deterministic and target-safe: smbd must be static, and
+    # old NetBSD libc process-title/backtrace probes must not leak into it.
     apply_samba4x_static_waf_cache "$cache_file"
     apply_samba4x_runtime_waf_cache "$cache_file"
-    apply_samba4x_no_pthread_waf_cache "$cache_file"
 
     if [ "$SDK_FAMILY" = "netbsd4" ]; then
         # NetBSD4's old static libc/toolchain combination does not support the
@@ -301,11 +271,6 @@ sync_samba4x_config_header() {
         HAVE_GETIFADDRS \
         HAVE_FREEIFADDRS \
         HAVE_IFACE_GETIFADDRS \
-        HAVE_PTHREAD \
-        HAVE_PTHREAD_CREATE \
-        HAVE_PTHREAD_ATTR_INIT \
-        HAVE_LIBPTHREAD \
-        WITH_PTHREADPOOL \
         HAVE_EXECINFO_H \
         HAVE_BACKTRACE \
         HAVE_BACKTRACE_SYMBOLS \
@@ -315,6 +280,67 @@ sync_samba4x_config_header() {
         undef_config_symbol "$config_header" "$symbol"
     done
     define_config_symbol "$config_header" "HAVE_IFACE_IFCONF" "1"
+}
+
+verify_samba4x_no_pthread_config() {
+    config_list="$(mktemp "$SAMBA4X_BUILD/no-pthread-config.XXXXXX")"
+    if [ ! -d "$SAMBA4X_SRC_DIR/bin/default" ]; then
+        rm -f "$config_list"
+        patch_fail "Samba 4.x configure generated no config.h files"
+    fi
+    find "$SAMBA4X_SRC_DIR/bin/default" -name config.h -type f >"$config_list" || {
+        rm -f "$config_list"
+        patch_fail "Unable to enumerate Samba 4.x config.h files"
+    }
+    if ! grep . "$config_list" >/dev/null 2>&1; then
+        rm -f "$config_list"
+        patch_fail "Samba 4.x configure generated no config.h files"
+    fi
+
+    while IFS= read -r config_header; do
+        for symbol in \
+            HAVE_PTHREAD \
+            HAVE_PTHREAD_CREATE \
+            HAVE_PTHREAD_ATTR_INIT \
+            HAVE_LIBPTHREAD \
+            WITH_PTHREADPOOL \
+            HAVE_ROBUST_MUTEXES \
+            HAVE_PTHREAD_MUTEXATTR_SETROBUST \
+            HAVE_PTHREAD_MUTEXATTR_SETROBUST_NP \
+            HAVE_DECL_PTHREAD_MUTEX_ROBUST \
+            HAVE_DECL_PTHREAD_MUTEX_ROBUST_NP \
+            HAVE_PTHREAD_MUTEX_CONSISTENT \
+            HAVE_PTHREAD_MUTEX_CONSISTENT_NP \
+            USE_TDB_MUTEX_LOCKING
+        do
+            if grep -E "^#define[[:space:]]+$symbol([[:space:]]|$)" "$config_header"; then
+                rm -f "$config_list"
+                patch_fail "Samba 4.x no-pthread configure unexpectedly defined $symbol in $config_header"
+            fi
+        done
+    done <"$config_list"
+    rm -f "$config_list"
+}
+
+validate_samba4x_smbd_map() {
+    if [ ! -s "$MAP_FILE" ]; then
+        patch_fail "Samba 4.x smbd link map is missing or empty: $MAP_FILE"
+    fi
+    if ! grep -E '^OUTPUT\(.*source3/smbd/smbd([[:space:]]|\))' "$MAP_FILE" >/dev/null 2>&1; then
+        patch_fail "Samba 4.x link map does not identify the smbd output: $MAP_FILE"
+    fi
+    if grep -F 'libpthread.a' "$MAP_FILE"; then
+        patch_fail "Samba 4.x smbd link map contains libpthread.a: $MAP_FILE"
+    fi
+}
+
+samba4x_max_stripped_bytes() {
+    case "$SDK_FAMILY:$NETBSD4_ABI" in
+        netbsd7:*) printf '%s\n' 10161808 ;;
+        netbsd4:le) printf '%s\n' 10172036 ;;
+        netbsd4:be) printf '%s\n' 10170480 ;;
+        *) patch_fail "No Samba 4.x binary-size ceiling for $SDK_FAMILY/$NETBSD4_ABI" ;;
+    esac
 }
 
 verify_samba4x_runtime_config() {
@@ -622,6 +648,11 @@ configure_samba4x() {
     # Time Capsule smbd does not use filesystem quota integration, and Samba's
     # optional quotactl runtime probe has a colon in its Waf message, which
     # cannot be represented reliably in a colon-delimited cross-answers file.
+    samba4x_nonshared_binaries=smbd/smbd
+    if [ "$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST" = "1" ]; then
+        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,pthreadpool_tevent_sync_test"
+    fi
+
     set -- \
         --cross-compile \
         "--cross-answers=$SAMBA4X_ACTIVE_CROSS_ANSWERS" \
@@ -645,8 +676,13 @@ configure_samba4x() {
         --without-utmp \
         --without-syslog \
         --without-quotas \
-        --nonshared-binary=smbd/smbd
+        --disable-pthreadpool \
+        --disable-tdb-mutex-locking \
+        "--nonshared-binary=$samba4x_nonshared_binaries"
 
+    if [ "$NO_PTHREADS" = "1" ]; then
+        set -- "$@" --disable-pthread
+    fi
     if [ -n "$SAMBA4X_STATIC_MODULES" ]; then
         set -- "$@" "--with-static-modules=$SAMBA4X_STATIC_MODULES"
     fi
@@ -943,7 +979,15 @@ prepare_samba4x_deps() {
 }
 
 mkdir -p "$SAMBA4X_WORK" "$SAMBA4X_STAGE" "$SAMBA4X_BUILD" "$SAMBA4X_DEPS" "$SAMBA4X_STAGE/sbin"
-MAP_FILE="$SAMBA4X_STAGE/sbin/smbd4x.map"
+MAP_FILE="$SAMBA4X_BUILD/smbd-link.map"
+export MAP_FILE
+SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST="${SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST:-0}"
+SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST="${SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST:-0}"
+if [ "$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST" = "1" ]; then
+    SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=1
+fi
+TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS=
+TC_PTHREADPOOL_TEST_STATIC_LDFLAGS=
 
 if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
     prepare_netbsd4_gc_note_inputs
@@ -967,12 +1011,16 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     SAMBA4X_NETBSD4_BASE_LDFLAGS="-Wl,-Bstatic -static -L$SAMBA4X_DEPS/lib -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     SAMBA4X_NETBSD4_FINAL_LDFLAGS="$SAMBA4X_NETBSD4_BASE_LDFLAGS"
-    SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
+    SAMBA4X_NETBSD4_TEST_LINKFLAGS="'-Wl,-Bstatic', '-static', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
+    SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     SAMBA4X_NETBSD4_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST"
     if [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
         SAMBA4X_NETBSD4_FINAL_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-Wl,-T,$SAMBA4X_NETBSD4_KEEP_NOTES_LD', '$SAMBA4X_NETBSD4_NOTE_OBJ', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
+        SAMBA4X_NETBSD4_TEST_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-T,$SAMBA4X_NETBSD4_KEEP_NOTES_LD', '$SAMBA4X_NETBSD4_NOTE_OBJ', '-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     fi
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_NETBSD4_FINAL_LINKFLAGS"
+    TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS="$SAMBA4X_NETBSD4_TEST_LINKFLAGS"
+    TC_PTHREADPOOL_TEST_STATIC_LDFLAGS="$SAMBA4X_NETBSD4_TEST_LINKFLAGS"
     export LDFLAGS="$SAMBA4X_NETBSD4_BASE_LDFLAGS"
 else
     export CC="$TOOLDIR/bin/$TRIPLE-gcc --sysroot=$SYSROOT"
@@ -983,9 +1031,11 @@ else
     export CXXFLAGS="$CFLAGS"
     export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
+    TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
+    TC_PTHREADPOOL_TEST_STATIC_LDFLAGS="$TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS"
     SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST"
-    export LDFLAGS="-Wl,-Bstatic -static -Wl,--gc-sections -Wl,-Map=$MAP_FILE -L$SAMBA4X_DEPS/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib"
+    export LDFLAGS="-Wl,-Bstatic -static -Wl,--gc-sections -L$SAMBA4X_DEPS/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib"
 fi
 export PKG_CONFIG_DIR=
 export PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig"
@@ -1028,6 +1078,10 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     echo "SAMBA4X_SHARED_LDFLAGS_LIST=$SAMBA4X_SHARED_LDFLAGS_LIST"
     echo "SAMBA4X_FINAL_LDFLAGS_LIST=$SAMBA4X_FINAL_LDFLAGS_LIST"
     echo "SAMBA4X_FINAL_LINKFLAGS=$SAMBA4X_FINAL_LINKFLAGS"
+    echo "TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS=$TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS"
+    echo "TC_PTHREADPOOL_TEST_STATIC_LDFLAGS=$TC_PTHREADPOOL_TEST_STATIC_LDFLAGS"
+    echo "SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST"
+    echo "SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST=$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST"
     echo "MAP_FILE=$MAP_FILE"
     echo "CFLAGS=$CFLAGS"
     echo "CPPFLAGS=$CPPFLAGS"
@@ -1061,6 +1115,7 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf distclean >/dev/null 2>&1 || true
 
     configure_samba4x
+    verify_samba4x_no_pthread_config
     if [ "$SAMBA4X_GENERATE_CROSS_ANSWERS" = "1" ]; then
         validate_generated_samba4x_cross_answers "$SAMBA4X_ACTIVE_CROSS_ANSWERS"
         install_generated_samba4x_cross_answers "$SAMBA4X_ACTIVE_CROSS_ANSWERS"
@@ -1087,7 +1142,27 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         echo "Final NetBSD4 build LDFLAGS=$LDFLAGS"
     fi
 
+    if [ "$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST" = "1" ]; then
+        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=pthreadpool_tevent_sync_test
+        pthreadpool_test_binary="$SAMBA4X_SRC_DIR/bin/default/lib/pthreadpool/pthreadpool_tevent_sync_test"
+        if [ ! -x "$pthreadpool_test_binary" ]; then
+            echo "Missing Samba 4.x pthreadpool lifecycle test at $pthreadpool_test_binary"
+            exit 1
+        fi
+        if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$pthreadpool_test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
+            echo "Samba 4.x pthreadpool lifecycle test is dynamically linked."
+            exit 1
+        fi
+        if [ "$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST" = "1" ]; then
+            "$CROSS_EXECUTE" "$pthreadpool_test_binary"
+        fi
+    fi
+
+    # Force the final smbd link so the dedicated map cannot be missing or
+    # inherited from an earlier configure probe or incremental build.
+    rm -f "$MAP_FILE" "$SAMBA4X_SRC_DIR/bin/default/source3/smbd/smbd"
     PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=smbd/smbd
+    validate_samba4x_smbd_map
 
     stage_samba4x_binary() {
         label=$1
@@ -1124,6 +1199,13 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         cp "$built_path" "$stage_path"
         cp "$built_path" "$stripped_path"
         "$STRIP" --strip-unneeded "$stripped_path"
+        stripped_size="$(wc -c <"$stripped_path" | tr -d ' ')"
+        max_stripped_size="$(samba4x_max_stripped_bytes)"
+        echo "Samba 4.x $label stripped size=$stripped_size limit=$max_stripped_size"
+        if [ "$stripped_size" -gt "$max_stripped_size" ]; then
+            echo "Samba 4.x $label exceeds its ramdisk binary-size ceiling."
+            exit 1
+        fi
         validate_netbsd4_notes "$stripped_path"
         dump_elf_notes "staged stripped $label" "$stripped_path"
     }

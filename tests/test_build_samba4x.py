@@ -129,17 +129,21 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         printf '%s\\n' "$TEST_EXTRA_GENERATED_ANSWER" >> "$cross_answers"
                     fi
                 fi
-                mkdir -p bin/c4che bin/default/include bin/default/source3/include bin/default/source4/include
+                mkdir -p bin/c4che
                 cat > bin/c4che/default.py <<'EOF'
                 ENABLE_PIE = True
                 LDFLAGS = []
                 LINKFLAGS = []
                 EOF
-                for header in bin/default/include/config.h bin/default/source3/include/config.h bin/default/source4/include/config.h; do
-                    cat > "$header" <<'EOF'
+                if [ "${TEST_CONFIGURE_NO_HEADERS:-0}" != "1" ]; then
+                    mkdir -p bin/default/include bin/default/source3/include bin/default/source4/include
+                    for header in bin/default/include/config.h bin/default/source3/include/config.h bin/default/source4/include/config.h; do
+                        cat > "$header" <<EOF
                 /* #undef HAVE_IFACE_IFCONF */
+                ${TEST_CONFIGURE_DEFINE:-}
                 EOF
-                done
+                    done
+                fi
                 exit 0
                 """
             ),
@@ -148,13 +152,44 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             src_dir / "buildtools" / "bin" / "waf",
             textwrap.dedent(
                 """\
+                import os
                 import pathlib
                 import sys
 
                 if "build" in sys.argv:
-                    smbd = pathlib.Path("bin/default/source3/smbd/smbd")
-                    smbd.parent.mkdir(parents=True, exist_ok=True)
-                    smbd.write_text("fake smbd\\n")
+                    targets = next(
+                        (arg.split("=", 1)[1] for arg in sys.argv
+                         if arg.startswith("--targets=")),
+                        "",
+                    ).split(",")
+                    capture = os.environ.get("TEST_WAF_TARGETS")
+                    if "pthreadpool_tevent_sync_test" in targets:
+                        test_binary = pathlib.Path(
+                            "bin/default/lib/pthreadpool/"
+                            "pthreadpool_tevent_sync_test"
+                        )
+                        test_binary.parent.mkdir(parents=True, exist_ok=True)
+                        test_binary.write_text("fake pthreadpool test\\n")
+                        test_binary.chmod(0o755)
+                        if capture:
+                            with pathlib.Path(capture).open("a") as stream:
+                                stream.write("pthreadpool_tevent_sync_test\\n")
+                    if "smbd/smbd" in targets:
+                        smbd = pathlib.Path("bin/default/source3/smbd/smbd")
+                        smbd.parent.mkdir(parents=True, exist_ok=True)
+                        smbd.write_text("fake smbd\\n")
+                        if capture:
+                            with pathlib.Path(capture).open("a") as stream:
+                                stream.write("smbd/smbd\\n")
+                        if os.environ.get("TEST_SKIP_MAP", "0") != "1":
+                            map_path = pathlib.Path(os.environ["MAP_FILE"])
+                            map_path.parent.mkdir(parents=True, exist_ok=True)
+                            map_path.write_text(
+                                os.environ.get(
+                                    "TEST_MAP_CONTENT",
+                                    "OUTPUT(bin/default/source3/smbd/smbd elf32-littlearm)\\n",
+                                )
+                            )
                 sys.exit(0)
                 """
             ),
@@ -272,6 +307,9 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             args = self.configure_args(capture)
             self.assertIn("--cross-compile", args)
+            self.assertIn("--disable-pthread", args)
+            self.assertIn("--disable-pthreadpool", args)
+            self.assertIn("--disable-tdb-mutex-locking", args)
             self.assertIn(
                 "--with-static-modules="
                 "vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr,vfs_aio_fork",
@@ -314,6 +352,9 @@ class Samba4XBuildScriptTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             args = self.configure_args(capture)
+            self.assertIn("--disable-pthread", args)
+            self.assertIn("--disable-pthreadpool", args)
+            self.assertIn("--disable-tdb-mutex-locking", args)
             cross_answers = self.cross_answer_arg(args)
             self.assertTrue(cross_answers.endswith("/generated-samba4x-4.24.3-netbsd4be.answers"))
             self.assertEqual(len(self.cross_execute_args(args)), 1)
@@ -369,8 +410,193 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     result = self.run_wrapper(wrapper, env)
 
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    cross_answers = self.cross_answer_arg(self.configure_args(capture))
+                    args = self.configure_args(capture)
+                    self.assertIn("--disable-pthread", args)
+                    self.assertIn("--disable-pthreadpool", args)
+                    self.assertIn("--disable-tdb-mutex-locking", args)
+                    cross_answers = self.cross_answer_arg(args)
                     self.assertTrue(cross_answers.endswith(f"/{expected}"))
+
+    def test_forbidden_pthread_config_defines_fail_before_build(self) -> None:
+        symbols = (
+            "HAVE_PTHREAD",
+            "HAVE_PTHREAD_CREATE",
+            "HAVE_PTHREAD_ATTR_INIT",
+            "HAVE_LIBPTHREAD",
+            "WITH_PTHREADPOOL",
+            "HAVE_ROBUST_MUTEXES",
+            "HAVE_PTHREAD_MUTEXATTR_SETROBUST",
+            "HAVE_PTHREAD_MUTEXATTR_SETROBUST_NP",
+            "HAVE_DECL_PTHREAD_MUTEX_ROBUST",
+            "HAVE_DECL_PTHREAD_MUTEX_ROBUST_NP",
+            "HAVE_PTHREAD_MUTEX_CONSISTENT",
+            "HAVE_PTHREAD_MUTEX_CONSISTENT_NP",
+            "USE_TDB_MUTEX_LOCKING",
+        )
+        for symbol in symbols:
+            with self.subTest(symbol=symbol):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    capture = root / "configure-args.txt"
+                    targets = root / "waf-targets.txt"
+                    env = self.env_for_lane(root, "netbsd7", capture)
+                    env["TEST_CONFIGURE_DEFINE"] = f"#define {symbol} 1"
+                    env["TEST_WAF_TARGETS"] = str(targets)
+
+                    result = self.run_wrapper("samba4x.sh", env)
+
+                    self.assertNotEqual(result.returncode, 0)
+                    log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                    self.assertIn(
+                        f"unexpectedly defined {symbol}",
+                        log,
+                    )
+                    self.assertFalse(targets.exists())
+
+    def test_missing_generated_config_headers_fail_before_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            targets = root / "waf-targets.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+            env["TEST_CONFIGURE_NO_HEADERS"] = "1"
+            env["TEST_WAF_TARGETS"] = str(targets)
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("generated no config.h files", log)
+            self.assertFalse(targets.exists())
+
+    def test_smbd_map_must_be_present_identify_smbd_and_omit_pthread(self) -> None:
+        cases = (
+            ("missing", None, "1", "missing or empty"),
+            ("empty", "", "0", "missing or empty"),
+            (
+                "wrong-output",
+                "OUTPUT(bin/default/testprog elf32-littlearm)\n",
+                "0",
+                "does not identify the smbd output",
+            ),
+            (
+                "pthread",
+                "OUTPUT(bin/default/source3/smbd/smbd elf32-littlearm)\n"
+                "/sysroot/usr/lib/libpthread.a(pthread.o)\n",
+                "0",
+                "contains libpthread.a",
+            ),
+        )
+        for name, map_content, skip_map, expected in cases:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    capture = root / "configure-args.txt"
+                    env = self.env_for_lane(root, "netbsd7", capture)
+                    env["TEST_SKIP_MAP"] = skip_map
+                    if map_content is not None:
+                        env["TEST_MAP_CONTENT"] = map_content
+                    if name == "missing":
+                        stale_map = (
+                            Path(env["SAMBA4X_NETBSD7_BUILD"])
+                            / "smbd-link.map"
+                        )
+                        self.make_file(
+                            stale_map,
+                            "OUTPUT(bin/default/source3/smbd/smbd elf32-littlearm)\n",
+                        )
+
+                    result = self.run_wrapper("samba4x.sh", env)
+
+                    self.assertNotEqual(result.returncode, 0)
+                    log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                    self.assertIn(expected, log)
+
+    def test_opt_in_pthreadpool_lifecycle_target_is_offline_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            targets = root / "waf-targets.txt"
+            cross_exec_capture = root / "cross-exec-args.txt"
+            cross_exec = root / "cross-exec.sh"
+            self.make_fake_cross_execute(cross_exec)
+            env = self.env_for_lane(root, "netbsd7", capture)
+            env.update(
+                {
+                    "TEST_WAF_TARGETS": str(targets),
+                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "TEST_CROSS_EXEC_ARGS": str(cross_exec_capture),
+                }
+            )
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(targets.read_text().splitlines(), ["smbd/smbd"])
+            self.assertIn(
+                "--nonshared-binary=smbd/smbd",
+                self.configure_args(capture),
+            )
+            self.assertFalse(cross_exec_capture.exists())
+
+    def test_opt_in_pthreadpool_lifecycle_build_and_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            targets = root / "waf-targets.txt"
+            cross_exec_capture = root / "cross-exec-args.txt"
+            cross_exec = root / "cross-exec.sh"
+            self.make_fake_cross_execute(cross_exec)
+            env = self.env_for_lane(root, "netbsd7", capture)
+            env.update(
+                {
+                    "TEST_WAF_TARGETS": str(targets),
+                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "TEST_CROSS_EXEC_ARGS": str(cross_exec_capture),
+                    "SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST": "1",
+                }
+            )
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(
+                targets.read_text().splitlines(),
+                ["pthreadpool_tevent_sync_test", "smbd/smbd"],
+            )
+            self.assertIn(
+                "--nonshared-binary=smbd/smbd,pthreadpool_tevent_sync_test",
+                self.configure_args(capture),
+            )
+            self.assertTrue(cross_exec_capture.exists())
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn(
+                "SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=1",
+                log,
+            )
+            self.assertNotIn(
+                "-Map=",
+                next(
+                    line
+                    for line in log.splitlines()
+                    if line.startswith(
+                        "TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS="
+                    )
+                ),
+            )
+
+    def test_netbsd4_without_gc_sections_still_generates_smbd_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            env = self.env_for_lane(root, "netbsd4be", capture)
+            env["SAMBA4X_NETBSD4_GC_SECTIONS"] = "0"
+
+            result = self.run_wrapper("samba4xoldbe.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            map_path = Path(env["SAMBA4X_NETBSD4BE_BUILD"]) / "smbd-link.map"
+            self.assertIn("source3/smbd/smbd", map_path.read_text())
 
     def test_missing_cross_answers_fail_before_configure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

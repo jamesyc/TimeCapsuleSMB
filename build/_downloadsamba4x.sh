@@ -37,6 +37,11 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
         git -C "$SAMBA4X_SRC_DIR" reset --hard HEAD
         git -C "$SAMBA4X_SRC_DIR" checkout -B "$SAMBA4X_GIT_REF" "FETCH_HEAD"
         git -C "$SAMBA4X_SRC_DIR" reset --hard "FETCH_HEAD"
+        # A downstream patch may add a source file. reset --hard removes the
+        # patch's tracked edits but leaves that added file untracked, causing
+        # the next exact git-apply check to fail. This checkout is disposable;
+        # clean only its untracked, non-ignored source files before reapplying.
+        git -C "$SAMBA4X_SRC_DIR" clean -fd
     elif [ -d "$SAMBA4X_SRC_DIR" ]; then
         printf 'Removing existing non-git Samba source tree at %s\n' "$SAMBA4X_SRC_DIR"
         rm -rf "$SAMBA4X_SRC_DIR"

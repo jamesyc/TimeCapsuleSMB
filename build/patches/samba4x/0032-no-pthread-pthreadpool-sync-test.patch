@@ -1,0 +1,280 @@
+diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
+index 1bc9766..f078c97 100644
+--- a/buildtools/wafsamba/wafsamba.py
++++ b/buildtools/wafsamba/wafsamba.py
+@@ -446,15 +446,23 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
+ 
+ 
+ #################################################################
+-def APPLY_SMBD_STATIC_ENV(bld, taskgen):
++def APPLY_TC_STATIC_BINARY_ENV(bld, taskgen):
+     # Time Capsule runs smbd from a tiny RAM disk. Keep the deployed binary
+-    # fully static and apply the static link flags only to smbd; external
+-    # DCE-RPC helper binaries are intentionally not shipped because executing
+-    # them from the HFS data disk is unsafe if Apple firmware unmounts it.
+-    if getattr(taskgen, 'target', None) != 'smbd/smbd':
++    # and the opt-in no-pthread lifecycle test fully static. This follow-on
++    # allowlist extends the smbd-only hook introduced by downstream patch 0001.
++    target = getattr(taskgen, 'target', None)
++    if target == 'smbd/smbd':
++        static_linkflags = TO_LIST(
++            getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
++        static_ldflags = TO_LIST(
++            getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
++    elif target == 'pthreadpool_tevent_sync_test':
++        static_linkflags = TO_LIST(getattr(
++            bld.env, 'TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS', []))
++        static_ldflags = TO_LIST(getattr(
++            bld.env, 'TC_PTHREADPOOL_TEST_STATIC_LDFLAGS', []))
++    else:
+         return
+-    static_linkflags = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
+-    static_ldflags = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
+     if not static_linkflags and not static_ldflags:
+         return
+     taskgen.env = taskgen.env.derive()
+@@ -588,7 +596,7 @@ def SAMBA_BINARY(bld, binname, source,
+         samba_use_hostcc = use_hostcc
+         )
+     APPLY_HOSTCC_ENV(bld, t)
+-    APPLY_SMBD_STATIC_ENV(bld, t)
++    APPLY_TC_STATIC_BINARY_ENV(bld, t)
+ 
+     if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
+         bld.MANPAGES(manpages, install)
+diff --git a/lib/pthreadpool/test_pthreadpool_tevent_sync.c b/lib/pthreadpool/test_pthreadpool_tevent_sync.c
+new file mode 100644
+index 0000000..a2daba9
+--- /dev/null
++++ b/lib/pthreadpool/test_pthreadpool_tevent_sync.c
+@@ -0,0 +1,216 @@
++/*
++ * Exercise pthreadpool_tevent with Samba's synchronous backend.
++ * This target is built and run only by the Time Capsule validation flow.
++ */
++
++#include "replace.h"
++#include <stdio.h>
++#include <talloc.h>
++#include <tevent.h>
++#include "pthreadpool_tevent.h"
++
++struct callback_state {
++	unsigned int calls;
++};
++
++static bool check(bool condition, const char *message)
++{
++	if (condition) {
++		return true;
++	}
++	fprintf(stderr, "FAIL: %s\n", message);
++	return false;
++}
++
++static void increment_job(void *private_data)
++{
++	unsigned int *value = private_data;
++	*value += 1;
++}
++
++static void completion_callback(struct tevent_req *req)
++{
++	struct callback_state *state = tevent_req_callback_data(
++		req, struct callback_state);
++	state->calls += 1;
++}
++
++static bool test_normal_completion(TALLOC_CTX *mem_ctx)
++{
++	struct tevent_context *ev = NULL;
++	struct pthreadpool_tevent *pool = NULL;
++	struct tevent_req *req = NULL;
++	struct callback_state *callback = NULL;
++	unsigned int jobs = 0;
++	int ret;
++
++	fprintf(stderr, "CASE normal: start\n");
++
++	ev = tevent_context_init(mem_ctx);
++	if (!check(ev != NULL, "normal: tevent_context_init")) {
++		return false;
++	}
++	callback = talloc_zero(ev, struct callback_state);
++	if (!check(callback != NULL, "normal: callback state")) {
++		return false;
++	}
++	ret = pthreadpool_tevent_init(ev, 8, &pool);
++	fprintf(stderr, "CASE normal: pool initialized\n");
++	if (!check(ret == 0, "normal: pthreadpool_tevent_init")) {
++		return false;
++	}
++	if (!check(pthreadpool_tevent_max_threads(pool) == 0,
++		   "normal: synchronous backend reports nonzero threads")) {
++		return false;
++	}
++	if (!check(pthreadpool_tevent_queued_jobs(pool) == 0,
++		   "normal: synchronous backend reports queued jobs")) {
++		return false;
++	}
++	req = pthreadpool_tevent_job_send(
++		ev, ev, pool, increment_job, &jobs);
++	fprintf(stderr, "CASE normal: job submitted\n");
++	if (!check(req != NULL, "normal: job_send")) {
++		return false;
++	}
++	if (!check(jobs == 1, "normal: job did not execute inline once")) {
++		return false;
++	}
++	if (!check(tevent_req_is_in_progress(req),
++		   "normal: request completed before immediate dispatch")) {
++		return false;
++	}
++	tevent_req_set_callback(req, completion_callback, callback);
++	if (!check(callback->calls == 0,
++		   "normal: callback ran before event loop")) {
++		return false;
++	}
++	ret = tevent_loop_once(ev);
++	fprintf(stderr, "CASE normal: immediate dispatched\n");
++	if (!check(ret == 0, "normal: tevent_loop_once")) {
++		return false;
++	}
++	if (!check(callback->calls == 1, "normal: callback count")) {
++		return false;
++	}
++	ret = pthreadpool_tevent_job_recv(req);
++	if (!check(ret == 0, "normal: job_recv")) {
++		return false;
++	}
++	TALLOC_FREE(req);
++	TALLOC_FREE(pool);
++	TALLOC_FREE(ev);
++	return true;
++}
++
++static bool test_request_freed_first(TALLOC_CTX *mem_ctx)
++{
++	struct tevent_context *ev = NULL;
++	struct pthreadpool_tevent *pool = NULL;
++	struct tevent_req *req = NULL;
++	unsigned int jobs = 0;
++	int ret;
++
++	fprintf(stderr, "CASE request-first: start\n");
++
++	ev = tevent_context_init(mem_ctx);
++	if (!check(ev != NULL, "request-first: tevent_context_init")) {
++		return false;
++	}
++	ret = pthreadpool_tevent_init(ev, 8, &pool);
++	if (!check(ret == 0, "request-first: pthreadpool_tevent_init")) {
++		return false;
++	}
++	req = pthreadpool_tevent_job_send(
++		ev, ev, pool, increment_job, &jobs);
++	fprintf(stderr, "CASE request-first: job submitted\n");
++	if (!check(req != NULL, "request-first: job_send")) {
++		return false;
++	}
++	if (!check(jobs == 1 && tevent_req_is_in_progress(req),
++		   "request-first: expected inline job and pending immediate")) {
++		return false;
++	}
++	TALLOC_FREE(req);
++	fprintf(stderr, "CASE request-first: request freed\n");
++	ret = tevent_loop_once(ev);
++	fprintf(stderr, "CASE request-first: immediate dispatched\n");
++	if (!check(ret == 0, "request-first: completion immediate")) {
++		return false;
++	}
++	TALLOC_FREE(pool);
++	TALLOC_FREE(ev);
++	return true;
++}
++
++static bool test_pool_freed_first(TALLOC_CTX *mem_ctx)
++{
++	struct tevent_context *ev = NULL;
++	struct pthreadpool_tevent *pool = NULL;
++	struct tevent_req *req = NULL;
++	struct callback_state *callback = NULL;
++	unsigned int jobs = 0;
++	int ret;
++
++	fprintf(stderr, "CASE pool-first: start\n");
++
++	ev = tevent_context_init(mem_ctx);
++	if (!check(ev != NULL, "pool-first: tevent_context_init")) {
++		return false;
++	}
++	callback = talloc_zero(ev, struct callback_state);
++	if (!check(callback != NULL, "pool-first: callback state")) {
++		return false;
++	}
++	ret = pthreadpool_tevent_init(ev, 8, &pool);
++	if (!check(ret == 0, "pool-first: pthreadpool_tevent_init")) {
++		return false;
++	}
++	req = pthreadpool_tevent_job_send(
++		ev, ev, pool, increment_job, &jobs);
++	fprintf(stderr, "CASE pool-first: job submitted\n");
++	if (!check(req != NULL, "pool-first: job_send")) {
++		return false;
++	}
++	if (!check(jobs == 1 && tevent_req_is_in_progress(req),
++		   "pool-first: expected inline job and pending immediate")) {
++		return false;
++	}
++	tevent_req_set_callback(req, completion_callback, callback);
++	TALLOC_FREE(pool);
++	fprintf(stderr, "CASE pool-first: pool freed\n");
++	ret = tevent_loop_once(ev);
++	fprintf(stderr, "CASE pool-first: immediate dispatched\n");
++	if (!check(ret == 0, "pool-first: completion immediate")) {
++		return false;
++	}
++	if (!check(callback->calls == 1, "pool-first: callback count")) {
++		return false;
++	}
++	ret = pthreadpool_tevent_job_recv(req);
++	if (!check(ret == 0, "pool-first: job_recv")) {
++		return false;
++	}
++	TALLOC_FREE(req);
++	TALLOC_FREE(ev);
++	return true;
++}
++
++int main(void)
++{
++	TALLOC_CTX *mem_ctx = talloc_new(NULL);
++	bool ok;
++
++	if (!check(mem_ctx != NULL, "talloc_new")) {
++		return 1;
++	}
++	ok = test_normal_completion(mem_ctx) &&
++		test_request_freed_first(mem_ctx) &&
++		test_pool_freed_first(mem_ctx);
++	TALLOC_FREE(mem_ctx);
++	if (!ok) {
++		return 1;
++	}
++	printf("pthreadpool_tevent synchronous lifecycle: PASS\n");
++	return 0;
++}
+diff --git a/lib/pthreadpool/wscript_build b/lib/pthreadpool/wscript_build
+index 2645847..d052291 100644
+--- a/lib/pthreadpool/wscript_build
++++ b/lib/pthreadpool/wscript_build
+@@ -45,3 +45,9 @@ bld.SAMBA_BINARY('pthreadpool_tevent_cmocka_unit_test',
+                   deps='PTHREADPOOL cmocka',
+                   enabled=bld.env.WITH_PTHREADPOOL,
+                   for_selftest=True)
++
++bld.SAMBA_BINARY('pthreadpool_tevent_sync_test',
++                  source='test_pthreadpool_tevent_sync.c',
++                  deps='PTHREADPOOL',
++                  enabled=not bld.env.WITH_PTHREADPOOL,
++                  install=False)

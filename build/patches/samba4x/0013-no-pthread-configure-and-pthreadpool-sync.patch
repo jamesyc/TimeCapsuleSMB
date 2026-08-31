@@ -1,0 +1,348 @@
+diff --git a/lib/pthreadpool/pthreadpool_tevent.c b/lib/pthreadpool/pthreadpool_tevent.c
+index 422a88c..27f0221 100644
+--- a/lib/pthreadpool/pthreadpool_tevent.c
++++ b/lib/pthreadpool/pthreadpool_tevent.c
+@@ -19,7 +19,9 @@
+ 
+ #include "replace.h"
+ #include "system/filesys.h"
++#ifdef HAVE_PTHREAD
+ #include "system/threads.h"
++#endif
+ #include "pthreadpool_tevent.h"
+ #include "pthreadpool.h"
+ #include "lib/util/tevent_unix.h"
+@@ -27,6 +29,7 @@
+ 
+ struct pthreadpool_tevent_job_state;
+ 
++#ifdef HAVE_PTHREAD
+ /*
+  * We need one pthreadpool_tevent_glue object per unique combination of tevent
+  * contexts and pthreadpool_tevent objects. Maintain a list of used tevent
+@@ -54,21 +57,25 @@ struct pthreadpool_tevent_glue {
+ struct pthreadpool_tevent_glue_ev_link {
+ 	struct pthreadpool_tevent_glue *glue;
+ };
++#endif
+ 
+ struct pthreadpool_tevent {
+ 	struct pthreadpool *pool;
++#ifdef HAVE_PTHREAD
+ 	struct pthreadpool_tevent_glue *glue_list;
+ 	/*
+ 	 * Control access to the glue_list
+ 	 */
+ 	pthread_mutex_t glue_mutex;
++#endif
+ 
+ 	struct pthreadpool_tevent_job_state *jobs;
++#ifdef HAVE_PTHREAD
+ 	/*
+ 	 * Control access to the jobs
+ 	 */
+ 	pthread_mutex_t jobs_mutex;
+-
++#endif
+ };
+ 
+ struct pthreadpool_tevent_job_state {
+@@ -107,6 +114,7 @@ int pthreadpool_tevent_init(TALLOC_CTX *mem_ctx, unsigned max_threads,
+ 		return ret;
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	ret = pthread_mutex_init(&pool->glue_mutex, NULL);
+ 	if (ret != 0) {
+ 		TALLOC_FREE(pool);
+@@ -119,6 +127,7 @@ int pthreadpool_tevent_init(TALLOC_CTX *mem_ctx, unsigned max_threads,
+ 		TALLOC_FREE(pool);
+ 		return ret;
+ 	}
++#endif
+ 
+ 	talloc_set_destructor(pool, pthreadpool_tevent_destructor);
+ 
+@@ -147,7 +156,9 @@ size_t pthreadpool_tevent_queued_jobs(struct pthreadpool_tevent *pool)
+ static int pthreadpool_tevent_destructor(struct pthreadpool_tevent *pool)
+ {
+ 	struct pthreadpool_tevent_job_state *state, *next;
++#ifdef HAVE_PTHREAD
+ 	struct pthreadpool_tevent_glue *glue = NULL;
++#endif
+ 	int ret;
+ 
+ 	ret = pthreadpool_stop(pool->pool);
+@@ -155,16 +166,19 @@ static int pthreadpool_tevent_destructor(struct pthreadpool_tevent *pool)
+ 		return ret;
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	ret = pthread_mutex_lock(&pool->jobs_mutex);
+ 	if (ret != 0 ) {
+ 		return ret;
+ 	}
++#endif
+ 	for (state = pool->jobs; state != NULL; state = next) {
+ 		next = state->next;
+ 		DLIST_REMOVE(pool->jobs, state);
+ 		state->pool = NULL;
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	ret = pthread_mutex_unlock(&pool->jobs_mutex);
+ 	if (ret != 0 ) {
+ 		return ret;
+@@ -190,6 +204,7 @@ static int pthreadpool_tevent_destructor(struct pthreadpool_tevent *pool)
+ 	pthread_mutex_destroy(&pool->glue_mutex);
+ 
+ 	pool->glue_list = NULL;
++#endif
+ 
+ 	ret = pthreadpool_destroy(pool->pool);
+ 	if (ret != 0) {
+@@ -200,6 +215,7 @@ static int pthreadpool_tevent_destructor(struct pthreadpool_tevent *pool)
+ 	return 0;
+ }
+ 
++#ifdef HAVE_PTHREAD
+ /*
+  * glue destruction is only called with
+  * glue_mutex already locked either from
+@@ -346,6 +362,15 @@ static int pthreadpool_tevent_register_ev(struct pthreadpool_tevent *pool,
+ 	}
+ 	return 0;
+ }
++#else
++static int pthreadpool_tevent_register_ev(struct pthreadpool_tevent *pool,
++					  struct tevent_context *ev)
++{
++	(void)pool;
++	(void)ev;
++	return 0;
++}
++#endif
+ 
+ static void pthreadpool_tevent_job_fn(void *private_data);
+ static void pthreadpool_tevent_job_done(struct tevent_context *ctx,
+@@ -427,16 +452,20 @@ struct tevent_req *pthreadpool_tevent_job_send(
+ 	 */
+ 	talloc_set_destructor(state, pthreadpool_tevent_job_state_destructor);
+ 
++#ifdef HAVE_PTHREAD
+ 	ret = pthread_mutex_lock(&pool->jobs_mutex);
+ 	if (tevent_req_error(req, ret)) {
+ 		return tevent_req_post(req, ev);
+ 	}
++#endif
+ 	DLIST_ADD_END(pool->jobs, state);
+ 
++#ifdef HAVE_PTHREAD
+ 	ret = pthread_mutex_unlock(&pool->jobs_mutex);
+ 	if (tevent_req_error(req, ret)) {
+ 		return tevent_req_post(req, ev);
+ 	}
++#endif
+ 
+ 	return req;
+ }
+@@ -456,8 +485,10 @@ static int pthreadpool_tevent_job_signal(int jobid,
+ 	struct pthreadpool_tevent_job_state *state = talloc_get_type_abort(
+ 		job_private_data, struct pthreadpool_tevent_job_state);
+ 	struct tevent_threaded_context *tctx = NULL;
++#ifdef HAVE_PTHREAD
+ 	struct pthreadpool_tevent_glue *g = NULL;
+ 	int ret;
++#endif
+ 
+ 	if (state->pool == NULL) {
+ 		/* The pthreadpool_tevent is already gone */
+@@ -510,17 +541,23 @@ static void pthreadpool_tevent_job_done(struct tevent_context *ctx,
+ 		private_data, struct pthreadpool_tevent_job_state);
+ 
+ 	if (state->pool != NULL) {
++#ifdef HAVE_PTHREAD
+ 		int ret;
+ 		ret = pthread_mutex_lock(&state->pool->jobs_mutex);
+ 		if (tevent_req_error(state->req, ret)) {
+ 			return;
+ 		}
++#endif
+ 		DLIST_REMOVE(state->pool->jobs, state);
++#ifdef HAVE_PTHREAD
+ 		ret = pthread_mutex_unlock(&state->pool->jobs_mutex);
++#endif
+ 		state->pool = NULL;
++#ifdef HAVE_PTHREAD
+ 		if (tevent_req_error(state->req, ret)) {
+ 			return;
+ 		}
++#endif
+ 	}
+ 
+ 	if (state->req == NULL) {
+diff --git a/lib/replace/replace.h b/lib/replace/replace.h
+index 051583c..1fa3cb9 100644
+--- a/lib/replace/replace.h
++++ b/lib/replace/replace.h
+@@ -1122,6 +1122,7 @@ extern const char hexchars_upper[];
+ # ifdef HAVE_PTHREAD
+ # error Configure failed to detect pthread library with missing TLS support
+ # endif
++#define __thread
+ #define HAVE___THREAD
+ #endif
+ 
+diff --git a/lib/replace/wscript b/lib/replace/wscript
+index 4621d90..f598f35 100644
+--- a/lib/replace/wscript
++++ b/lib/replace/wscript
+@@ -626,44 +626,51 @@ syscall(SYS_copy_file_range,0,NULL,0,NULL,0,0);
+        conf.undefine('HAVE_DGETTEXT')
+        conf.undefine('HAVE_DECL_DGETTEXT')
+ 
+-    conf.CHECK_FUNCS_IN('pthread_create', 'pthread', checklibc=True, headers='pthread.h')
+-
+-    PTHREAD_CFLAGS='error'
+-    PTHREAD_LDFLAGS='error'
+-
+-    if PTHREAD_LDFLAGS == 'error':
+-        # Check if pthread_attr_init() is provided by libc first!
+-        if conf.CHECK_FUNCS('pthread_attr_init'):
+-            PTHREAD_CFLAGS='-D_REENTRANT'
+-            PTHREAD_LDFLAGS=''
+-    if PTHREAD_LDFLAGS == 'error':
+-        if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthread'):
+-            PTHREAD_CFLAGS='-D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS'
+-            PTHREAD_LDFLAGS='-lpthread'
+-    if PTHREAD_LDFLAGS == 'error':
+-        if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthreads'):
+-            PTHREAD_CFLAGS='-D_THREAD_SAFE'
+-            PTHREAD_LDFLAGS='-lpthreads'
+-    if PTHREAD_LDFLAGS == 'error':
+-        if conf.CHECK_FUNCS_IN('pthread_attr_init', 'c_r'):
+-            PTHREAD_CFLAGS='-D_THREAD_SAFE -pthread'
+-            PTHREAD_LDFLAGS='-pthread'
+-
+-    # especially for HP-UX, where the CHECK_FUNC macro fails to test for
+-    # pthread_attr_init. On pthread_mutex_lock it works there...
+-    if PTHREAD_LDFLAGS == 'error':
+-        if conf.CHECK_FUNCS_IN('pthread_mutex_lock', 'pthread'):
+-            PTHREAD_CFLAGS='-D_REENTRANT'
+-            PTHREAD_LDFLAGS='-lpthread'
+-
+-    if PTHREAD_CFLAGS != 'error' and PTHREAD_LDFLAGS != 'error':
+-        if conf.CONFIG_SET('replace_add_global_pthread'):
+-            conf.ADD_CFLAGS(PTHREAD_CFLAGS)
+-            conf.ADD_LDFLAGS(PTHREAD_LDFLAGS)
+-        conf.CHECK_HEADERS('pthread.h')
+-        conf.DEFINE('HAVE_PTHREAD', '1')
+-
+-    if conf.CONFIG_SET('HAVE_PTHREAD'):
++    no_pthreads = bool(conf.env.NO_PTHREADS) or not getattr(
++        Options.options, 'with_pthread', True)
++    if no_pthreads:
++        conf.env.replace_add_global_pthread = False
++        conf.SET_TARGET_TYPE('pthread', 'EMPTY')
++        conf.msg('Checking for pthread support', 'disabled by --disable-pthread')
++    else:
++        conf.CHECK_FUNCS_IN('pthread_create', 'pthread', checklibc=True, headers='pthread.h')
++
++        PTHREAD_CFLAGS='error'
++        PTHREAD_LDFLAGS='error'
++
++        if PTHREAD_LDFLAGS == 'error':
++            # Check if pthread_attr_init() is provided by libc first!
++            if conf.CHECK_FUNCS('pthread_attr_init'):
++                PTHREAD_CFLAGS='-D_REENTRANT'
++                PTHREAD_LDFLAGS=''
++        if PTHREAD_LDFLAGS == 'error':
++            if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthread'):
++                PTHREAD_CFLAGS='-D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS'
++                PTHREAD_LDFLAGS='-lpthread'
++        if PTHREAD_LDFLAGS == 'error':
++            if conf.CHECK_FUNCS_IN('pthread_attr_init', 'pthreads'):
++                PTHREAD_CFLAGS='-D_THREAD_SAFE'
++                PTHREAD_LDFLAGS='-lpthreads'
++        if PTHREAD_LDFLAGS == 'error':
++            if conf.CHECK_FUNCS_IN('pthread_attr_init', 'c_r'):
++                PTHREAD_CFLAGS='-D_THREAD_SAFE -pthread'
++                PTHREAD_LDFLAGS='-pthread'
++
++        # especially for HP-UX, where the CHECK_FUNC macro fails to test for
++        # pthread_attr_init. On pthread_mutex_lock it works there...
++        if PTHREAD_LDFLAGS == 'error':
++            if conf.CHECK_FUNCS_IN('pthread_mutex_lock', 'pthread'):
++                PTHREAD_CFLAGS='-D_REENTRANT'
++                PTHREAD_LDFLAGS='-lpthread'
++
++        if PTHREAD_CFLAGS != 'error' and PTHREAD_LDFLAGS != 'error':
++            if conf.CONFIG_SET('replace_add_global_pthread'):
++                conf.ADD_CFLAGS(PTHREAD_CFLAGS)
++                conf.ADD_LDFLAGS(PTHREAD_LDFLAGS)
++            conf.CHECK_HEADERS('pthread.h')
++            conf.DEFINE('HAVE_PTHREAD', '1')
++
++    if not no_pthreads and conf.CONFIG_SET('HAVE_PTHREAD'):
+ 
+         conf.CHECK_FUNCS_IN('pthread_mutexattr_setrobust', 'pthread',
+                             checklibc=True, headers='pthread.h')
+diff --git a/lib/tevent/tevent.c b/lib/tevent/tevent.c
+index 12e1f40..9f26982 100644
+--- a/lib/tevent/tevent.c
++++ b/lib/tevent/tevent.c
+@@ -127,7 +127,9 @@ static void tevent_backend_init(void)
+ 	done = true;
+ 
+ 	tevent_poll_init();
++#ifdef HAVE_PTHREAD
+ 	tevent_poll_mt_init();
++#endif
+ #if defined(HAVE_EPOLL)
+ 	tevent_epoll_init();
+ #endif
+diff --git a/lib/tevent/tevent_threads.c b/lib/tevent/tevent_threads.c
+index 2dc1f17..b45a5e5 100644
+--- a/lib/tevent/tevent_threads.c
++++ b/lib/tevent/tevent_threads.c
+@@ -394,6 +394,7 @@ static int tevent_threaded_context_destructor(
+ 		DLIST_REMOVE(main_ev->threaded_contexts, tctx);
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	/*
+ 	 * We have to coordinate with _tevent_threaded_schedule_immediate's
+ 	 * unlock of the event_ctx_mutex. We're in the main thread here,
+@@ -415,6 +416,7 @@ static int tevent_threaded_context_destructor(
+ 	if (ret != 0) {
+ 		abort();
+ 	}
++#endif
+ 
+ 	return 0;
+ }
+diff --git a/wscript b/wscript
+index a14fd20..d40f6be 100644
+--- a/wscript
++++ b/wscript
+@@ -74,6 +74,7 @@ def options(opt):
+ # It also ensures our container image generation in bootstrap/ is correct
+ # as otherwise a missing package there would just silently work
+ 
++    opt.samba_add_onoff_option('pthread', with_name="enable", without_name="disable", default=True)
+     opt.samba_add_onoff_option('pthreadpool', with_name="enable", without_name="disable", default=True)
+ 
+     opt.add_option('--with-system-mitkrb5',
+@@ -200,7 +201,11 @@ def configure(conf):
+ 
+     conf.ADD_EXTRA_INCLUDES('#include/public #source4 #lib #source4/lib #source4/include #include #lib/replace')
+ 
+-    conf.env.replace_add_global_pthread = True
++    # Time Capsule appliance kernels cannot use Samba's pthread paths. Record
++    # the choice before libreplace probes pthread and constructs dependencies.
++    conf.env.NO_PTHREADS = not getattr(
++        Options.options, 'with_pthread', True)
++    conf.env.replace_add_global_pthread = not conf.env.NO_PTHREADS
+     conf.RECURSE('lib/replace')
+ 
+     conf.RECURSE('examples/fuse')
