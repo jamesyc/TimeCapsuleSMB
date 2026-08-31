@@ -10,10 +10,20 @@ final class MaintenanceStore: ObservableObject {
         didSet { markPlansStaleForOptionChange() }
     }
     @Published var noReboot = false {
-        didSet { markPlansStaleForOptionChange() }
+        didSet {
+            if noReboot && noWait {
+                noWait = false
+            }
+            markPlansStaleForOptionChange()
+        }
     }
     @Published var noWait = false {
-        didSet { markPlansStaleForOptionChange() }
+        didSet {
+            if noWait && noReboot {
+                noReboot = false
+            }
+            markPlansStaleForOptionChange()
+        }
     }
     @Published var repairPath = "" {
         didSet { markRepairScanStaleIfNeeded() }
@@ -454,7 +464,15 @@ final class MaintenanceStore: ObservableObject {
         guard let mountWaitValue else {
             return nil
         }
-        return MaintenanceOptions(noReboot: noReboot, noWait: noWait, mountWait: mountWaitValue)
+        let rebootOptions = RebootExecutionOptionPolicy.normalized(
+            noReboot: noReboot,
+            noWait: noWait
+        )
+        return MaintenanceOptions(
+            noReboot: rebootOptions.noReboot,
+            noWait: rebootOptions.noWait,
+            mountWait: mountWaitValue
+        )
     }
 
     private var trimmedRepairPath: String {

@@ -176,6 +176,37 @@ final class AppSettingsStoreTests: XCTestCase {
         }
     }
 
+    func testCheckboxLocalizationsDoNotFallBackToEnglish() {
+        let keys = [
+            "app_settings.show_raw_events",
+            "diagnostics.backend_events",
+            "checkup.option.skip_bonjour",
+            "checkup.option.skip_smb",
+            "checkup.option.skip_ssh",
+            "toggle.enable_nbns",
+            "toggle.smb_browse_compatibility",
+            "toggle.use_netatalk_metadata",
+            "toggle.enable_vfs_aio_fork",
+            "toggle.no_wait"
+        ]
+        let localizedLanguages = AppLanguage.allCases.filter {
+            $0.localizationIdentifier != nil && $0 != .english
+        }
+
+        for language in localizedLanguages {
+            for key in keys {
+                let localized = L10n.string(key, language: language)
+                XCTAssertFalse(localized.isEmpty, "\(language.rawValue): \(key)")
+                XCTAssertNotEqual(localized, key, "\(language.rawValue): \(key)")
+                XCTAssertNotEqual(
+                    localized,
+                    L10n.string(key, language: .english),
+                    "\(language.rawValue): \(key)"
+                )
+            }
+        }
+    }
+
     func testStructuredLocalPresentationsRerenderAfterLanguageChange() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

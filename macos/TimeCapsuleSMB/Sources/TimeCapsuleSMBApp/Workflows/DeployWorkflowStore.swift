@@ -59,23 +59,6 @@ struct DeployOptions: Equatable {
     }
 }
 
-enum DeployExecutionOptionPolicy {
-    static func allowsNoReboot(noWait: Bool) -> Bool {
-        !noWait
-    }
-
-    static func allowsNoWait(noReboot: Bool) -> Bool {
-        !noReboot
-    }
-
-    static func effectiveRebootOptions(noReboot: Bool, noWait: Bool) -> (noReboot: Bool, noWait: Bool) {
-        if noReboot {
-            return (true, false)
-        }
-        return (false, noWait)
-    }
-}
-
 enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
     case idle
     case planning
@@ -413,7 +396,7 @@ final class DeployWorkflowStore: ObservableObject {
         guard let mountWaitValue, let ataIdleSecondsValue, hasValidAtaStandby else {
             return nil
         }
-        let rebootOptions = DeployExecutionOptionPolicy.effectiveRebootOptions(noReboot: noReboot, noWait: noWait)
+        let rebootOptions = RebootExecutionOptionPolicy.normalized(noReboot: noReboot, noWait: noWait)
         return DeployOptions(
             nbnsEnabled: nbnsEnabled,
             rsyncEnabled: rsyncEnabled,

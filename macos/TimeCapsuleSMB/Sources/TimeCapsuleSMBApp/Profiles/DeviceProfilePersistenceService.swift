@@ -77,6 +77,17 @@ final class DeviceProfilePersistenceService {
         artifacts.discardStagedConfig(at: draft.context.configURL)
     }
 
+    func stageProfileConfig(_ profile: DeviceProfile) throws -> URL {
+        try artifacts.stageConfig(for: profile.id, sourceProfile: profile)
+    }
+
+    func discardStagedProfileConfig(at url: URL?) {
+        guard let url else {
+            return
+        }
+        artifacts.discardStagedConfig(at: url)
+    }
+
     @discardableResult
     func commitConfiguredProfile(
         configuredDevice: ConfiguredDeviceState,
@@ -130,7 +141,8 @@ final class DeviceProfilePersistenceService {
     func saveProfileEdits(
         profile: DeviceProfile,
         fields: DeviceProfileEditableFields,
-        replacementPassword: String? = nil
+        replacementPassword: String? = nil,
+        stagedConfigURL: URL? = nil
     ) async throws -> DeviceProfile {
         var updated = profile
         updated.displayName = fields.displayName
@@ -138,16 +150,42 @@ final class DeviceProfilePersistenceService {
 
         let rollback: PasswordRollback?
         if let replacementPassword {
-            rollback = try passwordRollback(for: profile.keychainAccount)
-            try passwordStore.save(replacementPassword, for: profile.keychainAccount)
+            do {
+                rollback = try passwordRollback(for: profile.keychainAccount)
+            } catch {
+                discardStagedProfileConfig(at: stagedConfigURL)
+                throw error
+            }
+            do {
+                try passwordStore.save(replacementPassword, for: profile.keychainAccount)
+            } catch {
+                discardStagedProfileConfig(at: stagedConfigURL)
+                throw error
+            }
             updated.passwordState = .available
         } else {
             rollback = nil
         }
 
+        let artifactRollback: DeviceProfileArtifacts.CommitRollback?
         do {
-            return try await registry.updateProfile(updated)
+            artifactRollback = try stagedConfigURL.map {
+                try artifacts.commitStagedConfig(at: $0, to: profile.configURL)
+            }
         } catch {
+            if let rollback {
+                rollbackPassword(rollback, account: profile.keychainAccount)
+            }
+            discardStagedProfileConfig(at: stagedConfigURL)
+            throw error
+        }
+
+        do {
+            let saved = try await registry.updateProfile(updated)
+            artifactRollback?.discardBackup()
+            return saved
+        } catch {
+            artifactRollback?.rollback()
             if let rollback {
                 rollbackPassword(rollback, account: profile.keychainAccount)
             }

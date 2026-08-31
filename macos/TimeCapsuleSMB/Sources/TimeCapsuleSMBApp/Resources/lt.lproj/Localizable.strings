@@ -920,7 +920,7 @@
 "toggle.repair_xattrs_include_hidden" = "Įtraukti paslėptus kelius";
 "toggle.repair_xattrs_include_time_machine" = "Įtraukti Time Machine kelius";
 "toggle.repair_xattrs_recursive" = "Rekursyviai";
-"toggle.repair_xattrs_verbose" = "Išsamus išvestis";
+"toggle.repair_xattrs_verbose" = "Išsami išvestis";
 "toolbar.cancel" = "Atšaukti";
 "toolbar.add" = "Pridėti";
 "toolbar.diagnostics" = "Diagnostika";

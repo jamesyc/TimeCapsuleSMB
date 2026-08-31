@@ -23,6 +23,7 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
+    add_boolean_override_arguments,
     add_config_argument,
     add_no_input_argument,
     add_password_source_arguments,
@@ -286,37 +287,67 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Python 3.9 argparse can fail while formatting usage when a visible option
     # follows fully suppressed mutually exclusive groups. Keep this public flag
     # before the internal-only groups below.
-    force_disable_smb_security_group = parser.add_mutually_exclusive_group()
-    force_disable_smb_security_group.add_argument(
-        "--disable-smb-security",
+    add_boolean_override_arguments(
+        parser,
         dest="force_disable_smb_signing_and_encryption",
-        action="store_true",
+        positive_flags=("--force-disable-smb-signing-and-encryption", "--disable-smb-security"),
+        negative_flags=("--no-force-disable-smb-signing-and-encryption", "--no-disable-smb-security"),
         help="Force the Samba server to disable SMB signing and encryption",
     )
-    force_disable_smb_security_group.add_argument(
-        "--no-disable-smb-security",
-        dest="no_force_disable_smb_signing_and_encryption",
-        action="store_true",
-        help=argparse.SUPPRESS,
+    add_boolean_override_arguments(
+        parser,
+        dest="internal_share_use_disk_root",
+        positive_flags=("--internal-share-use-disk-root",),
+        negative_flags=("--no-internal-share-use-disk-root",),
     )
-    parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
-    smb_bind_group = parser.add_mutually_exclusive_group()
-    smb_bind_group.add_argument("--smb-bind-lan-only", action="store_true", help=argparse.SUPPRESS)
-    smb_bind_group.add_argument("--no-smb-bind-lan-only", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--smb-browse-compatibility", action="store_true", help=argparse.SUPPRESS)
-    mdns_afp_group = parser.add_mutually_exclusive_group()
-    mdns_afp_group.add_argument("--mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
-    mdns_afp_group.add_argument("--no-mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
-    any_protocol_group = parser.add_mutually_exclusive_group()
-    any_protocol_group.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
-    any_protocol_group.add_argument("--no-any-protocol", action="store_true", help=argparse.SUPPRESS)
-    vfs_aio_fork_group = parser.add_mutually_exclusive_group()
-    vfs_aio_fork_group.add_argument("--enable-vfs-aio-fork", action="store_true", help=argparse.SUPPRESS)
-    vfs_aio_fork_group.add_argument("--disable-vfs-aio-fork", action="store_true", help=argparse.SUPPRESS)
-    require_smb_encryption_group = parser.add_mutually_exclusive_group()
-    require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
-    require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--netatalk", action="store_true", help=argparse.SUPPRESS)
+    add_boolean_override_arguments(
+        parser,
+        dest="smb_bind_lan_only",
+        positive_flags=("--smb-bind-lan-only",),
+        negative_flags=("--no-smb-bind-lan-only",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="smb_browse_compatibility",
+        positive_flags=("--smb-browse-compatibility",),
+        negative_flags=("--no-smb-browse-compatibility",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="mdns_advertise_afp",
+        positive_flags=("--mdns-advertise-afp",),
+        negative_flags=("--no-mdns-advertise-afp",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="any_protocol",
+        positive_flags=("--any-protocol",),
+        negative_flags=("--no-any-protocol",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="vfs_aio_fork_enabled",
+        positive_flags=("--enable-vfs-aio-fork",),
+        negative_flags=("--disable-vfs-aio-fork",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="require_smb_encryption",
+        positive_flags=("--require-smb-encryption",),
+        negative_flags=("--no-require-smb-encryption",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="fruit_metadata_netatalk",
+        positive_flags=("--netatalk",),
+        negative_flags=("--no-netatalk",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="debug_logging",
+        positive_flags=("--debug-logging",),
+        negative_flags=("--no-debug-logging",),
+    )
     parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -327,26 +358,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     env_path = resolve_app_paths(config_path=args.config).config_path
     env_exists = env_path.exists()
     existing = parse_env_file(env_path)
-    any_protocol = (
-        True if args.any_protocol
-        else False if args.no_any_protocol
-        else None
-    )
-    vfs_aio_fork_enabled = (
-        True if args.enable_vfs_aio_fork
-        else False if args.disable_vfs_aio_fork
-        else None
-    )
-    require_smb_encryption = (
-        True if args.require_smb_encryption
-        else False if args.no_require_smb_encryption
-        else None
-    )
-    force_disable_smb_signing_and_encryption = (
-        True if args.force_disable_smb_signing_and_encryption
-        else False if args.no_force_disable_smb_signing_and_encryption
-        else None
-    )
+    any_protocol = args.any_protocol
+    vfs_aio_fork_enabled = args.vfs_aio_fork_enabled
+    require_smb_encryption = args.require_smb_encryption
+    force_disable_smb_signing_and_encryption = args.force_disable_smb_signing_and_encryption
     try:
         validate_smb_protocol_options(
             any_protocol=(
@@ -570,23 +585,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                         discovered_airport_syap=target.discovered_airport_syap,
                         enable_ssh=True,
                         verbose_wait=not args.json,
-                        internal_share_use_disk_root=True if args.internal_share_use_disk_root else None,
-                        smb_bind_lan_only=(
-                            True if args.smb_bind_lan_only
-                            else False if args.no_smb_bind_lan_only
-                            else None
-                        ),
-                        smb_browse_compatibility=True if args.smb_browse_compatibility else None,
-                        mdns_advertise_afp=(
-                            True if args.mdns_advertise_afp
-                            else False if args.no_mdns_advertise_afp
-                            else None
-                        ),
+                        internal_share_use_disk_root=args.internal_share_use_disk_root,
+                        smb_bind_lan_only=args.smb_bind_lan_only,
+                        smb_browse_compatibility=args.smb_browse_compatibility,
+                        mdns_advertise_afp=args.mdns_advertise_afp,
                         any_protocol=any_protocol,
                         require_smb_encryption=require_smb_encryption,
                         force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
-                        fruit_metadata_netatalk=True if args.netatalk else None,
+                        fruit_metadata_netatalk=args.fruit_metadata_netatalk,
                         vfs_aio_fork_enabled=vfs_aio_fork_enabled,
+                        debug_logging=args.debug_logging,
                         ata_idle_seconds=args.ata_idle_seconds,
                         ata_standby=args.ata_standby,
                         probe=probe_for_context,

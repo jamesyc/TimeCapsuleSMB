@@ -5,6 +5,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
+    add_boolean_override_arguments,
     add_config_argument,
     add_no_input_argument,
     no_input_enabled,
@@ -89,28 +90,65 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Enable the bundled writable rsync daemon on TCP port 873",
     )
-    mdns_afp_group = parser.add_mutually_exclusive_group()
-    mdns_afp_group.add_argument("--mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
-    mdns_afp_group.add_argument("--no-mdns-advertise-afp", action="store_true", help=argparse.SUPPRESS)
-    any_protocol_group = parser.add_mutually_exclusive_group()
-    any_protocol_group.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
-    any_protocol_group.add_argument("--no-any-protocol", action="store_true", help=argparse.SUPPRESS)
-    vfs_aio_fork_group = parser.add_mutually_exclusive_group()
-    vfs_aio_fork_group.add_argument("--enable-vfs-aio-fork", action="store_true", help=argparse.SUPPRESS)
-    vfs_aio_fork_group.add_argument("--disable-vfs-aio-fork", action="store_true", help=argparse.SUPPRESS)
-    require_smb_encryption_group = parser.add_mutually_exclusive_group()
-    require_smb_encryption_group.add_argument("--require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
-    require_smb_encryption_group.add_argument("--no-require-smb-encryption", action="store_true", help=argparse.SUPPRESS)
-    force_disable_smb_security_group = parser.add_mutually_exclusive_group()
-    force_disable_smb_security_group.add_argument(
-        "--force-disable-smb-signing-and-encryption",
-        action="store_true",
-        help=argparse.SUPPRESS,
+    add_boolean_override_arguments(
+        parser,
+        dest="internal_share_use_disk_root",
+        positive_flags=("--internal-share-use-disk-root",),
+        negative_flags=("--no-internal-share-use-disk-root",),
     )
-    force_disable_smb_security_group.add_argument(
-        "--no-force-disable-smb-signing-and-encryption",
-        action="store_true",
-        help=argparse.SUPPRESS,
+    add_boolean_override_arguments(
+        parser,
+        dest="smb_bind_lan_only",
+        positive_flags=("--smb-bind-lan-only",),
+        negative_flags=("--no-smb-bind-lan-only",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="smb_browse_compatibility",
+        positive_flags=("--smb-browse-compatibility",),
+        negative_flags=("--no-smb-browse-compatibility",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="mdns_advertise_afp",
+        positive_flags=("--mdns-advertise-afp",),
+        negative_flags=("--no-mdns-advertise-afp",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="any_protocol",
+        positive_flags=("--any-protocol",),
+        negative_flags=("--no-any-protocol",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="vfs_aio_fork_enabled",
+        positive_flags=("--enable-vfs-aio-fork",),
+        negative_flags=("--disable-vfs-aio-fork",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="require_smb_encryption",
+        positive_flags=("--require-smb-encryption",),
+        negative_flags=("--no-require-smb-encryption",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="force_disable_smb_signing_and_encryption",
+        positive_flags=("--force-disable-smb-signing-and-encryption",),
+        negative_flags=("--no-force-disable-smb-signing-and-encryption",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="fruit_metadata_netatalk",
+        positive_flags=("--netatalk",),
+        negative_flags=("--no-netatalk",),
+    )
+    add_boolean_override_arguments(
+        parser,
+        dest="debug_logging",
+        positive_flags=("--debug-logging",),
+        negative_flags=("--no-debug-logging",),
     )
     parser.add_argument(
         "--mount-wait",
@@ -119,7 +157,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         metavar="SECONDS",
         help=f"Seconds for each deployment-time diskd.useVolume mount guard attempt to wait (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
     )
-    parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     if args.json and not args.dry_run:
@@ -127,31 +164,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     nbns_enabled = not args.no_nbns
     rsync_enabled = bool(args.enable_rsync)
-    mdns_advertise_afp = (
-        True if args.mdns_advertise_afp
-        else False if args.no_mdns_advertise_afp
-        else None
-    )
-    any_protocol = (
-        True if args.any_protocol
-        else False if args.no_any_protocol
-        else None
-    )
-    vfs_aio_fork_enabled = (
-        True if args.enable_vfs_aio_fork
-        else False if args.disable_vfs_aio_fork
-        else None
-    )
-    require_smb_encryption = (
-        True if args.require_smb_encryption
-        else False if args.no_require_smb_encryption
-        else None
-    )
-    force_disable_smb_signing_and_encryption = (
-        True if args.force_disable_smb_signing_and_encryption
-        else False if args.no_force_disable_smb_signing_and_encryption
-        else None
-    )
+    mdns_advertise_afp = args.mdns_advertise_afp
+    any_protocol = args.any_protocol
+    vfs_aio_fork_enabled = args.vfs_aio_fork_enabled
+    require_smb_encryption = args.require_smb_encryption
+    force_disable_smb_signing_and_encryption = args.force_disable_smb_signing_and_encryption
     deploy_options = DeployOptions(
         dry_run=args.dry_run,
         no_reboot=args.no_reboot,
@@ -297,10 +314,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                     nbns_enabled=nbns_enabled,
                     rsync_enabled=deploy_options.rsync_enabled,
                     debug_logging=args.debug_logging,
+                    internal_share_use_disk_root=args.internal_share_use_disk_root,
+                    smb_bind_lan_only=args.smb_bind_lan_only,
+                    smb_browse_compatibility=args.smb_browse_compatibility,
                     mdns_advertise_afp=mdns_advertise_afp,
                     any_protocol=any_protocol,
                     require_smb_encryption=require_smb_encryption,
                     force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+                    fruit_metadata_netatalk=args.fruit_metadata_netatalk,
                     vfs_aio_fork_enabled=vfs_aio_fork_enabled,
                 ),
                 callbacks=command_context.to_operation_callbacks(),

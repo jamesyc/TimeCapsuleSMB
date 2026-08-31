@@ -114,7 +114,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertFalse(store.canSave)
     }
 
-    func testUnchangedHostSaveUpdatesProfileSettingsWithoutBackendConfigure() async throws {
+    func testUnchangedHostSaveSynchronizesProfileSettingsAndConfigWithoutDeviceConfigure() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
@@ -139,6 +139,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.ataStandby = "0"
 
         await store.save(profile: profile)
+        try await waitUntilStoreState { store.state == .saved }
 
         let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(store.state, .saved)
@@ -158,7 +159,11 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             ataIdleSeconds: 0,
             ataStandby: 0
         ))
-        XCTAssertEqual(fixture.runner.calls, [])
+        let call = try XCTUnwrap(fixture.runner.calls.first)
+        XCTAssertEqual(call.operation, "update-config-settings")
+        XCTAssertEqual(call.params["smb_bind_lan_only"], .bool(false))
+        XCTAssertEqual(call.params["vfs_aio_fork_enabled"], .bool(true))
+        XCTAssertTrue(try String(contentsOf: saved.configURL, encoding: .utf8).contains("TC_TEST_SETTINGS_SYNCED=1"))
     }
 
     func testEquivalentHostEditDoesNotRunBackendConfigure() async throws {
@@ -175,12 +180,13 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.displayName = "Media Capsule"
 
         await store.save(profile: profile)
+        try await waitUntilStoreState { store.state == .saved }
 
         let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(store.state, .saved)
         XCTAssertEqual(saved.host, "root@10.0.0.2")
         XCTAssertEqual(saved.displayName, "Media Capsule")
-        XCTAssertEqual(fixture.runner.calls, [])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["update-config-settings"])
     }
 
     func testPasswordOnlySaveUpdatesKeychainAndClearsDraft() async throws {
@@ -202,13 +208,14 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertTrue(store.canSave)
 
         await store.save(profile: profile)
+        try await waitUntilStoreState { store.state == .saved }
 
         XCTAssertEqual(store.state, .saved)
         XCTAssertEqual(store.replacementPassword, "")
         XCTAssertNil(store.passwordError)
         XCTAssertEqual(try fixture.passwordStore.password(for: profile.keychainAccount), "new-password")
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .available)
-        XCTAssertEqual(fixture.runner.calls, [])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["update-config-settings"])
     }
 
     func testPasswordSaveFailureKeepsDraftAndDoesNotMarkAvailable() async throws {
@@ -224,6 +231,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.replacementPassword = "new-password"
 
         await store.save(profile: profile)
+        try await waitUntilStoreState { store.state == .failed }
 
         XCTAssertEqual(store.state, .failed)
         XCTAssertEqual(store.replacementPassword, "new-password")
@@ -267,6 +275,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.displayName = ""
 
         await store.save(profile: profile)
+        try await waitUntilStoreState { store.state == .saved }
 
         let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(store.state, .saved)

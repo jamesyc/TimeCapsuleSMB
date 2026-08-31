@@ -251,11 +251,11 @@ private struct InstallExecutionOptionsView: View {
     }
 
     private var allowsNoReboot: Bool {
-        DeployExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait)
+        RebootExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait)
     }
 
     private var allowsNoWait: Bool {
-        DeployExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot)
+        RebootExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot)
     }
 
     private var noWaitBinding: Binding<Bool> {

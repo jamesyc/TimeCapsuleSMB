@@ -73,40 +73,86 @@ enum OperationParams {
         ) -> [String: JSONValue] {
             var params: [String: JSONValue] = [
                 "password": .string(password),
-                "persist_password": .bool(false),
-                "debug_logging": .bool(debugLogging)
+                "persist_password": .bool(false)
             ]
             if let selectedRecord {
                 params["selected_record"] = selectedRecord
             } else {
                 params["host"] = .string(DeviceEndpointPolicy.rootSSHTarget(host))
             }
-            if let internalShareUseDiskRoot {
-                params["internal_share_use_disk_root"] = .bool(internalShareUseDiskRoot)
+            params.merge(managedSettings(
+                debugLogging: debugLogging,
+                internalShareUseDiskRoot: internalShareUseDiskRoot,
+                smbBindLanOnly: smbBindLanOnly,
+                smbBrowseCompatibility: smbBrowseCompatibility,
+                mdnsAdvertiseAFP: mdnsAdvertiseAFP,
+                anyProtocol: anyProtocol,
+                requireSMBEncryption: requireSMBEncryption,
+                forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
+                fruitMetadataNetatalk: fruitMetadataNetatalk,
+                vfsAIOForkEnabled: vfsAIOForkEnabled,
+                ataIdleSeconds: ataIdleSeconds,
+                ataStandby: ataStandby,
+                includeAtaStandby: includeAtaStandby
+            )) { _, new in new }
+            if let localNetworkPreflight {
+                for (key, value) in localNetworkPreflight.telemetryFields {
+                    params[key] = value
+                }
             }
-            if let smbBindLanOnly {
-                params["smb_bind_lan_only"] = .bool(smbBindLanOnly)
-            }
-            if let smbBrowseCompatibility {
-                params["smb_browse_compatibility"] = .bool(smbBrowseCompatibility)
-            }
-            if let mdnsAdvertiseAFP {
-                params["mdns_advertise_afp"] = .bool(mdnsAdvertiseAFP)
-            }
-            if let anyProtocol {
-                params["any_protocol"] = .bool(anyProtocol)
-            }
-            if let requireSMBEncryption {
-                params["require_smb_encryption"] = .bool(requireSMBEncryption)
-            }
-            if let forceDisableSMBSigningAndEncryption {
-                params["force_disable_smb_signing_and_encryption"] = .bool(forceDisableSMBSigningAndEncryption)
-            }
-            if let fruitMetadataNetatalk {
-                params["fruit_metadata_netatalk"] = .bool(fruitMetadataNetatalk)
-            }
-            if let vfsAIOForkEnabled {
-                params["vfs_aio_fork_enabled"] = .bool(vfsAIOForkEnabled)
+            return params
+        }
+
+        static func updateSettings(_ settings: DeviceProfileSettings) -> [String: JSONValue] {
+            managedSettings(
+                debugLogging: settings.debugLogging,
+                internalShareUseDiskRoot: settings.internalShareUseDiskRoot,
+                smbBindLanOnly: settings.smbBindLanOnly,
+                smbBrowseCompatibility: settings.smbBrowseCompatibility,
+                mdnsAdvertiseAFP: settings.mdnsAdvertiseAFP,
+                anyProtocol: settings.anyProtocol,
+                requireSMBEncryption: settings.requireSMBEncryption,
+                forceDisableSMBSigningAndEncryption: settings.forceDisableSMBSigningAndEncryption,
+                fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
+                vfsAIOForkEnabled: settings.vfsAIOForkEnabled,
+                ataIdleSeconds: settings.ataIdleSeconds,
+                ataStandby: settings.ataStandby,
+                includeAtaStandby: true
+            )
+        }
+
+        private static func managedSettings(
+            debugLogging: Bool?,
+            internalShareUseDiskRoot: Bool?,
+            smbBindLanOnly: Bool?,
+            smbBrowseCompatibility: Bool?,
+            mdnsAdvertiseAFP: Bool?,
+            anyProtocol: Bool?,
+            requireSMBEncryption: Bool?,
+            forceDisableSMBSigningAndEncryption: Bool?,
+            fruitMetadataNetatalk: Bool?,
+            vfsAIOForkEnabled: Bool?,
+            ataIdleSeconds: Int?,
+            ataStandby: Int?,
+            includeAtaStandby: Bool
+        ) -> [String: JSONValue] {
+            var params: [String: JSONValue] = [:]
+            let booleans: [(String, Bool?)] = [
+                ("debug_logging", debugLogging),
+                ("internal_share_use_disk_root", internalShareUseDiskRoot),
+                ("smb_bind_lan_only", smbBindLanOnly),
+                ("smb_browse_compatibility", smbBrowseCompatibility),
+                ("mdns_advertise_afp", mdnsAdvertiseAFP),
+                ("any_protocol", anyProtocol),
+                ("require_smb_encryption", requireSMBEncryption),
+                ("force_disable_smb_signing_and_encryption", forceDisableSMBSigningAndEncryption),
+                ("fruit_metadata_netatalk", fruitMetadataNetatalk),
+                ("vfs_aio_fork_enabled", vfsAIOForkEnabled)
+            ]
+            for (key, value) in booleans {
+                if let value {
+                    params[key] = .bool(value)
+                }
             }
             if let ataIdleSeconds {
                 params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
@@ -115,11 +161,6 @@ enum OperationParams {
                 params["ata_standby"] = .number(Double(ataStandby))
             } else if includeAtaStandby {
                 params["ata_standby"] = .string("")
-            }
-            if let localNetworkPreflight {
-                for (key, value) in localNetworkPreflight.telemetryFields {
-                    params[key] = value
-                }
             }
             return params
         }

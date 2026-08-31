@@ -85,7 +85,7 @@
 "app_settings.section.privacy" = "Privacy";
 "app_settings.section.time_machine" = "Time Machine";
 "app_settings.section.updates" = "Updates";
-"app_settings.show_raw_events" = "Toon onbewerkte backend gebeurtenissen in Diagnostics";
+"app_settings.show_raw_events" = "Toon onbewerkte backendgebeurtenissen in Diagnostiek";
 "app_settings.subtitle" = "Standaardwaarden voor nieuwe apparaten en gedrag op app-niveau.";
 "app_settings.telemetry_enabled" = "Deel anonieme telemetrie";
 "app_settings.time_machine_warnings" = "Toon macOS Time Machine compatibiliteitswaarschuwingen";
@@ -309,7 +309,7 @@
 "runtime.state.unknown" = "Niet geïnstalleerd.";
 "runtime.state.not_installed" = "Niet geïnstalleerd.";
 "runtime.state.unhealthy" = "Checkup heeft runtime problemen gevonden.";
-"diagnostics.backend_events" = "Backend Evenementen";
+"diagnostics.backend_events" = "Backendgebeurtenissen";
 "diagnostics.copied" = "Gekopieerd diagnostics.";
 "diagnostics.copy" = "Kopieer Diagnostics";
 "diagnostics.distribution" = "Distributie";
@@ -499,9 +499,9 @@
 "discovery_monitor.state.ready" = "Apparaten gevonden";
 "discovery_monitor.state.waiting_for_readiness" = "Wachten op app gereedheid";
 "checkup.advanced_options" = "Geavanceerde opties";
-"checkup.option.skip_bonjour" = "Sla Bonjour controles over";
-"checkup.option.skip_smb" = "Sla SMB cheques over";
-"checkup.option.skip_ssh" = "Sla SSH controles over";
+"checkup.option.skip_bonjour" = "Sla Bonjour-controles over";
+"checkup.option.skip_smb" = "Sla SMB-controles over";
+"checkup.option.skip_ssh" = "Sla SSH-controles over";
 "checkup.status.failed" = "Mislukt";
 "checkup.status.info" = "Info";
 "checkup.status.passed" = "Geslaagd";
@@ -902,10 +902,10 @@
 "timeline.stage.verifying_smb" = "Verificatie van SMB";
 "timeline.stage.waiting_for_device" = "Wachten op apparaat";
 "toggle.enable_debug_logging" = "Debug-logboekregistratie inschakelen";
-"toggle.enable_nbns" = "Inschakelen NBNS";
+"toggle.enable_nbns" = "NBNS inschakelen";
 "toggle.internal_share_use_disk_root" = "Intern delen maakt gebruik van schijfroot";
 "toggle.smb_bind_lan_only" = "SMB alleen aan LAN binden";
-"toggle.smb_browse_compatibility" = "Toestaan SMB Bladeren delen";
+"toggle.smb_browse_compatibility" = "Bladeren door SMB-shares toestaan";
 "toggle.mdns_advertise_afp" = "AFP via Bonjour adverteren";
 "toggle.any_protocol" = "Elk SMB-protocol toestaan";
 "toggle.require_smb_encryption" = "SMB-versleuteling vereisen";
@@ -915,7 +915,7 @@
 "toggle.enable_vfs_aio_fork" = "vfs_aio_fork inschakelen";
 "toggle.force_debug_logging" = "Forceer logboekregistratie voor foutopsporing";
 "toggle.no_reboot" = "Geen herstart";
-"toggle.no_wait" = "No Wait";
+"toggle.no_wait" = "Niet wachten";
 "toggle.repair_xattrs_fix_permissions" = "Repareer rechten";
 "toggle.repair_xattrs_include_hidden" = "Inclusief verborgen paden";
 "toggle.repair_xattrs_include_time_machine" = "Inclusief Time Machine Paden";

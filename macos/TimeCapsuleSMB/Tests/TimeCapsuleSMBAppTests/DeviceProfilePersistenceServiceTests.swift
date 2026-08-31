@@ -174,6 +174,86 @@ final class DeviceProfilePersistenceServiceTests: XCTestCase {
         XCTAssertEqual(try passwordStore.password(for: profile.keychainAccount), "new-secret")
     }
 
+    func testProfileEditCommitsStagedConfigWithSettings() async throws {
+        let temp = try TemporaryDirectory()
+        let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await registry.load()
+        let profile = try await registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try writeTestConfig(to: profile.configURL)
+        let service = DeviceProfilePersistenceService(
+            registry: registry,
+            passwordStore: InMemoryPasswordStore()
+        )
+        let stagedConfigURL = try service.stageProfileConfig(profile)
+        try "TC_HOST=root@10.0.0.2\nTC_ANY_PROTOCOL=true\n".write(
+            to: stagedConfigURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        var settings = profile.settings
+        settings.anyProtocol = true
+
+        let saved = try await service.saveProfileEdits(
+            profile: profile,
+            fields: DeviceProfileEditableFields(displayName: "Updated", settings: settings),
+            stagedConfigURL: stagedConfigURL
+        )
+
+        XCTAssertEqual(saved.displayName, "Updated")
+        XCTAssertTrue(saved.settings.anyProtocol)
+        XCTAssertEqual(
+            try String(contentsOf: saved.configURL, encoding: .utf8),
+            "TC_HOST=root@10.0.0.2\nTC_ANY_PROTOCOL=true\n"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedConfigURL.path))
+    }
+
+    func testProfileEditRegistryFailureRestoresPreviousConfig() async throws {
+        let temp = try TemporaryDirectory()
+        let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await registry.load()
+        let profile = try await registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try writeTestConfig(to: profile.configURL)
+        let service = DeviceProfilePersistenceService(
+            registry: registry,
+            passwordStore: InMemoryPasswordStore()
+        )
+        let stagedConfigURL = try service.stageProfileConfig(profile)
+        try "TC_HOST=root@10.0.0.2\nTC_ANY_PROTOCOL=true\n".write(
+            to: stagedConfigURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.removeItem(at: registry.registryURL)
+        try FileManager.default.createDirectory(at: registry.registryURL, withIntermediateDirectories: false)
+
+        do {
+            _ = try await service.saveProfileEdits(
+                profile: profile,
+                fields: DeviceProfileEditableFields(displayName: "Updated", settings: profile.settings),
+                stagedConfigURL: stagedConfigURL
+            )
+            XCTFail("Expected registry update failure.")
+        } catch {
+            XCTAssertNotNil(error)
+        }
+
+        XCTAssertEqual(
+            try String(contentsOf: profile.configURL, encoding: .utf8),
+            "TC_HOST=root@10.0.0.2\n"
+        )
+    }
+
     func testForgetRestoresPasswordWhenRegistryDeleteFails() async throws {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)

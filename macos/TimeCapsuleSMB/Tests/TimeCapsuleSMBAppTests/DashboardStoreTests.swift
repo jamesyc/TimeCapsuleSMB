@@ -320,6 +320,7 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.replacementPassword = "new-password"
 
         await session.profileEditorStore.save(profile: profile)
+        try await waitUntilStoreState { session.profileEditorStore.state == .saved }
 
         XCTAssertEqual(session.profileEditorStore.replacementPassword, "")
         XCTAssertNil(session.profileEditorStore.passwordError)
@@ -340,6 +341,7 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.replacementPassword = "new-password"
 
         await session.profileEditorStore.save(profile: profile)
+        try await waitUntilStoreState { session.profileEditorStore.state == .failed }
 
         XCTAssertEqual(session.profileEditorStore.replacementPassword, "new-password")
         XCTAssertEqual(session.profileEditorStore.passwordError, "In-memory password store save failed.")
@@ -389,6 +391,7 @@ final class DashboardStoreTests: XCTestCase {
             nbnsEnabled: false,
             rsyncEnabled: true,
             internalShareUseDiskRoot: true,
+            smbBindLanOnly: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
@@ -406,6 +409,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
+        XCTAssertEqual(session.deployStore.smbBindLanOnly, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
@@ -444,6 +448,7 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.nbnsEnabled = false
         session.profileEditorStore.draft.rsyncEnabled = true
         session.profileEditorStore.draft.internalShareUseDiskRoot = true
+        session.profileEditorStore.draft.smbBindLanOnly = true
         session.profileEditorStore.draft.smbBrowseCompatibility = true
         session.profileEditorStore.draft.mdnsAdvertiseAFP = true
         session.profileEditorStore.draft.anyProtocol = true
@@ -455,11 +460,13 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.ataStandby = "0"
 
         await session.profileEditorStore.save(profile: profile)
+        try await waitUntilStoreState { session.profileEditorStore.state == .saved }
 
         XCTAssertEqual(session.profileEditorStore.state, .saved)
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
+        XCTAssertEqual(session.deployStore.smbBindLanOnly, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)

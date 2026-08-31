@@ -417,6 +417,7 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("flash", payload["operations"])
         self.assertIn("reachability", payload["operations"])
         self.assertIn("set-ssh", payload["operations"])
+        self.assertNotIn("update-config-settings", payload["operations"])
         self.assertNotIn("ssh-access", payload["operations"])
         self.assertNotIn("telemetry-identity", payload["operations"])
         self.assertNotIn("paths", payload["operations"])
@@ -1902,6 +1903,87 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(values["TC_FRUIT_METADATA_NETATALK"], "true")
+
+    def test_update_config_settings_is_local_and_preserves_credentials_and_custom_values(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text(
+                "TC_HOST=root@10.0.0.2\n"
+                "TC_CONFIGURE_ID=existing-id\n"
+                "TC_CUSTOM_SETTING='kept value'\n"
+            )
+
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state") as probe:
+                rc = service.run_api_request(
+                    {
+                        "operation": "update-config-settings",
+                        "params": {
+                            "config": str(config_path),
+                            "internal_share_use_disk_root": True,
+                            "smb_bind_lan_only": True,
+                            "smb_browse_compatibility": True,
+                            "mdns_advertise_afp": True,
+                            "any_protocol": True,
+                            "require_smb_encryption": False,
+                            "force_disable_smb_signing_and_encryption": True,
+                            "fruit_metadata_netatalk": False,
+                            "vfs_aio_fork_enabled": True,
+                            "debug_logging": True,
+                            "ata_idle_seconds": 0,
+                            "ata_standby": "",
+                        },
+                    },
+                    collector.sink,
+                )
+                probe.assert_not_called()
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
+        self.assertEqual(values["TC_CONFIGURE_ID"], "existing-id")
+        self.assertEqual(values["TC_CUSTOM_SETTING"], "kept value")
+        self.assertEqual(values["TC_PASSWORD"], "")
+        self.assertEqual(values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "true")
+        self.assertEqual(values["TC_SMB_BIND_LAN_ONLY"], "true")
+        self.assertEqual(values["TC_SMB_BROWSE_COMPATIBILITY"], "true")
+        self.assertEqual(values["TC_MDNS_ADVERTISE_AFP"], "true")
+        self.assertEqual(values["TC_ANY_PROTOCOL"], "true")
+        self.assertEqual(values["TC_REQUIRE_SMB_ENCRYPTION"], "false")
+        self.assertEqual(values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+        self.assertEqual(values["TC_FRUIT_METADATA_NETATALK"], "false")
+        self.assertEqual(values["TC_VFS_AIO_FORK_ENABLED"], "true")
+        self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
+        self.assertEqual(values["TC_ATA_IDLE_SECONDS"], "0")
+        self.assertEqual(values["TC_ATA_STANDBY"], "")
+        self.assertEqual(
+            [event["stage"] for event in collector.events_of_type("stage")],
+            ["load_existing_config", "write_env"],
+        )
+
+    def test_update_config_settings_validation_failure_leaves_config_unchanged(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            original = "TC_HOST=root@10.0.0.2\nTC_ANY_PROTOCOL=false\n"
+            config_path.write_text(original)
+
+            rc = service.run_api_request(
+                {
+                    "operation": "update-config-settings",
+                    "params": {
+                        "config": str(config_path),
+                        "any_protocol": True,
+                        "require_smb_encryption": True,
+                    },
+                },
+                collector.sink,
+            )
+
+            self.assertEqual(config_path.read_text(), original)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(collector.events_of_type("error")[0]["code"], "validation_failed")
 
     def test_configure_vfs_aio_fork_param_writes_true(self) -> None:
         collector = CollectingSink()

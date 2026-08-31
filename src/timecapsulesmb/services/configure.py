@@ -369,6 +369,47 @@ def build_configure_env_values(
     ata_idle_seconds: object | None = None,
     ata_standby: object | None = None,
 ) -> dict[str, str]:
+    values = build_managed_config_env_values(
+        existing,
+        internal_share_use_disk_root=internal_share_use_disk_root,
+        smb_bind_lan_only=smb_bind_lan_only,
+        smb_browse_compatibility=smb_browse_compatibility,
+        mdns_advertise_afp=mdns_advertise_afp,
+        any_protocol=any_protocol,
+        require_smb_encryption=require_smb_encryption,
+        force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
+        fruit_metadata_netatalk=fruit_metadata_netatalk,
+        vfs_aio_fork_enabled=vfs_aio_fork_enabled,
+        debug_logging=debug_logging,
+        ata_idle_seconds=ata_idle_seconds,
+        ata_standby=ata_standby,
+    )
+    values.update({
+        "TC_HOST": host,
+        "TC_PASSWORD": password,
+        "TC_SSH_OPTS": ssh_opts,
+        "TC_CONFIGURE_ID": configure_id,
+    })
+    return values
+
+
+def build_managed_config_env_values(
+    existing: dict[str, str],
+    *,
+    internal_share_use_disk_root: bool | None = None,
+    smb_bind_lan_only: bool | None = None,
+    smb_browse_compatibility: bool | None = None,
+    mdns_advertise_afp: bool | None = None,
+    any_protocol: bool | None = None,
+    require_smb_encryption: bool | None = None,
+    force_disable_smb_signing_and_encryption: bool | None = None,
+    fruit_metadata_netatalk: bool | None = None,
+    vfs_aio_fork_enabled: bool | None = None,
+    debug_logging: bool | None = None,
+    ata_idle_seconds: object | None = None,
+    ata_standby: object | None = None,
+) -> dict[str, str]:
+    """Apply profile-managed settings without changing device identity or credentials."""
     effective_any_protocol = (
         parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
         if any_protocol is None
@@ -397,9 +438,6 @@ def build_configure_env_values(
 
     values = preserved_env_file_values(existing)
     values.update({
-        "TC_HOST": host,
-        "TC_PASSWORD": password,
-        "TC_SSH_OPTS": ssh_opts,
         "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true" if (
             parse_bool(existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"]))
             if internal_share_use_disk_root is None
@@ -450,7 +488,6 @@ def build_configure_env_values(
             if ata_standby is None
             else _optional_unsigned_config_value(ata_standby, "TC_ATA_STANDBY")
         ),
-        "TC_CONFIGURE_ID": configure_id,
     })
     return values
 

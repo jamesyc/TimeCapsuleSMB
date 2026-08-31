@@ -240,7 +240,9 @@ final class DeviceProfileEditorStore: ObservableObject {
     private var pendingProfile: DeviceProfile?
     private var pendingEditableFields: DeviceProfileEditableFields?
     private var pendingPassword: String?
+    private var pendingReplacementPassword: String?
     private var pendingConfigureDraft: ConfigureProfileDraft?
+    private var pendingStagedConfigURL: URL?
     private var localNetworkPreflightTask: Task<Void, Never>?
     private var isApplyingDraft = false
     private var isApplyingPasswordDraft = false
@@ -337,7 +339,11 @@ final class DeviceProfileEditorStore: ObservableObject {
             }
             startReconfigure(profile: profile, password: password, settings: settings)
         } else {
-            await saveRegistryOnly(profile: profile, settings: settings, replacementPassword: pendingReplacementPassword)
+            startSettingsSave(
+                profile: profile,
+                settings: settings,
+                replacementPassword: pendingReplacementPassword
+            )
         }
     }
 
@@ -388,30 +394,50 @@ final class DeviceProfileEditorStore: ObservableObject {
         )
     }
 
-    private func saveRegistryOnly(profile: DeviceProfile, settings: DeviceProfileSettings, replacementPassword: String?) async {
-        state = .saving
+    private func startSettingsSave(
+        profile: DeviceProfile,
+        settings: DeviceProfileSettings,
+        replacementPassword: String?
+    ) {
+        let stagedConfigURL: URL
+        do {
+            stagedConfigURL = try profilePersistence.stageProfileConfig(profile)
+        } catch {
+            failSave(error)
+            return
+        }
+        let editableFields = DeviceProfileEditableFields(
+            displayName: draft.displayName,
+            settings: settings
+        )
+        let start = coordinator.run(
+            operation: "update-config-settings",
+            params: OperationParams.Configure.updateSettings(settings),
+            context: DeviceRuntimeContext(profileID: profile.id, configURL: stagedConfigURL),
+            activeDeviceID: profile.id,
+            laneKey: .deviceWorkflow(profile.id, .configure)
+        )
+        guard case .started(let operation) = start else {
+            profilePersistence.discardStagedProfileConfig(at: stagedConfigURL)
+            error = BackendErrorViewModel(
+                operation: "update-config-settings",
+                code: "operation_rejected",
+                message: start.rejectionMessage ?? L10n.string("operation.error.already_running")
+            )
+            state = .failed
+            return
+        }
+        operationObserver.start(operation)
+        pendingProfile = profile
+        pendingEditableFields = editableFields
+        pendingReplacementPassword = replacementPassword
+        pendingStagedConfigURL = stagedConfigURL
         validationErrors = []
         error = nil
         currentStage = nil
-        do {
-            let saved = try await appStore.saveProfileEdits(
-                profile: profile,
-                fields: DeviceProfileEditableFields(displayName: draft.displayName, settings: settings),
-                replacementPassword: replacementPassword
-            )
-            savedProfile = saved
-            let savedDraft = DeviceProfileEditorDraft(profile: saved)
-            baselineDraft = savedDraft
-            applyDraft(savedDraft)
-            applyPasswordDraft("")
-            passwordError = nil
-            state = .saved
-        } catch {
-            if replacementPassword != nil {
-                passwordError = error.localizedDescription
-            }
-            failSave(error)
-        }
+        savedProfile = nil
+        state = .saving
+        process(lane.backend.events)
     }
 
     private func startReconfigure(profile: DeviceProfile, password: String, settings: DeviceProfileSettings) {
@@ -546,7 +572,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func handle(_ event: BackendEvent, activeOperation: ActiveOperation) {
-        guard event.operation == "configure" else {
+        guard event.operation == "configure" || event.operation == "update-config-settings" else {
             return
         }
         if let stage = OperationStageState(event: event) {
@@ -564,7 +590,37 @@ final class DeviceProfileEditorStore: ObservableObject {
             failFromResult(event)
             return
         }
-        applyConfigureResult(event, activeOperation: activeOperation)
+        if event.operation == "update-config-settings" {
+            applySettingsUpdateResult(activeOperation: activeOperation)
+        } else {
+            applyConfigureResult(event, activeOperation: activeOperation)
+        }
+    }
+
+    private func applySettingsUpdateResult(activeOperation: ActiveOperation) {
+        guard let profile = pendingProfile,
+              let editableFields = pendingEditableFields,
+              let stagedConfigURL = pendingStagedConfigURL else {
+            failContract(DeviceRegistryError.profileNotFound(activeOperation.profileID ?? "unknown"))
+            return
+        }
+        let replacementPassword = pendingReplacementPassword
+        Task { @MainActor in
+            do {
+                let saved = try await appStore.saveProfileEdits(
+                    profile: profile,
+                    fields: editableFields,
+                    replacementPassword: replacementPassword,
+                    stagedConfigURL: stagedConfigURL
+                )
+                finishSave(saved)
+            } catch {
+                if replacementPassword != nil {
+                    passwordError = error.localizedDescription
+                }
+                failSave(error)
+            }
+        }
     }
 
     private func applyConfigureResult(_ event: BackendEvent, activeOperation: ActiveOperation) {
@@ -595,17 +651,7 @@ final class DeviceProfileEditorStore: ObservableObject {
                         settings: editableFields.settings
                     )
                 )
-                savedProfile = saved
-                let savedDraft = DeviceProfileEditorDraft(profile: saved)
-                baselineDraft = savedDraft
-                applyDraft(savedDraft)
-                applyPasswordDraft("")
-                passwordError = nil
-                error = nil
-                validationErrors = []
-                currentStage = nil
-                state = .saved
-                clearPendingOperation()
+                finishSave(saved)
             } catch {
                 failSave(error)
             }
@@ -658,15 +704,32 @@ final class DeviceProfileEditorStore: ObservableObject {
         clearPendingOperation()
     }
 
+    private func finishSave(_ saved: DeviceProfile) {
+        savedProfile = saved
+        let savedDraft = DeviceProfileEditorDraft(profile: saved)
+        baselineDraft = savedDraft
+        applyDraft(savedDraft)
+        applyPasswordDraft("")
+        passwordError = nil
+        error = nil
+        validationErrors = []
+        currentStage = nil
+        state = .saved
+        clearPendingOperation()
+    }
+
     private func clearPendingOperation() {
         localNetworkPreflightTask?.cancel()
         localNetworkPreflightTask = nil
         operationObserver.finish()
         profilePersistence.discardConfigureDraft(pendingConfigureDraft)
+        profilePersistence.discardStagedProfileConfig(at: pendingStagedConfigURL)
         pendingProfile = nil
         pendingEditableFields = nil
         pendingPassword = nil
+        pendingReplacementPassword = nil
         pendingConfigureDraft = nil
+        pendingStagedConfigURL = nil
     }
 
     private func applyDraft(_ draft: DeviceProfileEditorDraft) {

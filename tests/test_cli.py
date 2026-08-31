@@ -2097,6 +2097,59 @@ class CliTests(unittest.TestCase):
         self.assertEqual(disabled.rc, 0)
         self.assertEqual(disabled.values["TC_VFS_AIO_FORK_ENABLED"], "false")
 
+    def test_configure_boolean_override_pairs_can_enable_and_disable_saved_values(self) -> None:
+        cases = (
+            (
+                "internal_share_use_disk_root",
+                "--internal-share-use-disk-root",
+                "--no-internal-share-use-disk-root",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+            ),
+            (
+                "smb_browse_compatibility",
+                "--smb-browse-compatibility",
+                "--no-smb-browse-compatibility",
+                "TC_SMB_BROWSE_COMPATIBILITY",
+            ),
+            ("fruit_metadata_netatalk", "--netatalk", "--no-netatalk", "TC_FRUIT_METADATA_NETATALK"),
+            ("debug_logging", "--debug-logging", "--no-debug-logging", "TC_DEBUG_LOGGING"),
+        )
+        for name, enable_flag, disable_flag, config_key in cases:
+            with self.subTest(name=name, value=True):
+                enabled = self.run_configure_cli(
+                    [enable_flag],
+                    existing_values=self.make_valid_env(**{config_key: "false"}),
+                    prompt_side_effect=self.configure_prompt_defaults(),
+                    probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                    confirm=True,
+                    command_context=FakeCommandContext(),
+                )
+                self.assertEqual(enabled.rc, 0)
+                self.assertEqual(enabled.values[config_key], "true")
+            with self.subTest(name=name, value=False):
+                disabled = self.run_configure_cli(
+                    [disable_flag],
+                    existing_values=self.make_valid_env(**{config_key: "true"}),
+                    prompt_side_effect=self.configure_prompt_defaults(),
+                    probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+                    confirm=True,
+                    command_context=FakeCommandContext(),
+                )
+                self.assertEqual(disabled.rc, 0)
+                self.assertEqual(disabled.values[config_key], "false")
+
+    def test_configure_canonical_force_disable_smb_security_arg_is_supported(self) -> None:
+        result = self.run_configure_cli(
+            ["--force-disable-smb-signing-and-encryption"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION"], "true")
+
     def test_configure_hidden_ata_args_write_drive_settings(self) -> None:
         result = self.run_configure_cli(
             ["--ata-idle-seconds", "0", "--ata-standby", "0"],
@@ -5369,7 +5422,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("VFS_AIO_FORK_ENABLED=1\n", captured[0])
         self.assertIn("VFS_AIO_FORK_ENABLED=0\n", captured[1])
 
-    def test_deploy_leaves_debug_logging_disabled_without_arg(self) -> None:
+    def test_deploy_preserves_configured_debug_logging_without_arg(self) -> None:
         captured: dict[str, str] = {}
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
@@ -5384,8 +5437,74 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertIn("SMBD_DEBUG_LOGGING=0\n", captured["flash_config"])
-        self.assertIn("MDNS_DEBUG_LOGGING=0\n", captured["flash_config"])
+        self.assertIn("SMBD_DEBUG_LOGGING=1\n", captured["flash_config"])
+        self.assertIn("MDNS_DEBUG_LOGGING=1\n", captured["flash_config"])
+
+    def test_deploy_profile_boolean_override_pairs_enable_and_disable_values(self) -> None:
+        captured: list[str] = []
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
+
+        enabled = self.run_deploy_cli(
+            [
+                "--no-reboot",
+                "--internal-share-use-disk-root",
+                "--smb-bind-lan-only",
+                "--smb-browse-compatibility",
+                "--netatalk",
+                "--debug-logging",
+            ],
+            values=self.make_valid_env(
+                TC_INTERNAL_SHARE_USE_DISK_ROOT="false",
+                TC_SMB_BIND_LAN_ONLY="false",
+                TC_SMB_BROWSE_COMPATIBILITY="false",
+                TC_FRUIT_METADATA_NETATALK="false",
+                TC_DEBUG_LOGGING="false",
+            ),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+        disabled = self.run_deploy_cli(
+            [
+                "--no-reboot",
+                "--no-internal-share-use-disk-root",
+                "--no-smb-bind-lan-only",
+                "--no-smb-browse-compatibility",
+                "--no-netatalk",
+                "--no-debug-logging",
+            ],
+            values=self.make_valid_env(
+                TC_INTERNAL_SHARE_USE_DISK_ROOT="true",
+                TC_SMB_BIND_LAN_ONLY="true",
+                TC_SMB_BROWSE_COMPATIBILITY="true",
+                TC_FRUIT_METADATA_NETATALK="true",
+                TC_DEBUG_LOGGING="true",
+            ),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(enabled.rc, 0)
+        self.assertEqual(disabled.rc, 0)
+        for line in (
+            "INTERNAL_SHARE_USE_DISK_ROOT=1\n",
+            "SMB_BIND_LAN_ONLY=1\n",
+            "SMB_BROWSE_COMPATIBILITY=1\n",
+            "FRUIT_METADATA_NETATALK=1\n",
+            "SMBD_DEBUG_LOGGING=1\n",
+        ):
+            self.assertIn(line, captured[0])
+        for line in (
+            "INTERNAL_SHARE_USE_DISK_ROOT=0\n",
+            "SMB_BIND_LAN_ONLY=0\n",
+            "SMB_BROWSE_COMPATIBILITY=0\n",
+            "FRUIT_METADATA_NETATALK=0\n",
+            "SMBD_DEBUG_LOGGING=0\n",
+        ):
+            self.assertIn(line, captured[1])
 
     def test_deploy_dry_run_no_wait_json_outputs_request_only_plan(self) -> None:
         result = self.run_deploy_cli(["--dry-run", "--json", "--no-wait"], values=self.make_valid_env())

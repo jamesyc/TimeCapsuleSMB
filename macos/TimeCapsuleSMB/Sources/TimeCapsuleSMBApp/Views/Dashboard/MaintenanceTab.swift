@@ -349,7 +349,9 @@ private struct RemoteMaintenanceAdvancedOptionsView: View {
             }
             GridRow {
                 Toggle(L10n.string("toggle.no_reboot"), isOn: $store.noReboot)
+                    .disabled(!RebootExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait))
                 Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
+                    .disabled(!RebootExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot))
             }
         }
     }

@@ -114,6 +114,33 @@ def add_no_wait_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for the device to go down and come back after reboot")
 
 
+def add_boolean_override_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    dest: str,
+    positive_flags: tuple[str, ...],
+    negative_flags: tuple[str, ...],
+    help: str = argparse.SUPPRESS,
+) -> None:
+    """Add an explicit true/false pair whose omitted value preserves config."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        *positive_flags,
+        dest=dest,
+        action="store_const",
+        const=True,
+        default=None,
+        help=help,
+    )
+    group.add_argument(
+        *negative_flags,
+        dest=dest,
+        action="store_const",
+        const=False,
+        help=argparse.SUPPRESS,
+    )
+
+
 def json_text(data: object) -> str:
     return json.dumps(data, indent=2, sort_keys=True)
 

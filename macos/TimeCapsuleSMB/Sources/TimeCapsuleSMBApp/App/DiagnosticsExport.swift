@@ -44,23 +44,7 @@ struct DiagnosticsExportBuilder {
             append("Check Updates On Launch", value: context.appSettings.checkForUpdatesOnLaunch, to: &lines)
             append("Version Check URL", value: context.appSettings.versionCheckURL.isEmpty ? "auto" : context.appSettings.versionCheckURL, to: &lines)
             append("Time Machine Warnings", value: context.appSettings.timeMachineWarningsEnabled, to: &lines)
-            append("Default NBNS", value: context.appSettings.defaultDeviceSettings.nbnsEnabled, to: &lines)
-            append("Default rsync", value: context.appSettings.defaultDeviceSettings.rsyncEnabled, to: &lines)
-            append("Default SMB Bind LAN Only", value: context.appSettings.defaultDeviceSettings.smbBindLanOnly, to: &lines)
-            append("Default SMB Browse Compatibility", value: context.appSettings.defaultDeviceSettings.smbBrowseCompatibility, to: &lines)
-            append("Default mDNS Advertise AFP", value: context.appSettings.defaultDeviceSettings.mdnsAdvertiseAFP, to: &lines)
-            append("Default Require SMB Encryption", value: context.appSettings.defaultDeviceSettings.requireSMBEncryption, to: &lines)
-            append(
-                "Default Force Disable SMB Signing and Encryption",
-                value: context.appSettings.defaultDeviceSettings.forceDisableSMBSigningAndEncryption,
-                to: &lines
-            )
-            append("Default Netatalk Metadata", value: context.appSettings.defaultDeviceSettings.fruitMetadataNetatalk, to: &lines)
-            append("Default vfs_aio_fork", value: context.appSettings.defaultDeviceSettings.vfsAIOForkEnabled, to: &lines)
-            append("Default Debug Logging", value: context.appSettings.defaultDeviceSettings.debugLogging, to: &lines)
-            append("Default Mount Wait", value: context.appSettings.defaultDeviceSettings.mountWaitSeconds, to: &lines)
-            append("Default ATA Idle", value: context.appSettings.defaultDeviceSettings.ataIdleSeconds, to: &lines)
-            append("Default ATA Standby", value: context.appSettings.defaultDeviceSettings.ataStandby.map(String.init) ?? "device default", to: &lines)
+            appendDeviceSettings(context.appSettings.defaultDeviceSettings, prefix: "Default", to: &lines)
         }
 
         appendSection("Readiness", to: &lines) { lines in
@@ -120,6 +104,7 @@ struct DiagnosticsExportBuilder {
                 append("Last Checkup", value: profile.lastCheckup?.summary ?? "none", to: &lines)
                 append("Runtime State", value: profile.runtimeState?.localizedSummary ?? "unknown", to: &lines)
                 append("Last Deploy", value: profile.lastDeployState?.localizedSummary ?? "none", to: &lines)
+                appendDeviceSettings(profile.settings, prefix: "Profile", to: &lines)
             } else {
                 append("Selected", value: "none", to: &lines)
             }
@@ -171,6 +156,32 @@ struct DiagnosticsExportBuilder {
 
     private func append(_ label: String, value: String, to lines: inout [String]) {
         lines.append("- \(label): \(redacted(value, key: label))")
+    }
+
+    private func appendDeviceSettings(
+        _ settings: DeviceProfileSettings,
+        prefix: String,
+        to lines: inout [String]
+    ) {
+        append("\(prefix) NBNS", value: settings.nbnsEnabled, to: &lines)
+        append("\(prefix) rsync", value: settings.rsyncEnabled, to: &lines)
+        append("\(prefix) Internal Share Uses Disk Root", value: settings.internalShareUseDiskRoot, to: &lines)
+        append("\(prefix) SMB Bind LAN Only", value: settings.smbBindLanOnly, to: &lines)
+        append("\(prefix) SMB Browse Compatibility", value: settings.smbBrowseCompatibility, to: &lines)
+        append("\(prefix) mDNS Advertise AFP", value: settings.mdnsAdvertiseAFP, to: &lines)
+        append("\(prefix) Allow Any SMB Protocol", value: settings.anyProtocol, to: &lines)
+        append("\(prefix) Require SMB Encryption", value: settings.requireSMBEncryption, to: &lines)
+        append(
+            "\(prefix) Force Disable SMB Signing and Encryption",
+            value: settings.forceDisableSMBSigningAndEncryption,
+            to: &lines
+        )
+        append("\(prefix) Netatalk Metadata", value: settings.fruitMetadataNetatalk, to: &lines)
+        append("\(prefix) vfs_aio_fork", value: settings.vfsAIOForkEnabled, to: &lines)
+        append("\(prefix) Debug Logging", value: settings.debugLogging, to: &lines)
+        append("\(prefix) Mount Wait", value: settings.mountWaitSeconds, to: &lines)
+        append("\(prefix) ATA Idle", value: settings.ataIdleSeconds, to: &lines)
+        append("\(prefix) ATA Standby", value: settings.ataStandby.map(String.init) ?? "device default", to: &lines)
     }
 
     private func eventSummary(_ event: BackendEvent) -> String {

@@ -25,6 +25,30 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck, .repairXattrs])
     }
 
+    func testNoRebootAndNoWaitAreMutuallyExclusiveAndRequestsAreNormalized() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
+            ])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+
+        store.noReboot = true
+        store.noWait = true
+        XCTAssertFalse(store.noReboot)
+        XCTAssertTrue(store.noWait)
+
+        store.planUninstall(password: "pw")
+        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+
+        XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(false))
+        XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
+
+        store.noReboot = true
+        XCTAssertTrue(store.noReboot)
+        XCTAssertFalse(store.noWait)
+    }
+
     func testActivationPlanAndAlreadyActiveResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

@@ -54,7 +54,7 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
 
     static func lane(for operation: String) -> DeviceWorkflowLane? {
         switch operation {
-        case "configure":
+        case "configure", "update-config-settings":
             return .configure
         case "deploy":
             return .deploy

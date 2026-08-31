@@ -136,6 +136,8 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.operation.ssh_access")
         case "configure":
             return L10n.string("timeline.operation.configure")
+        case "update-config-settings":
+            return L10n.string("timeline.stage.saving_device")
         case "deploy":
             return L10n.string("timeline.operation.deploy")
         case "doctor":
@@ -204,6 +206,9 @@ enum OperationTimelineBuilder {
         case ("configure", "wait_for_ssh_after_acp"):
             return L10n.string("timeline.stage.waiting_for_device")
         case ("configure", "write_env"):
+            return L10n.string("timeline.stage.saving_device")
+        case ("update-config-settings", "load_existing_config"),
+             ("update-config-settings", "write_env"):
             return L10n.string("timeline.stage.saving_device")
         case ("doctor", "run_checks"):
             return L10n.string("timeline.stage.running_checkup")

@@ -71,6 +71,8 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("configure", "wait_for_ssh_after_acp"): StagePolicy(REMOTE_READ, True, "Wait for SSH to open after ACP enablement."),
     ("configure", "ssh_probe_after_acp"): StagePolicy(REMOTE_READ, True, "Probe SSH again after ACP enablement."),
     ("configure", "write_env"): StagePolicy(LOCAL_WRITE, False, "Write the app .env configuration."),
+    ("update-config-settings", "load_existing_config"): StagePolicy(LOCAL_READ, True, "Read the existing device .env configuration."),
+    ("update-config-settings", "write_env"): StagePolicy(LOCAL_WRITE, False, "Write profile-managed settings to the device .env configuration."),
     ("deploy", "load_config"): StagePolicy(LOCAL_READ, True, "Read deployment configuration."),
     ("deploy", "resolve_managed_target"): StagePolicy(REMOTE_READ, True, "Resolve and probe the device target."),
     ("deploy", "validate_artifacts"): StagePolicy(LOCAL_READ, True, "Validate bundled payload artifacts."),

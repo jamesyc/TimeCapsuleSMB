@@ -24,15 +24,18 @@ from timecapsulesmb.services.app import (
     config_path,
     int_param,
     jsonable,
+    optional_bool_param,
     require_string_param,
     string_param,
 )
 from timecapsulesmb.services import configure as configure_service
 from timecapsulesmb.services.configure import (
     AIRPORT_ADMIN_PASSWORD_REJECTED_MESSAGE,
+    build_managed_config_env_values,
     ConfigureFlowError,
     ConfigureFlowHooks,
     ConfigureFlowRequest,
+    write_configure_env_file,
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure_target import resolve_configure_target
@@ -101,6 +104,59 @@ def require_enable_ssh_confirmation(params: dict[str, object], *, host: str) -> 
             },
         ),
     )
+
+
+def update_config_settings_operation(
+    params: dict[str, object],
+    context: AppOperationContext,
+) -> OperationResult:
+    """Synchronize app-managed profile settings without contacting the device."""
+    context.stage("load_existing_config")
+    env_path = resolve_app_paths(config_path=config_path(params)).config_path
+    if not env_path.is_file():
+        raise AppOperationError(
+            f"Missing device configuration file: {env_path}",
+            code="config_error",
+        )
+    existing = parse_env_file(env_path)
+    if not existing.get("TC_HOST", "").strip():
+        raise AppOperationError(
+            f"Missing required setting in {env_path}: TC_HOST",
+            code="config_error",
+        )
+    try:
+        values = build_managed_config_env_values(
+            existing,
+            internal_share_use_disk_root=optional_bool_param(params, "internal_share_use_disk_root"),
+            smb_bind_lan_only=optional_bool_param(params, "smb_bind_lan_only"),
+            smb_browse_compatibility=optional_bool_param(params, "smb_browse_compatibility"),
+            mdns_advertise_afp=optional_bool_param(params, "mdns_advertise_afp"),
+            any_protocol=optional_bool_param(params, "any_protocol"),
+            require_smb_encryption=optional_bool_param(params, "require_smb_encryption"),
+            force_disable_smb_signing_and_encryption=optional_bool_param(
+                params,
+                "force_disable_smb_signing_and_encryption",
+            ),
+            fruit_metadata_netatalk=optional_bool_param(params, "fruit_metadata_netatalk"),
+            vfs_aio_fork_enabled=optional_bool_param(params, "vfs_aio_fork_enabled"),
+            debug_logging=optional_bool_param(params, "debug_logging"),
+            ata_idle_seconds=params.get("ata_idle_seconds") if "ata_idle_seconds" in params else None,
+            ata_standby=params.get("ata_standby") if "ata_standby" in params else None,
+        )
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
+
+    context.stage("write_env")
+    write_configure_env_file(
+        env_path,
+        values,
+        persist_password="TC_PASSWORD" in existing,
+    )
+    context.values = values
+    return OperationResult(True, {
+        "config_path": str(env_path),
+        "summary": "Device profile settings synchronized.",
+    })
 
 
 def configure_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:

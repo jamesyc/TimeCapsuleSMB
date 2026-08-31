@@ -78,19 +78,31 @@ final class InMemoryPasswordStore: PasswordStore {
     }
 }
 
-private func writeConfigureArtifactIfNeeded(
+private func writeConfigArtifactIfNeeded(
     operation: String,
     context: DeviceRuntimeContext?,
     events: [BackendEvent]
 ) {
-    guard operation == "configure",
-          let context,
-          events.contains(where: { $0.operation == "configure" && $0.type == "result" && $0.ok == true }) else {
+    guard let context,
+          ["configure", "update-config-settings"].contains(operation),
+          events.contains(where: { $0.operation == operation && $0.type == "result" && $0.ok == true }) else {
         return
     }
-    let text = "TC_HOST=root@10.0.0.2\nTC_SSH_OPTS=\n"
     try? FileManager.default.createDirectory(at: context.configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try? text.write(to: context.configURL, atomically: true, encoding: .utf8)
+    if operation == "configure" {
+        try? "TC_HOST=root@10.0.0.2\nTC_SSH_OPTS=\n".write(
+            to: context.configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+    } else {
+        let existing = (try? String(contentsOf: context.configURL, encoding: .utf8)) ?? "TC_HOST=root@10.0.0.2\n"
+        try? (existing + "TC_TEST_SETTINGS_SYNCED=1\n").write(
+            to: context.configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+    }
 }
 
 final class StoreTestRunner: HelperRunning, @unchecked Sendable {
@@ -146,6 +158,15 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
         let response = queue.sync {
             storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
             if storedResponses.isEmpty {
+                if operation == "update-config-settings" {
+                    return Response(events: [BackendEvent(
+                        requestId: requestID,
+                        type: "result",
+                        operation: operation,
+                        ok: true,
+                        payload: .object(["summary": .string("Device profile settings synchronized.")])
+                    )])
+                }
                 return Response(
                     events: [BackendEvent.error(
                         operation: operation,
@@ -158,7 +179,7 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
             }
             return storedResponses.removeFirst()
         }
-        writeConfigureArtifactIfNeeded(operation: operation, context: context, events: response.events)
+        writeConfigArtifactIfNeeded(operation: operation, context: context, events: response.events)
 
         if response.delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: response.delayNanoseconds)
@@ -238,6 +259,15 @@ final class PausingStoreTestRunner: HelperRunning, @unchecked Sendable {
         let response = queue.sync {
             storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
             if storedResponses.isEmpty {
+                if operation == "update-config-settings" {
+                    return Response(events: [BackendEvent(
+                        requestId: requestID,
+                        type: "result",
+                        operation: operation,
+                        ok: true,
+                        payload: .object(["summary": .string("Device profile settings synchronized.")])
+                    )])
+                }
                 return Response(
                     events: [BackendEvent.error(
                         operation: operation,
@@ -250,7 +280,7 @@ final class PausingStoreTestRunner: HelperRunning, @unchecked Sendable {
             }
             return storedResponses.removeFirst()
         }
-        writeConfigureArtifactIfNeeded(operation: operation, context: context, events: response.events)
+        writeConfigArtifactIfNeeded(operation: operation, context: context, events: response.events)
 
         if response.pauseBeforeEvents {
             await pauseGate.wait()
@@ -398,7 +428,7 @@ final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
                 result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
             ), pauseGate)
         }
-        writeConfigureArtifactIfNeeded(operation: operation, context: context, events: response.events)
+        writeConfigArtifactIfNeeded(operation: operation, context: context, events: response.events)
 
         if response.delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: response.delayNanoseconds)

@@ -155,6 +155,44 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["host"], .string("root@fd00::2"))
     }
 
+    func testUpdateConfigSettingsParamsCarryEveryEnvironmentBackedProfileSetting() {
+        let settings = DeviceProfileSettings(
+            nbnsEnabled: false,
+            rsyncEnabled: true,
+            internalShareUseDiskRoot: true,
+            smbBindLanOnly: true,
+            smbBrowseCompatibility: true,
+            mdnsAdvertiseAFP: true,
+            anyProtocol: true,
+            requireSMBEncryption: false,
+            forceDisableSMBSigningAndEncryption: true,
+            fruitMetadataNetatalk: false,
+            vfsAIOForkEnabled: true,
+            debugLogging: true,
+            mountWaitSeconds: 45,
+            ataIdleSeconds: 0,
+            ataStandby: nil
+        )
+
+        let params = OperationParams.Configure.updateSettings(settings)
+
+        XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(params["smb_bind_lan_only"], .bool(true))
+        XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
+        XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
+        XCTAssertEqual(params["any_protocol"], .bool(true))
+        XCTAssertEqual(params["require_smb_encryption"], .bool(false))
+        XCTAssertEqual(params["force_disable_smb_signing_and_encryption"], .bool(true))
+        XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(false))
+        XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
+        XCTAssertEqual(params["debug_logging"], .bool(true))
+        XCTAssertEqual(params["ata_idle_seconds"], .number(0))
+        XCTAssertEqual(params["ata_standby"], .string(""))
+        XCTAssertNil(params["nbns_enabled"])
+        XCTAssertNil(params["rsync_enabled"])
+        XCTAssertNil(params["mount_wait"])
+    }
+
     func testPendingConfirmationBuildsFromBackendEvent() throws {
         let event = BackendEvent(
             type: "error",

@@ -184,12 +184,14 @@ final class AppStore: ObservableObject {
     func saveProfileEdits(
         profile: DeviceProfile,
         fields: DeviceProfileEditableFields,
-        replacementPassword: String? = nil
+        replacementPassword: String? = nil,
+        stagedConfigURL: URL? = nil
     ) async throws -> DeviceProfile {
         try await profilePersistence.saveProfileEdits(
             profile: profile,
             fields: fields,
-            replacementPassword: replacementPassword
+            replacementPassword: replacementPassword,
+            stagedConfigURL: stagedConfigURL
         )
     }
 

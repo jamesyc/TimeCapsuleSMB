@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.app.ops.configure import configure_operation
+from timecapsulesmb.app.ops.configure import configure_operation, update_config_settings_operation
 from timecapsulesmb.app.ops.deploy import deploy_operation
 from timecapsulesmb.app.ops.discovery import discover_operation
 from timecapsulesmb.app.ops.doctor import doctor_operation
@@ -41,6 +41,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("activate", activate_operation, telemetry=True),
     OperationSpec("capabilities", capabilities_operation),
     OperationSpec("configure", configure_operation, telemetry=True),
+    OperationSpec("update-config-settings", update_config_settings_operation, public=False),
     OperationSpec("deploy", deploy_operation, telemetry=True),
     OperationSpec("discover", discover_operation, telemetry=True),
     OperationSpec("doctor", doctor_operation, telemetry=True),
