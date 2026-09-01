@@ -761,6 +761,15 @@ find_samba4x_gmp_header() {
     return 1
 }
 
+# The GMP in the NetBSD tree reports itself as 6.1.0. Keep that in one place so
+# gmp.pc and the dependency stamps cannot drift apart.
+SAMBA4X_TARGET_GMP_VERSION="6.1.0"
+
+# Records which GMP the nettle and GnuTLS artifacts were built against. Both are
+# linked to libgmp, so replacing it has to invalidate them rather than let them
+# be reused. Each GMP path below sets this, and the stamps interpolate it.
+SAMBA4X_GMP_STAMP_ID="unknown-gmp"
+
 install_samba4x_target_gmp() {
     gmp_lib="$OBJ/external/lgpl3/gmp/lib/libgmp/libgmp.a"
     if ! gmp_header="$(find_samba4x_gmp_header)"; then
@@ -772,13 +781,16 @@ install_samba4x_target_gmp() {
         return 1
     fi
 
-    # nettle needs __gmpn_zero_p for its public-key half; without it we must
-    # build our own GMP instead of adopting the one from the NetBSD tree.
-    # Only reject on a successful nm run, so a missing or renamed nm leaves
-    # the existing behaviour untouched.
+    # nettle needs __gmpn_zero_p for its public-key half; without it we build
+    # our own GMP rather than adopt the one from the NetBSD tree. Match the
+    # symbol class, since nm also lists "U __gmpn_zero_p" for members that only
+    # reference it, and accept either separator. nm --defined-only would be
+    # simpler but is a GNU extension: an unsupported flag makes nm fail, which
+    # switches the probe off silently instead of failing loudly.
+    gmp_nm_sep="$(printf ' \t')"
     if gmp_syms="$("$TOOLDIR/bin/$TRIPLE-nm" "$gmp_lib" 2>/dev/null)"; then
         case "$gmp_syms" in
-            *__gmpn_zero_p*) ;;
+            *[TDRtdrBb]["$gmp_nm_sep"]"__gmpn_zero_p"*) ;;
             *)
                 echo "NetBSD target libgmp.a lacks __gmpn_zero_p; nettle would"
                 echo "build without public-key support."
@@ -788,13 +800,24 @@ install_samba4x_target_gmp() {
     fi
 
     mkdir -p "$SAMBA4X_DEPS/lib" "$SAMBA4X_DEPS/include" "$SAMBA4X_DEPS/lib/pkgconfig"
+    # Both providers install to the same libgmp.a, and a bundled stamp treats
+    # that file as proof of its own build. Drop every one of them while
+    # overwriting the archive, not just the stamp for the version configured
+    # now: SAMBA4X_GMP_VERSION is overridable, and a stamp left by any other
+    # version would still vouch for the archive adopted here.
+    rm -f "$SAMBA4X_DEPS"/.stamp-gmp-*
     cp "$gmp_lib" "$SAMBA4X_DEPS/lib/libgmp.a"
     cp "$gmp_header" "$SAMBA4X_DEPS/include/gmp.h"
     gmp_mparam="$(dirname "$gmp_header")/gmp-mparam.h"
     if [ -f "$gmp_mparam" ]; then
         cp "$gmp_mparam" "$SAMBA4X_DEPS/include/gmp-mparam.h"
     fi
-    write_samba4x_gmp_pc "6.1.0"
+    # Claim the stamp id only here, past every rejection above: a function called
+    # as an if condition runs in the current shell, so an assignment made before
+    # a "return 1" would still reach the caller and mislabel the downstream
+    # stamps as system when the bundled GMP is what actually gets used.
+    SAMBA4X_GMP_STAMP_ID="system-$SAMBA4X_TARGET_GMP_VERSION"
+    write_samba4x_gmp_pc "$SAMBA4X_TARGET_GMP_VERSION"
 }
 
 write_samba4x_gmp_pc() {
@@ -814,6 +837,9 @@ EOF
 }
 
 build_samba4x_gmp() {
+    # Set before the early return below so a cached bundled GMP labels the
+    # downstream stamps the same way a freshly built one does.
+    SAMBA4X_GMP_STAMP_ID="bundled-$SAMBA4X_GMP_VERSION"
     stamp="$SAMBA4X_DEPS/.stamp-gmp-$SAMBA4X_GMP_VERSION"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libgmp.a" ]; then
         echo "GMP $SAMBA4X_GMP_VERSION already built."
@@ -859,7 +885,7 @@ EOF
 }
 
 build_samba4x_nettle() {
-    stamp="$SAMBA4X_DEPS/.stamp-nettle-$SAMBA4X_NETTLE_VERSION-system-gmp"
+    stamp="$SAMBA4X_DEPS/.stamp-nettle-$SAMBA4X_NETTLE_VERSION-$SAMBA4X_GMP_STAMP_ID"
     if [ -f "$stamp" ] &&
        [ -f "$SAMBA4X_DEPS/lib/libnettle.a" ] &&
        [ -f "$SAMBA4X_DEPS/lib/libhogweed.a" ]; then
@@ -935,7 +961,9 @@ rewrite_samba4x_gnutls_pc() {
 }
 
 build_samba4x_gnutls() {
-    gnutls_stamp_suffix="system-nettle-oaep-no-thread-local"
+    # GnuTLS links -lhogweed -lnettle -lgmp, so a different GMP invalidates it
+    # just as it invalidates nettle.
+    gnutls_stamp_suffix="system-nettle-oaep-no-thread-local-$SAMBA4X_GMP_STAMP_ID"
     stamp="$SAMBA4X_DEPS/.stamp-gnutls-$SAMBA4X_GNUTLS_VERSION-$gnutls_stamp_suffix"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libgnutls.a" ]; then
         echo "GnuTLS $SAMBA4X_GNUTLS_VERSION already built."

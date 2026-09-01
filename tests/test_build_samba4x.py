@@ -11,6 +11,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# The dependency stamps carry the GMP the artifact was built against, so these
+# have to match what _samba4x.sh computes. A mismatch makes the build scripts
+# treat every dependency as unbuilt and try to download it.
+NETTLE_SYSTEM_GMP_STAMP = ".stamp-nettle-3.10.1-system-6.1.0"
+NETTLE_BUNDLED_GMP_STAMP = ".stamp-nettle-3.10.1-bundled-6.3.0"
+GNUTLS_SYSTEM_GMP_STAMP = (
+    ".stamp-gnutls-3.8.5-system-nettle-oaep-no-thread-local-system-6.1.0"
+)
+
 
 class Samba4XBuildScriptTests(unittest.TestCase):
     def make_executable(self, path: Path, text: str) -> None:
@@ -89,6 +98,26 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     -p)
                         printf 'Program Header:\\n'
                         ;;
+                esac
+                exit 0
+                """
+            ),
+        )
+        # nm drives the __gmpn_zero_p probe that decides whether the GMP in the
+        # NetBSD tree is usable. It cannot join the loop below: those exit 0
+        # without printing, which would read as a GMP missing every symbol.
+        self.make_executable(
+            tools / f"{triple}-nm",
+            textwrap.dedent(
+                """\
+                #!/bin/sh
+                if [ "${TEST_NM_RC:-0}" != "0" ]; then
+                    exit "$TEST_NM_RC"
+                fi
+                printf '0000 T __gmpn_add_n\\n'
+                case "${TEST_NM_ZERO_P:-1}" in
+                    1) printf '0000 T __gmpn_zero_p\\n' ;;
+                    undefined) printf '         U __gmpn_zero_p\\n' ;;
                 esac
                 exit 0
                 """
@@ -222,12 +251,12 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         self.make_file(build_src / "external" / "lgpl3" / "gmp" / "lib" / "libgmp" / "arch" / gmp_arch / "gmp.h")
 
         deps = samba_build / "deps"
-        self.make_file(deps / ".stamp-nettle-3.10.1-system-gmp")
+        self.make_file(deps / NETTLE_SYSTEM_GMP_STAMP)
         self.make_file(deps / "lib" / "libnettle.a")
         self.make_file(deps / "lib" / "libhogweed.a")
         self.make_file(deps / ".stamp-libtasn1-4.20.0")
         self.make_file(deps / "lib" / "libtasn1.a")
-        self.make_file(deps / ".stamp-gnutls-3.8.5-system-nettle-oaep-no-thread-local")
+        self.make_file(deps / GNUTLS_SYSTEM_GMP_STAMP)
         self.make_file(deps / "lib" / "libgnutls.a")
         self.make_file(deps / "lib" / "pkgconfig" / "gnutls.pc", "Libs: -L${libdir} -lgnutls\n")
 
@@ -239,9 +268,25 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             "samba_stage": samba_stage,
         }
 
+    def offline_dependency_urls(self, root: Path) -> dict[str, str]:
+        """Point every dependency download at a file that does not exist.
+
+        The fixture pre-creates the dependency stamps so nothing is downloaded,
+        but a stamp name that stops matching what the build scripts compute
+        would silently turn these tests into real fetches from ftp.gnu.org. A
+        missing file:// URL fails curl at once instead.
+        """
+        return {
+            "SAMBA4X_GMP_URL": f"file://{root / 'no-such-gmp.tar.xz'}",
+            "SAMBA4X_NETTLE_URL": f"file://{root / 'no-such-nettle.tar.gz'}",
+            "SAMBA4X_LIBTASN1_URL": f"file://{root / 'no-such-libtasn1.tar.gz'}",
+            "SAMBA4X_GNUTLS_URL": f"file://{root / 'no-such-gnutls.tar.xz'}",
+        }
+
     def env_for_lane(self, root: Path, lane: str, capture: Path) -> dict[str, str]:
         paths = self.prepare_fake_netbsd_inputs(root, lane=lane)
         env = os.environ.copy()
+        env.update(self.offline_dependency_urls(root))
         env.update(
             {
                 "TC_ENV_FILE": "/dev/null",
@@ -723,6 +768,146 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 Path(env["SAMBA4X_NETBSD4BE_LOG"]).read_text(),
             )
             self.assertFalse((output_dir / "samba4x-4.24.3-netbsd4be.answers").exists())
+
+    def test_usable_target_gmp_is_adopted_and_stamped_as_system(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("Using NetBSD target GMP", log)
+            self.assertIn("nettle 3.10.1 already built.", log)
+            self.assertIn("GnuTLS 3.8.5 already built.", log)
+            deps = Path(env["SAMBA4X_NETBSD7_BUILD"]) / "deps"
+            self.assertTrue((deps / NETTLE_SYSTEM_GMP_STAMP).exists())
+            self.assertTrue((deps / GNUTLS_SYSTEM_GMP_STAMP).exists())
+            pc = (deps / "lib" / "pkgconfig" / "gmp.pc").read_text()
+            self.assertIn("Version: 6.1.0", pc)
+            self.assertNotIn("Version: 6.3.0", pc)
+
+    def test_target_gmp_without_zero_p_falls_back_to_bundled_gmp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+            env["TEST_NM_ZERO_P"] = "0"
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("lacks __gmpn_zero_p", log)
+            self.assertIn("NetBSD target GMP is unavailable; building GMP 6.3.0.", log)
+            self.assertNotIn("Using NetBSD target GMP", log)
+            self.assertFalse(capture.exists())
+
+    def test_unusable_nm_leaves_target_gmp_adoption_untouched(self) -> None:
+        cases = ("nm exits nonzero", "nm missing")
+        for label in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    capture = root / "configure-args.txt"
+                    env = self.env_for_lane(root, "netbsd7", capture)
+                    if label == "nm exits nonzero":
+                        env["TEST_NM_RC"] = "1"
+                    else:
+                        tools = Path(env["BUILD_OUT"]) / "tools" / "bin"
+                        (tools / "arm--netbsdelf-nm").unlink()
+
+                    result = self.run_wrapper("samba4x.sh", env)
+
+                    self.assertEqual(
+                        result.returncode, 0, result.stdout + result.stderr
+                    )
+                    log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+                    self.assertIn("Using NetBSD target GMP", log)
+                    self.assertNotIn("lacks __gmpn_zero_p", log)
+                    self.assertIn("nettle 3.10.1 already built.", log)
+
+    def test_switching_gmp_provider_invalidates_nettle_and_gnutls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+            deps = Path(env["SAMBA4X_NETBSD7_BUILD"]) / "deps"
+            # The fixture is stamped for the adopted target GMP. Reject that GMP
+            # and present the bundled one as already built, so the run reaches
+            # the nettle decision with the other provider selected.
+            env["TEST_NM_ZERO_P"] = "0"
+            self.make_file(deps / ".stamp-gmp-6.3.0")
+            self.make_file(deps / "lib" / "libgmp.a")
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("GMP 6.3.0 already built.", log)
+            self.assertNotIn("nettle 3.10.1 already built.", log)
+            self.assertNotIn("GnuTLS 3.8.5 already built.", log)
+            self.assertTrue((deps / NETTLE_SYSTEM_GMP_STAMP).exists())
+            self.assertFalse((deps / NETTLE_BUNDLED_GMP_STAMP).exists())
+            self.assertFalse(capture.exists())
+
+    def test_undefined_zero_p_reference_does_not_count_as_a_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+            # nm lists "U __gmpn_zero_p" for a member that only references the
+            # symbol. Matching the bare name would read that as a definition.
+            env["TEST_NM_ZERO_P"] = "undefined"
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("lacks __gmpn_zero_p", log)
+            self.assertNotIn("Using NetBSD target GMP", log)
+
+    def test_adopting_target_gmp_drops_the_bundled_gmp_stamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            env = self.env_for_lane(root, "netbsd7", capture)
+            deps = Path(env["SAMBA4X_NETBSD7_BUILD"]) / "deps"
+            # An earlier run built the bundled GMP. Both providers install to
+            # the same libgmp.a, so adopting the target one has to retire that
+            # stamp; otherwise a later rejection reuses the adopted archive
+            # while calling it the bundled build.
+            self.make_file(deps / ".stamp-gmp-6.3.0")
+            # SAMBA4X_GMP_VERSION is overridable, so a stamp from a differently
+            # pinned bundled build can be sitting there too. It vouches for the
+            # same libgmp.a and has to be retired as well.
+            self.make_file(deps / ".stamp-gmp-6.2.1")
+            self.make_file(deps / "lib" / "libgmp.a", "bundled gmp\n")
+
+            adopt = self.run_wrapper("samba4x.sh", env)
+
+            self.assertEqual(adopt.returncode, 0, adopt.stdout + adopt.stderr)
+            self.assertIn(
+                "Using NetBSD target GMP",
+                Path(env["SAMBA4X_NETBSD7_LOG"]).read_text(),
+            )
+            self.assertFalse((deps / ".stamp-gmp-6.3.0").exists())
+            # A stamp from a differently pinned bundled build vouches for the
+            # same libgmp.a, so adoption has to retire it too.
+            self.assertFalse((deps / ".stamp-gmp-6.2.1").exists())
+
+            # The target GMP is unusable from here on, so the bundled build has
+            # to run again rather than claim it is already done.
+            env["TEST_NM_ZERO_P"] = "0"
+
+            reject = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(reject.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("NetBSD target GMP is unavailable", log)
+            self.assertNotIn("GMP 6.3.0 already built.", log)
 
 
 if __name__ == "__main__":
