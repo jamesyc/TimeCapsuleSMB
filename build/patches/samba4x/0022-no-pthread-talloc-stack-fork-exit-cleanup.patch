@@ -13,15 +13,13 @@ index 0148b11..5f62932 100644
  }
  
  static void talloc_stackframe_init(void)
-@@ -159,10 +161,76 @@ static struct talloc_stackframe *talloc_stackframe_get(void)
+@@ -159,11 +161,95 @@ static struct talloc_stackframe *talloc_stackframe_get(void)
  	return ts;
  }
  
 +void talloc_stackframe_reinit_after_fork(void)
 +{
 +#ifndef HAVE_PTHREAD
-+	struct talloc_stackframe *ts = global_ts;
-+
 +	/*
 +	 * The appliance build intentionally removes pthread support. In that
 +	 * mode Samba stores the talloc stack in process-global state instead
@@ -29,26 +27,12 @@ index 0148b11..5f62932 100644
 +	 * active event-loop stack tracking even though the parent loop will
 +	 * never finish in the child.
 +	 *
-+	 * Empty the inherited stack in place rather than dropping the pointer
-+	 * to it. The rest of talloc_stack.c assumes that once a stackframe
-+	 * exists it stays valid: talloc_pop() indexes talloc_stack at
-+	 * talloc_stacksize - 1 without checking either the pointer or the
-+	 * size, so a NULL global_ts crashes and an empty one would read index
-+	 * -1. Keeping the allocation and clearing the depth leaves both the
-+	 * pointer and the invariant intact, and the child allocates its own
-+	 * frames from here on.
-+	 *
-+	 * The copied parent allocations are process-private after fork and
-+	 * are reclaimed when the child exits.
++	 * Drop only the stack tracking. The copied parent allocations are
++	 * process-private after fork and will be reclaimed when the child
++	 * exits. Code that later needs a talloc stack will create a fresh one
++	 * in the child.
 +	 */
-+	if (ts == NULL) {
-+		return;
-+	}
-+
-+	while (ts->talloc_stacksize > 0) {
-+		ts->talloc_stacksize -= 1;
-+		ts->talloc_stack[ts->talloc_stacksize] = NULL;
-+	}
++	global_ts = NULL;
 +#endif
 +}
 +
@@ -77,20 +61,75 @@ index 0148b11..5f62932 100644
  	struct talloc_stackframe *ts = talloc_stackframe_get_existing();
  	size_t blocks;
  	int i;
-
+ 
 +	/*
-+	 * A frame can outlive its stack in the no-pthread appliance build: a
-+	 * forked child empties the inherited stack, and anything still holding
-+	 * a parent frame frees it afterwards. Without this guard the reads
-+	 * below index talloc_stack at -1.
++	 * Defense in depth, not a fix for an observed failure. The reads below
++	 * index talloc_stack at talloc_stacksize - 1 without checking either
++	 * the pointer or the size, while _talloc_tos() guards both conditions
++	 * on the same struct in this same file. talloc_stacksize is int, so an
++	 * empty stack would read index -1 rather than wrapping. No caller in
++	 * this build is known to pop a frame the stack does not hold; this
++	 * closes the asymmetry rather than a reachable path.
++	 *
++	 * Divert only a frame that is absent from this stack. A frame that is
++	 * genuinely on the stack, index 0 included, must still go through the
++	 * out-of-order recovery below: that path frees the frames stacked above
++	 * it and resets the depth, and skipping it would leak them and leave
++	 * talloc_stack[0] pointing at memory talloc is about to release.
++	 *
++	 * talloc_pop() is the frame's own destructor, so the diverted path
++	 * still lets talloc release the frame itself; only the stack
++	 * bookkeeping is skipped, and there is none to do for a frame the stack
++	 * does not reference.
 +	 */
 +	if (ts == NULL || ts->talloc_stacksize == 0) {
-+		talloc_free_children(frame);
-+		return 0;
++		goto orphaned;
++	}
++	if (ts->talloc_stack[ts->talloc_stacksize-1] != frame) {
++		/*
++		 * Not the top frame, so this is already the out-of-order case.
++		 * Only here is the full scan worth its cost: an in-order pop,
++		 * which is every pop on the hot path, stops at the test above.
++		 *
++		 * The same comparison appears again just below. That repeat is
++		 * deliberate: this one dispatches, Samba's is the lazy-free
++		 * diagnostic. Keeping Samba's copy byte-identical is what makes
++		 * this patch portable, so do not merge the two when rebasing,
++		 * and recheck them if Samba changes its condition.
++		 */
++		for (i = ts->talloc_stacksize - 1; i > 0; i--) {
++			if (ts->talloc_stack[i] == frame) {
++				break;
++			}
++		}
++		if (i == 0 && ts->talloc_stack[0] != frame) {
++			goto orphaned;
++		}
 +	}
 +
  	/* Catch lazy frame-freeing. */
  	if (ts->talloc_stack[ts->talloc_stacksize-1] != frame) {
+@@ -204,4 +281,20 @@ static int talloc_pop(TALLOC_CTX *frame)
+ 	ts->talloc_stack[i] = NULL;
+ 	ts->talloc_stacksize = i;
+ 	return 0;
++
++orphaned:
++	blocks = 0;
++	for (i = 0; i < 10; i++) {
++		talloc_free_children(frame);
++		blocks = talloc_total_blocks(frame);
++		if (blocks == 1) {
++			break;
++		}
++	}
++	if (blocks != 1) {
++		DBG_WARNING("Left %zu blocks after %i "
++			    "talloc_free_children(frame) calls\n",
++			    blocks, i);
++	}
++	return 0;
+ }
 diff --git a/lib/util/talloc_stack.h b/lib/util/talloc_stack.h
 index 89bf6ab..1f81655 100644
 --- a/lib/util/talloc_stack.h
