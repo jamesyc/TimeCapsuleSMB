@@ -348,6 +348,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         positive_flags=("--debug-logging",),
         negative_flags=("--no-debug-logging",),
     )
+    parser.add_argument("--smb-deadtime", type=non_negative_integer_arg, metavar="MINUTES", help=argparse.SUPPRESS)
     parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -595,6 +596,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         fruit_metadata_netatalk=args.fruit_metadata_netatalk,
                         vfs_aio_fork_enabled=vfs_aio_fork_enabled,
                         debug_logging=args.debug_logging,
+                        smb_deadtime=args.smb_deadtime,
                         ata_idle_seconds=args.ata_idle_seconds,
                         ata_standby=args.ata_standby,
                         probe=probe_for_context,

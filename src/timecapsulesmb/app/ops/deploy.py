@@ -207,6 +207,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         else None
     )
     ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
+    smb_deadtime = optional_unsigned_int_override_param(params, "smb_deadtime")
     context.update_fields(
         nbns_enabled=nbns_enabled,
         rsync_enabled=rsync_enabled,
@@ -390,6 +391,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 force_disable_smb_signing_and_encryption=force_disable_smb_signing_and_encryption,
                 fruit_metadata_netatalk=fruit_metadata_netatalk,
                 vfs_aio_fork_enabled=vfs_aio_fork_enabled,
+                smb_deadtime=smb_deadtime,
                 ata_idle_seconds=ata_idle_seconds,
                 ata_standby=ata_standby,
             ),

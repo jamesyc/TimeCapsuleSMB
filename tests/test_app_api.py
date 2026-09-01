@@ -1930,6 +1930,7 @@ class AppApiTests(unittest.TestCase):
                             "fruit_metadata_netatalk": False,
                             "vfs_aio_fork_enabled": True,
                             "debug_logging": True,
+                            "smb_deadtime": 480,
                             "ata_idle_seconds": 0,
                             "ata_standby": "",
                         },
@@ -1954,6 +1955,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_FRUIT_METADATA_NETATALK"], "false")
         self.assertEqual(values["TC_VFS_AIO_FORK_ENABLED"], "true")
         self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
+        self.assertEqual(values["TC_SMB_DEADTIME"], "480")
         self.assertEqual(values["TC_ATA_IDLE_SECONDS"], "0")
         self.assertEqual(values["TC_ATA_STANDBY"], "")
         self.assertEqual(
@@ -3505,6 +3507,7 @@ class AppApiTests(unittest.TestCase):
             "force_disable_smb_signing_and_encryption": False,
             "fruit_metadata_netatalk": True,
             "vfs_aio_fork_enabled": True,
+            "smb_deadtime": 240,
             "debug_logging": False,
             "ata_idle_seconds": 0,
             "ata_standby": 0,
@@ -3566,6 +3569,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(render_runtime.call_args.kwargs["fruit_metadata_netatalk"], True)
         self.assertEqual(render_runtime.call_args.kwargs["vfs_aio_fork_enabled"], True)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["smb_deadtime"], 240)
         self.assertEqual(render_runtime.call_args.kwargs["ata_idle_seconds"], 0)
         self.assertEqual(render_runtime.call_args.kwargs["ata_standby"], 0)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], False)

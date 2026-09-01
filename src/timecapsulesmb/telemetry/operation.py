@@ -27,6 +27,7 @@ OPTION_KEYS = frozenset({
     "force",
     "fruit_metadata_netatalk",
     "vfs_aio_fork_enabled",
+    "smb_deadtime",
     "include_hidden",
     "include_time_machine",
     "internal_share_use_disk_root",

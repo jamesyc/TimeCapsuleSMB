@@ -509,7 +509,7 @@ Current rendered Samba config characteristics:
 - `private dir = /mnt/Memory/samba4/private`
 - `log file = /Volumes/dkX/.samba4/logs/log.smbd`
 - `max log size = 128` in the normal generated config
-- `deadtime = 15`
+- `deadtime = 60` by default, or the value of `TC_SMB_DEADTIME` when set; `0` disables the idle disconnect
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 8`, set 128 KiB SMB2 read/write limits, and enable AIO for requests of at least one byte
 - `fruit:resource = file`
@@ -650,6 +650,7 @@ Current important `.env` values include:
 - `TC_FRUIT_METADATA_NETATALK`
 - `TC_VFS_AIO_FORK_ENABLED`
 - `TC_DEBUG_LOGGING`
+- `TC_SMB_DEADTIME`
 - `TC_ATA_IDLE_SECONDS`
 - `TC_ATA_STANDBY`
 - `TC_CONFIGURE_ID`
@@ -813,6 +814,7 @@ Hidden advanced arguments:
 - `--netatalk` / `--no-netatalk`: write `TC_FRUIT_METADATA_NETATALK=true|false`
 - `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: writes `TC_VFS_AIO_FORK_ENABLED=true|false`; toggles the bounded `vfs_aio_fork` runtime profile
 - `--debug-logging` / `--no-debug-logging`: explicitly enable or disable managed runtime debug logging
+- `--smb-deadtime MINUTES`: writes `TC_SMB_DEADTIME`; must be a non-negative integer, with `0` disabling the Samba idle disconnect
 - `--ata-idle-seconds SECONDS`: writes `TC_ATA_IDLE_SECONDS`; must be a non-negative integer, with `0` disabling the ATA idle timer
 - `--ata-standby SECONDS`: writes `TC_ATA_STANDBY`; must be a non-negative integer, with `0` disabling standby and a blank saved value leaving standby unchanged
 
@@ -1021,6 +1023,7 @@ Current defaults and fixed values:
 - `TC_FRUIT_METADATA_NETATALK=true`
 - `TC_VFS_AIO_FORK_ENABLED=false`
 - `TC_DEBUG_LOGGING=false`
+- `TC_SMB_DEADTIME=60`
 - `TC_ATA_IDLE_SECONDS=300`
 - `TC_ATA_STANDBY=` leaves the standby timer unchanged; set `0` to disable standby
 - `TC_SSH_OPTS` includes the legacy SSH algorithms required by AirPort firmware
@@ -1036,6 +1039,7 @@ Current validation behavior:
 - the managed share, binding, browsing, AFP, protocol/security, Netatalk metadata, `vfs_aio_fork`, and debug settings listed above must contain recognized boolean values.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: internal disks use `ShareRoot` by default, and external disks always use the disk root.
 - the protocol/security validator rejects required encryption combined with either `TC_ANY_PROTOCOL=true` or `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`.
+- `TC_SMB_DEADTIME`: optional non-negative integer; default `60` minutes, and `0` disables the Samba idle disconnect.
 - `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
 - `TC_ATA_STANDBY`: optional non-negative integer; blank leaves standby unchanged, and `0` disables standby through `atactl setstandby 0`.
 - `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.

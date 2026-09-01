@@ -73,6 +73,7 @@ class ConfigureFlowRequest:
     fruit_metadata_netatalk: bool | None = None
     vfs_aio_fork_enabled: bool | None = None
     debug_logging: bool | None = None
+    smb_deadtime: object | None = None
     ata_idle_seconds: object | None = None
     ata_standby: object | None = None
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None
@@ -225,6 +226,7 @@ def run_configure_flow(
         fruit_metadata_netatalk=request.fruit_metadata_netatalk,
         vfs_aio_fork_enabled=request.vfs_aio_fork_enabled,
         debug_logging=request.debug_logging,
+        smb_deadtime=request.smb_deadtime,
         ata_idle_seconds=request.ata_idle_seconds,
         ata_standby=request.ata_standby,
     )
@@ -366,6 +368,7 @@ def build_configure_env_values(
     fruit_metadata_netatalk: bool | None = None,
     vfs_aio_fork_enabled: bool | None = None,
     debug_logging: bool | None = None,
+    smb_deadtime: object | None = None,
     ata_idle_seconds: object | None = None,
     ata_standby: object | None = None,
 ) -> dict[str, str]:
@@ -381,6 +384,7 @@ def build_configure_env_values(
         fruit_metadata_netatalk=fruit_metadata_netatalk,
         vfs_aio_fork_enabled=vfs_aio_fork_enabled,
         debug_logging=debug_logging,
+        smb_deadtime=smb_deadtime,
         ata_idle_seconds=ata_idle_seconds,
         ata_standby=ata_standby,
     )
@@ -406,6 +410,7 @@ def build_managed_config_env_values(
     fruit_metadata_netatalk: bool | None = None,
     vfs_aio_fork_enabled: bool | None = None,
     debug_logging: bool | None = None,
+    smb_deadtime: object | None = None,
     ata_idle_seconds: object | None = None,
     ata_standby: object | None = None,
 ) -> dict[str, str]:
@@ -478,6 +483,11 @@ def build_managed_config_env_values(
             if debug_logging is None
             else debug_logging
         ) else "false",
+        "TC_SMB_DEADTIME": (
+            existing_config_value_or_default(existing, "TC_SMB_DEADTIME", "SMB deadtime")
+            if smb_deadtime is None
+            else _optional_unsigned_config_value(smb_deadtime, "TC_SMB_DEADTIME")
+        ),
         "TC_ATA_IDLE_SECONDS": (
             existing_config_value_or_default(existing, "TC_ATA_IDLE_SECONDS", "ATA idle seconds")
             if ata_idle_seconds is None

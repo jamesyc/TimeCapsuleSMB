@@ -140,6 +140,7 @@ def update_config_settings_operation(
             fruit_metadata_netatalk=optional_bool_param(params, "fruit_metadata_netatalk"),
             vfs_aio_fork_enabled=optional_bool_param(params, "vfs_aio_fork_enabled"),
             debug_logging=optional_bool_param(params, "debug_logging"),
+            smb_deadtime=params.get("smb_deadtime") if "smb_deadtime" in params else None,
             ata_idle_seconds=params.get("ata_idle_seconds") if "ata_idle_seconds" in params else None,
             ata_standby=params.get("ata_standby") if "ata_standby" in params else None,
         )
@@ -283,6 +284,7 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     "debug_logging",
                     parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])),
                 ),
+                smb_deadtime=params.get("smb_deadtime") if "smb_deadtime" in params else None,
                 ata_idle_seconds=params.get("ata_idle_seconds") if "ata_idle_seconds" in params else None,
                 ata_standby=params.get("ata_standby") if "ata_standby" in params else None,
                 probe=probe_for_context,

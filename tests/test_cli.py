@@ -2297,6 +2297,42 @@ class CliTests(unittest.TestCase):
         self.assertNotIn(password, telemetry_error)
         result.mocks.write_env_file.assert_not_called()
 
+    def test_configure_preserves_existing_smb_deadtime(self) -> None:
+        result = self.run_configure_cli(
+            [],
+            existing_values={"TC_SMB_DEADTIME": "240"},
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_SMB_DEADTIME"], "240")
+
+    def test_configure_saves_default_smb_deadtime_when_existing_env_lacks_it(self) -> None:
+        result = self.run_configure_cli(
+            [],
+            existing_values={},
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_SMB_DEADTIME"], "60")
+
+    def test_configure_smb_deadtime_flag_overrides_existing_value(self) -> None:
+        result = self.run_configure_cli(
+            ["--smb-deadtime", "0"],
+            existing_values={"TC_SMB_DEADTIME": "240"},
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_SMB_DEADTIME"], "0")
+
     def test_configure_preserves_existing_ata_settings(self) -> None:
         result = self.run_configure_cli(
             [],

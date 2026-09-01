@@ -149,6 +149,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_FRUIT_METADATA_NETATALK=true", rendered)
         self.assertIn("TC_VFS_AIO_FORK_ENABLED=false", rendered)
         self.assertIn("TC_DEBUG_LOGGING=false", rendered)
+        self.assertIn("TC_SMB_DEADTIME=60", rendered)
         self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
         self.assertIn("TC_ATA_STANDBY=''", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
@@ -500,6 +501,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "invalid_value")
         self.assertEqual(errors[0].key, "TC_DEBUG_LOGGING")
         values["TC_DEBUG_LOGGING"] = "false"
+        values["TC_SMB_DEADTIME"] = "-1"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_SMB_DEADTIME")
+        values["TC_SMB_DEADTIME"] = ""
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_SMB_DEADTIME")
+        values["TC_SMB_DEADTIME"] = "60"
         values["TC_ATA_IDLE_SECONDS"] = "-1"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
@@ -528,6 +540,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_FRUIT_METADATA_NETATALK"] = "not-bool"
         values["TC_VFS_AIO_FORK_ENABLED"] = "not-bool"
         values["TC_DEBUG_LOGGING"] = "not-bool"
+        values["TC_SMB_DEADTIME"] = "bad"
         values["TC_ATA_IDLE_SECONDS"] = "bad"
         values["TC_ATA_STANDBY"] = "bad"
         config = AppConfig.from_values(values, file_values=values)

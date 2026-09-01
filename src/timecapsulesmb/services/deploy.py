@@ -158,6 +158,7 @@ class DeployRuntimeConfig:
     force_disable_smb_signing_and_encryption: bool | None = None
     fruit_metadata_netatalk: bool | None = None
     vfs_aio_fork_enabled: bool | None = None
+    smb_deadtime: str | int | None = None
     ata_idle_seconds: str | int | None = None
     ata_standby: str | int | None = None
 
@@ -805,6 +806,7 @@ def upload_and_verify_deployment_payload(
         force_disable_smb_signing_and_encryption=runtime_config.force_disable_smb_signing_and_encryption,
         fruit_metadata_netatalk=runtime_config.fruit_metadata_netatalk,
         vfs_aio_fork_enabled=runtime_config.vfs_aio_fork_enabled,
+        smb_deadtime=runtime_config.smb_deadtime,
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
     )
@@ -1162,6 +1164,7 @@ def render_flash_runtime_config(
     force_disable_smb_signing_and_encryption: bool | None = None,
     fruit_metadata_netatalk: bool | None = None,
     vfs_aio_fork_enabled: bool | None = None,
+    smb_deadtime: str | int | None = None,
     ata_idle_seconds: str | int | None = None,
     ata_standby: str | int | None = None,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
@@ -1197,6 +1200,11 @@ def render_flash_runtime_config(
         DEFAULTS["TC_VFS_AIO_FORK_ENABLED"],
     )
     configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
+    runtime_smb_deadtime = (
+        _runtime_unsigned_config_value(config, "TC_SMB_DEADTIME", DEFAULTS["TC_SMB_DEADTIME"])
+        if smb_deadtime is None
+        else _runtime_unsigned_override_value(smb_deadtime)
+    )
     runtime_ata_idle_seconds = (
         _runtime_unsigned_config_value(config, "TC_ATA_IDLE_SECONDS", DEFAULTS["TC_ATA_IDLE_SECONDS"])
         if ata_idle_seconds is None
@@ -1276,6 +1284,7 @@ def render_flash_runtime_config(
         ("FRUIT_METADATA_NETATALK", 1 if effective_fruit_metadata_netatalk else 0),
         ("VFS_AIO_FORK_ENABLED", 1 if effective_vfs_aio_fork_enabled else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
+        ("SMB_DEADTIME", runtime_smb_deadtime),
         ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
         ("ATA_STANDBY", runtime_ata_standby),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),
