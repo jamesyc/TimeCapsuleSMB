@@ -68,6 +68,7 @@
 "app_settings.check_now" = "Jetzt prüfen";
 "app_settings.check_updates_on_launch" = "Suchen Sie beim Start nach Updates";
 "app_settings.default_bonjour_timeout" = "Discovery-Timeout in Sekunden";
+"app_settings.error.smb_deadtime" = "SMB-Deadtime-Minuten müssen eine nicht negative ganze Zahl sein.";
 "app_settings.error.ata_idle" = "ATA Leerlaufsekunden müssen eine nicht negative ganze Zahl sein.";
 "app_settings.error.ata_standby" = "ATA Standby-Sekunden müssen leer oder eine nicht negative Ganzzahl sein.";
 "app_settings.error.bonjour_timeout" = "Bonjour Timeout muss eine nicht negative Zahl sein.";
@@ -425,6 +426,7 @@
 "backend.summary.update_available" = "Update verfügbar.";
 "backend.summary.update_required" = "Update erforderlich.";
 "backend.summary.version_metadata_unavailable" = "Version metadata ist nicht verfügbar.";
+"field.smb_deadtime" = "SMB-Deadtime-Minuten";
 "field.ata_idle_seconds" = "ATA Leerlaufsekunden";
 "field.ata_standby" = "ATA Standby-Sekunden";
 "field.firmware_template" = "Firmware Vorlagenpfad, optional";
@@ -607,6 +609,7 @@
 "overview.discovery.waiting" = "Discovery beginnt, nachdem app runtime bereit ist.";
 "operation.error.already_running" = "Ein anderer Vorgang wird bereits ausgeführt.";
 "workflow.error.activation_plan_required" = "Planen Sie die Aktivierung von NetBSD4, bevor Sie sie ausführen.";
+"workflow.error.smb_deadtime_invalid" = "SMB-Deadtime-Minuten müssen eine nicht negative ganze Zahl sein.";
 "workflow.error.ata_idle_seconds_invalid" = "ATA Leerlaufsekunden müssen eine nicht negative ganze Zahl sein.";
 "workflow.error.ata_standby_invalid" = "ATA Standby-Sekunden müssen leer oder eine nicht negative Ganzzahl sein.";
 "workflow.error.deploy_options_invalid" = "Bereitstellungsoptionen sind ungültig.";
@@ -684,6 +687,7 @@
 "profile_editor.display_name" = "Anzeigename";
 "profile_editor.error.duplicate_host" = "Ein anderes gespeichertes Gerät verwendet diesen Host bereits.";
 "profile_editor.error.host_required" = "Host ist erforderlich.";
+"profile_editor.error.smb_deadtime_invalid" = "SMB-Deadtime-Minuten müssen eine nicht negative ganze Zahl sein.";
 "profile_editor.error.ata_idle_seconds_invalid" = "ATA Leerlaufsekunden müssen eine nicht negative ganze Zahl sein.";
 "profile_editor.error.ata_standby_invalid" = "ATA Standby-Sekunden müssen leer oder eine nicht negative Ganzzahl sein.";
 "profile_editor.error.mount_wait_invalid" = "Mount Wait muss eine nicht negative ganze Zahl sein.";

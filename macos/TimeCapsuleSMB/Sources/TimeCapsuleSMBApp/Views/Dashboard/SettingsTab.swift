@@ -136,6 +136,12 @@ private struct DeviceProfileAdvancedSettingsView: View {
                             .frame(width: 160)
                     }
                     GridRow {
+                        Text(L10n.string("field.smb_deadtime"))
+                            .foregroundStyle(.secondary)
+                        TextField(L10n.string("field.smb_deadtime"), text: $store.draft.smbDeadtime)
+                            .frame(width: 160)
+                    }
+                    GridRow {
                         Text(L10n.string("field.ata_idle_seconds"))
                             .foregroundStyle(.secondary)
                         TextField(L10n.string("field.ata_idle_seconds"), text: $store.draft.ataIdleSeconds)

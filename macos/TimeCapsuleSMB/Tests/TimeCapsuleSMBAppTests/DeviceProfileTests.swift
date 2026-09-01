@@ -112,6 +112,7 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.vfsAIOForkEnabled, false)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
+        XCTAssertEqual(settings.smbDeadtime, 60)
         XCTAssertEqual(settings.ataIdleSeconds, 300)
         XCTAssertNil(settings.ataStandby)
     }
@@ -196,6 +197,7 @@ final class DeviceProfileTests: XCTestCase {
           "nbnsEnabled": true,
           "debugLogging": false,
           "mountWaitSeconds": 45,
+          "smbDeadtime": "0",
           "ataIdleSeconds": "0",
           "ataStandby": "120"
         }
@@ -203,6 +205,7 @@ final class DeviceProfileTests: XCTestCase {
 
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
+        XCTAssertEqual(settings.smbDeadtime, 0)
         XCTAssertEqual(settings.ataIdleSeconds, 0)
         XCTAssertEqual(settings.ataStandby, 120)
     }
@@ -213,6 +216,7 @@ final class DeviceProfileTests: XCTestCase {
           "nbnsEnabled": true,
           "debugLogging": false,
           "mountWaitSeconds": 45,
+          "smbDeadtime": "bad",
           "ataIdleSeconds": "bad",
           "ataStandby": "bad"
         }
@@ -220,6 +224,7 @@ final class DeviceProfileTests: XCTestCase {
 
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
+        XCTAssertEqual(settings.smbDeadtime, 60)
         XCTAssertEqual(settings.ataIdleSeconds, 300)
         XCTAssertNil(settings.ataStandby)
     }

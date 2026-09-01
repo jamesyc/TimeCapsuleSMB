@@ -68,6 +68,7 @@
 "app_settings.check_now" = "Verifique agora";
 "app_settings.check_updates_on_launch" = "Verifique atualizações no lançamento";
 "app_settings.default_bonjour_timeout" = "Segundos de tempo limite de descoberta";
+"app_settings.error.smb_deadtime" = "Os minutos de deadtime SMB devem ser um número inteiro não negativo.";
 "app_settings.error.ata_idle" = "ATA segundos inativos devem ser um número inteiro não negativo.";
 "app_settings.error.ata_standby" = "ATA segundos de espera devem estar em branco ou ser um número inteiro não negativo.";
 "app_settings.error.bonjour_timeout" = "Bonjour o tempo limite deve ser um número não negativo.";
@@ -425,6 +426,7 @@
 "backend.summary.update_available" = "Atualização disponível.";
 "backend.summary.update_required" = "Atualização necessária.";
 "backend.summary.version_metadata_unavailable" = "A versão metadata não está disponível.";
+"field.smb_deadtime" = "SMB minutos de deadtime";
 "field.ata_idle_seconds" = "ATA segundos inativos";
 "field.ata_standby" = "ATA segundos de espera";
 "field.firmware_template" = "Firmware caminho do modelo, opcional";
@@ -607,6 +609,7 @@
 "overview.discovery.waiting" = "A descoberta começa depois que app runtime estiver pronto.";
 "operation.error.already_running" = "Outra operação já está em execução.";
 "workflow.error.activation_plan_required" = "Planeje a ativação de NetBSD4 antes de executá-lo.";
+"workflow.error.smb_deadtime_invalid" = "Os minutos de deadtime SMB devem ser um número inteiro não negativo.";
 "workflow.error.ata_idle_seconds_invalid" = "ATA segundos inativos devem ser um número inteiro não negativo.";
 "workflow.error.ata_standby_invalid" = "ATA segundos de espera devem estar em branco ou ser um número inteiro não negativo.";
 "workflow.error.deploy_options_invalid" = "As opções de implementação são inválidas.";
@@ -684,6 +687,7 @@
 "profile_editor.display_name" = "Nome de exibição";
 "profile_editor.error.duplicate_host" = "Outro dispositivo salvo já usa este host.";
 "profile_editor.error.host_required" = "Host é necessário.";
+"profile_editor.error.smb_deadtime_invalid" = "Os minutos de deadtime SMB devem ser um número inteiro não negativo.";
 "profile_editor.error.ata_idle_seconds_invalid" = "ATA segundos inativos devem ser um número inteiro não negativo.";
 "profile_editor.error.ata_standby_invalid" = "ATA segundos de espera devem estar em branco ou ser um número inteiro não negativo.";
 "profile_editor.error.mount_wait_invalid" = "A espera de montagem deve ser um número inteiro não negativo.";

@@ -20,6 +20,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             "hostRequired",
             "duplicateHost",
             "mountWaitInvalid",
+            "smbDeadtimeInvalid",
             "ataIdleSecondsInvalid",
             "ataStandbyInvalid",
             "passwordRequired"
@@ -47,6 +48,17 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         }
 
         draft.mountWaitSeconds = "45"
+        draft.smbDeadtime = "0"
+        XCTAssertEqual(try draft.validatedSettings().smbDeadtime, 0)
+        draft.smbDeadtime = "480"
+        XCTAssertEqual(try draft.validatedSettings().smbDeadtime, 480)
+        for invalid in ["", "-1", "1.5", "abc"] {
+            draft.smbDeadtime = invalid
+            XCTAssertThrowsError(try draft.validatedSettings()) { error in
+                XCTAssertEqual(error as? DeviceProfileEditorValidationError, .smbDeadtimeInvalid)
+            }
+        }
+        draft.smbDeadtime = "60"
         draft.ataIdleSeconds = "0"
         XCTAssertEqual(try draft.validatedSettings().ataIdleSeconds, 0)
         draft.ataIdleSeconds = "300"
@@ -156,11 +168,13 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 45,
+            smbDeadtime: 480,
             ataIdleSeconds: 0,
             ataStandby: 0
         ))
         let call = try XCTUnwrap(fixture.runner.calls.first)
         XCTAssertEqual(call.operation, "update-config-settings")
+        XCTAssertEqual(call.params["smb_deadtime"], .number(480))
         XCTAssertEqual(call.params["smb_bind_lan_only"], .bool(false))
         XCTAssertEqual(call.params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertTrue(try String(contentsOf: saved.configURL, encoding: .utf8).contains("TC_TEST_SETTINGS_SYNCED=1"))
@@ -311,11 +325,12 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
         store.draft.host = first.host
         store.draft.mountWaitSeconds = "bad"
+        store.draft.smbDeadtime = "nope"
         store.draft.ataIdleSeconds = "also-bad"
         store.draft.ataStandby = "still-bad"
         await store.save(profile: first)
         XCTAssertEqual(store.state, .invalid)
-        XCTAssertEqual(store.validationErrors, [.mountWaitInvalid, .ataIdleSecondsInvalid, .ataStandbyInvalid])
+        XCTAssertEqual(store.validationErrors, [.mountWaitInvalid, .smbDeadtimeInvalid, .ataIdleSecondsInvalid, .ataStandbyInvalid])
         XCTAssertEqual(fixture.runner.calls, [])
     }
 
@@ -445,6 +460,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(call.params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(call.params["debug_logging"], .bool(true))
+        XCTAssertEqual(call.params["smb_deadtime"], .number(60))
         XCTAssertEqual(call.params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(call.params["ata_standby"], .number(0))
 
@@ -467,6 +483,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 60,
+            smbDeadtime: 60,
             ataIdleSeconds: 0,
             ataStandby: 0
         ))

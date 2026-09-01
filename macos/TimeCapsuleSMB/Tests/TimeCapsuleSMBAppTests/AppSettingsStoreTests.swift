@@ -34,6 +34,7 @@ final class AppSettingsStoreTests: XCTestCase {
                 vfsAIOForkEnabled: true,
                 debugLogging: true,
                 mountWaitSeconds: 45,
+                smbDeadtime: 480,
                 ataIdleSeconds: 600,
                 ataStandby: 900
             ),

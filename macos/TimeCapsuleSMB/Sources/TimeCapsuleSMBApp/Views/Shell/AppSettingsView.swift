@@ -74,6 +74,10 @@ struct AppSettingsView: View {
                         TextField("", text: $editor.draft.mountWaitSeconds)
                             .frame(width: 120)
                     }
+                    SettingsFormRow(title: L10n.string("field.smb_deadtime")) {
+                        TextField("", text: $editor.draft.smbDeadtime)
+                            .frame(width: 120)
+                    }
                     SettingsFormRow(title: L10n.string("field.ata_idle_seconds")) {
                         TextField("", text: $editor.draft.ataIdleSeconds)
                             .frame(width: 120)

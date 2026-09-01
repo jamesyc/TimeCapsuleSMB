@@ -68,6 +68,7 @@
 "app_settings.check_now" = "Tikrinti dabar";
 "app_settings.check_updates_on_launch" = "Tikrinti naujinimus paleidžiant";
 "app_settings.default_bonjour_timeout" = "Paieškos skirtojo laiko sekundės";
+"app_settings.error.smb_deadtime" = "SMB deadtime minutės turi būti neneigiamas sveikasis skaičius.";
 "app_settings.error.ata_idle" = "ATA laukimo sekundės turi būti neneigiamas sveikasis skaičius.";
 "app_settings.error.ata_standby" = "ATA budėjimo sekundės turi būti tuščios arba neneigiamas sveikasis skaičius.";
 "app_settings.error.bonjour_timeout" = "Bonjour skirtasis laikas turi būti neneigiamas skaičius.";
@@ -425,6 +426,7 @@
 "backend.summary.update_available" = "Yra naujinimas.";
 "backend.summary.update_required" = "Reikalingas naujinimas.";
 "backend.summary.version_metadata_unavailable" = "Versijos metaduomenys nepasiekiami.";
+"field.smb_deadtime" = "SMB deadtime minutės";
 "field.ata_idle_seconds" = "ATA laukimo sekundės";
 "field.ata_standby" = "ATA budėjimo sekundės";
 "field.firmware_template" = "Programinės įrangos šablono kelias, neprivaloma";
@@ -607,6 +609,7 @@
 "overview.discovery.waiting" = "Paieška prasideda, kai programos aplinka bus paruošta.";
 "operation.error.already_running" = "Kita operacija jau vykdoma.";
 "workflow.error.activation_plan_required" = "Prieš vykdant planuokite NetBSD4 aktyvavimą.";
+"workflow.error.smb_deadtime_invalid" = "SMB deadtime minutės turi būti neneigiamas sveikasis skaičius.";
 "workflow.error.ata_idle_seconds_invalid" = "ATA laukimo sekundės turi būti neneigiamas sveikasis skaičius.";
 "workflow.error.ata_standby_invalid" = "ATA budėjimo sekundės turi būti tuščios arba neneigiamas sveikasis skaičius.";
 "workflow.error.deploy_options_invalid" = "Diegimo parinktys yra netinkamos.";
@@ -684,6 +687,7 @@
 "profile_editor.display_name" = "Rodomas pavadinimas";
 "profile_editor.error.duplicate_host" = "Kitas išsaugotas įrenginys jau naudoja šį kompiuterio pavadinimą.";
 "profile_editor.error.host_required" = "Kompiuterio pavadinimas būtinas.";
+"profile_editor.error.smb_deadtime_invalid" = "SMB deadtime minutės turi būti neneigiamas sveikasis skaičius.";
 "profile_editor.error.ata_idle_seconds_invalid" = "ATA laukimo sekundės turi būti neneigiamas sveikasis skaičius.";
 "profile_editor.error.ata_standby_invalid" = "ATA budėjimo sekundės turi būti tuščios arba neneigiamas sveikasis skaičius.";
 "profile_editor.error.mount_wait_invalid" = "Prijungimo laukimo laikas turi būti neneigiamas sveikasis skaičius.";

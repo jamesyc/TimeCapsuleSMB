@@ -184,6 +184,7 @@ final class DeviceSetupWorkflow: ObservableObject {
                 forceDisableSMBSigningAndEncryption: settings.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
                 vfsAIOForkEnabled: settings.vfsAIOForkEnabled,
+                smbDeadtime: settings.smbDeadtime,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,
                 includeAtaStandby: true,

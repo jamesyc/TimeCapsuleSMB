@@ -16,6 +16,7 @@ struct DeployOptions: Equatable {
     let fruitMetadataNetatalk: Bool
     let vfsAIOForkEnabled: Bool
     let debugLogging: Bool
+    let smbDeadtime: Int
     let ataIdleSeconds: Int
     let ataStandby: Int?
     let mountWait: Int
@@ -35,6 +36,7 @@ struct DeployOptions: Equatable {
         fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
         vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
         debugLogging: Bool,
+        smbDeadtime: Int = DeviceProfileSettings.default.smbDeadtime,
         ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
         ataStandby: Int? = DeviceProfileSettings.default.ataStandby,
         mountWait: Int
@@ -53,6 +55,7 @@ struct DeployOptions: Equatable {
         self.fruitMetadataNetatalk = fruitMetadataNetatalk
         self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
+        self.smbDeadtime = smbDeadtime
         self.ataIdleSeconds = ataIdleSeconds
         self.ataStandby = ataStandby
         self.mountWait = mountWait
@@ -164,6 +167,9 @@ final class DeployWorkflowStore: ObservableObject {
         didSet { reconcilePlanFreshness() }
     }
     @Published var debugLogging = false {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var smbDeadtime = String(DeviceProfileSettings.default.smbDeadtime) {
         didSet { reconcilePlanFreshness() }
     }
     @Published var ataIdleSeconds = String(DeviceProfileSettings.default.ataIdleSeconds) {
@@ -288,6 +294,7 @@ final class DeployWorkflowStore: ObservableObject {
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 vfsAIOForkEnabled: options.vfsAIOForkEnabled,
                 debugLogging: options.debugLogging,
+                smbDeadtime: options.smbDeadtime,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
                 mountWait: Double(options.mountWait)
@@ -346,6 +353,7 @@ final class DeployWorkflowStore: ObservableObject {
                 fruitMetadataNetatalk: options.fruitMetadataNetatalk,
                 vfsAIOForkEnabled: options.vfsAIOForkEnabled,
                 debugLogging: options.debugLogging,
+                smbDeadtime: options.smbDeadtime,
                 ataIdleSeconds: options.ataIdleSeconds,
                 ataStandby: options.ataStandby,
                 mountWait: Double(options.mountWait)
@@ -393,7 +401,7 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     private var currentOptions: DeployOptions? {
-        guard let mountWaitValue, let ataIdleSecondsValue, hasValidAtaStandby else {
+        guard let mountWaitValue, let smbDeadtimeValue, let ataIdleSecondsValue, hasValidAtaStandby else {
             return nil
         }
         let rebootOptions = RebootExecutionOptionPolicy.normalized(noReboot: noReboot, noWait: noWait)
@@ -412,10 +420,15 @@ final class DeployWorkflowStore: ObservableObject {
             fruitMetadataNetatalk: fruitMetadataNetatalk,
             vfsAIOForkEnabled: vfsAIOForkEnabled,
             debugLogging: debugLogging,
+            smbDeadtime: smbDeadtimeValue,
             ataIdleSeconds: ataIdleSecondsValue,
             ataStandby: ataStandbyValue,
             mountWait: mountWaitValue
         )
+    }
+
+    private var smbDeadtimeValue: Int? {
+        ValueParsers.nonNegativeInteger(smbDeadtime)
     }
 
     private var ataIdleSecondsValue: Int? {
@@ -437,6 +450,9 @@ final class DeployWorkflowStore: ObservableObject {
     private var deployOptionsValidationError: WorkflowLocalError? {
         if mountWaitValue == nil {
             return .mountWaitInvalid
+        }
+        if smbDeadtimeValue == nil {
+            return .smbDeadtimeInvalid
         }
         if ataIdleSecondsValue == nil {
             return .ataIdleSecondsInvalid

@@ -68,6 +68,7 @@
 "app_settings.check_now" = "立即检查";
 "app_settings.check_updates_on_launch" = "启动时检查更新";
 "app_settings.default_bonjour_timeout" = "Discovery timeout 秒数";
+"app_settings.error.smb_deadtime" = "SMB deadtime 分钟数必须为非负整数。";
 "app_settings.error.ata_idle" = "ATA idle seconds 必须是非负整数。";
 "app_settings.error.ata_standby" = "ATA standby seconds 必须留空或为非负整数。";
 "app_settings.error.bonjour_timeout" = "Bonjour timeout 必须是非负数。";
@@ -425,6 +426,7 @@
 "backend.summary.update_available" = "有可用更新。";
 "backend.summary.update_required" = "需要更新。";
 "backend.summary.version_metadata_unavailable" = "版本元数据不可用。";
+"field.smb_deadtime" = "SMB deadtime 分钟数";
 "field.ata_idle_seconds" = "ATA idle 秒数";
 "field.ata_standby" = "ATA standby 秒数";
 "flash.eligibility.disabled" = "此构建已禁用固件 Boot Hook 分析。";
@@ -607,6 +609,7 @@
 "overview.discovery.waiting" = "App Runtime 就绪后会开始 Discovery。";
 "operation.error.already_running" = "已有另一个操作正在运行。";
 "workflow.error.activation_plan_required" = "运行前请先规划 NetBSD4 activation。";
+"workflow.error.smb_deadtime_invalid" = "SMB deadtime 分钟数必须为非负整数。";
 "workflow.error.ata_idle_seconds_invalid" = "ATA idle seconds 必须是非负整数。";
 "workflow.error.ata_standby_invalid" = "ATA standby seconds 必须留空或为非负整数。";
 "workflow.error.deploy_options_invalid" = "部署选项无效。";
@@ -684,6 +687,7 @@
 "profile_editor.display_name" = "显示名称";
 "profile_editor.error.duplicate_host" = "另一个保存的设备已使用此 Host。";
 "profile_editor.error.host_required" = "主机为必填。";
+"profile_editor.error.smb_deadtime_invalid" = "SMB deadtime 分钟数必须为非负整数。";
 "profile_editor.error.ata_idle_seconds_invalid" = "ATA idle seconds 必须是非负整数。";
 "profile_editor.error.ata_standby_invalid" = "ATA standby seconds 必须留空或为非负整数。";
 "profile_editor.error.mount_wait_invalid" = "Mount wait 必须是非负整数。";

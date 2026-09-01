@@ -68,6 +68,7 @@
 "app_settings.check_now" = "Controleer nu";
 "app_settings.check_updates_on_launch" = "Controleer op updates bij de lancering";
 "app_settings.default_bonjour_timeout" = "Discovery time-out seconden";
+"app_settings.error.smb_deadtime" = "SMB deadtime-minuten moeten een niet-negatief geheel getal zijn.";
 "app_settings.error.ata_idle" = "ATA inactieve seconden moeten een niet-negatief geheel getal zijn.";
 "app_settings.error.ata_standby" = "ATA standby-seconden moeten leeg zijn of een niet-negatief geheel getal zijn.";
 "app_settings.error.bonjour_timeout" = "Bonjour time-out moet een niet-negatief getal zijn.";
@@ -425,6 +426,7 @@
 "backend.summary.update_available" = "Update beschikbaar.";
 "backend.summary.update_required" = "Update vereist.";
 "backend.summary.version_metadata_unavailable" = "Versie metadata is niet beschikbaar.";
+"field.smb_deadtime" = "SMB deadtime-minuten";
 "field.ata_idle_seconds" = "ATA inactieve seconden";
 "field.ata_standby" = "ATA standby-seconden";
 "field.firmware_template" = "Firmware sjabloonpad, optioneel";
@@ -607,6 +609,7 @@
 "overview.discovery.waiting" = "Discovery start nadat de app runtime gereed is.";
 "operation.error.already_running" = "Er is al een andere bewerking actief.";
 "workflow.error.activation_plan_required" = "Plan NetBSD4 activering voordat u het uitvoert.";
+"workflow.error.smb_deadtime_invalid" = "SMB deadtime-minuten moeten een niet-negatief geheel getal zijn.";
 "workflow.error.ata_idle_seconds_invalid" = "ATA inactieve seconden moeten een niet-negatief geheel getal zijn.";
 "workflow.error.ata_standby_invalid" = "ATA standby-seconden moeten leeg zijn of een niet-negatief geheel getal zijn.";
 "workflow.error.deploy_options_invalid" = "Implementatieopties zijn ongeldig.";
@@ -684,6 +687,7 @@
 "profile_editor.display_name" = "Weergavenaam";
 "profile_editor.error.duplicate_host" = "Een ander opgeslagen apparaat maakt al gebruik van deze host.";
 "profile_editor.error.host_required" = "Host is vereist.";
+"profile_editor.error.smb_deadtime_invalid" = "SMB deadtime-minuten moeten een niet-negatief geheel getal zijn.";
 "profile_editor.error.ata_idle_seconds_invalid" = "ATA inactieve seconden moeten een niet-negatief geheel getal zijn.";
 "profile_editor.error.ata_standby_invalid" = "ATA standby-seconden moeten leeg zijn of een niet-negatief geheel getal zijn.";
 "profile_editor.error.mount_wait_invalid" = "Mount wait moet een niet-negatief geheel getal zijn.";

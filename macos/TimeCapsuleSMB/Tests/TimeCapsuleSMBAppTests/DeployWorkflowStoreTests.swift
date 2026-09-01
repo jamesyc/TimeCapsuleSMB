@@ -52,6 +52,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.fruitMetadataNetatalk = true
         store.vfsAIOForkEnabled = true
         store.debugLogging = true
+        store.smbDeadtime = "0"
         store.ataIdleSeconds = "0"
         store.ataStandby = "0"
 
@@ -78,6 +79,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["smb_deadtime"], .number(0))
         XCTAssertEqual(runner.calls[0].params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(runner.calls[0].params["ata_standby"], .number(0))
         XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(45))
@@ -119,6 +121,13 @@ final class DeployWorkflowStoreTests: XCTestCase {
     func testInvalidAtaOptionsMoveToPlanFailedWithoutRunningHelper() {
         let runner = StoreTestRunner(responses: [])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
+
+        store.smbDeadtime = "bad"
+        store.runPlan(password: "pw")
+        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.error?.code, "smb_deadtime_invalid")
+        XCTAssertEqual(store.error?.message, "SMB deadtime minutes must be a non-negative integer.")
+        store.smbDeadtime = "60"
 
         store.ataIdleSeconds = "bad"
         store.runPlan(password: "pw")

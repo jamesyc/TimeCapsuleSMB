@@ -180,6 +180,7 @@ struct DiagnosticsExportBuilder {
         append("\(prefix) vfs_aio_fork", value: settings.vfsAIOForkEnabled, to: &lines)
         append("\(prefix) Debug Logging", value: settings.debugLogging, to: &lines)
         append("\(prefix) Mount Wait", value: settings.mountWaitSeconds, to: &lines)
+        append("\(prefix) SMB Deadtime", value: settings.smbDeadtime, to: &lines)
         append("\(prefix) ATA Idle", value: settings.ataIdleSeconds, to: &lines)
         append("\(prefix) ATA Standby", value: settings.ataStandby.map(String.init) ?? "device default", to: &lines)
     }

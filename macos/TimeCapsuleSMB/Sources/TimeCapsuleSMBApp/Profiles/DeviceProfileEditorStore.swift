@@ -40,6 +40,7 @@ enum DeviceProfileEditorValidationError: String, CaseIterable, Equatable, Locali
     case hostRequired
     case duplicateHost
     case mountWaitInvalid
+    case smbDeadtimeInvalid
     case ataIdleSecondsInvalid
     case ataStandbyInvalid
     case passwordRequired
@@ -52,6 +53,8 @@ enum DeviceProfileEditorValidationError: String, CaseIterable, Equatable, Locali
             return L10n.string("profile_editor.error.duplicate_host")
         case .mountWaitInvalid:
             return L10n.string("profile_editor.error.mount_wait_invalid")
+        case .smbDeadtimeInvalid:
+            return L10n.string("profile_editor.error.smb_deadtime_invalid")
         case .ataIdleSecondsInvalid:
             return L10n.string("profile_editor.error.ata_idle_seconds_invalid")
         case .ataStandbyInvalid:
@@ -88,6 +91,7 @@ struct DeviceProfileEditorDraft: Equatable {
     var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
+    var smbDeadtime: String
     var ataIdleSeconds: String
     var ataStandby: String
 
@@ -107,6 +111,7 @@ struct DeviceProfileEditorDraft: Equatable {
         vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
         debugLogging: Bool,
         mountWaitSeconds: String,
+        smbDeadtime: String = String(DeviceProfileSettings.default.smbDeadtime),
         ataIdleSeconds: String = String(DeviceProfileSettings.default.ataIdleSeconds),
         ataStandby: String = DeviceProfileSettings.default.ataStandby.map { String($0) } ?? ""
     ) {
@@ -125,6 +130,7 @@ struct DeviceProfileEditorDraft: Equatable {
         self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
+        self.smbDeadtime = smbDeadtime
         self.ataIdleSeconds = ataIdleSeconds
         self.ataStandby = ataStandby
     }
@@ -146,6 +152,7 @@ struct DeviceProfileEditorDraft: Equatable {
             vfsAIOForkEnabled: profile.settings.vfsAIOForkEnabled,
             debugLogging: profile.settings.debugLogging,
             mountWaitSeconds: String(profile.settings.mountWaitSeconds),
+            smbDeadtime: String(profile.settings.smbDeadtime),
             ataIdleSeconds: String(profile.settings.ataIdleSeconds),
             ataStandby: profile.settings.ataStandby.map { String($0) } ?? ""
         )
@@ -173,6 +180,10 @@ struct DeviceProfileEditorDraft: Equatable {
         if mountWait == nil {
             errors.append(.mountWaitInvalid)
         }
+        let deadtime = ValueParsers.nonNegativeInteger(smbDeadtime)
+        if deadtime == nil {
+            errors.append(.smbDeadtimeInvalid)
+        }
         let ataIdle = ValueParsers.nonNegativeInteger(ataIdleSeconds)
         if ataIdle == nil {
             errors.append(.ataIdleSecondsInvalid)
@@ -187,7 +198,7 @@ struct DeviceProfileEditorDraft: Equatable {
             errors.append(.ataStandbyInvalid)
             parsedAtaStandby = nil
         }
-        guard errors.isEmpty, let mountWait, let ataIdle else {
+        guard errors.isEmpty, let mountWait, let deadtime, let ataIdle else {
             return DeviceProfileEditorSettingsValidation(settings: nil, errors: errors)
         }
         let settings = DeviceProfileSettings(
@@ -204,6 +215,7 @@ struct DeviceProfileEditorDraft: Equatable {
             vfsAIOForkEnabled: vfsAIOForkEnabled,
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait,
+            smbDeadtime: deadtime,
             ataIdleSeconds: ataIdle,
             ataStandby: parsedAtaStandby
         )
@@ -522,6 +534,7 @@ final class DeviceProfileEditorStore: ObservableObject {
             forceDisableSMBSigningAndEncryption: draft.forceDisableSMBSigningAndEncryption,
             fruitMetadataNetatalk: draft.fruitMetadataNetatalk,
             vfsAIOForkEnabled: draft.vfsAIOForkEnabled,
+            smbDeadtime: settings.smbDeadtime,
             ataIdleSeconds: settings.ataIdleSeconds,
             ataStandby: settings.ataStandby,
             includeAtaStandby: true,

@@ -246,6 +246,7 @@ struct AppSettings: Codable, Equatable {
 enum AppSettingsValidationError: Equatable, LocalizedError {
     case invalidBonjourTimeout
     case invalidMountWait
+    case invalidSMBDeadtime
     case invalidAtaIdleSeconds
     case invalidAtaStandby
     case invalidVersionCheckURL
@@ -256,6 +257,8 @@ enum AppSettingsValidationError: Equatable, LocalizedError {
             return L10n.string("app_settings.error.bonjour_timeout")
         case .invalidMountWait:
             return L10n.string("app_settings.error.mount_wait")
+        case .invalidSMBDeadtime:
+            return L10n.string("app_settings.error.smb_deadtime")
         case .invalidAtaIdleSeconds:
             return L10n.string("app_settings.error.ata_idle")
         case .invalidAtaStandby:
@@ -411,6 +414,7 @@ struct AppSettingsDraft: Equatable {
     var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
+    var smbDeadtime: String
     var ataIdleSeconds: String
     var ataStandby: String
     var telemetryEnabled: Bool
@@ -437,6 +441,7 @@ struct AppSettingsDraft: Equatable {
         vfsAIOForkEnabled = settings.defaultDeviceSettings.vfsAIOForkEnabled
         debugLogging = settings.defaultDeviceSettings.debugLogging
         mountWaitSeconds = String(settings.defaultDeviceSettings.mountWaitSeconds)
+        smbDeadtime = String(settings.defaultDeviceSettings.smbDeadtime)
         ataIdleSeconds = String(settings.defaultDeviceSettings.ataIdleSeconds)
         ataStandby = settings.defaultDeviceSettings.ataStandby.map(String.init) ?? ""
         telemetryEnabled = settings.telemetryEnabled
@@ -453,6 +458,9 @@ struct AppSettingsDraft: Equatable {
         }
         guard let mountWait = ValueParsers.nonNegativeInteger(mountWaitSeconds) else {
             throw AppSettingsValidationError.invalidMountWait
+        }
+        guard let deadtime = ValueParsers.nonNegativeInteger(smbDeadtime) else {
+            throw AppSettingsValidationError.invalidSMBDeadtime
         }
         guard let ataIdle = ValueParsers.nonNegativeInteger(ataIdleSeconds) else {
             throw AppSettingsValidationError.invalidAtaIdleSeconds
@@ -490,6 +498,7 @@ struct AppSettingsDraft: Equatable {
                 vfsAIOForkEnabled: vfsAIOForkEnabled,
                 debugLogging: debugLogging,
                 mountWaitSeconds: mountWait,
+                smbDeadtime: deadtime,
                 ataIdleSeconds: ataIdle,
                 ataStandby: parsedAtaStandby
             ),

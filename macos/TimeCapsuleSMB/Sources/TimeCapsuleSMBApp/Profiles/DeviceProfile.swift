@@ -47,6 +47,7 @@ struct DeviceProfileSettings: Codable, Equatable {
     var vfsAIOForkEnabled: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
+    var smbDeadtime: Int
     var ataIdleSeconds: Int
     var ataStandby: Int?
 
@@ -64,6 +65,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         vfsAIOForkEnabled: false,
         debugLogging: false,
         mountWaitSeconds: 30,
+        smbDeadtime: 60,
         ataIdleSeconds: 300,
         ataStandby: nil
     )
@@ -82,6 +84,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         vfsAIOForkEnabled: Bool = false,
         debugLogging: Bool,
         mountWaitSeconds: Int,
+        smbDeadtime: Int = 60,
         ataIdleSeconds: Int = 300,
         ataStandby: Int? = nil
     ) {
@@ -101,6 +104,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         self.vfsAIOForkEnabled = vfsAIOForkEnabled
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
+        self.smbDeadtime = smbDeadtime
         self.ataIdleSeconds = ataIdleSeconds
         self.ataStandby = ataStandby
     }
@@ -119,6 +123,7 @@ struct DeviceProfileSettings: Codable, Equatable {
         case vfsAIOForkEnabled
         case debugLogging
         case mountWaitSeconds
+        case smbDeadtime
         case ataIdleSeconds
         case ataStandby
     }
@@ -144,6 +149,11 @@ struct DeviceProfileSettings: Codable, Equatable {
         vfsAIOForkEnabled = try container.decodeIfPresent(Bool.self, forKey: .vfsAIOForkEnabled) ?? Self.default.vfsAIOForkEnabled
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
         mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds
+        smbDeadtime = Self.decodeNonNegativeInteger(
+            from: container,
+            forKey: .smbDeadtime,
+            defaultValue: Self.default.smbDeadtime
+        )
         ataIdleSeconds = Self.decodeNonNegativeInteger(
             from: container,
             forKey: .ataIdleSeconds,

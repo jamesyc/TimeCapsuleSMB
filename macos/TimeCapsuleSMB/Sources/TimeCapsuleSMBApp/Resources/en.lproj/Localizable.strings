@@ -68,6 +68,7 @@
 "app_settings.check_now" = "Check Now";
 "app_settings.check_updates_on_launch" = "Check for updates on launch";
 "app_settings.default_bonjour_timeout" = "Discovery timeout seconds";
+"app_settings.error.smb_deadtime" = "SMB deadtime minutes must be a non-negative integer.";
 "app_settings.error.ata_idle" = "ATA idle seconds must be a non-negative integer.";
 "app_settings.error.ata_standby" = "ATA standby seconds must be blank or a non-negative integer.";
 "app_settings.error.bonjour_timeout" = "Bonjour timeout must be a non-negative number.";
@@ -425,6 +426,7 @@
 "backend.summary.update_available" = "Update available.";
 "backend.summary.update_required" = "Update required.";
 "backend.summary.version_metadata_unavailable" = "Version metadata is unavailable.";
+"field.smb_deadtime" = "SMB deadtime minutes";
 "field.ata_idle_seconds" = "ATA idle seconds";
 "field.ata_standby" = "ATA standby seconds";
 "field.firmware_template" = "Firmware template path, optional";
@@ -607,6 +609,7 @@
 "overview.discovery.waiting" = "Discovery starts after the app runtime is ready.";
 "operation.error.already_running" = "Another operation is already running.";
 "workflow.error.activation_plan_required" = "Plan NetBSD4 activation before running it.";
+"workflow.error.smb_deadtime_invalid" = "SMB deadtime minutes must be a non-negative integer.";
 "workflow.error.ata_idle_seconds_invalid" = "ATA idle seconds must be a non-negative integer.";
 "workflow.error.ata_standby_invalid" = "ATA standby seconds must be blank or a non-negative integer.";
 "workflow.error.deploy_options_invalid" = "Install / Update options are invalid.";
@@ -684,6 +687,7 @@
 "profile_editor.display_name" = "Display Name";
 "profile_editor.error.duplicate_host" = "Another saved device already uses this host.";
 "profile_editor.error.host_required" = "Host is required.";
+"profile_editor.error.smb_deadtime_invalid" = "SMB deadtime minutes must be a non-negative integer.";
 "profile_editor.error.ata_idle_seconds_invalid" = "ATA idle seconds must be a non-negative integer.";
 "profile_editor.error.ata_standby_invalid" = "ATA standby seconds must be blank or a non-negative integer.";
 "profile_editor.error.mount_wait_invalid" = "Mount wait must be a non-negative integer.";

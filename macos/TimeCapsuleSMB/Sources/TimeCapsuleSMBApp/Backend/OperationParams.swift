@@ -66,6 +66,7 @@ enum OperationParams {
             forceDisableSMBSigningAndEncryption: Bool? = nil,
             fruitMetadataNetatalk: Bool? = nil,
             vfsAIOForkEnabled: Bool? = nil,
+            smbDeadtime: Int? = nil,
             ataIdleSeconds: Int? = nil,
             ataStandby: Int? = nil,
             includeAtaStandby: Bool = false,
@@ -91,6 +92,7 @@ enum OperationParams {
                 forceDisableSMBSigningAndEncryption: forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: fruitMetadataNetatalk,
                 vfsAIOForkEnabled: vfsAIOForkEnabled,
+                smbDeadtime: smbDeadtime,
                 ataIdleSeconds: ataIdleSeconds,
                 ataStandby: ataStandby,
                 includeAtaStandby: includeAtaStandby
@@ -115,6 +117,7 @@ enum OperationParams {
                 forceDisableSMBSigningAndEncryption: settings.forceDisableSMBSigningAndEncryption,
                 fruitMetadataNetatalk: settings.fruitMetadataNetatalk,
                 vfsAIOForkEnabled: settings.vfsAIOForkEnabled,
+                smbDeadtime: settings.smbDeadtime,
                 ataIdleSeconds: settings.ataIdleSeconds,
                 ataStandby: settings.ataStandby,
                 includeAtaStandby: true
@@ -132,6 +135,7 @@ enum OperationParams {
             forceDisableSMBSigningAndEncryption: Bool?,
             fruitMetadataNetatalk: Bool?,
             vfsAIOForkEnabled: Bool?,
+            smbDeadtime: Int?,
             ataIdleSeconds: Int?,
             ataStandby: Int?,
             includeAtaStandby: Bool
@@ -153,6 +157,9 @@ enum OperationParams {
                 if let value {
                     params[key] = .bool(value)
                 }
+            }
+            if let smbDeadtime {
+                params["smb_deadtime"] = .number(Double(smbDeadtime))
             }
             if let ataIdleSeconds {
                 params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
@@ -197,6 +204,7 @@ enum OperationParams {
             fruitMetadataNetatalk: Bool = DeviceProfileSettings.default.fruitMetadataNetatalk,
             vfsAIOForkEnabled: Bool = DeviceProfileSettings.default.vfsAIOForkEnabled,
             debugLogging: Bool,
+            smbDeadtime: Int,
             ataIdleSeconds: Int,
             ataStandby: Int?,
             mountWait: Double
@@ -219,6 +227,7 @@ enum OperationParams {
                 "debug_logging": .bool(debugLogging),
                 "mount_wait": .number(mountWait)
             ]
+            params["smb_deadtime"] = .number(Double(smbDeadtime))
             params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
             if let ataStandby {
                 params["ata_standby"] = .number(Double(ataStandby))

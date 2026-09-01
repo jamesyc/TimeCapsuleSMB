@@ -28,6 +28,7 @@ final class PendingConfirmationTests: XCTestCase {
             noWait: true,
             nbnsEnabled: true,
             debugLogging: true,
+            smbDeadtime: 60,
             ataIdleSeconds: 0,
             ataStandby: 0,
             mountWait: 45
@@ -40,6 +41,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["no_reboot"], .bool(false))
         XCTAssertEqual(params["nbns_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(true))
+        XCTAssertEqual(params["smb_deadtime"], .number(60))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .number(0))
         XCTAssertEqual(params["mount_wait"], .number(45))
@@ -70,6 +72,7 @@ final class PendingConfirmationTests: XCTestCase {
             fruitMetadataNetatalk: true,
             vfsAIOForkEnabled: true,
             debugLogging: false,
+            smbDeadtime: 60,
             ataIdleSeconds: 0,
             ataStandby: nil,
             mountWait: 30
@@ -85,6 +88,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
+        XCTAssertEqual(params["smb_deadtime"], .number(60))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
         XCTAssertNil(params["credentials"])
@@ -109,6 +113,7 @@ final class PendingConfirmationTests: XCTestCase {
             anyProtocol: true,
             fruitMetadataNetatalk: true,
             vfsAIOForkEnabled: true,
+            smbDeadtime: 60,
             ataIdleSeconds: 0,
             ataStandby: nil,
             includeAtaStandby: true
@@ -124,6 +129,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
+        XCTAssertEqual(params["smb_deadtime"], .number(60))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
     }
@@ -170,6 +176,7 @@ final class PendingConfirmationTests: XCTestCase {
             vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 45,
+            smbDeadtime: 60,
             ataIdleSeconds: 0,
             ataStandby: nil
         )
@@ -186,6 +193,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["fruit_metadata_netatalk"], .bool(false))
         XCTAssertEqual(params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(true))
+        XCTAssertEqual(params["smb_deadtime"], .number(60))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
         XCTAssertNil(params["nbns_enabled"])

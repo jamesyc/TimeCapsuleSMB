@@ -392,6 +392,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.fruitMetadataNetatalk = settings.fruitMetadataNetatalk
         deployStore.vfsAIOForkEnabled = settings.vfsAIOForkEnabled
         deployStore.debugLogging = settings.debugLogging
+        deployStore.smbDeadtime = String(settings.smbDeadtime)
         deployStore.ataIdleSeconds = String(settings.ataIdleSeconds)
         deployStore.ataStandby = settings.ataStandby.map { String($0) } ?? ""
         deployStore.mountWait = String(settings.mountWaitSeconds)

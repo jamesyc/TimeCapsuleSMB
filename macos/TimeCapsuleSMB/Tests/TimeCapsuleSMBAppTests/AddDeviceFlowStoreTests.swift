@@ -577,6 +577,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 45,
+            smbDeadtime: 480,
             ataIdleSeconds: 600,
             ataStandby: 900
         )
@@ -599,6 +600,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[0].params["vfs_aio_fork_enabled"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["smb_deadtime"], .number(480))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(600))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .number(900))
     }
@@ -626,6 +628,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             vfsAIOForkEnabled: false,
             debugLogging: false,
             mountWaitSeconds: 99,
+            smbDeadtime: 222,
             ataIdleSeconds: 111,
             ataStandby: nil
         )
@@ -641,6 +644,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 1,
+            smbDeadtime: 3,
             ataIdleSeconds: 2,
             ataStandby: 3
         )
@@ -661,6 +665,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["fruit_metadata_netatalk"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["vfs_aio_fork_enabled"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["smb_deadtime"], .number(222))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(111))
         XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .string(""))
     }

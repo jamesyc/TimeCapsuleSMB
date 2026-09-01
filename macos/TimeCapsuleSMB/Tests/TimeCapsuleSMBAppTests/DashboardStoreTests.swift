@@ -399,6 +399,7 @@ final class DashboardStoreTests: XCTestCase {
             vfsAIOForkEnabled: true,
             debugLogging: true,
             mountWaitSeconds: 45,
+            smbDeadtime: 60,
             ataIdleSeconds: 0,
             ataStandby: 0
         )
@@ -416,6 +417,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
         XCTAssertEqual(session.deployStore.vfsAIOForkEnabled, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
+        XCTAssertEqual(session.deployStore.smbDeadtime, "60")
         XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
         XCTAssertEqual(session.deployStore.ataStandby, "0")
         XCTAssertEqual(session.deployStore.mountWait, "45")
@@ -456,6 +458,7 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.vfsAIOForkEnabled = true
         session.profileEditorStore.draft.debugLogging = true
         session.profileEditorStore.draft.mountWaitSeconds = "64"
+        session.profileEditorStore.draft.smbDeadtime = "480"
         session.profileEditorStore.draft.ataIdleSeconds = "0"
         session.profileEditorStore.draft.ataStandby = "0"
 
@@ -473,6 +476,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.fruitMetadataNetatalk, true)
         XCTAssertEqual(session.deployStore.vfsAIOForkEnabled, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
+        XCTAssertEqual(session.deployStore.smbDeadtime, "480")
         XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
         XCTAssertEqual(session.deployStore.ataStandby, "0")
         XCTAssertEqual(session.deployStore.mountWait, "64")

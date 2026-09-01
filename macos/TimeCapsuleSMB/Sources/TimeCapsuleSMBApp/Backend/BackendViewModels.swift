@@ -37,6 +37,7 @@ enum WorkflowLocalError: Equatable {
     case operationAlreadyRunning
     case operationCouldNotStart
     case deployOptionsInvalid
+    case smbDeadtimeInvalid
     case ataIdleSecondsInvalid
     case ataStandbyInvalid
     case deployPlanStale
@@ -66,6 +67,8 @@ enum WorkflowLocalError: Equatable {
             return "operation_could_not_start"
         case .deployOptionsInvalid:
             return "deploy_options_invalid"
+        case .smbDeadtimeInvalid:
+            return "smb_deadtime_invalid"
         case .ataIdleSecondsInvalid:
             return "ata_idle_seconds_invalid"
         case .ataStandbyInvalid:

@@ -68,6 +68,7 @@
 "app_settings.check_now" = "Проверьте сейчас";
 "app_settings.check_updates_on_launch" = "Проверяйте наличие обновлений при запуске.";
 "app_settings.default_bonjour_timeout" = "Тайм-аут обнаружения (секунды).";
+"app_settings.error.smb_deadtime" = "Минуты SMB deadtime должны быть неотрицательным целым числом.";
 "app_settings.error.ata_idle" = "ATA секунды простоя должны быть неотрицательным целым числом.";
 "app_settings.error.ata_standby" = "ATA секунды ожидания должны быть пустыми или представлять собой неотрицательное целое число.";
 "app_settings.error.bonjour_timeout" = "Bonjour таймаут должен быть неотрицательным числом.";
@@ -425,6 +426,7 @@
 "backend.summary.update_available" = "Доступно обновление.";
 "backend.summary.update_required" = "Требуется обновление.";
 "backend.summary.version_metadata_unavailable" = "Версия metadata недоступна.";
+"field.smb_deadtime" = "SMB минут deadtime";
 "field.ata_idle_seconds" = "ATA секунд простоя";
 "field.ata_standby" = "ATA секунды ожидания";
 "field.firmware_template" = "Firmware путь к шаблону, необязательно.";
@@ -607,6 +609,7 @@
 "overview.discovery.waiting" = "Обнаружение начинается после того, как app runtime будет готов.";
 "operation.error.already_running" = "Другая операция уже выполняется.";
 "workflow.error.activation_plan_required" = "Запланируйте активацию NetBSD4 перед ее запуском.";
+"workflow.error.smb_deadtime_invalid" = "Минуты SMB deadtime должны быть неотрицательным целым числом.";
 "workflow.error.ata_idle_seconds_invalid" = "ATA секунды простоя должны быть неотрицательным целым числом.";
 "workflow.error.ata_standby_invalid" = "ATA секунды ожидания должны быть пустыми или представлять собой неотрицательное целое число.";
 "workflow.error.deploy_options_invalid" = "Недопустимые параметры развертывания.";
@@ -684,6 +687,7 @@
 "profile_editor.display_name" = "Отображаемое имя";
 "profile_editor.error.duplicate_host" = "Другое сохраненное устройство уже использует этот хост.";
 "profile_editor.error.host_required" = "Требуется хост.";
+"profile_editor.error.smb_deadtime_invalid" = "Минуты SMB deadtime должны быть неотрицательным целым числом.";
 "profile_editor.error.ata_idle_seconds_invalid" = "ATA секунды простоя должны быть неотрицательным целым числом.";
 "profile_editor.error.ata_standby_invalid" = "ATA секунды ожидания должны быть пустыми или представлять собой неотрицательное целое число.";
 "profile_editor.error.mount_wait_invalid" = "Ожидание монтирования должно быть неотрицательным целым числом.";
