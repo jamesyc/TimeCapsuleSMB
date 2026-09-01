@@ -19,8 +19,8 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     echo "SAMBA4X_SRC_DIR=$SAMBA4X_SRC_DIR"
 
     echo "Installing Samba 4.x host build tools on the VM."
-    for pkg in bison p5-Parse-Yapp python311 pkg-config; do
-        if /usr/sbin/pkg_info "$pkg" >/dev/null 2>&1; then
+    for pkg in bison p5-Parse-Yapp; do
+        if pkg_info "$pkg" >/dev/null 2>&1; then
             echo "$pkg is already installed on the VM; skipping pkgin install."
         else
             /usr/pkg/bin/pkgin -4 -y install "$pkg"

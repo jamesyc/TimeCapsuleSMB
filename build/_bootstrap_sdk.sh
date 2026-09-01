@@ -14,23 +14,7 @@ if [ ! -d "$SRC" ]; then
     exit 1
 fi
 
-sdk_host_packages="gmake python27"
-
-# gcc7 provides the defaults for HOST_CC and HOST_CXX; a compiler the caller
-# supplied is theirs to install, and is only checked for below.
-if [ "$HOST_CC" = "/usr/pkg/gcc7/bin/gcc" ] ||
-    [ "$HOST_CXX" = "/usr/pkg/gcc7/bin/g++" ]; then
-    sdk_host_packages="gcc7 $sdk_host_packages"
-fi
-
-for pkg in $sdk_host_packages; do
-    if ! /usr/sbin/pkg_info "$pkg" >/dev/null 2>&1; then
-        echo "Installing $pkg on the VM."
-        /usr/pkg/bin/pkgin -4 -y install "$pkg"
-    fi
-done
-
-for tool in "$HOST_CC" "$HOST_CXX"; do
+for tool in "$HOST_CC" "$HOST_CXX" curl tar gmake python2.7; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Missing required host tool: $tool"
         exit 1
