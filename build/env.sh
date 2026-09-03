@@ -52,7 +52,10 @@ HOST_CXXFLAGS="${HOST_CXXFLAGS:--O -fcommon -fgnu89-inline}"
 HOST_CPPFLAGS="${HOST_CPPFLAGS:--D__GNUC_GNU_INLINE__ -D__STDC_WANT_LIB_EXT1__=1}"
 NO_PTHREADS="${NO_PTHREADS:-1}"
 
-SDK_JOBS="${SDK_JOBS:-1}"
+# Unset by default: any -j, including -j 1, turns off make(1) compatibility
+# mode, which changes how target commands are run. Leaving this empty keeps
+# build.sh invoked exactly as before.
+SDK_JOBS="${SDK_JOBS:-}"
 
 SAMBA4_VERSION="${SAMBA4_VERSION:-4.8.12}"
 SAMBA4_GIT_URL="${SAMBA4_GIT_URL:-https://github.com/samba-team/samba.git}"

@@ -31,6 +31,14 @@ esac
 
 mkdir -p "$OUT" "$STAMPS"
 
+# Holds "-j N" only when SDK_JOBS is set, and stays empty otherwise, so an
+# unset SDK_JOBS leaves build.sh invoked exactly as before. Any -j, including
+# -j 1, turns off make(1) compatibility mode.
+SDK_JOBS_FLAG=""
+if [ -n "${SDK_JOBS:-}" ]; then
+    SDK_JOBS_FLAG="-j $SDK_JOBS"
+fi
+
 clean_magic_cache() {
     magic_root="$SRC/external/bsd/file/dist/magic"
     if [ -d "$magic_root" ]; then
@@ -44,10 +52,11 @@ run_tools() {
     rm -f "$TOOLS_STAMP"
     clean_magic_cache
     cd "$SRC"
+    # shellcheck disable=SC2086
     env HOST_CC="$HOST_CC" HOST_CXX="$HOST_CXX" \
         HOST_CFLAGS="$HOST_CFLAGS" HOST_CXXFLAGS="$HOST_CXXFLAGS" \
         HOST_CPPFLAGS="$HOST_CPPFLAGS" \
-        ./build.sh -U -j "$SDK_JOBS" -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
+        ./build.sh -U $SDK_JOBS_FLAG -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
         -V NO_PTHREADS="$NO_PTHREADS" \
         -O "$OBJ" -T "$TOOLS" tools \
         >"$TOOLS_LOG" 2>&1
@@ -64,10 +73,11 @@ run_distribution() {
     rm -f "$DIST_STAMP"
     clean_magic_cache
     cd "$SRC"
+    # shellcheck disable=SC2086
     env HOST_CC="$HOST_CC" HOST_CXX="$HOST_CXX" \
         HOST_CFLAGS="$HOST_CFLAGS" HOST_CXXFLAGS="$HOST_CXXFLAGS" \
         HOST_CPPFLAGS="$HOST_CPPFLAGS" \
-        ./build.sh -U -j "$SDK_JOBS" -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
+        ./build.sh -U $SDK_JOBS_FLAG -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
         -V NO_PTHREADS="$NO_PTHREADS" \
         -O "$OBJ" -T "$TOOLS" distribution \
         >"$DIST_LOG" 2>&1
