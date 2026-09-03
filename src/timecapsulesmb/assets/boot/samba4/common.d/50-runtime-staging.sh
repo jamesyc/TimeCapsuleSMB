@@ -414,6 +414,7 @@ $smbd_log_level_line
 ${smbd_aio_lines}    deadtime = 720
     max open files = 512
     max smbd processes = 8
+    smb3 directory leases = no
     reset on zero vc = yes
     fruit:aapl = yes
     fruit:model = $smbd_fruit_model
