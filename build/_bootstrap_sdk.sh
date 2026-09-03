@@ -49,6 +49,7 @@ run_tools() {
         HOST_CPPFLAGS="$HOST_CPPFLAGS" \
         ./build.sh -U -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
         -V NO_PTHREADS="$NO_PTHREADS" \
+        -V MKCOMPAT="$MKCOMPAT" \
         -O "$OBJ" -T "$TOOLS" tools \
         >"$TOOLS_LOG" 2>&1
     date -u >"$TOOLS_STAMP"
@@ -69,6 +70,7 @@ run_distribution() {
         HOST_CPPFLAGS="$HOST_CPPFLAGS" \
         ./build.sh -U -m "$BUILD_MACHINE" -a "$BUILD_MACHINE_ARCH" \
         -V NO_PTHREADS="$NO_PTHREADS" \
+        -V MKCOMPAT="$MKCOMPAT" \
         -O "$OBJ" -T "$TOOLS" distribution \
         >"$DIST_LOG" 2>&1
     date -u >"$DIST_STAMP"
