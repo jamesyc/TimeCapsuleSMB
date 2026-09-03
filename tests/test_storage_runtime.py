@@ -5323,7 +5323,7 @@ MaSt = (
             2,
         )
         self.assertNotIn("aio_fork:max_children", proc.stdout)
-        self.assertIn("deadtime = 15", proc.stdout)
+        self.assertIn("deadtime = 720", proc.stdout)
         self.assertIn("smb3 directory leases = no", proc.stdout)
         self.assertIn("max smbd processes = 8", proc.stdout)
         self.assertNotIn("log level = 10", proc.stdout)
