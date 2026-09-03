@@ -47,7 +47,10 @@
 0013-no-pthread-configure-and-pthreadpool-sync.patch|configure-time no-pthread and synchronous pthreadpool support
 # The no-pthread talloc stack is process-global, so forked smbd children inherit
 # parent event-loop stack tracking. Drop inherited tracking after fork and
-# disarm normal-exit diagnostics once smbd has completed clean shutdown.
+# disarm normal-exit diagnostics once smbd has completed clean shutdown. Also
+# guard talloc_pop() against a frame the stack does not hold: it indexes
+# talloc_stack unchecked where _talloc_tos() guards the same struct. Defensive,
+# with no caller in this build known to reach it.
 0022-no-pthread-talloc-stack-fork-exit-cleanup.patch|no-pthread talloc stack fork and exit cleanup
 
 # Validation-only follow-on. This patch extends the static smbd hook introduced
