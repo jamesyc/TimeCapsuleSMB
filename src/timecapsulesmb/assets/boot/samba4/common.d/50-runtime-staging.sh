@@ -411,7 +411,7 @@ ${smbd_security_lines}${smbd_protocol_lines}    server multi channel support = n
     max log size = $smbd_max_log_size
 $smbd_log_level_line
     smb ports = 445
-${smbd_aio_lines}    deadtime = 15
+${smbd_aio_lines}    deadtime = 720
     max open files = 512
     max smbd processes = 8
     reset on zero vc = yes

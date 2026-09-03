@@ -509,7 +509,7 @@ Current rendered Samba config characteristics:
 - `private dir = /mnt/Memory/samba4/private`
 - `log file = /Volumes/dkX/.samba4/logs/log.smbd`
 - `max log size = 128` in the normal generated config
-- `deadtime = 15`
+- `deadtime = 720`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 8`, set 128 KiB SMB2 read/write limits, and enable AIO for requests of at least one byte
 - `fruit:resource = file`
