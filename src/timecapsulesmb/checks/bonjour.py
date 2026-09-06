@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-import socket
 from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips
+from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips, same_scoped_ip, is_link_local_ipv6
 from timecapsulesmb.discovery.bonjour import (
     BonjourIPFamily,
     BonjourDiscoverySnapshot,
@@ -85,6 +84,7 @@ def discover_smb_services_detailed(
     target_ip: str | None = None,
     family: BonjourIPFamily | None = None,
     interfaces: list[str] | None = None,
+    deadline: float | None = None,
 ) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourDiscoveryDiagnostics | None]:
     try:
         snapshot, diagnostics = discover_snapshot_detailed(
@@ -93,6 +93,7 @@ def discover_smb_services_detailed(
             target_ip=target_ip,
             family=family,
             interfaces=interfaces,
+            **({"deadline": deadline} if deadline is not None else {}),
         )
         return snapshot, None, diagnostics
     except Exception as e:
@@ -156,7 +157,7 @@ def select_resolved_smb_record_by_ip(
         record
         for record in records
         if (record.service_type == SMB_SERVICE or record.service_type.startswith(f"{SMB_SERVICE}."))
-        and (target_ip in (record.ipv4 or []) or target_ip in (record.ipv6 or []))
+        and any(same_scoped_ip(target_ip, ip) for ip in [*record.ipv4, *record.ipv6])
     ]
     if not matches:
         return None
@@ -299,47 +300,21 @@ def check_bonjour_host_ip(
             known_ips.append(ip)
 
     if expected_ip:
-        matching_ip = next((ip for ip in known_ips if _same_scoped_ip(ip, expected_ip)), None)
+        matching_ip = next((ip for ip in known_ips if same_scoped_ip(ip, expected_ip)), None)
         if matching_ip is not None:
-            suffix = " from service record" if any(_same_scoped_ip(ip, expected_ip) for ip in (record_ips or [])) else ""
+            suffix = " from service record" if any(same_scoped_ip(ip, expected_ip) for ip in (record_ips or [])) else ""
             return CheckResult("PASS", f"resolved Bonjour host {hostname} to {expected_ip}{suffix}")
+        if is_link_local_ipv6(expected_ip) and known_ips and all(
+            "%" not in ip and ipv6_literal(ip) == ipv6_literal(expected_ip) for ip in known_ips
+        ):
+            return CheckResult("FAIL", f"could not verify IPv6 scope for Bonjour host {hostname}, expected {expected_ip}", {"address_unverified": True})
         if known_ips:
             return CheckResult(
                 "FAIL",
                 f"Bonjour host {hostname} resolved to {', '.join(known_ips)}, expected {expected_ip}",
             )
-        return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}")
+        return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}", {"address_unverified": True})
 
     if known_ips:
         return CheckResult("PASS", f"resolved Bonjour host {hostname} to {', '.join(known_ips)}")
     return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}")
-
-
-def _same_scoped_ip(left: str, right: str) -> bool:
-    left_base, _, left_scope = left.partition("%")
-    right_base, _, right_scope = right.partition("%")
-    left_v4 = ipv4_literal(left_base)
-    right_v4 = ipv4_literal(right_base)
-    if left_v4 is not None or right_v4 is not None:
-        return left_v4 is not None and left_v4 == right_v4
-    left_v6 = ipv6_literal(left_base)
-    right_v6 = ipv6_literal(right_base)
-    if left_v6 is None or left_v6 != right_v6:
-        return False
-    if not left_scope or not right_scope:
-        return True
-
-    def scope_index(scope: str) -> int | None:
-        try:
-            return int(scope, 10)
-        except ValueError:
-            try:
-                return socket.if_nametoindex(scope)
-            except OSError:
-                return None
-
-    left_index = scope_index(left_scope)
-    right_index = scope_index(right_scope)
-    if left_index is not None and right_index is not None:
-        return left_index == right_index
-    return left_scope == right_scope

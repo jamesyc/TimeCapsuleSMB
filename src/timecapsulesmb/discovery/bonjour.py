@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from timecapsulesmb.core.errors import missing_dependency_message
 from timecapsulesmb.core.net import is_link_local_ip, is_link_local_ipv4, is_link_local_ipv6
+from timecapsulesmb.core.net import ipv6_scope_index, scoped_ip_literal
 
 
 SERVICE_TYPES = [
@@ -428,24 +429,12 @@ def _source_ipv6_for_target(target_ip: str | None) -> str | None:
     except OSError:
         return None
     try:
-        scope_id = 0
-        if target_scope:
-            try:
-                scope_id = int(target_scope, 10)
-            except ValueError:
-                scope_id = socket.if_nametoindex(target_scope)
+        scope_id = ipv6_scope_index(target_scope) if target_scope else 0
+        if scope_id is None or (parsed.is_link_local and not scope_id):
+            return None
         sock.connect((target_base, MDNS_PORT, 0, scope_id))
         sockname = sock.getsockname()
-        source_ip = sockname[0]
-        source_base, _, source_text_scope = source_ip.partition("%")
-        if len(sockname) >= 4 and sockname[3]:
-            try:
-                source_scope = socket.if_indextoname(sockname[3])
-            except OSError:
-                source_scope = str(sockname[3])
-            source_ip = f"{source_base}%{source_scope}"
-        elif source_text_scope:
-            source_ip = f"{source_base}%{source_text_scope}"
+        source_ip = scoped_ip_literal(sockname[0], scope_id=sockname[3] if len(sockname) >= 4 else 0)
     except OSError:
         return None
     finally:
@@ -519,16 +508,19 @@ class Collector:
         with self.lock:
             return list(self.events)
 
-    def resolve_pending(self, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> None:
+    def resolve_pending(self, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS, *, deadline: float | None = None) -> None:
         from zeroconf import DNSQuestionType
 
         with self.lock:
             pending = sorted(self.pending)
 
         for service_type, name in pending:
+            remaining_ms = timeout_ms if deadline is None else min(timeout_ms, int((deadline - time.monotonic()) * 1000))
+            if remaining_ms <= 0:
+                break
             try:
                 self.resolve_attempt_count += 1
-                info = self.zc.get_service_info(service_type, name, timeout_ms, question_type=DNSQuestionType.QM)
+                info = self.zc.get_service_info(service_type, name, remaining_ms, question_type=DNSQuestionType.QM)
             except Exception:
                 self.resolve_error_count += 1
                 info = None
@@ -702,6 +694,9 @@ def resolved_service_from_info(stype: str, info: Any) -> BonjourResolvedService:
     for ip in _service_info_addresses(info):
         try:
             ip_obj = ipaddress.ip_address(ip.split("%", 1)[0])
+            index = getattr(info, "interface_index", None)
+            if ip_obj.version == 6 and ip_obj.is_link_local and "%" not in ip and isinstance(index, int) and index > 0:
+                ip = scoped_ip_literal(ip, scope_id=index) or ip
             (ipv6 if ip_obj.version == 6 else ipv4).append(ip)
         except Exception:
             continue
@@ -763,7 +758,19 @@ def _open_zeroconf(interfaces: Sequence[str] | None = None, *, family: BonjourIP
 
     ip_version, _ip_version_name = _zeroconf_ip_version(IPVersion, family=family)
     if interfaces:
-        return Zeroconf(interfaces=list(interfaces), ip_version=ip_version)
+        choices: list[str | int] = []
+        for address in interfaces:
+            choice: str | int = address
+            if family == "ipv6" and "%" in address:
+                index = ipv6_scope_index(address.partition("%")[2])
+                if index is None:
+                    raise ValueError(f"unknown local IPv6 scope in {address}")
+                # zeroconf strips zones when selecting by address. Indexes also
+                # distinguish interfaces that share identical link-local bytes.
+                choice = index
+            if choice not in choices:
+                choices.append(choice)
+        return Zeroconf(interfaces=choices, ip_version=ip_version)
     return Zeroconf(ip_version=ip_version)
 
 
@@ -888,6 +895,7 @@ def discover_snapshot_detailed(
     target_ip: str | None = None,
     family: BonjourIPFamily | None = None,
     interfaces: Sequence[str] | None = None,
+    deadline: float | None = None,
 ) -> tuple[BonjourDiscoverySnapshot, BonjourDiscoveryDiagnostics]:
     service_types = _matching_service_types(service)
     start = time.monotonic()
@@ -901,14 +909,16 @@ def discover_snapshot_detailed(
         ptr_observer = PtrRecordObserver(service_types, start_time=start)
         ptr_observer.start(zc)
         collector.start()
-        deadline = start + max(0.0, timeout)
+        browse_deadline = start + max(0.0, timeout)
+        if deadline is not None:
+            browse_deadline = min(browse_deadline, deadline)
         while True:
-            remaining = deadline - time.monotonic()
+            remaining = browse_deadline - time.monotonic()
             if remaining <= 0:
                 break
             time.sleep(min(PENDING_RESOLVE_INTERVAL_SEC, remaining))
-            collector.resolve_pending(timeout_ms=PENDING_RESOLVE_TIMEOUT_MS)
-        collector.resolve_pending(timeout_ms=FINAL_PENDING_RESOLVE_TIMEOUT_MS)
+            collector.resolve_pending(timeout_ms=PENDING_RESOLVE_TIMEOUT_MS, **({"deadline": browse_deadline} if deadline is not None else {}))
+        collector.resolve_pending(timeout_ms=FINAL_PENDING_RESOLVE_TIMEOUT_MS, **({"deadline": deadline} if deadline is not None else {}))
         records = collector.results()
         instances = collector.service_instances()
         service_events = collector.service_events()

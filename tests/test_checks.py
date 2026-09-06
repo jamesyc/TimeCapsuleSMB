@@ -1993,7 +1993,7 @@ class CheckTests(unittest.TestCase):
     def test_check_bonjour_host_ip_matches_numeric_and_named_ipv6_scopes(self) -> None:
         with (
             mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=()),
-            mock.patch("timecapsulesmb.checks.bonjour.socket.if_nametoindex", return_value=17),
+            mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", return_value=17),
         ):
             result = check_bonjour_host_ip(
                 "home.local",
@@ -2003,6 +2003,23 @@ class CheckTests(unittest.TestCase):
 
         self.assertEqual(result.status, "PASS")
         self.assertIn("from service record", result.message)
+
+    def test_bonjour_dns_cannot_erase_a_concrete_ipv6_scope_mismatch(self) -> None:
+        def resolve(_host, _port, family, _kind):
+            return [] if family == socket.AF_INET else [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("fe80::2", 0, 0, 18))]
+
+        with (
+            mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=resolve),
+            mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", return_value=17),
+            mock.patch("timecapsulesmb.core.net.socket.if_indextoname", side_effect=OSError("use numeric zone")),
+        ):
+            result = check_bonjour_host_ip("home.local", expected_ip="fe80::2%en0", record_ips=["fe80::2%18"])
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("fe80::2%18", result.message)
+
+        with mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=("fe80::2",)):
+            result = check_bonjour_host_ip("home.local", expected_ip="fe80::2%17", record_ips=["fe80::2%18"])
+        self.assertEqual(result.status, "FAIL")
 
     def test_check_bonjour_host_ip_fails_when_dns_resolves_wrong_ip(self) -> None:
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.1.99", 0))]

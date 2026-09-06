@@ -172,10 +172,63 @@ def resolve_host_ipv6s(host: str) -> tuple[str, ...]:
         sockaddr = result[4]
         if not sockaddr:
             continue
-        ip_addr = ipv6_literal(sockaddr[0].split("%", 1)[0])
-        if ip_addr and ip_addr not in ordered:
+        ip_addr = scoped_ip_literal(sockaddr[0], scope_id=sockaddr[3] if len(sockaddr) >= 4 else 0)
+        if ip_addr and not any(ip_addr == known or same_scoped_ip(ip_addr, known) for known in ordered):
             ordered.append(ip_addr)
     return tuple(ordered)
+
+
+def ipv6_scope_index(scope: str) -> int | None:
+    """Resolve a local zone without falling back to the default interface."""
+    try:
+        index = int(scope, 10)
+    except ValueError:
+        try:
+            index = socket.if_nametoindex(scope)
+        except (OSError, ValueError):
+            return None
+    return index if 0 < index <= 0xFFFFFFFF else None
+
+
+def scoped_ip_literal(value: str, *, scope_id: int = 0) -> str | None:
+    """Preserve link-local zones from text or a socket's separate scope field."""
+    base, _, scope = value.strip().partition("%")
+    try:
+        address = ipaddress.ip_address(base)
+    except ValueError:
+        return None
+    if address.version != 6 or not address.is_link_local:
+        return str(address)
+    if scope_id:
+        if ipv6_scope_index(str(scope_id)) is None:
+            return None
+        text_index = ipv6_scope_index(scope) if scope else None
+        if text_index is not None and text_index != scope_id:
+            return None
+        try:
+            scope = socket.if_indextoname(scope_id)
+        except OSError:
+            scope = str(scope_id)
+    if scope and ("%" in scope or scope == "0"):
+        return None
+    return f"{address}%{scope}" if scope else str(address)
+
+
+def same_scoped_ip(left: str, right: str) -> bool:
+    left_base, _, left_scope = left.partition("%")
+    right_base, _, right_scope = right.partition("%")
+    left_ip = ipv4_literal(left_base) or ipv6_literal(left_base)
+    right_ip = ipv4_literal(right_base) or ipv6_literal(right_base)
+    if left_ip is None or left_ip != right_ip:
+        return False
+    if not is_link_local_ipv6(left_ip):
+        return True
+    # Equal address bytes alone cannot establish which link owns an IPv6 peer.
+    if not left_scope or not right_scope:
+        return False
+    left_index = ipv6_scope_index(left_scope)
+    right_index = ipv6_scope_index(right_scope)
+    return left_index is not None and left_index == right_index
 
 
 def resolve_host_ips(host: str) -> tuple[str, ...]:

@@ -76,7 +76,11 @@ class RuntimeTests(unittest.TestCase):
     def test_ssh_target_link_local_resolution_error_rejects_resolved_ipv6_hostname(self) -> None:
         addrinfo = [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("fe80::1%en0", 0, 0, 4))]
 
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
+        with (
+            mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo),
+            mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", return_value=4),
+            mock.patch("timecapsulesmb.core.net.socket.if_indextoname", return_value="en0"),
+        ):
             error = ssh_target_link_local_resolution_error(
                 "root@capsule.local",
                 DEFAULTS["TC_SSH_OPTS"],

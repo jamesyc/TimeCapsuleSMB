@@ -66,7 +66,7 @@ from timecapsulesmb.checks.smb_config import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.core.net import endpoint_host
+from timecapsulesmb.core.net import endpoint_host, is_link_local_ipv6, same_scoped_ip
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     FLASH_RUNTIME_CONFIG,
@@ -90,7 +90,10 @@ from timecapsulesmb.device.probe import (
     read_active_smb_conf_conn,
     runtime_ram_root_present_conn,
 )
-from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
+from timecapsulesmb.discovery.bonjour import (
+    BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance,
+    DEFAULT_BROWSE_TIMEOUT_SEC, FINAL_PENDING_RESOLVE_TIMEOUT_MS,
+)
 from timecapsulesmb.discovery.native_dns_sd import (
     NativeDnsSdDiscoveryDiagnostics,
     discover_native_dns_sd_snapshot_detailed,
@@ -98,7 +101,7 @@ from timecapsulesmb.discovery.native_dns_sd import (
     resolve_native_dns_sd_service_instance,
 )
 from timecapsulesmb.transport.local import find_free_local_port
-from timecapsulesmb.transport.local import command_exists
+from timecapsulesmb.transport.local import command_exists, scoped_tcp_connect_errors
 from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward
 
 
@@ -765,7 +768,14 @@ def _bonjour_family_attempts(
         if endpoint is None:
             add_result(CheckResult("SKIP", f"Bonjour {family_label} check skipped; local host has no usable route to the remote {family_plan.family} network"))
             continue
-        attempts.append((family_plan, endpoint.address, list(endpoint.local_sources)))
+        sources = list(endpoint.local_sources)
+        if is_link_local_ipv6(endpoint.address):
+            for candidate in family_plan.applicable_endpoints:
+                if candidate.address.split("%")[0] == endpoint.address.split("%")[0]:
+                    for source in candidate.local_sources:
+                        if source not in sources:
+                            sources.append(source)
+        attempts.append((family_plan, endpoint.address, sources))
     return attempts
 
 
@@ -778,6 +788,7 @@ class _BonjourAttemptOutcome:
     reason: str = ""
     debug_needed: bool = False
     fallback_allowed: bool = False
+    identity_mismatch: bool = False
 
 
 def _status_failed(results: Iterable[CheckResult]) -> bool:
@@ -841,6 +852,9 @@ def _evaluate_bonjour_snapshot(
                 expected_instance_name=bonjour_expected.instance_name,
             )
             target_result = check_smb_service_target(target)
+            if target.port != 445:
+                add(CheckResult("FAIL", f"_smb._tcp port is {target.port}, expected 445"))
+                outcome.identity_mismatch = True
             if target_result.status == "FAIL":
                 outcome.debug_needed = True
             add(target_result)
@@ -848,10 +862,10 @@ def _evaluate_bonjour_snapshot(
                 outcome.target = target
                 if _add_bonjour_target_host_label_result("_smb", target.hostname, add):
                     outcome.debug_needed = True
-                    outcome.fallback_allowed = True
+                    outcome.identity_mismatch = True
                 if _add_expected_bonjour_host_label_result(target, bonjour_expected.host_label, add):
                     outcome.debug_needed = True
-                    outcome.fallback_allowed = True
+                    outcome.identity_mismatch = True
                 host_ip_result = _add_bonjour_host_ip_results(
                     target.hostname,
                     expected_ip=target_ip,
@@ -860,6 +874,9 @@ def _evaluate_bonjour_snapshot(
                 )
                 if host_ip_result.status == "FAIL":
                     outcome.debug_needed = True
+                    unverified = bool((host_ip_result.details or {}).get("address_unverified"))
+                    outcome.identity_mismatch = outcome.identity_mismatch or not unverified
+                    outcome.fallback_allowed = outcome.fallback_allowed or unverified
             if _add_time_machine_adisk_results(
                 records_for_targets,
                 instance_name=resolution.instance.name,
@@ -893,6 +910,9 @@ def _evaluate_bonjour_snapshot(
                 expected_instance_name=None,
             )
             target_result = check_smb_service_target(target)
+            if target.port != 445:
+                add(CheckResult("FAIL", f"_smb._tcp port is {target.port}, expected 445"))
+                outcome.identity_mismatch = True
             if target_result.status == "FAIL":
                 outcome.debug_needed = True
             add(target_result)
@@ -900,10 +920,10 @@ def _evaluate_bonjour_snapshot(
                 outcome.target = target
                 if _add_bonjour_target_host_label_result("_smb", target.hostname, add):
                     outcome.debug_needed = True
-                    outcome.fallback_allowed = True
+                    outcome.identity_mismatch = True
                 if _add_expected_bonjour_host_label_result(target, bonjour_expected.host_label, add):
                     outcome.debug_needed = True
-                    outcome.fallback_allowed = True
+                    outcome.identity_mismatch = True
                 host_ip_result = _add_bonjour_host_ip_results(
                     target.hostname,
                     expected_ip=target_ip,
@@ -912,6 +932,9 @@ def _evaluate_bonjour_snapshot(
                 )
                 if host_ip_result.status == "FAIL":
                     outcome.debug_needed = True
+                    unverified = bool((host_ip_result.details or {}).get("address_unverified"))
+                    outcome.identity_mismatch = outcome.identity_mismatch or not unverified
+                    outcome.fallback_allowed = outcome.fallback_allowed or unverified
             if _add_time_machine_adisk_results(
                 smb_snapshot.resolved,
                 instance_name=resolved_record.name,
@@ -934,6 +957,7 @@ def _evaluate_zeroconf_bonjour_attempt(
     family: str | None,
     interfaces: list[str] | None,
     active_share_names: list[str],
+    resolver: Callable[..., tuple[BonjourResolvedService | None, CheckResult | None]] | None = None,
 ) -> _BonjourAttemptOutcome:
     if discovery_error is not None:
         return _BonjourAttemptOutcome(
@@ -953,7 +977,7 @@ def _evaluate_zeroconf_bonjour_attempt(
         family=family,
         interfaces=interfaces,
         active_share_names=active_share_names,
-        resolver=resolve_smb_instance,
+        resolver=resolver or resolve_smb_instance,
         browse_miss_message=(
             f"Python zeroconf browse did not observe expected _smb._tcp instance {expected_name!r}; "
             "targeted resolve succeeded"
@@ -965,6 +989,8 @@ def _evaluate_zeroconf_bonjour_attempt(
 def _native_smb_resolver(
     diagnostics: NativeDnsSdDiscoveryDiagnostics,
 ) -> Callable[..., tuple[BonjourResolvedService | None, CheckResult | None]]:
+    cache: dict[tuple[str, str], tuple[BonjourResolvedService | None, CheckResult | None]] = {}
+
     def resolve(
         instance: BonjourServiceInstance,
         *,
@@ -972,6 +998,9 @@ def _native_smb_resolver(
         family: str | None = None,
         **_kwargs: object,
     ) -> tuple[BonjourResolvedService | None, CheckResult | None]:
+        key = (instance.service_type, instance.fullname)
+        if key in cache:
+            return cache[key]
         record, resolve_result = resolve_native_dns_sd_service_instance(
             instance.service_type,
             instance.name,
@@ -980,11 +1009,13 @@ def _native_smb_resolver(
         )
         diagnostics.resolves.append(resolve_result)
         if record is None:
-            return None, CheckResult(
+            cache[key] = (None, CheckResult(
                 "FAIL",
                 missing_message or f"discovered _smb._tcp instance {instance.name!r} but could not resolve service target",
-            )
-        return record, None
+            ))
+        else:
+            cache[key] = (record, None)
+        return cache[key]
 
     return resolve
 
@@ -996,6 +1027,7 @@ def _evaluate_native_bonjour_attempt(
     family: str | None,
     interfaces: list[str] | None,
     active_share_names: list[str],
+    alternative_ips: list[str] | None = None,
 ) -> tuple[_BonjourAttemptOutcome | None, NativeDnsSdDiscoveryDiagnostics | None]:
     native_result = discover_native_dns_sd_snapshot_detailed(
         None,
@@ -1007,25 +1039,72 @@ def _evaluate_native_bonjour_attempt(
 
     native_snapshot, native_debug = native_result
     expected_name = bonjour_expected.instance_name
-    outcome = _evaluate_bonjour_snapshot(
-        native_snapshot,
-        bonjour_expected,
-        target_ip=target_ip,
-        family=family,
-        interfaces=interfaces,
-        active_share_names=active_share_names,
-        resolver=_native_smb_resolver(native_debug),
-        browse_miss_message=(
-            f"native macOS dns-sd browse did not observe expected _smb._tcp instance {expected_name!r}; "
-            "targeted resolve succeeded"
-        ),
-        targeted_resolve_pass_message=f"native macOS dns-sd resolved expected _smb._tcp instance {expected_name!r} by targeted query",
-    )
+    resolver = _native_smb_resolver(native_debug)
+    for address in alternative_ips or [target_ip]:
+        outcome = _evaluate_bonjour_snapshot(
+            native_snapshot,
+            bonjour_expected,
+            target_ip=address,
+            family=family,
+            interfaces=interfaces,
+            active_share_names=active_share_names,
+            resolver=resolver,
+            browse_miss_message=(
+                f"native macOS dns-sd browse did not observe expected _smb._tcp instance {expected_name!r}; "
+                "targeted resolve succeeded"
+            ),
+            targeted_resolve_pass_message=f"native macOS dns-sd resolved expected _smb._tcp instance {expected_name!r} by targeted query",
+        )
+        if not _status_failed(outcome.results):
+            break
     return outcome, native_debug
 
 
 def _should_try_native_bonjour_fallback(outcome: _BonjourAttemptOutcome) -> bool:
-    return outcome.fallback_allowed and _status_failed(outcome.results) and native_dns_sd_available()
+    return not outcome.identity_mismatch and outcome.fallback_allowed and _status_failed(outcome.results) and native_dns_sd_available()
+
+
+def _evaluate_scoped_bonjour_candidates(
+    snapshot: BonjourDiscoverySnapshot | None,
+    error: CheckResult | None,
+    expected: BonjourExpectedIdentity,
+    addresses: list[str],
+    interfaces: list[str] | None,
+    active_share_names: list[str],
+    deadline: float,
+) -> tuple[_BonjourAttemptOutcome, str, list[dict[str, object]]]:
+    # One browse and one targeted resolve per service, shared across all zones.
+    # Misses on guessed zones are diagnostics, not independent service failures.
+    resolved: dict[tuple[str, str], tuple[BonjourResolvedService | None, CheckResult | None]] = {}
+
+    def resolver(instance: BonjourServiceInstance, **kwargs: object) -> tuple[BonjourResolvedService | None, CheckResult | None]:
+        key = (instance.service_type, instance.fullname)
+        if key not in resolved:
+            remaining_ms = min(FINAL_PENDING_RESOLVE_TIMEOUT_MS, int((deadline - time.monotonic()) * 1000))
+            if remaining_ms <= 0:
+                resolved[key] = (None, CheckResult("FAIL", "IPv6 Bonjour resolution budget exhausted"))
+            else:
+                resolved[key] = resolve_smb_instance(instance, timeout_ms=remaining_ms, **kwargs)
+        return resolved[key]
+
+    attempts: list[tuple[str, _BonjourAttemptOutcome]] = []
+    for address in addresses:
+        outcome = _evaluate_zeroconf_bonjour_attempt(
+            snapshot, error, expected, target_ip=address, family="ipv6",
+            interfaces=interfaces, active_share_names=active_share_names, resolver=resolver,
+        )
+        attempts.append((address, outcome))
+        if not _status_failed(outcome.results):
+            break
+    address, chosen = next(
+        ((address, outcome) for address, outcome in attempts if not _status_failed(outcome.results)),
+        next(((address, outcome) for address, outcome in attempts if outcome.identity_mismatch), attempts[0]),
+    )
+    diagnostics = [
+        {"address": candidate, "results": [{"status": result.status, "message": result.message} for result in outcome.results]}
+        for candidate, outcome in attempts
+    ]
+    return chosen, address, diagnostics
 
 
 def _add_bonjour_results(
@@ -1097,23 +1176,37 @@ def _add_bonjour_results(
                 def add_attempt_result(result: CheckResult) -> None:
                     add_result(_prefixed_check_result(result, result_prefix))
 
+                scope_addresses = [
+                    candidate.address for candidate in family_plan.applicable_endpoints
+                    if candidate.local_sources and candidate.address.split("%")[0] == target_ip.split("%")[0]
+                ] if family_plan is not None and target_ip and is_link_local_ipv6(target_ip) else []
+                deadline = time.monotonic() + DEFAULT_BROWSE_TIMEOUT_SEC + FINAL_PENDING_RESOLVE_TIMEOUT_MS / 1000 if scope_addresses else None
                 smb_snapshot, discovery_error, attempt_debug = discover_smb_services_detailed(
                     include_related=True,
                     target_ip=target_ip,
                     family=family,
                     interfaces=interfaces,
+                    **({"deadline": deadline} if deadline is not None else {}),
                 )
                 if attempt_debug is not None:
                     attempt_diagnostics.append(attempt_debug)
-                zeroconf_outcome = _evaluate_zeroconf_bonjour_attempt(
-                    smb_snapshot,
-                    discovery_error,
-                    bonjour_expected,
-                    target_ip=target_ip,
-                    family=family,
-                    interfaces=interfaces,
-                    active_share_names=active_share_names,
-                )
+                if scope_addresses:
+                    assert deadline is not None
+                    zeroconf_outcome, target_ip, scope_debug = _evaluate_scoped_bonjour_candidates(
+                        smb_snapshot, discovery_error, bonjour_expected, scope_addresses,
+                        interfaces, active_share_names, deadline,
+                    )
+                    attempt_diagnostics.append({"family": "ipv6", "selected_address": target_ip, "scope_attempts": scope_debug})
+                else:
+                    zeroconf_outcome = _evaluate_zeroconf_bonjour_attempt(
+                        smb_snapshot,
+                        discovery_error,
+                        bonjour_expected,
+                        target_ip=target_ip,
+                        family=family,
+                        interfaces=interfaces,
+                        active_share_names=active_share_names,
+                    )
 
                 chosen_outcome = zeroconf_outcome
                 if _should_try_native_bonjour_fallback(zeroconf_outcome):
@@ -1123,6 +1216,7 @@ def _add_bonjour_results(
                         family=family,
                         interfaces=interfaces,
                         active_share_names=active_share_names,
+                        **({"alternative_ips": scope_addresses} if scope_addresses else {}),
                     )
                     if native_debug is not None:
                         native_fallback_diagnostics.append(native_debug)
@@ -1328,7 +1422,7 @@ def _doctor_smb_client_targets(
             for endpoint in family_plan.applicable_endpoints:
                 remote_address = endpoint.address
                 server = pinned_server
-                if server is None and _ip_literal(remote_address) is not None and ":" not in remote_address:
+                if server is None and _ip_literal(remote_address) is not None:
                     server = remote_address
                 if server is not None:
                     add(
@@ -1361,7 +1455,6 @@ def _authenticated_smb_target_groups(
     if not reachable_addresses:
         return [(None, targets)]
 
-    reachable = set(reachable_addresses)
     groups: list[tuple[str, list[SmbClientTargetInput]]] = []
     for family in ("ipv4", "ipv6"):
         family_targets = [
@@ -1369,7 +1462,8 @@ def _authenticated_smb_target_groups(
             for target in targets
             if _smb_target_family(target) == family
             and isinstance(target, SmbClientTarget)
-            and target.ip_address in reachable
+            and target.ip_address is not None
+            and any(same_scoped_ip(target.ip_address, address) for address in reachable_addresses)
         ]
         if family_targets:
             groups.append((family, family_targets))
@@ -2130,7 +2224,20 @@ def _doctor_check_direct_smb_port(
                 sink.add(result)
                 results.append(result)
                 continue
-            for endpoint in family_plan.endpoints:
+            for group in family_plan.endpoint_groups:
+                endpoint = group[0]
+                if is_link_local_ipv6(endpoint.address) and any(candidate.applicable for candidate in group):
+                    addresses = [candidate.address for candidate in group if candidate.applicable]
+                    errors = scoped_tcp_connect_errors(addresses, 445)
+                    successful = [address for address in addresses if errors[address] is None]
+                    if successful:
+                        reachable_addresses.extend(successful)
+                        result = CheckResult("PASS", f"SMB reachable at {', '.join(successful)}:445", {"scope_attempts": errors})
+                    else:
+                        result = CheckResult("WARN", f"SMB not reachable at {endpoint.address.split('%')[0]}:445 on any candidate interface", {"scope_attempts": errors})
+                    sink.add(result)
+                    results.append(result)
+                    continue
                 if endpoint.route.state == "unavailable":
                     if endpoint.family == "ipv6":
                         result = _ipv6_no_client_route_result(endpoint)

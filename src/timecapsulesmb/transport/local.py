@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import shlex
+import errno
+import os
+import selectors
 import shutil
 import socket
 import subprocess
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
+
+from timecapsulesmb.core.net import ipv6_scope_index
 
 
 def find_command(name: str) -> str | None:
@@ -40,6 +46,51 @@ def tcp_connect_error(host: str, port: int, timeout: float = 2.0) -> str | None:
 
 def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
     return tcp_connect_error(host, port, timeout=timeout) is None
+
+
+def scoped_tcp_connect_errors(hosts: Sequence[str], port: int, *, timeout: float = 2.0) -> dict[str, str | None]:
+    """Probe IPv6 scope alternatives concurrently within one connection budget."""
+    results: dict[str, str | None] = {}
+    sockets: list[socket.socket] = []
+    deadline = time.monotonic() + timeout
+    with selectors.DefaultSelector() as selector:
+        try:
+            for host in dict.fromkeys(hosts):
+                base, _, scope = host.partition("%")
+                index = ipv6_scope_index(scope)
+                if index is None:
+                    results[host] = "no usable local IPv6 scope"
+                    continue
+                try:
+                    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                    sockets.append(sock)
+                    sock.setblocking(False)
+                    code = sock.connect_ex((base, port, 0, index))
+                    if code in (0, errno.EISCONN):
+                        results[host] = None
+                    elif code in (errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY, errno.EINTR):
+                        selector.register(sock, selectors.EVENT_WRITE, host)
+                    else:
+                        results[host] = os.strerror(code)
+                except OSError as exc:
+                    results[host] = str(exc)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                for key, _events in selector.select(remaining):
+                    try:
+                        code = key.fileobj.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                        results[key.data] = os.strerror(code) if code else None
+                    except OSError as exc:
+                        results[key.data] = str(exc)
+                    selector.unregister(key.fileobj)
+            for key in selector.get_map().values():
+                results[key.data] = "connection timed out"
+        finally:
+            for sock in sockets:
+                sock.close()
+    return results
 
 
 def find_free_local_port(host: str = "127.0.0.1") -> int:

@@ -643,6 +643,51 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(record.ipv4, ["192.168.1.217", "169.254.155.207"])
         self.assertEqual(record.ipv6, ["fdbb:5737:6e53:9bf7::5868", "fe80::5868%17"])
 
+    def test_ipv6_zeroconf_uses_indexes_even_when_local_addresses_are_identical(self) -> None:
+        fake_version = make_fake_ip_version()
+        fake_zc = mock.Mock()
+        module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_version)
+        with (
+            mock.patch.dict(sys.modules, {"zeroconf": module}),
+            mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", side_effect=lambda name: {"en0": 17, "en1": 18}[name]),
+        ):
+            self.assertIs(_open_zeroconf(["fe80::1%en0", "fe80::1%en1", "fe80::1%17"], family="ipv6"), fake_zc)
+        module.Zeroconf.assert_called_once_with(interfaces=[17, 18], ip_version=fake_version.V6Only)
+        with (
+            mock.patch.dict(sys.modules, {"zeroconf": module}),
+            mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", side_effect=OSError("gone")),
+        ):
+            with self.assertRaisesRegex(ValueError, "unknown local IPv6 scope"):
+                _open_zeroconf(["fe80::1%gone"], family="ipv6")
+        self.assertEqual(module.Zeroconf.call_count, 1)
+
+    def test_service_info_scope_comes_only_from_observed_metadata(self) -> None:
+        for index, address, expected in ((17, "fe80::40", "fe80::40%17"), (None, "fe80::40", "fe80::40"), (17, "fe80::40%18", "fe80::40%18")):
+            with self.subTest(index=index, address=address), mock.patch("timecapsulesmb.core.net.socket.if_indextoname", side_effect=OSError("numeric scope")):
+                info = types.SimpleNamespace(
+                    name="Home._smb._tcp.local.", server="home.local.", port=445, properties={},
+                    interface_index=index, parsed_addresses=lambda _version: [address],
+                )
+                record = resolved_service_from_info("_smb._tcp.local.", info)
+                self.assertEqual(record.ipv6, [expected])
+
+    def test_collector_shares_resolution_deadline_across_pending_services(self) -> None:
+        clock = [100.0]
+        zc = mock.Mock()
+
+        def resolve(_service, _name, timeout_ms, **_kwargs):
+            clock[0] += timeout_ms / 1000
+            return None
+
+        zc.get_service_info.side_effect = resolve
+        collector = Collector(zc, ["_smb._tcp.local."], start_time=100.0)
+        collector.pending = {("_smb._tcp.local.", f"{name}._smb._tcp.local.") for name in ("First", "Second", "Third")}
+        with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=lambda: clock[0]):
+            collector.resolve_pending(timeout_ms=500, deadline=100.75)
+        self.assertEqual([call.args[2] for call in zc.get_service_info.call_args_list], [500, 250])
+        self.assertEqual(len(collector.pending), 3)
+        self.assertEqual(clock[0], 100.75)
+
     def test_resolved_service_from_info_splits_airport_packed_txt_value(self) -> None:
         class FakeInfo:
             name = "AirPort Time Capsule._airport._tcp.local."

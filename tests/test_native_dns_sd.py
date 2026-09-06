@@ -12,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.discovery.native_dns_sd import (
+    _parse_dns_sd_address_output,
     browse_native_dns_sd,
     discover_native_dns_sd_snapshot_detailed,
     resolve_native_dns_sd_service_instance,
@@ -42,6 +43,15 @@ class FakeDnsSdProc:
 
 
 class NativeDnsSdTests(unittest.TestCase):
+    def test_ipv6_address_rows_preserve_their_own_interface_index(self) -> None:
+        output = """Timestamp A/R Flags if Hostname Address TTL
+10:20:07.789 Add 2 17 home.local. fe80::40 120
+10:20:07.790 Add 2 18 home.local. fe80::40 120
+10:20:07.791 Add 2 17 home.local. fd00::40 120
+"""
+        with mock.patch("timecapsulesmb.core.net.socket.if_indextoname", side_effect=OSError("numeric scope")):
+            self.assertEqual(_parse_dns_sd_address_output(output), ["fe80::40%17", "fe80::40%18", "fd00::40"])
+
     def test_browse_native_dns_sd_omits_diagnostic_on_non_macos(self) -> None:
         with mock.patch("timecapsulesmb.discovery.native_dns_sd.command_exists") as command_exists:
             self.assertIsNone(browse_native_dns_sd(["_smb._tcp"], platform_name="Linux"))

@@ -208,6 +208,59 @@ class NetworkPlanTests(unittest.TestCase):
     def test_normalize_family_tokens_filters_unknowns_and_deduplicates(self) -> None:
         self.assertEqual(normalize_family_tokens(["ipv4", "bad", "ipv6", "ipv4"]), ("ipv4", "ipv6"))
 
+    def test_link_local_candidates_are_order_independent_and_keep_their_own_sources(self) -> None:
+        locals = ("fe80::5%18", "fe80::6%17", "fe80::7%17")
+        plans = []
+        for sources in (locals, tuple(reversed(locals))):
+            route = mock.Mock(side_effect=lambda address: RouteSelection("available", source=f"fe80::6%{address.split('%')[1]}"))
+            plan = build_network_check_plan(
+                smb_bind_interfaces="fe80:8::40/64", mdns_families=("ipv6",), nbns_families=(),
+                local_addresses=sources, route_selector=route,
+            )
+            self.assertEqual(plan.ipv6.remote_addresses, ("fe80::40%17", "fe80::40%18"))
+            self.assertEqual(len(plan.ipv6.endpoint_groups), 1)
+            self.assertEqual(route.call_args_list, [mock.call("fe80::40%17"), mock.call("fe80::40%18")])
+            self.assertEqual(set(plan.ipv6.endpoints[0].on_link_sources), {"fe80::6%17", "fe80::7%17"})
+            self.assertEqual(plan.ipv6.endpoints[1].on_link_sources, ("fe80::5%18",))
+            plans.append(plan)
+        self.assertEqual(plans[0].ipv6.remote_addresses, plans[1].ipv6.remote_addresses)
+
+    def test_numeric_and_named_source_scopes_do_not_duplicate_candidates(self) -> None:
+        with mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", return_value=17):
+            route = mock.Mock(return_value=RouteSelection("available", source="fe80::1%17"))
+            plan = build_network_check_plan(
+                smb_bind_interfaces="fe80:8::40/64", mdns_families=("ipv6",), nbns_families=(),
+                local_addresses=("fe80::1%17", "fe80::1%en0"), route_selector=route,
+            )
+        self.assertEqual(len(plan.ipv6.endpoints), 1)
+        route.assert_called_once()
+
+    def test_unscoped_or_disappeared_interfaces_do_not_use_the_default_route(self) -> None:
+        with mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", side_effect=OSError("gone")):
+            for sources in ((), ("fe80::1",), ("fe80::1%gone",)):
+                with self.subTest(sources=sources):
+                    route = mock.Mock()
+                    plan = build_network_check_plan(
+                        smb_bind_interfaces="fe80:8::40/64", mdns_families=("ipv6",), nbns_families=(),
+                        local_addresses=sources, route_selector=route,
+                    )
+                    route.assert_not_called()
+                    self.assertEqual(plan.ipv6.endpoints[0].route.state, "unavailable")
+            with mock.patch("timecapsulesmb.checks.network_plan.socket.socket") as sock:
+                self.assertEqual(select_route_to_address("fe80::40%gone").state, "unavailable")
+                self.assertEqual(select_route_to_address("fe80::40").state, "unavailable")
+                sock.assert_not_called()
+
+    def test_route_sockaddr_with_text_and_numeric_scope_does_not_duplicate_zone(self) -> None:
+        sock = mock.MagicMock()
+        sock.getsockname.return_value = ("fe80::1%en0", 4000, 0, 17)
+        with (
+            mock.patch("timecapsulesmb.checks.network_plan.socket.socket", return_value=mock.MagicMock(__enter__=mock.Mock(return_value=sock))),
+            mock.patch("timecapsulesmb.core.net.socket.if_nametoindex", return_value=17),
+            mock.patch("timecapsulesmb.core.net.socket.if_indextoname", return_value="en0"),
+        ):
+            self.assertEqual(select_route_to_address("fe80::40%17").source, "fe80::1%en0")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
+from timecapsulesmb.core.net import ipv6_scope_index, is_link_local_ipv6, scoped_ip_literal
+
 
 NetworkFamily = Literal["ipv4", "ipv6"]
 RouteState = Literal["available", "unavailable", "unknown"]
@@ -41,6 +43,17 @@ class NetworkFamilyPlan:
     mdns_expected: bool = False
     samba_expected: bool = False
     nbns_expected: bool = False
+
+    @property
+    def endpoint_groups(self) -> tuple[tuple[NetworkEndpointPlan, ...], ...]:
+        """Local zones are alternatives for one remote link-local endpoint."""
+        groups: dict[tuple[str, str], list[NetworkEndpointPlan]] = {}
+        for endpoint in self.endpoints:
+            address = endpoint.address
+            if is_link_local_ipv6(address):
+                address = address.split("%", 1)[0]
+            groups.setdefault((address, endpoint.cidr), []).append(endpoint)
+        return tuple(tuple(group) for group in groups.values())
 
     @property
     def remote_addresses(self) -> tuple[str, ...]:
@@ -240,27 +253,15 @@ def select_route_to_address(address: str, *, port: int = 445) -> RouteSelection:
         return RouteSelection("unknown", error=str(exc))
 
     family = socket.AF_INET6 if ip_obj.version == 6 else socket.AF_INET
-    scope_id = 0
-    if family == socket.AF_INET6 and scope:
-        try:
-            scope_id = int(scope, 10)
-        except ValueError:
-            try:
-                scope_id = socket.if_nametoindex(scope)
-            except OSError:
-                scope_id = 0
+    scope_id = ipv6_scope_index(scope) if family == socket.AF_INET6 and scope else 0
+    if scope_id is None or (ip_obj.version == 6 and ip_obj.is_link_local and not scope_id):
+        return RouteSelection("unavailable", error="no usable local IPv6 scope", error_number=errno.EADDRNOTAVAIL)
     destination = (address_base, port, 0, scope_id) if family == socket.AF_INET6 else (address_base, port)
     try:
         with socket.socket(family, socket.SOCK_DGRAM) as sock:
             sock.connect(destination)
             sockname = sock.getsockname()
-            source = _adapter_ip_text(sockname[0])
-            if family == socket.AF_INET6 and source and len(sockname) >= 4 and sockname[3]:
-                try:
-                    source_scope = socket.if_indextoname(sockname[3])
-                except OSError:
-                    source_scope = str(sockname[3])
-                source = f"{source}%{source_scope}"
+            source = scoped_ip_literal(sockname[0], scope_id=sockname[3] if family == socket.AF_INET6 else 0)
     except OSError as exc:
         state: RouteState = "unavailable" if exc.errno in _ROUTE_UNAVAILABLE_ERRNOS else "unknown"
         return RouteSelection(
@@ -332,30 +333,41 @@ def build_network_check_plan(
                 family=family,
                 local_addresses=candidate_local_addresses,
             )
-            endpoint_address = interface.address
-            if family == "ipv6" and ipaddress.ip_address(interface.address).is_link_local:
-                scoped_source = next((source for source in matching_sources if "%" in source), None)
-                if scoped_source is not None:
-                    endpoint_address = f"{interface.address}%{scoped_source.split('%', 1)[1]}"
-            try:
-                route = select_route(endpoint_address)
-            except Exception as exc:
-                route = RouteSelection("unknown", error=f"{type(exc).__name__}: {exc}")
-            endpoint_sources: list[str] = []
-            if route.state == "available" and route.source:
-                endpoint_sources.append(route.source)
-            elif route.state == "unknown":
-                endpoint_sources.extend(matching_sources)
-            endpoint = NetworkEndpointPlan(
-                address=endpoint_address,
-                cidr=interface.cidr,
-                family=family,
-                on_link_sources=matching_sources,
-                local_sources=tuple(endpoint_sources),
-                route=route,
-            )
-            if endpoint not in endpoints:
-                endpoints.append(endpoint)
+            candidates = [(interface.address, matching_sources)]
+            link_local = is_link_local_ipv6(interface.address)
+            if link_local:
+                by_scope: dict[int, list[str]] = {}
+                for source in matching_sources:
+                    index = ipv6_scope_index(source.partition("%")[2])
+                    if index is not None:
+                        by_scope.setdefault(index, []).append(source)
+                candidates = [
+                    (f"{interface.address}%{index}", tuple(sources))
+                    for index, sources in sorted(by_scope.items())
+                ] or [(interface.address, ())]
+            for endpoint_address, candidate_sources in candidates:
+                try:
+                    route = (
+                        RouteSelection("unavailable", error="no usable local IPv6 scope", error_number=errno.EADDRNOTAVAIL)
+                        if link_local and not candidate_sources else select_route(endpoint_address)
+                    )
+                except Exception as exc:
+                    route = RouteSelection("unknown", error=f"{type(exc).__name__}: {exc}")
+                endpoint_sources: list[str] = []
+                if route.state == "available" and route.source:
+                    endpoint_sources.append(route.source)
+                elif route.state == "unknown":
+                    endpoint_sources.extend(candidate_sources)
+                endpoint = NetworkEndpointPlan(
+                    address=endpoint_address,
+                    cidr=interface.cidr,
+                    family=family,
+                    on_link_sources=candidate_sources,
+                    local_sources=tuple(endpoint_sources),
+                    route=route,
+                )
+                if endpoint not in endpoints:
+                    endpoints.append(endpoint)
         return NetworkFamilyPlan(
             family=family,
             endpoints=tuple(endpoints),

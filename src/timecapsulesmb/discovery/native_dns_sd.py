@@ -7,6 +7,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 
+from timecapsulesmb.core.net import scoped_ip_literal, is_link_local_ipv6
+
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
     BonjourIPFamily,
@@ -314,7 +316,11 @@ def _parse_dns_sd_address_output(stdout: str) -> list[str]:
             or "...STARTING..." in stripped
         ):
             continue
-        for part in reversed(stripped.split()):
+        fields = stripped.split()
+        index = int(fields[3]) if len(fields) >= 6 and fields[1].lower() in {"add", "rmv"} and fields[3].isdigit() else 0
+        for part in reversed(fields):
+            if index and is_link_local_ipv6(part) and "%" not in part:
+                part = scoped_ip_literal(part, scope_id=index) or part
             _append_ip(addresses, part)
     return addresses
 
