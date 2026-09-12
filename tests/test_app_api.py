@@ -3032,8 +3032,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3070,8 +3072,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3099,8 +3103,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
@@ -3127,8 +3133,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3163,8 +3171,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
@@ -3201,8 +3211,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3239,8 +3251,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
@@ -3279,8 +3293,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3316,8 +3332,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3355,8 +3373,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
@@ -3395,8 +3415,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3490,8 +3512,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3577,8 +3601,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3643,8 +3669,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3703,8 +3731,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3759,8 +3789,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3816,8 +3848,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3993,8 +4027,10 @@ class AppApiTests(unittest.TestCase):
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
-            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         params = {"dry_run": False}

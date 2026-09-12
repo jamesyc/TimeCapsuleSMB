@@ -1,0 +1,12 @@
+native/telemetry/device.c
+native/telemetry/cycle.c
+native/telemetry/debug_job.c
+native/telemetry/http.c
+native/telemetry/main.c
+native/telemetry/payload.c
+native/telemetry/response.c
+native/telemetry/scheduler.c
+native/telemetry/signature.c
+native/telemetry/workspace.c
+native/vendor/random.c
+native/vendor/tweetnacl.c

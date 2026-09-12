@@ -826,8 +826,8 @@
 "timeline.deploy.detail.resolve_managed_target" = "Resolvendo o destino de implementação e investigando SSH.";
 "timeline.deploy.detail.select_payload_home" = "Selecionando um diretório payload gravável.";
 "timeline.deploy.detail.upload_boot_files" = "Copiando scripts de inicialização para /mnt/Flash.";
-"timeline.deploy.detail.upload_mdns_advertiser" = "Copiando mdns-advertiser para payload volume e flash.";
-"timeline.deploy.detail.upload_nbns_advertiser" = "Copiando nbns-advertiser para payload volume.";
+"timeline.deploy.detail.upload_mdns_advertiser" = "Copiando mdns para payload volume e flash.";
+"timeline.deploy.detail.upload_nbns_advertiser" = "Copiando nbns para payload volume.";
 "timeline.deploy.detail.upload_payload" = "Enviando arquivos managed SMB payload.";
 "timeline.deploy.detail.upload_runtime_config" = "Gravando configurações de runtime em /mnt/Flash.";
 "timeline.deploy.detail.upload_smbd" = "Copiando smbd para payload volume.";
@@ -857,8 +857,8 @@
 "timeline.deploy.title.resolve_managed_target" = "Conectar ao dispositivo";
 "timeline.deploy.title.select_payload_home" = "Selecione a pasta Payload";
 "timeline.deploy.title.upload_boot_files" = "Carregar arquivos de inicialização";
-"timeline.deploy.title.upload_mdns_advertiser" = "Carregar mdns-advertiser";
-"timeline.deploy.title.upload_nbns_advertiser" = "Carregar nbns-advertiser";
+"timeline.deploy.title.upload_mdns_advertiser" = "Carregar mdns";
+"timeline.deploy.title.upload_nbns_advertiser" = "Carregar nbns";
 "timeline.deploy.title.upload_payload" = "Carregar Payload";
 "timeline.deploy.title.upload_runtime_config" = "Carregar Runtime Config";
 "timeline.deploy.title.upload_smbd" = "Carregar smbd";

@@ -71,12 +71,16 @@ class StorageRuntimeTests(unittest.TestCase):
         common = self.runtime_asset_texts()
         boot = load_boot_asset_text("boot.sh")
         manager = load_boot_asset_text("manager.sh")
+        pkill = tmp_path / "pkill"
+        pkill.write_text("#!/bin/sh\nexit 0\n")
+        pkill.chmod(0o755)
         replacements = {
             "/mnt/Flash": str(flash),
             "/mnt/Memory": str(memory),
             "/mnt/Locks": str(locks),
             "/Volumes": str(volumes),
             "/usr/bin/acp": str(tmp_path / "acp"),
+            "/usr/bin/pkill": str(pkill),
         }
         if hostname_output is not None:
             hostname = tmp_path / "hostname"
@@ -254,14 +258,15 @@ class StorageRuntimeTests(unittest.TestCase):
         acp.chmod(0o755)
         return acp
 
-    def write_fake_mdns_hash_helper(
+    def write_fake_service_hash_helper(
         self,
         flash: Path,
         *,
         nt_hash: str = "0123456789ABCDEF0123456789ABCDEF",
     ) -> Path:
-        mdns = flash / "mdns-advertiser"
-        mdns.write_text(
+        service = flash.parent / "Memory/samba4/sbin/service"
+        service.parent.mkdir(parents=True, exist_ok=True)
+        service.write_text(
             "#!/bin/sh\n"
             "if [ \"$1\" = '--print-nt-hash-from-stdin' ]; then\n"
             "    cat >/dev/null\n"
@@ -270,8 +275,8 @@ class StorageRuntimeTests(unittest.TestCase):
             "fi\n"
             "exit 0\n"
         )
-        mdns.chmod(0o755)
-        return mdns
+        service.chmod(0o755)
+        return service
 
     def write_sequence_acp(self, tmp_path: Path, raws: tuple[str | bytes, ...]) -> Path:
         raw_dir = tmp_path / "acp-sequence"
@@ -1627,10 +1632,10 @@ MaSt = (
             "root@10.0.0.2",
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
             Path("/tmp/smbd"),
-            Path("/tmp/mdns-advertiser"),
-            Path("/tmp/nbns-advertiser"),
+            Path("/tmp/mdns"),
+            Path("/tmp/nbns"),
             rsync_path=Path("/tmp/rsync"),
-        )
+         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         source_ids = {upload.source_id for upload in plan.uploads}
 
         self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, source_ids)
@@ -2811,6 +2816,8 @@ MaSt = (
                         mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
                         printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
                         chmod 755 "$TC_SMBD_BIN"
+                        cp "$TC_SMBD_BIN" "$TC_SERVICE_BIN"
+                        cp "$TC_SMBD_BIN" "$TC_TELEMETRY_BIN"
                         : >"$RAM_PRIVATE/smbpasswd"
                         : >"$RAM_PRIVATE/username.map"
                         return 0
@@ -4151,7 +4158,7 @@ MaSt = (
                     tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            smbd|mdns-advertiser) return 0 ;;
+                            smbd|mdns) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
@@ -4239,7 +4246,7 @@ MaSt = (
                     tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            smbd|mdns-advertiser) return 0 ;;
+                            smbd|mdns) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
@@ -4637,7 +4644,7 @@ MaSt = (
                     tc_probe_smb_bind_interfaces() { echo "127.0.0.1/8"; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
-                            smbd|mdns-advertiser|nbns-advertiser) return 0 ;;
+                            smbd|mdns|nbns) return 0 ;;
                             *) return 1 ;;
                         esac
                     }
@@ -4678,11 +4685,16 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             self.write_fake_acp(tmp_path, "")
-            self.write_fake_mdns_hash_helper(flash)
+            self.write_fake_service_hash_helper(flash)
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
             events = tmp_path / "stage-events"
             script = tmp_path / "stage-runtime-temp-rename.sh"
             script.write_text(
@@ -4707,6 +4719,10 @@ MaSt = (
                         /bin/mv "$1" "$2"
                     }}
                     tc_stage_runtime {payload} {payload}/smbd ""
+                    /bin/rm -rf {payload}
+                    "$TC_TELEMETRY_BIN" --version
+                    printf 'hash-after-disk-removal='
+                    printf 'password\\n' | "$TC_SERVICE_BIN" --print-nt-hash-from-stdin
                     printf 'dest='
                     /bin/cat "$TC_SMBD_BIN"
                     printf 'smbpasswd='
@@ -4723,6 +4739,8 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("dest=payload smbd\n", proc.stdout)
+        self.assertIn("telemetry-ok\n", proc.stdout)
+        self.assertIn("hash-after-disk-removal=0123456789ABCDEF0123456789ABCDEF\n", proc.stdout)
         self.assertRegex(
             proc.stdout,
             rf"root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:0123456789ABCDEF0123456789ABCDEF:\[U          \]:LCT-[0-9A-F]+:",
@@ -4743,11 +4761,16 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             self.write_fake_acp(tmp_path, "")
-            self.write_fake_mdns_hash_helper(flash)
+            self.write_fake_service_hash_helper(flash)
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
             script = tmp_path / "stage-runtime-copy-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4797,12 +4820,17 @@ MaSt = (
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
-            (flash / "mdns-advertiser").write_text(
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
+            (payload / "service").write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = '--print-nt-hash-from-stdin' ]; then cat >/dev/null; exit 8; fi\n"
                 "exit 0\n"
             )
-            (flash / "mdns-advertiser").chmod(0o755)
+            (payload / "service").chmod(0o755)
             script = tmp_path / "stage-runtime-hash-helper-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4838,7 +4866,7 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_mdns_hash_helper(flash)
+            self.write_fake_service_hash_helper(flash)
             (tmp_path / "acp").write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1:$2\" = '-q:syPW' ]; then exit 6; fi\n"
@@ -4849,6 +4877,11 @@ MaSt = (
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
             script = tmp_path / "stage-runtime-acp-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4882,11 +4915,16 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             self.write_fake_acp(tmp_path, "")
-            self.write_fake_mdns_hash_helper(flash, nt_hash="not-a-valid-hash")
+            self.write_fake_service_hash_helper(flash, nt_hash="not-a-valid-hash")
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
             script = tmp_path / "stage-runtime-invalid-hash.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4922,11 +4960,16 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             self.write_fake_acp(tmp_path, "")
-            self.write_fake_mdns_hash_helper(flash)
+            self.write_fake_service_hash_helper(flash)
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
             script = tmp_path / "stage-runtime-private-chmod-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4971,11 +5014,16 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             self.write_fake_acp(tmp_path, "")
-            self.write_fake_mdns_hash_helper(flash)
+            self.write_fake_service_hash_helper(flash)
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("payload smbd\n")
             (payload / "smbd").chmod(0o755)
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
             script = tmp_path / "stage-runtime-smbpasswd-rename-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -5066,8 +5114,9 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text("#!/bin/sh\necho '192.168.1.40 bad/value'\n")
-            (flash / "mdns-advertiser").chmod(0o755)
+            (memory / "samba4/sbin").mkdir(parents=True, exist_ok=True)
+            (memory / "samba4/sbin/service").write_text("#!/bin/sh\necho '192.168.1.40 bad/value'\n")
+            (memory / "samba4/sbin/service").chmod(0o755)
             script = tmp_path / "smb-bind-invalid.sh"
             script.write_text(
                 textwrap.dedent(
@@ -5101,12 +5150,13 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text(
+            (memory / "samba4/sbin").mkdir(parents=True, exist_ok=True)
+            (memory / "samba4/sbin/service").write_text(
                 "#!/bin/sh\n"
                 f"printf '%s\\n' \"$1\" > {shlex.quote(str(memory / 'samba4/var/mdns-arg'))}\n"
                 "echo '192.168.1.40/24'\n"
             )
-            (flash / "mdns-advertiser").chmod(0o755)
+            (memory / "samba4/sbin/service").chmod(0o755)
             script = tmp_path / "smb-bind-lan-only.sh"
             script.write_text(
                 textwrap.dedent(
@@ -5136,12 +5186,13 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text(
+            (memory / "samba4/sbin").mkdir(parents=True, exist_ok=True)
+            (memory / "samba4/sbin/service").write_text(
                 "#!/bin/sh\n"
                 f"printf '%s\\n' \"$1\" > {shlex.quote(str(memory / 'samba4/var/mdns-arg'))}\n"
                 "echo '192.168.1.40/24'\n"
             )
-            (flash / "mdns-advertiser").chmod(0o755)
+            (memory / "samba4/sbin/service").chmod(0o755)
             script = tmp_path / "smb-bind-all.sh"
             script.write_text(
                 textwrap.dedent(
@@ -5174,11 +5225,16 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             self.write_fake_acp(tmp_path, fixture.raw)
-            self.write_fake_mdns_hash_helper(flash)
+            self.write_fake_service_hash_helper(flash)
             payload = volumes / "dk5/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("#!/bin/sh\nexit 0\n")
             (payload / "smbd").chmod(0o755)
+            service_source = flash.parent / "Memory/samba4/sbin/service"
+            (payload / "service").write_text(service_source.read_text() if service_source.exists() else "#!/bin/sh\nexit 0\n")
+            (payload / "service").chmod(0o755)
+            (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
+            (payload / "telemetry").chmod(0o755)
             (payload / "rsync").write_text("#!/bin/sh\nexit 0\n")
             (payload / "rsync").chmod(0o755)
             (payload / "rsyncd.conf").write_text("[shareroot]\n")
@@ -5795,7 +5851,7 @@ MaSt = (
                         cat <<'EOF'
                     100 Z smbd smbd
                     101 S smbd smbd
-                    102 S mdns-advertiser mdns-advertiser
+                    102 S mdns-advertiser mdns
                     103 S other other
                     EOF
                     }}
@@ -6237,6 +6293,7 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
+                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     get_radio_mac() {{
@@ -6271,7 +6328,7 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("launching mdns-advertiser", proc.stdout)
+        self.assertIn("launching mdns\n", proc.stdout)
         self.assertIn("--instance ", proc.stdout)
         self.assertNotIn("--afp", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
@@ -6353,6 +6410,7 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
+                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     get_radio_mac() {{ return 1; }}
@@ -6428,6 +6486,7 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
+                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     get_radio_mac() {{ return 1; }}
@@ -6619,6 +6678,7 @@ MaSt = (
                     . {flash}/tcapsulesmb.conf
                     NBNS_ENABLED=1
                     tc_init_runtime_env
+                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
                     get_radio_mac() {{
@@ -6664,18 +6724,74 @@ MaSt = (
         self.assertIn("/.samba4/logs/mdns.log", proc.stdout)
         self.assertIn("/.samba4/logs/nbns.log", proc.stdout)
         self.assertIn("mdns\n", proc.stdout)
-        self.assertIn("launching mdns-advertiser", proc.stdout)
+        self.assertIn("launching mdns\n", proc.stdout)
         self.assertIn("--instance ", proc.stdout)
         self.assertIn("James's AirPort Time Capsule", proc.stdout)
         self.assertIn("--airport-syfl 0xA0C", proc.stdout)
         self.assertIn("mdns-stdout", proc.stdout)
         self.assertIn("mdns-stderr", proc.stdout)
         self.assertIn("nbns\n", proc.stdout)
-        self.assertIn("launching nbns-advertiser", proc.stdout)
+        self.assertIn("launching nbns", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
         self.assertIn("nbns-stdout", proc.stdout)
         self.assertIn("nbns-stderr", proc.stdout)
 
+    def test_common_mdns_generated_launch_failure_does_not_run_snapshot_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                "printf 'mdns-args:%s\\n' \"$*\"\n"
+                "if [ \"$1\" = \"--instance\" ]; then\n"
+                "  echo generated-fail >&2\n"
+                "  exit 2\n"
+                "fi\n"
+                "echo unexpected-capture\n"
+                "exit 9\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "mdns-generation-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
+                    mkdir -p "$RAM_VAR"
+                    get_radio_mac() {{ return 1; }}
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "James's AirPort Time Capsule" ;;
+                            syVs) echo 7.9.1 ;;
+                            srcv) echo 79100.2 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_set_log "$RAM_VAR/test.log" test
+                    tc_launch_mdns_advertiser "mdns test" 0 0
+                    wait "$mdns_launch_pid" || true
+                    cat "$TC_MDNS_LOG_FILE"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("launching mdns", proc.stdout)
+        self.assertIn("--instance", proc.stdout)
+        self.assertIn("generated-fail", proc.stdout)
+        self.assertNotIn("launching mdns capture", proc.stdout)
+        self.assertNotIn("--save-all-snapshot", proc.stdout)
+        self.assertNotIn("--save-airport-snapshot", proc.stdout)
+        self.assertNotIn("--load-snapshot", proc.stdout)
+        self.assertNotIn("unexpected-capture", proc.stdout)
 
     def test_common_wake_or_mount_uses_diskd_without_mount_hfs_fallback_when_it_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

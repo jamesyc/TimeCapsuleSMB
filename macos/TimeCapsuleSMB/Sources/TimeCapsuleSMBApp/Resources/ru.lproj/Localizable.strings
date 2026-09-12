@@ -826,8 +826,8 @@
 "timeline.deploy.detail.resolve_managed_target" = "Определение цели развертывания и проверка SSH.";
 "timeline.deploy.detail.select_payload_home" = "Выбор записываемого каталога payload.";
 "timeline.deploy.detail.upload_boot_files" = "Копирование загрузочных сценариев в /mnt/Flash.";
-"timeline.deploy.detail.upload_mdns_advertiser" = "Копирование mdns-advertiser в payload, volume и flash.";
-"timeline.deploy.detail.upload_nbns_advertiser" = "Копирование nbns-advertiser в payload volume.";
+"timeline.deploy.detail.upload_mdns_advertiser" = "Копирование mdns в payload, volume и flash.";
+"timeline.deploy.detail.upload_nbns_advertiser" = "Копирование nbns в payload volume.";
 "timeline.deploy.detail.upload_payload" = "Загрузка файлов managed SMB payload.";
 "timeline.deploy.detail.upload_runtime_config" = "Запись настроек runtime в /mnt/Flash.";
 "timeline.deploy.detail.upload_smbd" = "Копирование smbd в payload volume.";
@@ -857,8 +857,8 @@
 "timeline.deploy.title.resolve_managed_target" = "Подключиться к устройству";
 "timeline.deploy.title.select_payload_home" = "Выберите папку Payload.";
 "timeline.deploy.title.upload_boot_files" = "Загрузить загрузочные файлы";
-"timeline.deploy.title.upload_mdns_advertiser" = "Загрузить mdns-advertiser";
-"timeline.deploy.title.upload_nbns_advertiser" = "Загрузить nbns-advertiser";
+"timeline.deploy.title.upload_mdns_advertiser" = "Загрузить mdns";
+"timeline.deploy.title.upload_nbns_advertiser" = "Загрузить nbns";
 "timeline.deploy.title.upload_payload" = "Загрузить Payload";
 "timeline.deploy.title.upload_runtime_config" = "Загрузить Runtime Config";
 "timeline.deploy.title.upload_smbd" = "Загрузить smbd";

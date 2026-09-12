@@ -4468,17 +4468,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("Discovery context:", error)
         self.assertIn("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records", error)
         self.assertIn(
-            "INFO mdns-advertiser transport state: reason=startup status=degraded ipv4=off ipv6=bridge0 "
+            "INFO mdns transport state: reason=startup status=degraded ipv4=off ipv6=bridge0 "
             "required_ipv4=1 required_ipv6=0 missing_required_ipv4=1 missing_required_ipv6=0 "
             "last_ipv4_errno=48 last_ipv6_errno=0",
             error,
         )
         self.assertIn(
-            "INFO mdns-advertiser counters: reason=ipv6_packet ipv4_rx=0 ipv6_rx=3 query_matches=2 "
+            "INFO mdns counters: reason=ipv6_packet ipv4_rx=0 ipv6_rx=3 query_matches=2 "
             "responses_sent=2 send_failures=1 last_send_failure=query_response errno=65 (No route to host)",
             error,
         )
-        self.assertNotIn("INFO mdns-advertiser IPv4 transport active:", error)
+        self.assertNotIn("INFO mdns IPv4 transport active:", error)
 
     def test_doctor_error_ignores_legacy_mdns_transport_logs(self) -> None:
         results = [
@@ -4502,8 +4502,8 @@ class CliTests(unittest.TestCase):
         self.assertIsNotNone(error)
         assert error is not None
         self.assertIn("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records", error)
-        self.assertNotIn("INFO mdns-advertiser transport state:", error)
-        self.assertNotIn("INFO mdns-advertiser IPv4 transport active:", error)
+        self.assertNotIn("INFO mdns transport state:", error)
+        self.assertNotIn("INFO mdns IPv4 transport active:", error)
 
     def test_doctor_failure_telemetry_includes_derived_mdns_boot_context(self) -> None:
         output = io.StringIO()
@@ -4543,7 +4543,7 @@ class CliTests(unittest.TestCase):
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("mDNS boot context:", telemetry_error)
         self.assertIn(
-            "INFO mdns-advertiser source=generated; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local., _airport._tcp.local., _riousbprint._tcp.local., _pdl-datastream._tcp.local.",
+            "INFO mdns source=generated; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local., _airport._tcp.local., _riousbprint._tcp.local., _pdl-datastream._tcp.local.",
             telemetry_error,
         )
         self.assertIn("INFO mDNS takeover established after SIGTERM + 0ms using exclusive bind", telemetry_error)
@@ -5084,7 +5084,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["device_path"], "resolved from MaSt at deploy time")
         self.assertEqual(payload["payload_dir"], "resolved from MaSt at deploy time/.samba4")
         self.assertEqual(payload["apple_mount_wait_seconds"], DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], "resolved from MaSt at deploy time/.samba4/nbns-advertiser")
+        self.assertEqual(payload["payload_targets"]["nbns"], "resolved from MaSt at deploy time/.samba4/nbns-advertiser")
         self.assertIn(
             {
                 "source_id": GENERATED_FLASH_CONFIG_SOURCE,
@@ -5820,7 +5820,7 @@ class CliTests(unittest.TestCase):
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             if on_uploading is not None:
-                on_uploading(plan.uploads[7])
+                on_uploading(next(transfer for transfer in plan.uploads if transfer.destination == "/mnt/Flash/manager.sh"))
             raise SshCommandTimeout(timeout)
 
         result = self.run_deploy_cli(
@@ -6073,8 +6073,8 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertNotIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
-        self.assertNotIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
-        self.assertNotIn("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertNotIn("/usr/bin/pkill '^mdns$' >/dev/null 2>&1 || true", text)
+        self.assertNotIn("/usr/bin/pkill '^nbns$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/pkill '^wcifsfs$' >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("skip rc.local if the NetBSD4 payload is already healthy", text)

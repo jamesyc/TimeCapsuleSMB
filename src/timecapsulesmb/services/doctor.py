@@ -212,7 +212,7 @@ def _mdns_transport_context_from_debug(debug_fields: Mapping[str, object]) -> li
     transport = _last_regex_group(r"mdns transport active: ([^\n]+)", mdns_log)
     if not transport:
         return []
-    return [f"INFO mdns-advertiser transport state: {transport}"]
+    return [f"INFO mdns transport state: {transport}"]
 
 
 def _mdns_counter_context_from_debug(debug_fields: Mapping[str, object]) -> list[str]:
@@ -222,7 +222,7 @@ def _mdns_counter_context_from_debug(debug_fields: Mapping[str, object]) -> list
     counters = _last_regex_group(r"mdns counters: ([^\n]+)", mdns_log)
     if not counters:
         return []
-    return [f"INFO mdns-advertiser counters: {counters}"]
+    return [f"INFO mdns counters: {counters}"]
 
 
 def _last_regex_group(pattern: str, text: str) -> str | None:
@@ -256,10 +256,10 @@ def build_mdns_boot_context(debug_fields: Mapping[str, object]) -> list[str]:
     service_types = _extract_generated_service_types(mdns_text)
     if source and service_types:
         lines.append(
-            f"INFO mdns-advertiser source={source}; generated services include {', '.join(service_types)}"
+            f"INFO mdns source={source}; generated services include {', '.join(service_types)}"
         )
     elif source:
-        lines.append(f"INFO mdns-advertiser source={source}")
+        lines.append(f"INFO mdns source={source}")
 
     takeover = _last_regex_group(r"mDNS takeover established after ([^\n]+)", mdns_text)
     if takeover:

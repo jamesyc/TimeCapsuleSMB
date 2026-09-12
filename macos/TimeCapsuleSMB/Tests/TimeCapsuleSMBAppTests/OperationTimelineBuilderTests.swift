@@ -162,8 +162,8 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
         XCTAssertEqual(timeline.map(\.title), [
             "Upload smbd",
-            "Upload mdns-advertiser",
-            "Upload nbns-advertiser",
+            "Upload mdns",
+            "Upload nbns",
             "Upload rsync",
             "Upload Boot Files",
             "Upload Runtime Config"

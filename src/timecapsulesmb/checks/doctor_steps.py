@@ -114,8 +114,8 @@ TRANSIENT_SMBD_READINESS_FAILURES = {
     "smbd is not bound to required TCP 445 sockets",
 }
 TRANSIENT_MDNS_READINESS_FAILURES = {
-    "mdns-advertiser process is not running",
-    "mdns-advertiser is not bound to required UDP 5353 listener",
+    "mdns process is not running",
+    "mdns is not bound to required UDP 5353 listener",
 }
 TRANSIENT_RSYNC_READINESS_FAILURES = {
     "persistent rsync binary is missing",
@@ -148,10 +148,10 @@ STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
     "managed smbd readiness probe timed out",
     "device Samba version unavailable (managed runtime smbd binary missing)",
     "mDNS startup deferred; no usable address has appeared yet",
-    "mdns-advertiser process is not running",
-    "mdns-advertiser bound to UDP 5353 but bind address is not active",
-    "mdns-advertiser is waiting for a usable address",
-    "mdns-advertiser is not bound to required UDP 5353 listener",
+    "mdns process is not running",
+    "mdns bound to UDP 5353 but bind address is not active",
+    "mdns is waiting for a usable address",
+    "mdns is not bound to required UDP 5353 listener",
     "Apple mDNSResponder is still running",
     "persistent rsync binary is missing",
     "persistent rsync config is missing",

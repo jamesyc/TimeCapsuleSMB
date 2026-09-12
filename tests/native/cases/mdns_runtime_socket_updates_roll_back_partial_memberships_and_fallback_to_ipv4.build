@@ -1,0 +1,5 @@
+mdns
+socket=fake_socket
+setsockopt=fake_setsockopt
+bind=fake_bind
+close=fake_close

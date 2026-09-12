@@ -826,8 +826,8 @@
 "timeline.deploy.detail.resolve_managed_target" = "Het implementatiedoel oplossen en onderzoeken SSH.";
 "timeline.deploy.detail.select_payload_home" = "Een beschrijfbare payload map selecteren.";
 "timeline.deploy.detail.upload_boot_files" = "Opstartscripts kopiëren naar /mnt/Flash.";
-"timeline.deploy.detail.upload_mdns_advertiser" = "Bezig met kopiëren van mdns-advertiser naar payload volume en flash.";
-"timeline.deploy.detail.upload_nbns_advertiser" = "Bezig met kopiëren van nbns-advertiser naar payload volume.";
+"timeline.deploy.detail.upload_mdns_advertiser" = "Bezig met kopiëren van mdns naar payload volume en flash.";
+"timeline.deploy.detail.upload_nbns_advertiser" = "Bezig met kopiëren van nbns naar payload volume.";
 "timeline.deploy.detail.upload_payload" = "Bezig met het uploaden van managed SMB payload bestanden.";
 "timeline.deploy.detail.upload_runtime_config" = "Schrijven van runtime instellingen naar /mnt/Flash.";
 "timeline.deploy.detail.upload_smbd" = "Bezig met kopiëren van smbd naar payload volume.";
@@ -857,8 +857,8 @@
 "timeline.deploy.title.resolve_managed_target" = "Verbinden met apparaat";
 "timeline.deploy.title.select_payload_home" = "Selecteer Payload map";
 "timeline.deploy.title.upload_boot_files" = "Opstartbestanden uploaden";
-"timeline.deploy.title.upload_mdns_advertiser" = "Uploaden mdns-advertiser";
-"timeline.deploy.title.upload_nbns_advertiser" = "Uploaden nbns-advertiser";
+"timeline.deploy.title.upload_mdns_advertiser" = "Uploaden mdns";
+"timeline.deploy.title.upload_nbns_advertiser" = "Uploaden nbns";
 "timeline.deploy.title.upload_payload" = "Uploaden Payload";
 "timeline.deploy.title.upload_runtime_config" = "Uploaden Runtime Config";
 "timeline.deploy.title.upload_smbd" = "Uploaden smbd";

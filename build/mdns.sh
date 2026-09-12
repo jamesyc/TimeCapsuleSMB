@@ -6,7 +6,7 @@ set -eu
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(select_tool_triple)"
-MDNS_SRC="$SCRIPT_DIR/mdns-advertiser.c"
+MDNS_SRC="$SCRIPT_DIR/native/mdns.sources"
 MDNS_CFLAGS="${MDNS_CFLAGS:--Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident}"
 MDNS_LDFLAGS="${MDNS_LDFLAGS:--static -Wl,--gc-sections}"
 
@@ -52,6 +52,14 @@ if ! {
     echo "MDNS_CFLAGS=$MDNS_CFLAGS"
     echo "MDNS_LDFLAGS=$MDNS_LDFLAGS"
 
+    # Explicit failures are necessary here: sh suppresses errexit inside the
+    # enclosing if condition, otherwise a failed compile could copy stale output.
+    # Compile separate modules into a single static executable. Explicit lists
+    # avoid pulling every helper into NetBSD 4's deliberately no-GC link.
+    set --
+    while IFS= read -r source; do
+        set -- "$@" "$SCRIPT_DIR/$source"
+    done <"$MDNS_SRC"
     "$TOOLDIR/bin/$TRIPLE-gcc" \
         $MDNS_CC_SYSROOT_FLAGS \
         $MDNS_CFLAGS \
@@ -60,12 +68,12 @@ if ! {
         -D_LARGEFILE_SOURCE \
         -D_FILE_OFFSET_BITS=64 \
         -D_LARGE_FILES \
-        "$MDNS_SRC" \
+        "$@" \
         -o "$MDNS_STAGE/$MDNS_BIN_NAME" \
-        $MDNS_LDFLAGS
+        $MDNS_LDFLAGS || exit 1
 
-    cp "$MDNS_STAGE/$MDNS_BIN_NAME" "$MDNS_STAGE/$MDNS_BIN_NAME.stripped"
-    "$TOOLDIR/bin/$TRIPLE-strip" --strip-unneeded "$MDNS_STAGE/$MDNS_BIN_NAME.stripped"
+    cp "$MDNS_STAGE/$MDNS_BIN_NAME" "$MDNS_STAGE/$MDNS_BIN_NAME.stripped" || exit 1
+    "$TOOLDIR/bin/$TRIPLE-strip" --strip-unneeded "$MDNS_STAGE/$MDNS_BIN_NAME.stripped" || exit 1
 
     "$TOOLDIR/bin/nbfile" "$MDNS_STAGE/$MDNS_BIN_NAME"
     "$TOOLDIR/bin/nbfile" "$MDNS_STAGE/$MDNS_BIN_NAME.stripped"

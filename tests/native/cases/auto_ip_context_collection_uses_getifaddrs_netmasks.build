@@ -1,0 +1,3 @@
+mdns
+getifaddrs=fake_getifaddrs
+freeifaddrs=fake_freeifaddrs

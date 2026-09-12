@@ -191,7 +191,7 @@ tc_generate_runtime_smbpasswd() {
         tc_log "Samba runtime staging failed: acp syPW returned empty password"
         return 1
     fi
-    if nt_hash=$(printf '%s\n' "$sy_pw" | "$TC_MDNS_BIN" --print-nt-hash-from-stdin 2>/dev/null); then
+    if nt_hash=$(printf '%s\n' "$sy_pw" | "$TC_SERVICE_BIN" --print-nt-hash-from-stdin 2>/dev/null); then
         :
     else
         nt_hash_status=$?
@@ -276,6 +276,11 @@ tc_stage_runtime() {
     smbd_src=$2
     nbns_src=${3:-}
 
+    # Flash is only about 1 MiB on these devices. Copy the helpers into RAM
+    # before authentication/bind probes, and never execute them from the disk
+    # that Apple's diskd may unmount after startup.
+    tc_stage_runtime_executable "$payload_dir/service" "$TC_SERVICE_BIN" || return 1
+    tc_stage_runtime_executable "$payload_dir/telemetry" "$TC_TELEMETRY_BIN" || return 1
     tc_stage_runtime_executable "$smbd_src" "$TC_SMBD_BIN" || return 1
 
     tc_generate_runtime_smbpasswd || return 1

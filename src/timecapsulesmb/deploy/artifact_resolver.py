@@ -36,22 +36,28 @@ def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> d
     if payload_family == PAYLOAD_FAMILY_NETBSD4LE:
         names = {
             "smbd": "smbd-netbsd4le",
-            "mdns-advertiser": "mdns-advertiser-netbsd4le",
-            "nbns-advertiser": "nbns-advertiser-netbsd4le",
+            "mdns": "mdns-netbsd4le",
+            "nbns": "nbns-netbsd4le",
+            "service": "service-netbsd4le",
+            "telemetry": "telemetry-netbsd4le",
             "rsync": "rsync-netbsd4le",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD4BE:
         names = {
             "smbd": "smbd-netbsd4be",
-            "mdns-advertiser": "mdns-advertiser-netbsd4be",
-            "nbns-advertiser": "nbns-advertiser-netbsd4be",
+            "mdns": "mdns-netbsd4be",
+            "nbns": "nbns-netbsd4be",
+            "service": "service-netbsd4be",
+            "telemetry": "telemetry-netbsd4be",
             "rsync": "rsync-netbsd4be",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD6:
         names = {
             "smbd": "smbd",
-            "mdns-advertiser": "mdns-advertiser",
-            "nbns-advertiser": "nbns-advertiser",
+            "mdns": "mdns",
+            "nbns": "nbns",
+            "service": "service",
+            "telemetry": "telemetry",
             "rsync": "rsync",
         }
     else:
