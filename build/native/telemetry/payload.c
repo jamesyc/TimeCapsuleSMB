@@ -1,4 +1,5 @@
 #include "device.h"
+#include <sys/utsname.h>
 #if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/sysctl.h>
 #endif
@@ -50,32 +51,40 @@ static void hash_text_hex(char *out, size_t out_len, const char *text) {
     bytes_to_hex(out, out_len, digest, 32);
 }
 
-static void build_router_id(char *out, size_t out_len, const char *syap, const char *syam, const char *synm) {
+static int build_router_id(char *out, size_t out_len, const char *syap, const char *syam, const char *synm) {
     char sysn[HEARTBEAT_MAX_FIELD];
     char wama[HEARTBEAT_MAX_FIELD];
     char rama[HEARTBEAT_MAX_FIELD];
     char input[1024];
     char hash_hex[65];
+    int result;
 
     memset(input, 0, sizeof(input));
-    if (read_acp_value("sySN", sysn, sizeof(sysn)) == 0) {
+    result = read_acp_value("sySN", sysn, sizeof(sysn));
+    if (result == ACP_ABORT) return 1;
+    if (result == ACP_OK) {
         (void)snprintf(out, out_len, "%s", sysn);
-        return;
+        return 0;
     }
 
     append_hash_input(input, sizeof(input), "namespace", "timecapsulesmb-router-heartbeat-v1");
     append_hash_input(input, sizeof(input), "syAP", syap);
     append_hash_input(input, sizeof(input), "syAM", syam);
     append_hash_input(input, sizeof(input), "syNm", synm);
-    if (read_acp_value("waMA", wama, sizeof(wama)) == 0) {
+    result = read_acp_value("waMA", wama, sizeof(wama));
+    if (result == ACP_ABORT) return 1;
+    if (result == ACP_OK) {
         append_hash_input(input, sizeof(input), "waMA", wama);
     }
-    if (read_acp_value("raMA", rama, sizeof(rama)) == 0) {
+    result = read_acp_value("raMA", rama, sizeof(rama));
+    if (result == ACP_ABORT) return 1;
+    if (result == ACP_OK) {
         append_hash_input(input, sizeof(input), "raMA", rama);
     }
 
     hash_text_hex(hash_hex, sizeof(hash_hex), input);
     (void)snprintf(out, out_len, "tc1-%s", hash_hex);
+    return 0;
 }
 
 static void build_heartbeat_id(char *out, size_t out_len, const char *router_id, const char *reason) {
@@ -153,9 +162,7 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     char syap[HEARTBEAT_MAX_FIELD] = "";
     char syam[HEARTBEAT_MAX_FIELD] = "";
     char synm[HEARTBEAT_MAX_FIELD] = "";
-    char uname_s[HEARTBEAT_MAX_FIELD] = "";
-    char uname_r[HEARTBEAT_MAX_FIELD] = "";
-    char uname_m[HEARTBEAT_MAX_FIELD] = "";
+    struct utsname system_name;
     char os_version[HEARTBEAT_MAX_FIELD * 3];
     char deploy_release_tag[HEARTBEAT_MAX_FIELD] = "";
     char router_id[96];
@@ -172,20 +179,19 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     long uptime_sec = 0;
     int have_uptime;
 
-    (void)read_acp_value("syAP", syap, sizeof(syap));
+    if (read_acp_value("syAP", syap, sizeof(syap)) == ACP_ABORT) return 1;
     normalize_decimal_acp(syap);
-    (void)read_acp_value("syAM", syam, sizeof(syam));
-    (void)read_acp_value("syNm", synm, sizeof(synm));
-    (void)read_first_line_command("/usr/bin/uname -s 2>/dev/null", uname_s, sizeof(uname_s));
-    (void)read_first_line_command("/usr/bin/uname -r 2>/dev/null", uname_r, sizeof(uname_r));
-    (void)read_first_line_command("/usr/bin/uname -m 2>/dev/null", uname_m, sizeof(uname_m));
-    (void)snprintf(os_version, sizeof(os_version), "%s %s %s", uname_s, uname_r, uname_m);
+    if (read_acp_value("syAM", syam, sizeof(syam)) == ACP_ABORT ||
+        read_acp_value("syNm", synm, sizeof(synm)) == ACP_ABORT) return 1;
+    os_version[0] = '\0';
+    if (uname(&system_name) == 0)
+        (void)snprintf(os_version, sizeof(os_version), "%s %s %s", system_name.sysname, system_name.release, system_name.machine);
     trim_line(os_version);
     have_uptime = read_uptime_seconds(&uptime_sec) == 0;
     format_uptime_json(uptime_json, sizeof(uptime_json), uptime_sec, have_uptime);
     (void)read_deploy_release_tag(deploy_release_tag, sizeof(deploy_release_tag));
 
-    build_router_id(router_id, sizeof(router_id), syap, syam, synm);
+    if (build_router_id(router_id, sizeof(router_id), syap, syam, synm) || telemetry_stop) return 1;
     build_heartbeat_id(heartbeat_id, sizeof(heartbeat_id), router_id, reason);
 
     if (json_escape(esc_router_id, sizeof(esc_router_id), router_id) != 0 ||

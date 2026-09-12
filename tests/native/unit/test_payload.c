@@ -1,9 +1,13 @@
 #include "device.h"
 #include <assert.h>
+#include <sys/utsname.h>
+volatile sig_atomic_t telemetry_stop;
 static int mode;
 void trim_line(char *v) { (void)v; }
-int read_first_line_command(const char *command, char *out, size_t cap) {
-    (void)command; snprintf(out, cap, "NetBSD"); return 0;
+int uname(struct utsname *name) {
+    memset(name, 0, sizeof(*name));
+    strcpy(name->sysname, "NetBSD"); strcpy(name->release, "6.0"); strcpy(name->machine, "evbarm");
+    return 0;
 }
 int read_acp_value(const char *key, char *out, size_t cap) {
     const char *v = "";

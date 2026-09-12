@@ -22,7 +22,7 @@ int telemetry_cycle(const char *reason, int lock_fd) {
     size_t len;
     struct telemetry_response response;
     int rc;
-    if (telemetry_nonce(nonce) || telemetry_payload(payload, sizeof(payload), reason, nonce)) return 1;
+    if (telemetry_nonce(nonce) || telemetry_payload(payload, sizeof(payload), reason, nonce) || telemetry_stop) return 1;
     if (telemetry_http(HEARTBEAT_ENDPOINT, payload, &body, &len, TC_RESPONSE_MAX)) {
         fputs("telemetry: POST failed\n", stderr); return 1;
     }

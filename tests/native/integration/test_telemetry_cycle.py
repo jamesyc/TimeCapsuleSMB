@@ -21,6 +21,8 @@ def rig(tmp_path_factory):
     signer = eddsa.new(key, 'rfc8032')
     fixture = root / 'debug'
     subprocess.run(['cc', str(Path(__file__).with_name('debug_fixture.c')), '-o', str(fixture)], check=True, timeout=30)
+    acp = root / 'acp'
+    subprocess.run(['cc', str(Path(__file__).with_name('acp_fixture.c')), '-o', str(acp)], check=True, timeout=30)
     state = {'mode': 'false', 'calls': [], 'payloads': [], 'hold': threading.Event(), 'signature_started': threading.Event()}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
@@ -91,12 +93,13 @@ def rig(tmp_path_factory):
         f'#define TC_DEBUG_BASE_URL "{base}/downloads/bin/debug"',
         '#define TC_DEBUG_QUERY ""',
         '#define TC_CLEANUP_INTERVAL_SECONDS 1',
+        f'#define TC_ACP_PATH "{acp}"',
         f'#define TC_TELEMETRY_WORK_ROOT "{root}/work"',
         f'#define HEARTBEAT_FLASH_CONFIG_PATH "{root}/config"',
         '#define TC_HEARTBEAT_PUBLIC_KEY_BYTES ' + ','.join(str(v) for v in public),
     ]))
     (root / 'config').write_text("TC_DEPLOY_RELEASE_TAG='test-release'\n")
-    binary = compile_native('telemetry', root / 'telemetry', flags=['-include', str(config)])
+    binary = compile_native('telemetry', root / 'telemetry', flags=['-include', str(config), '-DTC_ACP_TIMEOUT_SECONDS=1'])
     yield root, binary, state
     server.shutdown(); server.server_close(); thread.join(timeout=5)
 
@@ -396,3 +399,178 @@ def test_shared_ram_root_requires_sticky_permissions(cycle, rig):
     finally:
         work.chmod(original_mode)
         (work / 'debug').unlink(missing_ok=True)
+
+
+@pytest.fixture(scope='module')
+def production_collector(rig):
+    root, _, _ = rig
+    return compile_native('telemetry', root / 'telemetry-production-timeout',
+                          flags=['-include', str(root / 'test_config.h')])
+
+
+@pytest.fixture
+def acp_calls(tmp_path):
+    calls = tmp_path / 'acp-calls'
+    yield calls
+    # A failed assertion or outer subprocess timeout must not strand a fixture
+    # that deliberately ignores TERM or leaves a descendant holding stdout.
+    if calls.exists():
+        for line in calls.read_text().splitlines():
+            if line.split()[2] != 'parent': continue
+            try: os.killpg(int(line.split()[1]), signal.SIGKILL)
+            except ProcessLookupError: pass
+
+
+def assert_collectors_stopped(calls):
+    for line in calls.read_text().splitlines():
+        pid = int(line.split()[1])
+        def stopped():
+            # Container PID 1 may leave adopted descendants as zombies.
+            stat = Path(f'/proc/{pid}/stat')
+            if stat.exists():
+                try:
+                    if stat.read_text().rsplit(')', 1)[1].split()[0] == 'Z': return True
+                except FileNotFoundError: return True
+            try: os.kill(pid, 0)
+            except ProcessLookupError: return True
+            return False
+        wait_until(stopped)
+
+
+@pytest.mark.parametrize('mode', ['hang', 'line_hang', 'closed_hang', 'ignore_term', 'descendant', 'oversized', 'crash', 'drip', 'drip_after_line', 'nul'])
+def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, rig, acp_calls, mode):
+    _, state, marker, binary, env = cycle
+    calls = acp_calls
+    state['mode'] = 'true'
+    started = time.monotonic()
+    result = subprocess.run([str(binary), '--once'], env={**env, 'TC_TEST_ACP_MODE': mode,
+                            'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=6)
+    assert result.returncode == 1
+    assert time.monotonic() - started < 5
+    assert 'ACP syAP' in result.stderr
+    if mode in ('drip', 'drip_after_line'): assert 'timed out' in result.stderr
+    assert state['calls'] == [] and not marker.exists()
+    assert_collectors_stopped(calls)
+    assert subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5).returncode == 0
+    # A fresh invocation can collect/post after the failed owner exits.
+    state['mode'] = 'false'
+    assert subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=5).returncode == 0
+    assert len(state['calls']) == 1
+
+
+@pytest.mark.parametrize('value,expected', [
+    ('x' * 255, 'x' * 255),
+    ('  Café "Capsule"\t\r\nignored second line', 'Café "Capsule"'),
+    ('\t \r', ''),
+])
+@pytest.mark.parametrize('no_newline', [False, True])
+def test_acp_preserves_complete_first_line_at_eof_and_buffer_boundary(cycle, value, expected, no_newline):
+    run, state, *_ = cycle
+    options = {'TC_TEST_ACP_MODE': 'value', 'TC_TEST_ACP_KEY': 'syNm', 'TC_TEST_ACP_VALUE': value}
+    if no_newline: options['TC_TEST_ACP_NO_NEWLINE'] = '1'
+    assert run('false', **options).returncode == 0
+    assert len(state['calls']) == 1
+    assert state['payloads'][0]['device_name'] == expected
+
+
+def test_acp_rejects_a_first_line_one_byte_beyond_the_buffer(cycle):
+    run, state, marker, *_ = cycle
+    result = run('true', TC_TEST_ACP_MODE='value', TC_TEST_ACP_KEY='syNm', TC_TEST_ACP_VALUE='x' * 256)
+    assert result.returncode == 1 and 'oversized output' in result.stderr
+    assert state['calls'] == [] and not marker.exists()
+
+
+def test_acp_exec_does_not_inherit_workspace_or_pipe_descriptors(cycle):
+    run, state, *_ = cycle
+    assert run('false', TC_TEST_ACP_MODE='inspect_fds').returncode == 0
+    # A descriptor leak makes the fixture fail; missing optional ACP fields
+    # must not disguise that failure as an otherwise successful heartbeat.
+    assert state['payloads'][0]['device_syap'] == '119'
+
+
+def test_acp_exec_failure_aborts_without_posting(cycle, rig):
+    _, state, _, binary, env = cycle
+    root, _, _ = rig
+    acp = root / 'acp'
+    permissions = acp.stat().st_mode & 0o777
+    try:
+        acp.chmod(0o600)
+        result = subprocess.run([str(binary), '--once'], env=env, capture_output=True, text=True, timeout=5)
+        assert result.returncode == 1 and 'exec' in result.stderr
+        assert state['calls'] == []
+    finally:
+        acp.chmod(permissions)
+
+
+@pytest.mark.parametrize('key', ['syAM', 'syNm', 'sySN', 'waMA', 'raMA'])
+def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, acp_calls, key):
+    _, state, _, binary, env = cycle
+    calls = acp_calls
+    result = subprocess.run([str(binary), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'hang',
+                            'TC_TEST_ACP_KEY': key, 'TC_TEST_ACP_CALLS': str(calls)},
+                            capture_output=True, text=True, timeout=6)
+    assert result.returncode == 1 and f'ACP {key} timed out' in result.stderr
+    assert state['calls'] == []
+    assert calls.read_text().splitlines()[-1].startswith(key + ' ')
+    assert_collectors_stopped(calls)
+
+
+@pytest.mark.parametrize('args', [['--daemon'], ['--once'], ['--print-payload']])
+@pytest.mark.parametrize('mode,stop_signal', [('ignore_term', signal.SIGTERM), ('descendant', signal.SIGTERM),
+                                             ('closed_hang', signal.SIGINT)])
+def test_stop_during_acp_collection_is_prompt_even_with_long_timeout(cycle, production_collector, acp_calls, args, mode, stop_signal):
+    _, state, _, _, env = cycle
+    calls = acp_calls
+    process = subprocess.Popen([str(production_collector), *args], env={**env,
+        'TC_TEST_ACP_MODE': mode, 'TC_TEST_ACP_CALLS': str(calls)},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: calls.exists() and calls.stat().st_size > 0)
+        if mode == 'descendant': wait_until(lambda: ' descendant' in calls.read_text())
+        started = time.monotonic()
+        process.send_signal(stop_signal)
+        out, err = process.communicate(timeout=4)
+        assert process.returncode == 1 and b'cancelled' in err
+        assert time.monotonic() - started < 3
+        assert out == b'' and state['calls'] == []
+        assert_collectors_stopped(calls)
+    finally:
+        if process.poll() is None: process.kill()
+        process.communicate(timeout=5)
+
+
+@pytest.mark.parametrize('mode', ['empty', 'nonzero', 'drain'])
+def test_acp_unavailable_fields_and_extra_output_preserve_normal_reporting(cycle, mode):
+    run, state, *_ = cycle
+    assert run('false', TC_TEST_ACP_MODE=mode).returncode == 0
+    payload = state['payloads'][0]
+    assert payload['device_syap'] == ('119' if mode == 'drain' else '')
+    assert payload['router_id'].startswith('tc1-')
+
+
+def test_default_acp_deadline_allows_slow_success_and_stops_at_twenty_seconds(cycle, production_collector, acp_calls):
+    _, state, _, _, env = cycle
+    result = subprocess.run([str(production_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'slow'},
+                            capture_output=True, timeout=12)
+    assert result.returncode == 0 and len(state['calls']) == 1
+    state['calls'].clear()
+    calls = acp_calls
+    started = time.monotonic()
+    result = subprocess.run([str(production_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'hang',
+                            'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=25)
+    elapsed = time.monotonic() - started
+    assert result.returncode == 1 and 'timed out' in result.stderr
+    assert 20 <= elapsed < 24
+    assert state['calls'] == []
+    assert_collectors_stopped(calls)
+
+
+def test_each_acp_command_gets_its_own_deadline(cycle, acp_calls):
+    run, state, *_ = cycle
+    # Six 300ms probes exceed this fixture's 1s timeout in aggregate, but each
+    # individual probe fits. No whole-payload deadline should cut them short.
+    result = run('false', TC_TEST_ACP_MODE='slow_each', TC_TEST_ACP_KEY='*',
+                 TC_TEST_ACP_CALLS=str(acp_calls))
+    assert result.returncode == 0, result.stderr
+    assert [line.split()[0] for line in acp_calls.read_text().splitlines()] == ['syAP', 'syAM', 'syNm', 'sySN', 'waMA', 'raMA']
+    assert len(state['calls']) == 1

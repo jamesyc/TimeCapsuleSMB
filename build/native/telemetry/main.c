@@ -8,6 +8,7 @@ int main(int argc, char **argv) {
     struct telemetry_schedule schedule;
     time_t next_cleanup = 0, retry_after = 0;
     memset(&schedule, 0, sizeof(schedule));
+    signal(SIGTERM, stop); signal(SIGINT, stop); signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && !strcmp(argv[1], "--version")) { puts(HEARTBEAT_AGENT_VERSION); return 0; }
     if ((argc == 2 || argc == 3) && !strcmp(argv[1], "--print-payload")) {
         char json[HEARTBEAT_MAX_JSON];
@@ -21,7 +22,6 @@ int main(int argc, char **argv) {
         fputs("Usage: telemetry --daemon | --once [reason] | --cleanup | --print-payload [reason] | --version\n", stderr);
         return 2;
     }
-    signal(SIGTERM, stop); signal(SIGINT, stop); signal(SIGPIPE, SIG_IGN);
     if (cleanup_only) {
         rc = telemetry_recover();
         if (rc == TC_EXIT_BUSY) fputs("telemetry: cleanup deferred; workspace is in use\n", stderr);

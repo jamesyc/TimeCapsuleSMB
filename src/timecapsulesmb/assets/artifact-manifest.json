@@ -54,7 +54,7 @@
     },
     "telemetry": {
       "path": "bin/telemetry/telemetry",
-      "sha256": "fc0206f7c7c82408304bf5b2093ca22f4c30b4e47be56c8bf20f76895e5ea985"
+      "sha256": "9c85bfde3dbfcce19a0e8839e8d1c9322669f2949fbdcffc4119533852b854d9"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
@@ -62,7 +62,7 @@
     },
     "telemetry-netbsd4le": {
       "path": "bin/telemetry-netbsd4le/telemetry",
-      "sha256": "e34c90434a1354e3940c34f33cda25a1438eca56849fc039d6bbc3c1fe3b03d5"
+      "sha256": "a36e37fb082cc0df9def480499a97a167a9aff727971898d53a93d41180e34c9"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
@@ -70,7 +70,7 @@
     },
     "telemetry-netbsd4be": {
       "path": "bin/telemetry-netbsd4be/telemetry",
-      "sha256": "046a4f6876b850b300a60f00f84b0a6c773d32eb936d5d6a347fad74717582f8"
+      "sha256": "c066392ece749c04e33d677d1bbb901742f64ed62063fc1e8aed4e204c4de121"
     }
   }
 }
