@@ -45,6 +45,10 @@ Source: `samba-4.25.0rc2`, commit
 Patch 0021 is removed because rc2 contains that AFP_AfpInfo fix. Embedded srvsvc,
 durable-cookie handling and the durable test records follow rc2's updated APIs.
 
+- A fresh Ubuntu 24.04 host build passed all 53 invocations with ASan/UBSan
+  after declaring the stream test's `HASH_INODE` dependency explicitly. The
+  initial Linux CI attempt failed at linking: shared-module builds do not
+  inherit that dependency through `smbd_base` as the appliance build does.
 - All 53 regression invocations passed on the LAN NetBSD 6 device (the existing
   40 AIO/durable/pthreadpool invocations plus 13 stream/charset invocations).
 - Removing patch 0035 in the disposable VM source made `root_delete`,

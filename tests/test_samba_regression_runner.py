@@ -44,7 +44,9 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     exec(compile(script.read_text(), str(script), "exec"), {"bld": Builder()})
     assert [name for name, _ in calls] == ["existing", *run.TARGETS[1:]]
     for name, arguments in calls[1:]:
-        assert arguments["deps"] == "smbd_base"
+        assert arguments["deps"].split() == (
+            ["smbd_base", "HASH_INODE"] if name == "tc_streams_xattr_test" else ["smbd_base"]
+        )
         assert arguments["install"] is False
         assert (modules / arguments["source"]).read_bytes() == (run.HERE / (name + ".c")).read_bytes()
 

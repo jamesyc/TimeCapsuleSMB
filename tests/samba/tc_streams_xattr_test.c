@@ -86,6 +86,8 @@ static NTSTATUS test_pathref(TALLOC_CTX *ctx, const struct files_struct *parent,
 /* Eight bytes make multi-extent cases small and readable. */
 #define lp_smbd_max_xattr_size(snum) 8
 #define synthetic_pathref test_pathref
+/* Shared-module host configuration aliases this name to samba_init_module. */
+#undef vfs_streams_xattr_init
 #define vfs_streams_xattr_init regression_streams_xattr_init
 #include "vfs_streams_xattr.c"
 #undef synthetic_pathref
