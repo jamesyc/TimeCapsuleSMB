@@ -18,6 +18,7 @@ from timecapsulesmb.app.ops.common import (
     resolve_request_target,
 )
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.identity import load_install_identity
 from timecapsulesmb.services.app import (
     AppOperationError,
     OperationResult,
@@ -218,6 +219,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     target = resolve_request_target(config, context, profile="deploy", include_probe=True)
     connection = target.connection
     app_paths = resolve_app_paths(config_path=config_path(params))
+    telemetry_enabled = load_install_identity().telemetry_enabled
     internal_share_use_disk_root = bool_param(
         params,
         "internal_share_use_disk_root",
@@ -379,6 +381,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             prepared_plan=prepared_plan,
             runtime_config=DeployRuntimeConfig(
                 nbns_enabled=nbns_enabled,
+                telemetry_enabled=telemetry_enabled,
                 rsync_enabled=rsync_enabled,
                 debug_logging=debug_logging,
                 internal_share_use_disk_root=internal_share_use_disk_root,

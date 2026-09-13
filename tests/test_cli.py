@@ -847,6 +847,7 @@ class CliTests(unittest.TestCase):
         mount_root: str = "/Volumes/dk2",
         command_context=None,
         ensure_install_id: bool = False,
+        telemetry_enabled: bool = True,
         patch_actions: bool = False,
         patch_upload: bool = False,
         upload_side_effect=None,
@@ -880,6 +881,12 @@ class CliTests(unittest.TestCase):
         with ExitStack() as stack:
             if ensure_install_id:
                 mocks.ensure_install_id = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_install_id"))
+            mocks.load_install_identity = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.cli.deploy.load_install_identity",
+                    return_value=SimpleNamespace(telemetry_enabled=telemetry_enabled),
+                )
+            )
             mocks.load_env_config = stack.enter_context(
                 mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(config_values))
             )
@@ -5214,6 +5221,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("TC_CONFIG_VERSION=2\n", flash_config)
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", flash_config)
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", flash_config)
+        self.assertIn("TELEMETRY=true\n", flash_config)
         self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
         self.assertIn("NBNS_ENABLED=1\n", flash_config)
         self.assertIn("ANY_PROTOCOL=0\n", flash_config)
@@ -5228,6 +5236,23 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("PAYLOAD_DEVICE_HINT", flash_config)
         self.assertNotIn("PAYLOAD_INSTALL_ID", flash_config)
         self.assertNotIn("TC_SHARE_NAME", flash_config)
+
+    def test_deploy_writes_disabled_install_telemetry_preference_to_flash_config(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-reboot"],
+            telemetry_enabled=False,
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("TELEMETRY=false\n", captured["flash_config"])
 
     def test_deploy_no_nbns_writes_disabled_flash_config(self) -> None:
         captured: dict[str, str] = {}

@@ -1206,6 +1206,7 @@ MaSt = (
         self.assertNotIn("PAYLOAD_INSTALL_ID", rendered)
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", rendered)
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", rendered)
+        self.assertIn("TELEMETRY=true\n", rendered)
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
         self.assertIn("SMB_BIND_LAN_ONLY=1\n", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
@@ -1225,6 +1226,16 @@ MaSt = (
         self.assertNotIn("MDNS_INSTANCE_NAME", rendered)
         self.assertNotIn("MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_SHARE_NAME", rendered)
+
+    def test_flash_runtime_config_can_disable_telemetry(self) -> None:
+        rendered = render_flash_runtime_config(
+            AppConfig.from_values({}),
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            telemetry_enabled=False,
+        )
+
+        self.assertIn("TELEMETRY=false\n", rendered)
 
     def test_flash_runtime_config_can_enable_rsync(self) -> None:
         rendered = render_flash_runtime_config(

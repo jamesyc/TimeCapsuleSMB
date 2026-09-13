@@ -18,7 +18,7 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
-from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.identity import ensure_install_id, load_install_identity
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_green
@@ -180,6 +180,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     no_wait = deploy_options.effective_no_wait
     ensure_install_id()
     app_paths = resolve_app_paths(config_path=args.config)
+    telemetry_enabled = load_install_identity().telemetry_enabled
     config = load_env_config(env_path=args.config)
     try:
         validate_smb_protocol_options(
@@ -312,6 +313,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 prepared_plan=prepared_plan,
                 runtime_config=DeployRuntimeConfig(
                     nbns_enabled=nbns_enabled,
+                    telemetry_enabled=telemetry_enabled,
                     rsync_enabled=deploy_options.rsync_enabled,
                     debug_logging=args.debug_logging,
                     internal_share_use_disk_root=args.internal_share_use_disk_root,

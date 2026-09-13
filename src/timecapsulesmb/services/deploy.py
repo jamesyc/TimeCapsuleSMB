@@ -153,6 +153,7 @@ class PreparedDeployPlan:
 @dataclass(frozen=True)
 class DeployRuntimeConfig:
     nbns_enabled: bool
+    telemetry_enabled: bool = True
     rsync_enabled: bool = False
     debug_logging: bool | None = None
     internal_share_use_disk_root: bool | None = None
@@ -808,6 +809,7 @@ def upload_and_verify_deployment_payload(
         config,
         payload_home,
         nbns_enabled=runtime_config.nbns_enabled,
+        telemetry_enabled=runtime_config.telemetry_enabled,
         rsync_enabled=runtime_config.rsync_enabled,
         debug_logging=runtime_config.debug_logging,
         internal_share_use_disk_root=runtime_config.internal_share_use_disk_root,
@@ -1165,6 +1167,7 @@ def render_flash_runtime_config(
     payload_home: PayloadHome,
     *,
     nbns_enabled: bool,
+    telemetry_enabled: bool = True,
     rsync_enabled: bool = False,
     debug_logging: bool | None = None,
     internal_share_use_disk_root: bool | None = None,
@@ -1277,6 +1280,7 @@ def render_flash_runtime_config(
         ("TC_CONFIG_VERSION", 2),
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
+        ("TELEMETRY", "true" if telemetry_enabled else "false"),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
         ("SMB_BIND_LAN_ONLY", 1 if effective_smb_bind_lan_only else 0),
         ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),

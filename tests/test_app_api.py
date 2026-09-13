@@ -45,6 +45,7 @@ from timecapsulesmb.device.storage import (
     StorageDeviceError,
     build_dry_run_payload_home,
 )
+from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
 from timecapsulesmb.services.app import AppOperationError, jsonable
@@ -193,6 +194,12 @@ class AppApiTests(unittest.TestCase):
             mock.patch("timecapsulesmb.telemetry.urllib.request.urlopen", side_effect=AssertionError("tests must not send telemetry"))
         )
         self._runtime_wait_sleep = self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
+        self._install_identity = self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.app.ops.deploy.load_install_identity",
+                return_value=SimpleNamespace(telemetry_enabled=True),
+            )
+        )
 
     def tearDown(self) -> None:
         self._exit_stack.close()
@@ -4250,6 +4257,33 @@ MaSt = (
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "upload_smbd")
         self.assertIn("Caused by: Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp", finished["error"])
+
+    def test_deploy_writes_disabled_install_telemetry_preference_to_flash_config(self) -> None:
+        volume = MaStVolume(
+            "wd0",
+            "dk2",
+            "/Volumes/dk2",
+            "Data",
+            "f42bdb83-c265-5522-a087-25606a4d0abf",
+            True,
+            "hfs",
+        )
+        captured: dict[str, str] = {}
+
+        def capture_then_timeout(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+            raise SshCommandTimeout("Timed out copying deployment payload")
+
+        self._install_identity.return_value = SimpleNamespace(telemetry_enabled=False)
+        rc, _collector = self.run_confirmed_deploy_with_mast(
+            MaStDiscoveryResult((volume,), 1, ""),
+            payload_home_selection=PayloadHomeSelection(PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"), ()),
+            run_remote_actions_side_effect=lambda *args, **kwargs: None,
+            upload_side_effect=capture_then_timeout,
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertIn("TELEMETRY=false\n", captured["flash_config"])
 
     def test_activate_requires_explicit_confirmation(self) -> None:
         collector = CollectingSink()
