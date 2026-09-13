@@ -1,0 +1,38 @@
+diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
+--- a/source3/modules/vfs_aio_fork.c
++++ b/source3/modules/vfs_aio_fork.c
+@@ -538,6 +538,7 @@ struct aio_fork_state {
+ 	struct aio_child_list *list;
+ 	struct aio_child *child;
+ 	struct tevent_req *req;
++	struct tevent_req *pending_read;
+ 	struct tevent_context *ev;
+ 	struct files_struct *fsp;
+ 	void *data;
+@@ -676,6 +677,7 @@ static bool aio_fork_dispatch(struct aio_fork_state *state,
+ 		return false;
+ 	}
+ 	tevent_req_set_callback(subreq, aio_fork_done, state->req);
++	state->pending_read = subreq;
+ 	return true;
+ }
+ 
+@@ -719,6 +721,10 @@ static int aio_fork_state_destructor(struct aio_fork_state *state)
+ 		aio_fork_unqueue(state);
+ 	}
+ 	if (state->active) {
++		/* Remove the old socket watcher before a replacement worker can
++		 * reuse its descriptor. Talloc frees children after this destructor;
++		 * leaving the read until then can unregister the replacement fd. */
++		TALLOC_FREE(state->pending_read);
+ 		/*
+ 		 * The caller may free a submitted request if later setup fails.
+ 		 * Retire the worker and its mapping before another job can use it.
+@@ -826,6 +832,7 @@ static void aio_fork_done(struct tevent_req *subreq)
+ 	struct rw_ret *retbuf;
+ 
+ 	nread = read_packet_recv(subreq, talloc_tos(), &buf, &err);
++	state->pending_read = NULL;
+ 	TALLOC_FREE(subreq);
+ 	if (nread == -1) {
+ 		aio_fork_release_child(state, true);

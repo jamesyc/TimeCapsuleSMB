@@ -652,6 +652,9 @@ configure_samba4x() {
     if [ "$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST" = "1" ]; then
         samba4x_nonshared_binaries="$samba4x_nonshared_binaries,pthreadpool_tevent_sync_test"
     fi
+    if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
+        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test"
+    fi
 
     set -- \
         --cross-compile \
@@ -983,6 +986,17 @@ MAP_FILE="$SAMBA4X_BUILD/smbd-link.map"
 export MAP_FILE
 SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST="${SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST:-0}"
 SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST="${SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST:-0}"
+SAMBA4X_RUN_REGRESSION_TESTS="${SAMBA4X_RUN_REGRESSION_TESTS:-0}"
+SAMBA4X_BUILD_REGRESSION_TESTS="${SAMBA4X_BUILD_REGRESSION_TESTS:-0}"
+# Release validation runs the same real Samba tests as host CI on the selected
+# device. Ordinary offline compilation remains available, without claiming
+# that compilation alone validates allocation lifetimes or worker scheduling.
+if [ "$SAMBA4X_RUN_REGRESSION_TESTS" = "1" ]; then
+    SAMBA4X_BUILD_REGRESSION_TESTS=1
+fi
+if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
+    SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=1
+fi
 if [ "$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST" = "1" ]; then
     SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST=1
 fi
@@ -1105,6 +1119,10 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     }
     echo "PYTHON3_BIN=$PYTHON3_BIN"
 
+    if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
+        "$PYTHON3_BIN" "$SAMBA4X_SCRIPT_DIR/../tests/samba/run.py" stage --source "$SAMBA4X_SRC_DIR"
+    fi
+
     prepare_samba4x_deps
     prepare_samba4x_cross_answers
     echo "SAMBA4X_CROSS_ANSWERS_SOURCE=$SAMBA4X_CROSS_ANSWERS_SOURCE"
@@ -1156,6 +1174,29 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
         if [ "$SAMBA4X_RUN_PTHREADPOOL_SYNC_TEST" = "1" ]; then
             "$CROSS_EXECUTE" "$pthreadpool_test_binary"
         fi
+    fi
+
+    if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
+        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test
+        # Debug information can dwarf the tests on these small appliances.
+        # Keep the ordinary Waf outputs and upload separate stripped copies.
+        for test_relative in \
+            lib/pthreadpool/pthreadpool_tevent_sync_test \
+            source3/modules/tc_aio_fork_test \
+            source3/modules/tc_durable_reconnect_test
+        do
+            test_binary="$SAMBA4X_SRC_DIR/bin/default/$test_relative"
+            if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
+                echo "Samba regression test is dynamically linked: $test_binary"
+                exit 1
+            fi
+            cp "$test_binary" "$test_binary.stripped"
+            "$STRIP" --strip-unneeded "$test_binary.stripped"
+        done
+    fi
+    if [ "$SAMBA4X_RUN_REGRESSION_TESTS" = "1" ]; then
+        # A failing or unavailable device/test must stop before artifact staging.
+        "$PYTHON3_BIN" "$SAMBA4X_SCRIPT_DIR/../tests/samba/run.py" run --source "$SAMBA4X_SRC_DIR" --cross-exec "$CROSS_EXECUTE"
     fi
 
     # Force the final smbd link so the dedicated map cannot be missing or

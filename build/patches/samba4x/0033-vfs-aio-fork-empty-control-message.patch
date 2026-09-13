@@ -1,0 +1,13 @@
+diff --git a/source3/modules/vfs_aio_fork.c b/source3/modules/vfs_aio_fork.c
+--- a/source3/modules/vfs_aio_fork.c
++++ b/source3/modules/vfs_aio_fork.c
+@@ -195,6 +195,8 @@ static ssize_t read_fd(int fd, void *ptr, size_t nbytes, int *recvfd)
+ 	{
+ 		size_t num_fds = msghdr_extract_fds(&msg, NULL, 0);
+-		int fds[num_fds];
++		/* The short shutdown message carries no descriptor. Keep storage
++		 * nonempty even then: a zero-length VLA is undefined behavior. */
++		int fds[num_fds != 0 ? num_fds : 1];
+ 
+ 		msghdr_extract_fds(&msg, fds, num_fds);
+ 

@@ -98,6 +98,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.make_executable(tools / f"{triple}-{name}", "#!/bin/sh\nexit 0\n")
 
     def prepare_fake_samba_source(self, src_dir: Path) -> None:
+        self.make_file(src_dir / "source3/modules/wscript_build", "# fixture\n")
         self.make_executable(
             src_dir / "configure",
             textwrap.dedent(
@@ -163,6 +164,15 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         "",
                     ).split(",")
                     capture = os.environ.get("TEST_WAF_TARGETS")
+                    for target in ("tc_aio_fork_test", "tc_durable_reconnect_test"):
+                        if target in targets:
+                            if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
+                                binary = pathlib.Path("bin/default/source3/modules") / target
+                                binary.parent.mkdir(parents=True, exist_ok=True)
+                                binary.write_text("fake regression binary\\n")
+                            if capture:
+                                with pathlib.Path(capture).open("a") as stream:
+                                    stream.write(target + "\\n")
                     if "pthreadpool_tevent_sync_test" in targets:
                         test_binary = pathlib.Path(
                             "bin/default/lib/pthreadpool/"
@@ -597,6 +607,58 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             map_path = Path(env["SAMBA4X_NETBSD4BE_BUILD"]) / "smbd-link.map"
             self.assertIn("source3/smbd/smbd", map_path.read_text())
+
+    def test_regression_validation_gates_artifact_staging(self) -> None:
+        from tests.samba.run import cases
+
+        for failure in (None, "failed", "missing", "compile-only"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                capture = root / "configure-args.txt"
+                targets = root / "waf-targets.txt"
+                calls = root / "test-calls.txt"
+                cross_exec = root / "cross-exec.sh"
+                self.make_executable(cross_exec, textwrap.dedent("""\
+                    #!/bin/sh
+                    printf '%s %s\\n' "$(basename "$1")" "${2:-}" >> "$TEST_REGRESSION_CALLS"
+                    case "${1##*/}:${2:-}:${TEST_REGRESSION_FAILURE:-}" in
+                        tc_aio_fork_test.stripped:read:failed) exit 9 ;;
+                    esac
+                    exit 0
+                    """))
+                env = self.env_for_lane(root, "netbsd7", capture)
+                env.update({
+                    "SAMBA4X_RUN_REGRESSION_TESTS": "1",
+                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "TEST_WAF_TARGETS": str(targets),
+                    "TEST_REGRESSION_CALLS": str(calls),
+                    "TEST_REGRESSION_FAILURE": failure or "",
+                })
+                if failure == "missing":
+                    env["TEST_MISSING_REGRESSION_BINARY"] = "tc_aio_fork_test"
+                if failure == "compile-only":
+                    env["SAMBA4X_RUN_REGRESSION_TESTS"] = "0"
+                    env["SAMBA4X_BUILD_REGRESSION_TESTS"] = "1"
+                result = self.run_wrapper("samba4x.sh", env)
+                built = targets.read_text().splitlines()
+                staged = Path(env["SAMBA4X_NETBSD7_STAGE"]) / "sbin/smbd.stripped"
+                if failure in ("failed", "missing"):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("smbd/smbd", built)
+                    self.assertFalse(staged.exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(built[-1], "smbd/smbd")
+                    self.assertTrue(staged.exists())
+                    if failure == "compile-only":
+                        self.assertIn("tc_aio_fork_test", built)
+                        self.assertIn("tc_durable_reconnect_test", built)
+                        self.assertFalse(calls.exists())
+                        continue
+                    self.assertEqual(calls.read_text().splitlines(), [
+                        " ".join((target + ".stripped", *arguments)).rstrip() + (" " if not arguments else "")
+                        for target, arguments in cases()
+                    ])
 
     def test_missing_cross_answers_fail_before_configure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
