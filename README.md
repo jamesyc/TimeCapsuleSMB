@@ -12,7 +12,7 @@ This project has 2 parts:
 - a fork of Samba 4, modified to work on the Apple Time Capsule 
 - the installers for the Samba binary, via terminal or the **macOS GUI app**. 
 
-The Time Capsule will run its own Samba 4.24.3 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You can open Finder, choose Connect to Server, and use a normal SMB URL without relying on Apple’s legacy stack. You can also use the disk for Time Machine backups:  
+The Time Capsule will run its own Samba 4.25.0rc2 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You can open Finder, choose Connect to Server, and use a normal SMB URL without relying on Apple’s legacy stack. You can also use the disk for Time Machine backups:\
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />  
 You get the full Apple experience reproduced: after you install this, you do not have to worry about it again, even if the device IP address changes. It will show up automatically in the Time Machine section in the Settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
 
@@ -305,7 +305,7 @@ There are other constraints the Time Capsule places on us:
 - Samba 4.0.x has the same issue
 - Samba 4.2.x was much harder to compile, and had a `talloc` / `loadparm` use-after-free runtime bug
 - Samba 4.3.x was the first version to work as a network share, but it does not support vfs_fruit for Time Machine backup support
-- Samba 4.8.x was the first version that fully worked; current builds ship Samba 4.24.3.
+- Samba 4.8.x was the first version that fully worked; current builds ship Samba 4.25.0rc2.
 
 ## Troubleshooting
 

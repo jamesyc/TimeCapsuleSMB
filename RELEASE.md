@@ -2,6 +2,23 @@
 
 TimeCapsuleSMB releases contain the macOS app bundle, the Python CLI, boot scripts, and checked-in static NetBSD binaries used by deploy. The release process should make it clear which artifacts were shipped and how to verify them.
 
+## Samba 4.25.0rc2 candidate
+
+The current Samba build is pinned to `samba-4.25.0rc2`. This brings in upstream
+stream parent-directory resolution and AFP_AfpInfo stat fixes. The downstream
+series fixes NetBSD stream extent error handling, so deleting a file or directory
+with metadata does not fail after removing only its primary stream. It also
+preserves lookup and I/O failures instead of reporting false success.
+
+The existing NetBSD SDKs are retained. A const-preserving charset fallback
+supports their older GCC versions, and the embedded srvsvc and durable-cookie
+patches are adapted to rc2's APIs. `streams_xattr:max xattrs per stream = 2`
+remains necessary with this release candidate.
+
+Before switching to 4.25 final, reapply the series to the final tag, check whether
+the extent fix is incorporated upstream, and repeat the Samba regression and
+macOS mounted-share checks documented in `tests/samba/README.md`.
+
 ## Release Assets
 
 The primary user-facing release asset is `TimeCapsuleSMB.app.zip` on the GitHub release page. GitHub shows the SHA256 digest for uploaded release assets in the asset metadata. Users can verify a downloaded app zip with:

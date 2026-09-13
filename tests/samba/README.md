@@ -1,7 +1,7 @@
 # Patched Samba regression tests
 
-These tests compile the actual Samba 4.24.3 sources after applying the repository's
-ordered patch series. The AIO and durable drivers include the production C files,
+These tests compile the actual Samba 4.25.0rc2 sources after applying the repository's
+ordered patch series. The AIO, durable and stream drivers include the production C files,
 following Samba's existing VFS unit-test pattern. They use real bundled talloc,
 tevent, worker processes and DB/NDR code. Only I/O failures, process liveness and
 waiting are controlled. The existing pthreadpool lifecycle test runs alongside
@@ -44,3 +44,20 @@ zero-length descriptor array on the worker shutdown message, and a cancelled
 request's socket watcher surviving until after a replacement reused its fd.
 The `read` and `cancel_active` cases cover these paths; sanitizer exit code 86
 is deliberately distinct from the workers' expected shutdown codes 1 and 2.
+
+The stream cases use the real `vfs_streams_xattr.c` with a controlled xattr
+backend. ENOATTR is deliberately distinct from ENODATA even on Linux. They
+cover root/nested deletion, missing and populated extents, read/shrink behavior,
+missing primary streams, path lookup failures and real I/O errors. The charset
+case checks const-preserving return types and single argument evaluation on
+both the SDK compiler fallback and modern compilers.
+
+For a macOS mount of a device under test, also run:
+
+```sh
+.venv/bin/python -m tests.samba.manual_delete /path/to/mounted/share
+```
+
+This creates unique test objects at the share root and two nested depths and
+checks first-attempt unlink/rmdir/rm -rf, metadata and a 90 KB stream roundtrip
+and shrink. Cleanup retries cannot turn an observed failure into a pass.

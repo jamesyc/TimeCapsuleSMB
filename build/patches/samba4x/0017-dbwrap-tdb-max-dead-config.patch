@@ -1,9 +1,8 @@
 diff --git a/lib/dbwrap/dbwrap_tdb.c b/lib/dbwrap/dbwrap_tdb.c
-index 694d785..3b487a7 100644
+index d1886a0..afc0ad7 100644
 --- a/lib/dbwrap/dbwrap_tdb.c
 +++ b/lib/dbwrap/dbwrap_tdb.c
-@@ -515,4 +515,13 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
-  fail:
+@@ -1017,3 +1017,12 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
  	TALLOC_FREE(result);
  	return NULL;
  }
@@ -17,11 +16,10 @@ index 694d785..3b487a7 100644
 +	tdb_set_max_dead(db_ctx->wtdb->tdb, max_dead);
 +}
 diff --git a/lib/dbwrap/dbwrap_tdb.h b/lib/dbwrap/dbwrap_tdb.h
-index 71643ec..20e8f4f 100644
+index 9251538..3141a1d 100644
 --- a/lib/dbwrap/dbwrap_tdb.h
 +++ b/lib/dbwrap/dbwrap_tdb.h
-@@ -29,7 +29,8 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
- 			       int hash_size, int tdb_flags,
+@@ -30,6 +30,7 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
  			       int open_flags, mode_t mode,
  			       enum dbwrap_lock_order lock_order,
  			       uint64_t dbwrap_flags);
@@ -30,20 +28,18 @@ index 71643ec..20e8f4f 100644
  
  #endif /* __DBWRAP_TDB_H__ */
 diff --git a/source3/lib/dbwrap/dbwrap_open.c b/source3/lib/dbwrap/dbwrap_open.c
-index 0a020fc..48c6c1b 100644
+index eaf9092..4840c6d 100644
 --- a/source3/lib/dbwrap/dbwrap_open.c
 +++ b/source3/lib/dbwrap/dbwrap_open.c
-@@ -64,8 +64,9 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
- 			   uint64_t dbwrap_flags)
+@@ -70,6 +70,7 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
  {
  	struct db_context *result = NULL;
  	const char *base;
 +	int max_dead;
  	struct loadparm_context *lp_ctx = NULL;
+ 	bool persistent = (tdb_flags & TDB_CLEAR_IF_FIRST) == 0;
  
- 	if ((lock_order != DBWRAP_LOCK_ORDER_NONE) &&
- 	    !DBWRAP_LOCK_ORDER_VALID(lock_order)) {
-@@ -84,7 +85,21 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
+@@ -91,6 +92,20 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
  				base,
  				hash_size);
  
@@ -64,9 +60,7 @@ index 0a020fc..48c6c1b 100644
  	if (tdb_flags & TDB_CLEAR_IF_FIRST) {
  		bool try_readonly = false;
  
- 		if (dbwrap_flags & DBWRAP_FLAG_OPTIMIZE_READONLY_ACCESS) {
-@@ -197,6 +212,10 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
- 				   mode,
+@@ -238,6 +253,10 @@ struct db_context *db_open_ex(TALLOC_CTX *mem_ctx,
  				   lock_order,
  				   dbwrap_flags);
  	talloc_unlink(mem_ctx, lp_ctx);
@@ -76,3 +70,4 @@ index 0a020fc..48c6c1b 100644
 +	}
  	return result;
  }
+ 

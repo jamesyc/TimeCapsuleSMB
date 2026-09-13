@@ -1,11 +1,11 @@
 diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd.c
-index b9e2676..3f2caef 100644
+index a6dff33..8a5fbde 100644
 --- a/source3/rpc_server/srv_pipe_hnd.c
 +++ b/source3/rpc_server/srv_pipe_hnd.c
-@@ -30,6 +30,12 @@
- #include "rpc_server/rpc_config.h"
+@@ -31,6 +31,12 @@
  #include "../lib/tsocket/tsocket.h"
  #include "../lib/util/tevent_ntstatus.h"
+ #include "../lib/util/util_str_escape.h"
 +#ifdef TC_SAMBA4X_EMBEDDED_SRVSVC
 +#include "libcli/named_pipe_auth/npa_tstream.h"
 +#include "libcli/smb/smb_constants.h"
@@ -15,8 +15,8 @@ index b9e2676..3f2caef 100644
  #include "librpc/ndr/ndr_table.h"
  
  #undef DBGC_CLASS
-@@ -48,6 +54,196 @@ bool fsp_is_np(struct files_struct *fsp)
- 	return (type == FAKE_FILE_TYPE_NAMED_PIPE_PROXY);
+@@ -136,6 +142,194 @@ NTSTATUS np_wait_exists_recv(struct tevent_req *req)
+ 	return tevent_req_simple_recv_ntstatus(req);
  }
  
 +#ifdef TC_SAMBA4X_EMBEDDED_SRVSVC
@@ -118,10 +118,7 @@ index b9e2676..3f2caef 100644
 +	if (ncacn_conn == NULL) {
 +		return NT_STATUS_NO_MEMORY;
 +	}
-+	*ncacn_conn = (struct dcerpc_ncacn_conn) {
-+		.sock = -1,
-+		.endpoint = ep,
-+	};
++	/* Rc2 keeps the endpoint on dcesrv_conn rather than ncacn_conn. */
 +	ncacn_conn->p.msg_ctx = msg_ctx;
 +	ncacn_conn->p.transport = NCACN_NP;
 +
@@ -175,6 +172,7 @@ index b9e2676..3f2caef 100644
 +		return status;
 +	}
 +
++	ncacn_conn->dcesrv_conn = dcesrv_conn;
 +	dcesrv_conn->transport.private_data = ncacn_conn;
 +	dcesrv_conn->transport.report_output_data =
 +		dcesrv_sock_report_output_data;
@@ -212,7 +210,7 @@ index b9e2676..3f2caef 100644
  NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  		 const struct tsocket_address *remote_client_address,
  		 const struct tsocket_address *local_server_address,
-@@ -60,6 +256,9 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
+@@ -147,6 +341,9 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  	struct fake_file_handle *handle;
  	struct npa_state *npa = NULL;
  	int ret;
@@ -222,7 +220,7 @@ index b9e2676..3f2caef 100644
  
  	handle = talloc(mem_ctx, struct fake_file_handle);
  	if (handle == NULL) {
-@@ -76,6 +275,28 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
+@@ -163,6 +360,28 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  		.private_data = npa,
  	};
  
@@ -234,7 +232,7 @@ index b9e2676..3f2caef 100644
 +		session_info,
 +		ev_ctx,
 +		msg_ctx,
-+		dce_ctx,
++		global_dcesrv_context(), /* rc2 np_open no longer receives this */
 +		npa);
 +	if (NT_STATUS_IS_OK(status)) {
 +		*phandle = handle;
@@ -252,10 +250,10 @@ index b9e2676..3f2caef 100644
  		name,
  		NCACN_NP,
 diff --git a/source3/wscript_build b/source3/wscript_build
-index e4a595d..caa8ee7 100644
+index 6973b30..9b57850 100644
 --- a/source3/wscript_build
 +++ b/source3/wscript_build
-@@ -640,6 +640,24 @@ if bld.CONFIG_SET('WITH_SMB1SERVER'):
+@@ -643,6 +643,24 @@ if bld.CONFIG_SET('WITH_SMB1SERVER'):
  else:
      SMB1_SOURCES = ''
  
@@ -280,7 +278,7 @@ index e4a595d..caa8ee7 100644
  bld.SAMBA3_LIBRARY('smbd_base',
                     source='''
                            smbd/server_reload.c
-@@ -732,7 +750,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
+@@ -735,7 +753,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                            smbd/conn.c
                            rpc_server/srv_pipe_hnd.c
                            rpc_server/rpc_ncacn_np.c
@@ -289,7 +287,7 @@ index e4a595d..caa8ee7 100644
                     deps='''
                          talloc
                          tevent
-@@ -764,6 +782,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
+@@ -767,6 +785,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                          fd_handle
                          cli_spoolss
                          samba3-namearray

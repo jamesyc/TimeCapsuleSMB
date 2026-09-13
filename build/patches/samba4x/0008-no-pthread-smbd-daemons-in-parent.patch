@@ -1,8 +1,6 @@
-diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
-index 194ff2b..747521c 100644
 --- a/source3/smbd/scavenger.c
 +++ b/source3/smbd/scavenger.c
-@@ -336,6 +336,18 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+@@ -336,6 +336,18 @@
  		   server_id_str_buf(src, &tmp2)));
  
  	if (server_id_equal(&state->parent_id, &self)) {
@@ -21,7 +19,7 @@ index 194ff2b..747521c 100644
  		NTSTATUS status;
  
  		if (!smbd_scavenger_running(state) &&
-@@ -354,6 +366,7 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+@@ -354,6 +366,7 @@
  			goto done;
  		}
  		goto done;
@@ -29,11 +27,9 @@ index 194ff2b..747521c 100644
  	}
  
  	if (!state->am_scavenger) {
-diff --git a/source3/smbd/server.c b/source3/smbd/server.c
-index b2f130c..828b3f3 100644
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -443,8 +443,20 @@ static struct tevent_req *notifyd_req(struct messaging_context *msg_ctx,
+@@ -450,8 +450,20 @@
  		ctdbd_conn = messaging_ctdb_connection();
  	}
  
@@ -54,10 +50,11 @@ index b2f130c..828b3f3 100644
  	if (req == NULL) {
  		TALLOC_FREE(sys_notify_ctx);
  		return NULL;
-@@ -490,6 +502,22 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
+@@ -496,6 +508,22 @@
+ 		req = notifyd_req(msg, ev);
  		return (req != NULL);
  	}
- 
++
 +#ifndef HAVE_PTHREAD
 +	/*
 +	 * The Time Capsule appliance build runs smbd without pthreads. Keep
@@ -73,14 +70,14 @@ index b2f130c..828b3f3 100644
 +	DBG_NOTICE("Running notifyd in smbd parent for no-pthread build\n");
 +	return true;
 +#endif
-+
+ 
  	pid = fork();
  	if (pid == -1) {
- 		DEBUG(1, ("%s: fork failed: %s\n", __func__,
-@@ -671,6 +699,23 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+@@ -677,6 +705,23 @@
+ 	bool ok;
  	char c;
  	int up_pipe[2];
- 
++
 +#ifndef HAVE_PTHREAD
 +	/*
 +	 * The Time Capsule appliance build cannot safely fork Samba 4.24's
@@ -97,12 +94,11 @@ index b2f130c..828b3f3 100644
 +	DBG_NOTICE("Running cleanupd in smbd parent for no-pthread build\n");
 +	return true;
 +#endif
-+
+ 
  	if (interactive) {
  		req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
- 		*ppid = messaging_server_id(msg);
-@@ -2473,9 +2518,18 @@ quic_disabled:
- 		exit_daemon("Samba cannot init the cleanupd", EACCES);
+@@ -2688,9 +2733,18 @@
+ 		exit_daemon("Samba cannot init notification", EACCES);
  	}
  
 +#ifndef HAVE_PTHREAD

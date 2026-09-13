@@ -9,8 +9,8 @@ It is intentionally denser than [README.md](README.md). The README is the user-f
 The current system works end to end on the target Apple AirPort Time Capsule.
 
 What is working now:
-- static Samba 4.24.3 built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
-- static Samba 4.24.3 built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
+- static Samba 4.25.0rc2 built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
+- static Samba 4.25.0rc2 built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
 - static tiny SMB / Time Machine mDNS advertiser
 - static NBNS responder for NetBIOS name discovery
 - static `service` helper for NT hashing and network probes
@@ -155,9 +155,9 @@ Current naming split:
 - the live RAM runtime path is intentionally fixed at `/mnt/Memory/samba4`
 - share names are not configured locally; runtime sanitizes and de-duplicates the Apple `MaSt` partition names
 
-## Why Samba 4.8, Then 4.24.3
+## Why Samba 4.8, Then 4.25.0rc2
 
-The project did not land on Samba 4.x by accident. Samba 4.8 was the first fully working Time Machine target on this hardware; the current checked-in deploy artifacts are Samba 4.24.3.
+The project did not land on Samba 4.x by accident. Samba 4.8 was the first fully working Time Machine target on this hardware; the current checked-in deploy artifacts are Samba 4.25.0rc2.
 
 ### Samba 3
 
@@ -184,9 +184,9 @@ In practice, 4.3 proved the architecture and deployment model, while 4.8 was the
 
 Samba 4.8 was the first stable target because it gave the project a usable Time Machine stack through `vfs_fruit`.
 
-### Samba 4.24.3
+### Samba 4.25.0rc2
 
-Samba 4.24.3 is the current shipped target. It keeps the same static-module deployment model, but uses the newer `samba4x` build lanes and checked-in artifacts.
+Samba 4.25.0rc2 is the current shipped target. It keeps the same static-module deployment model, but uses the newer `samba4x` build lanes and checked-in artifacts.
 
 With the current static-module build, the shipped config supports:
 - `catia`
@@ -218,7 +218,7 @@ That combination:
 - serves files successfully
 - supports Time Machine semantics through `vfs_fruit`
 
-The current deploy artifacts use Samba 4.24.3 on the same NetBSD 7 / NetBSD 4 SDK split.
+The current deploy artifacts use Samba 4.25.0rc2 on the same NetBSD 7 / NetBSD 4 SDK split.
 
 The important build logic is now under [build/](build). The VM-side [build/Makefile](build/Makefile) names the supported per-family and all-lane targets while leaving the expensive SDK download/bootstrap steps explicit rather than making them artifact-build dependencies.
 
@@ -1584,7 +1584,7 @@ The current system is no longer just an experiment:
 - can use the persistent firmware boot-hook patch on NetBSD 4, or be manually reactivated after reboot on tested unpatched gen1 hardware
 - advertises itself over Bonjour
 - authenticates with the configured password; docs and examples use SMB username `admin`
-- serves the internal disk through Samba 4.24.3
+- serves the internal disk through Samba 4.25.0rc2
 - supports Time Machine via `vfs_fruit`
 
 The main remaining “nice to have” work is polish, not core functionality.

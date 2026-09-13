@@ -1,0 +1,33 @@
+diff --git a/lib/util/charset/charset.h b/lib/util/charset/charset.h
+index d73c792..0e8808f 100644
+--- a/lib/util/charset/charset.h
++++ b/lib/util/charset/charset.h
+@@ -190,6 +190,19 @@ char *strchr_m_nonconst(const char *s, char c);
+ char *strrchr_m_nonconst(const char *s, char c);
+ char *strstr_m_nonconst(const char *s, const char *findstr);
+ 
++/* The existing NetBSD SDK compilers predate GCC 4.9's C11 _Generic.
++ * Preserve rc2's const-qualified results and single argument evaluation with
++ * equivalent GNU compile-time selection; do not rebuild the SDK toolchains. */
++#if defined(__GNUC__) && !defined(__clang__) && \
++    (__GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 9))
++#define TC_CHARSET_SELECT(fn, s, arg) \
++	__builtin_choose_expr( \
++		__builtin_types_compatible_p(__typeof__((s) + 0), const char *), \
++		fn##_const((s), (arg)), fn##_nonconst((s), (arg)))
++#define strchr_m(s, c) TC_CHARSET_SELECT(strchr_m, s, c)
++#define strrchr_m(s, c) TC_CHARSET_SELECT(strrchr_m, s, c)
++#define strstr_m(s, f) TC_CHARSET_SELECT(strstr_m, s, f)
++#else
+ #define strchr_m(s, c) _Generic((s), \
+ 	char *:       strchr_m_nonconst((s), (c)), \
+ 	const char *: strchr_m_const((s), (c)), \
+@@ -205,6 +218,8 @@ char *strstr_m_nonconst(const char *s, const char *findstr);
+ 	const char *: strstr_m_const((s), (f)), \
+ 	default:      strstr_m_nonconst((s), (f)))
+ 
++#endif
++
+ bool utf8_check(const char *input, size_t maxlen,
+ 		size_t *byte_len,
+ 		size_t *char_len,

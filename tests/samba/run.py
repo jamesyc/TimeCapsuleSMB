@@ -15,7 +15,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test")
+TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test", "tc_streams_xattr_test")
 AIO_CASES = (
     "read", "short", "empty", "zero", "oversized", "read_error", "pwrite", "append", "fsync",
     "pwrite_error", "append_error", "fsync_error",
@@ -29,6 +29,10 @@ DURABLE_CASES = (
     "transition", "exhausted", "already_disconnected", "client_mismatch",
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
 )
+
+STREAM_CASES = ("charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
+                "missing_path", "invalid_stream", "primary_error", "extent_error", "roundtrip_shrink",
+                "shrink_missing", "short_read", "read_error")
 
 
 def stage(source: Path) -> None:
@@ -56,6 +60,8 @@ def cases():
         yield TARGETS[1], (case,)
     for case in DURABLE_CASES:
         yield TARGETS[2], (case,)
+    for case in STREAM_CASES:
+        yield TARGETS[3], (case,)
 
 
 def run_tests(source: Path, cross_exec: str | None = None) -> None:

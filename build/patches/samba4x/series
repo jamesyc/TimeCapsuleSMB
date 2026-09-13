@@ -108,11 +108,7 @@
 # Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
 # interface enumeration through libreplace's ioctl-based fallback.
 0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD
-# macOS Finder and Time Machine stat AFP_AfpInfo streams during ordinary copy
-# and sparsebundle work. Samba 4.24's fruit fstatat path accidentally
-# dereferences the yet-to-be-created no-stream filename copy, crashing the smbd
-# client process. Keep this until upstream fixes vfs_fruit.
-0021-vfs-fruit-fstatat-meta-stream-name.patch|fix vfs_fruit AFP_AfpInfo fstatat NULL filename crash
+# Samba 4.25 includes the AFP_AfpInfo fstatat fix formerly carried as 0021.
 # Time Capsule payload logs live on Apple-managed HFS, where root-created
 # directories can report owner 4294967295 and fail Samba's strict corepath
 # setup. Relax only the appliance core directory creation so panics produce
@@ -133,3 +129,11 @@
 # completed state before the SMB2 compound guard treats it as illegal async IOCTL
 # work and returns NT_STATUS_INTERNAL_ERROR.
 0028-time-machine-resume-key-sync-completion.patch|propagate synchronous resume-key IOCTL completion
+
+# NetBSD distinguishes ENOATTR from ENODATA. Missing optional extents must not
+# fail stream cleanup after its primary xattr is gone; retain real unlink errors.
+0035-streams-xattr-missing-extents.patch|portable stream extent cleanup and unlink errors
+
+# Rc2 uses C11 generic selection for const-preserving charset helpers. The
+# existing NetBSD SDK GCC predates that syntax; retain the types with GNU builtins.
+0036-legacy-gcc-charset-selection.patch|const-preserving charset helpers on legacy GCC

@@ -1,19 +1,18 @@
-diff --git a/source3/smbd/server.c b/source3/smbd/server.c
-index 80e96b0..b2f130c 100644
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -61,6 +61,7 @@
- #include "source3/lib/substitute.h"
+@@ -65,6 +65,7 @@
  #include "lib/addrchange.h"
  #include "../source4/lib/tls/tls.h"
+ #include "libcli/smb/smbXcli_base.h"
 +#include <samba/version.h>
  
  #ifdef HAVE_LIBQUIC
  #include <netinet/quic.h>
-@@ -96,6 +97,22 @@ struct smbd_parent_context {
+@@ -102,6 +103,22 @@
+ 
  	struct tstream_tls_params *quic_tlsp;
  };
- 
++
 +static bool smbd_handle_early_version_option(int argc, char *argv[])
 +{
 +	int i;
@@ -29,15 +28,13 @@ index 80e96b0..b2f130c 100644
 +
 +	return false;
 +}
-+
+ 
  struct smbd_open_socket {
  	struct smbd_open_socket *prev, *next;
- 	struct smbd_parent_context *parent;
-@@ -1998,6 +2015,19 @@ extern void build_options(bool screen);
- 
+@@ -2221,6 +2238,19 @@
  	setproctitle_init(argc, discard_const(argv), environ);
  
-+	/*
+ 	/*
 +	 * Samba's common --version popt callback calls exit(0). If smbd lets
 +	 * that callback run after talloc_stackframe() below, lib/util reports a
 +	 * scary "Dangling frame" even though the version path is intentionally
@@ -50,10 +47,11 @@ index 80e96b0..b2f130c 100644
 +		exit(0);
 +	}
 +
- 	/*
++	/*
  	 * Do this before any other talloc operation
  	 */
-@@ -2039,6 +2069,8 @@ extern void build_options(bool screen);
+ 	talloc_enable_null_tracking();
+@@ -2261,6 +2291,8 @@
  	while((opt = poptGetNextOpt(pc)) != -1) {
  		switch (opt)  {
  		case 'b':
@@ -62,7 +60,7 @@ index 80e96b0..b2f130c 100644
  			build_options(true); /* Display output to screen as well as debug */
  			exit(0);
  			break;
-@@ -2046,6 +2078,8 @@ extern void build_options(bool screen);
+@@ -2268,6 +2300,8 @@
  			d_fprintf(stderr, "\nInvalid option %s: %s\n\n",
  				  poptBadOption(pc, 0), poptStrerror(opt));
  			poptPrintUsage(pc, stderr, 0);

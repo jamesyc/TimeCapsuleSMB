@@ -61,7 +61,9 @@ SAMBA4_VERSION="${SAMBA4_VERSION:-4.8.12}"
 SAMBA4_GIT_URL="${SAMBA4_GIT_URL:-https://github.com/samba-team/samba.git}"
 SAMBA4_GIT_REF="${SAMBA4_GIT_REF:-samba-${SAMBA4_VERSION}}"
 
-SAMBA4X_VERSION="${SAMBA4X_VERSION:-4.24.3}"
+# Rc2 includes the upstream stream-parent and AFP_AfpInfo fixes. Our series
+# still supplies NetBSD extent errno handling until upstream incorporates it.
+SAMBA4X_VERSION="${SAMBA4X_VERSION:-4.25.0rc2}"
 SAMBA4X_GIT_URL="${SAMBA4X_GIT_URL:-https://github.com/samba-team/samba.git}"
 SAMBA4X_GIT_REF="${SAMBA4X_GIT_REF:-samba-${SAMBA4X_VERSION}}"
 SAMBA4X_GMP_VERSION="${SAMBA4X_GMP_VERSION:-6.3.0}"

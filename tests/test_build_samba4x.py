@@ -164,7 +164,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         "",
                     ).split(",")
                     capture = os.environ.get("TEST_WAF_TARGETS")
-                    for target in ("tc_aio_fork_test", "tc_durable_reconnect_test"):
+                    for target in ("tc_aio_fork_test", "tc_durable_reconnect_test", "tc_streams_xattr_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -188,6 +188,9 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         smbd = pathlib.Path("bin/default/source3/smbd/smbd")
                         smbd.parent.mkdir(parents=True, exist_ok=True)
                         smbd.write_text("fake smbd\\n")
+                        if "TEST_SMBD_BYTES" in os.environ:
+                            with smbd.open("r+b") as stream:
+                                stream.truncate(int(os.environ["TEST_SMBD_BYTES"]))
                         if capture:
                             with pathlib.Path(capture).open("a") as stream:
                                 stream.write("smbd/smbd\\n")
@@ -327,7 +330,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             )
             self.assertEqual(self.cross_execute_args(args), [])
             cross_answers = self.cross_answer_arg(args)
-            self.assertTrue(cross_answers.endswith("/samba4x-4.24.3-netbsd7.answers"))
+            self.assertTrue(cross_answers.endswith("/samba4x-4.25.0rc2-netbsd7.answers"))
             self.assertFalse(cross_exec_capture.exists())
 
     def test_generation_helper_starts_from_fresh_seed_and_ignores_stale_answers(self) -> None:
@@ -366,12 +369,12 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertIn("--disable-pthreadpool", args)
             self.assertIn("--disable-tdb-mutex-locking", args)
             cross_answers = self.cross_answer_arg(args)
-            self.assertTrue(cross_answers.endswith("/generated-samba4x-4.24.3-netbsd4be.answers"))
+            self.assertTrue(cross_answers.endswith("/generated-samba4x-4.25.0rc2-netbsd4be.answers"))
             self.assertEqual(len(self.cross_execute_args(args)), 1)
             seed = seed_capture.read_text()
             self.assertIn('Checking uname sysname type: "NetBSD"', seed)
             self.assertNotIn("CARRIED-FORWARD", seed)
-            generated = output_dir / "samba4x-4.24.3-netbsd4be.answers"
+            generated = output_dir / "samba4x-4.25.0rc2-netbsd4be.answers"
             generated_text = generated.read_text()
             self.assertIn("Checking whether the realpath function allows a NULL argument: NO", generated_text)
             self.assertNotIn("CARRIED-FORWARD", generated_text)
@@ -402,13 +405,13 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             args = self.configure_args(capture)
             self.cross_answer_arg(args)
             self.assertEqual(len(self.cross_execute_args(args)), 1)
-            self.assertTrue((output_dir / "samba4x-4.24.3-netbsd7.answers").exists())
+            self.assertTrue((output_dir / "samba4x-4.25.0rc2-netbsd7.answers").exists())
 
     def test_lane_wrappers_select_their_default_cross_answer_files(self) -> None:
         cases = (
-            ("samba4x.sh", "netbsd7", "samba4x-4.24.3-netbsd7.answers"),
-            ("samba4xoldle.sh", "netbsd4le", "samba4x-4.24.3-netbsd4le.answers"),
-            ("samba4xoldbe.sh", "netbsd4be", "samba4x-4.24.3-netbsd4be.answers"),
+            ("samba4x.sh", "netbsd7", "samba4x-4.25.0rc2-netbsd7.answers"),
+            ("samba4xoldle.sh", "netbsd4le", "samba4x-4.25.0rc2-netbsd4le.answers"),
+            ("samba4xoldbe.sh", "netbsd4be", "samba4x-4.25.0rc2-netbsd4be.answers"),
         )
         for wrapper, lane, expected in cases:
             with self.subTest(wrapper=wrapper):
@@ -611,7 +614,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
     def test_regression_validation_gates_artifact_staging(self) -> None:
         from tests.samba.run import cases
 
-        for failure in (None, "failed", "missing", "compile-only"):
+        for failure in (None, "failed", "missing", "stream-failed", "stream-missing", "compile-only"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 capture = root / "configure-args.txt"
@@ -623,6 +626,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     printf '%s %s\\n' "$(basename "$1")" "${2:-}" >> "$TEST_REGRESSION_CALLS"
                     case "${1##*/}:${2:-}:${TEST_REGRESSION_FAILURE:-}" in
                         tc_aio_fork_test.stripped:read:failed) exit 9 ;;
+                        tc_streams_xattr_test.stripped:root_delete:stream-failed) exit 9 ;;
                     esac
                     exit 0
                     """))
@@ -634,15 +638,17 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     "TEST_REGRESSION_CALLS": str(calls),
                     "TEST_REGRESSION_FAILURE": failure or "",
                 })
-                if failure == "missing":
-                    env["TEST_MISSING_REGRESSION_BINARY"] = "tc_aio_fork_test"
+                if failure in ("missing", "stream-missing"):
+                    env["TEST_MISSING_REGRESSION_BINARY"] = (
+                        "tc_streams_xattr_test" if failure == "stream-missing" else "tc_aio_fork_test"
+                    )
                 if failure == "compile-only":
                     env["SAMBA4X_RUN_REGRESSION_TESTS"] = "0"
                     env["SAMBA4X_BUILD_REGRESSION_TESTS"] = "1"
                 result = self.run_wrapper("samba4x.sh", env)
                 built = targets.read_text().splitlines()
                 staged = Path(env["SAMBA4X_NETBSD7_STAGE"]) / "sbin/smbd.stripped"
-                if failure in ("failed", "missing"):
+                if failure in ("failed", "missing", "stream-failed", "stream-missing"):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("smbd/smbd", built)
                     self.assertFalse(staged.exists())
@@ -653,12 +659,26 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     if failure == "compile-only":
                         self.assertIn("tc_aio_fork_test", built)
                         self.assertIn("tc_durable_reconnect_test", built)
+                        self.assertIn("tc_streams_xattr_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [
                         " ".join((target + ".stripped", *arguments)).rstrip() + (" " if not arguments else "")
                         for target, arguments in cases()
                     ])
+
+    def test_rc2_size_budget_accepts_boundary_and_rejects_growth(self) -> None:
+        for wrapper, lane in (("samba4x.sh", "netbsd7"),
+                              ("samba4xoldle.sh", "netbsd4le"),
+                              ("samba4xoldbe.sh", "netbsd4be")):
+            for size in (10 * 1024 * 1024, 10 * 1024 * 1024 + 1):
+                with self.subTest(lane=lane, size=size), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    env = self.env_for_lane(root, lane, root / "configure.txt")
+                    env["TEST_SMBD_BYTES"] = str(size)
+                    result = self.run_wrapper(wrapper, env)
+                    self.assertEqual(result.returncode == 0, size == 10 * 1024 * 1024,
+                                     result.stdout + result.stderr)
 
     def test_missing_cross_answers_fail_before_configure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -748,7 +768,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             result = self.run_wrapper("generate-samba4x-cross-answers-oldbe.sh", env)
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            generated = output_dir / "samba4x-4.24.3-netbsd4be.answers"
+            generated = output_dir / "samba4x-4.25.0rc2-netbsd4be.answers"
             realpath_lines = [
                 line
                 for line in generated.read_text().splitlines()
@@ -784,7 +804,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 "disagrees with independent realpath(path, NULL) probe",
                 Path(env["SAMBA4X_NETBSD4BE_LOG"]).read_text(),
             )
-            self.assertFalse((output_dir / "samba4x-4.24.3-netbsd4be.answers").exists())
+            self.assertFalse((output_dir / "samba4x-4.25.0rc2-netbsd4be.answers").exists())
 
 
 if __name__ == "__main__":

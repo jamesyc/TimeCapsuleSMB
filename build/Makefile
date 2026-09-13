@@ -69,9 +69,9 @@ require-build-tree:
 		patches/rsync/series \
 		patches/samba4x/series \
 		patches/gnutls/series \
-		cross-answers/samba4x-4.24.3-netbsd7.answers \
-		cross-answers/samba4x-4.24.3-netbsd4le.answers \
-		cross-answers/samba4x-4.24.3-netbsd4be.answers; do \
+		cross-answers/samba4x-4.25.0rc2-netbsd7.answers \
+		cross-answers/samba4x-4.25.0rc2-netbsd4le.answers \
+		cross-answers/samba4x-4.25.0rc2-netbsd4be.answers; do \
 		if [ ! -e "$$path" ]; then \
 			echo "Missing copied build support file: $$path"; \
 			missing=1; \

@@ -2,6 +2,10 @@
  * Process liveness and waiting are controlled so no test sleeps for seconds. */
 /* Give the included translation unit private export names: the linked Samba
  * server library also contains its ordinary, uninstrumented copy. */
+#define smbXsrv_open_global_parse_record regression_smbXsrv_open_global_parse_record
+#define smbXsrv_open_global_lookup regression_smbXsrv_open_global_lookup
+#define smbXsrv_open_global_traverse_per_rec_persistent_read regression_smbXsrv_open_global_traverse_per_rec_persistent_read
+#define smbXsrv_open_global_wipe regression_smbXsrv_open_global_wipe
 #define smbXsrv_open_global_init regression_open_global_init
 #define smbXsrv_open_create regression_open_create
 #define smbXsrv_open_update regression_open_update
@@ -38,13 +42,14 @@ static unsigned lock_depth, attempts, waits, disconnect_at;
 static bool fail_db;
 static struct db_context *database;
 static TDB_DATA record_key;
-static struct smbXsrv_open_global0 record;
+/* Rc2 serializes global records with the version-1 schema. */
+static struct smbXsrv_open_global record;
 
 static void write_record(void)
 {
 	DATA_BLOB blob = data_blob_null;
-	struct smbXsrv_open_globalB value = {.version = SMBXSRV_VERSION_0};
-	value.info.info0 = &record;
+	struct smbXsrv_open_globalB value = {.version = SMBXSRV_VERSION_1};
+	value.info.info1 = &record;
 	CHECK(NDR_ERR_CODE_IS_SUCCESS(ndr_push_struct_blob(&blob, NULL, &value,
 		(ndr_push_flags_fn_t)ndr_push_smbXsrv_open_globalB)));
 	CHECK(NT_STATUS_IS_OK(dbwrap_store(database, record_key,
@@ -94,7 +99,7 @@ static struct server_id current_process(const struct messaging_context *ctx)
 #define dbwrap_do_locked observed_do_locked
 #define serverid_exists live_process
 #define messaging_server_id current_process
-#define smbXsrv_version_global_current() SMBXSRV_VERSION_0
+#define smbXsrv_version_global_current() SMBXSRV_VERSION_1
 #include "../smbd/smbXsrv_open.c"
 #undef smb_msleep
 #undef dbwrap_do_locked
@@ -103,12 +108,12 @@ int main(int argc, char **argv)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct smbXsrv_open_table *table = talloc_zero(frame, struct smbXsrv_open_table);
-	struct smbXsrv_client_global0 client_global = {0};
+	struct smbXsrv_client_global client_global = {0};
 	struct smbXsrv_client client = {.global = &client_global, .open_table = table};
 	struct smbXsrv_connection conn = {.client = &client};
-	struct smbXsrv_session_global0 session_global = {0};
+	struct smbXsrv_session_global session_global = {0};
 	struct smbXsrv_session session = {.global = &session_global};
-	struct smbXsrv_tcon_global0 tcon_global = {0};
+	struct smbXsrv_tcon_global tcon_global = {0};
 	struct smbXsrv_tcon tcon = {.global = &tcon_global};
 	struct auth_session_info auth = {0};
 	struct security_token token = {0};
@@ -138,7 +143,7 @@ int main(int argc, char **argv)
 	session_global.auth_session_info = &auth;
 	session_global.session_global_id = 31;
 	tcon_global.tcon_global_id = 41;
-	record = (struct smbXsrv_open_global0) {
+	record = (struct smbXsrv_open_global) {
 		.open_global_id = 7, .open_persistent_id = 7, .durable = true,
 		.server_id = {.pid = 123}, .client_guid = client_global.client_guid,
 		.create_guid = create_guid, .open_owner = owner,
@@ -160,7 +165,7 @@ int main(int argc, char **argv)
 	else CHECK(waits > 0 && attempts == waits + 1);
 	if (NT_STATUS_IS_OK(status)) {
 		TDB_DATA stored;
-		struct smbXsrv_open_global0 *decoded = NULL;
+		struct smbXsrv_open_global *decoded = NULL;
 		CHECK(opened && table->local.num_opens == 1);
 		CHECK(opened->session == &session && opened->tcon == &tcon);
 		CHECK(opened->global->server_id.pid == 456);

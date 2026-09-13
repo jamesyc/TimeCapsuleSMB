@@ -1,0 +1,79 @@
+diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
+index 726f60e..f0ec2dc 100644
+--- a/source3/modules/vfs_streams_xattr.c
++++ b/source3/modules/vfs_streams_xattr.c
+@@ -158,7 +158,7 @@ static ssize_t fgetxattr_multi(const struct streams_xattr_config *config,
+ 					value + valuelen,
+ 					fraglen);
+ 		if (ret < 0) {
+-			if (errno == ENODATA) {
++			if (errno == ENOATTR) {
+ 				/*
+ 				 * Happens if fsetxattr_multi could not write
+ 				 * everything it intended to write. Return a
+@@ -300,13 +300,13 @@ static int fsetxattr_multi(const struct streams_xattr_config *config,
+ 			 */
+ 			ret = SMB_VFS_FREMOVEXATTR(fsp, xattr_name);
+ 
+-			if ((ret == -1) && (errno == ENODATA)) {
++			if ((ret == -1) && (errno == ENOATTR)) {
+ 				/*
+ 				 * fsetxattr_multi writes an
+ 				 * uninterrupted sequence from 1 to
+ 				 * config->max_extents. If we can't
+ 				 * remove one, it might be because
+-				 * it's not there (errno==ENODATA),
++				 * it's not there (errno==ENOATTR),
+ 				 * then nothing will follow.
+ 				 */
+ 				ret = 0;
+@@ -351,6 +351,10 @@ done:
+ 	return ret;
+ }
+ 
++/* VFS xattrs use ENOATTR. Unlike Linux, NetBSD defines ENODATA separately;
++ * accepting only ENODATA for a missing optional extent reports a failed delete
++ * after the primary stream has already been removed (TimeCapsuleSMB #263).
++ * The same contract applies to extent reads and shrinking-write cleanup. */
+ static int fremovexattr_multi(const struct streams_xattr_config *config,
+ 			      struct files_struct *fsp,
+ 			      const char *raw_stream_name)
+@@ -396,7 +400,7 @@ static int fremovexattr_multi(const struct streams_xattr_config *config,
+ 
+ 		TALLOC_FREE(xattr_name);
+ 		if (ret < 0) {
+-			if (errno == ENODATA) {
++			if (errno == ENOATTR) {
+ 				return 0;
+ 			}
+ 			return ret;
+@@ -1090,6 +1094,7 @@ static int streams_xattr_unlinkat(vfs_handle_struct *handle,
+ 				     &xattr_name);
+ 	if (ret != 0) {
+ 		errno = ret;
++		ret = -1;
+ 		goto fail;
+ 	}
+ 
+@@ -1104,6 +1109,7 @@ static int streams_xattr_unlinkat(vfs_handle_struct *handle,
+ 					&pathref);
+ 		if (!NT_STATUS_IS_OK(status)) {
+ 			errno = ENOENT;
++			ret = -1;
+ 			goto fail;
+ 		}
+ 		fsp = pathref->fsp;
+@@ -1114,8 +1120,11 @@ static int streams_xattr_unlinkat(vfs_handle_struct *handle,
+ 
+ 	ret = fremovexattr_multi(config, fsp, raw_stream_name);
+ 
+-	if ((ret == -1) && (errno == ENOATTR)) {
+-		errno = ENOENT;
++	/* Missing primary streams map to ENOENT; preserve all other failures. */
++	if (ret == -1) {
++		if (errno == ENOATTR) {
++			errno = ENOENT;
++		}
+ 		goto fail;
+ 	}
+ 

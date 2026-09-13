@@ -335,10 +335,11 @@ validate_samba4x_smbd_map() {
 }
 
 samba4x_max_stripped_bytes() {
+    # Rc2's NetBSD 6 binary adds 35,768 bytes over 4.24.3. Keep every lane
+    # below 10 MiB so the upgrade fits the existing 16 MiB RAM disk without
+    # resizing it, while still rejecting accidental dependency/code growth.
     case "$SDK_FAMILY:$NETBSD4_ABI" in
-        netbsd7:*) printf '%s\n' 10161808 ;;
-        netbsd4:le) printf '%s\n' 10172036 ;;
-        netbsd4:be) printf '%s\n' 10170480 ;;
+        netbsd7:*|netbsd4:le|netbsd4:be) printf '%s\n' 10485760 ;;
         *) patch_fail "No Samba 4.x binary-size ceiling for $SDK_FAMILY/$NETBSD4_ABI" ;;
     esac
 }
@@ -653,7 +654,7 @@ configure_samba4x() {
         samba4x_nonshared_binaries="$samba4x_nonshared_binaries,pthreadpool_tevent_sync_test"
     fi
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test"
+        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test"
     fi
 
     set -- \
@@ -1177,13 +1178,14 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     fi
 
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test
+        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test
         # Debug information can dwarf the tests on these small appliances.
         # Keep the ordinary Waf outputs and upload separate stripped copies.
         for test_relative in \
             lib/pthreadpool/pthreadpool_tevent_sync_test \
             source3/modules/tc_aio_fork_test \
-            source3/modules/tc_durable_reconnect_test
+            source3/modules/tc_durable_reconnect_test \
+            source3/modules/tc_streams_xattr_test
         do
             test_binary="$SAMBA4X_SRC_DIR/bin/default/$test_relative"
             if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
