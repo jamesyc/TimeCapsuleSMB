@@ -13,6 +13,27 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Samba4XBuildScriptTests(unittest.TestCase):
+    def test_build_env_example_selects_the_current_samba_source(self) -> None:
+        result = subprocess.run(
+            [
+                "sh",
+                "-c",
+                '. "$1"; printf "%s\\n%s\\n" "$SAMBA4X_VERSION" "$SAMBA4X_GIT_REF"',
+                "sh",
+                str(REPO_ROOT / "build/env.sh"),
+            ],
+            env=dict(os.environ, TC_ENV_FILE=str(REPO_ROOT / "build/.env.example")),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        version, ref = result.stdout.splitlines()
+        self.assertEqual(version, "4.25.0rc2")
+        self.assertEqual(ref, f"samba-{version}")
+        for lane in ("netbsd7", "netbsd4le", "netbsd4be"):
+            self.assertTrue((REPO_ROOT / f"build/cross-answers/samba4x-{version}-{lane}.answers").is_file())
+
     def make_executable(self, path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
