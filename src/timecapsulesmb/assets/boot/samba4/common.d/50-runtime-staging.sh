@@ -447,6 +447,7 @@ ${smbd_aio_fork_line}    acl_xattr:ignore system acls = yes
     streams_xattr:max xattrs per stream = 2
     fruit:resource = file
     fruit:metadata = $smbd_fruit_metadata
+    fruit:time_capsule_native_metadata = yes
     fruit:encoding = native
     fruit:time machine = yes
     fruit:posix_rename = yes

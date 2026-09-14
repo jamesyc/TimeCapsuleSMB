@@ -28,6 +28,40 @@ def test_runner_rejects_missing_test_without_running_later_cases(tmp_path, monke
         run.run_tests(tmp_path)
 
 
+@pytest.mark.parametrize("remote_dir", [None, "/tmp/probes", "/mnt/Memory/probes", "/Volumes/"])
+def test_device_execution_rejects_root_and_ram_scratch_before_running(
+    tmp_path, monkeypatch, remote_dir
+):
+    if remote_dir is None:
+        monkeypatch.delenv("CROSS_EXEC_REMOTE_DIR", raising=False)
+    else:
+        monkeypatch.setenv("CROSS_EXEC_REMOTE_DIR", remote_dir)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("unsafe scratch must fail before execution"),
+    )
+
+    with pytest.raises(RuntimeError, match="CROSS_EXEC_REMOTE_DIR under /Volumes/"):
+        run.run_tests(tmp_path, "cross-exec")
+
+
+def test_device_execution_uploads_large_native_fixture_once():
+    device_cases = list(run.execution_cases(True))
+    host_cases = list(run.execution_cases(False))
+
+    assert [item for item in device_cases if item[0] == run.TARGETS[4]] == [
+        (run.TARGETS[4], ("all",)),
+    ]
+    assert [item for item in host_cases if item[0] == run.TARGETS[4]] == [
+        *((run.TARGETS[4], (case,)) for case in run.NATIVE_METADATA_CASES),
+        (run.TARGETS[4], ("all",)),
+    ]
+    assert run.case_timeout(run.TARGETS[4], True) == 180
+    assert run.case_timeout(run.TARGETS[3], True) == 60
+    assert run.case_timeout(run.TARGETS[4], False) == 25
+
+
 def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp_path):
     modules = tmp_path / "source3/modules"
     modules.mkdir(parents=True)
@@ -44,9 +78,14 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     exec(compile(script.read_text(), str(script), "exec"), {"bld": Builder()})
     assert [name for name, _ in calls] == ["existing", *run.TARGETS[1:]]
     for name, arguments in calls[1:]:
-        assert arguments["deps"].split() == (
-            ["smbd_base", "HASH_INODE"] if name == "tc_streams_xattr_test" else ["smbd_base"]
-        )
+        expected_deps = {
+            "tc_streams_xattr_test": ["smbd_base", "HASH_INODE"],
+            "tc_native_metadata_test": [
+                "smbd_base", "HASH_INODE", "ADOUBLE", "OFFLOAD_TOKEN",
+                "STRING_REPLACE", "dbwrap", "xattr_tdb",
+            ],
+        }.get(name, ["smbd_base"])
+        assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False
         assert (modules / arguments["source"]).read_bytes() == (run.HERE / (name + ".c")).read_bytes()
 

@@ -5368,6 +5368,7 @@ MaSt = (
         self.assertIn("max log size = 128", proc.stdout)
         self.assertIn("fruit:model = TimeCapsule6,106", proc.stdout)
         self.assertIn("fruit:metadata = netatalk", proc.stdout)
+        self.assertEqual(proc.stdout.count("fruit:time_capsule_native_metadata = yes"), 2)
         self.assertIn("restrict anonymous = 2", proc.stdout)
         self.assertIn("min protocol = SMB2", proc.stdout)
         self.assertIn("max protocol = SMB3", proc.stdout)
@@ -5631,6 +5632,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("fruit:metadata = netatalk", proc.stdout)
         self.assertNotIn("fruit:metadata = stream", proc.stdout)
+        self.assertIn("fruit:time_capsule_native_metadata = yes", proc.stdout)
 
     def test_common_generate_smb_conf_uses_stream_metadata_when_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5666,6 +5668,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("fruit:metadata = stream", proc.stdout)
         self.assertNotIn("fruit:metadata = netatalk", proc.stdout)
+        self.assertIn("fruit:time_capsule_native_metadata = yes", proc.stdout)
 
     def test_common_generate_smb_conf_derives_fruit_model_from_acp_syap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

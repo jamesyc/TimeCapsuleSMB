@@ -1,0 +1,1175 @@
+diff --git a/source3/modules/timecapsule_native_xattr.h b/source3/modules/timecapsule_native_xattr.h
+new file mode 100644
+index 0000000..5e4a4e9
+--- /dev/null
++++ b/source3/modules/timecapsule_native_xattr.h
+@@ -0,0 +1,65 @@
++/* Apple AirPort firmware adds Darwin-style xattr syscalls to its NetBSD 4
++ * and NetBSD 6 kernels without exporting matching libc entry points. Keep
++ * these private ABI calls behind an appliance-only build define.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ */
++#ifndef _TIMECAPSULE_NATIVE_XATTR_H
++#define _TIMECAPSULE_NATIVE_XATTR_H
++
++#define TC_AIRPORT_SYS_FSETXATTR 377
++#define TC_AIRPORT_SYS_FGETXATTR 380
++#define TC_AIRPORT_SYS_FREMOVEXATTR 386
++
++#ifndef TC_AIRPORT_XATTR_SYSCALL
++#define TC_AIRPORT_XATTR_SYSCALL syscall
++#endif
++
++static inline ssize_t tc_airport_fgetxattr(int fd,
++					   const char *name,
++					   void *value,
++					   size_t size)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++	return (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FGETXATTR, fd, name, value, size);
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++static inline int tc_airport_fsetxattr(int fd,
++				       const char *name,
++				       const void *value,
++				       size_t size)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++	long ret = TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FSETXATTR, fd, name, value, size, 0);
++
++	/* NetBSD 4 returns bytes written while NetBSD 6 returns zero. */
++	return ret < 0 ? -1 : 0;
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++static inline int tc_airport_fremovexattr(int fd, const char *name)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++	long ret = TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FREMOVEXATTR, fd, name);
++
++	return ret < 0 ? -1 : 0;
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++#endif
+diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
+index d9313af..80c1510 100644
+--- a/source3/modules/vfs_fruit.c
++++ b/source3/modules/vfs_fruit.c
+@@ -38,6 +38,7 @@
+ #include "lib/util_macstreams.h"
+ #include "source3/smbd/dir.h"
+ #include "lib/util/smb_strtox.h"
++#include "timecapsule_native_xattr.h"
+ 
+ /*
+  * Enhanced OS X and Netatalk compatibility
+@@ -140,6 +141,7 @@ struct fruit_config_data {
+ 	bool validate_afpinfo;
+ 	bool veto_localized;
+ 	bool ignore_zero_aces;
++	bool time_capsule_native_metadata;
+ 
+ 	/*
+ 	 * Additional options, all enabled by default,
+@@ -203,6 +205,7 @@ struct fio {
+ 	 * create the stream.
+ 	 */
+ 	bool fake_fd;
++	bool native_meta_fallback;
+ 	int flags;
+ 	int mode;
+ };
+@@ -272,6 +275,206 @@ static struct fio *fruit_get_complete_fio(vfs_handle_struct *handle,
+ 	return fio;
+ }
+ 
++#define TC_FINDERINFO_NATIVE_XATTR "com.apple.FinderInfo"
++
++static bool tc_fruit_backend_missing(int error)
++{
++	return error == ENOATTR || error == ENOENT;
++}
++
++static bool tc_fruit_native_unavailable(int error)
++{
++	return tc_fruit_backend_missing(error) ||
++		error == ENOTSUP || error == EOPNOTSUPP || error == ENOSYS;
++}
++
++/* Return 1 for a 32-byte native FinderInfo value, 0 when absent, -1 on
++ * a real error. The AirPort kernel exposes this through private syscalls
++ * even though its stock NetBSD libc does not provide matching wrappers. */
++static int tc_native_finderinfo_read_fsp(files_struct *fsp,
++					 uint8_t finderinfo[AFP_FinderSize])
++{
++	ssize_t size;
++	ssize_t ret;
++	int fd = fsp_get_pathref_fd(fsp);
++
++	/* Named AFP streams on symlinks are not a native-HFS fallback case. In
++	 * particular, never read or mutate FinderInfo on the symlink target. */
++	if (S_ISLNK(fsp->fsp_name->st.st_ex_mode)) {
++		errno = ENOENT;
++		return 0;
++	}
++	if (fd == -1) {
++		errno = EBADF;
++		return -1;
++	}
++
++	size = tc_airport_fgetxattr(
++		fd, TC_FINDERINFO_NATIVE_XATTR, NULL, 0);
++	if (size < 0) {
++		return tc_fruit_native_unavailable(errno) ? 0 : -1;
++	}
++	if (size != AFP_FinderSize) {
++		errno = EIO;
++		return -1;
++	}
++
++	ret = tc_airport_fgetxattr(
++		fd, TC_FINDERINFO_NATIVE_XATTR, finderinfo, AFP_FinderSize);
++	if (ret != AFP_FinderSize) {
++		if (ret < 0 && tc_fruit_native_unavailable(errno)) {
++			return 0;
++		}
++		if (ret >= 0) {
++			errno = EIO;
++		}
++		return -1;
++	}
++	return 1;
++}
++
++static int tc_native_finderinfo_read_at(
++	vfs_handle_struct *handle,
++	const struct files_struct *dirfsp,
++	const struct smb_filename *smb_fname,
++	uint8_t finderinfo[AFP_FinderSize])
++{
++	struct fruit_config_data *config = NULL;
++	struct smb_filename *base_name = NULL;
++	files_struct *base_fsp = NULL;
++	NTSTATUS status;
++	int ret;
++
++	if (smb_fname->fsp != NULL) {
++		base_fsp = smb_fname->fsp;
++		if (fsp_is_alternate_stream(base_fsp)) {
++			base_fsp = base_fsp->base_fsp;
++		}
++		return tc_native_finderinfo_read_fsp(base_fsp, finderinfo);
++	}
++
++	SMB_VFS_HANDLE_GET_DATA(handle, config,
++				struct fruit_config_data, return -1);
++	if (config->in_openat_pathref_fsp) {
++		errno = ENOENT;
++		return 0;
++	}
++
++	base_name = cp_smb_filename_nostream(talloc_tos(), smb_fname);
++	if (base_name == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++
++	config->in_openat_pathref_fsp = true;
++	status = openat_pathref_fsp_lcomp(
++		discard_const_p(struct files_struct, dirfsp), base_name, 0);
++	config->in_openat_pathref_fsp = false;
++	if (!NT_STATUS_IS_OK(status)) {
++		int error = map_errno_from_nt_status(status);
++
++		TALLOC_FREE(base_name);
++		errno = error;
++		return tc_fruit_backend_missing(error) ? 0 : -1;
++	}
++
++	ret = tc_native_finderinfo_read_fsp(base_name->fsp, finderinfo);
++	{
++		int error = errno;
++
++		TALLOC_FREE(base_name);
++		errno = error;
++	}
++	return ret;
++}
++
++static void tc_native_finderinfo_mirror(files_struct *base_fsp,
++					const uint8_t finderinfo[AFP_FinderSize])
++{
++	int ret;
++
++	if (S_ISLNK(base_fsp->fsp_name->st.st_ex_mode)) {
++		return;
++	}
++	if (all_zero(finderinfo, AFP_FinderSize)) {
++		ret = tc_airport_fremovexattr(
++			fsp_get_pathref_fd(base_fsp), TC_FINDERINFO_NATIVE_XATTR);
++		if (ret == 0 || tc_fruit_native_unavailable(errno)) {
++			return;
++		}
++	} else {
++		ret = tc_airport_fsetxattr(
++			fsp_get_pathref_fd(base_fsp),
++			TC_FINDERINFO_NATIVE_XATTR,
++			finderinfo,
++			AFP_FinderSize);
++		if (ret == 0 || tc_fruit_native_unavailable(errno)) {
++			return;
++		}
++	}
++
++	DBG_WARNING("Native FinderInfo mirror failed for [%s]: %s\n",
++		    fsp_str_dbg(base_fsp), strerror(errno));
++}
++
++/* Return 1 when removed, 0 when absent, -1 on a real error. */
++static int tc_native_finderinfo_remove_at(
++	vfs_handle_struct *handle,
++	const struct files_struct *dirfsp,
++	const struct smb_filename *smb_fname)
++{
++	struct fruit_config_data *config = NULL;
++	struct smb_filename *base_name = NULL;
++	files_struct *base_fsp = NULL;
++	NTSTATUS status;
++	int ret;
++
++	if (smb_fname->fsp != NULL) {
++		base_fsp = smb_fname->fsp;
++		if (fsp_is_alternate_stream(base_fsp)) {
++			base_fsp = base_fsp->base_fsp;
++		}
++	} else {
++		SMB_VFS_HANDLE_GET_DATA(handle, config,
++					struct fruit_config_data, return -1);
++		base_name = cp_smb_filename_nostream(talloc_tos(), smb_fname);
++		if (base_name == NULL) {
++			errno = ENOMEM;
++			return -1;
++		}
++		config->in_openat_pathref_fsp = true;
++		status = openat_pathref_fsp_lcomp(
++			discard_const_p(struct files_struct, dirfsp), base_name, 0);
++		config->in_openat_pathref_fsp = false;
++		if (!NT_STATUS_IS_OK(status)) {
++			int error = map_errno_from_nt_status(status);
++
++			TALLOC_FREE(base_name);
++			errno = error;
++			return tc_fruit_backend_missing(error) ? 0 : -1;
++		}
++		base_fsp = base_name->fsp;
++	}
++	if (S_ISLNK(base_fsp->fsp_name->st.st_ex_mode)) {
++		TALLOC_FREE(base_name);
++		errno = ENOENT;
++		return 0;
++	}
++
++	ret = tc_airport_fremovexattr(
++		fsp_get_pathref_fd(base_fsp), TC_FINDERINFO_NATIVE_XATTR);
++	{
++		int error = errno;
++
++		TALLOC_FREE(base_name);
++		errno = error;
++	}
++	if (ret == 0) {
++		return 1;
++	}
++	return tc_fruit_native_unavailable(errno) ? 0 : -1;
++}
++
+ /**
+  * Initialize config struct from our smb.conf config parameters
+  **/
+@@ -394,6 +597,10 @@ static int init_fruit_config(vfs_handle_struct *handle)
+ 		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME,
+ 		"veto_localized", false);
+ 
++	config->time_capsule_native_metadata = lp_parm_bool(
++		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME,
++		"time_capsule_native_metadata", false);
++
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config,
+ 				NULL, struct fruit_config_data,
+ 				return -1);
+@@ -922,7 +1129,8 @@ static bool readdir_attr_meta_finderi_stream(
+ 	ssize_t nread;
+ 	NTSTATUS status;
+ 	bool ok;
+-	uint8_t buf[AFP_INFO_SIZE];
++	uint8_t buf[AFP_INFO_SIZE] = {0};
++	int error = 0;
+ 
+ 	status = synthetic_pathref(talloc_tos(),
+ 				   handle->conn->cwd_fsp,
+@@ -933,6 +1141,7 @@ static bool readdir_attr_meta_finderi_stream(
+ 				   smb_fname->flags,
+ 				   &stream_name);
+ 	if (!NT_STATUS_IS_OK(status)) {
++		errno = map_errno_from_nt_status(status);
+ 		return false;
+ 	}
+ 
+@@ -960,13 +1169,17 @@ static bool readdir_attr_meta_finderi_stream(
+ 	TALLOC_FREE(stream_name);
+ 
+ 	if (!NT_STATUS_IS_OK(status)) {
++		errno = map_errno_from_nt_status(status);
+ 		return false;
+ 	}
+ 
+ 	nread = SMB_VFS_PREAD(fsp, buf, sizeof(buf), 0);
+ 	if (nread != AFP_INFO_SIZE) {
+ 		DBG_ERR("short read [%s] [%zd/%d]\n",
+-			smb_fname_str_dbg(stream_name), nread, AFP_INFO_SIZE);
++			smb_fname_str_dbg(smb_fname), nread, AFP_INFO_SIZE);
++		if (nread >= 0) {
++			errno = EIO;
++		}
+ 		ok = false;
+ 		goto fail;
+ 	}
+@@ -977,9 +1190,15 @@ static bool readdir_attr_meta_finderi_stream(
+ 	ok = true;
+ 
+ fail:
++	if (!ok) {
++		error = errno;
++	}
+ 	if (fsp != NULL) {
+ 		close_file_free(NULL, &fsp, NORMAL_CLOSE);
+ 	}
++	if (!ok) {
++		errno = error;
++	}
+ 
+ 	return ok;
+ }
+@@ -1001,6 +1220,7 @@ static bool readdir_attr_meta_finderi_netatalk(
+ 	if (p == NULL) {
+ 		DBG_ERR("No ADEID_FINDERI for [%s]\n", smb_fname->base_name);
+ 		TALLOC_FREE(ad);
++		errno = EIO;
+ 		return false;
+ 	}
+ 
+@@ -1039,8 +1259,36 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
+ 	}
+ 
+ 	if (!ok) {
+-		/* Don't bother with errors, it's likely ENOENT */
+-		return true;
++		int backend_error = errno;
++
++		if (config->time_capsule_native_metadata &&
++		    tc_fruit_backend_missing(backend_error))
++		{
++			uint8_t native_finderinfo[AFP_FinderSize];
++			int native_state = tc_native_finderinfo_read_at(
++				handle,
++				handle->conn->cwd_fsp,
++				smb_fname,
++				native_finderinfo);
++
++			if (native_state == 1 &&
++			    !all_zero(native_finderinfo, AFP_FinderSize))
++			{
++				memcpy(ai.afpi_FinderInfo,
++				       native_finderinfo,
++				       AFP_FinderSize);
++				ok = true;
++			} else if (native_state < 0) {
++				DBG_WARNING(
++					"Native FinderInfo read failed for [%s]: %s\n",
++					smb_fname_str_dbg(smb_fname), strerror(errno));
++			}
++		}
++		if (!ok) {
++			/* AAPL directory enumeration must not drop the whole entry just
++			 * because optional Finder metadata is absent or unreadable. */
++			return true;
++		}
+ 	}
+ 
+ 	if (S_ISREG(smb_fname->st.st_ex_mode)) {
+@@ -1412,10 +1660,12 @@ static int fruit_open_meta_stream(vfs_handle_struct *handle,
+ 		.flags = flags & ~O_CREAT,
+ 		.mode = mode,
+ 	};
++	uint8_t native_finderinfo[AFP_FinderSize];
++	int backend_error;
++	int native_state = 0;
+ 	int fd;
+ 
+ 	DBG_DEBUG("Path [%s]\n", smb_fname_str_dbg(smb_fname));
+-
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
+ 
+@@ -1433,8 +1683,26 @@ static int fruit_open_meta_stream(vfs_handle_struct *handle,
+ 	if (fd != -1) {
+ 		return fd;
+ 	}
++	backend_error = errno;
++
++	if (config->time_capsule_native_metadata &&
++	    tc_fruit_backend_missing(backend_error))
++	{
++		native_state = tc_native_finderinfo_read_fsp(
++			fsp->base_fsp, native_finderinfo);
++		if (native_state < 0) {
++			VFS_REMOVE_FSP_EXTENSION(handle, fsp);
++			return -1;
++		}
++		if (native_state == 1 &&
++		    all_zero(native_finderinfo, AFP_FinderSize))
++		{
++			native_state = 0;
++		}
++	}
+ 
+-	if (!(flags & O_CREAT)) {
++	if (native_state == 0 && !(flags & O_CREAT)) {
++		errno = backend_error;
+ 		VFS_REMOVE_FSP_EXTENSION(handle, fsp);
+ 		return -1;
+ 	}
+@@ -1446,7 +1714,10 @@ static int fruit_open_meta_stream(vfs_handle_struct *handle,
+ 	}
+ 
+ 	fio->fake_fd = true;
+-	fio->flags = flags;
++	fio->native_meta_fallback = native_state == 1;
++	/* A later write to a native-only logical stream must materialize the
++	 * configured stream backend even if the client opened without O_CREAT. */
++	fio->flags = native_state == 1 ? flags | O_CREAT : flags;
+ 	fio->mode = mode;
+ 
+ 	return fd;
+@@ -1462,10 +1733,16 @@ static int fruit_open_meta_netatalk(vfs_handle_struct *handle,
+ 	struct fruit_config_data *config = NULL;
+ 	struct fio *fio = NULL;
+ 	struct adouble *ad = NULL;
++	uint8_t native_finderinfo[AFP_FinderSize];
+ 	bool meta_exists = false;
++	bool native_fallback = false;
++	int backend_error = 0;
++	int native_state = 0;
+ 	int fd;
+ 
+ 	DBG_DEBUG("Path [%s]\n", smb_fname_str_dbg(smb_fname));
++	SMB_VFS_HANDLE_GET_DATA(handle, config,
++				struct fruit_config_data, return -1);
+ 
+ 	/*
+ 	 * We know this is a stream open, so fsp->base_fsp must
+@@ -1477,12 +1754,26 @@ static int fruit_open_meta_netatalk(vfs_handle_struct *handle,
+ 	ad = ad_get(talloc_tos(), handle, fsp->base_fsp->fsp_name, ADOUBLE_META);
+ 	if (ad != NULL) {
+ 		meta_exists = true;
++	} else {
++		backend_error = errno;
+ 	}
+ 
+ 	TALLOC_FREE(ad);
+ 
+-	if (!meta_exists && !(flags & O_CREAT)) {
+-		errno = ENOENT;
++	if (!meta_exists && config->time_capsule_native_metadata &&
++	    tc_fruit_backend_missing(backend_error))
++	{
++		native_state = tc_native_finderinfo_read_fsp(
++			fsp->base_fsp, native_finderinfo);
++		if (native_state < 0) {
++			return -1;
++		}
++		native_fallback = native_state == 1 &&
++			!all_zero(native_finderinfo, AFP_FinderSize);
++	}
++
++	if (!meta_exists && !native_fallback && !(flags & O_CREAT)) {
++		errno = backend_error == 0 ? ENOENT : backend_error;
+ 		return -1;
+ 	}
+ 
+@@ -1491,15 +1782,13 @@ static int fruit_open_meta_netatalk(vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
+-	SMB_VFS_HANDLE_GET_DATA(handle, config,
+-				struct fruit_config_data, return -1);
+-
+ 	fio = VFS_ADD_FSP_EXTENSION(handle, fsp, struct fio, fio_destroy_fn);
+ 	fio->handle = handle;
+ 	fio->fsp = fsp;
+ 	fio->type = ADOUBLE_META;
+ 	fio->config = config;
+ 	fio->fake_fd = true;
++	fio->native_meta_fallback = native_fallback;
+ 	fio->flags = flags;
+ 	fio->mode = mode;
+ 
+@@ -2030,10 +2319,18 @@ static int fruit_unlink_meta(vfs_handle_struct *handle,
+ 			const struct smb_filename *smb_fname)
+ {
+ 	struct fruit_config_data *config = NULL;
++	int native_state = 0;
+ 	int rc;
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->time_capsule_native_metadata) {
++		native_state = tc_native_finderinfo_remove_at(
++			handle, dirfsp, smb_fname);
++		if (native_state < 0) {
++			return -1;
++		}
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -2050,6 +2347,9 @@ static int fruit_unlink_meta(vfs_handle_struct *handle,
+ 		DBG_ERR("Unsupported meta config [%d]\n", config->meta);
+ 		return -1;
+ 	}
++	if (rc != 0 && native_state == 1 && tc_fruit_backend_missing(errno)) {
++		return 0;
++	}
+ 
+ 	return rc;
+ }
+@@ -2438,10 +2738,39 @@ static ssize_t fruit_pread_meta(vfs_handle_struct *handle,
+ 		DBG_ERR("Failed to fetch fsp extension\n");
+ 		return -1;
+ 	}
++	to_return = MIN(n, AFP_INFO_SIZE);
++	if (fio->native_meta_fallback) {
++		AfpInfo *ai = NULL;
++		uint8_t native_finderinfo[AFP_FinderSize];
++		char afpinfo_buf[AFP_INFO_SIZE];
++		int native_state;
++
++		native_state = tc_native_finderinfo_read_fsp(
++			fsp->base_fsp, native_finderinfo);
++		if (native_state != 1) {
++			if (native_state == 0) {
++				errno = ENOENT;
++			}
++			return -1;
++		}
++		ai = afpinfo_new(talloc_tos());
++		if (ai == NULL) {
++			return -1;
++		}
++		memcpy(ai->afpi_FinderInfo,
++		       native_finderinfo,
++		       AFP_FinderSize);
++		nread = afpinfo_pack(ai, afpinfo_buf);
++		TALLOC_FREE(ai);
++		if (nread != AFP_INFO_SIZE) {
++			return -1;
++		}
++		memcpy(data, afpinfo_buf, to_return);
++		return to_return;
++	}
+ 
+ 	/* Yes, macOS always reads from offset 0 */
+ 	offset = 0;
+-	to_return = MIN(n, AFP_INFO_SIZE);
+ 
+ 	switch (fio->config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -2856,7 +3185,7 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+ {
+ 	struct fio *fio = fruit_get_complete_fio(handle, fsp);
+ 	ssize_t nwritten;
+-	uint8_t buf[AFP_INFO_SIZE];
++	uint8_t buf[AFP_INFO_SIZE] = {0};
+ 	size_t to_write;
+ 	size_t to_copy;
+ 	int cmp;
+@@ -2929,6 +3258,13 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+ 	if ((size_t)nwritten != to_write) {
+ 		return -1;
+ 	}
++	if (fio->config->time_capsule_native_metadata) {
++		/* The configured fruit backend remains authoritative. Mirror only
++		 * after it has accepted the complete AFP_AfpInfo update. */
++		fio->native_meta_fallback = false;
++		tc_native_finderinfo_mirror(
++			fsp->base_fsp, &buf[AFP_OFF_FinderInfo]);
++	}
+ 
+ 	/*
+ 	 * Return the requested amount, verified against macOS SMB server
+@@ -3242,8 +3578,12 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ {
+ 	struct adouble_buf ad = {};
+ 	struct smb_filename *smb_relname = NULL;
++	SMB_STRUCT_STAT base_sbuf;
+ 	uint8_t ad_data[402];
++	uint8_t native_finderinfo[AFP_FinderSize];
+ 	NTSTATUS status;
++	int backend_error;
++	int native_state;
+ 	int ret = -1;
+ 	ssize_t ealen;
+ 	ino_t ino;
+@@ -3262,6 +3602,7 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 	if (ret == -1) {
+ 		goto fail;
+ 	}
++	base_sbuf = *sbuf;
+ 
+ 	ino = hash_inode(sbuf, _smb_relname->stream_name);
+ 
+@@ -3269,7 +3610,29 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 		ret = SMB_VFS_NEXT_FSTATAT(
+ 			handle, dirfsp, _smb_relname, sbuf, flags);
+ 		if (ret == -1) {
+-			goto fail;
++			backend_error = errno;
++			if (!config->time_capsule_native_metadata ||
++			    !tc_fruit_backend_missing(backend_error))
++			{
++				errno = backend_error;
++				goto fail;
++			}
++			native_state = tc_native_finderinfo_read_at(
++				handle, dirfsp, _smb_relname, native_finderinfo);
++			if (native_state < 0) {
++				goto fail;
++			}
++			if (native_state == 0 ||
++			    all_zero(native_finderinfo, AFP_FinderSize)) {
++				errno = ENOENT;
++				goto fail;
++			}
++			*sbuf = base_sbuf;
++			sbuf->st_ex_size = AFP_INFO_SIZE;
++			sbuf->st_ex_mode &= ~S_IFMT;
++			sbuf->st_ex_mode |= S_IFREG;
++			sbuf->st_ex_blocks =
++				sbuf->st_ex_size / STAT_ST_BLOCKSIZE + 1;
+ 		}
+ 		sbuf->st_ex_ino = ino;
+ 		goto done;
+@@ -3311,10 +3674,26 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 		smb_relname->fsp, AFPINFO_EA_NETATALK, ad_data,
+ 		sizeof(ad_data));
+ 	if (ealen == -1) {
+-		if (errno == ENOATTR) {
++		backend_error = errno;
++		if (!config->time_capsule_native_metadata ||
++		    !tc_fruit_backend_missing(backend_error))
++		{
++			if (backend_error == ENOATTR) {
++				errno = ENOENT;
++			}
++			goto fail;
++		}
++		native_state = tc_native_finderinfo_read_fsp(
++			smb_relname->fsp, native_finderinfo);
++		if (native_state < 0) {
++			goto fail;
++		}
++		if (native_state == 0 ||
++		    all_zero(native_finderinfo, AFP_FinderSize)) {
+ 			errno = ENOENT;
++			goto fail;
+ 		}
+-		goto fail;
++		goto done;
+ 	}
+ 
+ 	ok = adouble_buf_parse(ad_data, ealen, &ad);
+@@ -3825,7 +4204,8 @@ static NTSTATUS fruit_streaminfo_meta_stream(
+ 	const struct smb_filename *smb_fname,
+ 	TALLOC_CTX *mem_ctx,
+ 	unsigned int *pnum_streams,
+-	struct stream_struct **pstreams)
++	struct stream_struct **pstreams,
++	bool *backend_exists)
+ {
+ 	struct stream_struct *stream = *pstreams;
+ 	unsigned int i, num_streams = *pnum_streams;
+@@ -3839,6 +4219,7 @@ static NTSTATUS fruit_streaminfo_meta_stream(
+ 	if (i == num_streams) {
+ 		return NT_STATUS_OK;
+ 	}
++	*backend_exists = true;
+ 
+ 	if (stream[i].size != AFP_INFO_SIZE) {
+ 		DBG_ERR("Removing invalid AFPINFO_STREAM size [%jd] from [%s]\n",
+@@ -3862,7 +4243,8 @@ static NTSTATUS fruit_streaminfo_meta_netatalk(
+ 	const struct smb_filename *smb_fname,
+ 	TALLOC_CTX *mem_ctx,
+ 	unsigned int *pnum_streams,
+-	struct stream_struct **pstreams)
++	struct stream_struct **pstreams,
++	bool *backend_exists)
+ {
+ 	struct stream_struct *stream = *pstreams;
+ 	unsigned int i, num_streams = *pnum_streams;
+@@ -3902,6 +4284,7 @@ static NTSTATUS fruit_streaminfo_meta_netatalk(
+ 	if (ad == NULL) {
+ 		return NT_STATUS_OK;
+ 	}
++	*backend_exists = true;
+ 
+ 	is_fi_empty = ad_empty_finderinfo(ad);
+ 	TALLOC_FREE(ad);
+@@ -3925,7 +4308,8 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
+ 				      const struct smb_filename *smb_fname,
+ 				      TALLOC_CTX *mem_ctx,
+ 				      unsigned int *pnum_streams,
+-				      struct stream_struct **pstreams)
++				      struct stream_struct **pstreams,
++				      bool backend_exists)
+ {
+ 	struct fruit_config_data *config = NULL;
+ 	NTSTATUS status;
+@@ -3937,20 +4321,50 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
+ 	case FRUIT_META_NETATALK:
+ 		status = fruit_streaminfo_meta_netatalk(handle, fsp, smb_fname,
+ 							mem_ctx, pnum_streams,
+-							pstreams);
++							pstreams, &backend_exists);
+ 		break;
+ 
+ 	case FRUIT_META_STREAM:
+ 		status = fruit_streaminfo_meta_stream(handle, fsp, smb_fname,
+ 						      mem_ctx, pnum_streams,
+-						      pstreams);
++						      pstreams, &backend_exists);
+ 		break;
+ 
+ 	default:
+ 		return NT_STATUS_INTERNAL_ERROR;
+ 	}
+ 
+-	return status;
++	if (!NT_STATUS_IS_OK(status) || backend_exists ||
++	    !config->time_capsule_native_metadata)
++	{
++		return status;
++	}
++
++	{
++		uint8_t native_finderinfo[AFP_FinderSize];
++		int native_state = tc_native_finderinfo_read_at(
++			handle,
++			handle->conn->cwd_fsp,
++			smb_fname,
++			native_finderinfo);
++
++		if (native_state < 0) {
++			return map_nt_error_from_unix(errno);
++		}
++		if (native_state == 0 ||
++		    all_zero(native_finderinfo, AFP_FinderSize))
++		{
++			return NT_STATUS_OK;
++		}
++		if (!add_fruit_stream(mem_ctx, pnum_streams, pstreams,
++				      AFPINFO_STREAM_NAME, AFP_INFO_SIZE,
++				      smb_roundup(handle->conn, AFP_INFO_SIZE)))
++		{
++			return NT_STATUS_NO_MEMORY;
++		}
++	}
++
++	return NT_STATUS_OK;
+ }
+ 
+ static NTSTATUS fruit_streaminfo_rsrc_stream(
+@@ -4116,6 +4530,8 @@ static NTSTATUS fruit_fstreaminfo(vfs_handle_struct *handle,
+ 	struct fruit_config_data *config = NULL;
+ 	const struct smb_filename *smb_fname = NULL;
+ 	NTSTATUS status;
++	bool meta_backend_exists = false;
++	unsigned int i;
+ 
+ 	smb_fname = fsp->fsp_name;
+ 
+@@ -4129,11 +4545,20 @@ static NTSTATUS fruit_fstreaminfo(vfs_handle_struct *handle,
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		return status;
+ 	}
++	if (config->meta == FRUIT_META_STREAM) {
++		for (i = 0; i < *pnum_streams; i++) {
++			if (strequal_m((*pstreams)[i].name, AFPINFO_STREAM)) {
++				meta_backend_exists = true;
++				break;
++			}
++		}
++	}
+ 
+ 	fruit_filter_empty_streams(pnum_streams, pstreams);
+ 
+ 	status = fruit_streaminfo_meta(handle, fsp, smb_fname,
+-				       mem_ctx, pnum_streams, pstreams);
++				       mem_ctx, pnum_streams, pstreams,
++				       meta_backend_exists);
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		return status;
+ 	}
+diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
+index ca9a20b..390de73 100644
+--- a/source3/modules/vfs_xattr_tdb.c
++++ b/source3/modules/vfs_xattr_tdb.c
+@@ -25,6 +25,7 @@
+ #include "dbwrap/dbwrap_open.h"
+ #include "source3/lib/xattr_tdb.h"
+ #include "lib/util/tevent_unix.h"
++#include "timecapsule_native_xattr.h"
+ 
+ #undef DBGC_CLASS
+ #define DBGC_CLASS DBGC_VFS
+@@ -32,8 +33,14 @@
+ struct xattr_tdb_config {
+ 	struct db_context *db;
+ 	bool ignore_user_xattr;
++	bool time_capsule_native_metadata;
+ };
+ 
++#define TC_USERTAGS_STREAM_XATTR \
++	"user.DosStream.com.apple.metadata:_kMDItemUserTags:$DATA"
++#define TC_USERTAGS_NATIVE_XATTR \
++	"com.apple.metadata:_kMDItemUserTags"
++
+ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
+ 			   struct xattr_tdb_config **_config);
+ 
+@@ -45,6 +52,138 @@ static bool is_user_xattr(const char *xattr_name)
+ 	return (match == 0);
+ }
+ 
++static bool tc_is_usertags_xattr(const char *name)
++{
++	return strequal_m(name, TC_USERTAGS_STREAM_XATTR);
++}
++
++static bool tc_xattr_list_contains(const char *list,
++				   size_t list_size,
++				   const char *name)
++{
++	size_t name_size = strlen(name) + 1;
++	size_t offset = 0;
++
++	while (offset < list_size) {
++		size_t entry_size = strnlen(list + offset, list_size - offset) + 1;
++
++		if (entry_size > list_size - offset) {
++			return false;
++		}
++		if (entry_size == name_size &&
++		    memcmp(list + offset, name, name_size) == 0)
++		{
++			return true;
++		}
++		offset += entry_size;
++	}
++	return false;
++}
++
++static bool tc_xattr_tdb_backend_missing(int error)
++{
++	return error == ENOATTR || error == ENOENT;
++}
++
++static bool tc_xattr_tdb_native_unavailable(int error)
++{
++	return tc_xattr_tdb_backend_missing(error) ||
++		error == ENOTSUP || error == EOPNOTSUPP || error == ENOSYS;
++}
++
++static ssize_t tc_native_usertags_get(struct files_struct *fsp,
++				      void *value,
++				      size_t size)
++{
++	ssize_t raw_size;
++	ssize_t ret;
++	int fd = fsp_get_pathref_fd(fsp);
++
++	if (fd == -1) {
++		errno = EBADF;
++		return -1;
++	}
++
++	raw_size = tc_airport_fgetxattr(
++		fd, TC_USERTAGS_NATIVE_XATTR, NULL, 0);
++	if (raw_size < 0) {
++		if (tc_xattr_tdb_native_unavailable(errno)) {
++			errno = ENOATTR;
++		}
++		return -1;
++	}
++	if (raw_size >= SSIZE_MAX) {
++		errno = EOVERFLOW;
++		return -1;
++	}
++	if (size == 0) {
++		return raw_size + 1;
++	}
++	if ((size_t)raw_size + 1 > size) {
++		errno = ERANGE;
++		return -1;
++	}
++
++	ret = tc_airport_fgetxattr(
++		fd, TC_USERTAGS_NATIVE_XATTR, value, raw_size);
++	if (ret < 0) {
++		return -1;
++	}
++	if (ret > raw_size) {
++		errno = EIO;
++		return -1;
++	}
++
++	/* streams_xattr reserves the final byte as its extent marker. */
++	((uint8_t *)value)[ret] = 0;
++	return ret + 1;
++}
++
++static int tc_native_usertags_exists(struct files_struct *fsp)
++{
++	ssize_t ret = tc_airport_fgetxattr(
++		fsp_get_pathref_fd(fsp), TC_USERTAGS_NATIVE_XATTR, NULL, 0);
++
++	if (ret >= 0) {
++		return 1;
++	}
++	if (tc_xattr_tdb_native_unavailable(errno)) {
++		return 0;
++	}
++	return -1;
++}
++
++static void tc_native_usertags_mirror(struct files_struct *fsp,
++				       const void *value,
++				       size_t size)
++{
++	const uint8_t *bytes = value;
++	int ret;
++
++	if (size <= 1 || bytes[size - 1] != 0) {
++		/* ponytail: Finder tag plists fit one xattr. Do not leave an older
++		 * native tag visible for an empty stream or if a future oversized tag
++		 * needs multiple extents. */
++		ret = tc_airport_fremovexattr(
++			fsp_get_pathref_fd(fsp), TC_USERTAGS_NATIVE_XATTR);
++		if (ret != 0 && !tc_xattr_tdb_native_unavailable(errno)) {
++			DBG_WARNING(
++				"Native Finder-tag cleanup failed for [%s]: %s\n",
++				fsp_str_dbg(fsp), strerror(errno));
++		}
++		return;
++	}
++
++	ret = tc_airport_fsetxattr(fsp_get_pathref_fd(fsp),
++				     TC_USERTAGS_NATIVE_XATTR,
++				     value,
++				     size - 1);
++	if (ret != 0 && !tc_xattr_tdb_native_unavailable(errno)) {
++		DBG_WARNING("Native Finder-tag mirror failed for [%s]: %s\n",
++			    fsp_str_dbg(fsp), strerror(errno));
++	}
++}
++
+ struct xattr_tdb_getxattrat_state {
+ 	struct vfs_aio_state vfs_aio_state;
+ 	ssize_t xattr_size;
+@@ -217,7 +356,9 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
+-	if (config->ignore_user_xattr && is_user_xattr(name)) {
++	if (config->ignore_user_xattr && is_user_xattr(name) &&
++	    !(config->time_capsule_native_metadata && tc_is_usertags_xattr(name)))
++	{
+ 		return SMB_VFS_NEXT_FGETXATTR(
+ 			handle, fsp, name, value, size);
+ 	}
+@@ -232,8 +373,16 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
+ 
+ 	xattr_size = xattr_tdb_getattr(config->db, frame, &id, name, &blob);
+ 	if (xattr_size < 0) {
+-		errno = ENOATTR;
++		int tdb_error = errno;
++
+ 		TALLOC_FREE(frame);
++		if (config->time_capsule_native_metadata &&
++		    tc_is_usertags_xattr(name) &&
++		    tc_xattr_tdb_backend_missing(tdb_error))
++		{
++			return tc_native_usertags_get(fsp, value, size);
++		}
++		errno = ENOATTR;
+ 		return -1;
+ 	}
+ 
+@@ -266,7 +415,9 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
+-	if (config->ignore_user_xattr && is_user_xattr(name)) {
++	if (config->ignore_user_xattr && is_user_xattr(name) &&
++	    !(config->time_capsule_native_metadata && tc_is_usertags_xattr(name)))
++	{
+ 		return SMB_VFS_NEXT_FSETXATTR(
+ 			handle, fsp, name, value, size, flags);
+ 	}
+@@ -278,6 +429,11 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
+ 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
+ 
+ 	ret = xattr_tdb_setattr(config->db, &id, name, value, size, flags);
++	if (ret == 0 && config->time_capsule_native_metadata &&
++	    tc_is_usertags_xattr(name))
++	{
++		tc_native_usertags_mirror(fsp, value, size);
++	}
+ 	return ret;
+ 
+ }
+@@ -291,6 +447,9 @@ static ssize_t xattr_tdb_flistxattr(struct vfs_handle_struct *handle,
+ 	struct file_id id;
+ 	ssize_t backend_size;
+ 	ssize_t ret;
++	bool append_native_usertags = false;
++	size_t native_name_size = sizeof(TC_USERTAGS_STREAM_XATTR);
++	TALLOC_CTX *frame = NULL;
+ 
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+@@ -301,12 +460,53 @@ static ssize_t xattr_tdb_flistxattr(struct vfs_handle_struct *handle,
+ 	}
+ 
+ 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
+-
++	frame = talloc_stackframe();
+ 	ret = xattr_tdb_listattr(config->db, &id, list, size);
+ 	if (ret == -1) {
++		TALLOC_FREE(frame);
+ 		return -1;
+ 	}
+-	if (ret == size) {
++
++	if (config->time_capsule_native_metadata) {
++		bool backend_missing = false;
++
++		if (size == 0) {
++			DATA_BLOB blob = data_blob_null;
++			ssize_t tag_size = xattr_tdb_getattr(
++				config->db, frame, &id,
++				TC_USERTAGS_STREAM_XATTR, &blob);
++
++			backend_missing = tag_size < 0 &&
++				tc_xattr_tdb_backend_missing(errno);
++		} else {
++			backend_missing = !tc_xattr_list_contains(
++				list, ret, TC_USERTAGS_STREAM_XATTR);
++		}
++		if (backend_missing) {
++			int native_state = tc_native_usertags_exists(fsp);
++
++			if (native_state < 0) {
++				TALLOC_FREE(frame);
++				return -1;
++			}
++			append_native_usertags = native_state == 1;
++		}
++	}
++	if (append_native_usertags) {
++		if (size == 0) {
++			TALLOC_FREE(frame);
++			return ret + native_name_size;
++		}
++		if ((size_t)ret + native_name_size > size) {
++			TALLOC_FREE(frame);
++			errno = ERANGE;
++			return -1;
++		}
++		memcpy(list + ret, TC_USERTAGS_STREAM_XATTR, native_name_size);
++		ret += native_name_size;
++	}
++	TALLOC_FREE(frame);
++	if (ret == (ssize_t)size) {
+ 		return ret;
+ 	}
+ 	if (!config->ignore_user_xattr) {
+@@ -329,12 +529,16 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
+ 	struct xattr_tdb_config *config = NULL;
+ 	SMB_STRUCT_STAT sbuf;
+ 	struct file_id id;
++	bool removed_native = false;
++	int ret;
+ 
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
+ 
+-	if (config->ignore_user_xattr && is_user_xattr(name)) {
++	if (config->ignore_user_xattr && is_user_xattr(name) &&
++	    !(config->time_capsule_native_metadata && tc_is_usertags_xattr(name)))
++	{
+ 		return SMB_VFS_NEXT_FREMOVEXATTR(handle, fsp, name);
+ 	}
+ 
+@@ -343,8 +547,23 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
+ 	}
+ 
+ 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
++	if (config->time_capsule_native_metadata &&
++	    tc_is_usertags_xattr(name))
++	{
++		ret = tc_airport_fremovexattr(
++			fsp_get_pathref_fd(fsp), TC_USERTAGS_NATIVE_XATTR);
++		if (ret == 0) {
++			removed_native = true;
++		} else if (!tc_xattr_tdb_native_unavailable(errno)) {
++			return -1;
++		}
++	}
+ 
+-	return xattr_tdb_removeattr(config->db, &id, name);
++	ret = xattr_tdb_removeattr(config->db, &id, name);
++	if (ret != 0 && removed_native && tc_xattr_tdb_backend_missing(errno)) {
++		return 0;
++	}
++	return ret;
+ }
+ 
+ /*
+@@ -414,6 +633,8 @@ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
+ 
+ 	config->ignore_user_xattr = lp_parm_bool(
+ 		SNUM(handle->conn), "xattr_tdb", "ignore_user_xattr", false);
++	config->time_capsule_native_metadata = lp_parm_bool(
++		SNUM(handle->conn), "fruit", "time_capsule_native_metadata", false);
+ 
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config, config_destructor,
+ 				struct xattr_tdb_config, return false);

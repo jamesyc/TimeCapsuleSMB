@@ -21,7 +21,7 @@ index 1bc9766..f078c97 100644
 +            getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
 +        static_ldflags = TO_LIST(
 +            getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
-+    elif target in ('pthreadpool_tevent_sync_test', 'tc_aio_fork_test', 'tc_durable_reconnect_test', 'tc_streams_xattr_test'):
++    elif target in ('pthreadpool_tevent_sync_test', 'tc_aio_fork_test', 'tc_durable_reconnect_test', 'tc_streams_xattr_test', 'tc_native_metadata_test'):
 +        static_linkflags = TO_LIST(getattr(
 +            bld.env, 'TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS', []))
 +        static_ldflags = TO_LIST(getattr(

@@ -164,7 +164,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         "",
                     ).split(",")
                     capture = os.environ.get("TEST_WAF_TARGETS")
-                    for target in ("tc_aio_fork_test", "tc_durable_reconnect_test", "tc_streams_xattr_test"):
+                    for target in ("tc_aio_fork_test", "tc_durable_reconnect_test",
+                                   "tc_streams_xattr_test", "tc_native_metadata_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -332,6 +333,24 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             cross_answers = self.cross_answer_arg(args)
             self.assertTrue(cross_answers.endswith("/samba4x-4.25.0rc2-netbsd7.answers"))
             self.assertFalse(cross_exec_capture.exists())
+
+    def test_appliance_lanes_enable_private_xattr_syscalls(self) -> None:
+        for wrapper, lane, log_name in (
+            ("samba4x.sh", "netbsd7", "SAMBA4X_NETBSD7_LOG"),
+            ("samba4xoldle.sh", "netbsd4le", "SAMBA4X_NETBSD4LE_LOG"),
+            ("samba4xoldbe.sh", "netbsd4be", "SAMBA4X_NETBSD4BE_LOG"),
+        ):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure-args.txt")
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                log = Path(env[log_name]).read_text().splitlines()
+                for variable in ("CFLAGS=", "CPPFLAGS="):
+                    line = next(item for item in log if item.startswith(variable))
+                    self.assertIn("-DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1", line)
 
     def test_generation_helper_starts_from_fresh_seed_and_ignores_stale_answers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -612,9 +631,10 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertIn("source3/smbd/smbd", map_path.read_text())
 
     def test_regression_validation_gates_artifact_staging(self) -> None:
-        from tests.samba.run import cases
+        from tests.samba.run import execution_cases
 
-        for failure in (None, "failed", "missing", "stream-failed", "stream-missing", "compile-only"):
+        for failure in (None, "failed", "missing", "stream-failed", "stream-missing",
+                        "native-failed", "native-missing", "compile-only"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 capture = root / "configure-args.txt"
@@ -627,6 +647,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     case "${1##*/}:${2:-}:${TEST_REGRESSION_FAILURE:-}" in
                         tc_aio_fork_test.stripped:read:failed) exit 9 ;;
                         tc_streams_xattr_test.stripped:root_delete:stream-failed) exit 9 ;;
+                        tc_native_metadata_test.stripped:all:native-failed) exit 9 ;;
                     esac
                     exit 0
                     """))
@@ -634,21 +655,25 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 env.update({
                     "SAMBA4X_RUN_REGRESSION_TESTS": "1",
                     "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "SAMBA4X_CROSS_EXEC_REMOTE_DIR": "/Volumes/test",
                     "TEST_WAF_TARGETS": str(targets),
                     "TEST_REGRESSION_CALLS": str(calls),
                     "TEST_REGRESSION_FAILURE": failure or "",
                 })
-                if failure in ("missing", "stream-missing"):
-                    env["TEST_MISSING_REGRESSION_BINARY"] = (
-                        "tc_streams_xattr_test" if failure == "stream-missing" else "tc_aio_fork_test"
-                    )
+                if failure in ("missing", "stream-missing", "native-missing"):
+                    env["TEST_MISSING_REGRESSION_BINARY"] = {
+                        "missing": "tc_aio_fork_test",
+                        "stream-missing": "tc_streams_xattr_test",
+                        "native-missing": "tc_native_metadata_test",
+                    }[failure]
                 if failure == "compile-only":
                     env["SAMBA4X_RUN_REGRESSION_TESTS"] = "0"
                     env["SAMBA4X_BUILD_REGRESSION_TESTS"] = "1"
                 result = self.run_wrapper("samba4x.sh", env)
                 built = targets.read_text().splitlines()
                 staged = Path(env["SAMBA4X_NETBSD7_STAGE"]) / "sbin/smbd.stripped"
-                if failure in ("failed", "missing", "stream-failed", "stream-missing"):
+                if failure in ("failed", "missing", "stream-failed", "stream-missing",
+                               "native-failed", "native-missing"):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("smbd/smbd", built)
                     self.assertFalse(staged.exists())
@@ -660,11 +685,12 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         self.assertIn("tc_aio_fork_test", built)
                         self.assertIn("tc_durable_reconnect_test", built)
                         self.assertIn("tc_streams_xattr_test", built)
+                        self.assertIn("tc_native_metadata_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [
                         " ".join((target + ".stripped", *arguments)).rstrip() + (" " if not arguments else "")
-                        for target, arguments in cases()
+                        for target, arguments in execution_cases(True)
                     ])
 
     def test_rc2_size_budget_accepts_boundary_and_rejects_growth(self) -> None:

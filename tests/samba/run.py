@@ -15,7 +15,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test", "tc_streams_xattr_test")
+TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
+           "tc_streams_xattr_test", "tc_native_metadata_test")
 AIO_CASES = (
     "read", "short", "empty", "zero", "oversized", "read_error", "pwrite", "append", "fsync",
     "pwrite_error", "append_error", "fsync_error",
@@ -33,6 +34,9 @@ DURABLE_CASES = (
 STREAM_CASES = ("charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
                 "missing_path", "invalid_stream", "primary_error", "extent_error", "roundtrip_shrink",
                 "shrink_missing", "short_read", "read_error")
+NATIVE_METADATA_CASES = ("syscall_abi", "tags_read", "tags_write", "tags_delete", "tags_errors",
+                         "tags_list", "finderinfo", "finderinfo_io", "finderinfo_readdir",
+                         "finderinfo_fstat", "finderinfo_streaminfo")
 
 
 def stage(source: Path) -> None:
@@ -62,11 +66,42 @@ def cases():
         yield TARGETS[2], (case,)
     for case in STREAM_CASES:
         yield TARGETS[3], (case,)
+    for case in NATIVE_METADATA_CASES:
+        yield TARGETS[4], (case,)
+
+
+def execution_cases(cross_exec: bool):
+    """Upload the large native fixture once on storage-constrained devices."""
+    native_seen = False
+    for target, arguments in cases():
+        if target == TARGETS[4]:
+            if cross_exec:
+                if native_seen:
+                    continue
+                arguments = ("all",)
+            native_seen = True
+        yield target, arguments
+    if not cross_exec and native_seen:
+        # Also exercise cross-case cleanup/order under sanitizers. Device runs
+        # use this same all-in-one form as their sole native invocation.
+        yield TARGETS[4], ("all",)
+
+
+def case_timeout(target: str, cross_exec: bool) -> int:
+    if cross_exec and target == TARGETS[4]:
+        return 180
+    return 60 if cross_exec else 25
 
 
 def run_tests(source: Path, cross_exec: str | None = None) -> None:
     """Timeouts kill the whole local test group, including forked AIO workers."""
-    for target, arguments in cases():
+    if cross_exec is not None:
+        remote_dir = os.environ.get("CROSS_EXEC_REMOTE_DIR", "").rstrip("/")
+        if not remote_dir.startswith("/Volumes/"):
+            raise RuntimeError(
+                "device regression tests require CROSS_EXEC_REMOTE_DIR under /Volumes/"
+            )
+    for target, arguments in execution_cases(cross_exec is not None):
         folder = "lib/pthreadpool" if target == TARGETS[0] else "source3/modules"
         binary = source / "bin/default" / folder / target
         if cross_exec:
@@ -77,7 +112,7 @@ def run_tests(source: Path, cross_exec: str | None = None) -> None:
         print("RUN", target, *arguments, flush=True)
         process = subprocess.Popen(command, start_new_session=True)
         try:
-            result = process.wait(timeout=60 if cross_exec else 25)
+            result = process.wait(timeout=case_timeout(target, cross_exec is not None))
             if result:
                 raise subprocess.CalledProcessError(result, command)
         finally:

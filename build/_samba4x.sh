@@ -654,7 +654,7 @@ configure_samba4x() {
         samba4x_nonshared_binaries="$samba4x_nonshared_binaries,pthreadpool_tevent_sync_test"
     fi
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test"
+        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test"
     fi
 
     set -- \
@@ -1015,14 +1015,17 @@ export RANLIB="$TOOLDIR/bin/$TRIPLE-ranlib"
 export STRIP="$TOOLDIR/bin/$TRIPLE-strip"
 export CROSS_EXEC_REMOTE_DIR="$SAMBA4X_CROSS_EXEC_REMOTE_DIR"
 
+# Apple added Darwin-compatible descriptor xattr syscalls to both Time Capsule
+# kernels without adding libc wrappers. Only appliance builds may use that
+# private ABI; ordinary host regression builds retain the ENOSYS stubs.
 if [ "$SDK_FAMILY" = "netbsd4" ]; then
     export CC="$TOOLDIR/bin/$TRIPLE-gcc"
     export CXX="$TOOLDIR/bin/$TRIPLE-g++"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp"
     export LD="$TOOLDIR/bin/$TRIPLE-ld"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
+    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1"
     SAMBA4X_NETBSD4_BASE_LDFLAGS="-Wl,-Bstatic -static -L$SAMBA4X_DEPS/lib -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     SAMBA4X_NETBSD4_FINAL_LDFLAGS="$SAMBA4X_NETBSD4_BASE_LDFLAGS"
@@ -1042,9 +1045,9 @@ else
     export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
     export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
+    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1 -DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     TC_PTHREADPOOL_TEST_STATIC_LDFLAGS="$TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS"
@@ -1178,14 +1181,15 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     fi
 
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test
+        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test
         # Debug information can dwarf the tests on these small appliances.
         # Keep the ordinary Waf outputs and upload separate stripped copies.
         for test_relative in \
             lib/pthreadpool/pthreadpool_tevent_sync_test \
             source3/modules/tc_aio_fork_test \
             source3/modules/tc_durable_reconnect_test \
-            source3/modules/tc_streams_xattr_test
+            source3/modules/tc_streams_xattr_test \
+            source3/modules/tc_native_metadata_test
         do
             test_binary="$SAMBA4X_SRC_DIR/bin/default/$test_relative"
             if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
