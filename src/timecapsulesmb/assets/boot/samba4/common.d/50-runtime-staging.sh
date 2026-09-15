@@ -444,10 +444,12 @@ EOF
     veto files = /$PAYLOAD_DIR_NAME/
     vfs objects = $smbd_vfs_objects
 ${smbd_aio_fork_line}    acl_xattr:ignore system acls = yes
-    streams_xattr:max xattrs per stream = 2
+    # AirPort HFS stores ordinary inline xattrs up to 3,802 bytes. Shard
+    # Windows-only ADS enough to retain the previous roughly 128 KiB limit.
+    smbd max xattr size = 3802
+    streams_xattr:max xattrs per stream = 35
     fruit:resource = file
     fruit:metadata = $smbd_fruit_metadata
-    fruit:time_capsule_native_metadata = yes
     fruit:encoding = native
     fruit:time machine = yes
     fruit:posix_rename = yes

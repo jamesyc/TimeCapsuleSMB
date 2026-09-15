@@ -313,7 +313,7 @@ In the macOS app, each saved device has advanced settings for the managed SMB ru
 - **Advertise AFP over Bonjour**: default off. When off, generated Time Machine ADisk records advertise SMB-only `adVF=0x82`. When on, the mDNS advertiser also publishes `_afpovertcp` and generated ADisk records use AFP+SMB `adVF=0x83`. SMB, AFP, ADISK, device-info, and printer records remain LAN-only over IPv4 and IPv6; WAN links receive only the AirPort Utility service.
 - **Allow Any SMB Protocol**: default off. Removes the SMB2/SMB3-only protocol restriction. Leave off unless an old client needs legacy SMB compatibility.
 - **Force Debug Logging**: default off. Enables verbose smbd/mDNS logging on the device. Use only for troubleshooting because it writes more logs.
-- **Use Netatalk for metadata**: default on. Stores Apple/Finder metadata in the Netatalk-compatible format used by Samba's fruit module. If unchecked, use `fruit:metadata = stream` instead.
+- **Use Netatalk for metadata**: default on. Selects the preferred legacy migration representation (`fruit:metadata = netatalk`); if unchecked, it selects `stream`. HFS runtime metadata is native after migration, while this setting remains the backend choice for a future non-HFS filesystem.
 
 Share names and Bonjour names still come from the Time Capsule itself. For most users, the defaults are recommended.
 

@@ -186,7 +186,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     ).split(",")
                     capture = os.environ.get("TEST_WAF_TARGETS")
                     for target in ("tc_aio_fork_test", "tc_durable_reconnect_test",
-                                   "tc_streams_xattr_test", "tc_native_metadata_test"):
+                                   "tc_streams_xattr_test", "tc_native_metadata_test",
+                                   "tc_xattr_migrate_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -206,6 +207,13 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         if capture:
                             with pathlib.Path(capture).open("a") as stream:
                                 stream.write("pthreadpool_tevent_sync_test\\n")
+                    if "tc_xattr_hfs_migrate" in targets:
+                        migrator = pathlib.Path(
+                            "bin/default/source3/utils/tc_xattr_hfs_migrate"
+                        )
+                        migrator.parent.mkdir(parents=True, exist_ok=True)
+                        migrator.write_bytes(b"fake migrator\\n")
+                        migrator.chmod(0o755)
                     if "smbd/smbd" in targets:
                         smbd = pathlib.Path("bin/default/source3/smbd/smbd")
                         smbd.parent.mkdir(parents=True, exist_ok=True)
@@ -587,7 +595,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(targets.read_text().splitlines(), ["smbd/smbd"])
             self.assertIn(
-                "--nonshared-binary=smbd/smbd",
+                "--nonshared-binary=smbd/smbd,tc_xattr_hfs_migrate",
                 self.configure_args(capture),
             )
             self.assertFalse(cross_exec_capture.exists())
@@ -618,7 +626,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 ["pthreadpool_tevent_sync_test", "smbd/smbd"],
             )
             self.assertIn(
-                "--nonshared-binary=smbd/smbd,pthreadpool_tevent_sync_test",
+                "--nonshared-binary=smbd/smbd,tc_xattr_hfs_migrate,pthreadpool_tevent_sync_test",
                 self.configure_args(capture),
             )
             self.assertTrue(cross_exec_capture.exists())
@@ -655,7 +663,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         from tests.samba.run import execution_cases
 
         for failure in (None, "failed", "missing", "stream-failed", "stream-missing",
-                        "native-failed", "native-missing", "compile-only"):
+                        "native-failed", "native-missing", "migrate-failed",
+                        "migrate-missing", "compile-only"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 capture = root / "configure-args.txt"
@@ -669,6 +678,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         tc_aio_fork_test.stripped:read:failed) exit 9 ;;
                         tc_streams_xattr_test.stripped:root_delete:stream-failed) exit 9 ;;
                         tc_native_metadata_test.stripped:all:native-failed) exit 9 ;;
+                        tc_xattr_migrate_test.stripped:all:migrate-failed) exit 9 ;;
                     esac
                     exit 0
                     """))
@@ -681,11 +691,12 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     "TEST_REGRESSION_CALLS": str(calls),
                     "TEST_REGRESSION_FAILURE": failure or "",
                 })
-                if failure in ("missing", "stream-missing", "native-missing"):
+                if failure in ("missing", "stream-missing", "native-missing", "migrate-missing"):
                     env["TEST_MISSING_REGRESSION_BINARY"] = {
                         "missing": "tc_aio_fork_test",
                         "stream-missing": "tc_streams_xattr_test",
                         "native-missing": "tc_native_metadata_test",
+                        "migrate-missing": "tc_xattr_migrate_test",
                     }[failure]
                 if failure == "compile-only":
                     env["SAMBA4X_RUN_REGRESSION_TESTS"] = "0"
@@ -694,7 +705,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 built = targets.read_text().splitlines()
                 staged = Path(env["SAMBA4X_NETBSD7_STAGE"]) / "sbin/smbd.stripped"
                 if failure in ("failed", "missing", "stream-failed", "stream-missing",
-                               "native-failed", "native-missing"):
+                               "native-failed", "native-missing", "migrate-failed",
+                               "migrate-missing"):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("smbd/smbd", built)
                     self.assertFalse(staged.exists())
@@ -707,6 +719,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         self.assertIn("tc_durable_reconnect_test", built)
                         self.assertIn("tc_streams_xattr_test", built)
                         self.assertIn("tc_native_metadata_test", built)
+                        self.assertIn("tc_xattr_migrate_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [

@@ -143,3 +143,7 @@
 # Keep Samba's configured stream/netatalk store authoritative, use HFS only as
 # a read fallback, and mirror successful SMB changes so AFP and SMB converge.
 0037-time-capsule-native-macos-metadata.patch|bridge native HFS Finder metadata into fruit
+# Supersede the temporary dual-write bridge with native HFS storage. fruit owns
+# FinderInfo and resource-fork stream semantics, xattr_tdb owns ordinary native
+# attributes, and a separate static helper migrates legacy TDB/AppleDouble data.
+0038-native-hfs-xattr-backend.patch|native HFS Mac metadata and legacy migration

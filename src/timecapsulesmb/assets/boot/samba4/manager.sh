@@ -571,10 +571,158 @@ tc_manager_apply_diskless_state() {
     tc_log "manager disk refresh complete: diskless/no-payload state applied reason=$refresh_reason"
 }
 
+tc_manager_xattr_volume_key() {
+    xattr_key_device=$1
+    xattr_key_uuid=$2
+
+    if [ -n "$xattr_key_uuid" ]; then
+        printf 'uuid:%s\n' "$xattr_key_uuid"
+    else
+        printf 'device:%s\n' "$xattr_key_device"
+    fi
+}
+
+tc_manager_xattr_volume_migrated() {
+    xattr_lookup_key=$1
+
+    case "
+${TC_MANAGER_XATTR_MIGRATED_VOLUMES:-}
+" in
+        *"
+$xattr_lookup_key
+"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+tc_manager_record_migrated_xattr_volume() {
+    xattr_record_key=$1
+
+    tc_manager_xattr_volume_migrated "$xattr_record_key" && return 0
+    if [ -z "${TC_MANAGER_XATTR_MIGRATED_VOLUMES:-}" ]; then
+        TC_MANAGER_XATTR_MIGRATED_VOLUMES=$xattr_record_key
+    else
+        TC_MANAGER_XATTR_MIGRATED_VOLUMES="$TC_MANAGER_XATTR_MIGRATED_VOLUMES
+$xattr_record_key"
+    fi
+}
+
+tc_manager_pending_xattr_volume_mounted() {
+    pending_topology_rows=$1
+
+    [ "${TC_BOOT_XATTR_MIGRATION:-0}" = 1 ] || return 1
+    while IFS="$TC_TAB" read -r disk builtin device root name uuid ||
+        [ -n "$disk$builtin$device$root$name$uuid" ]; do
+        [ -n "$device" ] || continue
+        pending_xattr_key=$(tc_manager_xattr_volume_key "$device" "$uuid") || return 1
+        tc_manager_xattr_volume_migrated "$pending_xattr_key" && continue
+        is_volume_root_mounted "$root" && return 0
+    done <<EOF
+$pending_topology_rows
+EOF
+    return 1
+}
+
+tc_manager_export_boot_xattrs() {
+    # The background call keeps temporary paths and positional roots out of the
+    # manager's globals. Exit this child explicitly so its EXIT trap always
+    # removes staging. The helper is copied, never linked from a sleeping disk.
+    migration_tdb="$TC_RESOLVED_PAYLOAD_DIR/private/xattr.tdb"
+    [ -f "$migration_tdb" ] || exit 0
+    migration_binary="$TC_RESOLVED_PAYLOAD_DIR/xattr-hfs-migrate"
+    migration_ram="/mnt/Memory/.tc-xattr-hfs-migrate.$$"
+    migration_child=
+    trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; rm -f "$migration_ram"' 0
+    trap 'exit 1' 1 2 15
+    [ "$#" -gt 0 ] || exit 1
+    cp "$migration_binary" "$migration_ram" || exit 1
+    chmod 755 "$migration_ram" || exit 1
+    migration_metadata=stream
+    [ "$FRUIT_METADATA_NETATALK" != 1 ] || migration_metadata=netatalk
+    tc_log "boot metadata migration beginning"
+    "$migration_ram" copy "$migration_tdb" "$migration_metadata" "$@" >>"$TC_LOG_FILE" 2>&1 &
+    migration_child=$!
+    migration_phase_status=0
+    wait "$migration_child" || migration_phase_status=$?
+    migration_child=
+    [ "$migration_phase_status" = 0 ] || exit 1
+    /bin/sync || exit 1
+    "$migration_ram" cleanup "$migration_tdb" "$migration_metadata" "$@" >>"$TC_LOG_FILE" 2>&1 &
+    migration_child=$!
+    migration_phase_status=0
+    wait "$migration_child" || migration_phase_status=$?
+    migration_child=
+    [ "$migration_phase_status" = 0 ] || exit 1
+    /bin/sync || exit 1
+    tc_log "boot metadata migration complete"
+    exit 0
+}
+
+tc_manager_stop_boot_xattrs() {
+    # Deploy stops the manager before replacing payloads. Forward that stop to
+    # the export so no detached migrator can keep writing during the upload.
+    if [ -n "${TC_MANAGER_XATTR_PID:-}" ]; then
+        kill -TERM "$TC_MANAGER_XATTR_PID" 2>/dev/null || true
+        wait "$TC_MANAGER_XATTR_PID" 2>/dev/null || true
+        TC_MANAGER_XATTR_PID=
+    fi
+}
+
+tc_manager_migrate_boot_xattrs() {
+    migration_topology_rows=$1
+
+    [ "${TC_BOOT_XATTR_MIGRATION:-0}" = 1 ] || return 0
+    migration_tdb_path="$TC_RESOLVED_PAYLOAD_DIR/private/xattr.tdb"
+    if [ "$migration_tdb_path" != "${TC_MANAGER_XATTR_TDB_PATH:-}" ]; then
+        TC_MANAGER_XATTR_TDB_PATH=$migration_tdb_path
+        TC_MANAGER_XATTR_MIGRATED_VOLUMES=
+    fi
+    migration_volume_keys=
+    set --
+    while IFS="$TC_TAB" read -r disk builtin device root name uuid ||
+        [ -n "$disk$builtin$device$root$name$uuid" ]; do
+        [ -n "$device" ] || continue
+        migration_xattr_key=$(tc_manager_xattr_volume_key "$device" "$uuid") || return 1
+        tc_manager_xattr_volume_migrated "$migration_xattr_key" && continue
+        if ! is_volume_root_mounted "$root"; then
+            tc_log "metadata migration pending for unavailable volume: device=/dev/$device root=$root"
+            continue
+        fi
+        if [ "$#" -eq 0 ]; then
+            set -- "$root"
+        else
+            set -- "$@" "$root"
+        fi
+        if [ -z "$migration_volume_keys" ]; then
+            migration_volume_keys=$migration_xattr_key
+        else
+            migration_volume_keys="$migration_volume_keys
+$migration_xattr_key"
+        fi
+    done <<EOF
+$migration_topology_rows
+EOF
+    [ "$#" -gt 0 ] || return 0
+
+    tc_manager_export_boot_xattrs "$@" &
+    TC_MANAGER_XATTR_PID=$!
+    migration_status=0
+    wait "$TC_MANAGER_XATTR_PID" || migration_status=$?
+    TC_MANAGER_XATTR_PID=
+    [ "$migration_status" = 0 ] || return 1
+    while IFS= read -r completed_xattr_key || [ -n "$completed_xattr_key" ]; do
+        [ -n "$completed_xattr_key" ] || continue
+        tc_manager_record_migrated_xattr_volume "$completed_xattr_key" || return 1
+    done <<EOF
+$migration_volume_keys
+EOF
+}
+
 tc_manager_apply_runtime_from_topology() {
     refresh_reason=$1
     topology_rows=$2
     refresh_start_seconds=$(tc_now_seconds)
+    previous_manager_topology_rows=${manager_topology_rows:-}
     manager_topology_rows=$topology_rows
     topology_count=$(tc_manager_count_rows "$topology_rows")
 
@@ -590,6 +738,17 @@ tc_manager_apply_runtime_from_topology() {
     if ! tc_manager_resolve_payload_from_topology "$topology_rows"; then
         tc_manager_apply_diskless_state "$refresh_reason"
         return 0
+    fi
+
+    if ! tc_manager_migrate_boot_xattrs "$topology_rows"; then
+        if [ "$refresh_reason" = initial ] || ! tc_manager_current_payload_ready; then
+            tc_log "metadata migration failed; retaining pending metadata and withholding initial Samba startup"
+            tc_manager_clear_payload_state
+        else
+            manager_topology_rows=$previous_manager_topology_rows
+            tc_log "metadata migration failed for changed topology; preserving the active Samba shares and retrying later"
+        fi
+        return 1
     fi
 
     if ! tc_manager_build_share_state_from_topology "$topology_rows"; then
@@ -725,6 +884,13 @@ tc_manager_reconcile_disk_state() {
     fi
 
     if [ "$current_stable_signature" = "$TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE" ]; then
+        if tc_manager_pending_xattr_volume_mounted "$current_stable_signature"; then
+            TC_MANAGER_DISK_PROBE_RESULT=migration_volume_available
+            TC_MANAGER_DISK_REFRESH_RESULT=refresh_migration_volume
+            tc_manager_apply_runtime_from_topology migration_volume_available "$current_stable_signature" || return 1
+            tc_log "manager disk refresh completed for newly available metadata migration volume"
+            return 0
+        fi
         if ! tc_manager_check_active_mast_users "$current_runtime_rows" "${manager_share_rows:-}"; then
             TC_MANAGER_DISK_PROBE_RESULT=active_users_dropped
             TC_MANAGER_DISK_REFRESH_RESULT=refresh_active_users
@@ -1610,6 +1776,8 @@ TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE_READY=0
 TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE=
 TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=0
 TC_MANAGER_PRINTER_CHANGED=0
+TC_MANAGER_XATTR_TDB_PATH=
+TC_MANAGER_XATTR_MIGRATED_VOLUMES=
 manager_payload_ready=0
 manager_payload_dir=
 manager_payload_volume=
@@ -1636,8 +1804,8 @@ tc_manager_stop_telemetry() {
         kill -TERM "$TC_MANAGER_TELEMETRY_PID" 2>/dev/null || true
     fi
 }
-trap 'TC_MANAGER_STOP_REQUESTED=1; tc_manager_stop_telemetry' TERM INT
-trap 'tc_manager_stop_telemetry' EXIT
+trap 'TC_MANAGER_STOP_REQUESTED=1; tc_manager_stop_boot_xattrs; tc_manager_stop_telemetry' TERM INT
+trap 'tc_manager_stop_boot_xattrs; tc_manager_stop_telemetry' EXIT
 
 while ! tc_manager_stop_requested; do
     if [ -x "$TC_TELEMETRY_BIN" ] &&

@@ -59,22 +59,36 @@ missing primary streams, path lookup failures and real I/O errors. The charset
 case checks const-preserving return types and single argument evaluation on
 both the SDK compiler fallback and modern compilers.
 
-The native-metadata cases include the real `vfs_xattr_tdb.c` and
-`vfs_fruit.c` bridge code with controlled TDB and private-syscall backends.
-They cover the NetBSD 4/6 return-value difference, TDB precedence, native-only
-fallback and listing, native-only open/read/on-demand materialization,
-primary-before-mirror writes, native-before-primary deletes, hard-error
-boundaries, FinderInfo size checks, AAPL directory compression, empty configured
-AFPInfo precedence, second-read deletion, concurrent TDB listing, and stream
-discovery. Both `fruit:metadata=stream` and `fruit:metadata=netatalk` exercise
-their write and unlink ordering.
+The native-HFS cases include the real `vfs_xattr_tdb.c` and `vfs_fruit.c` with
+controlled TDB, private-syscall, and lower-VFS backends. They cover the NetBSD
+4/6 syscall return difference, native Apple-xattr stream translation, special
+FinderInfo/resource filtering, non-HFS TDB fallback, FinderInfo synthesis,
+native and async xattr reads, resource create/truncate open paths and flags,
+stream stats, AAPL metadata, empty forks, directory rejection, and
+synchronous/asynchronous dispatch decisions.
+
+The migrator cases include the production one-shot parser. They cover valid,
+ordinary, corrupt, duplicate, and unsupported AppleDouble records; embedded
+FinderInfo and xattrs; oversized and missing native attributes; 1 MiB streamed
+resource forks; copy/cleanup separation; resource-copy restart markers;
+byte-for-byte verification; sidecar retention/deletion; and the intentionally
+blank resource-fork payload. A real temporary `xattr.tdb` case migrates
+FinderInfo under both public metadata settings, canonical Apple xattrs,
+ordinary ACL data, and a fragmented Windows stream, then verifies TDB deletion
+and detached-volume orphan retention through the program entry point. Additional
+cases cover per-file TDB retirement, failed transaction commits, subsequent boots
+with a previously absent volume, prevention of stale-value replay, directory-read
+errors, and ordinary directories whose names begin with `._`. Real stream/backend
+integration tests cover the 3,802-byte Apple-xattr boundary and unchanged Windows
+ADS fragmentation. Resource tests inject read failures after an earlier mismatch
+and check that cleanup retains the sidecar.
 Host runs keep those cases isolated and repeat them once through `all` to check
 cross-case cleanup under sanitizers. Device runs use that same reset-isolated
 `all` invocation as their sole run so the 6.8 MiB static fixture is uploaded once.
-When configured metadata and native HFS metadata disagree, the selected
-`fruit:metadata=stream|netatalk` store wins; reads do not heal or rewrite either
-copy. Resource forks stay on the existing `fruit:resource=file` path and are not
-part of this bridge.
+On HFS, native storage wins conflicts. `fruit:metadata=stream|netatalk` selects
+the preferred legacy value only during migration, and `fruit:resource=file`
+supplies AppleDouble sidecars to the migrator. Non-HFS shares retain the original
+TDB and AppleDouble behavior.
 
 For a macOS mount of a device under test, also run:
 

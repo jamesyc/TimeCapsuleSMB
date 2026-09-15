@@ -46,6 +46,10 @@ class ArtifactResolverTests(unittest.TestCase):
     def test_resolve_netbsd4_payload_returns_logical_deploy_names(self) -> None:
         artifacts = resolve_payload_artifacts(REPO_ROOT, "netbsd4le_samba4")
         self.assertEqual(artifacts["smbd"].repo_relative_path, "bin/samba4-netbsd4le/smbd")
+        self.assertEqual(
+            artifacts["xattr_migrator"].repo_relative_path,
+            "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
+        )
         self.assertEqual(artifacts["mdns"].repo_relative_path, "bin/mdns-netbsd4le/mdns-advertiser")
         self.assertEqual(artifacts["nbns"].repo_relative_path, "bin/nbns-netbsd4le/nbns-advertiser")
         self.assertNotIn("samba-dcerpcd", artifacts)
@@ -54,6 +58,10 @@ class ArtifactResolverTests(unittest.TestCase):
     def test_resolve_netbsd6_payload_returns_current_logical_deploy_names(self) -> None:
         artifacts = resolve_payload_artifacts(REPO_ROOT, "netbsd6_samba4")
         self.assertEqual(artifacts["smbd"].repo_relative_path, "bin/samba4/smbd")
+        self.assertEqual(
+            artifacts["xattr_migrator"].repo_relative_path,
+            "bin/xattr-migrate/xattr-hfs-migrate",
+        )
         self.assertEqual(artifacts["mdns"].repo_relative_path, "bin/mdns/mdns-advertiser")
         self.assertEqual(artifacts["nbns"].repo_relative_path, "bin/nbns/nbns-advertiser")
         self.assertNotIn("samba-dcerpcd", artifacts)

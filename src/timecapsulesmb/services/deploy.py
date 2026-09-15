@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import time
 import tempfile
@@ -19,7 +19,13 @@ from timecapsulesmb.deploy.dry_run import (
     deployment_plan_to_jsonable as _deployment_plan_to_jsonable,
     format_deployment_plan as _format_deployment_plan,
 )
-from timecapsulesmb.deploy.executor import flush_remote_filesystem_writes, run_remote_actions, upload_deployment_payload
+from timecapsulesmb.deploy.executor import (
+    XattrMigrationResult,
+    flush_remote_filesystem_writes,
+    migrate_xattr_tdb_to_hfs,
+    run_remote_actions,
+    upload_deployment_payload,
+)
 from timecapsulesmb.deploy.commands import RemoteAction, StopProcessAction
 from timecapsulesmb.deploy.planner import (
     BINARY_MDNS_SOURCE,
@@ -28,6 +34,7 @@ from timecapsulesmb.deploy.planner import (
     BINARY_TELEMETRY_SOURCE,
     BINARY_RSYNC_SOURCE,
     BINARY_SMBD_SOURCE,
+    BINARY_XATTR_MIGRATOR_SOURCE,
     DeploymentPlan,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
@@ -121,6 +128,10 @@ PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
     "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. "
     "Run Disk Repair; if this keeps happening, the disk may need replacing."
 )
+XATTR_MIGRATION_TIMEOUT_MESSAGE = (
+    "Timed out migrating Samba metadata into native HFS attributes. "
+    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
+)
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
 
 
@@ -135,6 +146,7 @@ class DeployPayloadContext:
 @dataclass(frozen=True)
 class DeployArtifactPaths:
     smbd: Path
+    xattr_migrator: Path
     mdns_advertiser: Path
     nbns_advertiser: Path
     rsync: Path
@@ -247,6 +259,7 @@ class DeployServiceDependencies:
     upload_deployment_payload: Callable[..., object]
     verify_payload_home: Callable[..., PayloadVerificationResult]
     flush_remote_writes: Callable[..., object]
+    migrate_xattrs: Callable[..., str]
     request_reboot: Callable[..., object]
     request_reboot_and_wait: Callable[..., object]
     decide_post_reboot_activation: Callable[..., object]
@@ -276,6 +289,7 @@ def default_deploy_service_dependencies() -> DeployServiceDependencies:
         upload_deployment_payload=upload_deployment_payload,
         verify_payload_home=verify_payload_home_conn,
         flush_remote_writes=flush_remote_filesystem_writes,
+        migrate_xattrs=migrate_xattr_tdb_to_hfs,
         request_reboot=request_reboot,
         request_reboot_and_wait=request_reboot_and_wait,
         decide_post_reboot_activation=decide_netbsd4_post_reboot_activation,
@@ -370,6 +384,8 @@ def effective_no_wait_for_deploy(*, requested: bool, no_reboot: bool) -> bool:
 def deploy_upload_stage(transfer: FileTransfer) -> str:
     if transfer.source_id == BINARY_SMBD_SOURCE:
         return "upload_smbd"
+    if transfer.source_id == BINARY_XATTR_MIGRATOR_SOURCE:
+        return "upload_xattr_migrator"
     if transfer.source_id == BINARY_MDNS_SOURCE:
         return "upload_mdns_advertiser"
     if transfer.source_id == BINARY_NBNS_SOURCE:
@@ -470,6 +486,7 @@ def resolve_deploy_artifact_paths(
     resolved_artifacts = resolver(distribution_root, payload_family)
     return DeployArtifactPaths(
         smbd=resolved_artifacts["smbd"].absolute_path,
+        xattr_migrator=resolved_artifacts["xattr_migrator"].absolute_path,
         mdns_advertiser=resolved_artifacts["mdns"].absolute_path,
         nbns_advertiser=resolved_artifacts["nbns"].absolute_path,
         rsync=resolved_artifacts["rsync"].absolute_path,
@@ -514,6 +531,7 @@ def prepare_deploy_preflight(
         artifacts.smbd,
         artifacts.mdns_advertiser,
         artifacts.nbns_advertiser,
+        xattr_migrator_path=artifacts.xattr_migrator,
         rsync_path=artifacts.rsync,
         service_path=artifacts.service,
         telemetry_path=artifacts.telemetry,
@@ -667,6 +685,7 @@ def prepare_deployment_plan(
         artifacts.smbd,
         artifacts.mdns_advertiser,
         artifacts.nbns_advertiser,
+        xattr_migrator_path=artifacts.xattr_migrator,
         rsync_path=artifacts.rsync,
         service_path=artifacts.service,
         telemetry_path=artifacts.telemetry,
@@ -708,6 +727,7 @@ def _deployment_upload_sources(
     generated_rsync_config.write_text(rsync_config_text)
     return {
         BINARY_SMBD_SOURCE: plan.smbd_path,
+        BINARY_XATTR_MIGRATOR_SOURCE: plan.xattr_migrator_path,
         BINARY_MDNS_SOURCE: plan.mdns_path,
         BINARY_NBNS_SOURCE: plan.nbns_path,
         BINARY_SERVICE_SOURCE: plan.service_path,
@@ -771,6 +791,7 @@ def upload_and_verify_deployment_payload(
     upload_payload_func=None,
     verify_payload_home=None,
     flush_remote_writes=None,
+    migrate_xattrs_func=None,
     dependencies: DeployServiceDependencies | None = None,
 ) -> None:
     callbacks = callbacks or OperationCallbacks()
@@ -785,8 +806,69 @@ def upload_and_verify_deployment_payload(
         upload_payload_func = dependencies.upload_deployment_payload
     if flush_remote_writes is None:
         flush_remote_writes = dependencies.flush_remote_writes
+    if migrate_xattrs_func is None:
+        migrate_xattrs_func = dependencies.migrate_xattrs
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
+    legacy_metadata = "netatalk" if runtime_config.fruit_metadata_netatalk else "stream"
+    copied_migration_roots = None
+
+    def run_xattr_migration_phase(phase: str) -> None:
+        nonlocal copied_migration_roots
+        callbacks.stage(f"migrate_xattrs_{phase}")
+        callbacks.message(
+            "Copying legacy Samba metadata into native HFS storage..."
+            if phase == "copy"
+            else "Verifying native HFS metadata and removing migrated legacy storage..."
+        )
+        migration_started = time.monotonic()
+        try:
+            migration_result = migrate_xattrs_func(
+                connection,
+                plan,
+                phase=phase,
+                legacy_metadata=legacy_metadata,
+                roots=copied_migration_roots if phase == "cleanup" else None,
+            )
+        except Exception as exc:
+            callbacks.measurement(
+                "xattr_migration",
+                phase=phase,
+                duration_sec=round(time.monotonic() - migration_started, 3),
+                result="failure",
+                error_type=type(exc).__name__,
+            )
+            if is_ssh_timeout_error(exc):
+                raise DeployDeviceError(
+                    XATTR_MIGRATION_TIMEOUT_MESSAGE,
+                    code="xattr_migration_timeout",
+                ) from exc
+            raise DeployDeviceError(
+                f"Native HFS metadata migration ({phase}) failed: {exc}",
+                code="xattr_migration_failed",
+            ) from exc
+        callbacks.measurement(
+            "xattr_migration",
+            phase=phase,
+            duration_sec=round(time.monotonic() - migration_started, 3),
+            result="success",
+        )
+        if isinstance(migration_result, XattrMigrationResult):
+            migration_output = migration_result.output
+            if phase == "copy":
+                copied_migration_roots = migration_result.roots
+            callbacks.debug(
+                **{
+                    f"xattr_migration_{phase}": migration_output.strip(),
+                    f"xattr_migration_{phase}_unavailable_roots": list(
+                        migration_result.unavailable_roots
+                    ),
+                }
+            )
+        else:
+            # Test or injected implementations may retain the original string
+            # result while the production executor carries the selected roots.
+            callbacks.debug(**{f"xattr_migration_{phase}": str(migration_result).strip()})
 
     def update_scp_upload_telemetry() -> None:
         scp_path = local_scp_path()
@@ -835,13 +917,9 @@ def upload_and_verify_deployment_payload(
             boot_asset_path_func=boot_asset_path_func,
             dependencies=dependencies,
         )
-        if initial_upload_stage is not None:
-            callbacks.stage(initial_upload_stage)
         update_scp_upload_telemetry()
         if on_before_upload is not None:
             on_before_upload()
-        upload_batch_started = time.monotonic()
-        upload_batch_result = "success"
         active_upload: FileTransfer | None = None
         upload_starts: dict[str, float] = {}
 
@@ -870,6 +948,45 @@ def upload_and_verify_deployment_payload(
                 active_upload = None
             if on_uploaded is not None:
                 on_uploaded(transfer)
+
+        migration_transfer = plan.migration_upload
+        if on_uploading is None:
+            callbacks.stage("upload_xattr_migrator")
+        record_uploading(migration_transfer)
+        try:
+            migration_plan = replace(plan, uploads=[migration_transfer])
+            migration_upload_kwargs: dict[str, object] = {
+                "connection": connection,
+                "source_resolver": upload_sources,
+            }
+            upload_payload_func(
+                migration_plan,
+                **_upload_payload_kwargs_for_func(
+                    upload_payload_func, migration_upload_kwargs
+                ),
+            )
+        except Exception as exc:
+            started = upload_starts.get(migration_transfer.source_id)
+            callbacks.measurement(
+                "upload",
+                source_id=migration_transfer.source_id,
+                mode=migration_transfer.mode,
+                destination_kind=_upload_destination_kind(migration_transfer, plan),
+                timeout_sec=migration_transfer.timeout_seconds,
+                duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
+                result="failure",
+                error_type=type(exc).__name__,
+            )
+            if _payload_upload_timed_out(exc, migration_transfer, plan):
+                raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc
+            raise
+        record_uploaded(migration_transfer)
+        run_xattr_migration_phase("copy")
+
+        if initial_upload_stage is not None:
+            callbacks.stage(initial_upload_stage)
+        upload_batch_started = time.monotonic()
+        upload_batch_result = "success"
 
         upload_kwargs: dict[str, object] = {
             "connection": connection,
@@ -939,6 +1056,7 @@ def upload_and_verify_deployment_payload(
         on_verified=on_verified,
         dependencies=dependencies,
     )
+    run_xattr_migration_phase("cleanup")
 
 
 def _run_activation_actions_and_verify(

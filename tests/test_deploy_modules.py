@@ -45,7 +45,9 @@ from timecapsulesmb.deploy.executor import (
     FLUSH_REMOTE_FILESYSTEMS_COMMAND,
     FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
     REBOOT_REQUEST_TIMEOUT_SECONDS,
+    XattrMigrationResult,
     flush_remote_filesystem_writes,
+    migrate_xattr_tdb_to_hfs,
     remote_request_reboot,
     run_remote_actions,
     remote_uninstall_payload,
@@ -59,6 +61,7 @@ from timecapsulesmb.deploy.planner import (
     BINARY_TELEMETRY_SOURCE,
     BINARY_RSYNC_SOURCE,
     BINARY_SMBD_SOURCE,
+    BINARY_XATTR_MIGRATOR_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -200,6 +203,7 @@ class DeployModuleTests(unittest.TestCase):
             Path("bin/smbd"),
             Path("bin/mdns"),
             Path("bin/nbns"),
+            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=startup_mode,
             wait_after_reboot=wait_after_reboot,
@@ -213,6 +217,7 @@ class DeployModuleTests(unittest.TestCase):
             ),
             artifacts=DeployArtifactPaths(
                 smbd=Path("bin/smbd"),
+                xattr_migrator=Path("bin/xattr-hfs-migrate"),
                 mdns_advertiser=Path("bin/mdns"),
                 nbns_advertiser=Path("bin/nbns"),
                 rsync=Path("bin/rsync"),
@@ -1413,7 +1418,7 @@ echo ok
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
@@ -1504,7 +1509,7 @@ echo ok
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         custom_plan = replace(
             plan,
             uploads=[
@@ -1530,6 +1535,61 @@ echo ok
         self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
         mount_mock.assert_not_called()
 
+    def test_upload_xattr_migrator_is_separate_from_runtime_payload(self) -> None:
+        plan = build_deployment_plan(
+            "host",
+            self._payload_home(),
+            Path("bin/smbd"),
+            Path("bin/mdns"),
+            Path("bin/nbns"),
+            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
+            rsync_path=Path("bin/rsync"),
+            service_path=Path("bin/service"),
+            telemetry_path=Path("bin/telemetry"),
+        )
+        connection = SshConnection("host", "pw", "-o foo")
+
+        self.assertNotIn(BINARY_XATTR_MIGRATOR_SOURCE, [item.source_id for item in plan.uploads])
+        self.assertEqual(plan.migration_upload.source_id, BINARY_XATTR_MIGRATOR_SOURCE)
+        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+            with mock.patch(
+                "timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn",
+                return_value=True,
+            ) as mount_mock:
+                upload_deployment_payload(
+                    replace(plan, uploads=[plan.migration_upload]),
+                    connection=connection,
+                    source_resolver={
+                        BINARY_XATTR_MIGRATOR_SOURCE: Path("bin/xattr-hfs-migrate")
+                    },
+                )
+
+        mount_mock.assert_called_once_with(
+            connection,
+            "/Volumes/dk2",
+            "/dev/dk2",
+            wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+        )
+        scp_mock.assert_called_once_with(
+            connection,
+            Path("bin/xattr-hfs-migrate"),
+            "/Volumes/dk2/samba4/xattr-hfs-migrate",
+            timeout=180,
+        )
+
+    def test_xattr_migration_rejects_invalid_phase_and_metadata(self) -> None:
+        plan = self._prepared_deploy_plan().plan
+        connection = SshConnection("host", "pw", "-o foo")
+
+        with self.assertRaisesRegex(ValueError, "migration phase"):
+            migrate_xattr_tdb_to_hfs(
+                connection, plan, phase="remove", legacy_metadata="stream"
+            )
+        with self.assertRaisesRegex(ValueError, "metadata backend"):
+            migrate_xattr_tdb_to_hfs(
+                connection, plan, phase="copy", legacy_metadata="hfs"
+            )
+
     def test_upload_and_verify_deployment_payload_records_upload_measurements(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
         connection = SshConnection("host", "pw", "-o foo")
@@ -1550,17 +1610,70 @@ echo ok
             callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
             run_remote_actions_func=mock.Mock(),
             upload_payload_func=fake_upload,
+            migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
             flush_remote_writes=mock.Mock(),
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
         )
 
         upload_measurements = [fields for kind, fields in measurements if kind == "upload"]
         batch_measurements = [fields for kind, fields in measurements if kind == "upload_batch"]
-        self.assertEqual([fields["source_id"] for fields in upload_measurements], [BINARY_SMBD_SOURCE, BINARY_MDNS_SOURCE])
-        self.assertEqual(upload_measurements[0]["destination_kind"], "payload")
-        self.assertEqual(upload_measurements[0]["result"], "success")
+        self.assertEqual(
+            [fields["source_id"] for fields in upload_measurements],
+            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_MDNS_SOURCE],
+        )
+        self.assertTrue(all(fields["destination_kind"] == "payload" for fields in upload_measurements))
+        self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
         self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
         self.assertEqual(batch_measurements[0]["result"], "success")
+
+    def test_xattr_copy_precedes_payload_and_cleanup_follows_verification(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        connection = SshConnection("host", "pw", "-o foo")
+        events: list[str] = []
+        migrated_root = self._mast_volume()
+
+        def migrate(_connection, _plan, *, phase, legacy_metadata, roots=None):
+            events.append(
+                f"migrate:{phase}:{legacy_metadata}:"
+                f"{'selected' if roots == (migrated_root,) else 'discover'}"
+            )
+            return XattrMigrationResult(f"phase={phase}", (migrated_root,))
+
+        def verify(*_args, **_kwargs):
+            events.append("verify")
+            return PayloadVerificationResult(True, "ok")
+
+        def upload(plan, *_args, **_kwargs):
+            events.append(
+                "upload:migrator"
+                if plan.uploads == [plan.migration_upload]
+                else "upload:payload"
+            )
+
+        upload_and_verify_deployment_payload(
+            AppConfig.from_values({}),
+            connection,
+            prepared_plan,
+            DeployRuntimeConfig(nbns_enabled=True, fruit_metadata_netatalk=False),
+            callbacks=OperationCallbacks(),
+            run_remote_actions_func=mock.Mock(),
+            migrate_xattrs_func=migrate,
+            upload_payload_func=upload,
+            flush_remote_writes=mock.Mock(),
+            verify_payload_home=verify,
+        )
+
+        self.assertEqual(
+            events,
+            [
+                "upload:migrator",
+                "migrate:copy:stream:discover",
+                "upload:payload",
+                "verify",
+                "verify",
+                "migrate:cleanup:stream:selected",
+            ],
+        )
 
     def test_upload_and_verify_deployment_payload_codes_manager_stop_timeout(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
@@ -1575,6 +1688,7 @@ echo ok
                 callbacks=OperationCallbacks(),
                 run_remote_actions_func=mock.Mock(side_effect=SshError("process manager did not stop")),
                 upload_payload_func=mock.Mock(),
+                migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
             )
 
         self.assertEqual(raised.exception.code, "manager_stop_timeout")
@@ -1599,6 +1713,7 @@ echo ok
                 callbacks=OperationCallbacks(),
                 run_remote_actions_func=mock.Mock(),
                 upload_payload_func=timeout_upload,
+                migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
             )
 
         self.assertEqual(raised.exception.code, "payload_upload_timeout")
@@ -1607,7 +1722,7 @@ echo ok
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
@@ -1622,7 +1737,7 @@ echo ok
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
             upload_deployment_payload(plan, connection=connection, source_resolver={})
@@ -2770,7 +2885,7 @@ describe_managed_smbd_status "" ""
         payload_dir_name = "samba4"
         payload_dir = f"/Volumes/dk2/{payload_dir_name}"
         paths = self._payload_home("/Volumes/dk2", payload_dir_name)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertEqual(plan.device_path, "/dev/dk2")
@@ -2805,6 +2920,7 @@ describe_managed_smbd_status "" ""
             Path("bin/smbd"),
             Path("bin/mdns"),
             Path("bin/nbns"),
+            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
          service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
@@ -2836,6 +2952,7 @@ describe_managed_smbd_status "" ""
             Path("bin/smbd"),
             Path("bin/mdns"),
             Path("bin/nbns"),
+            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
          service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
@@ -2878,6 +2995,7 @@ describe_managed_smbd_status "" ""
             Path("bin/smbd"),
             Path("bin/mdns"),
             Path("bin/nbns"),
+            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             rsync_enabled=True,
             startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
@@ -2895,6 +3013,7 @@ describe_managed_smbd_status "" ""
             Path("bin/smbd"),
             Path("bin/mdns"),
             Path("bin/nbns"),
+            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
             wait_after_reboot=False,
@@ -3031,13 +3150,13 @@ describe_managed_smbd_status "" ""
 
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         self.assertEqual(plan.post_upload_actions[0], EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
         self.assertIn(InstallPermissionsAction(tuple(plan.permissions)), plan.post_upload_actions)
 
     def test_deployment_plan_guards_each_payload_write_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
         for index, action in enumerate(plan.pre_upload_actions):
@@ -3057,7 +3176,7 @@ describe_managed_smbd_status "" ""
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         executable_permissions = {permission.path for permission in plan.permissions if permission.mode == "755"}
 
         self.assertIn("/Volumes/dk2/samba4/smbd", executable_permissions)

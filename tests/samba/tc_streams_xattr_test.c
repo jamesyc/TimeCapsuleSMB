@@ -11,7 +11,7 @@
 #define ENOATTR 193
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #x, errno); exit(90); } } while (0)
 
-struct test_attr { char name[128]; uint8_t data[64]; size_t size; };
+struct test_attr { char name[128]; uint8_t data[4096]; size_t size; };
 static struct test_attr attrs[8];
 static unsigned removes;
 static int fail_extent, fail_primary;
@@ -83,8 +83,9 @@ static NTSTATUS test_pathref(TALLOC_CTX *ctx, const struct files_struct *parent,
 #define SMB_VFS_FGETXATTR(f,n,v,s) test_get(f,n,v,s)
 #define SMB_VFS_FSETXATTR(f,n,v,s,g) test_set(f,n,v,s,g)
 #define SMB_VFS_FREMOVEXATTR(f,n) test_remove(f,n)
-/* Eight bytes make multi-extent cases small and readable. */
-#define lp_smbd_max_xattr_size(snum) 8
+/* Small fragments keep ordinary cases readable; also exercise the release limit. */
+static size_t fragment_size = 8;
+#define lp_smbd_max_xattr_size(snum) fragment_size
 #define synthetic_pathref test_pathref
 /* Shared-module host configuration aliases this name to samba_init_module. */
 #undef vfs_streams_xattr_init
@@ -110,7 +111,17 @@ int main(int argc, char **argv)
 	CHECK(argc == 2);
 	conn.cwd_fsp = &root; root.conn = sub.conn = file.conn = &conn;
 	test_file = &file; expected_parent = &root;
-	if (strcmp(argv[1], "charset_types") == 0) {
+	if (strcmp(argv[1], "hfs_windows_boundary") == 0) {
+		uint8_t value[3804], output[3804];
+		fragment_size = 3802; config.native_hfs = true;
+		memset(value, 0x65, sizeof(value)); value[3803] = 0;
+		CHECK(fsetxattr_multi(&config, &file, "windows:$DATA", value, sizeof(value), 0) == 0);
+		CHECK(find_attr("user.DosStream.windows:$DATA")->size == 3802);
+		CHECK(find_attr("user.DosStream.windows:$DATA")->data[3801] == 1);
+		CHECK(find_attr("user.DosStreamExt.1.windows:$DATA")->size == 2);
+		CHECK(fgetxattr_multi(&config, &file, "windows:$DATA", output, sizeof(output)) == sizeof(value));
+		CHECK(memcmp(value, output, sizeof(value)) == 0);
+	} else if (strcmp(argv[1], "charset_types") == 0) {
 		char mutable[] = "alpha";
 		const char immutable[] = "alpha";
 		char *cursor = mutable;

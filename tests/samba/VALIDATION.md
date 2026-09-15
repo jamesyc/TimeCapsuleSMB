@@ -145,10 +145,98 @@ and received these manifest hashes:
 | NetBSD 4 LE | 10,213,656 | `7ec1840e63bb4bd2be07b481be5b84fdeb0fb4814216e39f38e19a870ccc2532` |
 | NetBSD 4 BE | 10,212,492 | `ce2dd3df46e3c8795f606ed025c2d6ff48b4b3bada65370f0dd055c80f6ad19f` |
 
-Full local pytest passed 1,859 tests with four workers. A ten-worker run hit the
-known timing-sensitive ACP telemetry timeout; that exact case passed immediately
-alone before the clean full rerun. This validation does not claim macOS 27
-coverage or a full Time Machine backup cycle.
+## Native HFS V4 migration validation plan
+
+The V4 native-HFS backend and two-phase migrator supersede the 0037 dual-write
+results above. Do not treat this section as a completed live-device validation
+until every gate is checked and the actual migration output is recorded.
+
+Offline gates, in order:
+
+1. Apply the complete patch series to a fresh Samba checkout.
+2. Build `smbd`, `tc_xattr_hfs_migrate`, `tc_native_metadata_test`, and
+   `tc_xattr_migrate_test` for one NetBSD lane.
+3. Run host ASan/UBSan regression cases, including combined `all` runs.
+4. Run the Python deploy/planner/executor tests and the full local suite.
+5. Inspect the migrator binary for static linkage and the resident `smbd` for
+   the 10 MiB size budget and absence of pthread dependencies.
+6. Repeat offline builds for the other two lanes and update artifact hashes.
+
+The single live migration attempt must not begin until the offline gates pass
+and a read-only inventory has captured the TDB path, byte size, record count,
+mounted HFS roots, AppleDouble sidecar count, and representative metadata. The
+live sequence is NetBSD 4 first and NetBSD 6 last because rebooting the NetBSD 6
+router disconnects the NetBSD 4 device behind it.
+
+For each live family:
+
+1. Seed isolated files through SMB with FinderInfo, tags, another Apple xattr,
+   a Windows-only ADS, ACL data, and resource forks at 0, 3,802, 3,803, 90 KiB,
+   and 1 MiB. Seed an AppleDouble fixture containing embedded xattrs.
+2. Record the legacy TDB and sidecar bytes before migration.
+3. Run only the migrator `copy` phase and verify that all legacy data remains.
+4. Verify native FinderInfo/xattrs directly and resource contents through
+   `..namedfork/rsrc`, including hashes and exact lengths.
+5. Install but do not activate the V4 payload, then run `cleanup`.
+6. Confirm that verified sidecars and completed file records are removed,
+   malformed/unsupported sidecars and unmatched records are retained, and the
+   TDB is deleted only when empty.
+7. Activate Samba and verify SMB reads of every value, then use a fresh AFP
+   session to read the same FinderInfo, xattrs, and resource fork.
+8. Write new values through AFP and read them through SMB, then reverse the
+   direction. Exercise rename, truncate-to-zero, delete-on-close, and base-file
+   deletion.
+9. Reboot, run Doctor, repeat the cross-protocol reads, and remove all fixtures.
+
+Failure at any step stops before cleanup or activation. Preserve the TDB,
+sidecars, migrator output, and device logs for diagnosis; do not retry the live
+migration until the failure is understood.
+
+Offline validation of the review fixes on 2026-09-14:
+
+- The final full local suite passed 1,884 tests with ten workers. The focused
+  artifact/build/migration suite passed 51 tests and 39 subtests. Ruff,
+  diff-whitespace, ELF linkage, size-budget, and manifest checks passed. Existing
+  Python forkpty deprecation warnings remain.
+- The complete patch series applied to a fresh Samba checkout and removed the
+  superseded native-xattr header. A disposable Ubuntu 24.04 build then passed all
+  73 real C regression invocations under ASan/UBSan; the Mac host itself lacked
+  `pkg-config`/GnuTLS discovery, so no host packages were installed there.
+- Native-xattr regression code verifies that set/remove syscalls execute while
+  the cooperative file lock is held and that repeated `XATTR_CREATE` returns
+  `EEXIST` without issuing a second native write.
+- Resource tests distinguish readable conflicts from I/O failures, continue
+  checking readability after differences, retry EINTR/partial reads, and retain
+  sidecars on errors. Directory-read errors fail the scan; a 150-file fixture
+  exercises geometric allocation growth in directory snapshots.
+- Per-file TDB cleanup tests exercise failed commits, retained missing-disk
+  records, later discovery of those files, and subsequent deploys after native
+  edits/deletions. Completed records are retired independently.
+- Boot shell tests cover successful and failed migration, cancellation with helper
+  termination and RAM cleanup, partial migration with an unavailable volume,
+  same-process scan suppression, later attachment, retry after failure, and
+  preservation of already-active shares.
+- All three NetBSD lanes rebuilt smbd, the migrator, and static regression
+  drivers using the existing VM toolchains. Cross-execution and cross-answer
+  generation were disabled; the cross-exec command was /usr/bin/false.
+- All six root-built, stripped deliverables are static NetBSD ARM executables.
+  Resident smbd remains below 10 MiB; the temporary migrator is approximately
+  2 MiB. Binaries were copied back, followed by the required five-second wait
+  and manifest update.
+
+| Device family | smbd bytes | smbd SHA-256 | migrator bytes | migrator SHA-256 |
+| --- | ---: | --- | ---: | --- |
+| NetBSD 6 | 10,207,344 | `2f12424643461c42257a3f442177d44abdc7a6cc412d12792b64b193a135d1d0` | 2,126,852 | `fb0101af9be169de8c865dbac61ae36bf0bde3f10a19253ca332d3a7f0c554a6` |
+| NetBSD 4 LE | 10,219,572 | `6e41fcc582dfed744c001d2e4d3c9326f6018be1e21cfc25d95cb1f686fedae8` | 2,133,420 | `b4fa7df4a7db140629583179493d9b21bf7d08162d33390f1c149a0156be3f0b` |
+| NetBSD 4 BE | 10,218,420 | `ac2f276fd0051cdc8a019d390de192a432ba176b958cdc95d1ce5da0cfc93d1e` | 2,132,952 | `3eab680a8b1f46e80f9b44f86bf4e81238046164e2b26ae33855c12062fa575a` |
+
+Real-device volume identity across unplug/replug and AFP concurrency remain
+unvalidated. Unmatched device/inode records are retained rather than guessed.
+
+No live Time Capsule was contacted, deployed to, rebooted, cross-executed on,
+or migrated during this validation. The live plan above remains deliberately
+unexecuted. This validation does not claim macOS 27 coverage or a full Time
+Machine backup cycle.
 
 ## Native metadata race-fix validation (2026-09-13)
 

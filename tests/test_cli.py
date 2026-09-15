@@ -403,6 +403,12 @@ class CliTests(unittest.TestCase):
                 return_value=VersionCheckResult(should_block=False),
             )
         )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.services.deploy.migrate_xattr_tdb_to_hfs",
+                return_value="migration=complete",
+            )
+        )
 
     def tearDown(self) -> None:
         self._exit_stack.close()
@@ -5163,7 +5169,7 @@ class CliTests(unittest.TestCase):
             wait_seconds=7,
         )
         self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
-        result.mocks.upload_deployment_payload.assert_called_once()
+        self.assertEqual(result.mocks.upload_deployment_payload.call_count, 2)
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         result.mocks.verify_payload_home_conn.assert_has_calls(
             [
@@ -5425,6 +5431,8 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if _plan.uploads == [_plan.migration_upload]:
+                return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
         enabled = self.run_deploy_cli(
@@ -5469,6 +5477,8 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if _plan.uploads == [_plan.migration_upload]:
+                return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
         enabled = self.run_deploy_cli(
@@ -5837,13 +5847,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual(str(result.exception), "scp failed")
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["result"], "failure")
-        self.assertIn("stage=upload_payload", finished["error"])
+        self.assertIn("stage=upload_xattr_migrator", finished["error"])
         self.assertIn("RuntimeError: scp failed", finished["error"])
 
     def test_deploy_ssh_timeout_shows_red_slow_device_guidance_and_keeps_telemetry_detail(self) -> None:
         timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/.manager.sh.tmp'"
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if plan.uploads == [plan.migration_upload]:
+                return
             if on_uploading is not None:
                 on_uploading(next(transfer for transfer in plan.uploads if transfer.destination == "/mnt/Flash/manager.sh"))
             raise SshCommandTimeout(timeout)

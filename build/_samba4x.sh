@@ -649,12 +649,14 @@ configure_samba4x() {
     # Time Capsule smbd does not use filesystem quota integration, and Samba's
     # optional quotactl runtime probe has a colon in its Waf message, which
     # cannot be represented reliably in a colon-delimited cross-answers file.
-    samba4x_nonshared_binaries=smbd/smbd
+    # The one-shot HFS migrator is a separate binary so its TDB/tree-walk code
+    # does not remain in the RAM-resident smbd after conversion.
+    samba4x_nonshared_binaries=smbd/smbd,tc_xattr_hfs_migrate
     if [ "$SAMBA4X_BUILD_PTHREADPOOL_SYNC_TEST" = "1" ]; then
         samba4x_nonshared_binaries="$samba4x_nonshared_binaries,pthreadpool_tevent_sync_test"
     fi
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test"
+        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test"
     fi
 
     set -- \
@@ -1181,7 +1183,7 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     fi
 
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test
+        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test
         # Debug information can dwarf the tests on these small appliances.
         # Keep the ordinary Waf outputs and upload separate stripped copies.
         for test_relative in \
@@ -1189,7 +1191,8 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
             source3/modules/tc_aio_fork_test \
             source3/modules/tc_durable_reconnect_test \
             source3/modules/tc_streams_xattr_test \
-            source3/modules/tc_native_metadata_test
+            source3/modules/tc_native_metadata_test \
+            source3/modules/tc_xattr_migrate_test
         do
             test_binary="$SAMBA4X_SRC_DIR/bin/default/$test_relative"
             if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
@@ -1208,7 +1211,7 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     # Force the final smbd link so the dedicated map cannot be missing or
     # inherited from an earlier configure probe or incremental build.
     rm -f "$MAP_FILE" "$SAMBA4X_SRC_DIR/bin/default/source3/smbd/smbd"
-    PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=smbd/smbd
+    PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=smbd/smbd,tc_xattr_hfs_migrate
     validate_samba4x_smbd_map
 
     stage_samba4x_binary() {
@@ -1264,9 +1267,13 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     stage_samba4x_binary "smbd" '*/source3/smbd/smbd' \
         "$SAMBA4X_STAGE/sbin/smbd" \
         "$SAMBA4X_STAGE/sbin/smbd.stripped"
+    stage_samba4x_binary "xattr migrator" '*/source3/utils/tc_xattr_hfs_migrate' \
+        "$SAMBA4X_STAGE/bin/tc_xattr_hfs_migrate" \
+        "$SAMBA4X_STAGE/bin/tc_xattr_hfs_migrate.stripped"
 } >"$SAMBA4X_LOG" 2>&1
 
 printf 'Samba 4.x build complete.\n'
 printf 'Log: %s\n' "$SAMBA4X_LOG"
 printf 'Regular binary: %s\n' "$SAMBA4X_STAGE/sbin/smbd"
 printf 'Stripped binary: %s\n' "$SAMBA4X_STAGE/sbin/smbd.stripped"
+printf 'Stripped xattr migrator: %s\n' "$SAMBA4X_STAGE/bin/tc_xattr_hfs_migrate.stripped"

@@ -18,6 +18,36 @@ You get the full Apple experience reproduced: after you install this, you do not
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
+On HFS disks, the patched Samba runtime stores Mac metadata in the same native
+objects used by Apple's AFP server. This lets AFP and SMB observe the same
+FinderInfo, tags, extended attributes, and resource forks instead of maintaining
+separate protocol-specific copies:
+
+| Mac concept | SMB representation | Native HFS storage | Future FAT32 storage | Deploy migrator |
+| --- | --- | --- | --- | --- |
+| FinderInfo | `:AFP_AfpInfo:$DATA` | `com.apple.FinderInfo` catalog metadata | Configured `fruit:metadata` representation in `xattr.tdb` | TDB `stream\|netatalk` → native FinderInfo |
+| Tags and extended metadata | `:com.apple.…:$DATA` | Canonical native HFS xattr | Encoded stream in `xattr.tdb` | TDB stream → canonical HFS xattr |
+| Resource fork | `:AFP_Resource:$DATA` | `file/..namedfork/rsrc` | `._file` AppleDouble sidecar | AppleDouble resource entry → native HFS resource fork |
+| Windows-only ADS | Ordinary named stream | Encoded and, when necessary, sharded HFS xattrs | `xattr.tdb` | TDB stream/extents → native HFS xattrs |
+| NT ACL | Samba security xattr | Native HFS security xattr | `xattr.tdb` | TDB security xattr → native HFS xattr |
+
+When the legacy `xattr.tdb` exists, deploy performs this as a two-phase upgrade.
+Fresh installs and already-migrated systems skip the disk scan. An upgrade first
+copies and verifies legacy TDB and `._` AppleDouble contents while leaving the
+old representation intact.
+After the new payload is uploaded and verified, it reverifies the native values
+and retires each file's TDB record only after its native metadata is flushed and
+verified. Unmatched records remain for disconnected disks; an empty TDB is deleted.
+Deploy and boot migrate the volumes that are currently mounted without withholding
+healthy shares for a disconnected disk. The manager migrates a pending disk before
+publishing it when that disk is attached later. The migration helper stays on disk
+and is copied temporarily into RAM for each run.
+
+FAT32 volumes are not currently mounted or discovered. The non-HFS column above
+documents the intended fallback: if FAT32 support is added later, `xattr_tdb`
+continues using its real TDB backend and `fruit:resource=file` continues using
+AppleDouble rather than native HFS forks.
+
 NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can **use this to flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot**. If you do not flash the boot hook, then Samba will not start automatically on an older Time Capsule!
 
 The current authentication model accepts any user as the username, and the Samba password is the current Time Capsule device password. At boot, the device reads its live AirPort `syPW` value and generates the Samba password file in RAM, so a device-password change is picked up after reboot. Guest access is disabled.
@@ -39,7 +69,7 @@ For the python setup, you need:
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
-Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else. The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine. 
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. Matching one-shot migration binaries are under `bin/xattr-migrate*`; existing installations must complete that migration before starting this Samba build. The binaries are statically compiled. The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
 
 ## Quick Start (macOS app)
 
@@ -215,7 +245,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that Bonjour `_smb._tcp` advertisement is visible and resolves
 - that an authenticated SMB listing actually works and includes the active share name
 - that authenticated SMB file operations also work on the share
-- that `xattr_tdb:file` in the active Samba config points at persistent storage instead of the RAM disk
+- that the configured non-HFS `xattr_tdb:file` fallback points at persistent storage instead of the RAM disk; a successfully migrated HFS runtime does not open or recreate that TDB
 
 If you want the results in JSON instead of human-readable text, use:
 

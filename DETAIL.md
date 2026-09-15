@@ -18,6 +18,8 @@ What is working now:
 - boot-time runtime staging via `/mnt/Flash/rc.local`
 - boot-time manager for `smbd`, the mDNS and telemetry helpers, and the optional NBNS and rsync services when enabled
 - direct SMB service on port `445`
+- native HFS FinderInfo, extended-attribute, and resource-fork storage shared with Apple's AFP server
+- a two-phase deploy migrator for legacy `xattr.tdb` records and `._` AppleDouble resource files
 - Bonjour advertisement for:
   - managed `_smb._tcp`
   - managed `_adisk._tcp`
@@ -156,6 +158,94 @@ Current naming split:
 - share names are not configured locally; runtime sanitizes and de-duplicates the Apple `MaSt` partition names
 
 ## Why Samba 4.8, Then 4.25.0rc2
+
+## Native Mac Metadata Architecture
+
+Apple's HFS implementation stores the Mac concepts Samba must expose in three
+different kinds of native object. They should not be collapsed into a single
+extended-attribute mechanism:
+
+| Mac concept | SMB representation | Owning VFS layer | Native HFS storage | Future FAT32 storage | Migrator input and output |
+| --- | --- | --- | --- | --- | --- |
+| FinderInfo | `:AFP_AfpInfo:$DATA` | `fruit` | `com.apple.FinderInfo` catalog metadata | `fruit:metadata=stream\|netatalk` backed by TDB | Selected TDB metadata → native FinderInfo |
+| Tags and other Mac xattrs | `:com.apple.…:$DATA` | `streams_xattr` → `xattr_tdb` | Canonical HFS xattr | Encoded stream in `xattr.tdb` | TDB stream → canonical HFS xattr |
+| Resource fork | `:AFP_Resource:$DATA` | `fruit` | `file/..namedfork/rsrc` | `._file` through `fruit:resource=file` | AppleDouble resource entry → native resource fork |
+| Windows-only ADS | Ordinary named stream | `streams_xattr` → `xattr_tdb` | Encoded/sharded HFS xattrs | `xattr.tdb` | TDB stream/extents → native HFS xattrs |
+| NT ACL | Samba security xattr | `acl_xattr` → `xattr_tdb` | Native HFS security xattr | `xattr.tdb` | TDB security xattr → native HFS xattr |
+
+`vfs_fruit` already intercepts the two special Mac streams before
+`streams_xattr`. On HFS, its effective metadata backend synthesizes the 60-byte
+`AFP_AfpInfo` stream from the native 32-byte FinderInfo value. Its effective
+resource backend opens `file/..namedfork/rsrc` as a real descriptor, so large
+resource forks use normal offset I/O and are not limited by the device's
+3,802-byte ordinary-xattr ceiling.
+
+All other named streams continue down the configured stack:
+
+```text
+catia → fruit → streams_xattr → acl_xattr → xattr_tdb
+```
+
+On HFS, `xattr_tdb` is an automatic native backend and never opens or creates
+the configured TDB. It translates Mac stream names into canonical
+`com.apple.*` HFS xattrs, while excluding `com.apple.FinderInfo` and
+`com.apple.ResourceFork` because `fruit` owns their special SMB semantics.
+Windows-only streams remain encoded and may use HFS xattr extents. A canonical
+Apple xattr that exceeds the native HFS limit is rejected rather than exposing
+an incomplete first extent to AFP.
+
+On non-HFS filesystems, the module follows its upstream TDB behavior. FAT32 is
+not currently mounted or discovered; the fallback is kept deliberately so a
+future FAT32 implementation can use TDB-backed metadata and AppleDouble
+resources without another Samba storage redesign.
+
+### AppleDouble migration
+
+`fruit:resource=file` means a separate `._filename` AppleDouble container, not
+an HFS resource fork. A normal container has a header and entry table, a
+FinderInfo entry, an optional embedded `ATTR` table containing more xattrs, and
+an arbitrarily large resource entry. Deleting it after copying only the resource
+entry could therefore discard FinderInfo or tags.
+
+The standalone `xattr-hfs-migrate` helper validates all offsets and lengths,
+migrates FinderInfo and embedded xattrs using native-HFS conflict rules, streams
+the resource entry into `file/..namedfork/rsrc`, and verifies the result. It
+recognizes Samba's intentionally blank resource-fork placeholder. Malformed
+containers, unsupported top-level entries, oversized native xattrs, or failed
+read-back verification leave the sidecar untouched and fail that migration
+phase.
+
+The legacy `xattr.tdb` is the migration-needed signal: fresh installs and
+already-migrated systems skip the disk scan without adding a persistent marker.
+When it exists, migration is split around payload installation:
+
+1. Stop the old Samba runtime and upload only the migrator.
+2. `copy`: populate and verify native HFS storage without deleting TDB or AppleDouble data.
+3. Upload and verify the new Samba payload.
+4. `cleanup`: reverify and flush each file's native storage, remove verified sidecars, and transactionally delete that file's TDB record. Delete `xattr.tdb` when no records remain.
+5. Sync, then activate or reboot into the new runtime.
+
+A temporary per-file resource migration marker makes an interrupted large fork
+copy distinguishable from a pre-existing native/legacy conflict. The helper
+removes the marker after a complete byte-for-byte verification. Existing native
+values win conflicts, including complete native Windows ADS. Stream extents are
+written before their anchor so interrupted exports can be retried. Read failures
+are errors, never evidence of a conflict.
+
+Unmatched TDB records remain for disconnected disks. Deploy and boot migration
+operate only on volumes that remain mounted after the normal `diskd.useVolume`
+attempts, so an unavailable external disk does not withhold healthy shares. The
+manager remembers completed volumes in process-local state and migrates a pending
+volume before publishing it when that volume later becomes available. A failed
+attachment migration leaves the existing Samba runtime unchanged and is retried.
+No persistent progress file is needed: retiring each completed TDB record prevents
+later replay, while a manager restart may harmlessly verify already-migrated roots
+when another disk still has records in the retained TDB.
+
+The stream layer allows 3,803 logical bytes for canonical Apple xattrs on HFS:
+3,802 native bytes plus its synthetic marker. Windows ADS retain 3,802-byte
+physical fragments. Larger canonical Apple values fail before modifying the
+existing attribute.
 
 The project did not land on Samba 4.x by accident. Samba 4.8 was the first fully working Time Machine target on this hardware; the current checked-in deploy artifacts are Samba 4.25.0rc2.
 
@@ -520,13 +610,13 @@ Current rendered Samba config characteristics:
 - `deadtime = 720`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - when `TC_VFS_AIO_FORK_ENABLED=true`, append `aio_fork`, cap each share at `aio_fork:max_children = 8`, set 128 KiB SMB2 read/write limits, and enable AIO for requests of at least one byte
-- `fruit:resource = file`
+- `fruit:resource = file`; this remains the non-HFS and migration-source setting, while HFS shares automatically use the native resource fork
 - `fruit:veto_appledouble = yes`
-- `fruit:metadata = netatalk` by default, or `fruit:metadata = stream` when Netatalk metadata mode is explicitly disabled
+- `fruit:metadata = netatalk` by default, or `fruit:metadata = stream` when Netatalk metadata mode is explicitly disabled; on HFS this selects the preferred legacy migration source while runtime FinderInfo is native
 - `fruit:time machine = yes`
 - `fruit:posix_rename = yes`
 - `acl_xattr:ignore system acls = yes`
-- `xattr_tdb:file = /Volumes/dkX/.samba4/private/xattr.tdb`
+- `xattr_tdb:file = /Volumes/dkX/.samba4/private/xattr.tdb`; HFS shares bypass this backend after migration, while the configured path remains available for a future non-HFS filesystem
 - `veto files = /.samba4/` on every share so the payload is hidden when it lives on a shared disk root
 
 Current auth mapping:
@@ -702,7 +792,7 @@ Managed Bonjour records are link-scoped. LAN-owner links receive the complete ge
 
 ### Use Netatalk for metadata
 
-Default: on. Selects `fruit:metadata = netatalk`, the Netatalk-compatible metadata format used by Samba's `fruit` module. Turning it off selects `fruit:metadata = stream`; changing this for existing files should be treated as a metadata-compatibility decision rather than a performance toggle.
+Default: on. Selects `fruit:metadata = netatalk`; turning it off selects `fruit:metadata = stream`. On HFS, the selection is used by the one-shot migrator to choose between conflicting legacy representations, after which `fruit` reads and writes native FinderInfo regardless of this setting. It remains the runtime backend choice for a future non-HFS filesystem.
 
 ### Force Debug Logging
 
@@ -1125,7 +1215,7 @@ It checks:
 - authenticated `smbclient -L` listing
 - authenticated SMB CRUD operations via `smbclient`
 - that at least one active Samba share is present in the authenticated SMB listing
-- that the active runtime `xattr_tdb:file` path in `/mnt/Memory/samba4/etc/smb.conf` points at persistent storage instead of the ramdisk
+- that the configured non-HFS `xattr_tdb:file` fallback in `/mnt/Memory/samba4/etc/smb.conf` points at persistent storage instead of the ramdisk; the HFS backend does not require the TDB file to exist
 
 It does not:
 - deploy

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import shlex
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, DeploymentPlan, FileTransfer, UninstallPlan
-from timecapsulesmb.device.storage import ensure_volume_root_mounted_conn
+from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn, read_mast_volumes_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
@@ -24,6 +25,89 @@ FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
 # Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
 # payload after a slow upload. Keep this bounded, but long enough for real disks.
 FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300
+XATTR_HFS_MIGRATION_TIMEOUT_SECONDS = 600
+
+
+@dataclass(frozen=True)
+class XattrMigrationResult:
+    output: str
+    roots: tuple[MaStVolume, ...]
+    unavailable_roots: tuple[str, ...] = ()
+
+
+def migrate_xattr_tdb_to_hfs(
+    connection: SshConnection,
+    plan: DeploymentPlan,
+    *,
+    phase: str,
+    legacy_metadata: str,
+    roots: tuple[MaStVolume, ...] | None = None,
+) -> XattrMigrationResult:
+    """Migrate legacy metadata before native-HFS smbd is started."""
+    if phase not in {"copy", "cleanup"}:
+        raise ValueError(f"unsupported xattr migration phase: {phase}")
+    if legacy_metadata not in {"stream", "netatalk"}:
+        raise ValueError(f"unsupported legacy fruit metadata backend: {legacy_metadata}")
+    tdb_path = f"{plan.private_dir}/xattr.tdb"
+    migrator_path = plan.payload_targets["xattr_migrator"]
+    if not ensure_volume_root_mounted_conn(
+        connection, plan.volume_root, plan.device_path,
+        wait_seconds=plan.apple_mount_wait_seconds,
+    ):
+        raise RuntimeError("migration payload volume is unavailable")
+    probe = run_ssh(connection, f"test -f {shlex.quote(tdb_path)}", check=False)
+    if probe.returncode == 1:
+        return XattrMigrationResult(
+            f"migration_phase={phase} skipped reason=no_legacy_tdb",
+            (),
+        )
+    if probe.returncode != 0:
+        raise RuntimeError("could not probe legacy metadata")
+    candidates = tuple(read_mast_volumes_conn(connection)) if roots is None else roots
+    if not candidates:
+        raise RuntimeError("migration found no attached HFS volumes")
+    mounted: list[MaStVolume] = []
+    unavailable: list[str] = []
+    for volume in candidates:
+        if ensure_volume_root_mounted_conn(
+            connection, volume.volume_root, volume.device_path,
+            wait_seconds=plan.apple_mount_wait_seconds,
+        ):
+            mounted.append(volume)
+        else:
+            unavailable.append(volume.volume_root)
+    if not mounted:
+        if phase == "cleanup" and roots is not None:
+            return XattrMigrationResult(
+                "migration_phase=cleanup skipped reason=copied_roots_unavailable",
+                (),
+                tuple(unavailable),
+            )
+        raise RuntimeError("migration found no mounted HFS volumes")
+    root_args = shlex.join([volume.volume_root for volume in mounted])
+    script = f"""
+tdb={shlex.quote(tdb_path)}
+migration_ram=/mnt/Memory/.tc-xattr-hfs-migrate.$$
+migration_child=
+trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; rm -f "$migration_ram"' 0
+trap 'exit 1' 1 2 15
+cp {shlex.quote(migrator_path)} "$migration_ram" || exit $?
+chmod 755 "$migration_ram" || exit $?
+"$migration_ram" {shlex.quote(phase)} "$tdb" {shlex.quote(legacy_metadata)} {root_args} &
+migration_child=$!
+migration_status=0
+wait "$migration_child" || migration_status=$?
+migration_child=
+[ "$migration_status" = 0 ] || exit "$migration_status"
+/bin/sync || exit $?
+echo migration_phase={shlex.quote(phase)} complete unavailable_roots={len(unavailable)}
+""".strip()
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        timeout=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
+    )
+    return XattrMigrationResult(proc.stdout, tuple(mounted), tuple(unavailable))
 
 
 def _flash_upload_tmp_path(destination: str) -> str:

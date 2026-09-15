@@ -104,6 +104,23 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     for command in render_remote_actions(plan.pre_upload_actions):
         lines.append(f"  {command}")
     lines.append("")
+    migration_upload = plan.migration_upload
+    migration_timeout = (
+        f", timeout {migration_upload.timeout_seconds}s"
+        if migration_upload.timeout_seconds is not None
+        else ""
+    )
+    lines.append("Native HFS migration:")
+    lines.append(
+        f"  upload {migration_upload.description} "
+        f"({migration_upload.source_id}, {migration_upload.mode}{migration_timeout}) "
+        f"-> {migration_upload.destination}"
+    )
+    lines.append("  skip the disk scan when no legacy xattr.tdb exists")
+    lines.append("  copy and verify native metadata before replacing the Samba payload")
+    lines.append("  reverify and retire exported TDB records after payload verification")
+    lines.append("  retain unmatched records and migrate unavailable disks when they are attached later")
+    lines.append("")
     lines.append("Uploads:")
     for upload in plan.uploads:
         timeout = f", timeout {upload.timeout_seconds}s" if upload.timeout_seconds is not None else ""
@@ -149,6 +166,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
 def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data = asdict(plan)
     data["smbd_path"] = str(plan.smbd_path)
+    data["xattr_migrator_path"] = str(plan.xattr_migrator_path)
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
     data["rsync_path"] = str(plan.rsync_path)

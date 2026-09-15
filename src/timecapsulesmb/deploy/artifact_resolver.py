@@ -36,6 +36,7 @@ def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> d
     if payload_family == PAYLOAD_FAMILY_NETBSD4LE:
         names = {
             "smbd": "smbd-netbsd4le",
+            "xattr_migrator": "xattr-migrator-netbsd4le",
             "mdns": "mdns-netbsd4le",
             "nbns": "nbns-netbsd4le",
             "service": "service-netbsd4le",
@@ -45,6 +46,7 @@ def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> d
     elif payload_family == PAYLOAD_FAMILY_NETBSD4BE:
         names = {
             "smbd": "smbd-netbsd4be",
+            "xattr_migrator": "xattr-migrator-netbsd4be",
             "mdns": "mdns-netbsd4be",
             "nbns": "nbns-netbsd4be",
             "service": "service-netbsd4be",
@@ -54,6 +56,7 @@ def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> d
     elif payload_family == PAYLOAD_FAMILY_NETBSD6:
         names = {
             "smbd": "smbd",
+            "xattr_migrator": "xattr-migrator",
             "mdns": "mdns",
             "nbns": "nbns",
             "service": "service",

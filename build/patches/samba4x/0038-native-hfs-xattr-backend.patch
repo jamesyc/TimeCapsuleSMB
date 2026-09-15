@@ -1,0 +1,3910 @@
+diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
+index a10e8cb..8b33ff3 100644
+--- a/buildtools/wafsamba/wafsamba.py
++++ b/buildtools/wafsamba/wafsamba.py
+@@ -456,7 +456,10 @@ def APPLY_TC_STATIC_BINARY_ENV(bld, taskgen):
+             getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
+         static_ldflags = TO_LIST(
+             getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
+-    elif target in ('pthreadpool_tevent_sync_test', 'tc_aio_fork_test', 'tc_durable_reconnect_test', 'tc_streams_xattr_test', 'tc_native_metadata_test'):
++    elif target in ('pthreadpool_tevent_sync_test', 'tc_aio_fork_test',
++                    'tc_durable_reconnect_test', 'tc_streams_xattr_test',
++                    'tc_native_metadata_test', 'tc_xattr_migrate_test',
++                    'tc_xattr_hfs_migrate'):
+         static_linkflags = TO_LIST(getattr(
+             bld.env, 'TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS', []))
+         static_ldflags = TO_LIST(getattr(
+diff --git a/source3/modules/airport_native_xattr.h b/source3/modules/airport_native_xattr.h
+new file mode 100644
+index 0000000..00f11f8
+--- /dev/null
++++ b/source3/modules/airport_native_xattr.h
+@@ -0,0 +1,240 @@
++/* Apple AirPort firmware adds Darwin-style xattr syscalls to its NetBSD 4
++ * and NetBSD 6 kernels without exporting matching libc entry points. Keep
++ * these private ABI calls behind an appliance-only build define.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ */
++#ifndef _AIRPORT_NATIVE_XATTR_H
++#define _AIRPORT_NATIVE_XATTR_H
++
++#define TC_AIRPORT_SYS_FSETXATTR 377
++#define TC_AIRPORT_SYS_FGETXATTR 380
++#define TC_AIRPORT_SYS_FLISTXATTR 383
++#define TC_AIRPORT_SYS_FREMOVEXATTR 386
++
++#ifndef TC_AIRPORT_XATTR_SYSCALL
++#define TC_AIRPORT_XATTR_SYSCALL syscall
++#endif
++#ifndef TC_AIRPORT_XATTR_FLOCK
++#define TC_AIRPORT_XATTR_FLOCK flock
++#endif
++
++static inline int tc_airport_xattr_flock(int fd, int operation)
++{
++	int ret;
++
++	do {
++		ret = TC_AIRPORT_XATTR_FLOCK(fd, operation);
++	} while (ret != 0 && errno == EINTR);
++	return ret;
++}
++
++static inline ssize_t tc_airport_fgetxattr(int fd,
++					   const char *name,
++					   void *value,
++					   size_t size)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++	return (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FGETXATTR, fd, name, value, size);
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++static inline int tc_airport_fsetxattr(int fd,
++				       const char *name,
++				       const void *value,
++				       size_t size,
++				       int flags)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++	ssize_t existing;
++	long ret;
++	int result = -1;
++	int operation_error = 0;
++
++	if ((flags & ~(XATTR_CREATE | XATTR_REPLACE)) != 0 ||
++	    (flags & (XATTR_CREATE | XATTR_REPLACE)) ==
++		(XATTR_CREATE | XATTR_REPLACE))
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	if (tc_airport_xattr_flock(fd, LOCK_EX) != 0) {
++		return -1;
++	}
++	if (flags != 0) {
++		existing = tc_airport_fgetxattr(fd, name, NULL, 0);
++		if (existing >= 0 && (flags & XATTR_CREATE)) {
++			errno = EEXIST;
++			goto out;
++		}
++		if (existing < 0) {
++			if (errno != ENOATTR && errno != ENODATA && errno != ENOENT) {
++				goto out;
++			}
++			if (flags & XATTR_REPLACE) {
++				errno = ENOATTR;
++				goto out;
++			}
++		}
++	}
++	ret = TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FSETXATTR, fd, name, value, size, 0);
++	result = ret < 0 ? -1 : 0;
++
++	/* NetBSD 4 returns bytes written and ignores flags, while NetBSD 6
++	 * returns zero and rejects XATTR_CREATE for a missing HFS attribute.
++	 * Serialize every native mutation so the existence check is atomic
++	 * relative to other smbd children using this wrapper. */
++out:
++	operation_error = errno;
++	if (tc_airport_xattr_flock(fd, LOCK_UN) != 0 && result == 0) {
++		return -1;
++	}
++	if (result != 0) {
++		errno = operation_error;
++	}
++	return result;
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++static inline bool tc_airport_xattr_list_contains(const char *list,
++						   size_t list_size,
++						   const char *name,
++						   size_t name_size)
++{
++	size_t offset = 0;
++
++	while (offset < list_size) {
++		size_t entry_size = strnlen(list + offset, list_size - offset) + 1;
++
++		if (entry_size > list_size - offset) {
++			return false;
++		}
++		if (entry_size == name_size &&
++		    memcmp(list + offset, name, name_size) == 0)
++		{
++			return true;
++		}
++		offset += entry_size;
++	}
++	return false;
++}
++
++static inline ssize_t tc_airport_flistxattr(int fd, char *list, size_t size)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++	char *raw = NULL;
++	ssize_t raw_size;
++	ssize_t ret;
++	size_t in_offset = 0;
++	size_t out_size = 0;
++
++	raw_size = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FLISTXATTR, fd, NULL, 0);
++	if (raw_size <= 0) {
++		return raw_size;
++	}
++	raw = malloc(raw_size);
++	if (raw == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++	ret = (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FLISTXATTR, fd, raw, raw_size);
++	if (ret < 0) {
++		int error = errno;
++
++		free(raw);
++		errno = error;
++		return -1;
++	}
++	while (in_offset < (size_t)ret) {
++		size_t entry_size = strnlen(
++			raw + in_offset, (size_t)ret - in_offset) + 1;
++
++		if (entry_size > (size_t)ret - in_offset) {
++			free(raw);
++			errno = EIO;
++			return -1;
++		}
++		if (!tc_airport_xattr_list_contains(
++				raw, out_size, raw + in_offset, entry_size))
++		{
++			memmove(raw + out_size, raw + in_offset, entry_size);
++			out_size += entry_size;
++		}
++		in_offset += entry_size;
++	}
++	if (list == NULL || size == 0) {
++		free(raw);
++		return out_size;
++	}
++	if (size < out_size) {
++		free(raw);
++		errno = ERANGE;
++		return -1;
++	}
++	memcpy(list, raw, out_size);
++	free(raw);
++	return out_size;
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++static inline int tc_airport_fremovexattr(int fd, const char *name)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++	long ret;
++	int operation_error;
++
++	if (tc_airport_xattr_flock(fd, LOCK_EX) != 0) {
++		return -1;
++	}
++	ret = TC_AIRPORT_XATTR_SYSCALL(
++		TC_AIRPORT_SYS_FREMOVEXATTR, fd, name);
++	operation_error = errno;
++	if (tc_airport_xattr_flock(fd, LOCK_UN) != 0 && ret >= 0) {
++		return -1;
++	}
++	if (ret < 0) {
++		errno = operation_error;
++	}
++
++	return ret < 0 ? -1 : 0;
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++static inline bool tc_airport_path_is_hfs(const char *path)
++{
++#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
++#ifdef TC_AIRPORT_PATH_IS_HFS
++	return TC_AIRPORT_PATH_IS_HFS(path);
++#else
++	struct statvfs statvfs_buf;
++
++	if (statvfs(path, &statvfs_buf) != 0) {
++		return false;
++	}
++	return strcmp(statvfs_buf.f_fstypename, "hfs") == 0;
++#endif
++#else
++	return false;
++#endif
++}
++
++#endif
+diff --git a/source3/modules/timecapsule_native_xattr.h b/source3/modules/timecapsule_native_xattr.h
+deleted file mode 100644
+index 5e4a4e9..0000000
+--- a/source3/modules/timecapsule_native_xattr.h
++++ /dev/null
+@@ -1,65 +0,0 @@
+-/* Apple AirPort firmware adds Darwin-style xattr syscalls to its NetBSD 4
+- * and NetBSD 6 kernels without exporting matching libc entry points. Keep
+- * these private ABI calls behind an appliance-only build define.
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 3 of the License, or
+- * (at your option) any later version.
+- */
+-#ifndef _TIMECAPSULE_NATIVE_XATTR_H
+-#define _TIMECAPSULE_NATIVE_XATTR_H
+-
+-#define TC_AIRPORT_SYS_FSETXATTR 377
+-#define TC_AIRPORT_SYS_FGETXATTR 380
+-#define TC_AIRPORT_SYS_FREMOVEXATTR 386
+-
+-#ifndef TC_AIRPORT_XATTR_SYSCALL
+-#define TC_AIRPORT_XATTR_SYSCALL syscall
+-#endif
+-
+-static inline ssize_t tc_airport_fgetxattr(int fd,
+-					   const char *name,
+-					   void *value,
+-					   size_t size)
+-{
+-#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
+-	return (ssize_t)TC_AIRPORT_XATTR_SYSCALL(
+-		TC_AIRPORT_SYS_FGETXATTR, fd, name, value, size);
+-#else
+-	errno = ENOSYS;
+-	return -1;
+-#endif
+-}
+-
+-static inline int tc_airport_fsetxattr(int fd,
+-				       const char *name,
+-				       const void *value,
+-				       size_t size)
+-{
+-#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
+-	long ret = TC_AIRPORT_XATTR_SYSCALL(
+-		TC_AIRPORT_SYS_FSETXATTR, fd, name, value, size, 0);
+-
+-	/* NetBSD 4 returns bytes written while NetBSD 6 returns zero. */
+-	return ret < 0 ? -1 : 0;
+-#else
+-	errno = ENOSYS;
+-	return -1;
+-#endif
+-}
+-
+-static inline int tc_airport_fremovexattr(int fd, const char *name)
+-{
+-#ifdef TC_AIRPORT_NATIVE_XATTR_SYSCALLS
+-	long ret = TC_AIRPORT_XATTR_SYSCALL(
+-		TC_AIRPORT_SYS_FREMOVEXATTR, fd, name);
+-
+-	return ret < 0 ? -1 : 0;
+-#else
+-	errno = ENOSYS;
+-	return -1;
+-#endif
+-}
+-
+-#endif
+diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
+index 80c1510..9de211c 100644
+--- a/source3/modules/vfs_fruit.c
++++ b/source3/modules/vfs_fruit.c
+@@ -38,7 +38,7 @@
+ #include "lib/util_macstreams.h"
+ #include "source3/smbd/dir.h"
+ #include "lib/util/smb_strtox.h"
+-#include "timecapsule_native_xattr.h"
++#include "airport_native_xattr.h"
+ 
+ /*
+  * Enhanced OS X and Netatalk compatibility
+@@ -114,8 +114,19 @@ static struct global_fruit_config {
+ 
+ enum apple_fork {APPLE_FORK_DATA, APPLE_FORK_RSRC};
+ 
+-enum fruit_rsrc {FRUIT_RSRC_STREAM, FRUIT_RSRC_ADFILE, FRUIT_RSRC_XATTR};
+-enum fruit_meta {FRUIT_META_STREAM, FRUIT_META_NETATALK};
++enum fruit_rsrc {
++	FRUIT_RSRC_STREAM,
++	FRUIT_RSRC_ADFILE,
++	FRUIT_RSRC_XATTR,
++	/* Internal effective backend; deliberately not accepted by smb.conf. */
++	FRUIT_RSRC_NATIVE_HFS
++};
++enum fruit_meta {
++	FRUIT_META_STREAM,
++	FRUIT_META_NETATALK,
++	/* Internal effective backend; deliberately not accepted by smb.conf. */
++	FRUIT_META_NATIVE_HFS
++};
+ enum fruit_locking {FRUIT_LOCKING_NETATALK, FRUIT_LOCKING_NONE};
+ enum fruit_encoding {FRUIT_ENC_NATIVE, FRUIT_ENC_PRIVATE};
+ 
+@@ -141,7 +152,7 @@ struct fruit_config_data {
+ 	bool validate_afpinfo;
+ 	bool veto_localized;
+ 	bool ignore_zero_aces;
+-	bool time_capsule_native_metadata;
++	bool native_hfs;
+ 
+ 	/*
+ 	 * Additional options, all enabled by default,
+@@ -205,7 +216,6 @@ struct fio {
+ 	 * create the stream.
+ 	 */
+ 	bool fake_fd;
+-	bool native_meta_fallback;
+ 	int flags;
+ 	int mode;
+ };
+@@ -277,20 +287,17 @@ static struct fio *fruit_get_complete_fio(vfs_handle_struct *handle,
+ 
+ #define TC_FINDERINFO_NATIVE_XATTR "com.apple.FinderInfo"
+ 
++static struct smb_filename *tc_native_rsrc_name(
++	TALLOC_CTX *mem_ctx,
++	const struct smb_filename *base_name);
++
+ static bool tc_fruit_backend_missing(int error)
+ {
+ 	return error == ENOATTR || error == ENOENT;
+ }
+ 
+-static bool tc_fruit_native_unavailable(int error)
+-{
+-	return tc_fruit_backend_missing(error) ||
+-		error == ENOTSUP || error == EOPNOTSUPP || error == ENOSYS;
+-}
+-
+ /* Return 1 for a 32-byte native FinderInfo value, 0 when absent, -1 on
+- * a real error. The AirPort kernel exposes this through private syscalls
+- * even though its stock NetBSD libc does not provide matching wrappers. */
++ * a real error. The lower native-HFS xattr backend owns the private ABI. */
+ static int tc_native_finderinfo_read_fsp(files_struct *fsp,
+ 					 uint8_t finderinfo[AFP_FinderSize])
+ {
+@@ -309,20 +316,20 @@ static int tc_native_finderinfo_read_fsp(files_struct *fsp,
+ 		return -1;
+ 	}
+ 
+-	size = tc_airport_fgetxattr(
+-		fd, TC_FINDERINFO_NATIVE_XATTR, NULL, 0);
++	size = SMB_VFS_FGETXATTR(
++		fsp, TC_FINDERINFO_NATIVE_XATTR, NULL, 0);
+ 	if (size < 0) {
+-		return tc_fruit_native_unavailable(errno) ? 0 : -1;
++		return tc_fruit_backend_missing(errno) ? 0 : -1;
+ 	}
+ 	if (size != AFP_FinderSize) {
+ 		errno = EIO;
+ 		return -1;
+ 	}
+ 
+-	ret = tc_airport_fgetxattr(
+-		fd, TC_FINDERINFO_NATIVE_XATTR, finderinfo, AFP_FinderSize);
++	ret = SMB_VFS_FGETXATTR(
++		fsp, TC_FINDERINFO_NATIVE_XATTR, finderinfo, AFP_FinderSize);
+ 	if (ret != AFP_FinderSize) {
+-		if (ret < 0 && tc_fruit_native_unavailable(errno)) {
++		if (ret < 0 && tc_fruit_backend_missing(errno)) {
+ 			return 0;
+ 		}
+ 		if (ret >= 0) {
+@@ -388,33 +395,34 @@ static int tc_native_finderinfo_read_at(
+ 	return ret;
+ }
+ 
+-static void tc_native_finderinfo_mirror(files_struct *base_fsp,
+-					const uint8_t finderinfo[AFP_FinderSize])
++static int tc_native_finderinfo_write_fsp(
++	files_struct *base_fsp,
++	const uint8_t finderinfo[AFP_FinderSize])
+ {
+ 	int ret;
+ 
+ 	if (S_ISLNK(base_fsp->fsp_name->st.st_ex_mode)) {
+-		return;
++		errno = EACCES;
++		return -1;
+ 	}
+ 	if (all_zero(finderinfo, AFP_FinderSize)) {
+-		ret = tc_airport_fremovexattr(
+-			fsp_get_pathref_fd(base_fsp), TC_FINDERINFO_NATIVE_XATTR);
+-		if (ret == 0 || tc_fruit_native_unavailable(errno)) {
+-			return;
++		ret = SMB_VFS_FREMOVEXATTR(
++			base_fsp, TC_FINDERINFO_NATIVE_XATTR);
++		if (ret == 0 || tc_fruit_backend_missing(errno)) {
++			return 0;
+ 		}
+ 	} else {
+-		ret = tc_airport_fsetxattr(
+-			fsp_get_pathref_fd(base_fsp),
++		ret = SMB_VFS_FSETXATTR(
++			base_fsp,
+ 			TC_FINDERINFO_NATIVE_XATTR,
+ 			finderinfo,
+-			AFP_FinderSize);
+-		if (ret == 0 || tc_fruit_native_unavailable(errno)) {
+-			return;
++			AFP_FinderSize,
++			0);
++		if (ret == 0) {
++			return 0;
+ 		}
+ 	}
+-
+-	DBG_WARNING("Native FinderInfo mirror failed for [%s]: %s\n",
+-		    fsp_str_dbg(base_fsp), strerror(errno));
++	return -1;
+ }
+ 
+ /* Return 1 when removed, 0 when absent, -1 on a real error. */
+@@ -461,8 +469,7 @@ static int tc_native_finderinfo_remove_at(
+ 		return 0;
+ 	}
+ 
+-	ret = tc_airport_fremovexattr(
+-		fsp_get_pathref_fd(base_fsp), TC_FINDERINFO_NATIVE_XATTR);
++	ret = SMB_VFS_FREMOVEXATTR(base_fsp, TC_FINDERINFO_NATIVE_XATTR);
+ 	{
+ 		int error = errno;
+ 
+@@ -472,7 +479,7 @@ static int tc_native_finderinfo_remove_at(
+ 	if (ret == 0) {
+ 		return 1;
+ 	}
+-	return tc_fruit_native_unavailable(errno) ? 0 : -1;
++	return tc_fruit_backend_missing(errno) ? 0 : -1;
+ }
+ 
+ /**
+@@ -597,9 +604,14 @@ static int init_fruit_config(vfs_handle_struct *handle)
+ 		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME,
+ 		"veto_localized", false);
+ 
+-	config->time_capsule_native_metadata = lp_parm_bool(
+-		SNUM(handle->conn), FRUIT_PARAM_TYPE_NAME,
+-		"time_capsule_native_metadata", false);
++	config->native_hfs = tc_airport_path_is_hfs(handle->conn->connectpath);
++	if (config->native_hfs) {
++		/* Preserve the public settings for non-HFS filesystems. On an HFS
++		 * share both special Apple streams use the same native objects AFP
++		 * serves, without adding a public "hfs" configuration value. */
++		config->meta = FRUIT_META_NATIVE_HFS;
++		config->rsrc = FRUIT_RSRC_NATIVE_HFS;
++	}
+ 
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config,
+ 				NULL, struct fruit_config_data,
+@@ -1241,6 +1253,25 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data,
+ 				return false);
++	if (config->native_hfs) {
++		uint8_t native_finderinfo[AFP_FinderSize];
++		int native_state = tc_native_finderinfo_read_at(
++			handle,
++			handle->conn->cwd_fsp,
++			smb_fname,
++			native_finderinfo);
++
++		if (native_state != 1 ||
++		    all_zero(native_finderinfo, AFP_FinderSize))
++		{
++			return true;
++		}
++		memcpy(ai.afpi_FinderInfo,
++		       native_finderinfo,
++		       AFP_FinderSize);
++		ok = true;
++		goto have_metadata;
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_NETATALK:
+@@ -1259,38 +1290,12 @@ static bool readdir_attr_meta_finderi(struct vfs_handle_struct *handle,
+ 	}
+ 
+ 	if (!ok) {
+-		int backend_error = errno;
+-
+-		if (config->time_capsule_native_metadata &&
+-		    tc_fruit_backend_missing(backend_error))
+-		{
+-			uint8_t native_finderinfo[AFP_FinderSize];
+-			int native_state = tc_native_finderinfo_read_at(
+-				handle,
+-				handle->conn->cwd_fsp,
+-				smb_fname,
+-				native_finderinfo);
+-
+-			if (native_state == 1 &&
+-			    !all_zero(native_finderinfo, AFP_FinderSize))
+-			{
+-				memcpy(ai.afpi_FinderInfo,
+-				       native_finderinfo,
+-				       AFP_FinderSize);
+-				ok = true;
+-			} else if (native_state < 0) {
+-				DBG_WARNING(
+-					"Native FinderInfo read failed for [%s]: %s\n",
+-					smb_fname_str_dbg(smb_fname), strerror(errno));
+-			}
+-		}
+-		if (!ok) {
+-			/* AAPL directory enumeration must not drop the whole entry just
+-			 * because optional Finder metadata is absent or unreadable. */
+-			return true;
+-		}
++		/* AAPL directory enumeration must not drop the whole entry just
++		 * because optional Finder metadata is absent or unreadable. */
++		return true;
+ 	}
+ 
++have_metadata:
+ 	if (S_ISREG(smb_fname->st.st_ex_mode)) {
+ 		/* finder_type */
+ 		memcpy(&attr_data->attr_data.aapl.finder_info[0],
+@@ -1367,6 +1372,44 @@ static uint64_t readdir_attr_rfork_size_stream(
+ 	return rfork_size;
+ }
+ 
++static int tc_native_rsrc_statat(
++	vfs_handle_struct *handle,
++	const struct files_struct *dirfsp,
++	const struct smb_filename *smb_fname,
++	SMB_STRUCT_STAT *sbuf,
++	int flags)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	struct smb_filename *native_name = tc_native_rsrc_name(
++		frame, smb_fname);
++	int ret;
++
++	if (native_name == NULL) {
++		TALLOC_FREE(frame);
++		errno = ENOMEM;
++		return -1;
++	}
++	ret = SMB_VFS_NEXT_FSTATAT(
++		handle, dirfsp, native_name, sbuf, flags);
++	TALLOC_FREE(frame);
++	return ret;
++}
++
++static uint64_t readdir_attr_rfork_size_native(
++	vfs_handle_struct *handle,
++	const struct smb_filename *smb_fname)
++{
++	SMB_STRUCT_STAT st = {0};
++
++	if (tc_native_rsrc_statat(
++			handle, handle->conn->cwd_fsp, smb_fname, &st, 0) != 0 ||
++	    st.st_ex_size <= 0)
++	{
++		return 0;
++	}
++	return st.st_ex_size;
++}
++
+ static uint64_t readdir_attr_rfork_size(struct vfs_handle_struct *handle,
+ 					const struct smb_filename *smb_fname)
+ {
+@@ -1376,6 +1419,9 @@ static uint64_t readdir_attr_rfork_size(struct vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data,
+ 				return 0);
++	if (config->native_hfs) {
++		return readdir_attr_rfork_size_native(handle, smb_fname);
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_ADFILE:
+@@ -1660,9 +1706,6 @@ static int fruit_open_meta_stream(vfs_handle_struct *handle,
+ 		.flags = flags & ~O_CREAT,
+ 		.mode = mode,
+ 	};
+-	uint8_t native_finderinfo[AFP_FinderSize];
+-	int backend_error;
+-	int native_state = 0;
+ 	int fd;
+ 
+ 	DBG_DEBUG("Path [%s]\n", smb_fname_str_dbg(smb_fname));
+@@ -1683,26 +1726,7 @@ static int fruit_open_meta_stream(vfs_handle_struct *handle,
+ 	if (fd != -1) {
+ 		return fd;
+ 	}
+-	backend_error = errno;
+-
+-	if (config->time_capsule_native_metadata &&
+-	    tc_fruit_backend_missing(backend_error))
+-	{
+-		native_state = tc_native_finderinfo_read_fsp(
+-			fsp->base_fsp, native_finderinfo);
+-		if (native_state < 0) {
+-			VFS_REMOVE_FSP_EXTENSION(handle, fsp);
+-			return -1;
+-		}
+-		if (native_state == 1 &&
+-		    all_zero(native_finderinfo, AFP_FinderSize))
+-		{
+-			native_state = 0;
+-		}
+-	}
+-
+-	if (native_state == 0 && !(flags & O_CREAT)) {
+-		errno = backend_error;
++	if (!(flags & O_CREAT)) {
+ 		VFS_REMOVE_FSP_EXTENSION(handle, fsp);
+ 		return -1;
+ 	}
+@@ -1714,10 +1738,7 @@ static int fruit_open_meta_stream(vfs_handle_struct *handle,
+ 	}
+ 
+ 	fio->fake_fd = true;
+-	fio->native_meta_fallback = native_state == 1;
+-	/* A later write to a native-only logical stream must materialize the
+-	 * configured stream backend even if the client opened without O_CREAT. */
+-	fio->flags = native_state == 1 ? flags | O_CREAT : flags;
++	fio->flags = flags;
+ 	fio->mode = mode;
+ 
+ 	return fd;
+@@ -1733,11 +1754,8 @@ static int fruit_open_meta_netatalk(vfs_handle_struct *handle,
+ 	struct fruit_config_data *config = NULL;
+ 	struct fio *fio = NULL;
+ 	struct adouble *ad = NULL;
+-	uint8_t native_finderinfo[AFP_FinderSize];
+ 	bool meta_exists = false;
+-	bool native_fallback = false;
+ 	int backend_error = 0;
+-	int native_state = 0;
+ 	int fd;
+ 
+ 	DBG_DEBUG("Path [%s]\n", smb_fname_str_dbg(smb_fname));
+@@ -1760,19 +1778,7 @@ static int fruit_open_meta_netatalk(vfs_handle_struct *handle,
+ 
+ 	TALLOC_FREE(ad);
+ 
+-	if (!meta_exists && config->time_capsule_native_metadata &&
+-	    tc_fruit_backend_missing(backend_error))
+-	{
+-		native_state = tc_native_finderinfo_read_fsp(
+-			fsp->base_fsp, native_finderinfo);
+-		if (native_state < 0) {
+-			return -1;
+-		}
+-		native_fallback = native_state == 1 &&
+-			!all_zero(native_finderinfo, AFP_FinderSize);
+-	}
+-
+-	if (!meta_exists && !native_fallback && !(flags & O_CREAT)) {
++	if (!meta_exists && !(flags & O_CREAT)) {
+ 		errno = backend_error == 0 ? ENOENT : backend_error;
+ 		return -1;
+ 	}
+@@ -1788,13 +1794,69 @@ static int fruit_open_meta_netatalk(vfs_handle_struct *handle,
+ 	fio->type = ADOUBLE_META;
+ 	fio->config = config;
+ 	fio->fake_fd = true;
+-	fio->native_meta_fallback = native_fallback;
+ 	fio->flags = flags;
+ 	fio->mode = mode;
+ 
+ 	return fd;
+ }
+ 
++static int fruit_open_meta_native(vfs_handle_struct *handle,
++				  files_struct *fsp,
++				  int flags,
++				  mode_t mode)
++{
++	struct fruit_config_data *config = NULL;
++	struct fio *fio = NULL;
++	uint8_t finderinfo[AFP_FinderSize];
++	int native_state;
++	int fd;
++
++	SMB_VFS_HANDLE_GET_DATA(handle, config,
++				struct fruit_config_data, return -1);
++	SMB_ASSERT(fsp_is_alternate_stream(fsp));
++	native_state = tc_native_finderinfo_read_fsp(
++		fsp->base_fsp, finderinfo);
++	if (native_state < 0) {
++		return -1;
++	}
++	if (native_state == 1 && all_zero(finderinfo, AFP_FinderSize)) {
++		native_state = 0;
++	}
++	if (native_state == 0 && !(flags & O_CREAT)) {
++		errno = ENOENT;
++		return -1;
++	}
++	if ((flags & O_TRUNC) && native_state == 1) {
++		if (SMB_VFS_FREMOVEXATTR(
++				fsp->base_fsp,
++				TC_FINDERINFO_NATIVE_XATTR) != 0 &&
++		    !tc_fruit_backend_missing(errno))
++		{
++			return -1;
++		}
++		native_state = 0;
++	}
++
++	fd = vfs_fake_fd();
++	if (fd == -1) {
++		return -1;
++	}
++	fio = VFS_ADD_FSP_EXTENSION(handle, fsp, struct fio, fio_destroy_fn);
++	if (fio == NULL) {
++		vfs_fake_fd_close(fd);
++		errno = ENOMEM;
++		return -1;
++	}
++	fio->handle = handle;
++	fio->fsp = fsp;
++	fio->type = ADOUBLE_META;
++	fio->config = config;
++	fio->fake_fd = true;
++	fio->flags = flags;
++	fio->mode = mode;
++	return fd;
++}
++
+ static int fruit_open_meta(vfs_handle_struct *handle,
+ 			   const struct files_struct *dirfsp,
+ 			   const struct smb_filename *smb_fname,
+@@ -1807,6 +1869,10 @@ static int fruit_open_meta(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		fd = fruit_open_meta_native(handle, fsp, flags, mode);
++		goto done;
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -1824,6 +1890,7 @@ static int fruit_open_meta(vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++done:
+ 	DBG_DEBUG("path [%s] fd [%d]\n", smb_fname_str_dbg(smb_fname), fd);
+ 
+ 	return fd;
+@@ -1966,6 +2033,73 @@ static int fruit_open_rsrc_xattr(vfs_handle_struct *handle,
+ #endif
+ }
+ 
++static struct smb_filename *tc_native_rsrc_name(
++	TALLOC_CTX *mem_ctx,
++	const struct smb_filename *base_name)
++{
++	struct smb_filename *native_name = cp_smb_filename_nostream(
++		mem_ctx, base_name);
++	char *path;
++
++	if (native_name == NULL) {
++		return NULL;
++	}
++	path = talloc_asprintf(
++		native_name, "%s/..namedfork/rsrc", base_name->base_name);
++	if (path == NULL) {
++		TALLOC_FREE(native_name);
++		return NULL;
++	}
++	TALLOC_FREE(native_name->base_name);
++	native_name->base_name = path;
++	return native_name;
++}
++
++static int fruit_open_rsrc_native(vfs_handle_struct *handle,
++				  const struct files_struct *dirfsp,
++				  const struct smb_filename *smb_fname,
++				  files_struct *fsp,
++				  int flags,
++				  mode_t mode)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	struct smb_filename *native_name = NULL;
++	struct vfs_open_how how = {
++		.flags = flags,
++		.mode = mode,
++	};
++	SMB_STRUCT_STAT st = {0};
++	int fd;
++
++	if (!S_ISREG(fsp->base_fsp->fsp_name->st.st_ex_mode)) {
++		TALLOC_FREE(frame);
++		errno = ENOENT;
++		return -1;
++	}
++	native_name = tc_native_rsrc_name(frame, fsp->base_fsp->fsp_name);
++	if (native_name == NULL) {
++		TALLOC_FREE(frame);
++		errno = ENOMEM;
++		return -1;
++	}
++	if (!(flags & O_CREAT)) {
++		int stat_ret = SMB_VFS_NEXT_FSTATAT(
++			handle, fsp->conn->cwd_fsp, native_name, &st, 0);
++
++		if (stat_ret != 0 || st.st_ex_size == 0) {
++			int error = stat_ret == 0 ? ENOENT : errno;
++
++			TALLOC_FREE(frame);
++			errno = error;
++			return -1;
++		}
++	}
++	fd = SMB_VFS_NEXT_OPENAT(
++		handle, fsp->conn->cwd_fsp, native_name, fsp, &how);
++	TALLOC_FREE(frame);
++	return fd;
++}
++
+ static int fruit_open_rsrc(vfs_handle_struct *handle,
+ 			   const struct files_struct *dirfsp,
+ 			   const struct smb_filename *smb_fname,
+@@ -1985,6 +2119,11 @@ static int fruit_open_rsrc(vfs_handle_struct *handle,
+ 	fio->fsp = fsp;
+ 	fio->type = ADOUBLE_RSRC;
+ 	fio->config = config;
++	if (config->native_hfs) {
++		fd = fruit_open_rsrc_native(
++			handle, dirfsp, smb_fname, fsp, flags, mode);
++		goto done;
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM: {
+@@ -2015,6 +2154,7 @@ static int fruit_open_rsrc(vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
++done:
+ 	DBG_DEBUG("Path [%s] fd [%d]\n", smb_fname_str_dbg(smb_fname), fd);
+ 
+ 	if (fd == -1) {
+@@ -2105,6 +2245,11 @@ static int fruit_close_meta(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		ret = vfs_fake_fd_close(fsp_get_pathref_fd(fsp));
++		fsp_set_fd(fsp, -1);
++		return ret;
++	}
+ 
+ 	switch (config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -2143,6 +2288,9 @@ static int fruit_close_rsrc(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		return SMB_VFS_NEXT_CLOSE(handle, fsp);
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -2230,7 +2378,8 @@ static int fruit_renameat(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
+-	if ((config->rsrc != FRUIT_RSRC_ADFILE) ||
++	if (config->native_hfs ||
++	    (config->rsrc != FRUIT_RSRC_ADFILE) ||
+ 	    (!S_ISREG(smb_fname_src->st.st_ex_mode)))
+ 	{
+ 		return 0;
+@@ -2319,17 +2468,14 @@ static int fruit_unlink_meta(vfs_handle_struct *handle,
+ 			const struct smb_filename *smb_fname)
+ {
+ 	struct fruit_config_data *config = NULL;
+-	int native_state = 0;
+ 	int rc;
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
+-	if (config->time_capsule_native_metadata) {
+-		native_state = tc_native_finderinfo_remove_at(
++	if (config->native_hfs) {
++		int native_state = tc_native_finderinfo_remove_at(
+ 			handle, dirfsp, smb_fname);
+-		if (native_state < 0) {
+-			return -1;
+-		}
++		return native_state < 0 ? -1 : 0;
+ 	}
+ 
+ 	switch (config->meta) {
+@@ -2347,10 +2493,6 @@ static int fruit_unlink_meta(vfs_handle_struct *handle,
+ 		DBG_ERR("Unsupported meta config [%d]\n", config->meta);
+ 		return -1;
+ 	}
+-	if (rc != 0 && native_state == 1 && tc_fruit_backend_missing(errno)) {
+-		return 0;
+-	}
+-
+ 	return rc;
+ }
+ 
+@@ -2480,6 +2622,9 @@ static int fruit_unlink_rsrc(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
++	if (config->native_hfs) {
++		return 0;
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -2527,7 +2672,7 @@ static int fruit_fchmod(vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config,
+ 				struct fruit_config_data, return -1);
+ 
+-	if (config->rsrc != FRUIT_RSRC_ADFILE) {
++	if (config->native_hfs || config->rsrc != FRUIT_RSRC_ADFILE) {
+ 		return 0;
+ 	}
+ 
+@@ -2739,7 +2884,7 @@ static ssize_t fruit_pread_meta(vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 	to_return = MIN(n, AFP_INFO_SIZE);
+-	if (fio->native_meta_fallback) {
++	if (fio->config->native_hfs) {
+ 		AfpInfo *ai = NULL;
+ 		uint8_t native_finderinfo[AFP_FinderSize];
+ 		char afpinfo_buf[AFP_INFO_SIZE];
+@@ -2747,19 +2892,22 @@ static ssize_t fruit_pread_meta(vfs_handle_struct *handle,
+ 
+ 		native_state = tc_native_finderinfo_read_fsp(
+ 			fsp->base_fsp, native_finderinfo);
+-		if (native_state != 1) {
+-			if (native_state == 0) {
+-				errno = ENOENT;
+-			}
++		if (native_state < 0) {
++			return -1;
++		}
++		if (native_state == 0 && !fio->fake_fd) {
++			errno = ENOENT;
+ 			return -1;
+ 		}
+ 		ai = afpinfo_new(talloc_tos());
+ 		if (ai == NULL) {
+ 			return -1;
+ 		}
+-		memcpy(ai->afpi_FinderInfo,
+-		       native_finderinfo,
+-		       AFP_FinderSize);
++		if (native_state == 1) {
++			memcpy(ai->afpi_FinderInfo,
++			       native_finderinfo,
++			       AFP_FinderSize);
++		}
+ 		nread = afpinfo_pack(ai, afpinfo_buf);
+ 		TALLOC_FREE(ai);
+ 		if (nread != AFP_INFO_SIZE) {
+@@ -2863,6 +3011,9 @@ static ssize_t fruit_pread_rsrc(vfs_handle_struct *handle,
+ 		errno = EINVAL;
+ 		return -1;
+ 	}
++	if (fio->config->native_hfs) {
++		return SMB_VFS_NEXT_PREAD(handle, fsp, data, n, offset);
++	}
+ 
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -2918,6 +3069,9 @@ static bool fruit_must_handle_aio_stream(struct fio *fio)
+ 	if (fio->type == ADOUBLE_META) {
+ 		return true;
+ 	}
++	if (fio->config->native_hfs) {
++		return false;
++	}
+ 
+ 	if ((fio->type == ADOUBLE_RSRC) &&
+ 	    (fio->config->rsrc == FRUIT_RSRC_ADFILE))
+@@ -3232,6 +3386,14 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+ 	if (to_write != AFP_INFO_SIZE) {
+ 		to_write = AFP_INFO_SIZE;
+ 	}
++	if (fio->config->native_hfs) {
++		if (tc_native_finderinfo_write_fsp(
++				fsp->base_fsp, &buf[AFP_OFF_FinderInfo]) != 0)
++		{
++			return -1;
++		}
++		return n;
++	}
+ 
+ 	switch (fio->config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -3258,14 +3420,6 @@ static ssize_t fruit_pwrite_meta(vfs_handle_struct *handle,
+ 	if ((size_t)nwritten != to_write) {
+ 		return -1;
+ 	}
+-	if (fio->config->time_capsule_native_metadata) {
+-		/* The configured fruit backend remains authoritative. Mirror only
+-		 * after it has accepted the complete AFP_AfpInfo update. */
+-		fio->native_meta_fallback = false;
+-		tc_native_finderinfo_mirror(
+-			fsp->base_fsp, &buf[AFP_OFF_FinderInfo]);
+-	}
+-
+ 	/*
+ 	 * Return the requested amount, verified against macOS SMB server
+ 	 */
+@@ -3342,6 +3496,9 @@ static ssize_t fruit_pwrite_rsrc(vfs_handle_struct *handle,
+ 		DBG_ERR("Failed to fetch fsp extension\n");
+ 		return -1;
+ 	}
++	if (fio->config->native_hfs) {
++		return SMB_VFS_NEXT_PWRITE(handle, fsp, data, n, offset);
++	}
+ 
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -3605,34 +3762,31 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 	base_sbuf = *sbuf;
+ 
+ 	ino = hash_inode(sbuf, _smb_relname->stream_name);
++	if (config->native_hfs) {
++		native_state = tc_native_finderinfo_read_at(
++			handle, dirfsp, _smb_relname, native_finderinfo);
++		if (native_state != 1 ||
++		    all_zero(native_finderinfo, AFP_FinderSize))
++		{
++			if (native_state == 0) {
++				errno = ENOENT;
++			}
++			goto fail;
++		}
++		*sbuf = base_sbuf;
++		sbuf->st_ex_ino = ino;
++		sbuf->st_ex_size = AFP_INFO_SIZE;
++		sbuf->st_ex_mode &= ~S_IFMT;
++		sbuf->st_ex_mode |= S_IFREG;
++		sbuf->st_ex_blocks = sbuf->st_ex_size / STAT_ST_BLOCKSIZE + 1;
++		goto done;
++	}
+ 
+ 	if (config->meta == FRUIT_META_STREAM) {
+ 		ret = SMB_VFS_NEXT_FSTATAT(
+ 			handle, dirfsp, _smb_relname, sbuf, flags);
+ 		if (ret == -1) {
+-			backend_error = errno;
+-			if (!config->time_capsule_native_metadata ||
+-			    !tc_fruit_backend_missing(backend_error))
+-			{
+-				errno = backend_error;
+-				goto fail;
+-			}
+-			native_state = tc_native_finderinfo_read_at(
+-				handle, dirfsp, _smb_relname, native_finderinfo);
+-			if (native_state < 0) {
+-				goto fail;
+-			}
+-			if (native_state == 0 ||
+-			    all_zero(native_finderinfo, AFP_FinderSize)) {
+-				errno = ENOENT;
+-				goto fail;
+-			}
+-			*sbuf = base_sbuf;
+-			sbuf->st_ex_size = AFP_INFO_SIZE;
+-			sbuf->st_ex_mode &= ~S_IFMT;
+-			sbuf->st_ex_mode |= S_IFREG;
+-			sbuf->st_ex_blocks =
+-				sbuf->st_ex_size / STAT_ST_BLOCKSIZE + 1;
++			goto fail;
+ 		}
+ 		sbuf->st_ex_ino = ino;
+ 		goto done;
+@@ -3675,25 +3829,10 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 		sizeof(ad_data));
+ 	if (ealen == -1) {
+ 		backend_error = errno;
+-		if (!config->time_capsule_native_metadata ||
+-		    !tc_fruit_backend_missing(backend_error))
+-		{
+-			if (backend_error == ENOATTR) {
+-				errno = ENOENT;
+-			}
+-			goto fail;
+-		}
+-		native_state = tc_native_finderinfo_read_fsp(
+-			smb_relname->fsp, native_finderinfo);
+-		if (native_state < 0) {
+-			goto fail;
+-		}
+-		if (native_state == 0 ||
+-		    all_zero(native_finderinfo, AFP_FinderSize)) {
++		if (backend_error == ENOATTR) {
+ 			errno = ENOENT;
+-			goto fail;
+ 		}
+-		goto done;
++		goto fail;
+ 	}
+ 
+ 	ok = adouble_buf_parse(ad_data, ealen, &ad);
+@@ -3746,6 +3885,35 @@ static int fruit_fstatat_rsrc(struct vfs_handle_struct *handle,
+ 	ino_t ino;
+ 	int ret;
+ 	bool ok;
++	if (config->native_hfs) {
++		struct smb_filename base_name = *smb_relname;
++		SMB_STRUCT_STAT resource_st = {0};
++
++		base_name.stream_name = NULL;
++		ret = SMB_VFS_NEXT_FSTATAT(
++			handle, dirfsp, &base_name, sbuf, flags);
++		if (ret != 0) {
++			return ret;
++		}
++		if (!S_ISREG(sbuf->st_ex_mode)) {
++			errno = ENOENT;
++			return -1;
++		}
++		ret = tc_native_rsrc_statat(
++			handle, dirfsp, smb_relname, &resource_st, flags);
++		if (ret != 0 || resource_st.st_ex_size == 0) {
++			if (ret == 0) {
++				errno = ENOENT;
++			}
++			return -1;
++		}
++		sbuf->st_ex_ino = hash_inode(sbuf, smb_relname->stream_name);
++		sbuf->st_ex_size = resource_st.st_ex_size;
++		sbuf->st_ex_mode &= ~S_IFMT;
++		sbuf->st_ex_mode |= S_IFREG;
++		sbuf->st_ex_blocks = sbuf->st_ex_size / STAT_ST_BLOCKSIZE + 1;
++		return 0;
++	}
+ 
+ 	if (config->rsrc == FRUIT_RSRC_STREAM) {
+ 		ret = SMB_VFS_NEXT_FSTATAT(
+@@ -4027,6 +4195,9 @@ static int fruit_fstat_meta(vfs_handle_struct *handle,
+ 	int ret;
+ 
+ 	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
++	if (fio->config->native_hfs) {
++		return fruit_fstat_meta_netatalk(handle, fsp, sbuf);
++	}
+ 
+ 	switch (fio->config->meta) {
+ 	case FRUIT_META_STREAM:
+@@ -4095,10 +4266,30 @@ static int fruit_fstat_rsrc_adouble(vfs_handle_struct *handle,
+ 	return 0;
+ }
+ 
++static int fruit_fstat_rsrc_native(vfs_handle_struct *handle,
++				   files_struct *fsp,
++				   SMB_STRUCT_STAT *sbuf)
++{
++	SMB_STRUCT_STAT resource_st = {0};
++	int ret;
++
++	ret = SMB_VFS_NEXT_FSTAT(handle, fsp, &resource_st);
++	if (ret != 0) {
++		return ret;
++	}
++	*sbuf = fsp->base_fsp->fsp_name->st;
++	sbuf->st_ex_ino = hash_inode(sbuf, fsp->fsp_name->stream_name);
++	sbuf->st_ex_size = resource_st.st_ex_size;
++	return 0;
++}
++
+ static int fruit_fstat_rsrc(vfs_handle_struct *handle, files_struct *fsp,
+ 			    SMB_STRUCT_STAT *sbuf, struct fio *fio)
+ {
+ 	int ret;
++	if (fio->config->native_hfs) {
++		return fruit_fstat_rsrc_native(handle, fsp, sbuf);
++	}
+ 
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -4316,38 +4507,22 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
+ 				return NT_STATUS_INTERNAL_ERROR);
+-
+-	switch (config->meta) {
+-	case FRUIT_META_NETATALK:
+-		status = fruit_streaminfo_meta_netatalk(handle, fsp, smb_fname,
+-							mem_ctx, pnum_streams,
+-							pstreams, &backend_exists);
+-		break;
+-
+-	case FRUIT_META_STREAM:
+-		status = fruit_streaminfo_meta_stream(handle, fsp, smb_fname,
+-						      mem_ctx, pnum_streams,
+-						      pstreams, &backend_exists);
+-		break;
+-
+-	default:
+-		return NT_STATUS_INTERNAL_ERROR;
+-	}
+-
+-	if (!NT_STATUS_IS_OK(status) || backend_exists ||
+-	    !config->time_capsule_native_metadata)
+-	{
+-		return status;
+-	}
+-
+-	{
++	if (config->native_hfs) {
+ 		uint8_t native_finderinfo[AFP_FinderSize];
+-		int native_state = tc_native_finderinfo_read_at(
++		int native_state;
++
++		if (!del_fruit_stream(mem_ctx, pnum_streams, pstreams,
++				      AFPINFO_STREAM) ||
++		    !del_fruit_stream(mem_ctx, pnum_streams, pstreams,
++				      ":" NETATALK_META_XATTR ":$DATA"))
++		{
++			return NT_STATUS_NO_MEMORY;
++		}
++		native_state = tc_native_finderinfo_read_at(
+ 			handle,
+ 			handle->conn->cwd_fsp,
+ 			smb_fname,
+ 			native_finderinfo);
+-
+ 		if (native_state < 0) {
+ 			return map_nt_error_from_unix(errno);
+ 		}
+@@ -4362,9 +4537,27 @@ static NTSTATUS fruit_streaminfo_meta(vfs_handle_struct *handle,
+ 		{
+ 			return NT_STATUS_NO_MEMORY;
+ 		}
++		return NT_STATUS_OK;
+ 	}
+ 
+-	return NT_STATUS_OK;
++	switch (config->meta) {
++	case FRUIT_META_NETATALK:
++		status = fruit_streaminfo_meta_netatalk(handle, fsp, smb_fname,
++							mem_ctx, pnum_streams,
++							pstreams, &backend_exists);
++		break;
++
++	case FRUIT_META_STREAM:
++		status = fruit_streaminfo_meta_stream(handle, fsp, smb_fname,
++						      mem_ctx, pnum_streams,
++						      pstreams, &backend_exists);
++		break;
++
++	default:
++		return NT_STATUS_INTERNAL_ERROR;
++	}
++
++	return status;
+ }
+ 
+ static NTSTATUS fruit_streaminfo_rsrc_stream(
+@@ -4464,6 +4657,22 @@ static NTSTATUS fruit_streaminfo_rsrc(vfs_handle_struct *handle,
+ 
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
+ 				return NT_STATUS_INTERNAL_ERROR);
++	if (config->native_hfs) {
++		uint64_t rlen;
++
++		filter_empty_rsrc_stream(pnum_streams, pstreams);
++		rlen = readdir_attr_rfork_size_native(handle, smb_fname);
++		if (rlen == 0) {
++			return NT_STATUS_OK;
++		}
++		if (!add_fruit_stream(mem_ctx, pnum_streams, pstreams,
++				      AFPRESOURCE_STREAM_NAME, rlen,
++				      smb_roundup(handle->conn, rlen)))
++		{
++			return NT_STATUS_NO_MEMORY;
++		}
++		return NT_STATUS_OK;
++	}
+ 
+ 	switch (config->rsrc) {
+ 	case FRUIT_RSRC_STREAM:
+@@ -4583,7 +4792,8 @@ static int fruit_fntimes(vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
+ 				return -1);
+ 
+-	if ((config->meta != FRUIT_META_NETATALK) ||
++	if (config->native_hfs ||
++	    (config->meta != FRUIT_META_NETATALK) ||
+ 	    is_omit_timespec(&ft->create_time))
+ 	{
+ 		return SMB_VFS_NEXT_FNTIMES(handle, fsp, ft);
+@@ -4701,6 +4911,9 @@ static int fruit_ftruncate_rsrc(struct vfs_handle_struct *handle,
+ 		DBG_ERR("Failed to fetch fsp extension\n");
+ 		return -1;
+ 	}
++	if (fio->config->native_hfs) {
++		return SMB_VFS_NEXT_FTRUNCATE(handle, fsp, offset);
++	}
+ 
+ 	switch (fio->config->rsrc) {
+ 	case FRUIT_RSRC_XATTR:
+@@ -4800,7 +5013,8 @@ static NTSTATUS fruit_create_file(vfs_handle_struct *handle,
+ 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct fruit_config_data,
+ 				return NT_STATUS_UNSUCCESSFUL);
+ 
+-	if (is_apple_stream(smb_fname->stream_name) &&
++	if (!config->native_hfs &&
++	    is_apple_stream(smb_fname->stream_name) &&
+ 	    !internal_open &&
+ 	    config->convert_adouble)
+ 	{
+@@ -4919,7 +5133,7 @@ static NTSTATUS fruit_freaddir_attr(struct vfs_handle_struct *handle,
+ 
+ 	DBG_DEBUG("Path [%s]\n", fsp_str_dbg(fsp));
+ 
+-	if (config->convert_adouble) {
++	if (!config->native_hfs && config->convert_adouble) {
+ 		if (config->wipe_intentionally_left_blank_rfork) {
+ 			conv_flags |= AD_CONV_WIPE_BLANK;
+ 		}
+diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_xattr.c
+index f0ec2dc..04b2748 100644
+--- a/source3/modules/vfs_streams_xattr.c
++++ b/source3/modules/vfs_streams_xattr.c
+@@ -24,6 +24,7 @@
+ #include "includes.h"
+ #include "smbd/smbd.h"
+ #include "system/filesys.h"
++#include "airport_native_xattr.h"
+ #include "lib/util/tevent_unix.h"
+ #include "librpc/gen_ndr/ioctl.h"
+ #include "hash_inode.h"
+@@ -36,6 +37,7 @@ struct streams_xattr_config {
+ 	size_t prefix_len;
+ 	const char *ext_prefix;
+ 	size_t max_extents;
++	bool native_hfs;
+ 	bool store_stream_type;
+ };
+ 
+@@ -83,13 +85,29 @@ static char *streams_xattr_ext_name(TALLOC_CTX *mem_ctx,
+ 	return name;
+ }
+ 
++/* Only canonical Apple streams omit the marker in physical HFS storage.
++ * Windows ADS must retain their existing 3,802-byte extent layout. */
++static bool streams_xattr_native_apple(const struct streams_xattr_config *config,
++				     const char *name)
++{
++	size_t len = strlen(name);
++	const char *suffix = ":$DATA";
++
++	return config->native_hfs && len > strlen(suffix) &&
++		strncmp(name, "com.apple.", 10) == 0 &&
++		strcmp(name + len - strlen(suffix), suffix) == 0 &&
++		strcmp(name, "com.apple.FinderInfo:$DATA") != 0 &&
++		strcmp(name, "com.apple.ResourceFork:$DATA") != 0;
++}
++
+ static ssize_t fgetxattr_multi(const struct streams_xattr_config *config,
+ 			       struct files_struct *fsp,
+ 			       const char *raw_stream_name,
+ 			       void *_value,
+ 			       size_t size)
+ {
+-	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn));
++	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn)) +
++		streams_xattr_native_apple(config, raw_stream_name);
+ 	uint8_t *value = NULL;
+ 	size_t valuelen;
+ 	ssize_t ret = -1;
+@@ -221,12 +239,18 @@ static int fsetxattr_multi(const struct streams_xattr_config *config,
+ 			   size_t size,
+ 			   int flags)
+ {
+-	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn));
++	const size_t fraglen = lp_smbd_max_xattr_size(SNUM(fsp->conn)) +
++		streams_xattr_native_apple(config, raw_stream_name);
+ 	uint8_t *frag = NULL;
+ 	size_t i, len_extents, num_extents, written;
+ 	int ret = -1;
+ 	char *xattr_name = NULL;
+ 
++	if (streams_xattr_native_apple(config, raw_stream_name) && size > fraglen) {
++		/* Reject before writing an anchor: AFP must see the whole xattr. */
++		errno = E2BIG;
++		return -1;
++	}
+ 	if (size < 1) {
+ 		errno = EINVAL;
+ 		return -1;
+@@ -1497,14 +1521,15 @@ static int streams_xattr_connect(vfs_handle_struct *handle,
+ 				 "streams_xattr",
+ 				 "max xattrs per stream",
+ 				 1);
+-	if ((max_xattrs < 1) || (max_xattrs > 16)) {
++	if ((max_xattrs < 1) || (max_xattrs > 64)) {
+ 		DBG_WARNING("\"max xattrs per stream\"=%d invalid: "
+-			    "Between 1 and 16 possible\n",
++			    "Between 1 and 64 possible\n",
+ 			    max_xattrs);
+ 		errno = EINVAL;
+ 		return -1;
+ 	}
+ 	config->max_extents = max_xattrs - 1;
++	config->native_hfs = tc_airport_path_is_hfs(handle->conn->connectpath);
+ 
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config,
+ 				NULL, struct stream_xattr_config,
+diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
+index 390de73..a9a2b22 100644
+--- a/source3/modules/vfs_xattr_tdb.c
++++ b/source3/modules/vfs_xattr_tdb.c
+@@ -25,21 +25,21 @@
+ #include "dbwrap/dbwrap_open.h"
+ #include "source3/lib/xattr_tdb.h"
+ #include "lib/util/tevent_unix.h"
+-#include "timecapsule_native_xattr.h"
++#include "airport_native_xattr.h"
+ 
+ #undef DBGC_CLASS
+ #define DBGC_CLASS DBGC_VFS
+ 
+ struct xattr_tdb_config {
+ 	struct db_context *db;
++	bool native_hfs;
+ 	bool ignore_user_xattr;
+-	bool time_capsule_native_metadata;
+ };
+ 
+-#define TC_USERTAGS_STREAM_XATTR \
+-	"user.DosStream.com.apple.metadata:_kMDItemUserTags:$DATA"
+-#define TC_USERTAGS_NATIVE_XATTR \
+-	"com.apple.metadata:_kMDItemUserTags"
++#define TC_APPLE_STREAM_XATTR_PREFIX "user.DosStream."
++#define TC_APPLE_STREAM_XATTR_SUFFIX ":$DATA"
++#define TC_FINDERINFO_XATTR "com.apple.FinderInfo"
++#define TC_RESOURCEFORK_XATTR "com.apple.ResourceFork"
+ 
+ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
+ 			   struct xattr_tdb_config **_config);
+@@ -52,64 +52,42 @@ static bool is_user_xattr(const char *xattr_name)
+ 	return (match == 0);
+ }
+ 
+-static bool tc_is_usertags_xattr(const char *name)
++static char *tc_apple_stream_native_name(TALLOC_CTX *mem_ctx,
++					 const char *name)
+ {
+-	return strequal_m(name, TC_USERTAGS_STREAM_XATTR);
+-}
+-
+-static bool tc_xattr_list_contains(const char *list,
+-				   size_t list_size,
+-				   const char *name)
+-{
+-	size_t name_size = strlen(name) + 1;
+-	size_t offset = 0;
+-
+-	while (offset < list_size) {
+-		size_t entry_size = strnlen(list + offset, list_size - offset) + 1;
+-
+-		if (entry_size > list_size - offset) {
+-			return false;
+-		}
+-		if (entry_size == name_size &&
+-		    memcmp(list + offset, name, name_size) == 0)
+-		{
+-			return true;
+-		}
+-		offset += entry_size;
++	size_t prefix_len = strlen(TC_APPLE_STREAM_XATTR_PREFIX);
++	size_t suffix_len = strlen(TC_APPLE_STREAM_XATTR_SUFFIX);
++	size_t name_len = strlen(name);
++
++	if (name_len <= prefix_len + suffix_len ||
++	    strncmp(name, TC_APPLE_STREAM_XATTR_PREFIX "com.apple.",
++		    strlen(TC_APPLE_STREAM_XATTR_PREFIX "com.apple.")) != 0 ||
++	    strcmp(name + name_len - suffix_len,
++		   TC_APPLE_STREAM_XATTR_SUFFIX) != 0)
++	{
++		return NULL;
+ 	}
+-	return false;
++	return talloc_strndup(
++		mem_ctx, name + prefix_len, name_len - prefix_len - suffix_len);
+ }
+ 
+-static bool tc_xattr_tdb_backend_missing(int error)
++static bool tc_fruit_owned_native_xattr(const char *name)
+ {
+-	return error == ENOATTR || error == ENOENT;
++	return strcmp(name, TC_FINDERINFO_XATTR) == 0 ||
++		strcmp(name, TC_RESOURCEFORK_XATTR) == 0;
+ }
+ 
+-static bool tc_xattr_tdb_native_unavailable(int error)
+-{
+-	return tc_xattr_tdb_backend_missing(error) ||
+-		error == ENOTSUP || error == EOPNOTSUPP || error == ENOSYS;
+-}
+-
+-static ssize_t tc_native_usertags_get(struct files_struct *fsp,
+-				      void *value,
+-				      size_t size)
++static ssize_t tc_native_apple_stream_get(files_struct *fsp,
++					   const char *native_name,
++					   void *value,
++					   size_t size)
+ {
+ 	ssize_t raw_size;
+ 	ssize_t ret;
+ 	int fd = fsp_get_pathref_fd(fsp);
+ 
+-	if (fd == -1) {
+-		errno = EBADF;
+-		return -1;
+-	}
+-
+-	raw_size = tc_airport_fgetxattr(
+-		fd, TC_USERTAGS_NATIVE_XATTR, NULL, 0);
++	raw_size = tc_airport_fgetxattr(fd, native_name, NULL, 0);
+ 	if (raw_size < 0) {
+-		if (tc_xattr_tdb_native_unavailable(errno)) {
+-			errno = ENOATTR;
+-		}
+ 		return -1;
+ 	}
+ 	if (raw_size >= SSIZE_MAX) {
+@@ -123,9 +101,7 @@ static ssize_t tc_native_usertags_get(struct files_struct *fsp,
+ 		errno = ERANGE;
+ 		return -1;
+ 	}
+-
+-	ret = tc_airport_fgetxattr(
+-		fd, TC_USERTAGS_NATIVE_XATTR, value, raw_size);
++	ret = tc_airport_fgetxattr(fd, native_name, value, raw_size);
+ 	if (ret < 0) {
+ 		return -1;
+ 	}
+@@ -133,55 +109,111 @@ static ssize_t tc_native_usertags_get(struct files_struct *fsp,
+ 		errno = EIO;
+ 		return -1;
+ 	}
+-
+-	/* streams_xattr reserves the final byte as its extent marker. */
+ 	((uint8_t *)value)[ret] = 0;
+ 	return ret + 1;
+ }
+ 
+-static int tc_native_usertags_exists(struct files_struct *fsp)
++static int tc_native_apple_stream_set(files_struct *fsp,
++				      const char *native_name,
++				      const void *value,
++				      size_t size,
++				      int flags)
+ {
+-	ssize_t ret = tc_airport_fgetxattr(
+-		fsp_get_pathref_fd(fsp), TC_USERTAGS_NATIVE_XATTR, NULL, 0);
+-
+-	if (ret >= 0) {
+-		return 1;
++	if (size == 0) {
++		errno = EINVAL;
++		return -1;
+ 	}
+-	if (tc_xattr_tdb_native_unavailable(errno)) {
+-		return 0;
++	if (((const uint8_t *)value)[size - 1] != 0) {
++		/* HFS must expose one complete canonical xattr to AFP. A
++		 * streams_xattr extent count here would expose only its anchor. */
++		errno = E2BIG;
++		return -1;
+ 	}
+-	return -1;
++	return tc_airport_fsetxattr(
++		fsp_get_pathref_fd(fsp), native_name, value, size - 1, flags);
+ }
+ 
+-static void tc_native_usertags_mirror(struct files_struct *fsp,
+-				       const void *value,
+-				       size_t size)
++static ssize_t tc_native_list_with_apple_streams(
++	files_struct *fsp, char *list, size_t size)
+ {
+-	const uint8_t *bytes = value;
+-	int ret;
++	ssize_t raw_size;
++	ssize_t ret;
++	char *raw = NULL;
++	size_t offset = 0;
++	size_t required = 0;
++	size_t written_size = 0;
+ 
+-	if (size <= 1 || bytes[size - 1] != 0) {
+-		/* ponytail: Finder tag plists fit one xattr. Do not leave an older
+-		 * native tag visible for an empty stream or if a future oversized tag
+-		 * needs multiple extents. */
+-		ret = tc_airport_fremovexattr(
+-			fsp_get_pathref_fd(fsp), TC_USERTAGS_NATIVE_XATTR);
+-		if (ret != 0 && !tc_xattr_tdb_native_unavailable(errno)) {
+-			DBG_WARNING(
+-				"Native Finder-tag cleanup failed for [%s]: %s\n",
+-				fsp_str_dbg(fsp), strerror(errno));
++	raw_size = tc_airport_flistxattr(fsp_get_pathref_fd(fsp), NULL, 0);
++	if (raw_size <= 0) {
++		return raw_size;
++	}
++	raw = talloc_array(talloc_tos(), char, raw_size);
++	if (raw == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++	ret = tc_airport_flistxattr(
++		fsp_get_pathref_fd(fsp), raw, raw_size);
++	if (ret < 0) {
++		TALLOC_FREE(raw);
++		return -1;
++	}
++	while (offset < (size_t)ret) {
++		const char *entry = raw + offset;
++		size_t entry_size = strlen(entry) + 1;
++
++		if (tc_fruit_owned_native_xattr(entry)) {
++			offset += entry_size;
++			continue;
+ 		}
+-		return;
++		required += entry_size;
++		if (strncmp(entry, "com.apple.", strlen("com.apple.")) == 0) {
++			required += strlen(TC_APPLE_STREAM_XATTR_PREFIX) +
++				entry_size - 1 +
++				strlen(TC_APPLE_STREAM_XATTR_SUFFIX) + 1;
++		}
++		offset += entry_size;
++	}
++	if (list == NULL || size == 0) {
++		TALLOC_FREE(raw);
++		return required;
++	}
++	if (size < required) {
++		TALLOC_FREE(raw);
++		errno = ERANGE;
++		return -1;
+ 	}
++	offset = 0;
++	while (offset < (size_t)ret) {
++		const char *entry = raw + offset;
++		size_t entry_size = strlen(entry) + 1;
+ 
+-	ret = tc_airport_fsetxattr(fsp_get_pathref_fd(fsp),
+-				     TC_USERTAGS_NATIVE_XATTR,
+-				     value,
+-				     size - 1);
+-	if (ret != 0 && !tc_xattr_tdb_native_unavailable(errno)) {
+-		DBG_WARNING("Native Finder-tag mirror failed for [%s]: %s\n",
+-			    fsp_str_dbg(fsp), strerror(errno));
++		if (tc_fruit_owned_native_xattr(entry)) {
++			offset += entry_size;
++			continue;
++		}
++		memcpy(list + written_size, entry, entry_size);
++		written_size += entry_size;
++		if (strncmp(entry, "com.apple.", strlen("com.apple.")) == 0) {
++			int stream_written = snprintf(
++				list + written_size,
++				size - written_size,
++				"%s%s%s",
++				TC_APPLE_STREAM_XATTR_PREFIX,
++				entry,
++				TC_APPLE_STREAM_XATTR_SUFFIX);
++
++			if (stream_written < 0) {
++				TALLOC_FREE(raw);
++				errno = EIO;
++				return -1;
++			}
++			written_size += stream_written + 1;
++		}
++		offset += entry_size;
+ 	}
++	TALLOC_FREE(raw);
++	return written_size;
+ }
+ 
+ struct xattr_tdb_getxattrat_state {
+@@ -221,12 +253,14 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
+ 	}
+ 	state->xattr_size = -1;
+ 
+-	if (config->ignore_user_xattr && is_user_xattr(xattr_name)) {
++	if (!config->native_hfs && config->ignore_user_xattr &&
++	    is_user_xattr(xattr_name))
++	{
+ 		subreq = SMB_VFS_NEXT_GETXATTRAT_SEND(state,
+ 						      ev,
+ 						      handle,
+ 						      dir_fsp,
+-						      smb_fname,
++						      _smb_fname,
+ 						      xattr_name,
+ 						      alloc_hint);
+ 		if (tevent_req_nomem(subreq, req)) {
+@@ -247,6 +281,83 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
+ 		return tevent_req_post(req, ev);
+ 	}
+ 
++	if (config->native_hfs) {
++		files_struct *fsp = smb_fname->fsp;
++		char *native_name = tc_apple_stream_native_name(
++			talloc_tos(), xattr_name);
++		ssize_t xattr_size;
++
++		if (native_name != NULL &&
++		    tc_fruit_owned_native_xattr(native_name))
++		{
++			TALLOC_FREE(native_name);
++			TALLOC_FREE(smb_fname);
++			tevent_req_error(req, ENOATTR);
++			return tevent_req_post(req, ev);
++		}
++		if (native_name == NULL &&
++		    strcmp(xattr_name, TC_RESOURCEFORK_XATTR) == 0)
++		{
++			TALLOC_FREE(smb_fname);
++			tevent_req_error(req, ENOTSUP);
++			return tevent_req_post(req, ev);
++		}
++		if (native_name != NULL) {
++			xattr_size = tc_native_apple_stream_get(
++				fsp, native_name, NULL, 0);
++		} else {
++			xattr_size = tc_airport_fgetxattr(
++				fsp_get_pathref_fd(fsp), xattr_name, NULL, 0);
++		}
++		if (xattr_size < 0) {
++			tevent_req_error(req, errno);
++			TALLOC_FREE(native_name);
++			TALLOC_FREE(smb_fname);
++			return tevent_req_post(req, ev);
++		}
++		state->xattr_size = xattr_size;
++		if (alloc_hint == 0 || xattr_size == 0) {
++			TALLOC_FREE(native_name);
++			TALLOC_FREE(smb_fname);
++			tevent_req_done(req);
++			return tevent_req_post(req, ev);
++		}
++		if ((size_t)xattr_size > alloc_hint) {
++			TALLOC_FREE(native_name);
++			TALLOC_FREE(smb_fname);
++			state->xattr_size = -1;
++			tevent_req_error(req, ERANGE);
++			return tevent_req_post(req, ev);
++		}
++		state->xattr_value = talloc_array(state, uint8_t, xattr_size);
++		if (tevent_req_nomem(state->xattr_value, req)) {
++			TALLOC_FREE(native_name);
++			TALLOC_FREE(smb_fname);
++			return tevent_req_post(req, ev);
++		}
++		if (native_name != NULL) {
++			xattr_size = tc_native_apple_stream_get(
++				fsp,
++				native_name,
++				state->xattr_value,
++				state->xattr_size);
++		} else {
++			xattr_size = tc_airport_fgetxattr(
++				fsp_get_pathref_fd(fsp),
++				xattr_name,
++				state->xattr_value,
++				state->xattr_size);
++		}
++		TALLOC_FREE(native_name);
++		TALLOC_FREE(smb_fname);
++		if (xattr_size < 0) {
++			tevent_req_error(req, errno);
++			return tevent_req_post(req, ev);
++		}
++		state->xattr_size = xattr_size;
++		tevent_req_done(req);
++		return tevent_req_post(req, ev);
++	}
+ 
+ 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &smb_fname->st);
+ 
+@@ -355,10 +466,31 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
++	if (config->native_hfs) {
++		char *native_name = tc_apple_stream_native_name(
++			talloc_tos(), name);
++		ssize_t ret;
+ 
+-	if (config->ignore_user_xattr && is_user_xattr(name) &&
+-	    !(config->time_capsule_native_metadata && tc_is_usertags_xattr(name)))
+-	{
++		if (native_name != NULL) {
++			if (tc_fruit_owned_native_xattr(native_name)) {
++				TALLOC_FREE(native_name);
++				errno = ENOATTR;
++				return -1;
++			}
++			ret = tc_native_apple_stream_get(
++				fsp, native_name, value, size);
++			TALLOC_FREE(native_name);
++			return ret;
++		}
++		if (strcmp(name, TC_RESOURCEFORK_XATTR) == 0) {
++			errno = ENOTSUP;
++			return -1;
++		}
++		return tc_airport_fgetxattr(
++			fsp_get_pathref_fd(fsp), name, value, size);
++	}
++
++	if (config->ignore_user_xattr && is_user_xattr(name)) {
+ 		return SMB_VFS_NEXT_FGETXATTR(
+ 			handle, fsp, name, value, size);
+ 	}
+@@ -373,15 +505,7 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
+ 
+ 	xattr_size = xattr_tdb_getattr(config->db, frame, &id, name, &blob);
+ 	if (xattr_size < 0) {
+-		int tdb_error = errno;
+-
+ 		TALLOC_FREE(frame);
+-		if (config->time_capsule_native_metadata &&
+-		    tc_is_usertags_xattr(name) &&
+-		    tc_xattr_tdb_backend_missing(tdb_error))
+-		{
+-			return tc_native_usertags_get(fsp, value, size);
+-		}
+ 		errno = ENOATTR;
+ 		return -1;
+ 	}
+@@ -409,15 +533,35 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
+ 	struct xattr_tdb_config *config = NULL;
+ 	SMB_STRUCT_STAT sbuf;
+ 	struct file_id id;
+-	int ret;
+ 
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
++	if (config->native_hfs) {
++		char *native_name = tc_apple_stream_native_name(
++			talloc_tos(), name);
++		int ret;
+ 
+-	if (config->ignore_user_xattr && is_user_xattr(name) &&
+-	    !(config->time_capsule_native_metadata && tc_is_usertags_xattr(name)))
+-	{
++		if (native_name != NULL) {
++			if (tc_fruit_owned_native_xattr(native_name)) {
++				TALLOC_FREE(native_name);
++				errno = ENOTSUP;
++				return -1;
++			}
++			ret = tc_native_apple_stream_set(
++				fsp, native_name, value, size, flags);
++			TALLOC_FREE(native_name);
++			return ret;
++		}
++		if (strcmp(name, TC_RESOURCEFORK_XATTR) == 0) {
++			errno = ENOTSUP;
++			return -1;
++		}
++		return tc_airport_fsetxattr(
++			fsp_get_pathref_fd(fsp), name, value, size, flags);
++	}
++
++	if (config->ignore_user_xattr && is_user_xattr(name)) {
+ 		return SMB_VFS_NEXT_FSETXATTR(
+ 			handle, fsp, name, value, size, flags);
+ 	}
+@@ -428,13 +572,7 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
+ 
+ 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
+ 
+-	ret = xattr_tdb_setattr(config->db, &id, name, value, size, flags);
+-	if (ret == 0 && config->time_capsule_native_metadata &&
+-	    tc_is_usertags_xattr(name))
+-	{
+-		tc_native_usertags_mirror(fsp, value, size);
+-	}
+-	return ret;
++	return xattr_tdb_setattr(config->db, &id, name, value, size, flags);
+ 
+ }
+ 
+@@ -447,13 +585,14 @@ static ssize_t xattr_tdb_flistxattr(struct vfs_handle_struct *handle,
+ 	struct file_id id;
+ 	ssize_t backend_size;
+ 	ssize_t ret;
+-	bool append_native_usertags = false;
+-	size_t native_name_size = sizeof(TC_USERTAGS_STREAM_XATTR);
+ 	TALLOC_CTX *frame = NULL;
+ 
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
++	if (config->native_hfs) {
++		return tc_native_list_with_apple_streams(fsp, list, size);
++	}
+ 
+ 	if (SMB_VFS_NEXT_FSTAT(handle, fsp, &sbuf) == -1) {
+ 		return -1;
+@@ -467,44 +606,6 @@ static ssize_t xattr_tdb_flistxattr(struct vfs_handle_struct *handle,
+ 		return -1;
+ 	}
+ 
+-	if (config->time_capsule_native_metadata) {
+-		bool backend_missing = false;
+-
+-		if (size == 0) {
+-			DATA_BLOB blob = data_blob_null;
+-			ssize_t tag_size = xattr_tdb_getattr(
+-				config->db, frame, &id,
+-				TC_USERTAGS_STREAM_XATTR, &blob);
+-
+-			backend_missing = tag_size < 0 &&
+-				tc_xattr_tdb_backend_missing(errno);
+-		} else {
+-			backend_missing = !tc_xattr_list_contains(
+-				list, ret, TC_USERTAGS_STREAM_XATTR);
+-		}
+-		if (backend_missing) {
+-			int native_state = tc_native_usertags_exists(fsp);
+-
+-			if (native_state < 0) {
+-				TALLOC_FREE(frame);
+-				return -1;
+-			}
+-			append_native_usertags = native_state == 1;
+-		}
+-	}
+-	if (append_native_usertags) {
+-		if (size == 0) {
+-			TALLOC_FREE(frame);
+-			return ret + native_name_size;
+-		}
+-		if ((size_t)ret + native_name_size > size) {
+-			TALLOC_FREE(frame);
+-			errno = ERANGE;
+-			return -1;
+-		}
+-		memcpy(list + ret, TC_USERTAGS_STREAM_XATTR, native_name_size);
+-		ret += native_name_size;
+-	}
+ 	TALLOC_FREE(frame);
+ 	if (ret == (ssize_t)size) {
+ 		return ret;
+@@ -529,16 +630,34 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
+ 	struct xattr_tdb_config *config = NULL;
+ 	SMB_STRUCT_STAT sbuf;
+ 	struct file_id id;
+-	bool removed_native = false;
+-	int ret;
+ 
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
++	if (config->native_hfs) {
++		char *native_name = tc_apple_stream_native_name(
++			talloc_tos(), name);
++		int ret;
+ 
+-	if (config->ignore_user_xattr && is_user_xattr(name) &&
+-	    !(config->time_capsule_native_metadata && tc_is_usertags_xattr(name)))
+-	{
++		if (native_name != NULL) {
++			if (tc_fruit_owned_native_xattr(native_name)) {
++				TALLOC_FREE(native_name);
++				errno = ENOATTR;
++				return -1;
++			}
++			ret = tc_airport_fremovexattr(
++				fsp_get_pathref_fd(fsp), native_name);
++			TALLOC_FREE(native_name);
++			return ret;
++		}
++		if (strcmp(name, TC_RESOURCEFORK_XATTR) == 0) {
++			errno = ENOTSUP;
++			return -1;
++		}
++		return tc_airport_fremovexattr(fsp_get_pathref_fd(fsp), name);
++	}
++
++	if (config->ignore_user_xattr && is_user_xattr(name)) {
+ 		return SMB_VFS_NEXT_FREMOVEXATTR(handle, fsp, name);
+ 	}
+ 
+@@ -547,23 +666,7 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
+ 	}
+ 
+ 	id = SMB_VFS_NEXT_FILE_ID_CREATE(handle, &sbuf);
+-	if (config->time_capsule_native_metadata &&
+-	    tc_is_usertags_xattr(name))
+-	{
+-		ret = tc_airport_fremovexattr(
+-			fsp_get_pathref_fd(fsp), TC_USERTAGS_NATIVE_XATTR);
+-		if (ret == 0) {
+-			removed_native = true;
+-		} else if (!tc_xattr_tdb_native_unavailable(errno)) {
+-			return -1;
+-		}
+-	}
+-
+-	ret = xattr_tdb_removeattr(config->db, &id, name);
+-	if (ret != 0 && removed_native && tc_xattr_tdb_backend_missing(errno)) {
+-		return 0;
+-	}
+-	return ret;
++	return xattr_tdb_removeattr(config->db, &id, name);
+ }
+ 
+ /*
+@@ -602,6 +705,19 @@ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
+ 		goto error;
+ 	}
+ 
++	config->native_hfs = tc_airport_path_is_hfs(
++		handle->conn->connectpath);
++	config->ignore_user_xattr = lp_parm_bool(
++		SNUM(handle->conn), "xattr_tdb", "ignore_user_xattr", false);
++	if (config->native_hfs) {
++		SMB_VFS_HANDLE_SET_DATA(handle, config, config_destructor,
++					struct xattr_tdb_config, return false);
++		if (_config != NULL) {
++			*_config = config;
++		}
++		return true;
++	}
++
+ 	def_dbname = state_path(talloc_tos(), "xattr.tdb");
+ 	if (def_dbname == NULL) {
+ 		errno = ENOSYS;
+@@ -631,11 +747,6 @@ static bool xattr_tdb_init(struct vfs_handle_struct *handle,
+ 	}
+ 	TALLOC_FREE(def_dbname);
+ 
+-	config->ignore_user_xattr = lp_parm_bool(
+-		SNUM(handle->conn), "xattr_tdb", "ignore_user_xattr", false);
+-	config->time_capsule_native_metadata = lp_parm_bool(
+-		SNUM(handle->conn), "fruit", "time_capsule_native_metadata", false);
+-
+ 	SMB_VFS_HANDLE_SET_DATA(handle, config, config_destructor,
+ 				struct xattr_tdb_config, return false);
+ 
+@@ -664,6 +775,9 @@ static int xattr_tdb_openat(struct vfs_handle_struct *handle,
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
++	if (config->native_hfs) {
++		return SMB_VFS_NEXT_OPENAT(handle, dirfsp, smb_fname, fsp, how);
++	}
+ 
+ 	fd = SMB_VFS_NEXT_OPENAT(handle,
+ 				 dirfsp,
+@@ -714,6 +828,9 @@ static int xattr_tdb_mkdirat(vfs_handle_struct *handle,
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
++	if (config->native_hfs) {
++		return SMB_VFS_NEXT_MKDIRAT(handle, dirfsp, smb_fname, mode);
++	}
+ 
+ 	ret = SMB_VFS_NEXT_MKDIRAT(handle,
+ 				dirfsp,
+@@ -760,6 +877,9 @@ static int xattr_tdb_unlinkat(vfs_handle_struct *handle,
+ 	if (!xattr_tdb_init(handle, &config)) {
+ 		return -1;
+ 	}
++	if (config->native_hfs) {
++		return SMB_VFS_NEXT_UNLINKAT(handle, dirfsp, smb_fname, flags);
++	}
+ 
+ 	frame = talloc_stackframe();
+ 
+diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_migrate.c
+new file mode 100644
+index 0000000..bd03a21
+--- /dev/null
++++ b/source3/utils/tc_xattr_hfs_migrate.c
+@@ -0,0 +1,1724 @@
++/* One-shot migration of xattr_tdb metadata into AirPort HFS storage.
++ * This is a standalone deployment helper, not part of the resident smbd. */
++#include "includes.h"
++#include "system/filesys.h"
++#include "lib/dbwrap/dbwrap.h"
++#include "source3/lib/xattr_tdb.h"
++#include "source3/include/MacExtensions.h"
++#include "source3/modules/airport_native_xattr.h"
++
++#define TC_HFS_XATTR_SIZE 3802
++#define TC_HFS_STREAM_XATTRS 35
++#define TC_STREAM_PREFIX "user.DosStream."
++#define TC_EXT_PREFIX "user.DosStreamExt."
++#define TC_STREAM_SUFFIX ":$DATA"
++#define TC_AFPINFO_XATTR TC_STREAM_PREFIX "AFP_AfpInfo" TC_STREAM_SUFFIX
++#define TC_NETATALK_META_XATTR "user.org.netatalk.Metadata"
++#define TC_FINDERINFO_XATTR "com.apple.FinderInfo"
++#define TC_AD_MAGIC 0x00051607
++#define TC_AD_VERSION 0x00020000
++#define TC_AD_HEADER_SIZE 26
++#define TC_AD_ENTRY_SIZE 12
++#define TC_AD_RFORK 2
++#define TC_AD_FINDERI 9
++#define TC_AD_FILLER_OFFSET 8
++#define TC_AD_FILLER_SIZE 16
++#define TC_AD_OSX_FILLER "Mac OS X        "
++#define TC_AD_XATTR_MAGIC 0x41545452
++#define TC_AD_XATTR_HEADER_SIZE 36
++#define TC_AD_XATTR_ENTRY_SIZE 11
++#define TC_AD_MAX_HEADER (64 * 1024)
++#define TC_AD_MAX_ENTRIES 1024
++#define TC_COPY_SIZE (64 * 1024)
++#define TC_RESOURCE_MARKER_XATTR "user.TimeCapsuleSMB.ResourceMigration"
++#define TC_RESOURCE_MARKER_MAGIC "TCV4RSRC"
++
++enum tc_phase {
++	TC_PHASE_COPY,
++	TC_PHASE_CLEANUP,
++};
++
++struct tc_tdb_key {
++	uint8_t data[16];
++	bool matched;
++	bool retired;
++};
++
++struct tc_ad_entry {
++	bool present;
++	uint32_t offset;
++	uint32_t length;
++};
++
++struct tc_appledouble {
++	uint8_t *header;
++	size_t header_size;
++	struct tc_ad_entry finderinfo;
++	struct tc_ad_entry resource;
++	bool unsupported_entries;
++};
++
++struct tc_counts {
++	uint64_t entries;
++	uint64_t tdb_records;
++	uint64_t xattrs_written;
++	uint64_t streams_written;
++	uint64_t finderinfo_written;
++	uint64_t resources_written;
++	uint64_t native_kept;
++	uint64_t conflicts;
++	uint64_t sidecars_seen;
++	uint64_t sidecars_deleted;
++	uint64_t tdb_total;
++	uint64_t tdb_matched;
++	uint64_t tdb_deleted;
++	uint64_t tdb_retired;
++	uint64_t orphaned;
++	uint64_t errors;
++};
++
++struct tc_migration {
++	TALLOC_CTX *mem_ctx;
++	struct db_context *db;
++	const char *tdb_path;
++	const char *legacy_metadata;
++	enum tc_phase phase;
++	struct tc_tdb_key *tdb_keys;
++	size_t num_tdb_keys;
++	int tdb_collect_error;
++	struct tc_counts counts;
++};
++
++static bool tc_missing_error(int error)
++{
++	return error == ENOATTR || error == ENODATA || error == ENOENT;
++}
++
++static struct file_id tc_file_id(const struct stat *st)
++{
++	struct file_id id = {0};
++	id.devid = st->st_dev;
++	id.inode = st->st_ino;
++	return id;
++}
++
++static int tc_collect_tdb_key(struct db_record *record, void *private_data)
++{
++	struct tc_migration *migration = private_data;
++	struct tc_tdb_key *keys;
++	TDB_DATA key = dbwrap_record_get_key(record);
++
++	if (key.dsize != sizeof(migration->tdb_keys[0].data)) {
++		migration->tdb_collect_error = errno = EINVAL;
++		return -1;
++	}
++	keys = talloc_realloc(
++		migration->mem_ctx,
++		migration->tdb_keys,
++		struct tc_tdb_key,
++		migration->num_tdb_keys + 1);
++	if (keys == NULL) {
++		migration->tdb_collect_error = errno = ENOMEM;
++		return -1;
++	}
++	migration->tdb_keys = keys;
++	memcpy(keys[migration->num_tdb_keys].data, key.dptr, key.dsize);
++	keys[migration->num_tdb_keys].matched = false;
++	keys[migration->num_tdb_keys].retired = false;
++	migration->num_tdb_keys++;
++	return 0;
++}
++
++static int tc_collect_tdb_keys(struct tc_migration *migration)
++{
++	NTSTATUS status;
++
++	if (migration->db == NULL) {
++		return 0;
++	}
++	migration->tdb_collect_error = 0;
++	status = dbwrap_traverse_read(
++		migration->db, tc_collect_tdb_key, migration, NULL);
++	/* TDB returns a positive record count when a callback stops traversal,
++	 * so preserve callback failures separately from the NTSTATUS result. */
++	if (migration->tdb_collect_error != 0) {
++		errno = migration->tdb_collect_error;
++		fprintf(stderr, "unable to enumerate TDB records: %s\n",
++			strerror(errno));
++		return -1;
++	}
++	if (!NT_STATUS_IS_OK(status)) {
++		fprintf(stderr, "unable to enumerate TDB records: %s\n",
++			nt_errstr(status));
++		return -1;
++	}
++	migration->counts.tdb_total = migration->num_tdb_keys;
++	return 0;
++}
++
++static int tc_mark_tdb_key(struct tc_migration *migration,
++			   const struct file_id *id)
++{
++	uint8_t key[16];
++	size_t i;
++
++	push_file_id_16(key, id);
++	/* The deployed databases average only a few thousand rows. A linear
++	 * lookup keeps this one-shot helper small; replace it if that changes. */
++	for (i = 0; i < migration->num_tdb_keys; i++) {
++		if (memcmp(migration->tdb_keys[i].data, key, sizeof(key)) != 0) {
++			continue;
++		}
++		if (!migration->tdb_keys[i].matched) {
++			migration->tdb_keys[i].matched = true;
++			migration->counts.tdb_matched++;
++		}
++		/* A failed first hardlink visit must not bypass verification later. */
++		return migration->tdb_keys[i].retired ? 0 : 1;
++	}
++	return 0;
++}
++
++static int tc_native_get(TALLOC_CTX *mem_ctx,
++			 int fd,
++			 const char *name,
++			 DATA_BLOB *blob)
++{
++	ssize_t size;
++	ssize_t ret;
++
++	*blob = data_blob_null;
++	size = tc_airport_fgetxattr(fd, name, NULL, 0);
++	if (size < 0) {
++		return -1;
++	}
++	if (size == 0) {
++		return 0;
++	}
++	blob->data = talloc_array(mem_ctx, uint8_t, size);
++	if (blob->data == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++	ret = tc_airport_fgetxattr(fd, name, blob->data, size);
++	if (ret != size) {
++		if (ret >= 0) {
++			errno = EIO;
++		}
++		TALLOC_FREE(blob->data);
++		return -1;
++	}
++	blob->length = size;
++	return 0;
++}
++
++static int tc_native_write_verified(struct tc_migration *migration,
++				    int fd,
++				    const char *path,
++				    const char *name,
++				    const uint8_t *value,
++				    size_t size,
++				    bool keep_existing)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	DATA_BLOB existing = data_blob_null;
++	int ret;
++
++	ret = tc_native_get(frame, fd, name, &existing);
++	if (ret == 0) {
++		if (existing.length == size &&
++		    (size == 0 || memcmp(existing.data, value, size) == 0))
++		{
++			migration->counts.native_kept++;
++			TALLOC_FREE(frame);
++			return 0;
++		}
++		if (keep_existing) {
++			migration->counts.native_kept++;
++			migration->counts.conflicts++;
++			TALLOC_FREE(frame);
++			return 0;
++		}
++	} else if (!tc_missing_error(errno)) {
++		fprintf(stderr, "native read failed path=%s name=%s error=%s\n",
++			path, name, strerror(errno));
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	if (migration->phase == TC_PHASE_CLEANUP) {
++		fprintf(stderr,
++			"native verification mismatch path=%s name=%s\n",
++			path, name);
++		TALLOC_FREE(frame);
++		errno = EIO;
++		return -1;
++	}
++
++	if (tc_airport_fsetxattr(fd, name, value, size, 0) != 0) {
++		fprintf(stderr, "native write failed path=%s name=%s size=%zu error=%s\n",
++			path, name, size, strerror(errno));
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	TALLOC_FREE(existing.data);
++	if (tc_native_get(frame, fd, name, &existing) != 0 ||
++	    existing.length != size ||
++	    memcmp(existing.data, value, size) != 0)
++	{
++		fprintf(stderr, "native verification failed path=%s name=%s\n",
++			path, name);
++		TALLOC_FREE(frame);
++		errno = EIO;
++		return -1;
++	}
++	migration->counts.xattrs_written++;
++	TALLOC_FREE(frame);
++	return 0;
++}
++
++static ssize_t tc_tdb_get(struct tc_migration *migration,
++			  TALLOC_CTX *mem_ctx,
++			  const struct file_id *id,
++			  const char *name,
++			  DATA_BLOB *blob)
++{
++	return xattr_tdb_getattr(migration->db, mem_ctx, id, name, blob);
++}
++
++static bool tc_stream_anchor(const char *name)
++{
++	return strncmp(name, TC_STREAM_PREFIX, strlen(TC_STREAM_PREFIX)) == 0;
++}
++
++static bool tc_stream_extent(const char *name)
++{
++	return strncmp(name, TC_EXT_PREFIX, strlen(TC_EXT_PREFIX)) == 0;
++}
++
++static int tc_read_tdb_stream(struct tc_migration *migration,
++			      TALLOC_CTX *mem_ctx,
++			      const struct file_id *id,
++			      const char *anchor_name,
++			      DATA_BLOB *logical)
++{
++	DATA_BLOB anchor = data_blob_null;
++	const char *raw_name;
++	uint8_t extents;
++	size_t total;
++	size_t written;
++	uint8_t i;
++	ssize_t ret;
++
++	*logical = data_blob_null;
++	ret = tc_tdb_get(migration, mem_ctx, id, anchor_name, &anchor);
++	if (ret < 0) {
++		return -1;
++	}
++	if (anchor.length == 0) {
++		errno = EINVAL;
++		return -1;
++	}
++	extents = anchor.data[anchor.length - 1];
++	if (extents >= TC_HFS_STREAM_XATTRS) {
++		errno = EOVERFLOW;
++		return -1;
++	}
++	total = anchor.length - 1;
++	raw_name = anchor_name + strlen(TC_STREAM_PREFIX);
++	for (i = 1; i <= extents; i++) {
++		char *extent_name = talloc_asprintf(
++			mem_ctx, "%s%u.%s", TC_EXT_PREFIX, i, raw_name);
++		DATA_BLOB extent = data_blob_null;
++
++		if (extent_name == NULL) {
++			errno = ENOMEM;
++			return -1;
++		}
++		ret = tc_tdb_get(migration, mem_ctx, id, extent_name, &extent);
++		if (ret < 0 || total + extent.length < total) {
++			if (ret >= 0) {
++				errno = EOVERFLOW;
++			}
++			return -1;
++		}
++		total += extent.length;
++	}
++	logical->data = talloc_array(mem_ctx, uint8_t, total == 0 ? 1 : total);
++	if (logical->data == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++	memcpy(logical->data, anchor.data, anchor.length - 1);
++	written = anchor.length - 1;
++	for (i = 1; i <= extents; i++) {
++		char *extent_name = talloc_asprintf(
++			mem_ctx, "%s%u.%s", TC_EXT_PREFIX, i, raw_name);
++		DATA_BLOB extent = data_blob_null;
++
++		ret = tc_tdb_get(migration, mem_ctx, id, extent_name, &extent);
++		if (ret < 0) {
++			return -1;
++		}
++		memcpy(logical->data + written, extent.data, extent.length);
++		written += extent.length;
++	}
++	logical->length = total;
++	return 0;
++}
++
++static char *tc_apple_native_name(TALLOC_CTX *mem_ctx,
++				  const char *anchor_name)
++{
++	const char *raw = anchor_name + strlen(TC_STREAM_PREFIX);
++	size_t raw_len = strlen(raw);
++	size_t suffix_len = strlen(TC_STREAM_SUFFIX);
++
++	if (raw_len <= suffix_len ||
++	    strncmp(raw, "com.apple.", strlen("com.apple.")) != 0 ||
++	    strcmp(raw + raw_len - suffix_len, TC_STREAM_SUFFIX) != 0)
++	{
++		return NULL;
++	}
++	return talloc_strndup(mem_ctx, raw, raw_len - suffix_len);
++}
++
++/* An existing complete native ADS wins, including edits made before a
++ * disconnected disk's next boot migration. New ADS anchors are written last,
++ * so an interrupted export can only leave unreferenced, retryable extents. */
++static int tc_keep_native_stream(struct tc_migration *migration, int fd,
++				 const char *anchor_name, const DATA_BLOB *logical)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	DATA_BLOB fragment = data_blob_null;
++	const char *raw = anchor_name + strlen(TC_STREAM_PREFIX);
++	size_t offset = 0, i, extents;
++	bool different = false;
++	int ret = tc_native_get(frame, fd, anchor_name, &fragment);
++
++	if (ret != 0) {
++		int error = errno;
++		TALLOC_FREE(frame);
++		errno = error;
++		return tc_missing_error(error) ? 0 : -1;
++	}
++	if (fragment.length == 0 || fragment.length > TC_HFS_XATTR_SIZE) {
++		goto invalid;
++	}
++	extents = fragment.data[--fragment.length];
++	if (extents >= TC_HFS_STREAM_XATTRS) {
++		goto invalid;
++	}
++	for (i = 0; i <= extents; i++) {
++		if (offset + fragment.length > logical->length ||
++		    memcmp(fragment.data, logical->data + MIN(offset, logical->length),
++			   MIN(fragment.length, logical->length - MIN(offset, logical->length))) != 0)
++		{
++			different = true;
++		}
++		offset += fragment.length;
++		if (i < extents) {
++			char *name = talloc_asprintf(frame, "%s%zu.%s", TC_EXT_PREFIX, i + 1, raw);
++			if (name == NULL || tc_native_get(frame, fd, name, &fragment) != 0) {
++				TALLOC_FREE(frame);
++				return -1;
++			}
++			if (fragment.length == 0 || fragment.length > TC_HFS_XATTR_SIZE) {
++				goto invalid;
++			}
++		}
++	}
++	migration->counts.native_kept++;
++	migration->counts.conflicts += different || offset != logical->length;
++	TALLOC_FREE(frame);
++	return 1;
++invalid:
++	TALLOC_FREE(frame);
++	errno = EIO;
++	return -1;
++}
++
++static int tc_write_internal_stream(struct tc_migration *migration,
++				    int fd,
++				    const char *path,
++				    const char *anchor_name,
++				    const DATA_BLOB *logical)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	const char *raw_name = anchor_name + strlen(TC_STREAM_PREFIX);
++	size_t first_len = MIN(logical->length, TC_HFS_XATTR_SIZE - 1);
++	size_t remaining = logical->length - first_len;
++	size_t extents = remaining == 0 ? 0 :
++		(remaining + TC_HFS_XATTR_SIZE - 1) / TC_HFS_XATTR_SIZE;
++	uint8_t *anchor;
++	size_t offset;
++	size_t i;
++	int existing = tc_keep_native_stream(migration, fd, anchor_name, logical);
++
++	if (existing != 0) {
++		TALLOC_FREE(frame);
++		return existing < 0 ? -1 : 0;
++	}
++
++	if (extents >= TC_HFS_STREAM_XATTRS) {
++		fprintf(stderr, "stream too large path=%s name=%s size=%zu\n",
++			path, anchor_name, logical->length);
++		TALLOC_FREE(frame);
++		errno = EOVERFLOW;
++		return -1;
++	}
++	anchor = talloc_array(frame, uint8_t, first_len + 1);
++	if (anchor == NULL) {
++		TALLOC_FREE(frame);
++		errno = ENOMEM;
++		return -1;
++	}
++	memcpy(anchor, logical->data, first_len);
++	anchor[first_len] = extents;
++	offset = first_len;
++	for (i = 1; i <= extents; i++) {
++		char *extent_name = talloc_asprintf(
++			frame, "%s%zu.%s", TC_EXT_PREFIX, i, raw_name);
++		size_t chunk = MIN(logical->length - offset, TC_HFS_XATTR_SIZE);
++
++		if (extent_name == NULL ||
++		    tc_native_write_verified(migration, fd, path, extent_name,
++					     logical->data + offset,
++					     chunk, false) != 0)
++		{
++			TALLOC_FREE(frame);
++			return -1;
++		}
++		offset += chunk;
++	}
++	if (tc_native_write_verified(migration, fd, path, anchor_name,
++				     anchor, first_len + 1, false) != 0)
++	{
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	migration->counts.streams_written++;
++	TALLOC_FREE(frame);
++	return 0;
++}
++
++static int tc_migrate_stream(struct tc_migration *migration,
++			     int fd,
++			     const char *path,
++			     const struct file_id *id,
++			     const char *anchor_name)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	DATA_BLOB logical = data_blob_null;
++	char *native_name;
++	int ret;
++
++	if (strcmp(anchor_name, TC_AFPINFO_XATTR) == 0) {
++		TALLOC_FREE(frame);
++		return 0;
++	}
++	ret = tc_read_tdb_stream(
++		migration, frame, id, anchor_name, &logical);
++	if (ret != 0) {
++		fprintf(stderr, "stream decode failed path=%s name=%s error=%s\n",
++			path, anchor_name, strerror(errno));
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	native_name = tc_apple_native_name(frame, anchor_name);
++	if (native_name != NULL) {
++		if (logical.length > TC_HFS_XATTR_SIZE) {
++			fprintf(stderr, "Apple xattr too large path=%s name=%s size=%zu\n",
++				path, native_name, logical.length);
++			TALLOC_FREE(frame);
++			errno = EOVERFLOW;
++			return -1;
++		}
++		ret = tc_native_write_verified(
++			migration, fd, path, native_name,
++			logical.data, logical.length, true);
++	} else {
++		ret = tc_write_internal_stream(
++			migration, fd, path, anchor_name, &logical);
++	}
++	TALLOC_FREE(frame);
++	return ret;
++}
++
++static int tc_finderinfo_from_stream(struct tc_migration *migration,
++				     TALLOC_CTX *mem_ctx,
++				     const struct file_id *id,
++				     uint8_t finderinfo[AFP_FinderSize])
++{
++	DATA_BLOB logical = data_blob_null;
++
++	if (tc_read_tdb_stream(
++			migration, mem_ctx, id, TC_AFPINFO_XATTR, &logical) != 0)
++	{
++		return -1;
++	}
++	if (logical.length != AFP_INFO_SIZE) {
++		errno = EINVAL;
++		return -1;
++	}
++	if (RIVAL(logical.data, 0) != AFP_Signature ||
++	    RIVAL(logical.data, 4) != AFP_Version)
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	memcpy(finderinfo, logical.data + AFP_OFF_FinderInfo, AFP_FinderSize);
++	return 0;
++}
++
++static int tc_appledouble_entry(const uint8_t *data,
++				size_t size,
++				uint32_t wanted_id,
++				DATA_BLOB *entry)
++{
++	uint16_t count;
++	uint16_t i;
++
++	*entry = data_blob_null;
++	if (size < TC_AD_HEADER_SIZE ||
++	    PULL_BE_U32(data, 0) != TC_AD_MAGIC ||
++	    PULL_BE_U32(data, 4) != TC_AD_VERSION)
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	count = PULL_BE_U16(data, 24);
++	if (TC_AD_HEADER_SIZE + (size_t)count * TC_AD_ENTRY_SIZE > size) {
++		errno = EINVAL;
++		return -1;
++	}
++	for (i = 0; i < count; i++) {
++		size_t descriptor = TC_AD_HEADER_SIZE +
++			(size_t)i * TC_AD_ENTRY_SIZE;
++		uint32_t id = PULL_BE_U32(data, descriptor);
++		uint32_t offset = PULL_BE_U32(data, descriptor + 4);
++		uint32_t length = PULL_BE_U32(data, descriptor + 8);
++
++		if (id != wanted_id) {
++			continue;
++		}
++		if ((size_t)offset + length < offset ||
++		    (size_t)offset + length > size)
++		{
++			errno = EINVAL;
++			return -1;
++		}
++		entry->data = discard_const_p(uint8_t, data) + offset;
++		entry->length = length;
++		return 0;
++	}
++	errno = ENOATTR;
++	return -1;
++}
++
++static int tc_finderinfo_from_netatalk(struct tc_migration *migration,
++				       TALLOC_CTX *mem_ctx,
++				       const struct file_id *id,
++				       uint8_t finderinfo[AFP_FinderSize])
++{
++	DATA_BLOB blob = data_blob_null;
++	DATA_BLOB entry = data_blob_null;
++	ssize_t ret;
++
++	ret = tc_tdb_get(
++		migration, mem_ctx, id, TC_NETATALK_META_XATTR, &blob);
++	if (ret < 0) {
++		return -1;
++	}
++	if (tc_appledouble_entry(
++			blob.data, blob.length, TC_AD_FINDERI, &entry) != 0 ||
++	    entry.length != AFP_FinderSize)
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	memcpy(finderinfo,
++	       entry.data,
++	       AFP_FinderSize);
++	return 0;
++}
++
++static int tc_migrate_finderinfo(struct tc_migration *migration,
++				 int fd,
++				 const char *path,
++				 const struct file_id *id)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	DATA_BLOB existing = data_blob_null;
++	uint8_t finderinfo[AFP_FinderSize];
++	int ret;
++
++	ret = tc_native_get(frame, fd, TC_FINDERINFO_XATTR, &existing);
++	if (ret == 0) {
++		if (existing.length != AFP_FinderSize) {
++			fprintf(stderr,
++				"invalid native FinderInfo path=%s size=%zu\n",
++				path, existing.length);
++			TALLOC_FREE(frame);
++			errno = EIO;
++			return -1;
++		}
++		migration->counts.native_kept++;
++		TALLOC_FREE(frame);
++		return 0;
++	}
++	if (!tc_missing_error(errno)) {
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	if (strcmp(migration->legacy_metadata, "netatalk") == 0) {
++		ret = tc_finderinfo_from_netatalk(
++			migration, frame, id, finderinfo);
++		if (ret != 0 && tc_missing_error(errno)) {
++			ret = tc_finderinfo_from_stream(
++				migration, frame, id, finderinfo);
++		}
++	} else {
++		ret = tc_finderinfo_from_stream(
++			migration, frame, id, finderinfo);
++		if (ret != 0 && tc_missing_error(errno)) {
++			ret = tc_finderinfo_from_netatalk(
++				migration, frame, id, finderinfo);
++		}
++	}
++	if (ret != 0) {
++		if (tc_missing_error(errno)) {
++			TALLOC_FREE(frame);
++			return 0;
++		}
++		fprintf(stderr, "FinderInfo decode failed path=%s error=%s\n",
++			path, strerror(errno));
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	if (all_zero(finderinfo, AFP_FinderSize)) {
++		TALLOC_FREE(frame);
++		return 0;
++	}
++	ret = tc_native_write_verified(
++		migration, fd, path, TC_FINDERINFO_XATTR,
++		finderinfo, AFP_FinderSize, true);
++	if (ret == 0) {
++		migration->counts.finderinfo_written++;
++	}
++	TALLOC_FREE(frame);
++	return ret;
++}
++
++static int tc_migrate_tdb_record(struct tc_migration *migration,
++				 int fd,
++				 const char *path,
++				 const struct stat *st)
++{
++	TALLOC_CTX *frame;
++	struct file_id id = tc_file_id(st);
++	ssize_t list_size;
++	ssize_t ret;
++	char *list;
++	size_t offset = 0;
++
++	if (migration->db == NULL) {
++		return 0;
++	}
++	if (tc_mark_tdb_key(migration, &id) == 0) {
++		return 0;
++	}
++	frame = talloc_stackframe();
++	migration->counts.tdb_records++;
++
++	list_size = xattr_tdb_listattr(migration->db, &id, NULL, 0);
++	if (list_size < 0) {
++		fprintf(stderr, "TDB list failed path=%s error=%s\n",
++			path, strerror(errno));
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	if (list_size == 0) {
++		TALLOC_FREE(frame);
++		return 0;
++	}
++	list = talloc_array(frame, char, list_size);
++	if (list == NULL) {
++		TALLOC_FREE(frame);
++		errno = ENOMEM;
++		return -1;
++	}
++	ret = xattr_tdb_listattr(migration->db, &id, list, list_size);
++	if (ret != list_size) {
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	if (tc_migrate_finderinfo(migration, fd, path, &id) != 0) {
++		TALLOC_FREE(frame);
++		return -1;
++	}
++	while (offset < (size_t)list_size) {
++		const char *name = list + offset;
++		size_t remaining = (size_t)list_size - offset;
++		size_t name_length = strnlen(name, remaining);
++		size_t name_size;
++		DATA_BLOB blob = data_blob_null;
++
++		if (name_length == remaining) {
++			TALLOC_FREE(frame);
++			errno = EINVAL;
++			return -1;
++		}
++		name_size = name_length + 1;
++		offset += name_size;
++		if (strcmp(name, TC_AFPINFO_XATTR) == 0 ||
++		    strcmp(name, TC_NETATALK_META_XATTR) == 0 ||
++		    strcmp(name, TC_FINDERINFO_XATTR) == 0 ||
++		    tc_stream_extent(name))
++		{
++			continue;
++		}
++		if (tc_stream_anchor(name)) {
++			if (tc_migrate_stream(migration, fd, path, &id, name) != 0) {
++				TALLOC_FREE(frame);
++				return -1;
++			}
++			continue;
++		}
++		ret = tc_tdb_get(migration, frame, &id, name, &blob);
++		if (ret < 0) {
++			TALLOC_FREE(frame);
++			return -1;
++		}
++		if (blob.length > TC_HFS_XATTR_SIZE) {
++			fprintf(stderr, "xattr too large path=%s name=%s size=%zu\n",
++				path, name, blob.length);
++			TALLOC_FREE(frame);
++			errno = EOVERFLOW;
++			return -1;
++		}
++		if (tc_native_write_verified(
++				migration, fd, path, name,
++				blob.data, blob.length, true) != 0)
++		{
++			TALLOC_FREE(frame);
++			return -1;
++		}
++	}
++	TALLOC_FREE(frame);
++	return 0;
++}
++
++static int tc_pread_exact(int fd, void *value, size_t size, off_t offset)
++{
++	uint8_t *bytes = value;
++	size_t done = 0;
++
++	while (done < size) {
++		ssize_t ret = pread(fd, bytes + done, size - done, offset + done);
++
++		if (ret < 0 && errno == EINTR) {
++			continue;
++		}
++		if (ret <= 0) {
++			if (ret == 0) {
++				errno = EIO;
++			}
++			return -1;
++		}
++		done += ret;
++	}
++	return 0;
++}
++
++/* Return 0 for valid AppleDouble, 1 for an ordinary ._ file, and -1 for a
++ * corrupt AppleDouble container. Resource bytes remain on disk and are
++ * streamed later; only the bounded header is retained here. */
++static int tc_parse_appledouble(int fd,
++				const struct stat *st,
++				struct tc_appledouble *ad)
++{
++	uint16_t count;
++	size_t descriptors_size;
++	size_t i;
++
++	ZERO_STRUCTP(ad);
++	if (st->st_size < TC_AD_HEADER_SIZE) {
++		return 1;
++	}
++	ad->header_size = MIN((off_t)TC_AD_MAX_HEADER, st->st_size);
++	ad->header = malloc(ad->header_size);
++	if (ad->header == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++	if (tc_pread_exact(fd, ad->header, ad->header_size, 0) != 0) {
++		return -1;
++	}
++	if (PULL_BE_U32(ad->header, 0) != TC_AD_MAGIC ||
++	    PULL_BE_U32(ad->header, 4) != TC_AD_VERSION)
++	{
++		return 1;
++	}
++	count = PULL_BE_U16(ad->header, 24);
++	if (count == 0 || count > TC_AD_MAX_ENTRIES) {
++		errno = EINVAL;
++		return -1;
++	}
++	descriptors_size = (size_t)count * TC_AD_ENTRY_SIZE;
++	if (TC_AD_HEADER_SIZE + descriptors_size > ad->header_size) {
++		errno = EINVAL;
++		return -1;
++	}
++	for (i = 0; i < count; i++) {
++		const uint8_t *descriptor = ad->header + TC_AD_HEADER_SIZE +
++			i * TC_AD_ENTRY_SIZE;
++		uint32_t id = PULL_BE_U32(descriptor, 0);
++		struct tc_ad_entry *entry = NULL;
++		uint32_t offset = PULL_BE_U32(descriptor, 4);
++		uint32_t length = PULL_BE_U32(descriptor, 8);
++
++		if ((uint64_t)offset + length > (uint64_t)st->st_size) {
++			errno = EINVAL;
++			return -1;
++		}
++		if (id == TC_AD_FINDERI) {
++			entry = &ad->finderinfo;
++		} else if (id == TC_AD_RFORK) {
++			entry = &ad->resource;
++		} else {
++			ad->unsupported_entries = true;
++			continue;
++		}
++		if (entry->present) {
++			errno = EINVAL;
++			return -1;
++		}
++		entry->present = true;
++		entry->offset = offset;
++		entry->length = length;
++	}
++	if (ad->finderinfo.present &&
++	    (ad->finderinfo.length < AFP_FinderSize ||
++	     (uint64_t)ad->finderinfo.offset + ad->finderinfo.length >
++		ad->header_size))
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	return 0;
++}
++
++static int tc_migrate_appledouble_finderinfo(
++	struct tc_migration *migration,
++	int base_fd,
++	const char *path,
++	const struct tc_appledouble *ad)
++{
++	const uint8_t *finderinfo;
++
++	if (!ad->finderinfo.present) {
++		return 0;
++	}
++	finderinfo = ad->header + ad->finderinfo.offset;
++	if (all_zero(finderinfo, AFP_FinderSize)) {
++		return 0;
++	}
++	if (tc_native_write_verified(
++			migration, base_fd, path, TC_FINDERINFO_XATTR,
++			finderinfo, AFP_FinderSize, true) != 0)
++	{
++		return -1;
++	}
++	migration->counts.finderinfo_written++;
++	return 0;
++}
++
++static int tc_migrate_appledouble_xattrs(
++	struct tc_migration *migration,
++	int base_fd,
++	const char *path,
++	const struct tc_appledouble *ad)
++{
++	const struct tc_ad_entry *finder = &ad->finderinfo;
++	const uint8_t *header;
++	size_t header_offset;
++	uint32_t total_size;
++	uint32_t data_start;
++	uint32_t data_length;
++	uint16_t count;
++	size_t entry_offset;
++	uint16_t i;
++
++	if (!finder->present || finder->length == AFP_FinderSize) {
++		return 0;
++	}
++	if (finder->length < AFP_FinderSize + 2 + TC_AD_XATTR_HEADER_SIZE) {
++		errno = EINVAL;
++		return -1;
++	}
++	if (memcmp(ad->header + TC_AD_FILLER_OFFSET,
++		   TC_AD_OSX_FILLER, TC_AD_FILLER_SIZE) != 0)
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	header_offset = finder->offset + AFP_FinderSize + 2;
++	header = ad->header + header_offset;
++	if (PULL_BE_U32(header, 0) != TC_AD_XATTR_MAGIC) {
++		errno = EINVAL;
++		return -1;
++	}
++	total_size = PULL_BE_U32(header, 8);
++	data_start = PULL_BE_U32(header, 12);
++	data_length = PULL_BE_U32(header, 16);
++	count = PULL_BE_U16(header, 34);
++	if (count > TC_AD_MAX_ENTRIES ||
++	    total_size > ad->header_size ||
++	    total_size > (uint64_t)finder->offset + finder->length ||
++	    data_start < header_offset + TC_AD_XATTR_HEADER_SIZE ||
++	    (uint64_t)data_start + data_length > total_size)
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	entry_offset = header_offset + TC_AD_XATTR_HEADER_SIZE;
++	for (i = 0; i < count; i++) {
++		uint32_t value_offset;
++		uint32_t value_length;
++		uint8_t name_length;
++		const char *name;
++
++		entry_offset = (entry_offset + 3) & ~(size_t)3;
++		if (entry_offset + TC_AD_XATTR_ENTRY_SIZE > data_start) {
++			errno = EINVAL;
++			return -1;
++		}
++		value_offset = PULL_BE_U32(ad->header, entry_offset);
++		value_length = PULL_BE_U32(ad->header, entry_offset + 4);
++		name_length = ad->header[entry_offset + 10];
++		if (name_length == 0 ||
++		    entry_offset + TC_AD_XATTR_ENTRY_SIZE + name_length > data_start ||
++		    ad->header[entry_offset + TC_AD_XATTR_ENTRY_SIZE +
++			name_length - 1] != '\0' ||
++		    (uint64_t)value_offset + value_length > total_size)
++		{
++			errno = EINVAL;
++			return -1;
++		}
++		name = (const char *)ad->header + entry_offset +
++			TC_AD_XATTR_ENTRY_SIZE;
++		if (strcmp(name, TC_FINDERINFO_XATTR) != 0 &&
++		    strcmp(name, "com.apple.ResourceFork") != 0)
++		{
++			if (value_length > TC_HFS_XATTR_SIZE) {
++				fprintf(stderr,
++					"AppleDouble xattr too large path=%s name=%s size=%u\n",
++					path, name, value_length);
++				errno = EOVERFLOW;
++				return -1;
++			}
++			if (tc_native_write_verified(
++					migration, base_fd, path, name,
++					ad->header + value_offset,
++					value_length, true) != 0)
++			{
++				return -1;
++			}
++		}
++		entry_offset += TC_AD_XATTR_ENTRY_SIZE + name_length;
++	}
++	return 0;
++}
++
++static char *tc_appledouble_path(TALLOC_CTX *mem_ctx, const char *path)
++{
++	const char *base = strrchr(path, '/');
++
++	if (base == NULL) {
++		return talloc_asprintf(mem_ctx, "._%s", path);
++	}
++	return talloc_asprintf(mem_ctx, "%.*s/._%s",
++		(int)(base - path), path, base + 1);
++}
++
++/* The exact placeholder vfs_fruit already removes when
++ * fruit:wipe_intentionally_left_blank_rfork=yes. */
++static const uint8_t tc_empty_resourcefork[] = {
++	0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E,
++	0x54, 0x68, 0x69, 0x73, 0x20, 0x72, 0x65, 0x73,
++	0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x66, 0x6F,
++	0x72, 0x6B, 0x20, 0x69, 0x6E, 0x74, 0x65, 0x6E,
++	0x74, 0x69, 0x6F, 0x6E, 0x61, 0x6C, 0x6C, 0x79,
++	0x20, 0x6C, 0x65, 0x66, 0x74, 0x20, 0x62, 0x6C,
++	0x61, 0x6E, 0x6B, 0x20, 0x20, 0x20, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x1C, 0x00, 0x1E, 0xFF, 0xFF
++};
++
++/* 1 means the known blank fork, 0 ordinary data, -1 a read failure. */
++static int tc_is_empty_resourcefork(int source_fd, off_t offset, off_t length)
++{
++	uint8_t value[sizeof(tc_empty_resourcefork)];
++
++	if (length != sizeof(value)) {
++		return 0;
++	}
++	if (tc_pread_exact(source_fd, value, sizeof(value), offset) != 0) {
++		return -1;
++	}
++	return memcmp(value, tc_empty_resourcefork, sizeof(value)) == 0;
++}
++
++/* Return 0 for equal readable forks, 1 for readable conflicts, -1 for errors.
++ * Finish reading both forks even after finding a difference: a later disk
++ * error must not turn an unverified legacy fork into disposable data. */
++static int tc_verify_resource(int source_fd, int resource_fd,
++			      off_t source_offset, off_t resource_length)
++{
++	uint8_t *source = NULL;
++	uint8_t *native = NULL;
++	struct stat native_st;
++	off_t offset = 0;
++	bool different;
++	int result = -1;
++
++	if (fstat(resource_fd, &native_st) != 0) {
++		return -1;
++	}
++	different = native_st.st_size != resource_length;
++	source = malloc(TC_COPY_SIZE);
++	native = malloc(TC_COPY_SIZE);
++	if (source == NULL || native == NULL) {
++		errno = ENOMEM;
++		goto out;
++	}
++	while (offset < MAX(resource_length, native_st.st_size)) {
++		size_t source_size = offset < resource_length ?
++			MIN((off_t)TC_COPY_SIZE, resource_length - offset) : 0;
++		size_t native_size = offset < native_st.st_size ?
++			MIN((off_t)TC_COPY_SIZE, native_st.st_size - offset) : 0;
++
++		if (tc_pread_exact(source_fd, source, source_size,
++				   source_offset + offset) != 0 ||
++		    tc_pread_exact(resource_fd, native, native_size, offset) != 0)
++		{
++			goto out;
++		}
++		if (memcmp(source, native, MIN(source_size, native_size)) != 0) {
++			different = true;
++		}
++		offset += MAX(source_size, native_size);
++	}
++	result = different ? 1 : 0;
++out:
++	free(source);
++	free(native);
++	return result;
++}
++
++/* Return 1 for our in-progress marker, 0 when absent, and -1 if a marker
++ * belongs to a different source length or is corrupt. */
++static int tc_resource_marker_state(int base_fd, off_t resource_length)
++{
++	uint8_t marker[16];
++	ssize_t size;
++	ssize_t ret;
++
++	size = tc_airport_fgetxattr(
++		base_fd, TC_RESOURCE_MARKER_XATTR, NULL, 0);
++	if (size < 0) {
++		return tc_missing_error(errno) ? 0 : -1;
++	}
++	if (size != sizeof(marker)) {
++		errno = EINVAL;
++		return -1;
++	}
++	ret = tc_airport_fgetxattr(
++		base_fd, TC_RESOURCE_MARKER_XATTR, marker, sizeof(marker));
++	if (ret != sizeof(marker) ||
++	    memcmp(marker, TC_RESOURCE_MARKER_MAGIC, 8) != 0 ||
++	    PULL_BE_U64(marker, 8) != (uint64_t)resource_length)
++	{
++		if (ret >= 0) {
++			errno = EINVAL;
++		}
++		return -1;
++	}
++	return 1;
++}
++
++static int tc_set_resource_marker(int base_fd, off_t resource_length)
++{
++	uint8_t marker[16];
++
++	memcpy(marker, TC_RESOURCE_MARKER_MAGIC, 8);
++	PUSH_BE_U64(marker, 8, resource_length);
++	return tc_airport_fsetxattr(
++		base_fd, TC_RESOURCE_MARKER_XATTR, marker, sizeof(marker), 0);
++}
++
++static int tc_remove_resource_marker(int base_fd)
++{
++	int ret = tc_airport_fremovexattr(
++		base_fd, TC_RESOURCE_MARKER_XATTR);
++
++	if (ret == 0 || tc_missing_error(errno)) {
++		return 0;
++	}
++	return -1;
++}
++
++static int tc_migrate_resource(struct tc_migration *migration,
++			       int base_fd,
++			       int source_fd,
++			       const char *path,
++			       const struct tc_ad_entry *resource)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	char *resource_path = NULL;
++	struct stat native_st;
++	uint8_t *buffer = NULL;
++	off_t copied = 0;
++	int marker_state;
++	int comparison;
++	int blank;
++	int resource_fd = -1;
++	int result = -1;
++
++	if (!resource->present || resource->length == 0) {
++		TALLOC_FREE(frame);
++		return 0;
++	}
++	blank = tc_is_empty_resourcefork(source_fd, resource->offset, resource->length);
++	if (blank != 0) {
++		TALLOC_FREE(frame);
++		return blank < 0 ? -1 : 0;
++	}
++	resource_path = talloc_asprintf(
++		frame, "%s/..namedfork/rsrc", path);
++	if (resource_path == NULL) {
++		errno = ENOMEM;
++		goto out;
++	}
++	resource_fd = open(
++		resource_path,
++		migration->phase == TC_PHASE_COPY ? O_RDWR | O_CREAT : O_RDONLY,
++		0600);
++	if (resource_fd == -1 || fstat(resource_fd, &native_st) != 0) {
++		goto out;
++	}
++	marker_state = tc_resource_marker_state(base_fd, resource->length);
++	if (marker_state < 0) {
++		goto out;
++	}
++	if (migration->phase == TC_PHASE_CLEANUP &&
++	    (marker_state != 0 || native_st.st_size == 0))
++	{
++		errno = EIO;
++		goto out;
++	}
++	if (native_st.st_size > 0 && marker_state == 0) {
++		comparison = tc_verify_resource(source_fd, resource_fd,
++			resource->offset, resource->length);
++		if (comparison < 0) {
++			goto out;
++		}
++		migration->counts.conflicts += comparison != 0;
++		migration->counts.native_kept++;
++		result = 0;
++		goto out;
++	}
++	if (marker_state == 0 &&
++	    tc_set_resource_marker(base_fd, resource->length) != 0)
++	{
++		goto out;
++	}
++	buffer = malloc(TC_COPY_SIZE);
++	if (buffer == NULL || ftruncate(resource_fd, 0) != 0) {
++		errno = buffer == NULL ? ENOMEM : errno;
++		goto out;
++	}
++	while (copied < resource->length) {
++			size_t chunk = MIN(
++				(off_t)TC_COPY_SIZE, resource->length - copied);
++			ssize_t read_ret = pread(
++				source_fd, buffer, chunk, resource->offset + copied);
++			ssize_t write_ret;
++
++			if (read_ret != chunk) {
++				if (read_ret >= 0) {
++					errno = EIO;
++				}
++				goto out;
++			}
++			write_ret = pwrite(resource_fd, buffer, chunk, copied);
++			if (write_ret != chunk) {
++				if (write_ret >= 0) {
++					errno = EIO;
++				}
++				goto out;
++			}
++			copied += chunk;
++	}
++	if (ftruncate(resource_fd, resource->length) != 0 ||
++	    fsync(resource_fd) != 0 ||
++	    tc_verify_resource(source_fd, resource_fd,
++		resource->offset, resource->length) != 0)
++	{
++		fprintf(stderr, "resource verification failed path=%s error=%s\n",
++			path, strerror(errno));
++		goto out;
++	}
++	if (tc_remove_resource_marker(base_fd) != 0) {
++		goto out;
++	}
++	migration->counts.resources_written++;
++	result = 0;
++out:
++	if (result != 0 && errno != ENOENT) {
++		fprintf(stderr, "resource migration failed path=%s error=%s\n",
++			path, strerror(errno));
++	}
++	if (resource_fd != -1) {
++		close(resource_fd);
++	}
++	free(buffer);
++	TALLOC_FREE(frame);
++	return result;
++}
++
++static int tc_unlink_verified_sidecar(const char *path, const struct stat *source)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	struct stat current;
++	const char *slash = strrchr(path, '/');
++	char *parent = slash == NULL ? talloc_strdup(frame, ".") :
++		talloc_strndup(frame, path, slash == path ? 1 : slash - path);
++	int dir_fd = -1;
++	int result = -1;
++
++	/* Do not unlink a replacement that arrived while the old descriptor was
++	 * being verified. Flush the directory before retiring the matching row. */
++	if (parent == NULL || lstat(path, &current) != 0) {
++		goto out;
++	}
++	if (current.st_dev != source->st_dev || current.st_ino != source->st_ino ||
++	    current.st_size != source->st_size || current.st_mtime != source->st_mtime ||
++	    current.st_ctime != source->st_ctime)
++	{
++		errno = EIO;
++		goto out;
++	}
++	dir_fd = open(parent, O_RDONLY);
++	if (dir_fd == -1 || unlink(path) != 0 || fsync(dir_fd) != 0) {
++		goto out;
++	}
++	result = 0;
++out:
++	if (dir_fd != -1) { close(dir_fd); }
++	TALLOC_FREE(frame);
++	return result;
++}
++
++static int tc_migrate_appledouble(struct tc_migration *migration,
++				  int base_fd,
++				  const char *path)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	char *appledouble = tc_appledouble_path(frame, path);
++	struct tc_appledouble ad = {0};
++	struct stat source_st;
++	int source_fd = -1;
++	int parse_state;
++	int result = -1;
++
++	if (appledouble == NULL) {
++		errno = ENOMEM;
++		goto out;
++	}
++	source_fd = open(appledouble, O_RDONLY | O_NOFOLLOW);
++	if (source_fd == -1) {
++		if (errno == ENOENT) {
++			result = 0;
++		}
++		goto out;
++	}
++	if (fstat(source_fd, &source_st) != 0 ||
++	    !S_ISREG(source_st.st_mode))
++	{
++		goto out;
++	}
++	parse_state = tc_parse_appledouble(source_fd, &source_st, &ad);
++	if (parse_state == 1) {
++		result = 0;
++		goto out;
++	}
++	if (parse_state != 0) {
++		goto out;
++	}
++	migration->counts.sidecars_seen++;
++	if (ad.unsupported_entries) {
++		fprintf(stderr, "unsupported AppleDouble entries path=%s\n", path);
++		errno = ENOTSUP;
++		goto out;
++	}
++	if (tc_migrate_appledouble_finderinfo(
++			migration, base_fd, path, &ad) != 0 ||
++	    tc_migrate_appledouble_xattrs(
++			migration, base_fd, path, &ad) != 0 ||
++	    tc_migrate_resource(
++			migration, base_fd, source_fd, path, &ad.resource) != 0)
++	{
++		goto out;
++	}
++	if (migration->phase == TC_PHASE_CLEANUP) {
++		if (fsync(base_fd) != 0 ||
++		    tc_unlink_verified_sidecar(appledouble, &source_st) != 0) {
++			goto out;
++		}
++		migration->counts.sidecars_deleted++;
++	}
++	result = 0;
++out:
++	if (result != 0 && errno != ENOENT) {
++		fprintf(stderr, "AppleDouble migration failed path=%s error=%s\n",
++			path, strerror(errno));
++	}
++	if (source_fd != -1) {
++		close(source_fd);
++	}
++	free(ad.header);
++	TALLOC_FREE(frame);
++	return result;
++}
++
++/* A TDB row is one file's complete metadata, including stream extents.
++ * Retire it only after every value and sidecar has passed verification and
++ * native writes are durable. Per-file commits preserve progress if a later
++ * file or an absent disk prevents the rest of the migration from completing. */
++static int tc_retire_tdb_record(struct tc_migration *migration,
++			       int fd, const struct stat *st)
++{
++	struct file_id id = tc_file_id(st);
++	uint8_t key[16];
++	size_t i;
++	NTSTATUS status;
++
++	if (migration->phase != TC_PHASE_CLEANUP || migration->db == NULL) {
++		return 0;
++	}
++	push_file_id_16(key, &id);
++	for (i = 0; i < migration->num_tdb_keys; i++) {
++		struct tc_tdb_key *entry = &migration->tdb_keys[i];
++
++		if (memcmp(entry->data, key, sizeof(key)) != 0 || entry->retired) {
++			continue;
++		}
++		if (fsync(fd) != 0 || dbwrap_transaction_start(migration->db) != 0) {
++			return -1;
++		}
++		status = dbwrap_delete(migration->db, (TDB_DATA){.dptr = key, .dsize = sizeof(key)});
++		if (!NT_STATUS_IS_OK(status)) {
++			dbwrap_transaction_cancel(migration->db);
++			errno = EIO;
++			return -1;
++		}
++		if (dbwrap_transaction_commit(migration->db) != 0) {
++			return -1;
++		}
++		entry->retired = true;
++		migration->counts.tdb_retired++;
++		break;
++	}
++	return 0;
++}
++
++static int tc_scan_path(struct tc_migration *migration,
++			const char *path,
++			bool scan_sidecar)
++{
++	struct stat st;
++	struct stat opened_st;
++	char **children = NULL;
++	size_t child_count = 0, child_capacity = 0, i;
++	int pass;
++	DIR *dir = NULL;
++	struct dirent *entry;
++	int fd = -1;
++	int result = 0;
++
++	if (lstat(path, &st) != 0) {
++		fprintf(stderr, "lstat failed path=%s error=%s\n", path, strerror(errno));
++		return -1;
++	}
++	migration->counts.entries++;
++	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
++		fd = open(path, O_RDONLY | O_NOFOLLOW);
++		if (fd == -1 || fstat(fd, &opened_st) != 0 ||
++		    st.st_dev != opened_st.st_dev || st.st_ino != opened_st.st_ino ||
++		    tc_migrate_tdb_record(
++				migration, fd, path, &st) != 0)
++		{
++			fprintf(stderr, "metadata migration failed path=%s error=%s\n",
++				path, strerror(errno));
++			result = -1;
++		}
++		if (result == 0 && scan_sidecar &&
++		    tc_migrate_appledouble(migration, fd, path) != 0)
++		{
++			result = -1;
++		}
++		if (result == 0 && tc_retire_tdb_record(migration, fd, &st) != 0) {
++			result = -1;
++		}
++		if (fd != -1) {
++			close(fd);
++		}
++	}
++	if (!S_ISDIR(st.st_mode)) {
++		return result;
++	}
++	dir = opendir(path);
++	if (dir == NULL) {
++		return -1;
++	}
++	/* Snapshot one directory before cleanup removes sidecars from it. A
++	 * readdir error is not EOF. Process ._ objects first so their inodes are
++	 * visited before their base files can remove verified sidecars. */
++	for (;;) {
++		char **grown;
++		errno = 0;
++		entry = readdir(dir);
++		if (entry == NULL) {
++			if (errno != 0) {
++				result = -1;
++			}
++			break;
++		}
++		if (ISDOT(entry->d_name) || ISDOTDOT(entry->d_name) ||
++		    strcmp(entry->d_name, ".samba4") == 0)
++		{
++			continue;
++		}
++		if (child_count == child_capacity) {
++			/* Geometric growth avoids repeatedly copying the pointer array
++			 * for large Time Machine bands directories. */
++			size_t capacity = child_capacity == 0 ? 64 : child_capacity * 2;
++			if (capacity < child_capacity || capacity > SIZE_MAX / sizeof(char *)) {
++				errno = ENOMEM;
++				result = -1;
++				break;
++			}
++			grown = talloc_realloc(migration->mem_ctx, children, char *, capacity);
++			if (grown == NULL) {
++				result = -1;
++				break;
++			}
++			children = grown;
++			child_capacity = capacity;
++		}
++		children[child_count] = talloc_strdup(children, entry->d_name);
++		if (children[child_count] == NULL) {
++			result = -1;
++			break;
++		}
++		child_count++;
++	}
++	if (closedir(dir) != 0) {
++		result = -1;
++	}
++	for (pass = 0; pass < 2; pass++) {
++		for (i = 0; i < child_count; i++) {
++			TALLOC_CTX *frame = talloc_stackframe();
++			bool sidecar_name = strncmp(children[i], "._", 2) == 0;
++			char *child;
++			if (sidecar_name != (pass == 0)) {
++				TALLOC_FREE(frame);
++				continue;
++			}
++			child = talloc_asprintf(frame, "%s/%s", path, children[i]);
++			if (child == NULL || tc_scan_path(migration, child, !sidecar_name) != 0) {
++				result = -1;
++			}
++			TALLOC_FREE(frame);
++		}
++	}
++	TALLOC_FREE(children);
++	return result;
++}
++
++static int tc_scan_root(struct tc_migration *migration, const char *path)
++{
++	if (!tc_airport_path_is_hfs(path)) {
++		fprintf(stderr, "not an HFS volume: %s\n", path);
++		errno = EINVAL;
++		return -1;
++	}
++	return tc_scan_path(migration, path, false);
++}
++
++static int tc_scan_roots_file(struct tc_migration *migration,
++			      const char *roots_path)
++{
++	char path[PATH_MAX + 2];
++	FILE *roots = fopen(roots_path, "r");
++	int result = 0;
++
++	if (roots == NULL) {
++		return -1;
++	}
++	while (fgets(path, sizeof(path), roots) != NULL) {
++		size_t length = strlen(path);
++
++		if (length == 0) {
++			continue;
++		}
++		if (path[length - 1] != '\n' && !feof(roots)) {
++			fprintf(stderr, "HFS root path exceeds PATH_MAX\n");
++			errno = ENAMETOOLONG;
++			result = -1;
++			break;
++		}
++		if (path[length - 1] == '\n') {
++			path[--length] = '\0';
++		}
++		if (length != 0 && tc_scan_root(migration, path) != 0) {
++			result = -1;
++		}
++	}
++	if (ferror(roots)) {
++		result = -1;
++	}
++	fclose(roots);
++	return result;
++}
++
++static void tc_usage(const char *program)
++{
++	fprintf(stderr,
++		"usage: %s copy|cleanup TDB_PATH|- stream|netatalk "
++		"HFS_ROOT [HFS_ROOT ...]\n"
++		"       %s copy|cleanup TDB_PATH|- stream|netatalk "
++		"--roots-file PATH\n",
++		program,
++		program);
++}
++
++int main(int argc, char **argv)
++{
++	TALLOC_CTX *frame = talloc_stackframe();
++	struct tc_migration migration = { .mem_ctx = frame };
++	int result = 0;
++	int i;
++
++	if (argc < 5 ||
++	    (strcmp(argv[1], "copy") != 0 && strcmp(argv[1], "cleanup") != 0) ||
++	    (strcmp(argv[3], "stream") != 0 && strcmp(argv[3], "netatalk") != 0))
++	{
++		tc_usage(argv[0]);
++		TALLOC_FREE(frame);
++		return 2;
++	}
++	migration.phase = strcmp(argv[1], "copy") == 0 ?
++		TC_PHASE_COPY : TC_PHASE_CLEANUP;
++	migration.tdb_path = strcmp(argv[2], "-") == 0 ? NULL : argv[2];
++	migration.legacy_metadata = argv[3];
++	if (migration.tdb_path != NULL) {
++		migration.db = dbwrap_local_open(
++			frame, migration.tdb_path, 0, TDB_DEFAULT,
++			migration.phase == TC_PHASE_COPY ? O_RDONLY : O_RDWR, 0,
++			DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
++		if (migration.db == NULL) {
++			fprintf(stderr, "unable to open TDB %s: %s\n",
++				migration.tdb_path, strerror(errno));
++			TALLOC_FREE(frame);
++			return 3;
++		}
++		if (tc_collect_tdb_keys(&migration) != 0) {
++			TALLOC_FREE(frame);
++			return 3;
++		}
++	}
++	if (strcmp(argv[4], "--roots-file") == 0) {
++		if (argc != 6 || tc_scan_roots_file(&migration, argv[5]) != 0) {
++			migration.counts.errors++;
++			result = -1;
++		}
++	} else {
++		for (i = 4; i < argc; i++) {
++			if (tc_scan_root(&migration, argv[i]) != 0) {
++				migration.counts.errors++;
++				result = -1;
++			}
++		}
++	}
++	migration.counts.orphaned =
++		migration.counts.tdb_total - migration.counts.tdb_matched;
++	if (result == 0 &&
++	    migration.phase == TC_PHASE_CLEANUP &&
++	    migration.db != NULL &&
++	    migration.counts.tdb_retired == migration.counts.tdb_total)
++	{
++		TALLOC_FREE(migration.db);
++		if (unlink(migration.tdb_path) != 0) {
++			fprintf(stderr, "unable to remove migrated TDB %s: %s\n",
++				migration.tdb_path, strerror(errno));
++			migration.counts.errors++;
++			result = -1;
++		} else {
++			migration.counts.tdb_deleted = 1;
++		}
++	}
++	printf("phase=%s entries=%"PRIu64" tdb_records=%"PRIu64
++	       " xattrs_written=%"PRIu64" streams_written=%"PRIu64
++	       " finderinfo_written=%"PRIu64" resources_written=%"PRIu64
++	       " native_kept=%"PRIu64" conflicts=%"PRIu64
++	       " sidecars_seen=%"PRIu64" sidecars_deleted=%"PRIu64
++	       " tdb_total=%"PRIu64" tdb_matched=%"PRIu64
++	       " tdb_orphaned=%"PRIu64" tdb_retired=%"PRIu64" tdb_deleted=%"PRIu64
++	       " errors=%"PRIu64"\n",
++	       migration.phase == TC_PHASE_COPY ? "copy" : "cleanup",
++	       migration.counts.entries,
++	       migration.counts.tdb_records,
++	       migration.counts.xattrs_written,
++	       migration.counts.streams_written,
++	       migration.counts.finderinfo_written,
++	       migration.counts.resources_written,
++	       migration.counts.native_kept,
++	       migration.counts.conflicts,
++	       migration.counts.sidecars_seen,
++	       migration.counts.sidecars_deleted,
++	       migration.counts.tdb_total,
++	       migration.counts.tdb_matched,
++	       migration.counts.orphaned,
++	       migration.counts.tdb_retired,
++	       migration.counts.tdb_deleted,
++	       migration.counts.errors);
++	TALLOC_FREE(frame);
++	return result == 0 ? 0 : 4;
++}
+diff --git a/source3/utils/wscript_build b/source3/utils/wscript_build
+index 0903c3f..4fc8719 100644
+--- a/source3/utils/wscript_build
++++ b/source3/utils/wscript_build
+@@ -146,6 +146,14 @@ bld.SAMBA3_BINARY('dbwrap_tool',
+                  cmdline_contexts
+                  ''')
+ 
++# AirPort deployments run this once before the first native-HFS Samba start.
++# Keep it separate from smbd so migration-only TDB and tree-walk code does not
++# occupy the device's small runtime RAM disk after conversion.
++bld.SAMBA3_BINARY('tc_xattr_hfs_migrate',
++                 source='tc_xattr_hfs_migrate.c',
++                 deps='xattr_tdb',
++                 install=False)
++
+ bld.SAMBA3_BINARY('dbwrap_torture',
+                  source='dbwrap_torture.c',
+                  deps='''

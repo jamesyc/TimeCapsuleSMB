@@ -16,7 +16,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
-           "tc_streams_xattr_test", "tc_native_metadata_test")
+           "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test")
+MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
+BUILD_TARGETS = (*TARGETS, MIGRATOR_TARGET)
 AIO_CASES = (
     "read", "short", "empty", "zero", "oversized", "read_error", "pwrite", "append", "fsync",
     "pwrite_error", "append_error", "fsync_error",
@@ -31,12 +33,16 @@ DURABLE_CASES = (
     "create_mismatch", "owner_mismatch", "not_durable", "database_failure", "v1_reconnect",
 )
 
-STREAM_CASES = ("charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
+STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_delete", "extent_delete", "missing_primary",
                 "missing_path", "invalid_stream", "primary_error", "extent_error", "roundtrip_shrink",
                 "shrink_missing", "short_read", "read_error")
-NATIVE_METADATA_CASES = ("syscall_abi", "tags_read", "tags_write", "tags_delete", "tags_errors",
-                         "tags_list", "finderinfo", "finderinfo_io", "finderinfo_readdir",
-                         "finderinfo_fstat", "finderinfo_streaminfo")
+NATIVE_METADATA_CASES = (
+    "syscall_abi", "native_xattrs", "native_xattr_list", "non_hfs_tdb",
+    "finderinfo", "finderinfo_views", "resource_backend", "resource_views", "stream_boundary",
+)
+XATTR_MIGRATE_CASES = (
+    "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
+)
 
 
 def stage(source: Path) -> None:
@@ -68,27 +74,32 @@ def cases():
         yield TARGETS[3], (case,)
     for case in NATIVE_METADATA_CASES:
         yield TARGETS[4], (case,)
+    for case in XATTR_MIGRATE_CASES:
+        yield TARGETS[5], (case,)
 
 
 def execution_cases(cross_exec: bool):
-    """Upload the large native fixture once on storage-constrained devices."""
-    native_seen = False
+    """Upload each large native fixture once on storage-constrained devices."""
+    combined_targets = (TARGETS[4], TARGETS[5])
+    seen: set[str] = set()
     for target, arguments in cases():
-        if target == TARGETS[4]:
+        if target in combined_targets:
             if cross_exec:
-                if native_seen:
+                if target in seen:
                     continue
                 arguments = ("all",)
-            native_seen = True
+            seen.add(target)
         yield target, arguments
-    if not cross_exec and native_seen:
+    if not cross_exec:
         # Also exercise cross-case cleanup/order under sanitizers. Device runs
         # use this same all-in-one form as their sole native invocation.
-        yield TARGETS[4], ("all",)
+        for target in combined_targets:
+            if target in seen:
+                yield target, ("all",)
 
 
 def case_timeout(target: str, cross_exec: bool) -> int:
-    if cross_exec and target == TARGETS[4]:
+    if cross_exec and target in {TARGETS[4], TARGETS[5]}:
         return 180
     return 60 if cross_exec else 25
 
@@ -153,11 +164,11 @@ def host(work: Path, jobs: int, sanitizers: bool) -> None:
     options += ["--disable-" + item for item in (
         "python", "pthread", "pthreadpool", "tdb-mutex-locking", "cups", "iprint", "avahi")]
     options += ["--bundled-libraries=ALL", "--with-shared-modules=!vfs_snapper",
-                "--nonshared-binary=" + ",".join(TARGETS)]
+                "--nonshared-binary=" + ",".join(BUILD_TARGETS)]
     subprocess.run(["./configure", *options], cwd=source, env=env, check=True)
     host_flags(source)
     subprocess.run([sys.executable, "buildtools/bin/waf", "build", "-j" + str(jobs),
-                    "--targets=" + ",".join(TARGETS)], cwd=source, env=env, check=True)
+                    "--targets=" + ",".join(BUILD_TARGETS)], cwd=source, env=env, check=True)
     # Child processes must inherit sanitizer runtime settings as well.
     subprocess.run([sys.executable, "-m", "tests.samba.run", "run", "--source", str(source)],
                    cwd=ROOT, env=env, check=True)

@@ -36,7 +36,7 @@ if runtime_manager_present; then
     tc_log "manager already running"
 else
     tc_log "starting manager"
-    /mnt/Flash/manager.sh </dev/null >/dev/null 2>&1 &
+    TC_BOOT_XATTR_MIGRATION=1 /mnt/Flash/manager.sh </dev/null >/dev/null 2>&1 &
     manager_pid=$!
     tc_log "manager launched as pid $manager_pid"
 fi

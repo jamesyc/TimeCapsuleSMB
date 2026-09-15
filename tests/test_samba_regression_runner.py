@@ -57,6 +57,13 @@ def test_device_execution_uploads_large_native_fixture_once():
         *((run.TARGETS[4], (case,)) for case in run.NATIVE_METADATA_CASES),
         (run.TARGETS[4], ("all",)),
     ]
+    assert [item for item in device_cases if item[0] == run.TARGETS[5]] == [
+        (run.TARGETS[5], ("all",)),
+    ]
+    assert [item for item in host_cases if item[0] == run.TARGETS[5]] == [
+        *((run.TARGETS[5], (case,)) for case in run.XATTR_MIGRATE_CASES),
+        (run.TARGETS[5], ("all",)),
+    ]
     assert run.case_timeout(run.TARGETS[4], True) == 180
     assert run.case_timeout(run.TARGETS[3], True) == 60
     assert run.case_timeout(run.TARGETS[4], False) == 25
@@ -84,6 +91,7 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
                 "smbd_base", "HASH_INODE", "ADOUBLE", "OFFLOAD_TOKEN",
                 "STRING_REPLACE", "dbwrap", "xattr_tdb",
             ],
+            "tc_xattr_migrate_test": ["smbd_base", "dbwrap", "xattr_tdb"],
         }.get(name, ["smbd_base"])
         assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False

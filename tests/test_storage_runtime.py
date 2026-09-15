@@ -1645,6 +1645,7 @@ MaSt = (
             Path("/tmp/smbd"),
             Path("/tmp/mdns"),
             Path("/tmp/nbns"),
+            xattr_migrator_path=Path("/tmp/xattr-hfs-migrate"),
             rsync_path=Path("/tmp/rsync"),
          service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         source_ids = {upload.source_id for upload in plan.uploads}
@@ -5368,7 +5369,7 @@ MaSt = (
         self.assertIn("max log size = 128", proc.stdout)
         self.assertIn("fruit:model = TimeCapsule6,106", proc.stdout)
         self.assertIn("fruit:metadata = netatalk", proc.stdout)
-        self.assertEqual(proc.stdout.count("fruit:time_capsule_native_metadata = yes"), 2)
+        self.assertNotIn("fruit:time_capsule_native_metadata", proc.stdout)
         self.assertIn("restrict anonymous = 2", proc.stdout)
         self.assertIn("min protocol = SMB2", proc.stdout)
         self.assertIn("max protocol = SMB3", proc.stdout)
@@ -5632,7 +5633,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("fruit:metadata = netatalk", proc.stdout)
         self.assertNotIn("fruit:metadata = stream", proc.stdout)
-        self.assertIn("fruit:time_capsule_native_metadata = yes", proc.stdout)
+        self.assertNotIn("fruit:time_capsule_native_metadata", proc.stdout)
 
     def test_common_generate_smb_conf_uses_stream_metadata_when_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5668,7 +5669,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("fruit:metadata = stream", proc.stdout)
         self.assertNotIn("fruit:metadata = netatalk", proc.stdout)
-        self.assertIn("fruit:time_capsule_native_metadata = yes", proc.stdout)
+        self.assertNotIn("fruit:time_capsule_native_metadata", proc.stdout)
 
     def test_common_generate_smb_conf_derives_fruit_model_from_acp_syap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
