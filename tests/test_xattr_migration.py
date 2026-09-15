@@ -58,7 +58,7 @@ def test_deploy_migration_stages_temporary_binary_and_keeps_persistent_helper(mi
     assert result.roots == tuple(m.volumes)
     assert result.unavailable_roots == ()
     assert m.helper.exists() and m.tdb.read_text() == "pending"
-    assert not list(m.root.glob(".tc-xattr-hfs-migrate.*"))
+    assert not (m.root / "tc-xattr-hfs-migrate").exists()
     assert m.mount.call_count == 3  # payload first, then every discovered volume
 
 
@@ -85,7 +85,7 @@ def test_deploy_migration_failure_preserves_pending_metadata(migration, monkeypa
     with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
         executor.migrate_xattr_tdb_to_hfs(m.connection, m.plan, phase="copy", legacy_metadata="stream")
     assert m.tdb.read_text() == "pending" and m.helper.exists()
-    assert not list(m.root.glob(".tc-xattr-hfs-migrate.*"))
+    assert not (m.root / "tc-xattr-hfs-migrate").exists()
     if stage != "helper":
         assert not m.calls.exists()
 
@@ -172,7 +172,7 @@ def test_stopping_deploy_migration_stops_helper_and_removes_ram_copy(migration, 
                 future.result(timeout=5)
             with pytest.raises(ProcessLookupError):
                 os.kill(child_pid, 0)
-            assert not list(m.root.glob(".tc-xattr-hfs-migrate.*"))
+            assert not (m.root / "tc-xattr-hfs-migrate").exists()
             assert m.tdb.exists() and m.helper.exists()
         finally:
             if child_pid is not None:
@@ -188,6 +188,10 @@ def manager_library(tmp_path):
     text = load_boot_asset_text("manager.sh")
     text = text[text.index("tc_manager_debug_log() {"):text.index("\ntc_prepare_ram_root\n")]
     text = text.replace("/mnt/Memory", str(tmp_path)).replace("/bin/sync", "true")
+    wrapper = tmp_path / "migrate.sh"
+    wrapper.write_text(load_boot_asset_text("migrate.sh"))
+    wrapper.chmod(0o755)
+    text = text.replace("/mnt/Flash/migrate.sh", str(wrapper))
     library = tmp_path / "manager-functions.sh"
     library.write_text(text)
     return library
@@ -226,7 +230,7 @@ done
     lines = m.calls.read_text().splitlines() if m.calls.exists() else []
     assert [lines[i] for i in range(0, len(lines), 5)] == expected
     assert m.helper.exists() and m.tdb.exists()
-    assert not list(m.root.glob(".tc-xattr-hfs-migrate.*"))
+    assert not (m.root / "tc-xattr-hfs-migrate").exists()
 
 
 def test_boot_migration_failure_withholds_share_state(migration):
@@ -280,23 +284,30 @@ printf 'topology=%s shares=%s payload=%s\n' "$manager_topology_rows" "$manager_s
 
 
 def test_boot_migration_failure_is_retried_without_marking_volume_complete(migration):
+    m = migration
     library = manager_library(migration.root)
     script = f'''
 set -eu
 . {shlex.quote(str(library))}
 TC_BOOT_XATTR_MIGRATION=1
 TC_TAB=$(printf '\t')
+TC_LOG_FILE={shlex.quote(str(migration.root / 'boot.log'))}
 TC_RESOLVED_PAYLOAD_DIR={shlex.quote(str(migration.helper.parent))}
+FRUIT_METADATA_NETATALK=1
 rows={shlex.quote('wd0' + chr(9) + '1' + chr(9) + 'dk2' + chr(9) + migration.volumes[0].volume_root + chr(9) + 'Data' + chr(9) + 'uuid')}
 tc_log() {{ :; }}
 is_volume_root_mounted() {{ return 0; }}
-tc_manager_export_boot_xattrs() {{ echo export; return 1; }}
+export FAIL_MIGRATION=4
 if tc_manager_migrate_boot_xattrs "$rows"; then exit 9; fi
 if tc_manager_migrate_boot_xattrs "$rows"; then exit 8; fi
 '''
     result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == ["export", "export"]
+    assert m.calls.read_text().splitlines() == [
+        "copy", str(m.tdb), "netatalk", m.volumes[0].volume_root,
+        "copy", str(m.tdb), "netatalk", m.volumes[0].volume_root,
+    ]
+    assert not (m.root / "tc-xattr-hfs-migrate").exists()
 
 
 def test_boot_migration_skips_offline_volume_then_migrates_it_when_mounted(migration):
@@ -338,13 +349,8 @@ tc_manager_migrate_boot_xattrs "$rows"
     ]
 
 
-def test_stopping_boot_migration_stops_helper_and_removes_ram_copy(migration):
-    import os
-    import time
-
+def test_boot_migration_runs_and_removes_ram_copy(migration):
     m = migration
-    pid_file = m.root / "helper.pid"
-    m.helper.write_text(f'#!/bin/sh\necho $$ > {shlex.quote(str(pid_file))}\nexec /bin/sleep 30\n')
     library = manager_library(m.root)
     script = f'''
 set -eu
@@ -358,24 +364,74 @@ manager_topology_rows={shlex.quote('wd0' + chr(9) + '1' + chr(9) + 'dk2' + chr(9
 FRUIT_METADATA_NETATALK=1
 tc_log() {{ :; }}
 is_volume_root_mounted() {{ return 0; }}
-trap 'tc_manager_stop_boot_xattrs' TERM
-if tc_manager_migrate_boot_xattrs "$manager_topology_rows"; then exit 9; fi
+if ! tc_manager_migrate_boot_xattrs "$manager_topology_rows"; then exit 9; fi
 '''
-    process = subprocess.Popen(["/bin/sh", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    try:
-        deadline = time.monotonic() + 5
-        while not pid_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert pid_file.exists(), "migration did not start"
-        pid = int(pid_file.read_text())
-        process.terminate()
-        _, stderr = process.communicate(timeout=5)
-        assert process.returncode == 0, stderr
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
-        assert not list(m.root.glob(".tc-xattr-hfs-migrate.*"))
-        assert m.tdb.exists() and m.helper.exists()
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.communicate()
+    result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert m.calls.read_text().splitlines() == [
+        "copy", str(m.tdb), "netatalk", m.volumes[0].volume_root,
+        "cleanup", str(m.tdb), "netatalk", m.volumes[0].volume_root,
+    ]
+    assert not (m.root / "tc-xattr-hfs-migrate").exists()
+    assert m.tdb.exists() and m.helper.exists()
+
+
+def test_wrapper_cancellation_terminates_helper_and_removes_ram_copy(migration):
+    m = migration
+    pid_file = m.root / "helper.pid"
+    m.helper.write_text(
+        f'#!/bin/sh\necho $$ > {shlex.quote(str(pid_file))}\nwhile :; do :; done\n'
+    )
+    wrapper = m.root / "migrate.sh"
+    wrapper.write_text(load_boot_asset_text("migrate.sh"))
+    wrapper.chmod(0o755)
+    ram = m.root / ".tc-xattr-hfs-migrate.wrapper"
+    log = m.root / "wrapper.log"
+    script = f'''
+set -eu
+# Symbolic names: USR1/USR2 are 10/12 on Linux but 30/31 on macOS/BSD.
+trap ':' USR1 USR2
+{shlex.quote(str(wrapper))} copy {shlex.quote(str(m.tdb))} netatalk \\
+    {shlex.quote(str(m.helper))} {shlex.quote(str(ram))} "$$" {shlex.quote(str(log))} \\
+    {shlex.quote(m.volumes[0].volume_root)} &
+wrapper_pid=$!
+i=0
+while [ ! -f {shlex.quote(str(pid_file))} ] && [ "$i" -lt 200000 ]; do i=$((i + 1)); done
+helper_pid=$(cat {shlex.quote(str(pid_file))})
+kill -TERM "$wrapper_pid"
+wrapper_status=0
+wait "$wrapper_pid" || wrapper_status=$?
+[ "$wrapper_status" -ne 0 ]
+helper_alive=0
+kill -0 "$helper_pid" 2>/dev/null && helper_alive=1
+[ "$helper_alive" -eq 0 ]
+[ ! -e {shlex.quote(str(ram))} ]
+rm -f {shlex.quote(str(pid_file))} {shlex.quote(str(log))}
+'''
+    result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_manager_traps_remain_normal_after_migration(migration):
+    m = migration
+    library = manager_library(m.root)
+    marker = m.root / "normal-trap"
+    script = f'''
+set -eu
+. {shlex.quote(str(library))}
+TC_BOOT_XATTR_MIGRATION=1
+TC_TAB=$(printf '\\t')
+TC_LOG_FILE={shlex.quote(str(m.root / 'boot.log'))}
+TC_RESOLVED_PAYLOAD_DIR={shlex.quote(str(m.helper.parent))}
+FRUIT_METADATA_NETATALK=1
+rows={shlex.quote('wd0' + chr(9) + '1' + chr(9) + 'dk2' + chr(9) + m.volumes[0].volume_root + chr(9) + 'Data' + chr(9) + 'uuid')}
+tc_log() {{ :; }}
+is_volume_root_mounted() {{ return 0; }}
+manager_stop() {{ echo normal > {shlex.quote(str(marker))}; exit 0; }}
+trap 'manager_stop' 15
+tc_manager_migrate_boot_xattrs "$rows"
+kill -TERM $$
+'''
+    result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text().strip() == "normal"

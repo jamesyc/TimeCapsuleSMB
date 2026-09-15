@@ -134,6 +134,7 @@ def validate_boot_script_tokens(app_paths: AppPaths) -> InstallCheckResult:
     try:
         require_no_unresolved_asset_tokens(load_boot_asset_text("boot.sh"))
         require_no_unresolved_asset_tokens(load_boot_asset_text("manager.sh"))
+        require_no_unresolved_asset_tokens(load_boot_asset_text("migrate.sh"))
     except Exception as exc:
         return InstallCheckResult("boot_script_tokens", False, f"boot script validation failed: {exc}")
     return InstallCheckResult("boot_script_tokens", True, "managed boot scripts have no unresolved tokens")

@@ -233,10 +233,38 @@ Offline validation of the review fixes on 2026-09-14:
 Real-device volume identity across unplug/replug and AFP concurrency remain
 unvalidated. Unmatched device/inode records are retained rather than guessed.
 
-No live Time Capsule was contacted, deployed to, rebooted, cross-executed on,
-or migrated during this validation. The live plan above remains deliberately
-unexecuted. This validation does not claim macOS 27 coverage or a full Time
-Machine backup cycle.
+This offline validation does not claim macOS 27 coverage or a full Time Machine
+backup cycle. Live migration results are recorded separately below.
+
+## Live migration validation (2026-09-14/15)
+
+- NetBSD 4 local little-endian (`TimeCapsule6,116`, `192.168.1.10`) was backed
+  up before deployment: `xattr.tdb` and `xattr.tdb.bak` were each 8,228,864
+  bytes with SHA-256 `cef291e8095f87dc33eda68badb4e5cd2fa92cf9535b905b0987296d4e09b149`.
+  The original TDB was retired by cleanup and the backup remained on HFS.
+- The first NetBSD 4 reboot exposed NetBSD `sh` behavior for appending to an
+  empty `"$@"` under `set -u`. That manager fix was redeployed; the subsequent
+  boot passed managed-runtime checks, Doctor, SMB CRUD, SMB EA set/get, and
+  SSH-side HFS verification. Temporary test files were removed.
+- The migration wrapper was then deployed and cancellation-tested on NetBSD 4:
+  TERM removed both the helper process and its RAM executable. A no-reboot
+  activation passed all managed-runtime checks.
+- NetBSD 6 (`TimeCapsule6,113`, `192.168.1.218`) was backed up before deployment:
+  the 8,880,128-byte TDB and `.bak` matched at SHA-256
+  `b6ac03bc79292b9275418c9deab2a6feea08396e4dc37523063e660e8e0f8a59`.
+- NetBSD 6 deployed and verified the payload, retained 29 unmatched TDB
+  records as migrator orphans, and preserved the `.bak`. After manager restart,
+  the runtime reached stable `ok` passes. Doctor passed all checks, SMB CRUD and
+  EA set/get passed, SSH confirmed `/dev/dk2` mounted as HFS, and temporary test
+  files were removed.
+- A subsequent NetBSD 6 backup-restore/deploy retry was monitored without any
+  manual manager start. The final wrapper-based copy and cleanup both completed
+  with `status=0`; the runtime started automatically, Doctor passed all checks,
+  and SMB CRUD passed. Wrapper cancellation also removed the helper and RAM
+  executable. The `.bak` remains intact; the 29 unmatched records remain
+  intentionally retained in the active TDB as migrator orphans.
+- The London NetBSD 4 LE target was intentionally skipped. No other live device
+  was deployed or migrated.
 
 ## Native metadata race-fix validation (2026-09-13)
 
