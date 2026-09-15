@@ -623,47 +623,23 @@ EOF
     return 1
 }
 
-tc_manager_export_boot_xattrs() {
-    # The background call keeps temporary paths and positional roots out of the
-    # manager's globals. Exit this child explicitly so its EXIT trap always
-    # removes staging. The helper is copied, never linked from a sleeping disk.
-    migration_tdb="$TC_RESOLVED_PAYLOAD_DIR/private/xattr.tdb"
-    [ -f "$migration_tdb" ] || exit 0
-    migration_binary="$TC_RESOLVED_PAYLOAD_DIR/xattr-hfs-migrate"
-    migration_ram="/mnt/Memory/.tc-xattr-hfs-migrate.$$"
-    migration_child=
-    trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; rm -f "$migration_ram"' 0
-    trap 'exit 1' 1 2 15
-    [ "$#" -gt 0 ] || exit 1
-    cp "$migration_binary" "$migration_ram" || exit 1
-    chmod 755 "$migration_ram" || exit 1
-    migration_metadata=stream
-    [ "$FRUIT_METADATA_NETATALK" != 1 ] || migration_metadata=netatalk
-    tc_log "boot metadata migration beginning"
-    "$migration_ram" copy "$migration_tdb" "$migration_metadata" "$@" >>"$TC_LOG_FILE" 2>&1 &
-    migration_child=$!
-    migration_phase_status=0
-    wait "$migration_child" || migration_phase_status=$?
-    migration_child=
-    [ "$migration_phase_status" = 0 ] || exit 1
-    /bin/sync || exit 1
-    "$migration_ram" cleanup "$migration_tdb" "$migration_metadata" "$@" >>"$TC_LOG_FILE" 2>&1 &
-    migration_child=$!
-    migration_phase_status=0
-    wait "$migration_child" || migration_phase_status=$?
-    migration_child=
-    [ "$migration_phase_status" = 0 ] || exit 1
-    /bin/sync || exit 1
-    tc_log "boot metadata migration complete"
-    exit 0
-}
-
 tc_manager_stop_boot_xattrs() {
-    # Deploy stops the manager before replacing payloads. Forward that stop to
-    # the export so no detached migrator can keep writing during the upload.
+    # Deploy stops the manager before replacing payloads. Stop the dedicated
+    # wrapper first so it can terminate its migrator child and remove RAM state.
     if [ -n "${TC_MANAGER_XATTR_PID:-}" ]; then
         kill -TERM "$TC_MANAGER_XATTR_PID" 2>/dev/null || true
-        wait "$TC_MANAGER_XATTR_PID" 2>/dev/null || true
+        migration_stop_attempt=0
+        while [ "$migration_stop_attempt" -lt 5 ]; do
+            /bin/kill -0 "$TC_MANAGER_XATTR_PID" 2>/dev/null || break
+            migration_stop_attempt=$((migration_stop_attempt + 1))
+            sleep 1 || break
+        done
+        if /bin/kill -0 "$TC_MANAGER_XATTR_PID" 2>/dev/null; then
+            tc_log "metadata migration wrapper still running after TERM; sending KILL"
+            /usr/bin/pkill -KILL -f "$TC_MANAGER_XATTR_RAM" >/dev/null 2>&1 || true
+            kill -KILL "$TC_MANAGER_XATTR_PID" 2>/dev/null || true
+        fi
+        /bin/rm -f "$TC_MANAGER_XATTR_RAM"
         TC_MANAGER_XATTR_PID=
     fi
 }
@@ -702,14 +678,82 @@ $migration_xattr_key"
     done <<EOF
 $migration_topology_rows
 EOF
-    [ "$#" -gt 0 ] || return 0
+    if [ "$#" -eq 0 ]; then
+        tc_log "metadata migration skipped: no mounted pending roots"
+        return 0
+    fi
 
-    tc_manager_export_boot_xattrs "$@" &
-    TC_MANAGER_XATTR_PID=$!
+    tc_log "metadata migration selected roots count=$# roots=$*"
+
+    migration_tdb="$TC_RESOLVED_PAYLOAD_DIR/private/xattr.tdb"
+    migration_binary="$TC_RESOLVED_PAYLOAD_DIR/xattr-hfs-migrate"
+    migration_wrapper=/mnt/Flash/migrate.sh
+    if [ ! -f "$migration_tdb" ]; then
+        tc_log "metadata migration skipped: no legacy TDB at $migration_tdb"
+        return 0
+    fi
+    migration_metadata=stream
+    [ "$FRUIT_METADATA_NETATALK" != 1 ] || migration_metadata=netatalk
+    TC_MANAGER_XATTR_RAM=/mnt/Memory/tc-xattr-hfs-migrate
+    rm -f "$TC_MANAGER_XATTR_RAM"
+    tc_log "boot metadata migration beginning phase=copy metadata=$migration_metadata tdb=$migration_tdb roots=$*"
     migration_status=0
-    wait "$TC_MANAGER_XATTR_PID" || migration_status=$?
+    TC_MANAGER_XATTR_STATUS=127
+    trap 'TC_MANAGER_XATTR_STATUS=0' 30
+    trap 'TC_MANAGER_XATTR_STATUS=1' 31
+    "$migration_wrapper" copy "$migration_tdb" "$migration_metadata" \
+        "$migration_binary" "$TC_MANAGER_XATTR_RAM" "$$" "$TC_LOG_FILE" "$@" &
+    TC_MANAGER_XATTR_PID=$!
+    while /bin/kill -0 "$TC_MANAGER_XATTR_PID" 2>/dev/null; do
+        sleep 1 || break
+    done
     TC_MANAGER_XATTR_PID=
+    migration_signal_wait=0
+    while [ "$TC_MANAGER_XATTR_STATUS" = 127 ] && [ "$migration_signal_wait" -lt 10000 ]; do
+        migration_signal_wait=$((migration_signal_wait + 1))
+    done
+    migration_status=$TC_MANAGER_XATTR_STATUS
+    trap - 30 31
+    rm -f "$TC_MANAGER_XATTR_RAM"
+    tc_log "metadata migration export finished status=$migration_status"
     [ "$migration_status" = 0 ] || return 1
+    if /bin/sync; then
+        tc_log "boot metadata migration copy sync finished status=0"
+    else
+        migration_sync_status=$?
+        tc_log "boot metadata migration copy sync failed status=$migration_sync_status"
+        return 1
+    fi
+
+    tc_log "boot metadata migration beginning phase=cleanup metadata=$migration_metadata tdb=$migration_tdb roots=$*"
+    migration_status=0
+    TC_MANAGER_XATTR_STATUS=127
+    trap 'TC_MANAGER_XATTR_STATUS=0' 30
+    trap 'TC_MANAGER_XATTR_STATUS=1' 31
+    "$migration_wrapper" cleanup "$migration_tdb" "$migration_metadata" \
+        "$migration_binary" "$TC_MANAGER_XATTR_RAM" "$$" "$TC_LOG_FILE" "$@" &
+    TC_MANAGER_XATTR_PID=$!
+    while /bin/kill -0 "$TC_MANAGER_XATTR_PID" 2>/dev/null; do
+        sleep 1 || break
+    done
+    TC_MANAGER_XATTR_PID=
+    migration_signal_wait=0
+    while [ "$TC_MANAGER_XATTR_STATUS" = 127 ] && [ "$migration_signal_wait" -lt 10000 ]; do
+        migration_signal_wait=$((migration_signal_wait + 1))
+    done
+    migration_status=$TC_MANAGER_XATTR_STATUS
+    trap - 30 31
+    rm -f "$TC_MANAGER_XATTR_RAM"
+    tc_log "metadata migration cleanup finished status=$migration_status"
+    [ "$migration_status" = 0 ] || return 1
+    if /bin/sync; then
+        tc_log "boot metadata migration cleanup sync finished status=0"
+    else
+        migration_sync_status=$?
+        tc_log "boot metadata migration cleanup sync failed status=$migration_sync_status"
+        return 1
+    fi
+    tc_log "boot metadata migration complete status=0"
     while IFS= read -r completed_xattr_key || [ -n "$completed_xattr_key" ]; do
         [ -n "$completed_xattr_key" ] || continue
         tc_manager_record_migrated_xattr_volume "$completed_xattr_key" || return 1

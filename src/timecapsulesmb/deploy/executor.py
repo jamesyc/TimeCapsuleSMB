@@ -87,7 +87,7 @@ def migrate_xattr_tdb_to_hfs(
     root_args = shlex.join([volume.volume_root for volume in mounted])
     script = f"""
 tdb={shlex.quote(tdb_path)}
-migration_ram=/mnt/Memory/.tc-xattr-hfs-migrate.$$
+migration_ram=/mnt/Memory/tc-xattr-hfs-migrate
 migration_child=
 trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; rm -f "$migration_ram"' 0
 trap 'exit 1' 1 2 15

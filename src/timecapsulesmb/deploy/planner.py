@@ -36,6 +36,7 @@ PACKAGED_COMMON_SH_SOURCE = "packaged:common.sh"
 PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
 PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
 PACKAGED_MANAGER_SOURCE = "packaged:manager.sh"
+PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE = "packaged:migrate.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
 GENERATED_RSYNC_CONFIG_SOURCE = "generated:rsyncd.conf"
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
@@ -240,6 +241,7 @@ def build_deployment_plan(
         "common.sh": "/mnt/Flash/common.sh",
         "boot.sh": "/mnt/Flash/boot.sh",
         "manager.sh": "/mnt/Flash/manager.sh",
+        "migrate.sh": "/mnt/Flash/migrate.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
         "mdns": "/mnt/Flash/mdns-advertiser",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
@@ -283,6 +285,7 @@ def build_deployment_plan(
         RemotePermission(flash_targets["common.sh"], "755"),
         RemotePermission(flash_targets["boot.sh"], "755"),
         RemotePermission(flash_targets["manager.sh"], "755"),
+        RemotePermission(flash_targets["migrate.sh"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
         RemotePermission(flash_targets["mdns"], "755"),
         RemotePermission(payload_targets["service"], "755"),
@@ -331,6 +334,7 @@ def build_deployment_plan(
             FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
             FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
             FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
+            FileTransfer(PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE, flash_targets["migrate.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged xattr migration wrapper"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
             FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
         ],
@@ -407,6 +411,7 @@ def build_uninstall_plan(
         "common.sh": "/mnt/Flash/common.sh",
         "boot.sh": "/mnt/Flash/boot.sh",
         "manager.sh": "/mnt/Flash/manager.sh",
+        "migrate.sh": "/mnt/Flash/migrate.sh",
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
@@ -447,6 +452,7 @@ def build_uninstall_plan(
             RemovePathAction(flash_targets["common.sh"]),
             RemovePathAction(flash_targets["boot.sh"]),
             RemovePathAction(flash_targets["manager.sh"]),
+            RemovePathAction(flash_targets["migrate.sh"]),
             RemovePathAction(flash_targets["start-samba.sh"]),
             RemovePathAction(flash_targets["watchdog.sh"]),
             RemovePathAction(flash_targets["dfree.sh"]),

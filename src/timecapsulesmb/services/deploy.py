@@ -43,6 +43,7 @@ from timecapsulesmb.deploy.planner import (
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
+    PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE,
     FileTransfer,
 )
 from timecapsulesmb.deploy.planner import (
@@ -119,6 +120,7 @@ DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_MANAGER_SOURCE,
+    PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE,
 })
 MANAGER_STOP_TIMEOUT_MESSAGE = (
     "A service on the device is stuck, often due to a failing disk. "
@@ -740,6 +742,7 @@ def _deployment_upload_sources(
         PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("dfree.sh")),
         PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path_func("boot.sh")),
         PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path_func("manager.sh")),
+        PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE: boot_assets.enter_context(boot_asset_path_func("migrate.sh")),
     }
 
 

@@ -74,6 +74,7 @@ from timecapsulesmb.deploy.planner import (
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
+    PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE,
     PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
     build_uninstall_plan,
@@ -1434,6 +1435,7 @@ echo ok
             PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
             PACKAGED_MANAGER_SOURCE: Path("/tmp/manager.sh"),
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
+            PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE: Path("/tmp/migrate.sh"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
@@ -1447,7 +1449,7 @@ echo ok
                         on_uploading=uploading.append,
                         on_uploaded=uploaded.append,
                     )
-        self.assertEqual(scp_mock.call_count, 14)
+        self.assertEqual(scp_mock.call_count, 15)
         self.assertEqual(mount_mock.call_count, 7)
         self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
         self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
@@ -1467,6 +1469,7 @@ echo ok
                 Path("/tmp/common.sh"),
                 Path("/tmp/boot.sh"),
                 Path("/tmp/manager.sh"),
+                Path("/tmp/migrate.sh"),
                 Path("/tmp/dfree.sh"),
                 Path("/tmp/tcapsulesmb.conf"),
             ],
@@ -1487,6 +1490,7 @@ echo ok
                 "/mnt/Flash/.common.sh.tmp",
                 "/mnt/Flash/.boot.sh.tmp",
                 "/mnt/Flash/.manager.sh.tmp",
+                "/mnt/Flash/.migrate.sh.tmp",
                 "/mnt/Flash/.dfree.sh.tmp",
                 "/mnt/Flash/.tcapsulesmb.conf.tmp",
             ],
@@ -1494,7 +1498,7 @@ echo ok
         for call, transfer in zip(scp_mock.call_args_list, plan.uploads):
             expected_timeout = PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS if transfer.source_id.startswith("binary:") else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
             self.assertEqual(call.kwargs.get("timeout"), expected_timeout)
-        self.assertEqual(ssh_mock.call_count, 15)
+        self.assertEqual(ssh_mock.call_count, 17)
         cleanup_command = ssh_mock.call_args_list[0].args[1]
         self.assertIn("rm -f", cleanup_command)
         self.assertIn("/mnt/Flash/.mdns-advertiser.tmp", cleanup_command)
@@ -1502,6 +1506,7 @@ echo ok
         self.assertIn("/mnt/Flash/.common.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.manager.sh.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.migrate.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
         self.assertEqual(uploading, plan.uploads)
