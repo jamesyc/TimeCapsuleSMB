@@ -1,6 +1,11 @@
 import Combine
 import Foundation
 
+extension Notification.Name {
+    /// Posted by the "Check for Updates…" menu item; `AppStore` runs a manual update check.
+    static let tcapsuleCheckForUpdates = Notification.Name("com.timecapsulesmb.checkForUpdates")
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var route: AppRoute = .allDevices
@@ -77,6 +82,13 @@ final class AppStore: ObservableObject {
                 self?.refreshSSHAccessForDiscoveredProfiles()
             }
             .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .tcapsuleCheckForUpdates)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.checkForUpdatesManually()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     var selectedProfile: DeviceProfile? {
@@ -113,6 +125,21 @@ final class AppStore: ObservableObject {
         if appSettingsStore.settings.checkForUpdatesOnLaunch {
             appUpdateStore.checkNow(settings: appSettingsStore.settings)
         }
+        appUpdateStore.startAutomaticChecks(settings: appSettingsStore.settings)
+    }
+
+    func checkForUpdatesManually() {
+        appUpdateStore.checkNow(settings: appSettingsStore.settings, manual: true)
+    }
+
+    /// Persists the currently prompted release as skipped so automatic checks stop offering it.
+    func skipUpdateVersion() async {
+        guard let versionCode = appUpdateStore.skipVersion() else {
+            return
+        }
+        var settings = appSettingsStore.settings
+        settings.skippedUpdateVersionCode = versionCode
+        try? await saveAppSettings(settings)
     }
 
     func navigate(to route: AppRoute) {
@@ -174,6 +201,7 @@ final class AppStore: ObservableObject {
         {
             appReadinessStore.start()
         }
+        appUpdateStore.startAutomaticChecks(settings: settings)
     }
 
     func password(for profile: DeviceProfile) -> String? {

@@ -74,6 +74,8 @@
 "app_settings.error.corrupt" = "App settings could not be read: %@";
 "app_settings.error.mount_wait" = "Mount wait must be a non-negative integer.";
 "app_settings.error.version_url" = "Version check URL must be blank or an HTTP/HTTPS URL.";
+"app_settings.error.update_interval" = "Update check interval must be between 1 and 720 hours.";
+"app_settings.error.release_url" = "Release metadata URL must be blank or an HTTP/HTTPS URL.";
 "app_settings.helper_path" = "Helper path";
 "app_settings.language" = "Language";
 "app_settings.restore_defaults" = "Restore Defaults";
@@ -91,6 +93,8 @@
 "app_settings.time_machine_warnings" = "Show macOS Time Machine compatibility warnings";
 "app_settings.title" = "Settings";
 "app_settings.version_url" = "Version metadata URL";
+"app_settings.release_url" = "Release metadata URL";
+"app_settings.update_check_interval" = "Check interval (hours)";
 "app_appearance.dark" = "Dark";
 "app_appearance.light" = "Light";
 "app_appearance.system" = "System";
@@ -111,6 +115,17 @@
 "app_update.state.idle" = "Not checked yet.";
 "app_update.state.unavailable" = "Version metadata unavailable.";
 "app_update.state.update_available" = "Update available.";
+"app_update.alert.failed.title" = "Update check failed";
+"app_update.alert.up_to_date.message" = "TimeCapsuleSMB %@ is the newest version available.";
+"app_update.alert.up_to_date.title" = "You're up to date";
+"app_update.sheet.download" = "Download";
+"app_update.sheet.no_notes" = "No release notes were provided for this version.";
+"app_update.sheet.published" = "Released %@";
+"app_update.sheet.remind_later" = "Remind Me Later";
+"app_update.sheet.required" = "Your version is no longer supported. Please update to continue.";
+"app_update.sheet.skip" = "Skip This Version";
+"app_update.sheet.title" = "%@ is available";
+"menu.check_for_updates" = "Check for Updates…";
 "button.discover" = "Discover";
 "checkup.presentation.headline.failed" = "Checkup failed.";
 "checkup.presentation.headline.idle" = "Run a checkup to inspect this Apple AirPort Time Capsule or AirPort Extreme.";

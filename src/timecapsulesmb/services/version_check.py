@@ -114,13 +114,21 @@ def load_fresh_cached_payload(
     cache_path: Path = VERSION_CHECK_CACHE_PATH,
     now: float | None = None,
     max_age_seconds: int = VERSION_CHECK_CACHE_SECONDS,
+    url: str | None = None,
 ) -> object | None:
+    """Return the cached payload when it is fresh and, if `url` is given, was fetched from that URL.
+
+    Entries written before URLs were recorded are treated as stale when a URL is requested, so
+    changing the metadata URL in settings takes effect immediately instead of after the TTL.
+    """
     timestamp = time.time() if now is None else now
     try:
         cache = json.loads(cache_path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(cache, dict):
+        return None
+    if url is not None and cache.get("url") != url:
         return None
     fetched_at = cache.get("fetched_at")
     if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
@@ -135,11 +143,15 @@ def save_cached_payload(
     *,
     cache_path: Path = VERSION_CHECK_CACHE_PATH,
     now: float | None = None,
+    url: str | None = None,
 ) -> None:
     if not isinstance(payload, dict):
         return
     timestamp = time.time() if now is None else now
-    text = json.dumps({"fetched_at": timestamp, "payload": payload}, sort_keys=True) + "\n"
+    entry: dict[str, object] = {"fetched_at": timestamp, "payload": payload}
+    if url is not None:
+        entry["url"] = url
+    text = json.dumps(entry, sort_keys=True) + "\n"
     try:
         cache_path.write_text(text)
     except OSError:
@@ -182,7 +194,7 @@ def _check_client_version(
     opener: UrlOpen,
 ) -> VersionCheckResult:
     timestamp = time.time() if now is None else now
-    cached_payload = load_fresh_cached_payload(cache_path=cache_path, now=timestamp)
+    cached_payload = load_fresh_cached_payload(cache_path=cache_path, now=timestamp, url=url)
     cached_metadata = parse_version_metadata(cached_payload)
     if cached_metadata is not None and local_version_code >= cached_metadata.min_supported_version:
         return VersionCheckResult(
@@ -200,7 +212,7 @@ def _check_client_version(
     if fetched_metadata is None:
         return VersionCheckResult(should_block=False, checked_url=url, local_version_code=local_version_code)
 
-    save_cached_payload(fetched_payload, cache_path=cache_path, now=timestamp)
+    save_cached_payload(fetched_payload, cache_path=cache_path, now=timestamp, url=url)
     if local_version_code < fetched_metadata.min_supported_version:
         return VersionCheckResult(
             should_block=True,

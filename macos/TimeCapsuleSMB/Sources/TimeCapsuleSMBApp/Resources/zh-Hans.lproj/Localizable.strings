@@ -74,6 +74,8 @@
 "app_settings.error.corrupt" = "无法读取 App settings：%@";
 "app_settings.error.mount_wait" = "Mount wait 必须是非负整数。";
 "app_settings.error.version_url" = "Version check URL 必须留空，或为 HTTP/HTTPS URL。";
+"app_settings.error.update_interval" = "更新检查间隔必须在 1 到 720 小时之间。";
+"app_settings.error.release_url" = "发布元数据 URL 必须为空或为 HTTP/HTTPS 地址。";
 "app_settings.helper_path" = "Helper path";
 "app_settings.language" = "语言";
 "app_settings.restore_defaults" = "恢复默认值";
@@ -91,6 +93,8 @@
 "app_settings.time_machine_warnings" = "显示 macOS Time Machine 兼容性警告";
 "app_settings.title" = "设置";
 "app_settings.version_url" = "Version metadata URL";
+"app_settings.release_url" = "发布元数据 URL";
+"app_settings.update_check_interval" = "检查间隔（小时）";
 "app_appearance.dark" = "深色";
 "app_appearance.light" = "浅色";
 "app_appearance.system" = "跟随系统";
@@ -111,6 +115,17 @@
 "app_update.state.idle" = "尚未检查。";
 "app_update.state.unavailable" = "Version metadata 不可用。";
 "app_update.state.update_available" = "有可用更新。";
+"app_update.alert.failed.title" = "更新检查失败";
+"app_update.alert.up_to_date.message" = "TimeCapsuleSMB %@ 已是最新版本。";
+"app_update.alert.up_to_date.title" = "已是最新";
+"app_update.sheet.download" = "下载";
+"app_update.sheet.no_notes" = "此版本未提供发布说明。";
+"app_update.sheet.published" = "发布于 %@";
+"app_update.sheet.remind_later" = "稍后提醒";
+"app_update.sheet.required" = "您的版本已不再受支持，请更新后继续。";
+"app_update.sheet.skip" = "跳过此版本";
+"app_update.sheet.title" = "%@ 现已可用";
+"menu.check_for_updates" = "检查更新…";
 "button.discover" = "发现";
 "checkup.presentation.headline.failed" = "检查失败。";
 "checkup.presentation.headline.idle" = "运行检查来检查此 Apple AirPort Time Capsule 或 AirPort Extreme。";

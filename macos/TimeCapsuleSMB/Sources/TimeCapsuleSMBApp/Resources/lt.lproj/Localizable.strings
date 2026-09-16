@@ -74,6 +74,8 @@
 "app_settings.error.corrupt" = "Nepavyko nuskaityti programos nustatymų: %@";
 "app_settings.error.mount_wait" = "Prijungimo laukimo laikas turi būti neneigiamas sveikasis skaičius.";
 "app_settings.error.version_url" = "Versijos tikrinimo URL turi būti tuščias arba HTTP/HTTPS URL.";
+"app_settings.error.update_interval" = "Atnaujinimų tikrinimo intervalas turi būti nuo 1 iki 720 valandų.";
+"app_settings.error.release_url" = "Leidimo metaduomenų URL turi būti tuščias arba HTTP/HTTPS URL.";
 "app_settings.helper_path" = "Pagalbinės programos kelias";
 "app_settings.language" = "Kalba";
 "app_settings.restore_defaults" = "Atkurti numatytuosius";
@@ -91,6 +93,8 @@
 "app_settings.time_machine_warnings" = "Rodyti macOS Time Machine suderinamumo įspėjimus";
 "app_settings.title" = "Nustatymai";
 "app_settings.version_url" = "Versijos metaduomenų URL";
+"app_settings.release_url" = "Leidimo metaduomenų URL";
+"app_settings.update_check_interval" = "Tikrinimo intervalas (valandos)";
 "app_appearance.dark" = "Tamsi";
 "app_appearance.light" = "Šviesi";
 "app_appearance.system" = "Sisteminė";
@@ -111,6 +115,17 @@
 "app_update.state.idle" = "Dar netikrinta.";
 "app_update.state.unavailable" = "Versijos metaduomenys nepasiekiami.";
 "app_update.state.update_available" = "Yra naujinimas.";
+"app_update.alert.failed.title" = "Atnaujinimų patikra nepavyko";
+"app_update.alert.up_to_date.message" = "TimeCapsuleSMB %@ yra naujausia prieinama versija.";
+"app_update.alert.up_to_date.title" = "Turite naujausią versiją";
+"app_update.sheet.download" = "Atsisiųsti";
+"app_update.sheet.no_notes" = "Šiai versijai leidimo pastabų nepateikta.";
+"app_update.sheet.published" = "Išleista %@";
+"app_update.sheet.remind_later" = "Priminti vėliau";
+"app_update.sheet.required" = "Jūsų versija nebepalaikoma. Atnaujinkite, kad galėtumėte tęsti.";
+"app_update.sheet.skip" = "Praleisti šią versiją";
+"app_update.sheet.title" = "Galima versija %@";
+"menu.check_for_updates" = "Tikrinti, ar yra atnaujinimų…";
 "button.discover" = "Ieškoti";
 "checkup.presentation.headline.failed" = "Patikrinimas nepavyko.";
 "checkup.presentation.headline.idle" = "Atlikite patikrinimą, kad apžiūrėtumėte šį Apple AirPort Time Capsule arba AirPort Extreme.";

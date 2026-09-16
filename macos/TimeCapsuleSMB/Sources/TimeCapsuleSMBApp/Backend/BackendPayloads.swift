@@ -70,6 +70,80 @@ struct VersionCheckPayload: Decodable, Equatable {
     }
 }
 
+struct ReleaseAssetPayload: Decodable, Equatable {
+    let name: String
+    let size: Int?
+    let downloadURL: String
+    let sha256: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case size
+        case sha256
+        case downloadURL = "download_url"
+    }
+}
+
+struct ReleaseInfoPayload: Decodable, Equatable {
+    let tag: String
+    let name: String
+    let publishedAt: String?
+    let notes: String
+    let htmlURL: String
+    let prerelease: Bool
+    let asset: ReleaseAssetPayload?
+
+    enum CodingKeys: String, CodingKey {
+        case tag
+        case name
+        case notes
+        case prerelease
+        case asset
+        case publishedAt = "published_at"
+        case htmlURL = "html_url"
+    }
+
+    var publishedDate: Date? {
+        guard let publishedAt else {
+            return nil
+        }
+        return ISO8601DateFormatter().date(from: publishedAt)
+    }
+}
+
+/// Result of the helper `update-check` operation: `version-check` fields plus GitHub release metadata.
+struct UpdateCheckPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let shouldBlock: Bool
+    let updateAvailable: Bool
+    let checkedURL: String
+    let message: String
+    let downloadURL: String
+    let localVersionCode: Int
+    let currentVersion: Int?
+    let minSupportedVersion: Int?
+    let latestTag: String?
+    let source: String
+    let summary: String
+    let release: ReleaseInfoPayload?
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case shouldBlock = "should_block"
+        case updateAvailable = "update_available"
+        case checkedURL = "checked_url"
+        case message
+        case downloadURL = "download_url"
+        case localVersionCode = "local_version_code"
+        case currentVersion = "current_version"
+        case minSupportedVersion = "min_supported_version"
+        case latestTag = "latest_tag"
+        case source
+        case summary
+        case release
+    }
+}
+
 struct ReachabilityPayload: Decodable, Equatable {
     let schemaVersion: Int
     let status: String

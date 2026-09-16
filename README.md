@@ -74,7 +74,7 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 ## Quick Start (macOS app)
 
 1. Download the latest release of the app from here: https://github.com/jamesyc/TimeCapsuleSMB/releases
-2. Unzip the app and run it. If you get a "cannot be opened" warning, you need to manually disable Gatekeeper for this app.
+2. Unzip the app and run it. Releases are signed and notarized, so macOS should open the app without a Gatekeeper warning. The app checks for new releases on launch and from **TimeCapsuleSMB → Check for Updates…** in the menu bar.
 3. Make sure *Local Network* permissions is granted (System Settings → Privacy & Security → Local Network → make sure TimeCapsuleSMB is allowed, then quit/reopen the app). Close and re-open the app after granting permissions.
 4. Click "Add Device" on the left sidebar, and select your device. 
 5. Enter your device password, and click "Save Device". 
