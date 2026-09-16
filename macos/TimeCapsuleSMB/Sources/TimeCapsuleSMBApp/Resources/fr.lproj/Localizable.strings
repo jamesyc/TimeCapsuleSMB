@@ -77,6 +77,8 @@
 "app_settings.error.corrupt" = "Impossible de lire les réglages de l’app : %@";
 "app_settings.error.mount_wait" = "Le délai d’attente du montage doit être un entier positif ou nul.";
 "app_settings.error.version_url" = "L’URL de vérification des versions doit être vide ou utiliser HTTP/HTTPS.";
+"app_settings.error.update_interval" = "L'intervalle de vérification des mises à jour doit être compris entre 1 et 720 heures.";
+"app_settings.error.release_url" = "L'URL des métadonnées de version doit être vide ou une URL HTTP/HTTPS.";
 "app_settings.helper_path" = "Chemin du programme auxiliaire";
 "app_settings.language" = "Langue";
 "app_settings.restore_defaults" = "Restaurer les paramètres par défaut";
@@ -94,6 +96,8 @@
 "app_settings.time_machine_warnings" = "Afficher les avertissements de compatibilité de Time Machine sur macOS";
 "app_settings.title" = "Paramètres";
 "app_settings.version_url" = "URL des métadonnées de version";
+"app_settings.release_url" = "URL des métadonnées de version";
+"app_settings.update_check_interval" = "Intervalle de vérification (heures)";
 "app_appearance.dark" = "Sombre";
 "app_appearance.light" = "Clair";
 "app_appearance.system" = "Système";
@@ -114,6 +118,17 @@
 "app_update.state.idle" = "Pas encore vérifié.";
 "app_update.state.unavailable" = "Métadonnées de version indisponibles.";
 "app_update.state.update_available" = "Mise à jour disponible.";
+"app_update.alert.failed.title" = "Échec de la vérification des mises à jour";
+"app_update.alert.up_to_date.message" = "TimeCapsuleSMB %@ est la version la plus récente disponible.";
+"app_update.alert.up_to_date.title" = "Vous êtes à jour";
+"app_update.sheet.download" = "Télécharger";
+"app_update.sheet.no_notes" = "Aucune note de version n'a été fournie pour cette version.";
+"app_update.sheet.published" = "Publié le %@";
+"app_update.sheet.remind_later" = "Me le rappeler plus tard";
+"app_update.sheet.required" = "Votre version n'est plus prise en charge. Veuillez mettre à jour pour continuer.";
+"app_update.sheet.skip" = "Ignorer cette version";
+"app_update.sheet.title" = "%@ est disponible";
+"menu.check_for_updates" = "Rechercher des mises à jour…";
 "button.discover" = "Découvrir";
 "checkup.presentation.headline.failed" = "Échec de la vérification.";
 "checkup.presentation.headline.idle" = "Lancez une vérification de cet Apple AirPort Time Capsule ou AirPort Extreme.";

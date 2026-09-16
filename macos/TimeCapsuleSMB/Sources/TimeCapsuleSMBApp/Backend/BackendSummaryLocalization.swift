@@ -96,7 +96,7 @@ enum BackendSummaryLocalization {
             return payload.bool("ok").map { installValidationSummary(ok: $0) }
         case "set-telemetry":
             return payload.bool("telemetry_enabled").map { telemetrySummary(enabled: $0) }
-        case "version-check":
+        case "version-check", "update-check":
             return versionSummary(
                 source: payload.string("source"),
                 shouldBlock: payload.bool("should_block"),
@@ -430,6 +430,16 @@ extension InstallValidationPayload {
 }
 
 extension VersionCheckPayload {
+    var localizedSummary: String {
+        BackendSummaryLocalization.versionSummary(
+            source: source,
+            shouldBlock: shouldBlock,
+            updateAvailable: updateAvailable
+        )
+    }
+}
+
+extension UpdateCheckPayload {
     var localizedSummary: String {
         BackendSummaryLocalization.versionSummary(
             source: source,

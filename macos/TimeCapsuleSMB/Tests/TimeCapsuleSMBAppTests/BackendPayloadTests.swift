@@ -2,6 +2,72 @@ import XCTest
 @testable import TimeCapsuleSMBApp
 
 final class BackendPayloadTests: XCTestCase {
+    func testDecodesUpdateCheckPayloadWithRelease() throws {
+        let payload = try jsonValue("""
+        {
+          "schema_version": 1,
+          "should_block": false,
+          "update_available": true,
+          "checked_url": "https://example.invalid/version.json",
+          "message": "m",
+          "download_url": "https://example.invalid/download",
+          "local_version_code": 30001,
+          "current_version": 30002,
+          "min_supported_version": 20121,
+          "latest_tag": "v3.0.1",
+          "source": "network",
+          "summary": "Update available.",
+          "release": {
+            "tag": "v3.0.1",
+            "name": "v3.0.1",
+            "published_at": "2026-10-01T00:00:00Z",
+            "notes": "- Fixes",
+            "html_url": "https://example.invalid/rel",
+            "prerelease": false,
+            "asset": {"name": "TimeCapsuleSMB.app.zip", "size": 10, "download_url": "https://example.invalid/app.zip", "sha256": "ab"}
+          }
+        }
+        """).decode(UpdateCheckPayload.self)
+
+        XCTAssertTrue(payload.updateAvailable)
+        XCTAssertEqual(payload.currentVersion, 30002)
+        XCTAssertEqual(payload.release?.asset?.sha256, "ab")
+        XCTAssertEqual(payload.release?.asset?.size, 10)
+        XCTAssertEqual(payload.release?.publishedDate, ISO8601DateFormatter().date(from: "2026-10-01T00:00:00Z"))
+        XCTAssertEqual(payload.localizedSummary, "Update available.")
+    }
+
+    func testDecodesUpdateCheckPayloadWithoutRelease() throws {
+        let payload = try jsonValue("""
+        {
+          "schema_version": 1,
+          "should_block": false,
+          "update_available": false,
+          "checked_url": "https://example.invalid/version.json",
+          "message": "m",
+          "download_url": "https://example.invalid/download",
+          "local_version_code": 30001,
+          "current_version": null,
+          "min_supported_version": null,
+          "latest_tag": null,
+          "source": "unavailable",
+          "summary": "Version metadata is unavailable.",
+          "release": null
+        }
+        """).decode(UpdateCheckPayload.self)
+
+        XCTAssertNil(payload.release)
+        XCTAssertEqual(payload.localizedSummary, "Version metadata is unavailable.")
+    }
+
+    func testUpdateCheckParamsOmitBlankURLs() {
+        XCTAssertEqual(OperationParams.Readiness.updateCheck(url: " ", releaseURL: ""), [:])
+        XCTAssertEqual(
+            OperationParams.Readiness.updateCheck(url: "https://a", releaseURL: " https://b "),
+            ["url": .string("https://a"), "release_url": .string("https://b")]
+        )
+    }
+
     func testDecodesReadinessPayloads() throws {
         let capabilities = try jsonValue("""
         {

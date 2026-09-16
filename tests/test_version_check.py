@@ -189,7 +189,12 @@ class VersionCheckTests(unittest.TestCase):
     def test_fresh_supported_cache_skips_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = Path(tmp) / "version-cache.json"
-            save_cached_payload(self.metadata(min_supported_version=20003), cache_path=cache_path, now=1000.0)
+            save_cached_payload(
+                self.metadata(min_supported_version=20003),
+                cache_path=cache_path,
+                now=1000.0,
+                url=VERSION_CHECK_URL,
+            )
             calls: list[tuple[object, float]] = []
 
             def opener(_request, timeout):
@@ -208,6 +213,49 @@ class VersionCheckTests(unittest.TestCase):
             self.assertEqual(result.source, "cache")
             self.assertEqual(result.current_version, 20004)
             self.assertEqual(calls, [])
+
+    def test_cache_for_a_different_url_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "version-cache.json"
+            save_cached_payload(
+                self.metadata(min_supported_version=20003),
+                cache_path=cache_path,
+                now=1000.0,
+                url=VERSION_CHECK_URL,
+            )
+            calls: list[tuple[object, float]] = []
+
+            result = check_client_version(
+                local_version_code=20004,
+                url="http://127.0.0.1:8000/version.json",
+                cache_path=cache_path,
+                now=1000.0 + 60,
+                opener=self.opener_for_payload(
+                    self.metadata(current_version=20005, min_supported_version=20005),
+                    calls,
+                ),
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(result.should_block)
+            self.assertEqual(result.source, "network")
+            self.assertEqual(json.loads(cache_path.read_text())["url"], "http://127.0.0.1:8000/version.json")
+
+    def test_legacy_cache_without_url_is_treated_as_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "version-cache.json"
+            save_cached_payload(self.metadata(min_supported_version=20003), cache_path=cache_path, now=1000.0)
+            calls: list[tuple[object, float]] = []
+
+            result = check_client_version(
+                local_version_code=20004,
+                cache_path=cache_path,
+                now=1000.0 + 60,
+                opener=self.opener_for_payload(self.metadata(), calls),
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(result.source, "network")
 
     def test_stale_cache_fetches_remote_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

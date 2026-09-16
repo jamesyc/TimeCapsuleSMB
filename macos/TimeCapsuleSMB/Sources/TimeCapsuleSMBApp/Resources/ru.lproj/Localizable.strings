@@ -77,6 +77,8 @@
 "app_settings.error.corrupt" = "Не удалось прочитать настройки приложения: %@";
 "app_settings.error.mount_wait" = "Ожидание монтирования должно быть неотрицательным целым числом.";
 "app_settings.error.version_url" = "URL проверки версии должен быть пустым или использовать HTTP/HTTPS.";
+"app_settings.error.update_interval" = "Интервал проверки обновлений должен быть от 1 до 720 часов.";
+"app_settings.error.release_url" = "URL метаданных релиза должен быть пустым или HTTP/HTTPS-адресом.";
 "app_settings.helper_path" = "Путь к вспомогательной программе";
 "app_settings.language" = "Язык";
 "app_settings.restore_defaults" = "Восстановить настройки по умолчанию";
@@ -94,6 +96,8 @@
 "app_settings.time_machine_warnings" = "Показывать предупреждения о совместимости Time Machine с macOS";
 "app_settings.title" = "Настройки";
 "app_settings.version_url" = "URL метаданных версии";
+"app_settings.release_url" = "URL метаданных релиза";
+"app_settings.update_check_interval" = "Интервал проверки (часы)";
 "app_appearance.dark" = "Темный";
 "app_appearance.light" = "Светлый";
 "app_appearance.system" = "Система";
@@ -114,6 +118,17 @@
 "app_update.state.idle" = "Пока не проверено.";
 "app_update.state.unavailable" = "Метаданные версии недоступны.";
 "app_update.state.update_available" = "Доступно обновление.";
+"app_update.alert.failed.title" = "Не удалось проверить обновления";
+"app_update.alert.up_to_date.message" = "TimeCapsuleSMB %@ — самая новая доступная версия.";
+"app_update.alert.up_to_date.title" = "У вас актуальная версия";
+"app_update.sheet.download" = "Скачать";
+"app_update.sheet.no_notes" = "Для этой версии нет примечаний к выпуску.";
+"app_update.sheet.published" = "Выпущено %@";
+"app_update.sheet.remind_later" = "Напомнить позже";
+"app_update.sheet.required" = "Ваша версия больше не поддерживается. Обновите приложение, чтобы продолжить.";
+"app_update.sheet.skip" = "Пропустить эту версию";
+"app_update.sheet.title" = "Доступна версия %@";
+"menu.check_for_updates" = "Проверить обновления…";
 "button.discover" = "Найти устройства";
 "checkup.presentation.headline.failed" = "Проверка не удалась.";
 "checkup.presentation.headline.idle" = "Запустите диагностику этого Apple AirPort Time Capsule или AirPort Extreme.";

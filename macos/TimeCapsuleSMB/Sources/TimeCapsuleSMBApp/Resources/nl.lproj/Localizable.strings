@@ -77,6 +77,8 @@
 "app_settings.error.corrupt" = "App-instellingen konden niet worden gelezen: %@";
 "app_settings.error.mount_wait" = "De wachttijd voor koppelen moet een niet-negatief geheel getal zijn.";
 "app_settings.error.version_url" = "De URL voor versiecontrole moet leeg zijn of HTTP/HTTPS gebruiken.";
+"app_settings.error.update_interval" = "Het update-controle-interval moet tussen 1 en 720 uur liggen.";
+"app_settings.error.release_url" = "De release-metadata-URL moet leeg zijn of een HTTP/HTTPS-URL.";
 "app_settings.helper_path" = "Pad naar hulpprogramma";
 "app_settings.language" = "Taal";
 "app_settings.restore_defaults" = "Standaardinstellingen herstellen";
@@ -94,6 +96,8 @@
 "app_settings.time_machine_warnings" = "Compatibiliteitswaarschuwingen voor Time Machine op macOS tonen";
 "app_settings.title" = "Instellingen";
 "app_settings.version_url" = "URL voor versiemetadata";
+"app_settings.release_url" = "Release-metadata-URL";
+"app_settings.update_check_interval" = "Controle-interval (uren)";
 "app_appearance.dark" = "Donker";
 "app_appearance.light" = "Licht";
 "app_appearance.system" = "Systeem";
@@ -114,6 +118,17 @@
 "app_update.state.idle" = "Nog niet gecontroleerd.";
 "app_update.state.unavailable" = "Versiemetadata niet beschikbaar.";
 "app_update.state.update_available" = "Update beschikbaar.";
+"app_update.alert.failed.title" = "Updatecontrole mislukt";
+"app_update.alert.up_to_date.message" = "TimeCapsuleSMB %@ is de nieuwste beschikbare versie.";
+"app_update.alert.up_to_date.title" = "Je bent up-to-date";
+"app_update.sheet.download" = "Downloaden";
+"app_update.sheet.no_notes" = "Er zijn geen release-opmerkingen voor deze versie.";
+"app_update.sheet.published" = "Uitgebracht op %@";
+"app_update.sheet.remind_later" = "Herinner me later";
+"app_update.sheet.required" = "Je versie wordt niet meer ondersteund. Werk bij om door te gaan.";
+"app_update.sheet.skip" = "Deze versie overslaan";
+"app_update.sheet.title" = "%@ is beschikbaar";
+"menu.check_for_updates" = "Controleren op updates…";
 "button.discover" = "Apparaten zoeken";
 "checkup.presentation.headline.failed" = "Controle mislukt.";
 "checkup.presentation.headline.idle" = "Voer een controle uit om deze Apple AirPort Time Capsule of AirPort Extreme te inspecteren.";

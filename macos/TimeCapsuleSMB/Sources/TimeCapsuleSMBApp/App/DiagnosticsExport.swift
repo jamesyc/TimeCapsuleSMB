@@ -13,7 +13,7 @@ struct DiagnosticsExportContext {
     var validation: InstallValidationPayload?
     var runtimeIssues: [BundleRuntimeIssue]
     var updateState: AppUpdateState
-    var updatePayload: VersionCheckPayload?
+    var updatePayload: UpdateCheckPayload?
     var updateError: BackendErrorViewModel?
     var selectedProfile: DeviceProfile?
     var selectedProfileIsFallback: Bool
@@ -48,6 +48,9 @@ struct DiagnosticsExportBuilder {
             append("Raw Events Default", value: context.appSettings.showRawBackendEventsByDefault, to: &lines)
             append("Check Updates On Launch", value: context.appSettings.checkForUpdatesOnLaunch, to: &lines)
             append("Version Check URL", value: context.appSettings.versionCheckURL.isEmpty ? "auto" : context.appSettings.versionCheckURL, to: &lines)
+            append("Release Info URL", value: context.appSettings.releaseInfoURL.isEmpty ? "auto" : context.appSettings.releaseInfoURL, to: &lines)
+            append("Update Check Interval Hours", value: context.appSettings.updateCheckIntervalHours, to: &lines)
+            append("Skipped Update Version", value: context.appSettings.skippedUpdateVersionCode.map(String.init) ?? "none", to: &lines)
             append("Time Machine Warnings", value: context.appSettings.timeMachineWarningsEnabled, to: &lines)
             appendDeviceSettings(context.appSettings.defaultDeviceSettings, prefix: "Default", to: &lines)
         }
@@ -89,6 +92,10 @@ struct DiagnosticsExportBuilder {
                 append("Minimum Supported Version", value: payload.minSupportedVersion.map(String.init) ?? "unknown", to: &lines)
                 append("Latest Tag", value: payload.latestTag ?? "unknown", to: &lines)
                 append("Download URL", value: payload.downloadURL, to: &lines)
+                if let release = payload.release {
+                    append("Latest Release", value: "\(release.name) (\(release.tag))", to: &lines)
+                    append("Release Asset", value: release.asset.map { "\($0.name) sha256=\($0.sha256 ?? "none")" } ?? "none", to: &lines)
+                }
             }
             if let error = context.updateError {
                 append("Error", value: "\(error.operation) \(error.code): \(error.message)", to: &lines)

@@ -154,6 +154,13 @@ struct AppSettings: Codable, Equatable {
     var checkForUpdatesOnLaunch: Bool
     var versionCheckURL: String
     var timeMachineWarningsEnabled: Bool
+    var updateCheckIntervalHours: Int
+    var releaseInfoURL: String
+    var skippedUpdateVersionCode: Int?
+
+    /// Allowed automatic update check interval, in hours.
+    static let updateCheckIntervalRange = 1...720
+    static let defaultUpdateCheckIntervalHours = 24
 
     static let `default` = AppSettings(
         language: .system,
@@ -165,7 +172,10 @@ struct AppSettings: Codable, Equatable {
         showRawBackendEventsByDefault: true,
         checkForUpdatesOnLaunch: true,
         versionCheckURL: "",
-        timeMachineWarningsEnabled: true
+        timeMachineWarningsEnabled: true,
+        updateCheckIntervalHours: defaultUpdateCheckIntervalHours,
+        releaseInfoURL: "",
+        skippedUpdateVersionCode: nil
     )
 
     init(
@@ -178,7 +188,10 @@ struct AppSettings: Codable, Equatable {
         showRawBackendEventsByDefault: Bool,
         checkForUpdatesOnLaunch: Bool,
         versionCheckURL: String,
-        timeMachineWarningsEnabled: Bool
+        timeMachineWarningsEnabled: Bool,
+        updateCheckIntervalHours: Int = AppSettings.defaultUpdateCheckIntervalHours,
+        releaseInfoURL: String = "",
+        skippedUpdateVersionCode: Int? = nil
     ) {
         self.language = language
         self.appearance = appearance
@@ -190,6 +203,9 @@ struct AppSettings: Codable, Equatable {
         self.checkForUpdatesOnLaunch = checkForUpdatesOnLaunch
         self.versionCheckURL = versionCheckURL
         self.timeMachineWarningsEnabled = timeMachineWarningsEnabled
+        self.updateCheckIntervalHours = updateCheckIntervalHours
+        self.releaseInfoURL = releaseInfoURL
+        self.skippedUpdateVersionCode = skippedUpdateVersionCode
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -203,6 +219,9 @@ struct AppSettings: Codable, Equatable {
         case checkForUpdatesOnLaunch
         case versionCheckURL
         case timeMachineWarningsEnabled
+        case updateCheckIntervalHours
+        case releaseInfoURL
+        case skippedUpdateVersionCode
     }
 
     init(from decoder: Decoder) throws {
@@ -226,6 +245,13 @@ struct AppSettings: Codable, Equatable {
         versionCheckURL = try container.decodeIfPresent(String.self, forKey: .versionCheckURL) ?? defaults.versionCheckURL
         timeMachineWarningsEnabled = try container.decodeIfPresent(Bool.self, forKey: .timeMachineWarningsEnabled)
             ?? defaults.timeMachineWarningsEnabled
+        let decodedInterval = (try? container.decodeIfPresent(Int.self, forKey: .updateCheckIntervalHours))
+            ?? defaults.updateCheckIntervalHours
+        updateCheckIntervalHours = Self.updateCheckIntervalRange.contains(decodedInterval)
+            ? decodedInterval
+            : defaults.updateCheckIntervalHours
+        releaseInfoURL = try container.decodeIfPresent(String.self, forKey: .releaseInfoURL) ?? defaults.releaseInfoURL
+        skippedUpdateVersionCode = try? container.decodeIfPresent(Int.self, forKey: .skippedUpdateVersionCode)
     }
 
     private static func decodeNonNegativeDouble(
@@ -249,6 +275,8 @@ enum AppSettingsValidationError: Equatable, LocalizedError {
     case invalidAtaIdleSeconds
     case invalidAtaStandby
     case invalidVersionCheckURL
+    case invalidUpdateCheckInterval
+    case invalidReleaseInfoURL
 
     var errorDescription: String? {
         switch self {
@@ -262,6 +290,10 @@ enum AppSettingsValidationError: Equatable, LocalizedError {
             return L10n.string("app_settings.error.ata_standby")
         case .invalidVersionCheckURL:
             return L10n.string("app_settings.error.version_url")
+        case .invalidUpdateCheckInterval:
+            return L10n.string("app_settings.error.update_interval")
+        case .invalidReleaseInfoURL:
+            return L10n.string("app_settings.error.release_url")
         }
     }
 }
@@ -417,6 +449,10 @@ struct AppSettingsDraft: Equatable {
     var checkForUpdatesOnLaunch: Bool
     var versionCheckURL: String
     var timeMachineWarningsEnabled: Bool
+    var updateCheckIntervalHours: String
+    var releaseInfoURL: String
+    /// Not editable in the form; carried through so saving the form keeps the skipped release.
+    private let skippedUpdateVersionCode: Int?
 
     init(settings: AppSettings) {
         language = settings.language
@@ -441,6 +477,9 @@ struct AppSettingsDraft: Equatable {
         checkForUpdatesOnLaunch = settings.checkForUpdatesOnLaunch
         versionCheckURL = settings.versionCheckURL
         timeMachineWarningsEnabled = settings.timeMachineWarningsEnabled
+        updateCheckIntervalHours = String(settings.updateCheckIntervalHours)
+        releaseInfoURL = settings.releaseInfoURL
+        skippedUpdateVersionCode = settings.skippedUpdateVersionCode
     }
 
     func validatedSettings() throws -> AppSettings {
@@ -467,6 +506,15 @@ struct AppSettingsDraft: Equatable {
         if !trimmedVersionURL.isEmpty, !Self.isHTTPURL(trimmedVersionURL) {
             throw AppSettingsValidationError.invalidVersionCheckURL
         }
+        guard let updateInterval = ValueParsers.nonNegativeInteger(updateCheckIntervalHours),
+              AppSettings.updateCheckIntervalRange.contains(updateInterval)
+        else {
+            throw AppSettingsValidationError.invalidUpdateCheckInterval
+        }
+        let trimmedReleaseURL = releaseInfoURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedReleaseURL.isEmpty, !Self.isHTTPURL(trimmedReleaseURL) {
+            throw AppSettingsValidationError.invalidReleaseInfoURL
+        }
 
         return AppSettings(
             language: language,
@@ -492,7 +540,10 @@ struct AppSettingsDraft: Equatable {
             showRawBackendEventsByDefault: showRawBackendEventsByDefault,
             checkForUpdatesOnLaunch: checkForUpdatesOnLaunch,
             versionCheckURL: trimmedVersionURL,
-            timeMachineWarningsEnabled: timeMachineWarningsEnabled
+            timeMachineWarningsEnabled: timeMachineWarningsEnabled,
+            updateCheckIntervalHours: updateInterval,
+            releaseInfoURL: trimmedReleaseURL,
+            skippedUpdateVersionCode: skippedUpdateVersionCode
         )
     }
 

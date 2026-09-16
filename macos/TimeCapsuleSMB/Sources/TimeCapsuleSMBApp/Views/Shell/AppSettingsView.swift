@@ -75,6 +75,14 @@ struct AppSettingsView: View {
                         TextField(L10n.string("value.auto"), text: $editor.draft.versionCheckURL)
                             .frame(maxWidth: 420)
                     }
+                    SettingsFormRow(title: L10n.string("app_settings.release_url")) {
+                        TextField(L10n.string("value.auto"), text: $editor.draft.releaseInfoURL)
+                            .frame(maxWidth: 420)
+                    }
+                    SettingsFormRow(title: L10n.string("app_settings.update_check_interval")) {
+                        TextField(String(AppSettings.defaultUpdateCheckIntervalHours), text: $editor.draft.updateCheckIntervalHours)
+                            .frame(maxWidth: 120)
+                    }
                     HStack(spacing: 10) {
                         Button {
                             appUpdateStore.checkNow(settings: appSettingsStore.settings)

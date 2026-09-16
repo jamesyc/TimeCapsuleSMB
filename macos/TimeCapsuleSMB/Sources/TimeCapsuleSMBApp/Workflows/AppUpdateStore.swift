@@ -27,20 +27,101 @@ enum AppUpdateState: String, Equatable {
     }
 }
 
+/// A newer release the app should offer to the user.
+struct UpdatePrompt: Identifiable, Equatable {
+    let versionCode: Int
+    let title: String
+    let tag: String?
+    let notes: String
+    let publishedDate: Date?
+    let htmlURL: URL?
+    let asset: ReleaseAssetPayload?
+    let isRequired: Bool
+
+    var id: Int {
+        versionCode
+    }
+
+    init(
+        versionCode: Int,
+        title: String,
+        tag: String?,
+        notes: String,
+        publishedDate: Date?,
+        htmlURL: URL?,
+        asset: ReleaseAssetPayload?,
+        isRequired: Bool
+    ) {
+        self.versionCode = versionCode
+        self.title = title
+        self.tag = tag
+        self.notes = notes
+        self.publishedDate = publishedDate
+        self.htmlURL = htmlURL
+        self.asset = asset
+        self.isRequired = isRequired
+    }
+
+    /// Nil when the payload does not describe a newer version.
+    init?(payload: UpdateCheckPayload) {
+        guard payload.updateAvailable || payload.shouldBlock, let versionCode = payload.currentVersion else {
+            return nil
+        }
+        self.init(
+            versionCode: versionCode,
+            title: payload.release?.name ?? payload.latestTag ?? String(versionCode),
+            tag: payload.release?.tag ?? payload.latestTag,
+            notes: payload.release?.notes ?? "",
+            publishedDate: payload.release?.publishedDate,
+            htmlURL: URL(string: payload.release?.htmlURL ?? payload.downloadURL),
+            asset: payload.release?.asset,
+            isRequired: payload.shouldBlock
+        )
+    }
+}
+
+enum ManualCheckOutcome: Equatable {
+    case upToDate(localVersionCode: Int)
+    case failed(String)
+}
+
+/// Schedules a repeating tick; returns a cancellable that stops it. Injectable for tests.
+typealias UpdateCheckScheduler = (_ interval: TimeInterval, _ tick: @escaping @MainActor () -> Void) -> AnyCancellable
+
 @MainActor
 final class AppUpdateStore: ObservableObject {
     @Published private(set) var state: AppUpdateState = .idle
-    @Published private(set) var payload: VersionCheckPayload?
+    @Published private(set) var payload: UpdateCheckPayload?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var currentStage: OperationStageState?
+    /// Non-nil while the release-notes sheet should be shown.
+    @Published private(set) var promptedRelease: UpdatePrompt?
+    /// Set only for manual checks that found nothing to prompt about, so the UI can confirm the check ran.
+    @Published var manualCheckOutcome: ManualCheckOutcome?
 
     let lane: OperationLane
 
-    private let operationObserver = BackendOperationObserver()
-    private var cancellables: Set<AnyCancellable> = []
+    nonisolated static let defaultScheduler: UpdateCheckScheduler = { interval, tick in
+        Timer.publish(every: interval, on: .main, in: .common)
+            .autoconnect()
+            .sink { _ in
+                Task { @MainActor in
+                    tick()
+                }
+            }
+    }
 
-    init(coordinator: OperationCoordinator) {
+    private let operationObserver = BackendOperationObserver()
+    private let scheduler: UpdateCheckScheduler
+    private var cancellables: Set<AnyCancellable> = []
+    private var timerCancellable: AnyCancellable?
+    private var lastSettings: AppSettings = .default
+    private var isManualCheck = false
+    private var dismissedVersionCode: Int?
+
+    init(coordinator: OperationCoordinator, scheduler: @escaping UpdateCheckScheduler = AppUpdateStore.defaultScheduler) {
         self.lane = coordinator.lane(for: .localPath("app-update"))
+        self.scheduler = scheduler
         lane.backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
@@ -60,14 +141,17 @@ final class AppUpdateStore: ObservableObject {
         lane.backend.isRunning
     }
 
-    func checkNow(settings: AppSettings) {
+    /// Runs `update-check`. Automatic checks that collide with a running check are dropped silently;
+    /// manual checks report the collision as an error.
+    func checkNow(settings: AppSettings, manual: Bool = false) {
+        lastSettings = settings
         guard !lane.isBusy else {
-            state = .failed
-            error = BackendErrorViewModel(
-                operation: "version-check",
-                code: "operation_rejected",
-                message: L10n.string("operation.error.already_running")
-            )
+            if manual {
+                let message = L10n.string("operation.error.already_running")
+                state = .failed
+                error = BackendErrorViewModel(operation: "update-check", code: "operation_rejected", message: message)
+                manualCheckOutcome = .failed(message)
+            }
             return
         }
         lane.clear()
@@ -76,21 +160,53 @@ final class AppUpdateStore: ObservableObject {
         payload = nil
         error = nil
         currentStage = nil
+        isManualCheck = manual
+        manualCheckOutcome = nil
 
-        let params = OperationParams.Readiness.versionCheck(url: settings.versionCheckURL)
-        switch lane.run(operation: "version-check", params: params, context: nil, activeDeviceID: nil) {
+        let params = OperationParams.Readiness.updateCheck(url: settings.versionCheckURL, releaseURL: settings.releaseInfoURL)
+        switch lane.run(operation: "update-check", params: params, context: nil, activeDeviceID: nil) {
         case .started(let operation):
             operationObserver.start(operation)
             process(lane.backend.events)
         case .rejected(let message):
             state = .failed
             operationObserver.clear()
-            error = BackendErrorViewModel(
-                operation: "version-check",
-                code: "operation_rejected",
-                message: message
-            )
+            error = BackendErrorViewModel(operation: "update-check", code: "operation_rejected", message: message)
+            if manual {
+                manualCheckOutcome = .failed(message)
+            }
         }
+    }
+
+    /// Starts (or restarts) the periodic check using `settings.updateCheckIntervalHours`.
+    func startAutomaticChecks(settings: AppSettings) {
+        lastSettings = settings
+        timerCancellable = scheduler(TimeInterval(settings.updateCheckIntervalHours) * 3600) { [weak self] in
+            guard let self, !self.lane.isBusy else {
+                return
+            }
+            self.checkNow(settings: self.lastSettings)
+        }
+    }
+
+    func stopAutomaticChecks() {
+        timerCancellable = nil
+    }
+
+    /// Hides the prompt for this release until the app relaunches.
+    func remindLater() {
+        dismissedVersionCode = promptedRelease?.versionCode
+        promptedRelease = nil
+    }
+
+    /// Hides the prompt and returns the version code to persist as skipped. Required updates cannot be skipped.
+    func skipVersion() -> Int? {
+        guard let prompt = promptedRelease, !prompt.isRequired else {
+            return nil
+        }
+        dismissedVersionCode = prompt.versionCode
+        promptedRelease = nil
+        return prompt.versionCode
     }
 
     private func process(_ events: [BackendEvent]) {
@@ -100,7 +216,7 @@ final class AppUpdateStore: ObservableObject {
     }
 
     private func handle(_ event: BackendEvent) {
-        guard event.operation == "version-check" else {
+        guard event.operation == "update-check" else {
             return
         }
         if let stage = OperationStageState(event: event) {
@@ -108,8 +224,12 @@ final class AppUpdateStore: ObservableObject {
             return
         }
         if event.type == "error" {
-            error = BackendErrorViewModel(event: event)
+            let viewModel = BackendErrorViewModel(event: event)
+            error = viewModel
             state = .failed
+            if isManualCheck {
+                manualCheckOutcome = .failed(viewModel.message)
+            }
             operationObserver.finish()
             return
         }
@@ -117,7 +237,7 @@ final class AppUpdateStore: ObservableObject {
             return
         }
         do {
-            let result = try event.decodePayload(VersionCheckPayload.self)
+            let result = try event.decodePayload(UpdateCheckPayload.self)
             payload = result
             if result.shouldBlock || result.updateAvailable {
                 state = .updateAvailable
@@ -127,15 +247,37 @@ final class AppUpdateStore: ObservableObject {
                 state = .current
             }
             error = nil
+            promptedRelease = prompt(for: result)
+            if isManualCheck, promptedRelease == nil {
+                manualCheckOutcome = result.source == "unavailable"
+                    ? .failed(result.localizedSummary)
+                    : .upToDate(localVersionCode: result.localVersionCode)
+            }
             operationObserver.finish()
         } catch {
-            self.error = BackendErrorViewModel(
-                operation: "version-check",
-                code: "contract_decode_failed",
-                message: error.localizedDescription
-            )
+            let message = error.localizedDescription
+            self.error = BackendErrorViewModel(operation: "update-check", code: "contract_decode_failed", message: message)
             state = .failed
+            if isManualCheck {
+                manualCheckOutcome = .failed(message)
+            }
             operationObserver.finish()
         }
+    }
+
+    private func prompt(for result: UpdateCheckPayload) -> UpdatePrompt? {
+        guard let prompt = UpdatePrompt(payload: result) else {
+            return nil
+        }
+        if prompt.isRequired || isManualCheck {
+            return prompt
+        }
+        if prompt.versionCode == lastSettings.skippedUpdateVersionCode {
+            return nil
+        }
+        if prompt.versionCode == dismissedVersionCode {
+            return nil
+        }
+        return prompt
     }
 }

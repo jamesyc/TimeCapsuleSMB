@@ -117,6 +117,12 @@ def version_check_payload(result: VersionCheckResult) -> dict[str, object]:
     })
 
 
+def update_check_payload(result: VersionCheckResult, release: object | None) -> dict[str, object]:
+    payload = version_check_payload(result)
+    payload["release"] = release
+    return payload
+
+
 def reachability_payload(result: ReachabilityResult) -> dict[str, object]:
     checks = jsonable(result.checks)
     if not isinstance(checks, list):

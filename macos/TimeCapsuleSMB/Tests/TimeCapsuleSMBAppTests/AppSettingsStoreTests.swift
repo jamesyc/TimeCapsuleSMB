@@ -370,6 +370,71 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(appearanceTitleAtPublication, "深色")
     }
 
+    func testUpdateSettingsDefaultsAndDecodeFallback() async throws {
+        XCTAssertEqual(AppSettings.default.updateCheckIntervalHours, 24)
+        XCTAssertEqual(AppSettings.default.releaseInfoURL, "")
+        XCTAssertNil(AppSettings.default.skippedUpdateVersionCode)
+
+        let temp = try TemporaryDirectory()
+        let url = temp.url.appendingPathComponent("settings.json")
+        try #"{"telemetryEnabled": false, "updateCheckIntervalHours": 0}"#.write(to: url, atomically: true, encoding: .utf8)
+        let store = AppSettingsStore(settingsURL: url)
+        await store.load()
+        XCTAssertEqual(store.state, .loaded)
+        XCTAssertFalse(store.settings.telemetryEnabled)
+        XCTAssertEqual(store.settings.updateCheckIntervalHours, 24, "out-of-range values fall back to the default")
+        XCTAssertEqual(store.settings.releaseInfoURL, "")
+        XCTAssertNil(store.settings.skippedUpdateVersionCode)
+    }
+
+    func testUpdateSettingsRoundTrip() async throws {
+        let temp = try TemporaryDirectory()
+        let url = temp.url.appendingPathComponent("settings.json")
+        var settings = AppSettings.default
+        settings.updateCheckIntervalHours = 6
+        settings.releaseInfoURL = "https://example.invalid/latest"
+        settings.skippedUpdateVersionCode = 30002
+        let store = AppSettingsStore(settingsURL: url)
+        try await store.save(settings)
+
+        let reloaded = AppSettingsStore(settingsURL: url)
+        await reloaded.load()
+        XCTAssertEqual(reloaded.settings, settings)
+    }
+
+    func testDraftValidatesUpdateInterval() throws {
+        var draft = AppSettingsDraft(settings: .default)
+        draft.updateCheckIntervalHours = "0"
+        XCTAssertThrowsError(try draft.validatedSettings()) { error in
+            XCTAssertEqual(error as? AppSettingsValidationError, .invalidUpdateCheckInterval)
+        }
+        draft.updateCheckIntervalHours = "721"
+        XCTAssertThrowsError(try draft.validatedSettings())
+        draft.updateCheckIntervalHours = "abc"
+        XCTAssertThrowsError(try draft.validatedSettings())
+        draft.updateCheckIntervalHours = "12"
+        XCTAssertEqual(try draft.validatedSettings().updateCheckIntervalHours, 12)
+    }
+
+    func testDraftValidatesReleaseURL() throws {
+        var draft = AppSettingsDraft(settings: .default)
+        draft.releaseInfoURL = "notaurl"
+        XCTAssertThrowsError(try draft.validatedSettings()) { error in
+            XCTAssertEqual(error as? AppSettingsValidationError, .invalidReleaseInfoURL)
+        }
+        draft.releaseInfoURL = "  https://example.invalid/latest  "
+        XCTAssertEqual(try draft.validatedSettings().releaseInfoURL, "https://example.invalid/latest")
+        draft.releaseInfoURL = ""
+        XCTAssertEqual(try draft.validatedSettings().releaseInfoURL, "")
+    }
+
+    func testDraftPreservesSkippedVersion() throws {
+        var settings = AppSettings.default
+        settings.skippedUpdateVersionCode = 30005
+        let draft = AppSettingsDraft(settings: settings)
+        XCTAssertEqual(try draft.validatedSettings().skippedUpdateVersionCode, 30005)
+    }
+
     private func telemetryPayload(enabled: Bool) -> JSONValue {
         .object([
             "schema_version": .number(1),

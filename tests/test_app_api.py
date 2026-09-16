@@ -984,6 +984,126 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(payload["source"], "network")
             self.assertEqual(payload["summary"], "Update required.")
 
+    def test_update_check_operation_merges_release_metadata(self) -> None:
+        from timecapsulesmb.services.release_info import ReleaseAsset, ReleaseInfo
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app_paths = SimpleNamespace(
+                version_check_cache_path=Path(tmp) / "version-cache.json",
+                release_info_cache_path=Path(tmp) / "release-cache.json",
+            )
+            collector = CollectingSink()
+            version = VersionCheckResult(
+                should_block=False,
+                checked_url="https://example.invalid/version.json",
+                local_version_code=30001,
+                current_version=30002,
+                min_supported_version=20121,
+                latest_tag="v3.0.1",
+                source="network",
+            )
+            release = ReleaseInfo(
+                tag="v3.0.1",
+                name="v3.0.1",
+                published_at="2026-10-01T00:00:00Z",
+                notes="- Fixes",
+                html_url="https://example.invalid/rel",
+                prerelease=False,
+                app_asset=ReleaseAsset(
+                    name="TimeCapsuleSMB.app.zip",
+                    size=10,
+                    download_url="https://example.invalid/app.zip",
+                    sha256="ab" * 32,
+                ),
+            )
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch("timecapsulesmb.app.ops.readiness.resolve_app_paths", return_value=app_paths)
+                )
+                check = stack.enter_context(
+                    mock.patch("timecapsulesmb.app.ops.readiness.check_client_version", return_value=version)
+                )
+                load = stack.enter_context(
+                    mock.patch("timecapsulesmb.app.ops.readiness.load_release_info", return_value=release)
+                )
+                rc = service.run_api_request(
+                    {
+                        "operation": "update-check",
+                        "params": {
+                            "url": "https://example.invalid/version.json",
+                            "release_url": "https://example.invalid/latest",
+                        },
+                    },
+                    collector.sink,
+                )
+            self.assertEqual(rc, 0)
+            check.assert_called_once_with(
+                url="https://example.invalid/version.json",
+                cache_path=app_paths.version_check_cache_path,
+            )
+            load.assert_called_once_with(
+                url="https://example.invalid/latest",
+                cache_path=app_paths.release_info_cache_path,
+            )
+            payload = self.assert_single_terminal_event(collector, "result")["payload"]
+            self.assertTrue(payload["update_available"])
+            self.assertFalse(payload["should_block"])
+            self.assertEqual(payload["current_version"], 30002)
+            self.assertEqual(payload["release"]["tag"], "v3.0.1")
+            self.assertEqual(payload["release"]["notes"], "- Fixes")
+            self.assertEqual(payload["release"]["asset"]["sha256"], "ab" * 32)
+            self.assertEqual(payload["summary"], "Update available.")
+            stages = [event["stage"] for event in collector.events_of_type("stage")]
+            self.assertEqual(stages, ["resolve_paths", "check_version", "fetch_release"])
+
+    def test_update_check_operation_tolerates_missing_release(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_paths = SimpleNamespace(
+                version_check_cache_path=Path(tmp) / "version-cache.json",
+                release_info_cache_path=Path(tmp) / "release-cache.json",
+            )
+            collector = CollectingSink()
+            version = VersionCheckResult(should_block=False, local_version_code=30001)
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch("timecapsulesmb.app.ops.readiness.resolve_app_paths", return_value=app_paths)
+                )
+                stack.enter_context(
+                    mock.patch("timecapsulesmb.app.ops.readiness.check_client_version", return_value=version)
+                )
+                load = stack.enter_context(
+                    mock.patch("timecapsulesmb.app.ops.readiness.load_release_info", return_value=None)
+                )
+                rc = service.run_api_request({"operation": "update-check"}, collector.sink)
+            self.assertEqual(rc, 0)
+            self.assertEqual(
+                load.call_args.kwargs["url"],
+                "https://api.github.com/repos/jamesyc/TimeCapsuleSMB/releases/latest",
+            )
+            payload = self.assert_single_terminal_event(collector, "result")["payload"]
+            self.assertIsNone(payload["release"])
+            self.assertEqual(payload["source"], "unavailable")
+            self.assertEqual(payload["summary"], "Version metadata is unavailable.")
+
+    def test_update_check_operation_rejects_bad_release_url(self) -> None:
+        collector = CollectingSink()
+        rc = service.run_api_request(
+            {"operation": "update-check", "params": {"release_url": "ftp://x"}},
+            collector.sink,
+        )
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertIn("release_url", error["message"])
+
+    def test_update_check_is_public_operation_with_stage_policies(self) -> None:
+        from timecapsulesmb.app.ops import public_operation_names
+        from timecapsulesmb.app.stage_policy import stage_policy
+
+        self.assertIn("update-check", public_operation_names())
+        for stage in ("resolve_paths", "check_version", "fetch_release"):
+            self.assertIsNotNone(stage_policy("update-check", stage), stage)
+
     def test_version_check_payload_reports_optional_update(self) -> None:
         payload = contracts.version_check_payload(
             VersionCheckResult(

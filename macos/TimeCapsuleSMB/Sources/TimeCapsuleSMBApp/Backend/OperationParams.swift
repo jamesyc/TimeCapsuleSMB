@@ -19,6 +19,15 @@ enum OperationParams {
             }
             return params
         }
+
+        static func updateCheck(url: String, releaseURL: String) -> [String: JSONValue] {
+            var params = versionCheck(url: url)
+            let trimmedReleaseURL = releaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedReleaseURL.isEmpty {
+                params["release_url"] = .string(trimmedReleaseURL)
+            }
+            return params
+        }
     }
 
     enum Discovery {

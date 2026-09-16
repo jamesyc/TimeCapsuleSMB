@@ -856,6 +856,38 @@ Default: off. Writes `server smb encrypt = required`, `server min protocol = SMB
 
 Default: off. Writes `server signing = disabled` and `server smb encrypt = off`. This may improve throughput when a client would otherwise require signing, but it weakens SMB transport security and cannot be combined with **Require SMB Encryption**.
 
+## macOS App Updates
+
+The app checks for new releases on launch (the existing "Check for updates on launch" setting) and
+then every **Check interval (hours)** while running (default 24, range 1–720). Automatic checks and
+the **TimeCapsuleSMB → Check for Updates…** menu item both run the helper's `update-check`
+operation, which combines the `version.json` check used by `version-check` with the latest GitHub
+release from `releases/latest`: release name, publish date, markdown notes, release page URL, and
+the `TimeCapsuleSMB.app.zip` asset with its SHA256 digest. `version.json` remains the authority for
+whether an update exists (`current_version` above the running version) or is required
+(`min_supported_version` above it); GitHub only supplies the notes and the download.
+
+When a newer version exists the app shows a sheet with the release notes and three actions:
+**Download** opens the release page, **Remind Me Later** hides the prompt until the next launch,
+and **Skip This Version** persists `skippedUpdateVersionCode` in `app-settings.json` so automatic
+checks stop offering that release. Required updates cannot be skipped. A manual check always shows
+the sheet when an update exists, and otherwise reports "You're up to date" or the failure reason.
+An automatic check that collides with a running check is dropped silently.
+
+Settings: **Release metadata URL** overrides the GitHub API URL (blank uses the default), which is
+useful for testing against a local JSON file served over HTTP. **Version metadata URL** keeps its
+existing meaning.
+
+Helper environment knobs (read at run time; defaults in parentheses; clamped):
+- `TCAPSULE_RELEASE_API_URL` (`https://api.github.com/repos/jamesyc/TimeCapsuleSMB/releases/latest`)
+- `TCAPSULE_RELEASE_TIMEOUT_SECONDS` (5, clamped to 1–60)
+- `TCAPSULE_RELEASE_CACHE_SECONDS` (10800, clamped to 0–604800)
+
+The release cache file is `.release-info-cache.json` in the helper state directory, next to
+`.version-check-cache.json`. Both caches record the URL they were fetched from and are ignored when
+the configured URL changes, so a new metadata URL takes effect on the next check rather than after
+the cache TTL.
+
 ## CLI Command Reference
 
 The CLI entrypoint is `tcapsule COMMAND [ARGS...]`. In a normal checkout the first command is usually run through the repo-local launcher:
@@ -1132,7 +1164,7 @@ Arguments:
 Arguments:
 - `--pretty-error`: also write request parsing errors to stderr for local debugging
 
-Known public app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `repair-xattrs`, `set-ssh`, `set-telemetry`, `uninstall`, `validate-install`, and `version-check`. The backend also accepts internal non-public operations such as `update-config-settings`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
+Known public app operations are `activate`, `capabilities`, `configure`, `deploy`, `discover`, `doctor`, `flash`, `fsck`, `reachability`, `repair-xattrs`, `set-ssh`, `set-telemetry`, `uninstall`, `update-check`, `validate-install`, and `version-check`. The backend also accepts internal non-public operations such as `update-config-settings`. This is not the normal human CLI surface; prefer the direct commands above unless you are integrating with the GUI helper contract.
 
 ## Local Test Coverage
 
