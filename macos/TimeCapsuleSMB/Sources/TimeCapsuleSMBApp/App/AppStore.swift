@@ -27,13 +27,31 @@ final class AppStore: ObservableObject {
 
     convenience init() {
         let coordinator = OperationCoordinator()
+        let appSettingsStore = AppSettingsStore()
+        let installer = AppUpdateInstaller(
+            environment: .production(
+                helperPathOverride: { [weak coordinator] in coordinator?.appLane.backend.helperPath ?? "" },
+                hasBlockingActivity: { [weak coordinator] in !(coordinator?.activeOperations.isEmpty ?? true) }
+            ),
+            downloader: URLSessionUpdateDownloader(additionalTrustedHosts: { [weak appSettingsStore] in
+                guard let appSettingsStore,
+                      let host = URLSessionUpdateDownloader.trustedHost(fromMetadataURL: appSettingsStore.settings.releaseInfoURL)
+                else {
+                    return []
+                }
+                return [host]
+            }),
+            processRunner: FoundationProcessRunner(),
+            relaunch: AppUpdateInstaller.relaunchAfterExit
+        )
         self.init(
             appReadinessStore: AppReadinessStore(backend: coordinator.appLane.backend),
-            appSettingsStore: AppSettingsStore(),
+            appSettingsStore: appSettingsStore,
             deviceRegistry: DeviceRegistryStore(),
             operationCoordinator: coordinator,
             passwordStore: KeychainPasswordStore(),
             activityStore: ActivityStore(coordinator: coordinator),
+            appUpdateStore: AppUpdateStore(coordinator: coordinator, installer: installer),
             localNetworkPreflightChecker: BonjourLocalNetworkPreflightChecker()
         )
     }
@@ -116,6 +134,7 @@ final class AppStore: ObservableObject {
     }
 
     func start() async {
+        AppUpdateInstaller.cleanupStaleDownloads(in: InstallEnvironment.productionUpdatesDirectory)
         await appSettingsStore.load()
         applyAppSettings(appSettingsStore.settings)
         await deviceRegistry.load()

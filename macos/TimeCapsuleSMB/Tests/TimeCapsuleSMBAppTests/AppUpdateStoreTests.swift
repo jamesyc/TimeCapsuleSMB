@@ -12,6 +12,7 @@ final class AppUpdateStoreTests: XCTestCase {
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = AppUpdateStore(coordinator: coordinator)
+        store.markUIReady()
         var settings = AppSettings.default
         settings.versionCheckURL = "https://example.invalid/version.json"
         settings.releaseInfoURL = "https://example.invalid/latest"
@@ -35,6 +36,7 @@ final class AppUpdateStoreTests: XCTestCase {
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = AppUpdateStore(coordinator: coordinator)
+        store.markUIReady()
         let finishPublished = expectation(description: "AppUpdateStore publishes after backend running state clears")
         var didFulfill = false
         var cancellables: Set<AnyCancellable> = []
@@ -68,6 +70,7 @@ final class AppUpdateStoreTests: XCTestCase {
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = AppUpdateStore(coordinator: coordinator)
+        store.markUIReady()
 
         store.checkNow(settings: .default)
 
@@ -94,6 +97,7 @@ final class AppUpdateStoreTests: XCTestCase {
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = AppUpdateStore(coordinator: coordinator)
+        store.markUIReady()
 
         store.checkNow(settings: .default)
 
@@ -121,6 +125,7 @@ final class AppUpdateStoreTests: XCTestCase {
             ])
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
 
         store.checkNow(settings: .default)
 
@@ -139,6 +144,7 @@ final class AppUpdateStoreTests: XCTestCase {
             .init(events: [BackendEvent(type: "result", operation: "update-check", ok: true, payload: payload)])
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
 
         store.checkNow(settings: .default)
         try await waitUntilStoreState { store.promptedRelease != nil }
@@ -158,6 +164,7 @@ final class AppUpdateStoreTests: XCTestCase {
             .init(events: [BackendEvent(type: "result", operation: "update-check", ok: true, payload: payload)])
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
         var settings = AppSettings.default
         settings.skippedUpdateVersionCode = 30002
 
@@ -178,6 +185,7 @@ final class AppUpdateStoreTests: XCTestCase {
             .init(events: [BackendEvent(type: "result", operation: "update-check", ok: true, payload: payload)])
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
         var settings = AppSettings.default
         settings.skippedUpdateVersionCode = 30002
 
@@ -196,6 +204,7 @@ final class AppUpdateStoreTests: XCTestCase {
             ])
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
 
         store.checkNow(settings: .default, manual: true)
 
@@ -211,6 +220,7 @@ final class AppUpdateStoreTests: XCTestCase {
             ])
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
 
         store.checkNow(settings: .default, manual: true)
 
@@ -228,6 +238,7 @@ final class AppUpdateStoreTests: XCTestCase {
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let store = AppUpdateStore(coordinator: coordinator)
+        store.markUIReady()
 
         store.checkNow(settings: .default)
         try await waitUntilStoreState { runner.calls.count == 1 && store.isChecking }
@@ -244,6 +255,7 @@ final class AppUpdateStoreTests: XCTestCase {
             .init(events: [], pauseBeforeEvents: true)
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
 
         store.checkNow(settings: .default)
         try await waitUntilStoreState { runner.calls.count == 1 && store.isChecking }
@@ -269,6 +281,7 @@ final class AppUpdateStoreTests: XCTestCase {
             ])
         ])
         let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)), scheduler: scheduler)
+        store.markUIReady()
         var settings = AppSettings.default
         settings.updateCheckIntervalHours = 6
 
@@ -294,6 +307,88 @@ final class AppUpdateStoreTests: XCTestCase {
         store.stopAutomaticChecks()
         XCTAssertEqual(cancelCount, 2)
         runner.finishAll()
+    }
+
+    func testInstallForwardsToInstallerAndRemindLaterResetsIt() async throws {
+        let payload = updateCheckPayload(shouldBlock: false, updateAvailable: true, currentVersion: 30002)
+        let runner = StoreTestRunner(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "update-check", ok: true, payload: payload)])
+        ])
+        let temp = try TemporaryDirectory()
+        let installer = AppUpdateInstaller(
+            environment: InstallEnvironment(
+                bundleURL: temp.url.appendingPathComponent("TimeCapsuleSMB.app"),
+                updatesDirectory: temp.url.appendingPathComponent("updates"),
+                bundleIdentifier: "com.timecapsulesmb.TimeCapsuleSMB",
+                expectedTeamID: nil,
+                runtimeMode: { .developmentCheckout },
+                hasBlockingActivity: { false }
+            ),
+            downloader: NoopDownloader(),
+            processRunner: NoopRunner(),
+            relaunch: { _ in }
+        )
+        let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)), installer: installer)
+        store.markUIReady()
+
+        XCTAssertNil(store.installUnavailableReason(), "no prompt means nothing to report")
+        store.checkNow(settings: .default)
+        try await waitUntilStoreState { store.promptedRelease != nil }
+        XCTAssertEqual(store.installUnavailableReason(), "In-app updates are unavailable when running from a source checkout.")
+
+        await store.install()
+        guard case .failed(.unsupported) = store.installState else {
+            return XCTFail("unexpected install state \(store.installState)")
+        }
+
+        store.remindLater()
+        XCTAssertEqual(store.installState, .idle)
+    }
+
+    func testStoreWithoutInstallerReportsInstallUnavailable() async throws {
+        let payload = updateCheckPayload(shouldBlock: false, updateAvailable: true, currentVersion: 30002)
+        let runner = StoreTestRunner(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "update-check", ok: true, payload: payload)])
+        ])
+        let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+        store.markUIReady()
+
+        store.checkNow(settings: .default)
+        try await waitUntilStoreState { store.promptedRelease != nil }
+
+        XCTAssertNotNil(store.installUnavailableReason())
+        await store.install()
+        XCTAssertEqual(store.installState, .idle)
+    }
+
+    private struct NoopDownloader: UpdateDownloading {
+        func download(_ url: URL, to destination: URL, expectedSize: Int?, progress: @escaping @Sendable (Double) -> Void) async throws {}
+    }
+
+    private struct NoopRunner: ProcessRunning {
+        func run(_ executable: String, _ arguments: [String]) async throws -> ProcessOutput {
+            ProcessOutput(exitCode: 0, stdout: "", stderr: "")
+        }
+    }
+
+    func testPromptIsHeldUntilUIIsReady() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "update-check", ok: true,
+                             payload: updateCheckPayload(shouldBlock: false, updateAvailable: true, currentVersion: 30002))
+            ])
+        ])
+        let store = AppUpdateStore(coordinator: OperationCoordinator(backend: BackendClient(runner: runner)))
+
+        store.checkNow(settings: .default)
+        try await waitUntilStoreState { store.state == .updateAvailable && !store.isChecking }
+        XCTAssertNil(store.promptedRelease, "prompt must wait for the window")
+
+        store.markUIReady()
+
+        XCTAssertEqual(store.promptedRelease?.versionCode, 30002)
+        store.markUIReady()
+        XCTAssertEqual(store.promptedRelease?.versionCode, 30002, "repeat calls are harmless")
     }
 
     private func updateCheckPayload(

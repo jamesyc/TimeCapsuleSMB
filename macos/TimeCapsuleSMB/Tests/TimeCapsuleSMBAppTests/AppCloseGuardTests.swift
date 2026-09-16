@@ -35,6 +35,20 @@ final class AppCloseGuardTests: XCTestCase {
         XCTAssertEqual(presenter.prompts, [.activeOperation, .activeOperation])
     }
 
+    func testAllowTerminationBypassesQuitConfirmation() {
+        let guardController = AppCloseGuard()
+        let presenter = RecordingCloseGuardPresenter()
+        guardController.configure { true }
+        guardController.presenter = presenter
+        let delegate = AppCloseGuardApplicationDelegate()
+        delegate.closeGuard = guardController
+
+        guardController.allowTermination()
+
+        XCTAssertEqual(delegate.applicationShouldTerminate(.shared), .terminateNow)
+        XCTAssertTrue(presenter.requests.isEmpty)
+    }
+
     func testConfirmedWindowCloseClosesWindowDirectly() {
         let guardController = AppCloseGuard()
         let presenter = RecordingCloseGuardPresenter()

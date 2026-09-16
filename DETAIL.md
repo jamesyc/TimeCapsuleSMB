@@ -846,6 +846,27 @@ The release cache file is `.release-info-cache.json` in the helper state directo
 the configured URL changes, so a new metadata URL takes effect on the next check rather than after
 the cache TTL.
 
+### In-app install
+
+When the release carries a `TimeCapsuleSMB.app.zip` asset with a SHA256 digest and the app runs
+as a packaged bundle from a writable location, the sheet offers **Install Update**. The app
+downloads the zip to `~/Library/Application Support/TimeCapsuleSMB/updates/<version>/` (only from
+`github.com`, the GitHub asset CDN hosts, or the host of a configured **Release metadata URL**
+override, since that server already supplies the digest), then in order: verifies the SHA256 against the GitHub
+digest, expands with `ditto -x -k`, checks that exactly one `.app` with the same bundle identifier
+and the expected `CFBundleVersion` was produced, runs `codesign --verify --deep --strict`, requires
+the new bundle's `TeamIdentifier` to equal the running app's, and requires
+`spctl --assess --type execute` to accept it. Only then is the running bundle moved to the Trash,
+the new bundle moved into place, and the app relaunched (a detached shell waits for the current
+process to exit and then runs `open`). Quarantine attributes are never modified; notarized
+releases pass Gatekeeper on their own.
+
+Any failure leaves the current install untouched and the sheet shows the reason with a
+**Download** fallback. Install is unavailable, and Download offered instead, when running from a
+source checkout, from a read-only location, while device operations are running, when the release
+has no digest-bearing app asset, or when the running app has no Team ID (ad-hoc development
+builds). Leftover download directories are removed on the next launch.
+
 ## CLI Command Reference
 
 The CLI entrypoint is `tcapsule COMMAND [ARGS...]`. In a normal checkout the first command is usually run through the repo-local launcher:
