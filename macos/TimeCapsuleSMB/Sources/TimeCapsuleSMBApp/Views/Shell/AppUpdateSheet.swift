@@ -5,19 +5,67 @@ import SwiftUI
 struct AppUpdateSheet: View {
     let prompt: UpdatePrompt
     let isChecking: Bool
+    var installState: InstallState = .idle
+    /// Nil when Install Update is available; otherwise shown as the reason Download is offered instead.
+    var installUnavailableReason: String? = nil
     let onDownload: () -> Void
     let onRemindLater: () -> Void
     let onSkip: () -> Void
+    var onInstall: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             Divider()
             notes
+            installStatus
             footer
         }
         .padding(20)
         .frame(minWidth: 520, idealWidth: 560, minHeight: 420, idealHeight: 520)
+    }
+
+    private var canInstall: Bool {
+        installUnavailableReason == nil
+    }
+
+    @ViewBuilder
+    private var installStatus: some View {
+        switch installState {
+        case .idle:
+            if let reason = installUnavailableReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .downloading(let fraction):
+            VStack(alignment: .leading, spacing: 4) {
+                ProgressView(value: fraction)
+                Text(L10n.format("app_update.install.downloading", Int(fraction * 100)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .verifying:
+            installProgressRow(L10n.string("app_update.install.verifying"))
+        case .installing:
+            installProgressRow(L10n.string("app_update.install.installing"))
+        case .readyToRelaunch:
+            installProgressRow(L10n.string("app_update.install.relaunching"))
+        case .failed(let failure):
+            Text(failure.localizedMessage)
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private func installProgressRow(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var header: some View {
@@ -63,13 +111,28 @@ struct AppUpdateSheet: View {
         HStack {
             if !prompt.isRequired {
                 Button(L10n.string("app_update.sheet.skip"), action: onSkip)
+                    .disabled(installState.isActive)
             }
             Spacer()
             Button(L10n.string("app_update.sheet.remind_later"), action: onRemindLater)
                 .keyboardShortcut(.cancelAction)
-            Button(L10n.string("app_update.sheet.download"), action: onDownload)
-                .keyboardShortcut(.defaultAction)
-                .disabled(prompt.htmlURL == nil || isChecking)
+                .disabled(installState.isActive)
+            if canInstall, !isInstallFailed {
+                Button(L10n.string("app_update.sheet.install"), action: onInstall)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isChecking || installState.isActive)
+            } else {
+                Button(L10n.string("app_update.sheet.download"), action: onDownload)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(prompt.htmlURL == nil || isChecking || installState.isActive)
+            }
         }
+    }
+
+    private var isInstallFailed: Bool {
+        if case .failed = installState {
+            return true
+        }
+        return false
     }
 }

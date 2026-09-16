@@ -79,6 +79,16 @@ Do not run underscore-prefixed helper scripts directly.
 
 The macOS app packaging flow supports Developer ID signing and notarization when the relevant signing environment is configured. A public release should state whether the attached app zip is notarized. When notarization is enabled, the package validation step should complete successfully before the release asset is uploaded.
 
+### App self-update requirements
+
+The macOS app installs updates in place only from releases that keep these properties:
+
+- the asset is named exactly `TimeCapsuleSMB.app.zip` and is created with `ditto -c -k --keepParent` (the `--zip` packaging flag does this);
+- the bundle is Developer ID signed with the same Team ID as the previous release and notarized with the ticket stapled (`package_app.py --notarize`);
+- `CFBundleVersion` equals `CLI_VERSION_CODE`, and `version.json` `current_version` is updated to the same value.
+
+A release missing any of these still appears in the app's update prompt with its release notes, but the app offers **Download** instead of **Install Update**. See the "macOS App Updates" section of `DETAIL.md` for the verification chain.
+
 ## Release Checklist
 
 - Update `version.json` and `pyproject.toml` to the release version.

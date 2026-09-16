@@ -100,6 +100,8 @@ final class AppUpdateStore: ObservableObject {
     @Published var manualCheckOutcome: ManualCheckOutcome?
 
     let lane: OperationLane
+    /// Nil when in-app install is not wired (tests, previews).
+    let installer: AppUpdateInstaller?
 
     nonisolated static let defaultScheduler: UpdateCheckScheduler = { interval, tick in
         Timer.publish(every: interval, on: .main, in: .common)
@@ -118,10 +120,24 @@ final class AppUpdateStore: ObservableObject {
     private var lastSettings: AppSettings = .default
     private var isManualCheck = false
     private var dismissedVersionCode: Int?
+    /// SwiftUI drops a sheet requested before the window is key and never retries, so prompts are
+    /// held here until `markUIReady()` is called.
+    private var isUIReady = false
+    private var pendingPrompt: UpdatePrompt?
 
-    init(coordinator: OperationCoordinator, scheduler: @escaping UpdateCheckScheduler = AppUpdateStore.defaultScheduler) {
+    init(
+        coordinator: OperationCoordinator,
+        installer: AppUpdateInstaller? = nil,
+        scheduler: @escaping UpdateCheckScheduler = AppUpdateStore.defaultScheduler
+    ) {
         self.lane = coordinator.lane(for: .localPath("app-update"))
+        self.installer = installer
         self.scheduler = scheduler
+        installer?.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
         lane.backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
@@ -193,8 +209,40 @@ final class AppUpdateStore: ObservableObject {
         timerCancellable = nil
     }
 
+    /// Called once the main window can present sheets; publishes any prompt that arrived earlier.
+    func markUIReady() {
+        isUIReady = true
+        if let pending = pendingPrompt {
+            pendingPrompt = nil
+            promptedRelease = pending
+        }
+    }
+
+    var installState: InstallState {
+        installer?.state ?? .idle
+    }
+
+    /// Nil when the prompted release can be installed in place; otherwise the reason to offer Download instead.
+    func installUnavailableReason() -> String? {
+        guard let prompt = promptedRelease else {
+            return nil
+        }
+        guard let installer else {
+            return L10n.string("app_update.install.unsupported.dev_checkout")
+        }
+        return installer.canInstall(prompt)
+    }
+
+    func install() async {
+        guard let prompt = promptedRelease, let installer else {
+            return
+        }
+        await installer.install(prompt)
+    }
+
     /// Hides the prompt for this release until the app relaunches.
     func remindLater() {
+        installer?.reset()
         dismissedVersionCode = promptedRelease?.versionCode
         promptedRelease = nil
     }
@@ -247,8 +295,14 @@ final class AppUpdateStore: ObservableObject {
                 state = .current
             }
             error = nil
-            promptedRelease = prompt(for: result)
-            if isManualCheck, promptedRelease == nil {
+            let nextPrompt = prompt(for: result)
+            if isUIReady {
+                promptedRelease = nextPrompt
+            } else {
+                pendingPrompt = nextPrompt
+                promptedRelease = nil
+            }
+            if isManualCheck, nextPrompt == nil {
                 manualCheckOutcome = result.source == "unavailable"
                     ? .failed(result.localizedSummary)
                     : .upToDate(localVersionCode: result.localVersionCode)
