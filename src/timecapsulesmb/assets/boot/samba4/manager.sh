@@ -607,6 +607,17 @@ $xattr_record_key"
     fi
 }
 
+tc_manager_record_migrated_xattr_volumes() {
+    xattr_record_keys=$1
+
+    while IFS= read -r xattr_record_key || [ -n "$xattr_record_key" ]; do
+        [ -n "$xattr_record_key" ] || continue
+        tc_manager_record_migrated_xattr_volume "$xattr_record_key" || return 1
+    done <<EOF
+$xattr_record_keys
+EOF
+}
+
 tc_manager_pending_xattr_volume_mounted() {
     pending_topology_rows=$1
 
@@ -694,6 +705,10 @@ EOF
     migration_wrapper=/mnt/Flash/migrate.sh
     if [ ! -f "$migration_tdb" ]; then
         tc_log "metadata migration skipped: no legacy TDB at $migration_tdb"
+        # These volumes have nothing to migrate. Record them as done, or
+        # tc_manager_pending_xattr_volume_mounted would report them as newly
+        # available on every pass and the manager would restart mDNS each time.
+        tc_manager_record_migrated_xattr_volumes "$migration_volume_keys" || return 1
         return 0
     fi
     migration_metadata=stream
@@ -760,12 +775,7 @@ EOF
         return 1
     fi
     tc_log "boot metadata migration complete status=0"
-    while IFS= read -r completed_xattr_key || [ -n "$completed_xattr_key" ]; do
-        [ -n "$completed_xattr_key" ] || continue
-        tc_manager_record_migrated_xattr_volume "$completed_xattr_key" || return 1
-    done <<EOF
-$migration_volume_keys
-EOF
+    tc_manager_record_migrated_xattr_volumes "$migration_volume_keys"
 }
 
 tc_manager_apply_runtime_from_topology() {

@@ -233,6 +233,57 @@ done
     assert not (m.root / "tc-xattr-hfs-migrate").exists()
 
 
+def test_boot_migration_without_tdb_marks_mounted_volumes_complete(migration):
+    # A payload with no legacy TDB has nothing to migrate. The manager must still
+    # record the mounted volumes as done, or every later pass would treat them as
+    # newly available migration volumes and restart the mDNS advertiser.
+    m = migration
+    m.tdb.unlink()
+    library = manager_library(m.root)
+    rows = "\n".join(
+        f"wd0\t1\tdk{i+2}\t{v.volume_root}\tData\tuuid-{i}"
+        for i, v in enumerate(m.volumes)
+    )
+    script = f'''
+set -eu
+. {shlex.quote(str(library))}
+TC_BOOT_XATTR_MIGRATION=1
+TC_TAB=$(printf '\\t')
+TC_LOG_FILE={shlex.quote(str(m.root / 'boot.log'))}
+TC_RESOLVED_PAYLOAD_DIR={shlex.quote(str(m.helper.parent))}
+FRUIT_METADATA_NETATALK=1
+rows={shlex.quote(rows)}
+tc_log() {{ printf '%s\\n' "$*"; }}
+is_volume_root_mounted() {{ [ "$1" = {shlex.quote(m.volumes[0].volume_root)} ]; }}
+if tc_manager_pending_xattr_volume_mounted "$rows"; then echo pending=1; else echo pending=0; fi
+tc_manager_migrate_boot_xattrs "$rows"
+if tc_manager_pending_xattr_volume_mounted "$rows"; then echo pending=1; else echo pending=0; fi
+tc_manager_migrate_boot_xattrs "$rows"
+is_volume_root_mounted() {{ return 0; }}
+if tc_manager_pending_xattr_volume_mounted "$rows"; then echo pending=1; else echo pending=0; fi
+tc_manager_migrate_boot_xattrs "$rows"
+if tc_manager_pending_xattr_volume_mounted "$rows"; then echo pending=1; else echo pending=0; fi
+'''
+    result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    unavailable = f"metadata migration pending for unavailable volume: device=/dev/dk3 root={m.volumes[1].volume_root}"
+    assert result.stdout.splitlines() == [
+        "pending=1",
+        unavailable,
+        f"metadata migration selected roots count=1 roots={m.volumes[0].volume_root}",
+        f"metadata migration skipped: no legacy TDB at {m.tdb}",
+        "pending=0",
+        unavailable,
+        "metadata migration skipped: no mounted pending roots",
+        # the second volume becomes mounted later and is handled exactly once
+        "pending=1",
+        f"metadata migration selected roots count=1 roots={m.volumes[1].volume_root}",
+        f"metadata migration skipped: no legacy TDB at {m.tdb}",
+        "pending=0",
+    ]
+    assert not m.calls.exists() and m.helper.exists()
+
+
 def test_boot_migration_failure_withholds_share_state(migration):
     m = migration
     library = manager_library(m.root)
