@@ -146,8 +146,8 @@ derive_airport_fields() {
 
     AIRPORT_INSTANCE_NAME=$(get_airport_system_name || true)
     AIRPORT_WAMA=
-    AIRPORT_RAMA=$(get_radio_mac bwl0 || true)
-    AIRPORT_RAM2=$(get_radio_mac bwl1 || true)
+    AIRPORT_RAMA=$(get_radio_mac bwl0 || get_radio_mac ath0 || true)
+    AIRPORT_RAM2=$(get_radio_mac bwl1 || get_radio_mac ath1 || true)
     AIRPORT_RAST=$(get_airport_rast || true)
     AIRPORT_RANA=$(get_airport_rana || true)
     AIRPORT_SYFL=$(get_airport_syfl || true)

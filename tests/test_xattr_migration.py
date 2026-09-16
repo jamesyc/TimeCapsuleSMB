@@ -361,6 +361,36 @@ if tc_manager_migrate_boot_xattrs "$rows"; then exit 8; fi
     assert not (m.root / "tc-xattr-hfs-migrate").exists()
 
 
+def test_boot_migration_missing_tdb_records_volume_as_done(migration):
+    m = migration
+    library = manager_library(m.root)
+    m.tdb.unlink()
+    rows = "\n".join(
+        f"wd0\t1\tdk{i+2}\t{v.volume_root}\tData\tuuid-{i}"
+        for i, v in enumerate(m.volumes)
+    )
+    script = f'''
+set -eu
+. {shlex.quote(str(library))}
+TC_BOOT_XATTR_MIGRATION=1
+TC_TAB=$(printf '\t')
+TC_LOG_FILE={shlex.quote(str(m.root / 'boot.log'))}
+TC_RESOLVED_PAYLOAD_DIR={shlex.quote(str(m.helper.parent))}
+FRUIT_METADATA_NETATALK=1
+rows={shlex.quote(rows)}
+tc_log() {{ :; }}
+is_volume_root_mounted() {{ return 0; }}
+tc_manager_migrate_boot_xattrs "$rows"
+tc_manager_migrate_boot_xattrs "$rows"
+if tc_manager_pending_xattr_volume_mounted "$rows"; then exit 9; fi
+'''
+    result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert not m.calls.exists()
+    assert not (m.root / "tc-xattr-hfs-migrate").exists()
+    assert m.helper.exists() and not m.tdb.exists()
+
+
 def test_boot_migration_skips_offline_volume_then_migrates_it_when_mounted(migration):
     m = migration
     library = manager_library(m.root)

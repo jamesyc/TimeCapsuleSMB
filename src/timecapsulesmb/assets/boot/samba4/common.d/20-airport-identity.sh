@@ -1,10 +1,19 @@
 get_radio_mac() {
     radio_iface=$1
-    /sbin/ifconfig "$radio_iface" 2>/dev/null \
+    radio_mac=$(/sbin/ifconfig "$radio_iface" 2>/dev/null \
         | sed -n \
             -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
             -e 's/^[[:space:]]*address:*[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-        | sed -n '1p'
+        | sed -n '1p')
+    case "$radio_mac" in
+        ??:??:??:??:??:??)
+            printf '%s\n' "$radio_mac"
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 get_airport_srcv() {
