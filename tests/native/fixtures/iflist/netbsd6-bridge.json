@@ -1,0 +1,136 @@
+{
+  "source_path": "plan/spike-2026-09-16/iflist6.bin",
+  "source_sha256": "8cfbd0b8d59c124dda9fbc684b0231cef5e563bbbb51ca184024cd3c6bd961cf",
+  "source_bytes": 3048,
+  "fixture_sha256": "bf74661b7d9c96748b1e07e53fb8255b96751eb80ac0f0caf7135e00168bbcb5",
+  "rtm_version": 4,
+  "layout": {
+    "ifinfo": 20,
+    "ifa_hdr": 24,
+    "ifam_index": 16,
+    "roundup": 8
+  },
+  "firmware": "7.9.1",
+  "lane": "netbsd6",
+  "device": "AirPort Time Capsule (syAP=119), NetBSD 6.0, bridge mode",
+  "plan_section": "v3.1-implementation-guide F4 (layout differs from the guide: RTM_VERSION 4, RTM_IFINFO 0x14, ifa_msghdr 24 bytes, RT_ROUNDUP 8)",
+  "expectation": "observed",
+  "completeness": "complete",
+  "observer": "device (sysctl NET_RT_IFLIST raw dump, plan/spike-2026-09-16/iflist.c built for the NetBSD 6 lane)",
+  "sanitization": {
+    "mac_map": {
+      "80:ea:96:e6:58:68": "02:00:00:00:00:01",
+      "80:ea:96:eb:2e:7d": "02:00:00:00:00:02",
+      "80:ea:96:eb:2e:7c": "02:00:00:00:00:03",
+      "ac:de:48:56:1d:83": "02:00:00:00:00:04"
+    },
+    "ipv4_map": {
+      "192.168.1.0/24": "192.0.2.0/24"
+    },
+    "ipv6_prefix_map": {
+      "2600:1700:83b7:20f::/64": "2001:db8:0:1::/64"
+    }
+  },
+  "expected": {
+    "links": [
+      {
+        "name": "bcmeth1",
+        "index": 1,
+        "flags": 4294961154
+      },
+      {
+        "name": "bcmeth0",
+        "index": 2,
+        "flags": 4294961475
+      },
+      {
+        "name": "lo0",
+        "index": 3,
+        "flags": 4294934601
+      },
+      {
+        "name": "bwl0",
+        "index": 4,
+        "flags": 4294936675
+      },
+      {
+        "name": "bwl1",
+        "index": 5,
+        "flags": 4294936675
+      },
+      {
+        "name": "wlan0",
+        "index": 10,
+        "flags": 4294961507
+      },
+      {
+        "name": "wlan1",
+        "index": 11,
+        "flags": 4294961507
+      },
+      {
+        "name": "vlan0",
+        "index": 12,
+        "flags": 4294961475
+      },
+      {
+        "name": "bridge0",
+        "index": 13,
+        "flags": 4294959171
+      },
+      {
+        "name": "bridge1",
+        "index": 14,
+        "flags": 4294959171
+      }
+    ],
+    "addrs": [
+      {
+        "owner_index": 3,
+        "family": "inet",
+        "addr": "127.0.0.1",
+        "prefix": 8
+      },
+      {
+        "owner_index": 3,
+        "family": "inet6",
+        "addr": "::1",
+        "scope": 0,
+        "prefix": 128
+      },
+      {
+        "owner_index": 3,
+        "family": "inet6",
+        "addr": "fe80::1",
+        "scope": 3,
+        "prefix": 64
+      },
+      {
+        "owner_index": 13,
+        "family": "inet6",
+        "addr": "fe80::ff:fe00:1",
+        "scope": 13,
+        "prefix": 64
+      },
+      {
+        "owner_index": 13,
+        "family": "inet",
+        "addr": "192.0.2.218",
+        "prefix": 24
+      },
+      {
+        "owner_index": 13,
+        "family": "inet6",
+        "addr": "2001:db8:0:1:0:ff:fe00:1",
+        "scope": 0,
+        "prefix": 64
+      },
+      {
+        "owner_index": 13,
+        "family": "inet",
+        "addr": "169.254.155.207",
+        "prefix": 16
+      }
+    ]
+  }
+}

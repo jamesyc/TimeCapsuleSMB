@@ -1,0 +1,136 @@
+{
+  "source_path": "plan/spike-2026-09-16/iflist.bin",
+  "source_sha256": "32fcd1c80e100e5257fbb47a506cb8db5ef4ed33cb476efee8d66a19a5753421",
+  "source_bytes": 2244,
+  "fixture_sha256": "8c2ce0f140fa6fbbfec6b2e794c2833c54104014651936771b724be2817e3457",
+  "rtm_version": 3,
+  "layout": {
+    "ifinfo": 15,
+    "ifa_hdr": 20,
+    "ifam_index": 12,
+    "roundup": 4
+  },
+  "firmware": "7.8.1",
+  "lane": "netbsd4le",
+  "device": "AirPort Time Capsule (syAP=116), NetBSD 4.0_STABLE, bridge mode",
+  "plan_section": "v3.1-implementation-guide F4; mdns-redesign M17",
+  "expectation": "observed",
+  "completeness": "complete",
+  "observer": "device (sysctl NET_RT_IFLIST raw dump, plan/spike-2026-09-16/iflist.c)",
+  "sanitization": {
+    "mac_map": {
+      "e8:8d:28:58:f1:5c": "02:00:00:00:00:01",
+      "e8:8d:28:61:9b:7d": "02:00:00:00:00:02",
+      "e8:8d:28:61:9b:7e": "02:00:00:00:00:03",
+      "ac:de:48:99:7c:35": "02:00:00:00:00:04"
+    },
+    "ipv4_map": {
+      "192.168.1.0/24": "192.0.2.0/24"
+    },
+    "ipv6_prefix_map": {
+      "2600:1700:83b7:20f::/64": "2001:db8:0:1::/64"
+    }
+  },
+  "expected": {
+    "links": [
+      {
+        "name": "mgi0",
+        "index": 1,
+        "flags": 59715
+      },
+      {
+        "name": "mgi1",
+        "index": 2,
+        "flags": 59394
+      },
+      {
+        "name": "bwl0",
+        "index": 3,
+        "flags": 34883
+      },
+      {
+        "name": "bwl1",
+        "index": 4,
+        "flags": 34883
+      },
+      {
+        "name": "lo0",
+        "index": 5,
+        "flags": 32841
+      },
+      {
+        "name": "wlan0",
+        "index": 6,
+        "flags": 59715
+      },
+      {
+        "name": "wlan1",
+        "index": 7,
+        "flags": 59715
+      },
+      {
+        "name": "vlan0",
+        "index": 8,
+        "flags": 59715
+      },
+      {
+        "name": "bridge0",
+        "index": 9,
+        "flags": 57411
+      },
+      {
+        "name": "bridge1",
+        "index": 10,
+        "flags": 57346
+      }
+    ],
+    "addrs": [
+      {
+        "owner_index": 5,
+        "family": "inet",
+        "addr": "127.0.0.1",
+        "prefix": 8
+      },
+      {
+        "owner_index": 5,
+        "family": "inet6",
+        "addr": "::1",
+        "scope": 0,
+        "prefix": 128
+      },
+      {
+        "owner_index": 5,
+        "family": "inet6",
+        "addr": "fe80::1",
+        "scope": 5,
+        "prefix": 64
+      },
+      {
+        "owner_index": 9,
+        "family": "inet6",
+        "addr": "fe80::ff:fe00:1",
+        "scope": 9,
+        "prefix": 64
+      },
+      {
+        "owner_index": 9,
+        "family": "inet",
+        "addr": "192.0.2.10",
+        "prefix": 24
+      },
+      {
+        "owner_index": 9,
+        "family": "inet6",
+        "addr": "2001:db8:0:1:0:ff:fe00:1",
+        "scope": 0,
+        "prefix": 64
+      },
+      {
+        "owner_index": 9,
+        "family": "inet",
+        "addr": "169.254.147.85",
+        "prefix": 16
+      }
+    ]
+  }
+}
