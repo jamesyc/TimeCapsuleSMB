@@ -486,3 +486,106 @@ kill -TERM $$
     result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert marker.read_text().strip() == "normal"
+
+
+def _markers(m):
+    return sorted(p.name for p in (m.helper.parent / "private").glob("xattr-migrated-*"))
+
+
+def _phases(m):
+    # Match the phase words instead of a fixed stride: the migrator is called
+    # with phase, tdb, metadata and one argument per mounted root, so a stride
+    # would silently return nonsense as soon as a second volume is mounted.
+    lines = m.calls.read_text().splitlines() if m.calls.exists() else []
+    return [line for line in lines if line in ("copy", "cleanup")]
+
+
+def _boot_migration_script(m, library):
+    return f'''
+set -eu
+. {shlex.quote(str(library))}
+TC_TAB=$(printf '\\t')
+TC_LOG_FILE={shlex.quote(str(m.root / 'boot.log'))}
+TC_RESOLVED_PAYLOAD_DIR={shlex.quote(str(m.helper.parent))}
+manager_topology_rows={shlex.quote(f"wd0\t1\tdk2\t{m.volumes[0].volume_root}\tData\tuuid-0")}
+FRUIT_METADATA_NETATALK=1
+TC_BOOT_XATTR_MIGRATION=1
+export FAIL_MIGRATION=0
+tc_log() {{ :; }}
+is_volume_root_mounted() {{ return 0; }}
+if tc_manager_migrate_boot_xattrs "$manager_topology_rows"; then echo ok; else echo failed; fi
+'''
+
+
+def test_boot_migration_marker_persists_once_the_legacy_tdb_is_gone(migration):
+    m = migration
+    m.helper.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" >> {shlex.quote(str(m.calls))}\n'
+        f'[ "$1" != cleanup ] || rm -f {shlex.quote(str(m.tdb))}\nexit 0\n'
+    )
+    m.helper.chmod(0o755)
+    script = _boot_migration_script(m, manager_library(m.root))
+
+    first = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.splitlines() == ["ok"]
+    assert _phases(m) == ["copy", "cleanup"]
+    assert not m.tdb.exists()
+    assert _markers(m) == ["xattr-migrated-uuid_uuid-0"]
+
+    # A second manager starts with an empty set, so only the marker on disk can
+    # keep it from walking the volume again.
+    second = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert second.returncode == 0, second.stderr
+    assert _phases(m) == ["copy", "cleanup"]
+
+
+def test_boot_migration_marker_is_withheld_while_the_legacy_tdb_remains(migration):
+    # Cleanup reports success for records whose disk is absent, and those are
+    # kept on purpose, so the volume is not finished and must not be marked.
+    m = migration
+    script = _boot_migration_script(m, manager_library(m.root))
+
+    first = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert first.returncode == 0, first.stderr
+    assert _phases(m) == ["copy", "cleanup"]
+    assert m.tdb.exists()
+    assert _markers(m) == []
+
+    second = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
+    assert second.returncode == 0, second.stderr
+    assert _phases(m) == ["copy", "cleanup", "copy", "cleanup"]
+
+
+def test_boot_migration_skips_a_volume_whose_marker_is_already_on_disk(migration):
+    m = migration
+    (m.helper.parent / "private/xattr-migrated-uuid_uuid-0").write_text("uuid:uuid-0\n")
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", _boot_migration_script(m, manager_library(m.root))],
+        text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _phases(m) == []
+    assert m.tdb.exists()
+
+
+def test_boot_migration_leaves_no_marker_when_cleanup_fails_after_copy(migration):
+    # Copy removes the TDB and cleanup then fails: the absent TDB alone would
+    # say the volume is done, so the marker has to follow the exit status too.
+    m = migration
+    m.helper.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" >> {shlex.quote(str(m.calls))}\n'
+        f'[ "$1" != cleanup ] || exit 4\n'
+        f'rm -f {shlex.quote(str(m.tdb))}\nexit 0\n'
+    )
+    m.helper.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", _boot_migration_script(m, manager_library(m.root))],
+        text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["failed"]
+    assert not m.tdb.exists()
+    assert _markers(m) == []
