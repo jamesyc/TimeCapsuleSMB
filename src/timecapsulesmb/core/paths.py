@@ -52,6 +52,10 @@ class AppPaths:
     def version_check_cache_path(self) -> Path:
         return self.state_dir / ".version-check-cache.json"
 
+    @property
+    def release_info_cache_path(self) -> Path:
+        return self.state_dir / ".release-info-cache.json"
+
 
 def package_root() -> Path:
     return Path(__file__).resolve().parents[1]

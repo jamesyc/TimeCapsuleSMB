@@ -8,6 +8,7 @@ from timecapsulesmb.app.contracts import (
     capabilities_payload,
     install_validation_payload,
     telemetry_preference_payload,
+    update_check_payload,
     version_check_payload,
 )
 from timecapsulesmb.core.paths import artifact_manifest_resource, resolve_app_paths
@@ -24,6 +25,11 @@ from timecapsulesmb.services.app import (
     bool_param,
     config_path,
     string_param,
+)
+from timecapsulesmb.services.release_info import (
+    load_release_info,
+    release_api_url,
+    release_info_to_jsonable,
 )
 from timecapsulesmb.services.version_check import VERSION_CHECK_URL, check_client_version
 
@@ -78,16 +84,35 @@ def set_telemetry_operation(params: dict[str, object], context: AppOperationCont
     )
 
 
-def version_check_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
-    url = string_param(params, "url", VERSION_CHECK_URL).strip() or VERSION_CHECK_URL
+def _validated_http_url(params: dict[str, object], name: str, default: str) -> str:
+    url = string_param(params, name, default).strip() or default
     parsed_url = urlparse(url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise AppOperationError("url must be an HTTP/HTTPS URL", code="validation_failed")
+        raise AppOperationError(f"{name} must be an HTTP/HTTPS URL", code="validation_failed")
+    return url
+
+
+def version_check_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    url = _validated_http_url(params, "url", VERSION_CHECK_URL)
     context.stage("resolve_paths")
     app_paths = resolve_app_paths(config_path=config_path(params))
     context.stage("check_version")
     result = check_client_version(url=url, cache_path=app_paths.version_check_cache_path)
     return OperationResult(True, version_check_payload(result))
+
+
+def update_check_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    """Version check plus GitHub release metadata (notes and app asset) for the app updater."""
+    url = _validated_http_url(params, "url", VERSION_CHECK_URL)
+    release_url = _validated_http_url(params, "release_url", release_api_url())
+    context.stage("resolve_paths")
+    app_paths = resolve_app_paths(config_path=config_path(params))
+    context.stage("check_version")
+    result = check_client_version(url=url, cache_path=app_paths.version_check_cache_path)
+    context.stage("fetch_release")
+    release = load_release_info(url=release_url, cache_path=app_paths.release_info_cache_path)
+    release_payload = release_info_to_jsonable(release) if release is not None else None
+    return OperationResult(True, update_check_payload(result, release_payload))
 
 
 def _public_operation_names() -> list[str]:

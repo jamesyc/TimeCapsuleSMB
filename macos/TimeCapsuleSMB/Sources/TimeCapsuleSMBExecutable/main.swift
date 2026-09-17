@@ -27,5 +27,12 @@ struct TimeCapsuleSMBExecutable: App {
         WindowGroup {
             ContentView()
         }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button(AppMenuCommands.checkForUpdatesTitle) {
+                    AppMenuCommands.requestCheckForUpdates()
+                }
+            }
+        }
     }
 }

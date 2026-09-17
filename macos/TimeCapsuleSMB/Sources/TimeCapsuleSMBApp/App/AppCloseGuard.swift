@@ -77,9 +77,15 @@ public final class AppCloseGuard: NSObject {
     var presenter: AppCloseGuardPresenting = AppCloseGuardAlertPresenter()
 
     private var policy = AppCloseGuardPolicy()
+    private var terminationAllowed = false
 
     public func configure(hasBlockingActivity: @escaping () -> Bool) {
         policy = AppCloseGuardPolicy(hasBlockingActivity: hasBlockingActivity)
+    }
+
+    /// Lets an intentional quit (for example an in-app update relaunch) bypass the close confirmation.
+    public func allowTermination() {
+        terminationAllowed = true
     }
 
     func shouldCloseWindow(_ window: NSWindow) -> Bool {
@@ -100,7 +106,7 @@ public final class AppCloseGuard: NSObject {
     }
 
     func shouldTerminateApplication(_ application: NSApplication) -> NSApplication.TerminateReply {
-        guard policy.requiresConfirmation else {
+        guard policy.requiresConfirmation, !terminationAllowed else {
             return .terminateNow
         }
         presenter.confirmClose(

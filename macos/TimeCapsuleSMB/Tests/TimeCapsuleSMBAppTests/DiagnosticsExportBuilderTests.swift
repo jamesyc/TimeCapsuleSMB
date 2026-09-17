@@ -97,7 +97,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             ),
             runtimeIssues: [],
             updateState: .current,
-            updatePayload: versionPayload(),
+            updatePayload: updatePayload(),
             updateError: nil,
             selectedProfile: profile(),
             activeOperations: [.device("profile-one"): ActiveOperation(operation: "deploy", profileID: "profile-one", context: nil)],
@@ -120,6 +120,32 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             latestTag: "v2.1.4",
             source: source,
             summary: source == "unavailable" ? "Version metadata is unavailable." : "TimeCapsuleSMB is up to date."
+        )
+    }
+
+    private func updatePayload(source: String = "network") -> UpdateCheckPayload {
+        UpdateCheckPayload(
+            schemaVersion: 1,
+            shouldBlock: false,
+            updateAvailable: false,
+            checkedURL: "https://example.invalid/version.json",
+            message: "Current.",
+            downloadURL: "https://example.invalid/download",
+            localVersionCode: 20125,
+            currentVersion: 20125,
+            minSupportedVersion: 20000,
+            latestTag: "v2.1.4",
+            source: source,
+            summary: source == "unavailable" ? "Version metadata is unavailable." : "TimeCapsuleSMB is up to date.",
+            release: ReleaseInfoPayload(
+                tag: "v2.1.4",
+                name: "v2.1.4",
+                publishedAt: "2026-01-01T00:00:00Z",
+                notes: "- notes",
+                htmlURL: "https://example.invalid/rel",
+                prerelease: false,
+                asset: ReleaseAssetPayload(name: "TimeCapsuleSMB.app.zip", size: 1, downloadURL: "https://example.invalid/app.zip", sha256: "ab")
+            )
         )
     }
 

@@ -19,6 +19,7 @@ from timecapsulesmb.app.ops.reachability import reachability_operation
 from timecapsulesmb.app.ops.readiness import (
     capabilities_operation,
     set_telemetry_operation,
+    update_check_operation,
     validate_install_operation,
     version_check_operation,
 )
@@ -52,6 +53,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("set-ssh", set_ssh_operation, telemetry=True),
     OperationSpec("set-telemetry", set_telemetry_operation),
     OperationSpec("uninstall", uninstall_operation, telemetry=True),
+    OperationSpec("update-check", update_check_operation),
     OperationSpec("validate-install", validate_install_operation),
     OperationSpec("version-check", version_check_operation),
 )

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 public struct ContentView: View {
@@ -9,6 +10,7 @@ public struct ContentView: View {
     @ObservedObject private var activityStore: ActivityStore
     @ObservedObject private var deviceDiscovery: DeviceDiscoveryStore
     @ObservedObject private var appBackend: BackendClient
+    @ObservedObject private var appUpdateStore: AppUpdateStore
     @StateObject private var addDeviceStore: AddDeviceFlowStore
     @StateObject private var appSettingsEditorStore: AppSettingsEditorStore
     @StateObject private var dashboardStore: DashboardStore
@@ -16,6 +18,7 @@ public struct ContentView: View {
     @State private var diagnosticsShowBackendEvents = true
     @State private var profilePendingDeletion: DeviceProfile?
     @State private var deleteErrorMessage: String?
+    @State private var updateSheetHasAppeared = false
     @State private var systemColorScheme = SystemAppearance.currentColorScheme
     private let startsAutomatically: Bool
 
@@ -34,6 +37,7 @@ public struct ContentView: View {
         _activityStore = ObservedObject(wrappedValue: composition.appStore.activityStore)
         _deviceDiscovery = ObservedObject(wrappedValue: composition.appStore.deviceDiscovery)
         _appBackend = ObservedObject(wrappedValue: composition.appStore.backend)
+        _appUpdateStore = ObservedObject(wrappedValue: composition.appStore.appUpdateStore)
         _appSettingsEditorStore = StateObject(wrappedValue: composition.appSettingsEditorStore)
         _addDeviceStore = StateObject(wrappedValue: composition.addDeviceStore)
         _dashboardStore = StateObject(wrappedValue: composition.dashboardStore)
@@ -109,6 +113,12 @@ public struct ContentView: View {
             }
             addDeviceStore.applyAppSettings(appSettingsStore.settings)
             appSettingsEditorStore.sync(settings: appSettingsStore.settings)
+            if NSApplication.shared.keyWindow != nil {
+                appUpdateStore.markUIReady()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            appUpdateStore.markUIReady()
         }
         .onChange(of: addDeviceStore.savedProfile) { _, profile in
             guard let profile else { return }
@@ -138,6 +148,44 @@ public struct ContentView: View {
                     set: { appBackend.helperPath = $0 }
                 )
             )
+        }
+        .sheet(item: updatePromptPresented) { prompt in
+            AppUpdateSheet(
+                prompt: prompt,
+                isChecking: appUpdateStore.isChecking,
+                installState: appUpdateStore.installState,
+                installUnavailableReason: appUpdateStore.installUnavailableReason(),
+                onDownload: {
+                    if let url = prompt.htmlURL {
+                        WorkspaceURLOpener().open(url)
+                    }
+                    appUpdateStore.remindLater()
+                },
+                onRemindLater: {
+                    appUpdateStore.remindLater()
+                },
+                onSkip: {
+                    Task { @MainActor in
+                        await appStore.skipUpdateVersion()
+                    }
+                },
+                onInstall: {
+                    Task { @MainActor in
+                        await appUpdateStore.install()
+                    }
+                }
+            )
+            .interactiveDismissDisabled(appUpdateStore.installState.isActive)
+            .onAppear {
+                updateSheetHasAppeared = true
+            }
+        }
+        .alert(manualUpdateOutcomeTitle, isPresented: manualUpdateOutcomePresented) {
+            Button(L10n.string("action.ok"), role: .cancel) {
+                appUpdateStore.manualCheckOutcome = nil
+            }
+        } message: {
+            Text(manualUpdateOutcomeMessage)
         }
         .confirmationDialog(
             L10n.string("dialog.forget.title"),
@@ -180,6 +228,55 @@ public struct ContentView: View {
             }
         } message: { confirmation in
             Text(confirmation.message)
+        }
+    }
+
+    /// The store owns the prompt. SwiftUI may reset this binding to nil while the window is still
+    /// being built at launch (before a sheet can be presented); only a nil that arrives after the
+    /// sheet actually appeared counts as the user dismissing it.
+    private var updatePromptPresented: Binding<UpdatePrompt?> {
+        Binding(
+            get: { appUpdateStore.promptedRelease },
+            set: { prompt in
+                guard prompt == nil, updateSheetHasAppeared else {
+                    return
+                }
+                updateSheetHasAppeared = false
+                appUpdateStore.remindLater()
+            }
+        )
+    }
+
+    private var manualUpdateOutcomePresented: Binding<Bool> {
+        Binding(
+            get: { appUpdateStore.manualCheckOutcome != nil },
+            set: { isPresented in
+                if !isPresented {
+                    appUpdateStore.manualCheckOutcome = nil
+                }
+            }
+        )
+    }
+
+    private var manualUpdateOutcomeTitle: String {
+        switch appUpdateStore.manualCheckOutcome {
+        case .upToDate, .none:
+            return L10n.string("app_update.alert.up_to_date.title")
+        case .failed:
+            return L10n.string("app_update.alert.failed.title")
+        }
+    }
+
+    private var manualUpdateOutcomeMessage: String {
+        switch appUpdateStore.manualCheckOutcome {
+        case .upToDate(let localVersionCode):
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                ?? String(localVersionCode)
+            return L10n.format("app_update.alert.up_to_date.message", version)
+        case .failed(let message):
+            return message
+        case .none:
+            return ""
         }
     }
 
