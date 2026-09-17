@@ -60,6 +60,7 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
    <img width="634" height="429" alt="image" src="https://github.com/user-attachments/assets/e35d8934-975b-4079-8087-8c22984a3165" />
 10. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup.
+11. Delete the old AFP servers listed in macOS Time Machine settings. Then add the new Samba server destination. *This step will not delete your old backups from the disk.*
 
 Please [read the FAQ](FAQ.md) for more information. If you have an issue that could not be resolved via the FAQ, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help.
 
