@@ -147,3 +147,10 @@
 # FinderInfo and resource-fork stream semantics, xattr_tdb owns ordinary native
 # attributes, and a separate static helper migrates legacy TDB/AppleDouble data.
 0038-native-hfs-xattr-backend.patch|native HFS Mac metadata and legacy migration
+# v3.1.0 (mdns-redesign.md package 7). Legacy TDB keys carry (st_dev, st_ino),
+# never a volume UUID: only a row whose device was walked completely with no
+# file claiming it is a proven orphan; everything else is unresolved and kept.
+# A database left with only proven orphans is set aside, never deleted; the
+# walk no longer crosses into nested mounts; and a `fingerprint` mode gives
+# the manager's durable checkpoint a source generation to validate against.
+0039-xattr-migrate-orphan-classification.patch|xattr migrator orphan/unresolved split, quarantine and fingerprint
