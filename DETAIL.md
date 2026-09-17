@@ -194,10 +194,11 @@ Windows-only streams remain encoded and may use HFS xattr extents. A canonical
 Apple xattr that exceeds the native HFS limit is rejected rather than exposing
 an incomplete first extent to AFP.
 
-On non-HFS filesystems, the module follows its upstream TDB behavior. FAT32 is
-not currently mounted or discovered; the fallback is kept deliberately so a
-future FAT32 implementation can use TDB-backed metadata and AppleDouble
-resources without another Samba storage redesign.
+FAT32 is not currently supported: TimeCapsuleSMB does not mount or discover
+FAT32 volumes. On non-HFS filesystems, the module follows its upstream TDB
+behavior; the fallback is kept deliberately so a future FAT32 implementation
+can use TDB-backed metadata and AppleDouble resources without another Samba
+storage redesign.
 
 ### AppleDouble migration
 

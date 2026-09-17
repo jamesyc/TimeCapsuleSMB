@@ -27,6 +27,10 @@ Time Machine may still create a new backup bundle if it cannot find or reuse the
 
 ## Setup and Configuration
 
+#### What disk formats are supported?
+
+HFS+ is currently supported. FAT32 disks are not currently supported. TimeCapsuleSMB does not mount or discover FAT32 volumes, so they will not appear as usable shares.
+
 #### What is the "Device Password" mode?
 
 TimeCapsuleSMB needs the device/root password during setup. That password is used to enable or access SSH from the app/CLI. The managed Samba runtime reads the current AirPort device password from `syPW` on the Time Capsule at boot and generates its RAM-only Samba auth files before `smbd` starts.

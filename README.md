@@ -30,6 +30,7 @@ If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buym
 
 You will need:  
 - A macOS 14+ or Linux machine on the same local network as the Time Capsule
+- External storage must currently use HFS+. FAT32 disks are not supported.
 - The password for the Time Capsule
 
 For the python setup, you need:  
