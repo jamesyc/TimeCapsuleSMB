@@ -618,6 +618,53 @@ $xattr_record_keys
 EOF
 }
 
+# The set above lives only as long as the manager, so persist the same keys next
+# to the payload and let a reboot skip a volume whose migration already finished.
+tc_manager_xattr_marker_path() {
+    xattr_marker_key=$1
+
+    [ -n "${TC_RESOLVED_PAYLOAD_DIR:-}" ] || return 1
+    xattr_marker_name=$(printf '%s\n' "$xattr_marker_key" | /usr/bin/sed 's/[^A-Za-z0-9._-]/_/g')
+    [ -n "$xattr_marker_name" ] || return 1
+    printf '%s/private/xattr-migrated-%s\n' "$TC_RESOLVED_PAYLOAD_DIR" "$xattr_marker_name"
+}
+
+tc_manager_persist_migrated_xattr_volumes() {
+    xattr_persist_keys=$1
+
+    while IFS= read -r xattr_persist_key || [ -n "$xattr_persist_key" ]; do
+        [ -n "$xattr_persist_key" ] || continue
+        xattr_persist_path=$(tc_manager_xattr_marker_path "$xattr_persist_key") || continue
+        # Sanitizing two distinct keys can yield one name; skipping a name that
+        # is taken costs the other volume a rescan instead of marking it done.
+        [ ! -f "$xattr_persist_path" ] || continue
+        # Braces so the shell's own redirection error is silenced too, not just
+        # printf's: a marker is an optimization, and a read-only or full volume
+        # must degrade to the previous rescan rather than to stderr noise.
+        { printf '%s\n' "$xattr_persist_key" > "$xattr_persist_path"; } 2>/dev/null || true
+    done <<EOF
+$xattr_persist_keys
+EOF
+}
+
+tc_manager_load_migrated_xattr_markers() {
+    # A marker is only ever written for a key already in the set, so a reread
+    # could not add anything; skip it and keep the directory read to one per
+    # payload. The flag resets when the payload path changes.
+    [ "${TC_MANAGER_XATTR_MARKERS_LOADED:-0}" = 1 ] && return 0
+    [ -n "${TC_RESOLVED_PAYLOAD_DIR:-}" ] || return 0
+    for xattr_marker_file in "$TC_RESOLVED_PAYLOAD_DIR"/private/xattr-migrated-*; do
+        [ -f "$xattr_marker_file" ] || continue
+        while IFS= read -r xattr_marker_line || [ -n "$xattr_marker_line" ]; do
+            [ -n "$xattr_marker_line" ] || continue
+            tc_manager_record_migrated_xattr_volume "$xattr_marker_line" || return 1
+        done < "$xattr_marker_file"
+    done
+    # Only after a complete pass: a partial read must be retried, not cached.
+    TC_MANAGER_XATTR_MARKERS_LOADED=1
+    return 0
+}
+
 tc_manager_pending_xattr_volume_mounted() {
     pending_topology_rows=$1
 
@@ -667,7 +714,9 @@ tc_manager_migrate_boot_xattrs() {
     if [ "$migration_tdb_path" != "${TC_MANAGER_XATTR_TDB_PATH:-}" ]; then
         TC_MANAGER_XATTR_TDB_PATH=$migration_tdb_path
         TC_MANAGER_XATTR_MIGRATED_VOLUMES=
+        TC_MANAGER_XATTR_MARKERS_LOADED=0
     fi
+    tc_manager_load_migrated_xattr_markers || return 1
     migration_volume_keys=
     set --
     while IFS="$TC_TAB" read -r disk builtin device root name uuid ||
@@ -709,6 +758,7 @@ EOF
         # tc_manager_pending_xattr_volume_mounted would report them as newly
         # available on every pass and the manager would restart mDNS each time.
         tc_manager_record_migrated_xattr_volumes "$migration_volume_keys" || return 1
+        tc_manager_persist_migrated_xattr_volumes "$migration_volume_keys"
         return 0
     fi
     migration_metadata=stream
@@ -775,7 +825,13 @@ EOF
         return 1
     fi
     tc_log "boot metadata migration complete status=0"
-    tc_manager_record_migrated_xattr_volumes "$migration_volume_keys"
+    tc_manager_record_migrated_xattr_volumes "$migration_volume_keys" || return 1
+    # Cleanup also succeeds with the TDB intact, when every record belongs to a
+    # disk that is not attached; marking the volume done would strand those
+    # records, so only a removed TDB means there is nothing left to migrate.
+    if [ ! -f "$migration_tdb" ]; then
+        tc_manager_persist_migrated_xattr_volumes "$migration_volume_keys"
+    fi
 }
 
 tc_manager_apply_runtime_from_topology() {
@@ -1838,6 +1894,7 @@ TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=0
 TC_MANAGER_PRINTER_CHANGED=0
 TC_MANAGER_XATTR_TDB_PATH=
 TC_MANAGER_XATTR_MIGRATED_VOLUMES=
+TC_MANAGER_XATTR_MARKERS_LOADED=0
 manager_payload_ready=0
 manager_payload_dir=
 manager_payload_volume=
