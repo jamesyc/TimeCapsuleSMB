@@ -507,7 +507,7 @@ set -eu
 TC_TAB=$(printf '\\t')
 TC_LOG_FILE={shlex.quote(str(m.root / 'boot.log'))}
 TC_RESOLVED_PAYLOAD_DIR={shlex.quote(str(m.helper.parent))}
-manager_topology_rows={shlex.quote(f"wd0\t1\tdk2\t{m.volumes[0].volume_root}\tData\tuuid-0")}
+manager_topology_rows={shlex.quote('wd0' + chr(9) + '1' + chr(9) + 'dk2' + chr(9) + m.volumes[0].volume_root + chr(9) + 'Data' + chr(9) + 'uuid-0')}
 FRUIT_METADATA_NETATALK=1
 TC_BOOT_XATTR_MIGRATION=1
 export FAIL_MIGRATION=0
