@@ -2164,7 +2164,7 @@ new file mode 100644
 index 0000000..bd03a21
 --- /dev/null
 +++ b/source3/utils/tc_xattr_hfs_migrate.c
-@@ -0,0 +1,1724 @@
+@@ -0,0 +1,1843 @@
 +/* One-shot migration of xattr_tdb metadata into AirPort HFS storage.
 + * This is a standalone deployment helper, not part of the resident smbd. */
 +#include "includes.h"
@@ -2176,6 +2176,9 @@ index 0000000..bd03a21
 +
 +#define TC_HFS_XATTR_SIZE 3802
 +#define TC_HFS_STREAM_XATTRS 35
++#define TC_PROGRESS_ENV "TC_XATTR_PROGRESS_PATH"
++#define TC_PROGRESS_SECONDS 10
++#define TC_STATUS_ENV "TC_XATTR_STATUS_PATH"
 +#define TC_STREAM_PREFIX "user.DosStream."
 +#define TC_EXT_PREFIX "user.DosStreamExt."
 +#define TC_STREAM_SUFFIX ":$DATA"
@@ -2249,12 +2252,86 @@ index 0000000..bd03a21
 +	struct db_context *db;
 +	const char *tdb_path;
 +	const char *legacy_metadata;
++	const char *progress_path;
++	const char *status_path;
++	time_t progress_reported;
++	uint64_t progress_ticks;
 +	enum tc_phase phase;
 +	struct tc_tdb_key *tdb_keys;
 +	size_t num_tdb_keys;
 +	int tdb_collect_error;
 +	struct tc_counts counts;
 +};
++
++/* Publish the entry counter so a supervising shell can tell a slow walk from a
++ * stalled one. A whole share takes hours here and the summary only prints at the
++ * end, so without this the caller has nothing to time out against. The file is
++ * rewritten in place to keep it a fixed size: it lives on the RAM disk, and the
++ * value matters, not its history. Failure is ignored on purpose -- progress is
++ * advisory, and a migration must not abort because a report could not be made. */
++static void tc_report_progress(struct tc_migration *migration, bool force)
++{
++	time_t now;
++	FILE *out;
++
++	if (migration->progress_path == NULL) {
++		return;
++	}
++	now = time(NULL);
++	if (!force && now - migration->progress_reported < TC_PROGRESS_SECONDS) {
++		return;
++	}
++	migration->progress_reported = now;
++	/* The tick is what the watcher compares. The entry count alone would not
++	 * do: it stays at zero for the whole of tc_collect_tdb_keys and unchanged
++	 * for the whole of one large resource fork, so a healthy migration in
++	 * either would look identical to a stalled one. */
++	migration->progress_ticks++;
++	out = fopen(migration->progress_path, "w");
++	if (out == NULL) {
++		return;
++	}
++	fprintf(out, "%"PRIu64" %"PRIu64"\n",
++		migration->progress_ticks, migration->counts.entries);
++	fclose(out);
++}
++
++/* Record the exit code where the caller can read it. The device shell answers 0
++ * from wait for a background child however that child exited, so a deploy that
++ * watches the migrator has no other way to tell a completed migration from a
++ * failed one. Written from every return in main(), but a signal still ends the
++ * process without one, so the caller has to treat an absent or unparsable file
++ * as a failure of its own rather than as a success.
++ *
++ * Unlike the progress report this one is not advisory: a write that fails
++ * silently is exactly the "succeeded when it failed" case this exists to
++ * prevent, so say so on stderr, which the deploy relays. */
++static void tc_report_status(struct tc_migration *migration, int status)
++{
++	FILE *out;
++	bool failed;
++
++	if (migration->status_path == NULL) {
++		return;
++	}
++	out = fopen(migration->status_path, "w");
++	if (out == NULL) {
++		fprintf(stderr, "unable to record status in %s: %s\n",
++			migration->status_path, strerror(errno));
++		return;
++	}
++	/* Close whatever the write did: short-circuiting past fclose would leave
++	 * the stream to be flushed at exit, so a status reported here as lost
++	 * could still reach the file afterwards. */
++	failed = fprintf(out, "%d\n", status) < 0;
++	if (fclose(out) != 0) {
++		failed = true;
++	}
++	if (failed) {
++		fprintf(stderr, "unable to record status in %s: %s\n",
++			migration->status_path, strerror(errno));
++	}
++}
 +
 +static bool tc_missing_error(int error)
 +{
@@ -2293,6 +2370,9 @@ index 0000000..bd03a21
 +	keys[migration->num_tdb_keys].matched = false;
 +	keys[migration->num_tdb_keys].retired = false;
 +	migration->num_tdb_keys++;
++	/* This callback reallocates per record, so a large database spends minutes
++	 * here before the directory walk begins. */
++	tc_report_progress(migration, false);
 +	return 0;
 +}
 +
@@ -3264,7 +3344,8 @@ index 0000000..bd03a21
 +/* Return 0 for equal readable forks, 1 for readable conflicts, -1 for errors.
 + * Finish reading both forks even after finding a difference: a later disk
 + * error must not turn an unverified legacy fork into disposable data. */
-+static int tc_verify_resource(int source_fd, int resource_fd,
++static int tc_verify_resource(struct tc_migration *migration,
++			      int source_fd, int resource_fd,
 +			      off_t source_offset, off_t resource_length)
 +{
 +	uint8_t *source = NULL;
@@ -3300,6 +3381,9 @@ index 0000000..bd03a21
 +			different = true;
 +		}
 +		offset += MAX(source_size, native_size);
++		/* Verification re-reads both forks, so it is the longer half of
++		 * the work on a large one and would otherwise be silent. */
++		tc_report_progress(migration, false);
 +	}
 +	result = different ? 1 : 0;
 +out:
@@ -3410,7 +3494,7 @@ index 0000000..bd03a21
 +		goto out;
 +	}
 +	if (native_st.st_size > 0 && marker_state == 0) {
-+		comparison = tc_verify_resource(source_fd, resource_fd,
++		comparison = tc_verify_resource(migration, source_fd, resource_fd,
 +			resource->offset, resource->length);
 +		if (comparison < 0) {
 +			goto out;
@@ -3451,10 +3535,14 @@ index 0000000..bd03a21
 +				goto out;
 +			}
 +			copied += chunk;
++			/* A resource fork is copied in chunks and then read back
++			 * twice to verify, so one large fork is minutes of work
++			 * on a single entry. */
++			tc_report_progress(migration, false);
 +	}
 +	if (ftruncate(resource_fd, resource->length) != 0 ||
 +	    fsync(resource_fd) != 0 ||
-+	    tc_verify_resource(source_fd, resource_fd,
++	    tc_verify_resource(migration, source_fd, resource_fd,
 +		resource->offset, resource->length) != 0)
 +	{
 +		fprintf(stderr, "resource verification failed path=%s error=%s\n",
@@ -3644,6 +3732,7 @@ index 0000000..bd03a21
 +		return -1;
 +	}
 +	migration->counts.entries++;
++	tc_report_progress(migration, false);
 +	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
 +		fd = open(path, O_RDONLY | O_NOFOLLOW);
 +		if (fd == -1 || fstat(fd, &opened_st) != 0 ||
@@ -3715,6 +3804,10 @@ index 0000000..bd03a21
 +			break;
 +		}
 +		child_count++;
++		/* Time Machine bands directories hold hundreds of thousands of
++		 * entries, and this snapshot completes before any of them is
++		 * visited. */
++		tc_report_progress(migration, false);
 +	}
 +	if (closedir(dir) != 0) {
 +		result = -1;
@@ -3803,11 +3896,19 @@ index 0000000..bd03a21
 +	int result = 0;
 +	int i;
 +
++	/* Read before the argument check so a usage error is reported too: the
++	 * caller distinguishes a migrator that rejected its arguments from one
++	 * that never started at all. */
++	migration.status_path = getenv(TC_STATUS_ENV);
++	if (migration.status_path != NULL && migration.status_path[0] == '\0') {
++		migration.status_path = NULL;
++	}
 +	if (argc < 5 ||
 +	    (strcmp(argv[1], "copy") != 0 && strcmp(argv[1], "cleanup") != 0) ||
 +	    (strcmp(argv[3], "stream") != 0 && strcmp(argv[3], "netatalk") != 0))
 +	{
 +		tc_usage(argv[0]);
++		tc_report_status(&migration, 2);
 +		TALLOC_FREE(frame);
 +		return 2;
 +	}
@@ -3815,6 +3916,17 @@ index 0000000..bd03a21
 +		TC_PHASE_COPY : TC_PHASE_CLEANUP;
 +	migration.tdb_path = strcmp(argv[2], "-") == 0 ? NULL : argv[2];
 +	migration.legacy_metadata = argv[3];
++	/* Read through the environment rather than a new argument: the command line
++	 * is positional and already overloaded by the --roots-file sentinel, and a
++	 * binary from an earlier deploy has to keep working with the current
++	 * callers. Unset simply means no reporting. */
++	migration.progress_path = getenv(TC_PROGRESS_ENV);
++	if (migration.progress_path != NULL && migration.progress_path[0] == '\0') {
++		migration.progress_path = NULL;
++	}
++	/* Report before opening the database: collecting its keys walks every
++	 * record and is itself long enough to look like a stall. */
++	tc_report_progress(&migration, true);
 +	if (migration.tdb_path != NULL) {
 +		migration.db = dbwrap_local_open(
 +			frame, migration.tdb_path, 0, TDB_DEFAULT,
@@ -3823,10 +3935,12 @@ index 0000000..bd03a21
 +		if (migration.db == NULL) {
 +			fprintf(stderr, "unable to open TDB %s: %s\n",
 +				migration.tdb_path, strerror(errno));
++			tc_report_status(&migration, 3);
 +			TALLOC_FREE(frame);
 +			return 3;
 +		}
 +		if (tc_collect_tdb_keys(&migration) != 0) {
++			tc_report_status(&migration, 3);
 +			TALLOC_FREE(frame);
 +			return 3;
 +		}
@@ -3886,6 +4000,11 @@ index 0000000..bd03a21
 +	       migration.counts.tdb_retired,
 +	       migration.counts.tdb_deleted,
 +	       migration.counts.errors);
++	/* After the summary, so a caller that reads both sees a status only for a
++	 * run whose counters were already produced. Note stdout is block buffered
++	 * down a pipe, so the summary itself reaches the caller at exit, not here:
++	 * the ordering holds for a caller that waits, not for one that polls. */
++	tc_report_status(&migration, result == 0 ? 0 : 4);
 +	TALLOC_FREE(frame);
 +	return result == 0 ? 0 : 4;
 +}

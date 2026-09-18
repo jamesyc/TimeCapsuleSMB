@@ -20,6 +20,8 @@ from timecapsulesmb.deploy.dry_run import (
     format_deployment_plan as _format_deployment_plan,
 )
 from timecapsulesmb.deploy.executor import (
+    XATTR_MIGRATION_STALL_EXIT_CODE,
+    XATTR_MIGRATION_STALL_SENTINEL,
     XattrMigrationResult,
     flush_remote_filesystem_writes,
     migrate_xattr_tdb_to_hfs,
@@ -133,6 +135,11 @@ PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
 XATTR_MIGRATION_TIMEOUT_MESSAGE = (
     "Timed out migrating Samba metadata into native HFS attributes. "
     "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
+)
+XATTR_MIGRATION_STALL_MESSAGE = (
+    "Metadata migration stopped making progress and was halted. "
+    "The disk may be failing or slow to spin up. "
+    "Verified exports are already committed; rerun deploy after checking the disk."
 )
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
 
@@ -403,6 +410,17 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
 
 def _manager_stop_timed_out(exc: BaseException) -> bool:
     return MANAGER_STOP_TIMEOUT_SENTINEL in str(exc)
+
+
+def _xattr_migration_stalled(exc: BaseException) -> bool:
+    # Key off the exit status where there is one: the sentinel also appears in
+    # the script's own text, so an error report that quotes the command would
+    # otherwise look like a stall. Only fall back to the text for transports
+    # that surface device output without a status, as run_ssh does.
+    returncode = getattr(exc, "returncode", None)
+    if returncode is not None:
+        return returncode == XATTR_MIGRATION_STALL_EXIT_CODE
+    return XATTR_MIGRATION_STALL_SENTINEL in str(exc)
 
 
 def _payload_upload_timed_out(exc: BaseException, transfer: FileTransfer | None, plan: DeploymentPlan) -> bool:
@@ -841,6 +859,11 @@ def upload_and_verify_deployment_payload(
                 result="failure",
                 error_type=type(exc).__name__,
             )
+            if _xattr_migration_stalled(exc):
+                raise DeployDeviceError(
+                    XATTR_MIGRATION_STALL_MESSAGE,
+                    code="xattr_migration_stalled",
+                ) from exc
             if is_ssh_timeout_error(exc):
                 raise DeployDeviceError(
                     XATTR_MIGRATION_TIMEOUT_MESSAGE,

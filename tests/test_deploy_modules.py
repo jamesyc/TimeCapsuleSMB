@@ -45,6 +45,7 @@ from timecapsulesmb.deploy.executor import (
     FLUSH_REMOTE_FILESYSTEMS_COMMAND,
     FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
     REBOOT_REQUEST_TIMEOUT_SECONDS,
+    XATTR_MIGRATION_STALL_EXIT_CODE,
     XattrMigrationResult,
     flush_remote_filesystem_writes,
     migrate_xattr_tdb_to_hfs,
@@ -1699,6 +1700,51 @@ echo ok
         self.assertEqual(raised.exception.code, "manager_stop_timeout")
         self.assertIn("A service on the device is stuck", str(raised.exception))
         self.assertIsInstance(raised.exception.__cause__, SshError)
+
+    def test_upload_and_verify_deployment_payload_codes_xattr_migration_stall(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        connection = SshConnection("host", "pw", "-o foo")
+        stalled = subprocess.CalledProcessError(
+            XATTR_MIGRATION_STALL_EXIT_CODE, ["/bin/sh", "-c", "..."],
+            "", "migration stalled entries=4211\n",
+        )
+
+        with self.assertRaises(DeployDeviceError) as raised:
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                connection,
+                prepared_plan,
+                DeployRuntimeConfig(nbns_enabled=True),
+                callbacks=OperationCallbacks(),
+                run_remote_actions_func=mock.Mock(),
+                upload_payload_func=mock.Mock(),
+                migrate_xattrs_func=mock.Mock(side_effect=stalled),
+            )
+
+        self.assertEqual(raised.exception.code, "xattr_migration_stalled")
+        self.assertIn("stopped making progress", str(raised.exception))
+
+    def test_upload_and_verify_deployment_payload_keeps_migration_timeout_distinct(self) -> None:
+        # The stall branch runs first, so a plain ssh timeout must not be caught
+        # by it: the operator would be sent to inspect a disk that is fine.
+        prepared_plan = self._prepared_deploy_plan()
+        connection = SshConnection("host", "pw", "-o foo")
+
+        with self.assertRaises(DeployDeviceError) as raised:
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                connection,
+                prepared_plan,
+                DeployRuntimeConfig(nbns_enabled=True),
+                callbacks=OperationCallbacks(),
+                run_remote_actions_func=mock.Mock(),
+                upload_payload_func=mock.Mock(),
+                migrate_xattrs_func=mock.Mock(
+                    side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish")
+                ),
+            )
+
+        self.assertEqual(raised.exception.code, "xattr_migration_timeout")
 
     def test_upload_and_verify_deployment_payload_codes_payload_upload_timeout(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
