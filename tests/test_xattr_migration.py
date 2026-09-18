@@ -486,3 +486,100 @@ kill -TERM $$
     result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert marker.read_text().strip() == "normal"
+
+
+def _fast_watchdog(monkeypatch, *, poll=1, stall=3):
+    # The script embeds these when it is rendered, so patching the module
+    # constants really does change the shell the test runs.
+    monkeypatch.setattr(executor, "XATTR_HFS_MIGRATION_POLL_SECONDS", poll)
+    monkeypatch.setattr(executor, "XATTR_HFS_MIGRATION_STALL_SECONDS", stall)
+
+
+def test_deploy_migration_survives_a_long_run_that_keeps_reporting(migration, monkeypatch):
+    # The whole point of watching progress instead of the clock: a migration
+    # may legitimately outlast any budget as long as it is still moving.
+    m = migration
+    _fast_watchdog(monkeypatch)
+    m.helper.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" >> {shlex.quote(str(m.calls))}\n'
+        'i=0\nwhile [ "$i" -lt 8 ]; do\n'
+        '    i=$((i + 1))\n'
+        '    echo "$i" > "$TC_XATTR_PROGRESS_PATH"\n'
+        '    /bin/sleep 1\ndone\n'
+        'echo done\nexit 0\n'
+    )
+    m.helper.chmod(0o755)
+
+    result = executor.migrate_xattr_tdb_to_hfs(
+        m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+    )
+
+    assert executor.XATTR_MIGRATION_STALL_SENTINEL not in result.output
+    assert "done" in result.output
+
+
+def test_deploy_migration_halts_a_run_that_stops_reporting(migration, monkeypatch):
+    import os
+    import time
+
+    m = migration
+    _fast_watchdog(monkeypatch)
+    pid_file = m.root / "stalled-helper.pid"
+    # Sleeps far longer than the stall budget, so finishing on time can only
+    # mean the watchdog cut it short.
+    m.helper.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" >> {shlex.quote(str(m.calls))}\n'
+        f'echo $$ > {shlex.quote(str(pid_file))}\n'
+        'echo 1 > "$TC_XATTR_PROGRESS_PATH"\n'
+        'exec /bin/sleep 60\n'
+    )
+    m.helper.chmod(0o755)
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        executor.migrate_xattr_tdb_to_hfs(
+            m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 30, f"migration ran {elapsed:.1f}s; the stall was not cut short"
+    # The status the script really exits with, so the classifier in deploy.py is
+    # matched against what the device sends rather than against a constant the
+    # tests supply themselves.
+    assert caught.value.returncode == executor.XATTR_MIGRATION_STALL_EXIT_CODE
+    assert executor.XATTR_MIGRATION_STALL_SENTINEL in (caught.value.stderr or "")
+    # The migrator is gone rather than merely disowned, and the RAM copies with it.
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
+    assert not (m.root / "tc-xattr-hfs-migrate.progress").exists()
+    assert not (m.root / "tc-xattr-hfs-migrate.stalled").exists()
+
+
+def test_deploy_migration_failure_is_not_reported_as_a_stall(migration, monkeypatch):
+    # A migrator that exits on its own must keep its own status: conflating the
+    # two would send the operator looking at the disk for a software fault.
+    m = migration
+    _fast_watchdog(monkeypatch)
+    monkeypatch.setenv("FAIL_MIGRATION", "4")
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        executor.migrate_xattr_tdb_to_hfs(
+            m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+        )
+
+    assert caught.value.returncode == 4
+    assert executor.XATTR_MIGRATION_STALL_SENTINEL not in (caught.value.stderr or "")
+
+
+def test_deploy_migration_runs_a_migrator_that_ignores_the_progress_variable(migration, monkeypatch):
+    # A binary from an earlier deploy writes no counter at all. It must still be
+    # allowed to finish, or upgrading would require a matching migrator first.
+    m = migration
+    _fast_watchdog(monkeypatch, poll=1, stall=30)
+
+    result = executor.migrate_xattr_tdb_to_hfs(
+        m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+    )
+
+    assert executor.XATTR_MIGRATION_STALL_SENTINEL not in result.output
+    assert m.calls.read_text().splitlines()[0] == "copy"

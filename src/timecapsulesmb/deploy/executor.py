@@ -25,7 +25,23 @@ FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
 # Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
 # payload after a slow upload. Keep this bounded, but long enough for real disks.
 FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300
-XATTR_HFS_MIGRATION_TIMEOUT_SECONDS = 600
+# The migrator walks every file on the share, so a large disk legitimately runs
+# for hours: bounding the run itself kills real work. Bound a lack of progress
+# instead, from the device, where the migrator's own counter can be watched.
+XATTR_HFS_MIGRATION_POLL_SECONDS = 10
+# A single entry can chain a disk spin-up, an ATA retry on a marginal sector and
+# several fsyncs, so legitimate silence reaches well over a minute. Leave room
+# for that: the cost of waiting too long is minutes, of killing too early a
+# failed deploy.
+XATTR_HFS_MIGRATION_STALL_SECONDS = 300
+# Only a backstop for ssh itself wedging. It must stay above the stall budget,
+# or it fires first and the watchdog never gets to report the reason.
+XATTR_HFS_MIGRATION_TIMEOUT_SECONDS = 900
+XATTR_MIGRATION_STALL_SENTINEL = "migration stalled"
+# EX_TEMPFAIL. The sentinel travels in the script's own text, so it cannot tell
+# a stall from any other failure whose report happens to quote the command; the
+# exit status can, and nothing else in this pipeline uses 75.
+XATTR_MIGRATION_STALL_EXIT_CODE = 75
 
 
 @dataclass(frozen=True)
@@ -88,16 +104,46 @@ def migrate_xattr_tdb_to_hfs(
     script = f"""
 tdb={shlex.quote(tdb_path)}
 migration_ram=/mnt/Memory/tc-xattr-hfs-migrate
+migration_progress="$migration_ram.progress"
 migration_child=
-trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; rm -f "$migration_ram"' 0
+migration_watchdog=
+trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; if [ -n "$migration_watchdog" ]; then kill -TERM "$migration_watchdog" 2>/dev/null || true; fi; rm -f "$migration_ram" "$migration_progress" "$migration_ram.stalled"' 0
 trap 'exit 1' 1 2 15
+rm -f "$migration_progress" "$migration_ram.stalled"
 cp {shlex.quote(migrator_path)} "$migration_ram" || exit $?
 chmod 755 "$migration_ram" || exit $?
-"$migration_ram" {shlex.quote(phase)} "$tdb" {shlex.quote(legacy_metadata)} {root_args} &
+TC_XATTR_PROGRESS_PATH="$migration_progress" \
+    "$migration_ram" {shlex.quote(phase)} "$tdb" {shlex.quote(legacy_metadata)} {root_args} &
 migration_child=$!
+migration_stall_note="$migration_ram.stalled"
+(
+    watch_seen=
+    watch_idle=0
+    while kill -0 "$migration_child" 2>/dev/null; do
+        sleep {XATTR_HFS_MIGRATION_POLL_SECONDS}
+        watch_now=
+        if [ -f "$migration_progress" ]; then read watch_now < "$migration_progress"; fi
+        if [ "$watch_now" != "$watch_seen" ]; then
+            watch_seen=$watch_now
+            watch_idle=0
+            continue
+        fi
+        watch_idle=$((watch_idle + {XATTR_HFS_MIGRATION_POLL_SECONDS}))
+        if [ "$watch_idle" -ge {XATTR_HFS_MIGRATION_STALL_SECONDS} ]; then
+            echo "{XATTR_MIGRATION_STALL_SENTINEL} entries=${{watch_seen:-none}}" > "$migration_stall_note"
+            kill -TERM "$migration_child" 2>/dev/null || true
+            break
+        fi
+    done
+) </dev/null >/dev/null 2>&1 &
+migration_watchdog=$!
 migration_status=0
 wait "$migration_child" || migration_status=$?
 migration_child=
+if [ -f "$migration_stall_note" ]; then
+    cat "$migration_stall_note" >&2
+    exit {XATTR_MIGRATION_STALL_EXIT_CODE}
+fi
 [ "$migration_status" = 0 ] || exit "$migration_status"
 /bin/sync || exit $?
 echo migration_phase={shlex.quote(phase)} complete unavailable_roots={len(unavailable)}
