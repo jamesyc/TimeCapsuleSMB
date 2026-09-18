@@ -858,6 +858,124 @@ static void test_tdb_collection_failures(void)
 	TALLOC_FREE(frame);
 }
 
+static void test_status(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	/* The scan enumerates everything under its root, so the status file and the
+	 * databases live beside it rather than inside: a run must never walk what
+	 * the run before it wrote. */
+	char root[] = "/tmp/tc-status.XXXXXX";
+	char side[] = "/tmp/tc-status-side.XXXXXX";
+	char status[128], object[128], missing[128], tdb[128], malformed[128];
+	char line[32];
+	uint8_t short_key[] = {7, 8, 9};
+	uint8_t short_value[] = {1};
+	char *argv[] = {"migrate", "copy", "-", "netatalk", root, NULL};
+	char *bad[] = {"migrate", "sideways", "-", "netatalk", root, NULL};
+	struct db_context *db;
+	struct file_id id;
+	struct stat st;
+	FILE *in;
+	int fd;
+
+	CHECK(mkdtemp(root) != NULL);
+	CHECK(mkdtemp(side) != NULL);
+	snprintf(status, sizeof(status), "%s/status", side);
+	snprintf(object, sizeof(object), "%s/object", root);
+	snprintf(missing, sizeof(missing), "%s/absent/status", side);
+	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", side);
+	snprintf(malformed, sizeof(malformed), "%s/malformed.tdb", side);
+	fd = open(object, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0);
+	CHECK(fstat(fd, &st) == 0); id = tc_file_id(&st); close(fd);
+
+	/* Without the variable nothing is written: the file only exists because a
+	 * caller asked for it, and an older caller asks for nothing. */
+	unsetenv("TC_XATTR_STATUS_PATH");
+	reset_xattrs();
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(status, F_OK) == -1);
+
+	CHECK(setenv("TC_XATTR_STATUS_PATH", status, 1) == 0);
+	reset_xattrs();
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	in = fopen(status, "r"); CHECK(in != NULL);
+	CHECK(fgets(line, sizeof(line), in) != NULL);
+	CHECK(atoi(line) == 0);
+	fclose(in);
+
+	/* An argument the caller got wrong still reports, so the deploy can tell a
+	 * migrator that refused its arguments from one that never ran. */
+	CHECK(unlink(status) == 0);
+	CHECK(tc_xattr_hfs_migrate_program_main(5, bad) == 2);
+	in = fopen(status, "r"); CHECK(in != NULL);
+	CHECK(fgets(line, sizeof(line), in) != NULL);
+	CHECK(atoi(line) == 2);
+	fclose(in);
+
+	/* The failed migration is the case this exists for: the device shell calls
+	 * the child successful either way, so a status of 4 is the only evidence
+	 * that survives. */
+	CHECK(unlink(status) == 0);
+	db = dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_CREAT | O_RDWR,
+		0600, DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE); CHECK(db != NULL);
+	CHECK(xattr_tdb_setattr(db, &id, "user.DosStream.windows:$DATA", "old", 4, 0) == 0);
+	TALLOC_FREE(db);
+	argv[1] = "cleanup"; argv[2] = tdb;
+	reset_xattrs();
+	commit_error = true;
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 4);
+	commit_error = false;
+	in = fopen(status, "r"); CHECK(in != NULL);
+	CHECK(fgets(line, sizeof(line), in) != NULL);
+	CHECK(atoi(line) == 4);
+	fclose(in);
+
+	/* A database that cannot be read reports its own code before any scan. */
+	CHECK(unlink(status) == 0);
+	db = dbwrap_local_open(frame, malformed, 0, TDB_DEFAULT, O_CREAT | O_RDWR,
+		0600, DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE); CHECK(db != NULL);
+	CHECK(NT_STATUS_IS_OK(dbwrap_store(
+		db, (TDB_DATA){.dptr = short_key, .dsize = sizeof(short_key)},
+		(TDB_DATA){.dptr = short_value, .dsize = sizeof(short_value)},
+		DBWRAP_REPLACE)));
+	TALLOC_FREE(db);
+	argv[2] = malformed;
+	reset_xattrs();
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 3);
+	in = fopen(status, "r"); CHECK(in != NULL);
+	CHECK(fgets(line, sizeof(line), in) != NULL);
+	CHECK(atoi(line) == 3);
+	fclose(in);
+	argv[1] = "copy"; argv[2] = discard_const_p(char, "-");
+
+	/* A path that cannot be written leaves no file and fails nothing. */
+	CHECK(unlink(status) == 0);
+	CHECK(setenv("TC_XATTR_STATUS_PATH", missing, 1) == 0);
+	reset_xattrs();
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(missing, F_OK) == -1);
+
+	/* An empty value means the same as unset: the run writes nothing even
+	 * though a variable is set, so a file already there is left alone. */
+	CHECK(setenv("TC_XATTR_STATUS_PATH", status, 1) == 0);
+	reset_xattrs();
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(status, F_OK) == 0);
+	CHECK(setenv("TC_XATTR_STATUS_PATH", "", 1) == 0);
+	CHECK(unlink(status) == 0);
+	reset_xattrs();
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(status, F_OK) == -1);
+	unsetenv("TC_XATTR_STATUS_PATH");
+
+	CHECK(unlink(tdb) == 0);
+	CHECK(unlink(malformed) == 0);
+	CHECK(unlink(object) == 0);
+	CHECK(rmdir(root) == 0);
+	CHECK(rmdir(side) == 0);
+	TALLOC_FREE(frame);
+}
+
 static void test_scan(void)
 {
 	TALLOC_CTX *frame = talloc_stackframe();
@@ -904,6 +1022,7 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[1], "resume") == 0 || strcmp(argv[1], "all") == 0) { test_resume(); }
 	if (strcmp(argv[1], "scan") == 0 || strcmp(argv[1], "all") == 0) { test_scan(); }
+	if (strcmp(argv[1], "status") == 0 || strcmp(argv[1], "all") == 0) { test_status(); }
 	if (strcmp(argv[1], "errors") == 0 || strcmp(argv[1], "all") == 0) {
 		test_errors();
 	}
@@ -915,7 +1034,8 @@ int main(int argc, char **argv)
 	    strcmp(argv[1], "tdb") != 0 &&
 	    strcmp(argv[1], "errors") != 0 &&
 	    strcmp(argv[1], "resume") != 0 &&
-	    strcmp(argv[1], "scan") != 0)
+	    strcmp(argv[1], "scan") != 0 &&
+	    strcmp(argv[1], "status") != 0)
 	{
 		CHECK(false);
 	}

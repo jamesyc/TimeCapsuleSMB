@@ -42,6 +42,11 @@ XATTR_MIGRATION_STALL_SENTINEL = "migration stalled"
 # a stall from any other failure whose report happens to quote the command; the
 # exit status can, and nothing else in this pipeline uses 75.
 XATTR_MIGRATION_STALL_EXIT_CODE = 75
+# The status file is created empty and written afterwards, so a migrator killed
+# in that window leaves nothing readable behind. Report it as its own code: the
+# shell exits 2 on a value it cannot parse, which collides with the migrator's
+# own code for bad arguments.
+XATTR_MIGRATION_NO_STATUS_EXIT_CODE = 76
 
 
 @dataclass(frozen=True)
@@ -105,14 +110,16 @@ def migrate_xattr_tdb_to_hfs(
 tdb={shlex.quote(tdb_path)}
 migration_ram=/mnt/Memory/tc-xattr-hfs-migrate
 migration_progress="$migration_ram.progress"
+migration_status_file="$migration_ram.status"
 migration_child=
 migration_watchdog=
-trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; if [ -n "$migration_watchdog" ]; then kill -TERM "$migration_watchdog" 2>/dev/null || true; fi; rm -f "$migration_ram" "$migration_progress" "$migration_ram.stalled"' 0
+trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; if [ -n "$migration_watchdog" ]; then kill -TERM "$migration_watchdog" 2>/dev/null || true; fi; rm -f "$migration_ram" "$migration_progress" "$migration_ram.stalled" "$migration_status_file"' 0
 trap 'exit 1' 1 2 15
-rm -f "$migration_progress" "$migration_ram.stalled"
+rm -f "$migration_progress" "$migration_ram.stalled" "$migration_status_file"
 cp {shlex.quote(migrator_path)} "$migration_ram" || exit $?
 chmod 755 "$migration_ram" || exit $?
 TC_XATTR_PROGRESS_PATH="$migration_progress" \
+    TC_XATTR_STATUS_PATH="$migration_status_file" \
     "$migration_ram" {shlex.quote(phase)} "$tdb" {shlex.quote(legacy_metadata)} {root_args} &
 migration_child=$!
 migration_stall_note="$migration_ram.stalled"
@@ -138,11 +145,42 @@ migration_stall_note="$migration_ram.stalled"
 ) </dev/null >/dev/null 2>&1 &
 migration_watchdog=$!
 migration_status=0
-wait "$migration_child" || migration_status=$?
+wait "$migration_child" 2>/dev/null || true
 migration_child=
+# The device shell answers 0 from wait for a background child however that child
+# exited, so the status the migrator recorded for itself is the only account of
+# the run. The binary is copied from this same deploy above, so a missing file
+# means the migrator died before reaching any of its own exits, and the file is
+# created empty and filled afterwards, so a value that is not a number means it
+# died in that window. Both are failures; exiting with the unparsed value would
+# fail the shell itself, which reports 2 here and so reads as the migrator's own
+# usage code rather than as the error it is.
+if [ -f "$migration_status_file" ]; then
+    read migration_status < "$migration_status_file" || migration_status=
+else
+    migration_status=
+fi
+# The watchdog only writes the note when it decided to kill, so the note means
+# the run was cut short whatever the migrator managed to record in the same
+# moment. Checked before the status is judged: a killed migrator has no signal
+# handler and so records nothing, and calling that absence a second, separate
+# failure would only restate the stall in a code that carries no information.
 if [ -f "$migration_stall_note" ]; then
     cat "$migration_stall_note" >&2
+    echo "migration status at the stall: ${{migration_status:-none recorded}}" >&2
     exit {XATTR_MIGRATION_STALL_EXIT_CODE}
+fi
+case "$migration_status" in
+    ''|*[!0-9]*)
+        echo "migration left no usable status" >&2
+        migration_status={XATTR_MIGRATION_NO_STATUS_EXIT_CODE}
+        ;;
+esac
+# exit truncates to a byte, so a value of 256 or more would land on 0 and read
+# as success. The migrator has no such code today; this keeps it that way.
+if [ "$migration_status" -gt 255 ]; then
+    echo "migration reported an out of range status: $migration_status" >&2
+    migration_status={XATTR_MIGRATION_NO_STATUS_EXIT_CODE}
 fi
 [ "$migration_status" = 0 ] || exit "$migration_status"
 /bin/sync || exit $?

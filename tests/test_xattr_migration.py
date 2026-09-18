@@ -22,7 +22,16 @@ def migration(tmp_path, monkeypatch):
     tdb.write_text("pending")
     calls = tmp_path / "calls"
     helper = payload / "xattr-hfs-migrate"
-    helper.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> {shlex.quote(str(calls))}\nexit "${{FAIL_MIGRATION:-0}}"\n')
+    # The real migrator records its own exit status: the device shell reports 0
+    # from wait for a background child however that child exited, so the deploy
+    # reads the status from the file instead. A stub that skipped it would be
+    # testing a migrator that cannot exist.
+    helper.write_text(
+        f'#!/bin/sh\n'
+        f'printf "%s\\n" "$@" >> {shlex.quote(str(calls))}\n'
+        f'echo "${{FAIL_MIGRATION:-0}}" > "$TC_XATTR_STATUS_PATH"\n'
+        f'exit "${{FAIL_MIGRATION:-0}}"\n'
+    )
     helper.chmod(0o755)
     binary = Path("unused")
     plan = build_deployment_plan(
@@ -506,7 +515,9 @@ def test_deploy_migration_survives_a_long_run_that_keeps_reporting(migration, mo
         '    i=$((i + 1))\n'
         '    echo "$i" > "$TC_XATTR_PROGRESS_PATH"\n'
         '    /bin/sleep 1\ndone\n'
-        'echo done\nexit 0\n'
+        'echo done\n'
+        'echo 0 > "$TC_XATTR_STATUS_PATH"\n'
+        'exit 0\n'
     )
     m.helper.chmod(0o755)
 
@@ -583,3 +594,102 @@ def test_deploy_migration_runs_a_migrator_that_ignores_the_progress_variable(mig
 
     assert executor.XATTR_MIGRATION_STALL_SENTINEL not in result.output
     assert m.calls.read_text().splitlines()[0] == "copy"
+
+
+def test_deploy_migration_reads_the_status_the_migrator_recorded(migration):
+    # The device shell answers 0 from wait for a background child however that
+    # child exited, so a migrator that failed is indistinguishable from one that
+    # succeeded unless its own status is read back. Stand in for that shell with
+    # a helper that records a failure and still exits 0.
+    m = migration
+    m.helper.write_text(
+        '#!/bin/sh\n'
+        'if [ -n "${TC_XATTR_STATUS_PATH:-}" ]; then echo 4 > "$TC_XATTR_STATUS_PATH"; fi\n'
+        'exit 0\n'
+    )
+    m.helper.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        executor.migrate_xattr_tdb_to_hfs(
+            m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+        )
+
+    assert caught.value.returncode == 4
+
+
+def test_deploy_migration_rejects_a_migrator_that_records_nothing(migration):
+    # The migrator is copied from this same deploy, so it always knows how to
+    # record a status. One that exits without writing it died before reaching an
+    # exit of its own, which the device shell would otherwise report as success.
+    m = migration
+    m.helper.write_text('#!/bin/sh\nexit 0\n')
+    m.helper.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        executor.migrate_xattr_tdb_to_hfs(
+            m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+        )
+
+    assert caught.value.returncode == executor.XATTR_MIGRATION_NO_STATUS_EXIT_CODE
+
+
+def test_deploy_migration_rejects_a_status_that_is_not_a_number(migration):
+    # The status file is created empty and filled afterwards, so a migrator
+    # killed in that window leaves nothing readable. Exiting with the unparsed
+    # value would fail the shell itself and report 255.
+    m = migration
+    m.helper.write_text(
+        '#!/bin/sh\n'
+        ': > "$TC_XATTR_STATUS_PATH"\n'
+        'exit 0\n'
+    )
+    m.helper.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        executor.migrate_xattr_tdb_to_hfs(
+            m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+        )
+
+    assert caught.value.returncode == executor.XATTR_MIGRATION_NO_STATUS_EXIT_CODE
+
+
+def test_deploy_migration_reports_a_stall_with_the_status_it_found(migration, monkeypatch):
+    # A watchdog kill and a migrator finishing can land in the same moment. The
+    # note means the run was cut short either way, so it stays the diagnosis,
+    # and the recorded status is reported with it rather than replacing it.
+    # Recording 4 and then stalling builds exactly that collision.
+    m = migration
+    _fast_watchdog(monkeypatch)
+    m.helper.write_text(
+        '#!/bin/sh\n'
+        'echo 4 > "$TC_XATTR_STATUS_PATH"\n'
+        'sleep 30\n'
+    )
+    m.helper.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        executor.migrate_xattr_tdb_to_hfs(
+            m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+        )
+
+    assert caught.value.returncode == executor.XATTR_MIGRATION_STALL_EXIT_CODE
+    assert executor.XATTR_MIGRATION_STALL_SENTINEL in (caught.value.stderr or "")
+    assert "migration status at the stall: 4" in (caught.value.stderr or "")
+
+
+def test_deploy_migration_reports_a_stall_that_recorded_nothing(migration, monkeypatch):
+    # The ordinary stall: a killed migrator has no signal handler, so it records
+    # nothing. Saying so is the honest report -- judging that absence separately
+    # would restate the stall as a second, unrelated-looking failure.
+    m = migration
+    _fast_watchdog(monkeypatch)
+    m.helper.write_text('#!/bin/sh\nsleep 30\n')
+    m.helper.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        executor.migrate_xattr_tdb_to_hfs(
+            m.connection, m.plan, phase="copy", legacy_metadata="netatalk"
+        )
+
+    assert caught.value.returncode == executor.XATTR_MIGRATION_STALL_EXIT_CODE
+    assert "migration status at the stall: none recorded" in (caught.value.stderr or "")
