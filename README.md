@@ -6,49 +6,19 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
 [![macOS App](https://img.shields.io/badge/macOS%20app-download-brightgreen)](https://github.com/jamesyc/TimeCapsuleSMB/releases/latest)
 
-Apple AirPort Time Capsules only support AFP and SMB1 natively. Apple removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). This is a modern Samba setup that runs directly on the Time Capsule itself; macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
+Apple AirPort Time Capsules only support AFP and SMB1 natively. Apple has removed AFP support in macOS 27 (and removed SMB1 support from macOS a long time ago). TimeCapsuleSMB is a Samba setup that runs directly on the Time Capsule itself and makes it compatible with macOS 27+ computers. Newer computers running macOS 27 can connect to the Time Capsule as a network share, and use it for Time Machine backups. Your old backup will automatically work after updating, no wipe required!
 
 This project has 2 parts:
 - a fork of Samba 4, modified to work on the Apple Time Capsule 
 - the installers for the Samba binary, via terminal or the **macOS GUI app**. 
 
-The Time Capsule will run its own Samba 4.25.0rc2 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections. You can open Finder, choose Connect to Server, and use a normal SMB URL without relying on Apple’s legacy stack. You can also use the disk for Time Machine backups:\
+The Apple Time Capsule will run its own Samba 4.25 server, and will advertise SMB over Bonjour (show up automatically in the "Network" folder on macOS). You can open Finder or use Connect to Server, and you can use a normal SMB URL without relying on Apple’s legacy SMB1 stack. You can also use the disk for Time Machine backups:\
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />  
-You get the full Apple experience reproduced: after you install this, you do not have to worry about it again, even if the device IP address changes. It will show up automatically in the Time Machine section in the Settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
+You get the full Apple experience reproduced: after you install this, you generally do not have to worry about it again, even if the device IP address changes. It will show up automatically in the Time Machine section in the Settings app, and it will use mDNS/Bonjour so it will work fine even if the IP address is not static and gets changed.
 
 The "Install" or `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
-On HFS disks, the patched Samba runtime stores Mac metadata in the same native
-objects used by Apple's AFP server. This lets AFP and SMB observe the same
-FinderInfo, tags, extended attributes, and resource forks instead of maintaining
-separate protocol-specific copies:
-
-| Mac concept | SMB representation | Native HFS storage | Future FAT32 storage | Deploy migrator |
-| --- | --- | --- | --- | --- |
-| FinderInfo | `:AFP_AfpInfo:$DATA` | `com.apple.FinderInfo` catalog metadata | Configured `fruit:metadata` representation in `xattr.tdb` | TDB `stream\|netatalk` → native FinderInfo |
-| Tags and extended metadata | `:com.apple.…:$DATA` | Canonical native HFS xattr | Encoded stream in `xattr.tdb` | TDB stream → canonical HFS xattr |
-| Resource fork | `:AFP_Resource:$DATA` | `file/..namedfork/rsrc` | `._file` AppleDouble sidecar | AppleDouble resource entry → native HFS resource fork |
-| Windows-only ADS | Ordinary named stream | Encoded and, when necessary, sharded HFS xattrs | `xattr.tdb` | TDB stream/extents → native HFS xattrs |
-| NT ACL | Samba security xattr | Native HFS security xattr | `xattr.tdb` | TDB security xattr → native HFS xattr |
-
-When the legacy `xattr.tdb` exists, deploy performs this as a two-phase upgrade.
-Fresh installs and already-migrated systems skip the disk scan. An upgrade first
-copies and verifies legacy TDB and `._` AppleDouble contents while leaving the
-old representation intact.
-After the new payload is uploaded and verified, it reverifies the native values
-and retires each file's TDB record only after its native metadata is flushed and
-verified. Unmatched records remain for disconnected disks; an empty TDB is deleted.
-Deploy and boot migrate the volumes that are currently mounted without withholding
-healthy shares for a disconnected disk. The manager migrates a pending disk before
-publishing it when that disk is attached later. The migration helper stays on disk
-and is copied temporarily into RAM for each run.
-
-FAT32 volumes are not currently mounted or discovered. The non-HFS column above
-documents the intended fallback: if FAT32 support is added later, `xattr_tdb`
-continues using its real TDB backend and `fruit:resource=file` continues using
-AppleDouble rather than native HFS forks.
-
-NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices may need a manual `activate` after every reboot**, or you can **use this to flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot**. If you do not flash the boot hook, then Samba will not start automatically on an older Time Capsule!
+NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices can do a manual `activate` after every reboot**, or you can **use this to flash the firmware (to add a boot hook) to allow it to automatically start Samba on reboot**. If you do not flash the boot hook, then Samba will not start automatically on an older Time Capsule!
 
 The current authentication model accepts any user as the username, and the Samba password is the current Time Capsule device password. At boot, the device reads its live AirPort `syPW` value and generates the Samba password file in RAM, so a device-password change is picked up after reboot. Guest access is disabled.
 
@@ -60,6 +30,7 @@ If TimeCapsuleSMB has been useful to you, you can [buy me a coffee](https://buym
 
 You will need:  
 - A macOS 14+ or Linux machine on the same local network as the Time Capsule
+- External storage must currently use HFS+. FAT32 disks are not supported.
 - The password for the Time Capsule
 
 For the python setup, you need:  
@@ -69,7 +40,7 @@ For the python setup, you need:
 
 During first-time setup, if necessary `configure` can enable SSH on the Time Capsule.
 
-Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. Matching one-shot migration binaries are under `bin/xattr-migrate*`; existing installations must complete that migration before starting this Samba build. The binaries are statically compiled. The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled. The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
 
 ## Quick Start (macOS app)
 
@@ -90,6 +61,7 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 9. (For gen 1-4 devices only) Go to the maintenance page "Persistent NetBSD4 Boot Hook" section. Install the firmware patch to allow the device to automatically start Samba after reboots. Click "Back Up and Inspect" and "Plan Patch" to check if it can be installed; then run "Write Patch" to flash it to your device.    
    <img width="634" height="429" alt="image" src="https://github.com/user-attachments/assets/e35d8934-975b-4079-8087-8c22984a3165" />
 10. (Optional) Wait 5-10 minutes for Samba to fully start up, then go to the Checkup tab and run a Checkup.
+11. Delete the old AFP servers listed in macOS Time Machine settings. Then add the new Samba server destination. *This step will not delete your old backups from the disk.*
 
 Please [read the FAQ](FAQ.md) for more information. If you have an issue that could not be resolved via the FAQ, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help.
 
@@ -335,7 +307,8 @@ There are other constraints the Time Capsule places on us:
 - Samba 4.0.x has the same issue
 - Samba 4.2.x was much harder to compile, and had a `talloc` / `loadparm` use-after-free runtime bug
 - Samba 4.3.x was the first version to work as a network share, but it does not support vfs_fruit for Time Machine backup support
-- Samba 4.8.x was the first version that fully worked; current builds ship Samba 4.25.0rc2.
+- Samba 4.8.x was the first version that fully worked, but was extremely slow (less than 1MB/s)
+- Samba 4.25.0rc2 is the current build we ship with.
 
 ## Troubleshooting
 
