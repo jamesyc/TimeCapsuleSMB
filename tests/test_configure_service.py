@@ -34,7 +34,6 @@ class ConfigureServiceTests(unittest.TestCase):
     def test_build_configure_env_values_handles_advanced_metadata_settings(self) -> None:
         preserved = build_configure_env_values(
             {
-                "TC_SMB_BIND_LAN_ONLY": "false",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_MDNS_ADVERTISE_AFP": "true",
                 "TC_REQUIRE_SMB_ENCRYPTION": "true",
@@ -52,7 +51,6 @@ class ConfigureServiceTests(unittest.TestCase):
             password="pw",
             ssh_opts="-o foo",
             configure_id="config-id",
-            smb_bind_lan_only=True,
             smb_browse_compatibility=True,
             mdns_advertise_afp=True,
             require_smb_encryption=True,
@@ -60,13 +58,11 @@ class ConfigureServiceTests(unittest.TestCase):
             vfs_aio_fork_enabled=True,
         )
 
-        self.assertEqual(preserved["TC_SMB_BIND_LAN_ONLY"], "false")
         self.assertEqual(preserved["TC_SMB_BROWSE_COMPATIBILITY"], "true")
         self.assertEqual(preserved["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(preserved["TC_REQUIRE_SMB_ENCRYPTION"], "true")
         self.assertEqual(preserved["TC_FRUIT_METADATA_NETATALK"], "true")
         self.assertEqual(preserved["TC_VFS_AIO_FORK_ENABLED"], "true")
-        self.assertEqual(enabled["TC_SMB_BIND_LAN_ONLY"], "true")
         self.assertEqual(enabled["TC_SMB_BROWSE_COMPATIBILITY"], "true")
         self.assertEqual(enabled["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(enabled["TC_REQUIRE_SMB_ENCRYPTION"], "true")
@@ -452,7 +448,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertEqual(result.identity.syap, "119")
         self.assertEqual(result.identity.model, "TimeCapsule8,119")
         self.assertEqual(written["TC_HOST"], "root@10.0.0.2")
-        self.assertEqual(written["TC_SMB_BIND_LAN_ONLY"], "false")
+        self.assertNotIn("TC_SMB_BIND_LAN_ONLY", written)
         self.assertEqual(written["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(written["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(written["TC_REQUIRE_SMB_ENCRYPTION"], "false")
@@ -464,6 +460,67 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertIn({"ssh_final_reachable": True}, debug_fields)
         self.assertIn({"ssh_final_reachable": True}, update_fields)
         self.assertIn({"configure_id": "config-id", "device_syap": "119", "device_model": "TimeCapsule8,119"}, update_fields)
+
+    def test_run_configure_flow_strips_removed_settings_with_one_notice_each(self) -> None:
+        probe_state = self.make_probe_state()
+        written: dict[str, str] = {}
+        callbacks, _stages, logs, _debug_fields, _update_fields = self.callbacks()
+
+        def write_env(_path: Path, values: Mapping[str, str]) -> None:
+            written.update(values)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            run_configure_flow(
+                ConfigureFlowRequest(
+                    existing={
+                        "TC_SMB_BIND_LAN_ONLY": "true",
+                        "TC_MDNS_HOST_LABEL": "old-label",
+                        "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,113",
+                        "TC_CUSTOM": "kept",
+                    },
+                    env_path=env_path,
+                    host="root@10.0.0.2",
+                    password="pw",
+                    ssh_opts="-o foo",
+                    configure_id="config-id",
+                    persist_password=False,
+                    probe=mock.Mock(return_value=probe_state),
+                    write_env=write_env,
+                ),
+                callbacks=callbacks,
+            )
+
+        # Removed settings leave the file; unrelated custom values survive.
+        self.assertNotIn("TC_SMB_BIND_LAN_ONLY", written)
+        self.assertNotIn("TC_MDNS_HOST_LABEL", written)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", written)
+        self.assertEqual(written["TC_CUSTOM"], "kept")
+        notices = [line for line in logs if line.startswith("Removing ")]
+        self.assertEqual(len(notices), 3, logs)
+        self.assertTrue(any("TC_SMB_BIND_LAN_ONLY" in line and "LAN-only" in line for line in notices))
+        self.assertTrue(any("TC_MDNS_HOST_LABEL" in line and "AirPort name" in line for line in notices))
+        self.assertTrue(any("TC_MDNS_DEVICE_MODEL" in line and "observed from the device" in line for line in notices))
+
+    def test_run_configure_flow_is_silent_when_no_removed_settings_exist(self) -> None:
+        probe_state = self.make_probe_state()
+        callbacks, _stages, logs, _debug_fields, _update_fields = self.callbacks()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_configure_flow(
+                ConfigureFlowRequest(
+                    existing={"TC_CUSTOM": "kept"},
+                    env_path=Path(tmp) / ".env",
+                    host="root@10.0.0.2",
+                    password="pw",
+                    ssh_opts="-o foo",
+                    configure_id="config-id",
+                    persist_password=False,
+                    probe=mock.Mock(return_value=probe_state),
+                    write_env=lambda _path, _values: None,
+                ),
+                callbacks=callbacks,
+            )
+        self.assertFalse(any(line.startswith("Removing ") for line in logs), logs)
 
     def test_run_configure_flow_can_save_reachable_target_without_authentication(self) -> None:
         probe_state = self.make_auth_failed_probe_state()
@@ -489,7 +546,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertIs(result.probe_state, probe_state)
         self.assertEqual(written["TC_PASSWORD"], "badpw")
         self.assertEqual(written["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(written["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", written)
 
     def test_run_configure_flow_normalizes_acp_authentication_failure(self) -> None:
         probe_state = ProbedDeviceState(

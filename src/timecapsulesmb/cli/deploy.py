@@ -84,7 +84,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
-    parser.add_argument("--no-nbns", action="store_true", help="Disable the bundled NBNS responder on the next boot")
+    parser.add_argument("--no-nbns", action="store_true", help="Disable Apple's native NBNS service on the next boot")
     parser.add_argument(
         "--enable-rsync",
         action="store_true",
@@ -95,12 +95,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         dest="internal_share_use_disk_root",
         positive_flags=("--internal-share-use-disk-root",),
         negative_flags=("--no-internal-share-use-disk-root",),
-    )
-    add_boolean_override_arguments(
-        parser,
-        dest="smb_bind_lan_only",
-        positive_flags=("--smb-bind-lan-only",),
-        negative_flags=("--no-smb-bind-lan-only",),
     )
     add_boolean_override_arguments(
         parser,
@@ -317,7 +311,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     rsync_enabled=deploy_options.rsync_enabled,
                     debug_logging=args.debug_logging,
                     internal_share_use_disk_root=args.internal_share_use_disk_root,
-                    smb_bind_lan_only=args.smb_bind_lan_only,
                     smb_browse_compatibility=args.smb_browse_compatibility,
                     mdns_advertise_afp=mdns_advertise_afp,
                     any_protocol=any_protocol,

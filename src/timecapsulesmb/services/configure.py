@@ -8,11 +8,12 @@ from typing import Mapping
 
 from timecapsulesmb.configure_defaults import existing_config_value_or_default, validated_value_or_empty
 from timecapsulesmb.core.config import (
+    AIRPORT_SYAP_TO_MODEL,
     DEFAULTS,
     CONFIG_VALIDATORS,
-    infer_mdns_device_model_from_airport_syap,
     parse_bool,
     preserved_env_file_values,
+    REMOVED_ENV_FILE_KEYS,
     write_env_file,
 )
 from timecapsulesmb.core.net import canonical_ssh_target, endpoint_host
@@ -47,7 +48,6 @@ class ObservedDeviceIdentity:
     syap: str | None
     syap_source: str | None
     model: str | None
-    model_source: str | None
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,6 @@ class ConfigureFlowRequest:
     ssh_wait_timeout: int = 180
     verbose_wait: bool = True
     internal_share_use_disk_root: bool | None = None
-    smb_bind_lan_only: bool | None = None
     smb_browse_compatibility: bool | None = None
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
@@ -77,7 +76,6 @@ class ConfigureFlowRequest:
     ata_standby: object | None = None
     probe: Callable[[SshConnection], ProbedDeviceState] | None = None
     write_env: Callable[[Path, Mapping[str, str]], None] | None = None
-    infer_model_from_syap: Callable[[str], str | None] = infer_mdns_device_model_from_airport_syap
 
 
 @dataclass(frozen=True)
@@ -172,7 +170,6 @@ def observed_device_identity(
     compatibility: DeviceCompatibility | None,
     *,
     discovered_airport_syap: str | None = None,
-    infer_model_from_syap: Callable[[str], str | None] = infer_mdns_device_model_from_airport_syap,
 ) -> ObservedDeviceIdentity:
     syap_source: str | None = "probed"
     syap = None if compatibility is None else compatibility.exact_syap
@@ -184,19 +181,14 @@ def observed_device_identity(
         ) or None
         syap_source = "discovered" if syap is not None else None
 
-    model_source: str | None = "probed"
     model = None if compatibility is None else compatibility.exact_model
     if model is None and syap is not None:
-        model = infer_model_from_syap(syap)
-        model_source = "derived" if model is not None else None
-    elif model is None:
-        model_source = None
+        model = AIRPORT_SYAP_TO_MODEL.get(syap)
 
     return ObservedDeviceIdentity(
         syap=syap,
         syap_source=syap_source,
         model=model,
-        model_source=model_source,
     )
 
 
@@ -216,7 +208,6 @@ def run_configure_flow(
         ssh_opts=request.ssh_opts,
         configure_id=request.configure_id,
         internal_share_use_disk_root=request.internal_share_use_disk_root,
-        smb_bind_lan_only=request.smb_bind_lan_only,
         smb_browse_compatibility=request.smb_browse_compatibility,
         mdns_advertise_afp=request.mdns_advertise_afp,
         any_protocol=request.any_protocol,
@@ -296,13 +287,13 @@ def run_configure_flow(
     identity = observed_device_identity(
         compatibility,
         discovered_airport_syap=request.discovered_airport_syap,
-        infer_model_from_syap=request.infer_model_from_syap,
     )
     if identity.syap is not None:
         values["TC_AIRPORT_SYAP"] = identity.syap
-    if identity.model is not None:
-        values["TC_MDNS_DEVICE_MODEL"] = identity.model
 
+    for removed_key, removed_reason in REMOVED_ENV_FILE_KEYS.items():
+        if removed_key in request.existing:
+            callbacks.message(f"Removing {removed_key} from {request.env_path}: {removed_reason}.")
     callbacks.stage("write_env")
     request.env_path.parent.mkdir(parents=True, exist_ok=True)
     write_configure_env_file(
@@ -357,7 +348,6 @@ def build_configure_env_values(
     ssh_opts: str,
     configure_id: str,
     internal_share_use_disk_root: bool | None = None,
-    smb_bind_lan_only: bool | None = None,
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
@@ -372,7 +362,6 @@ def build_configure_env_values(
     values = build_managed_config_env_values(
         existing,
         internal_share_use_disk_root=internal_share_use_disk_root,
-        smb_bind_lan_only=smb_bind_lan_only,
         smb_browse_compatibility=smb_browse_compatibility,
         mdns_advertise_afp=mdns_advertise_afp,
         any_protocol=any_protocol,
@@ -397,7 +386,6 @@ def build_managed_config_env_values(
     existing: dict[str, str],
     *,
     internal_share_use_disk_root: bool | None = None,
-    smb_bind_lan_only: bool | None = None,
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
@@ -442,11 +430,6 @@ def build_managed_config_env_values(
             parse_bool(existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"]))
             if internal_share_use_disk_root is None
             else internal_share_use_disk_root
-        ) else "false",
-        "TC_SMB_BIND_LAN_ONLY": "true" if (
-            parse_bool(existing.get("TC_SMB_BIND_LAN_ONLY", DEFAULTS["TC_SMB_BIND_LAN_ONLY"]))
-            if smb_bind_lan_only is None
-            else smb_bind_lan_only
         ) else "false",
         "TC_SMB_BROWSE_COMPATIBILITY": "true" if (
             parse_bool(existing.get("TC_SMB_BROWSE_COMPATIBILITY", DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"]))

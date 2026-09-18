@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import shlex
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
@@ -28,8 +29,7 @@ from timecapsulesmb.deploy.executor import (
 )
 from timecapsulesmb.deploy.commands import RemoteAction, StopProcessAction
 from timecapsulesmb.deploy.planner import (
-    BINARY_MDNS_SOURCE,
-    BINARY_NBNS_SOURCE,
+    BINARY_DISCOVERY_SOURCE,
     BINARY_SERVICE_SOURCE,
     BINARY_TELEMETRY_SOURCE,
     BINARY_RSYNC_SOURCE,
@@ -91,6 +91,7 @@ from timecapsulesmb.transport.ssh import (
     local_scp_path,
     local_scp_supports_legacy_option,
     scp_upload_transport,
+    run_ssh,
 )
 from timecapsulesmb.transport.errors import is_ssh_timeout_error
 
@@ -149,8 +150,7 @@ class DeployPayloadContext:
 class DeployArtifactPaths:
     smbd: Path
     xattr_migrator: Path
-    mdns_advertiser: Path
-    nbns_advertiser: Path
+    discovery: Path
     rsync: Path
     service: Path
     telemetry: Path
@@ -171,7 +171,6 @@ class DeployRuntimeConfig:
     rsync_enabled: bool = False
     debug_logging: bool | None = None
     internal_share_use_disk_root: bool | None = None
-    smb_bind_lan_only: bool | None = None
     smb_browse_compatibility: bool | None = None
     mdns_advertise_afp: bool | None = None
     any_protocol: bool | None = None
@@ -276,6 +275,59 @@ class DeployDeviceError(DeviceError):
     def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+FLASH_CAPACITY_MARGIN_BYTES = 16 * 1024
+
+
+def _allocated_flash_bytes(size: int) -> int:
+    return ((size + 1023) // 1024) * 1024
+
+
+def _required_flash_upload_peak(
+    transfers: list[FileTransfer], source_resolver: Mapping[str, Path], remote_sizes: Mapping[str, int]
+) -> int:
+    free_change = 0
+    peak = 0
+    for transfer in transfers:
+        if transfer.mode != "flash_atomic":
+            continue
+        new_size = _allocated_flash_bytes(source_resolver[transfer.source_id].stat().st_size)
+        peak = max(peak, new_size - free_change)
+        old_size = _allocated_flash_bytes(remote_sizes.get(transfer.destination, 0))
+        free_change += old_size - new_size
+    return peak + FLASH_CAPACITY_MARGIN_BYTES
+
+
+def _probe_flash_capacity(
+    connection: SshConnection,
+    transfers: list[FileTransfer],
+    source_resolver: Mapping[str, Path],
+) -> tuple[int, int]:
+    flash_transfers = [transfer for transfer in transfers if transfer.mode == "flash_atomic"]
+    quoted_targets = " ".join(shlex.quote(transfer.destination) for transfer in flash_transfers)
+    command = (
+        "/bin/df -k /mnt/Flash || exit $?; "
+        "echo __TC_FLASH_FILES__; "
+        f"/bin/ls -ln {quoted_targets} 2>/dev/null || true"
+    )
+    result = run_ssh(connection, f"/bin/sh -c {shlex.quote(command)}")
+    try:
+        df_output, files_output = result.stdout.split("__TC_FLASH_FILES__\n", 1)
+        df_fields = [line.split() for line in df_output.splitlines() if line.split()]
+        available_bytes = int(df_fields[-1][3]) * 1024
+        remote_sizes: dict[str, int] = {}
+        targets = {transfer.destination for transfer in flash_transfers}
+        for line in files_output.splitlines():
+            fields = line.split()
+            if len(fields) >= 9 and fields[-1] in targets:
+                remote_sizes[fields[-1]] = int(fields[4])
+    except (IndexError, ValueError) as exc:
+        raise DeployDeviceError(
+            "Could not read available space on /mnt/Flash safely; no services were stopped.",
+            code="flash_capacity_probe_failed",
+        ) from exc
+    return available_bytes, _required_flash_upload_peak(flash_transfers, source_resolver, remote_sizes)
 
 
 def default_deploy_service_dependencies() -> DeployServiceDependencies:
@@ -388,10 +440,8 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
         return "upload_smbd"
     if transfer.source_id == BINARY_XATTR_MIGRATOR_SOURCE:
         return "upload_xattr_migrator"
-    if transfer.source_id == BINARY_MDNS_SOURCE:
-        return "upload_mdns_advertiser"
-    if transfer.source_id == BINARY_NBNS_SOURCE:
-        return "upload_nbns_advertiser"
+    if transfer.source_id == BINARY_DISCOVERY_SOURCE:
+        return "upload_discovery"
     if transfer.source_id in {BINARY_RSYNC_SOURCE, GENERATED_RSYNC_CONFIG_SOURCE}:
         return "upload_rsync"
     if transfer.source_id in DEPLOY_UPLOAD_BOOT_SOURCES:
@@ -428,10 +478,8 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
 def uploaded_file_message(transfer: FileTransfer) -> str | None:
     if transfer.source_id == BINARY_SMBD_SOURCE:
         return "Uploaded smbd."
-    if transfer.source_id == BINARY_MDNS_SOURCE and transfer.mode == "flash_atomic":
-        return "Uploaded mdns."
-    if transfer.source_id == BINARY_NBNS_SOURCE:
-        return "Uploaded nbns."
+    if transfer.source_id == BINARY_DISCOVERY_SOURCE and transfer.mode == "flash_atomic":
+        return "Uploaded discovery service."
     if transfer.source_id == GENERATED_RSYNC_CONFIG_SOURCE:
         return "Uploaded rsync runtime files."
     if transfer.source_id == PACKAGED_DFREE_SH_SOURCE:
@@ -471,7 +519,7 @@ def _upload_payload_kwargs_for_func(upload_payload_func: Callable[..., object], 
 
 
 def pre_upload_action_message(action: RemoteAction) -> str | None:
-    if isinstance(action, StopProcessAction) and action.name == "nbns":
+    if isinstance(action, StopProcessAction) and action.name == "discoveryd":
         return "Cleaning up previous deployment files..."
     return None
 
@@ -489,8 +537,7 @@ def resolve_deploy_artifact_paths(
     return DeployArtifactPaths(
         smbd=resolved_artifacts["smbd"].absolute_path,
         xattr_migrator=resolved_artifacts["xattr_migrator"].absolute_path,
-        mdns_advertiser=resolved_artifacts["mdns"].absolute_path,
-        nbns_advertiser=resolved_artifacts["nbns"].absolute_path,
+        discovery=resolved_artifacts["discovery"].absolute_path,
         rsync=resolved_artifacts["rsync"].absolute_path,
         service=resolved_artifacts["service"].absolute_path,
         telemetry=resolved_artifacts["telemetry"].absolute_path,
@@ -531,8 +578,7 @@ def prepare_deploy_preflight(
         connection.host,
         build_dry_run_payload_home(options.payload_dir_name),
         artifacts.smbd,
-        artifacts.mdns_advertiser,
-        artifacts.nbns_advertiser,
+        artifacts.discovery,
         xattr_migrator_path=artifacts.xattr_migrator,
         rsync_path=artifacts.rsync,
         service_path=artifacts.service,
@@ -685,8 +731,7 @@ def prepare_deployment_plan(
         connection.host,
         payload_home,
         artifacts.smbd,
-        artifacts.mdns_advertiser,
-        artifacts.nbns_advertiser,
+        artifacts.discovery,
         xattr_migrator_path=artifacts.xattr_migrator,
         rsync_path=artifacts.rsync,
         service_path=artifacts.service,
@@ -730,8 +775,7 @@ def _deployment_upload_sources(
     return {
         BINARY_SMBD_SOURCE: plan.smbd_path,
         BINARY_XATTR_MIGRATOR_SOURCE: plan.xattr_migrator_path,
-        BINARY_MDNS_SOURCE: plan.mdns_path,
-        BINARY_NBNS_SOURCE: plan.nbns_path,
+        BINARY_DISCOVERY_SOURCE: plan.discovery_path,
         BINARY_SERVICE_SOURCE: plan.service_path,
         BINARY_TELEMETRY_SOURCE: plan.telemetry_path,
         BINARY_RSYNC_SOURCE: plan.rsync_path,
@@ -795,6 +839,7 @@ def upload_and_verify_deployment_payload(
     verify_payload_home=None,
     flush_remote_writes=None,
     migrate_xattrs_func=None,
+    probe_flash_capacity_func=None,
     dependencies: DeployServiceDependencies | None = None,
 ) -> None:
     callbacks = callbacks or OperationCallbacks()
@@ -811,6 +856,8 @@ def upload_and_verify_deployment_payload(
         flush_remote_writes = dependencies.flush_remote_writes
     if migrate_xattrs_func is None:
         migrate_xattrs_func = dependencies.migrate_xattrs
+    if probe_flash_capacity_func is None:
+        probe_flash_capacity_func = _probe_flash_capacity
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
     legacy_metadata = "netatalk" if runtime_config.fruit_metadata_netatalk else "stream"
@@ -882,13 +929,6 @@ def upload_and_verify_deployment_payload(
             upload_transport=scp_upload_transport(connection),
         )
 
-    callbacks.stage("pre_upload_actions")
-    try:
-        run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
-    except Exception as exc:
-        if _manager_stop_timed_out(exc):
-            raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code="manager_stop_timeout") from exc
-        raise
     callbacks.stage("prepare_deployment_files")
     flash_config_text = render_flash_config_func(
         config,
@@ -898,7 +938,6 @@ def upload_and_verify_deployment_payload(
         rsync_enabled=runtime_config.rsync_enabled,
         debug_logging=runtime_config.debug_logging,
         internal_share_use_disk_root=runtime_config.internal_share_use_disk_root,
-        smb_bind_lan_only=runtime_config.smb_bind_lan_only,
         smb_browse_compatibility=runtime_config.smb_browse_compatibility,
         mdns_advertise_afp=runtime_config.mdns_advertise_afp,
         any_protocol=runtime_config.any_protocol,
@@ -920,6 +959,37 @@ def upload_and_verify_deployment_payload(
             boot_asset_path_func=boot_asset_path_func,
             dependencies=dependencies,
         )
+        callbacks.stage("preflight_flash_capacity")
+        try:
+            available_flash_bytes, required_flash_bytes = probe_flash_capacity_func(
+                connection, plan.uploads, upload_sources
+            )
+        except DeployDeviceError:
+            raise
+        except Exception as exc:
+            raise DeployDeviceError(
+                "Could not read available space on /mnt/Flash safely; no services were stopped.",
+                code="flash_capacity_probe_failed",
+            ) from exc
+        callbacks.debug(
+            flash_available_bytes=available_flash_bytes,
+            flash_required_peak_bytes=required_flash_bytes,
+        )
+        if available_flash_bytes < required_flash_bytes:
+            raise DeployDeviceError(
+                "Not enough free space on /mnt/Flash for the atomic upgrade "
+                f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
+                "No services were stopped and the existing discovery binary was retained.",
+                code="insufficient_flash_space",
+            )
+
+        callbacks.stage("pre_upload_actions")
+        try:
+            run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
+        except Exception as exc:
+            if _manager_stop_timed_out(exc):
+                raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code="manager_stop_timeout") from exc
+            raise
         update_scp_upload_telemetry()
         if on_before_upload is not None:
             on_before_upload()
@@ -1059,6 +1129,11 @@ def upload_and_verify_deployment_payload(
         on_verified=on_verified,
         dependencies=dependencies,
     )
+    if plan.post_verify_actions:
+        callbacks.stage("cleanup_legacy_flash_discovery")
+        run_remote_actions_func(connection, plan.post_verify_actions)
+        callbacks.stage("flush_legacy_flash_cleanup")
+        flush_remote_writes(connection)
     run_xattr_migration_phase("cleanup")
 
 
@@ -1292,7 +1367,6 @@ def render_flash_runtime_config(
     rsync_enabled: bool = False,
     debug_logging: bool | None = None,
     internal_share_use_disk_root: bool | None = None,
-    smb_bind_lan_only: bool | None = None,
     smb_browse_compatibility: bool | None = None,
     mdns_advertise_afp: bool | None = None,
     any_protocol: bool | None = None,
@@ -1305,10 +1379,6 @@ def render_flash_runtime_config(
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
-    smb_bind_lan_only_default = config.get(
-        "TC_SMB_BIND_LAN_ONLY",
-        DEFAULTS["TC_SMB_BIND_LAN_ONLY"],
-    )
     smb_browse_compatibility_default = config.get(
         "TC_SMB_BROWSE_COMPATIBILITY",
         DEFAULTS["TC_SMB_BROWSE_COMPATIBILITY"],
@@ -1349,11 +1419,6 @@ def render_flash_runtime_config(
         parse_bool(internal_root_default)
         if internal_share_use_disk_root is None
         else internal_share_use_disk_root
-    )
-    effective_smb_bind_lan_only = (
-        parse_bool(smb_bind_lan_only_default)
-        if smb_bind_lan_only is None
-        else smb_bind_lan_only
     )
     effective_any_protocol = (
         parse_bool(any_protocol_default)
@@ -1398,12 +1463,11 @@ def render_flash_runtime_config(
     effective_debug_logging = parse_bool(configured_debug_logging) if debug_logging is None else debug_logging
 
     values: list[tuple[str, str | int]] = [
-        ("TC_CONFIG_VERSION", 2),
+        ("TC_CONFIG_VERSION", 3),
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
         ("TELEMETRY", "true" if telemetry_enabled else "false"),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
-        ("SMB_BIND_LAN_ONLY", 1 if effective_smb_bind_lan_only else 0),
         ("SMB_BROWSE_COMPATIBILITY", 1 if effective_smb_browse_compatibility else 0),
         ("MDNS_ADVERTISE_AFP", 1 if effective_mdns_advertise_afp else 0),
         ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),

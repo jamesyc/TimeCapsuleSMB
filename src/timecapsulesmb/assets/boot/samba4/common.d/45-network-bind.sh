@@ -1,75 +1,4 @@
-tc_smb_bind_token_is_ipv4_cidr() {
-    token=$1
-
-    case "$token" in
-        ""|/*|*/|*/*/*|*[!0123456789./]*) return 1 ;;
-    esac
-
-    ip_part=${token%/*}
-    prefix_part=${token#*/}
-    case "$prefix_part" in
-        ""|*[!0123456789]*) return 1 ;;
-    esac
-    [ "$prefix_part" -le 32 ] 2>/dev/null || return 1
-
-    old_ifs=$IFS
-    IFS=.
-    set -- $ip_part
-    IFS=$old_ifs
-    [ "$#" -eq 4 ] || return 1
-
-    for octet in "$@"; do
-        case "$octet" in
-            ""|*[!0123456789]*) return 1 ;;
-        esac
-        [ "$octet" -le 255 ] 2>/dev/null || return 1
-    done
-
-    return 0
-}
-
-tc_smb_bind_token_is_ipv6_cidr() {
-    token=$1
-
-    case "$token" in
-        ""|/*|*/|*/*/*|*[!0123456789abcdefABCDEF:./]*) return 1 ;;
-        *:*) ;;
-        *) return 1 ;;
-    esac
-
-    prefix_part=${token#*/}
-    case "$prefix_part" in
-        ""|*[!0123456789]*) return 1 ;;
-    esac
-    [ "$prefix_part" -le 128 ] 2>/dev/null || return 1
-
-    return 0
-}
-
-tc_smb_bind_token_is_cidr() {
-    tc_smb_bind_token_is_ipv4_cidr "$1" || tc_smb_bind_token_is_ipv6_cidr "$1"
-}
-
-tc_normalize_smb_bind_tokens() {
-    bind_tokens=$1
-    normalized=
-
-    set -- $bind_tokens
-    [ "$#" -gt 0 ] || return 1
-
-    for cidr_token in "$@"; do
-        tc_smb_bind_token_is_cidr "$cidr_token" || return 1
-        if [ -n "$normalized" ]; then
-            normalized="$normalized $cidr_token"
-        else
-            normalized=$cidr_token
-        fi
-    done
-
-    printf '%s\n' "$normalized"
-}
-
-tc_normalize_mdns_socket_families() {
+tc_normalize_socket_families() {
     families=$1
     saw_ipv4=0
     saw_ipv6=0
@@ -107,42 +36,34 @@ tc_normalize_mdns_socket_families() {
     printf '%s\n' "$normalized"
 }
 
-tc_probe_smb_bind_tokens() {
-    bind_arg=--print-smb-bind-interfaces
-
-    [ -x "$TC_SERVICE_BIN" ] || return 1
-    if [ "${SMB_BIND_LAN_ONLY:-1}" = "1" ]; then
-        bind_arg=--print-smb-bind-interfaces-lan
-    fi
-    bind_tokens=$("$TC_SERVICE_BIN" "$bind_arg" 2>/dev/null) || return $?
-    tc_normalize_smb_bind_tokens "$bind_tokens" || return 1
-}
-
-tc_probe_mdns_socket_families() {
-    [ -x "$TC_MDNS_BIN" ] || return 1
-    families=$("$TC_MDNS_BIN" --print-mdns-socket-families 2>/dev/null) || return $?
-    tc_normalize_mdns_socket_families "$families" || return 1
-}
-
-tc_probe_nbns_socket_families() {
-    [ -x "$TC_NBNS_BIN" ] || return 1
-    families=$("$TC_NBNS_BIN" --print-nbns-socket-families 2>/dev/null) || return $?
-    tc_normalize_mdns_socket_families "$families" || return 1
-}
-
+# `service --print-smb-bind-interfaces` (v3.1.0) prints the Samba
+# `interfaces =` tokens on line 1 (loopback included, every SVC_SMB link
+# address, guide B.4) and `status=validated|incomplete
+# reason=<word>` on line 2 (B.9). With --retain-policy the remaining lines
+# carry the manager's process-local policy, which the helper validates on
+# its next invocation. No state file or shell interpretation of roles.
 tc_probe_smb_bind_interfaces() {
-    bind_tokens=$(tc_probe_smb_bind_tokens) || return $?
-    printf '127.0.0.1/8 ::1/128 %s\n' "$bind_tokens"
-}
-
-tc_auto_ip_unavailable_status() {
-    [ "$1" = "11" ]
-}
-
-tc_mark_smb_deferred_no_ip() {
-    TC_MANAGER_SMB_DEFERRED_NO_IP=1
-    if [ "${TC_SMB_BIND_WAIT_LOGGED:-0}" != "1" ]; then
-        tc_log "Samba bind discovery deferred; no usable address has appeared yet"
-        TC_SMB_BIND_WAIT_LOGGED=1
-    fi
+    [ -x "$TC_SERVICE_BIN" ] || return 1
+    tc_bind_output=$(printf '%s\n' "${TC_MANAGER_BIND_POLICY:-policy none}" | "$TC_SERVICE_BIN" --print-smb-bind-interfaces --retain-policy 2>/dev/null) || return 1
+    tc_bind_tokens=$(printf '%s\n' "$tc_bind_output" | sed -n '1p') || return 1
+    tc_bind_status=$(printf '%s\n' "$tc_bind_output" | sed -n '2p') || return 1
+    tc_bind_policy=$(printf '%s\n' "$tc_bind_output" | sed -n '3,$p') || return 1
+    tc_bind_header=$(printf '%s\n' "$tc_bind_policy" | sed -n '1p') || return 1
+    # C formats typed addresses. Only check the response boundary here; no
+    # duplicate IP parser, and never permit an injected smb.conf directive.
+    case "$tc_bind_tokens" in ""|*[!0123456789abcdefABCDEF:./\ ]*) return 1 ;; esac
+    case "$tc_bind_status" in
+        status=validated) tc_bind_state=validated; tc_bind_reason= ;;
+        "status=incomplete reason="?*) tc_bind_state=incomplete; tc_bind_reason=${tc_bind_status#status=incomplete reason=} ;;
+        *) return 1 ;;
+    esac
+    case "$tc_bind_header" in
+        "policy "[123]" "[01]) ;;
+        "policy none") [ "$tc_bind_state" != validated ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    TC_SMB_BIND_PROBE_TOKENS=$tc_bind_tokens
+    TC_SMB_BIND_STATUS=$tc_bind_state
+    TC_SMB_BIND_REASON=$tc_bind_reason
+    TC_SMB_BIND_POLICY=$tc_bind_policy
 }

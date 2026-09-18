@@ -258,7 +258,7 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
     fi
 
     # The Time Capsule image does not expose a normal always-on Avahi daemon.
-    # Use the dedicated mdns-advertiser payload instead. Printing and spoolss
+    # Use the dedicated discoveryd payload instead. Printing and spoolss
     # are patched out in _downloadsamba4.sh, so keep configure on the no-printing
     # path too.
     #

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import shlex
 import subprocess
 import time
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
 
 RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
 RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
-RUNTIME_NBNS_BIN = f"{RUNTIME_RAM_ROOT}/sbin/nbns-advertiser"
 RUNTIME_RSYNC_BIN = f"{RUNTIME_RAM_ROOT}/sbin/rsync"
 RUNTIME_RSYNC_CONF = f"{RUNTIME_RAM_ROOT}/etc/rsyncd.conf"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
@@ -61,18 +61,16 @@ REMOTE_RUNTIME_RAM_LOG_PATHS = {
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
     "remote_smbd_log_tail": "log.smbd",
-    "remote_mdns_log_tail": "mdns.log",
-    "remote_nbns_log_tail": "nbns.log",
+    "remote_discovery_log_tail": "discovery.log",
 }
 REMOTE_RUNTIME_FALLBACK_LOG_PATHS = {
-    "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
-    "remote_nbns_log_tail": "/mnt/Memory/samba4/var/nbns.log",
+    "remote_discovery_log_tail": "/mnt/Memory/samba4/var/discovery.log",
 }
 SMBD_STATUS_HELPERS = rf'''
     RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
     RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
     RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
-    RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
+    RUNTIME_DISCOVERY_BIN=${{RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}}
     RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
 RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
 
@@ -269,61 +267,6 @@ smbd_bound_445() {{
     return 0
 }}
 
-mdns_bound_5353() {{
-    fstat_out=$1
-    family=$2
-
-    case "$family" in
-        ipv4)
-            case "$fstat_out" in
-                *mdns-advertiser*" internet dgram udp "*":5353"*) return 0 ;;
-                *) return 1 ;;
-            esac
-            ;;
-        ipv6)
-            case "$fstat_out" in
-                *mdns-advertiser*" internet6 dgram udp "*":5353"*) return 0 ;;
-                *) return 1 ;;
-            esac
-            ;;
-        *) return 1 ;;
-    esac
-}}
-
-mdns_socket_families_supported() {{
-    families=$1
-    saw_family=0
-
-    set -- $families
-    for family in "$@"; do
-        case "$family" in
-            ipv4|ipv6) saw_family=1 ;;
-            *) return 1 ;;
-        esac
-    done
-
-    [ "$saw_family" -eq 1 ]
-}}
-
-mdns_bound_required_5353() {{
-    fstat_out=$1
-    families=$2
-    saw_family=0
-
-    set -- $families
-    for family in "$@"; do
-        case "$family" in
-            ipv4|ipv6)
-                saw_family=1
-                mdns_bound_5353 "$fstat_out" "$family" || return 1
-                ;;
-            *) return 1 ;;
-        esac
-    done
-
-    [ "$saw_family" -eq 1 ]
-}}
-
 describe_managed_smbd_status() {{
     ps_out=$1
     fstat_out=$2
@@ -401,82 +344,6 @@ describe_managed_smbd_status() {{
     return "$status"
 }}
 
-describe_managed_mdns_status() {{
-    ps_out=$1
-    fstat_out=$2
-    status=0
-    mdns_auto_ip_state=waiting
-    mdns_auto_ip_failure=
-    mdns_socket_families=
-    mdns_health_family_supported=1
-    if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
-        mdns_auto_ip_state=failed
-        mdns_auto_ip_failure="mdns binary missing at $RUNTIME_MDNS_BIN"
-    elif [ ! -x "$RUNTIME_MDNS_BIN" ]; then
-        mdns_auto_ip_state=failed
-        mdns_auto_ip_failure="mdns binary is not executable at $RUNTIME_MDNS_BIN"
-    else
-        mdns_socket_families=$("$RUNTIME_MDNS_BIN" --print-mdns-socket-families 2>/dev/null)
-        mdns_auto_ip_rc=$?
-        case "$mdns_auto_ip_rc" in
-            0) mdns_auto_ip_state=active ;;
-            11) mdns_auto_ip_state=waiting ;;
-            *)
-                mdns_auto_ip_state=failed
-                mdns_auto_ip_failure="mdns mDNS socket family probe failed with exit code $mdns_auto_ip_rc"
-                ;;
-        esac
-    fi
-    if [ "$mdns_auto_ip_state" = "active" ]; then
-        if ! mdns_socket_families_supported "$mdns_socket_families"; then
-            mdns_health_family_supported=0
-        fi
-    fi
-
-    if [ "$mdns_auto_ip_state" = "failed" ]; then
-        echo "FAIL:$mdns_auto_ip_failure"
-        status=1
-    fi
-
-    if mdns_process_present "$ps_out"; then
-        echo "PASS:mdns process is running"
-    else
-        if [ "$mdns_auto_ip_state" = "waiting" ]; then
-            echo "FAIL:mDNS startup deferred; no usable address has appeared yet"
-        else
-            echo "FAIL:mdns process is not running"
-        fi
-        status=1
-    fi
-    if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_required_5353 "$fstat_out" "$mdns_socket_families"; then
-        echo "PASS:mdns bound to required UDP 5353 listeners"
-        if [ "$mdns_auto_ip_state" = "active" ]; then
-            echo "PASS:mdns bind address active"
-        else
-            echo "FAIL:mdns bound to UDP 5353 but bind address is not active"
-            status=1
-        fi
-    else
-        if mdns_process_present "$ps_out" && [ "$mdns_auto_ip_state" = "waiting" ]; then
-            echo "FAIL:mdns is waiting for a usable address"
-            status=1
-        else
-            if [ "$mdns_health_family_supported" -eq 1 ]; then
-                echo "FAIL:mdns is not bound to required UDP 5353 listener"
-            else
-                echo "FAIL:mdns mDNS socket family probe returned no supported family"
-            fi
-            status=1
-        fi
-    fi
-    if apple_mdns_present "$ps_out"; then
-        echo "FAIL:Apple mDNSResponder is still running"
-        status=1
-    else
-        echo "PASS:Apple mDNSResponder is stopped"
-    fi
-    return "$status"
-}}
 '''
 
 
@@ -1292,10 +1159,6 @@ def _fstat_has_udp_port(fstat_out: str, proc_name: str, family: str, port: int) 
     return False
 
 
-def _mdns_bound_required_5353(fstat_out: str, families: tuple[str, ...]) -> bool:
-    return bool(families) and all(_fstat_has_udp_port(fstat_out, "mdns-advertiser", family, 5353) for family in families)
-
-
 def probe_managed_smbd_conn(
     connection: SshConnection,
     *,
@@ -1331,27 +1194,80 @@ exit "$status"
     return _readiness_result_from_lines(ready=False, lines=lines, default_detail="managed smbd not ready")
 
 
-def probe_managed_mdns_takeover_conn(
+def _fstat_5353_listeners(fstat_out: str) -> dict[str, set[str]]:
+    """Process name -> socket families ("ipv4"/"ipv6") bound on UDP 5353."""
+    listeners: dict[str, set[str]] = {}
+    for line in fstat_out.splitlines():
+        fields = line.split()
+        if len(fields) < 2 or " dgram udp " not in line or ":5353" not in line:
+            continue
+        family = "ipv6" if " internet6 " in line else "ipv4" if " internet " in line else None
+        if family is None:
+            continue
+        listeners.setdefault(fields[1], set()).add(family)
+    return listeners
+
+
+def _argv_has_pair(argv: list[str], flag: str, value: str) -> bool:
+    return any(argv[i] == flag and argv[i + 1] == value for i in range(len(argv) - 1))
+
+
+def _parse_link_plan(text: str) -> dict[str, object]:
+    """Parses `--print-link-plan` output (guide C.2): status, mode, links with masks."""
+    status = ""
+    mode = ""
+    reason = ""
+    links: list[dict[str, str]] = []
+    addresses: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        kind, _, rest = raw_line.partition(": ")
+        fields: dict[str, str] = {}
+        try:
+            tokens = shlex.split(rest) if rest else []
+        except ValueError as e:
+            # C.2: quoted fields escape `"` and `\\`; anything else is a
+            # malformed line and a diagnostic, never an uncaught exception.
+            fields["malformed"] = f"{raw_line!r}: {e}"
+            tokens = []
+        for token in tokens:
+            key, _, value = token.partition("=")
+            fields[key] = value
+        if kind == "plan":
+            status = fields.get("status", "")
+            mode = fields.get("mode", "")
+            reason = fields.get("reason", "")
+        elif kind == "link":
+            links.append(fields)
+        elif kind == "addr":
+            addresses.append(fields)
+    return {"status": status, "mode": mode, "reason": reason, "links": links, "addresses": addresses}
+
+
+def probe_managed_mdns_conn(
     connection: SshConnection,
     *,
     binary_timeout_seconds: int = MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
     process_timeout_seconds: int = MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
-    socket_families_timeout_seconds: int = MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
+    plan_timeout_seconds: int = MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
     fstat_timeout_seconds: int = MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
 ) -> ReadinessProbeResult:
+    """v3.1.0 mDNS health (guide C.9): Apple's mDNSResponder is the only
+    responder on the device, diskd runs on loopback, and our registrant is
+    alive with a plan that grants SMB somewhere when a payload is active."""
     steps: list[ProbeStepResult] = []
+    not_ready = "managed mDNS registrant not active"
 
     binary_script = r'''
-RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
-if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
+RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}
+if [ ! -e "$RUNTIME_DISCOVERY_BIN" ]; then
     echo "missing"
     exit 2
 fi
-if [ ! -x "$RUNTIME_MDNS_BIN" ]; then
+if [ ! -x "$RUNTIME_DISCOVERY_BIN" ]; then
     echo "not_executable"
     exit 3
 fi
-echo "$RUNTIME_MDNS_BIN"
+echo "$RUNTIME_DISCOVERY_BIN"
 '''
     binary_step, binary_proc = _run_timed_probe_step(
         connection,
@@ -1372,19 +1288,19 @@ echo "$RUNTIME_MDNS_BIN"
         )
     if binary_step.status == "timeout":
         steps.append(binary_step)
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     if binary_proc is None or binary_proc.returncode != 0:
         stdout = ("" if binary_proc is None else binary_proc.stdout).strip()
         if stdout == "missing":
-            detail = "mdns binary missing at /mnt/Flash/mdns-advertiser"
+            detail = "discovery binary missing at /mnt/Flash/discoveryd"
         elif stdout == "not_executable":
-            detail = "mdns binary is not executable at /mnt/Flash/mdns-advertiser"
+            detail = "discovery binary is not executable at /mnt/Flash/discoveryd"
         else:
             rc = "unknown" if binary_proc is None else str(binary_proc.returncode)
-            detail = f"mdns binary probe failed with exit code {rc}"
+            detail = f"discovery binary probe failed with exit code {rc}"
         _append_step(steps, "mdns_binary", "fail", detail)
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    _append_step(steps, "mdns_binary", "pass", "mdns binary is executable")
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
+    _append_step(steps, "mdns_binary", "pass", "discovery binary is executable")
 
     ps_step, ps_proc = _run_timed_probe_step(
         connection,
@@ -1395,96 +1311,165 @@ echo "$RUNTIME_MDNS_BIN"
     )
     if ps_step.status == "timeout":
         steps.append(ps_step)
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     ps_out = "" if ps_proc is None else ps_proc.stdout
-    mdns_pids = _parse_live_pids_for_ucomm(ps_out, "mdns-advertiser")
-    apple_mdns_running = _process_present_for_ucomm(ps_out, "mDNSResponder")
+    mdns_pids = _parse_live_pids_for_ucomm(ps_out, "discoveryd")
+    apple_pids = _parse_live_pids_for_ucomm(ps_out, "mDNSResponder")
+    diskd_lines = [line for line in ps_out.splitlines() if len(line.split()) >= 5 and line.split()[4] == "diskd" and not line.split()[2].startswith("Z")]
+    # Same classification as the runtime's tc_apple_diskd_probe: a diskd is
+    # ours only if its argv carries the `-i lo0` pair; every other live diskd
+    # is ACPd's and advertises on the LAN regardless of ours (review 2, R8).
+    loopback_diskd = [line for line in diskd_lines if _argv_has_pair(line.split()[5:], "-i", "lo0")]
+    stray_diskd = [line for line in diskd_lines if line not in loopback_diskd]
+    diskless = any("--diskless" in line for line in ps_out.splitlines() if "discoveryd" in line)
 
-    if mdns_pids:
-        _append_step(steps, "mdns_process", "pass", "mdns process is running")
-
-    families_script = r'''
-RUNTIME_MDNS_BIN=${RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}
-"$RUNTIME_MDNS_BIN" --print-mdns-socket-families
-'''
-    families_step, families_proc = _run_timed_probe_step(
-        connection,
-        step_id="mdns_socket_families_probe",
-        timeout_detail="mdns socket family probe",
-        script=families_script,
-        timeout_seconds=socket_families_timeout_seconds,
-    )
-    if families_step.status == "timeout":
-        steps.append(families_step)
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-
-    family_rc = 1 if families_proc is None else families_proc.returncode
-    families_out = "" if families_proc is None else families_proc.stdout
-    mdns_families = _capability_family_tokens(families_out)
-    if family_rc == 11:
-        if mdns_pids:
-            _append_step(steps, "mdns_auto_ip", "fail", "mdns is waiting for a usable address")
-        else:
-            _append_step(steps, "mdns_process", "fail", "mDNS startup deferred; no usable address has appeared yet")
-        if apple_mdns_running:
-            _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
-        else:
-            _append_step(steps, "apple_mdns", "pass", "Apple mDNSResponder is stopped")
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    if family_rc != 0:
+    fstat_proc: subprocess.CompletedProcess[str] | None = None
+    if apple_pids:
+        _append_step(steps, "apple_mdns", "pass", "Apple mDNSResponder is running")
+    else:
+        # F11: nothing respawns it and a hand-started one lacks _airport.
+        _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is not running (reboot the device; it cannot be restarted by hand)")
+    if loopback_diskd and not stray_diskd:
+        _append_step(steps, "diskd_loopback", "pass", "Apple diskd runs on loopback (-i lo0)")
+    elif stray_diskd:
+        stray_pids = ", ".join(line.split()[0] for line in stray_diskd)
         _append_step(
-            steps,
-            "mdns_socket_families",
-            "fail",
-            f"mdns mDNS socket family probe failed with exit code {family_rc}",
+            steps, "diskd_loopback", "fail",
+            f"Apple diskd pid(s) {stray_pids} are not on loopback; their _smb/_adisk/_afpovertcp names may be visible"
+            + (" (a loopback diskd also runs; the manager retries the cleanup every disk pass)" if loopback_diskd else ""),
         )
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    if not mdns_families:
-        _append_step(steps, "mdns_socket_families", "fail", "mdns mDNS socket family probe returned no supported family")
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    _append_step(steps, "mdns_socket_families", "pass", f"mdns socket families active: {' '.join(mdns_families)}")
+    else:
+        _append_step(steps, "diskd_loopback", "fail", "Apple diskd is not running")
+    discovery_lines = [
+        line for line in ps_out.splitlines()
+        if len(line.split()) >= 5 and line.split()[4] == "discoveryd" and not line.split()[2].startswith("Z")
+    ]
+    if len(mdns_pids) == 1:
+        _append_step(steps, "mdns_process", "pass", "discovery process is running")
+    elif len(mdns_pids) > 1:
+        _append_step(steps, "mdns_process", "fail", "multiple discovery processes are running")
+    else:
+        _append_step(steps, "mdns_process", "fail", "discovery process is not running")
 
-    if not mdns_pids:
-        _append_step(steps, "mdns_process", "fail", "mdns process is not running")
-        if apple_mdns_running:
-            _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
+    if apple_pids:
+        fstat_script = "if [ ! -x /usr/bin/fstat ]; then echo fstat_missing; exit 127; fi; /usr/bin/fstat 2>/dev/null | /usr/bin/sed -n '/internet/p'; exit 0"
+        fstat_step, fstat_proc = _run_timed_probe_step(
+            connection,
+            step_id="mdns_fstat_probe",
+            timeout_detail="mdns fstat probe",
+            script=fstat_script,
+            timeout_seconds=fstat_timeout_seconds,
+        )
+        if fstat_step.status == "timeout":
+            steps.append(fstat_step)
+            return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
+        if fstat_proc is None or fstat_proc.returncode == 127:
+            _append_step(steps, "mdns_fstat", "fail", "fstat missing")
+            return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
+        listeners = _fstat_5353_listeners("" if fstat_proc is None else fstat_proc.stdout)
+        apple_families = listeners.get("mDNSResponder", set())
+        if apple_families >= {"ipv4", "ipv6"}:
+            _append_step(steps, "apple_mdns_5353", "pass", "Apple mDNSResponder listens on UDP 5353 for IPv4 and IPv6")
         else:
-            _append_step(steps, "apple_mdns", "pass", "Apple mDNSResponder is stopped")
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
+            _append_step(steps, "apple_mdns_5353", "fail", "Apple mDNSResponder is not bound to UDP 5353 for both IPv4 and IPv6")
+        others = sorted(name for name in listeners if name != "mDNSResponder")
+        if others:
+            _append_step(steps, "mdns_5353_exclusive", "fail", f"other processes hold UDP 5353: {' '.join(others)}")
+        else:
+            _append_step(steps, "mdns_5353_exclusive", "pass", "no other process holds UDP 5353")
 
-    fstat_script = "if [ ! -x /usr/bin/fstat ]; then echo fstat_missing; exit 127; fi; " + " ".join(
-        f"/usr/bin/fstat -p {pid} 2>/dev/null || true;" for pid in mdns_pids
-    )
-    fstat_step, fstat_proc = _run_timed_probe_step(
+    plan_script = r'''
+RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}
+RUNTIME_CONFIG_FILE=${RUNTIME_CONFIG_FILE:-/mnt/Flash/tcapsulesmb.conf}
+NBNS_ENABLED=0
+[ ! -r "$RUNTIME_CONFIG_FILE" ] || . "$RUNTIME_CONFIG_FILE"
+echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
+"$RUNTIME_DISCOVERY_BIN" --print-link-plan
+'''
+    plan_step, plan_proc = _run_timed_probe_step(
         connection,
-        step_id="mdns_fstat_probe",
-        timeout_detail="mdns fstat probe",
-        script=fstat_script,
-        timeout_seconds=fstat_timeout_seconds,
+        step_id="mdns_link_plan_probe",
+        timeout_detail="mdns link plan probe",
+        script=plan_script,
+        timeout_seconds=plan_timeout_seconds,
     )
-    if fstat_step.status == "timeout":
-        steps.append(fstat_step)
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    if fstat_proc is None or fstat_proc.returncode == 127:
-        _append_step(steps, "mdns_fstat", "fail", "fstat missing")
-        return _readiness_result_from_steps(ready=False, steps=steps, default_detail="managed mDNS takeover not active")
-    fstat_out = "" if fstat_proc is None else fstat_proc.stdout
-    if _mdns_bound_required_5353(fstat_out, mdns_families):
-        _append_step(steps, "mdns_udp_5353", "pass", "mdns bound to required UDP 5353 listeners")
-        _append_step(steps, "mdns_bind_address", "pass", "mdns bind address active")
+    if plan_step.status == "timeout":
+        steps.append(plan_step)
+        return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
+    if plan_proc is None or plan_proc.returncode != 0:
+        rc = "unknown" if plan_proc is None else str(plan_proc.returncode)
+        _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan probe failed with exit code {rc}")
     else:
-        _append_step(steps, "mdns_udp_5353", "fail", "mdns is not bound to required UDP 5353 listener")
+        nbns_enabled = any(line.strip() == "TC_NBNS_ENABLED=1" for line in plan_proc.stdout.splitlines())
+        plan = _parse_link_plan(plan_proc.stdout)
+        status = str(plan["status"])
+        links = plan["links"]
+        addresses = plan["addresses"]
+        smb_links = [link for link in links if "smb" in str(link.get("mask", "")).split(",")]
+        smb_indexes = {str(link.get("index", "")) for link in smb_links}
+        def service_ipv4(address: str) -> bool:
+            try:
+                parsed = ipaddress.IPv4Address(address)
+            except ipaddress.AddressValueError:
+                return False
+            first = int(str(parsed).split(".", 1)[0])
+            return 1 <= first <= 223 and first != 127
 
-    if apple_mdns_running:
-        _append_step(steps, "apple_mdns", "fail", "Apple mDNSResponder is still running")
-    else:
-        _append_step(steps, "apple_mdns", "pass", "Apple mDNSResponder is stopped")
+        smb_ipv4 = any(
+            addr.get("family") == "inet"
+            and addr.get("link") in smb_indexes
+            and service_ipv4(str(addr.get("addr", "")))
+            for addr in addresses
+        )
+        if status not in {"validated", "incomplete", "cold-start"}:
+            _append_step(steps, "mdns_link_plan", "fail", "mdns link plan output could not be parsed")
+        elif diskless:
+            _append_step(steps, "mdns_link_plan", "pass", f"mdns link plan {status} (diskless; nothing advertised)")
+        elif status != "validated":
+            _append_step(steps, "mdns_link_plan", "fail", f"sharing facts are incomplete ({plan.get('reason') or 'unknown'}); the registrant waits or retains its previous validated policy")
+        elif smb_links:
+            names = " ".join(f"{link.get('name') or '?'}({link.get('role')})" for link in smb_links)
+            _append_step(steps, "mdns_link_plan", "pass", f"mdns link plan {status} mode={plan['mode']}; SMB on {names}")
+        else:
+            _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan {status} mode={plan['mode']} grants SMB on no link")
+
+        title = discovery_lines[0] if len(discovery_lines) == 1 else ""
+        marker = re.search(r"\bnbns=(disabled|waiting|starting|ready)\b", title)
+        nbns_state = marker.group(1) if marker else ""
+        eligible = nbns_enabled and not diskless and status == "validated" and smb_ipv4
+        wcifsnd_lines = [
+            line for line in ps_out.splitlines()
+            if len(line.split()) >= 5 and line.split()[4] == "wcifsnd" and not line.split()[2].startswith("Z")
+        ]
+        controller_pid = mdns_pids[0] if len(mdns_pids) == 1 else ""
+        owned_wcifsnd = [line for line in wcifsnd_lines if line.split()[1] == controller_pid]
+        fstat_out = "" if fstat_proc is None else fstat_proc.stdout
+        owned_fstat = "\n".join(
+            line for line in fstat_out.splitlines()
+            if len(line.split()) >= 3 and line.split()[1] == "wcifsnd" and line.split()[2] == (owned_wcifsnd[0].split()[0] if len(owned_wcifsnd) == 1 else "")
+        )
+        ports_ready = (
+            _fstat_has_udp_port(owned_fstat, "wcifsnd", "ipv4", 137)
+            and _fstat_has_udp_port(owned_fstat, "wcifsnd", "ipv4", 138)
+        )
+        if not marker:
+            _append_step(steps, "native_nbns", "fail", "discovery NBNS state is not available yet")
+        elif eligible and nbns_state == "starting":
+            _append_step(steps, "native_nbns", "fail", "discovery native NBNS is still starting")
+        elif eligible and nbns_state == "ready" and len(owned_wcifsnd) == 1 and len(wcifsnd_lines) == 1 and ports_ready:
+            _append_step(steps, "native_nbns", "pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        elif eligible:
+            _append_step(steps, "native_nbns", "fail", "discovery native NBNS is not ready")
+        elif nbns_state in {"disabled", "waiting"} and not wcifsnd_lines:
+            _append_step(steps, "native_nbns", "pass", f"native NBNS is {nbns_state}")
+        else:
+            _append_step(steps, "native_nbns", "fail", "discovery native NBNS state does not match the active plan")
 
     ready = all(step.status == "pass" for step in steps)
     return _readiness_result_from_steps(
         ready=ready,
         steps=steps,
-        default_detail="managed mDNS takeover active" if ready else "managed mDNS takeover not active",
+        default_detail="managed mDNS registrant active" if ready else not_ready,
     )
 
 
@@ -1613,6 +1598,74 @@ exit "$status"
     )
 
 
+@dataclass(frozen=True)
+class UsbPrinterProbeResult:
+    """What ACP's `prni` says about a USB printer (guide G6, release gate).
+
+    `present` means a printer entry with `pluggedIn=true`; `name` is its
+    ACP name (what Apple's printd advertises the queue as); `error` is set
+    when the read itself failed, which is distinct from "no printer"."""
+    present: bool
+    name: str | None
+    error: str | None = None
+    make: str | None = None
+    model: str | None = None
+
+
+def _prni_string_value(raw: str) -> str:
+    value = raw.strip()
+    if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+        value = value[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return value
+
+
+def parse_prni_printers(text: str) -> UsbPrinterProbeResult:
+    """Parse `acp -A prni` output: `printers=[ { key=value ... } ... ]`.
+    String values are quoted on NetBSD 6 and bare on NetBSD 4."""
+    entry: dict[str, str] = {}
+    entries: list[dict[str, str]] = []
+    depth = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            depth += 1
+            if depth >= 2:
+                entry = {}
+            continue
+        if stripped.startswith("}"):
+            if depth >= 2 and entry:
+                entries.append(entry)
+                entry = {}
+            depth = max(0, depth - 1)
+            continue
+        key, sep, value = stripped.partition("=")
+        if sep and depth >= 2:
+            entry[key.strip()] = value
+    for candidate in entries:
+        if candidate.get("pluggedIn", "").strip() != "true":
+            continue
+        name = _prni_string_value(candidate.get("name", ""))
+        if not name:
+            continue
+        return UsbPrinterProbeResult(
+            present=True,
+            name=name,
+            make=_prni_string_value(candidate.get("make", "")) or None,
+            model=_prni_string_value(candidate.get("model", "")) or None,
+        )
+    return UsbPrinterProbeResult(present=False, name=None)
+
+
+def probe_usb_printer_conn(connection: SshConnection, *, timeout_seconds: int = REMOTE_STATE_PROBE_TIMEOUT_SECONDS) -> UsbPrinterProbeResult:
+    try:
+        proc = run_ssh(connection, "/usr/bin/acp -A prni 2>/dev/null", check=False, timeout=timeout_seconds)
+    except SshCommandTimeout:
+        return UsbPrinterProbeResult(present=False, name=None, error="acp -A prni timed out")
+    if proc.returncode != 0:
+        return UsbPrinterProbeResult(present=False, name=None, error=f"acp -A prni exited {proc.returncode}")
+    return parse_prni_printers(proc.stdout or "")
+
+
 def _capability_family_tokens(value: str) -> tuple[str, ...]:
     tokens: list[str] = []
     for token in value.split():
@@ -1627,19 +1680,7 @@ def probe_remote_network_capabilities_conn(connection: SshConnection, *, timeout
 RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
 RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
 RUNTIME_CONFIG_FILE=${{RUNTIME_CONFIG_FILE:-/mnt/Flash/tcapsulesmb.conf}}
-RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
-RUNTIME_NBNS_BIN=${{RUNTIME_NBNS_BIN:-$RUNTIME_RAM_SBIN/nbns-advertiser}}
 RUNTIME_SERVICE_BIN=${{RUNTIME_SERVICE_BIN:-$RUNTIME_RAM_SBIN/service}}
-SMB_BIND_LAN_ONLY=${{SMB_BIND_LAN_ONLY:-1}}
-
-if [ -f "$RUNTIME_CONFIG_FILE" ]; then
-    . "$RUNTIME_CONFIG_FILE"
-fi
-
-case "$SMB_BIND_LAN_ONLY" in
-    0|false|FALSE|no|NO) SMB_BIND_ARG=--print-smb-bind-interfaces ;;
-    *) SMB_BIND_ARG=--print-smb-bind-interfaces-lan ;;
-esac
 
 tc_probe_cap() {{
     cap_name=$1
@@ -1658,9 +1699,10 @@ tc_probe_cap() {{
     fi
 }}
 
-tc_probe_cap smb "$RUNTIME_SERVICE_BIN" "$SMB_BIND_ARG"
-tc_probe_cap mdns "$RUNTIME_MDNS_BIN" --print-mdns-socket-families
-tc_probe_cap nbns "$RUNTIME_NBNS_BIN" --print-nbns-socket-families
+tc_probe_cap smb "$RUNTIME_SERVICE_BIN" --print-smb-bind-interfaces
+# NBNS eligibility comes from the validated service plan. Runtime health is
+# checked separately so a crashed wcifsnd child cannot look like "disabled".
+echo "TC_CAP nbns ipv4"
 '''
     proc = run_ssh(
         connection,
@@ -1682,9 +1724,8 @@ tc_probe_cap nbns "$RUNTIME_NBNS_BIN" --print-nbns-socket-families
                 continue
             _prefix, cap_name, value = fields
             if cap_name == "smb":
-                smb_bind_interfaces = value.strip()
-            elif cap_name == "mdns":
-                mdns_families = _capability_family_tokens(value)
+                # Line 1 carries the tokens; the status line (guide B.9) is the manager's business.
+                smb_bind_interfaces = value.strip().splitlines()[0].strip() if value.strip() else ""
             elif cap_name == "nbns":
                 nbns_families = _capability_family_tokens(value)
         elif line.startswith("TC_CAP_ERROR "):
@@ -1788,12 +1829,12 @@ def probe_managed_runtime_once_conn(
     smbd = probe_managed_smbd_conn(connection, timeout_seconds=smbd_timeout_seconds)
     if not smbd.ready and smbd_mdns_stagger_seconds > 0:
         time.sleep(smbd_mdns_stagger_seconds)
-    mdns = probe_managed_mdns_takeover_conn(connection)
+    mdns = probe_managed_mdns_conn(connection)
     rsync = probe_managed_rsync_conn(connection)
 
     if smbd.ready and mdns.ready and rsync.ready:
         time.sleep(mdns_settle_seconds)
-        settled_mdns = probe_managed_mdns_takeover_conn(connection)
+        settled_mdns = probe_managed_mdns_conn(connection)
         if settled_mdns.ready:
             return ManagedRuntimeProbeResult(
                 ready=True,
@@ -1934,7 +1975,7 @@ def probe_managed_runtime_conn(
             ready=False,
             detail="managed runtime not ready",
             smbd=ReadinessProbeResult(ready=False, detail="managed smbd not ready"),
-            mdns=ReadinessProbeResult(ready=False, detail="managed mDNS takeover not active"),
+            mdns=ReadinessProbeResult(ready=False, detail="managed mDNS registrant not active"),
         )
 
     timeout_detail = _runtime_timeout_detail(timeout_seconds, final_attempts)
@@ -2169,8 +2210,7 @@ def runtime_startup_failure_debug_fields(
         str(value)
         for value in (
             logs.get("remote_manager_log_tail"),
-            logs.get("remote_mdns_log_tail"),
-            logs.get("remote_nbns_log_tail"),
+            logs.get("remote_discovery_log_tail"),
             verification_detail,
         )
         if value
@@ -2282,7 +2322,7 @@ if [ ! -x /usr/bin/fstat ]; then
     exit 0
 fi
 ps_out="$(capture_ps_out)"
-for proc_name in smbd nbns-advertiser rsync; do
+for proc_name in smbd wcifsnd rsync; do
     echo "$proc_name:"
     socket_lines=$(capture_fstat_for_ucomm "$ps_out" "$proc_name" | /usr/bin/sed -n '/internet/p' | /usr/bin/sed -n '1,40p')
     if [ -n "$socket_lines" ]; then
@@ -2320,7 +2360,6 @@ for runtime_path in \
     "$RUNTIME_RAM_VAR" \
     "$RUNTIME_RAM_SBIN/smbd" \
     $RUNTIME_RAM_SBIN/smbd.tmp.* \
-    "$RUNTIME_RAM_SBIN/nbns-advertiser" \
     "$RUNTIME_RAM_SBIN/rsync" \
     $RUNTIME_RAM_SBIN/rsync.tmp.* \
     "$RUNTIME_RAM_PRIVATE/smbpasswd" \

@@ -118,10 +118,6 @@ tc_bind_interfaces_have_nonloopback_ipv4() {
     return 1
 }
 
-tc_nbns_bound_ipv4_udp_137() {
-    tc_process_bound_ipv4_udp_port "$NBNS_PROC_NAME" 137
-}
-
 tc_process_bound_required_udp_families() {
     proc_name=$1
     port=$2
@@ -144,19 +140,6 @@ tc_process_bound_required_udp_families() {
     done
 
     [ "$saw_family" = "1" ]
-}
-
-tc_mdns_bound_udp_5353() {
-    families=$(tc_probe_mdns_socket_families) || return $?
-    tc_process_bound_required_udp_families "$MDNS_PROC_NAME" 5353 "$families"
-}
-
-tc_nbns_bound_udp_137() {
-    if ! families=$(tc_probe_nbns_socket_families); then
-        tc_nbns_bound_ipv4_udp_137
-        return $?
-    fi
-    tc_process_bound_required_udp_families "$NBNS_PROC_NAME" 137 "$families"
 }
 
 tc_wait_for_smbd_ipv4_445() {

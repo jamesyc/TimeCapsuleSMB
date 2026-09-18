@@ -383,7 +383,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.nbnsEnabled = settings.nbnsEnabled
         deployStore.rsyncEnabled = settings.rsyncEnabled
         deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
-        deployStore.smbBindLanOnly = settings.smbBindLanOnly
         deployStore.smbBrowseCompatibility = settings.smbBrowseCompatibility
         deployStore.mdnsAdvertiseAFP = settings.mdnsAdvertiseAFP
         deployStore.anyProtocol = settings.anyProtocol

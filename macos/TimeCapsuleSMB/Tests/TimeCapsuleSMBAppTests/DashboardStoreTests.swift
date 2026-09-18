@@ -391,7 +391,6 @@ final class DashboardStoreTests: XCTestCase {
             nbnsEnabled: false,
             rsyncEnabled: true,
             internalShareUseDiskRoot: true,
-            smbBindLanOnly: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
@@ -409,7 +408,6 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
-        XCTAssertEqual(session.deployStore.smbBindLanOnly, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
@@ -448,7 +446,6 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.nbnsEnabled = false
         session.profileEditorStore.draft.rsyncEnabled = true
         session.profileEditorStore.draft.internalShareUseDiskRoot = true
-        session.profileEditorStore.draft.smbBindLanOnly = true
         session.profileEditorStore.draft.smbBrowseCompatibility = true
         session.profileEditorStore.draft.mdnsAdvertiseAFP = true
         session.profileEditorStore.draft.anyProtocol = true
@@ -466,7 +463,6 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
-        XCTAssertEqual(session.deployStore.smbBindLanOnly, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
         XCTAssertEqual(session.deployStore.mdnsAdvertiseAFP, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)

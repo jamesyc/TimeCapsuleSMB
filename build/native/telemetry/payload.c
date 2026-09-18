@@ -1,4 +1,5 @@
 #include "device.h"
+#include "../common/plan.h"
 #include <sys/utsname.h>
 #if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/sysctl.h>
@@ -158,6 +159,67 @@ static void format_uptime_json(char *out, size_t out_len, long uptime_sec, int h
     }
 }
 
+/* Schema v2 uses the same fresh facts/config snapshot as the plan. No ps,
+ * daemon IPC, or history: plan_error reports failed facts, not service death. */
+static const char *config_bool_json(int value) {
+    return value < 0 ? "null" : value ? "true" : "false";
+}
+
+static const char *json_bool_or_null(struct acp_bool value, int invert) {
+    if (!value.available) return "null";
+    return (value.value ? 1 : 0) != invert ? "true" : "false";
+}
+
+/* Appends the v2 fields; the caller has already emitted the v1 body up to
+ * its closing brace position. Returns the number of bytes written or -1. */
+static int append_v2_fields(char *json, size_t cap, size_t used) {
+    struct device_plan plan;
+    struct plan_options options;
+    size_t i;
+    int n;
+    memset(&options, 0, sizeof(options));
+    if (device_plan_collect(&plan, NULL, &options) != 0) return -1;
+    n = snprintf(json + used, cap - used,
+                 ",\"router_mode\":\"%s\",\"wan_setup_allowed\":%s,\"disks_over_wan\":%s,\"guest_enabled\":%s,"
+                 "\"nbns_enabled\":%s,\"debug_logging\":%s,\"advertise_afp\":%s",
+                 router_mode_name(plan.mode),
+                 json_bool_or_null(plan.waNM, 1),             /* waNM=1 means setup over WAN disabled */
+                 plan.usbF.available ? (plan.wan_disks_allowed ? "true" : "false") : "null",
+                 plan.gnRo.available ? "true" : "false",
+                 config_bool_json(plan.config.nbns_enabled),
+                 config_bool_json(plan.config.debug_logging),
+                 config_bool_json(plan.config.advertise_afp));
+    if (n < 0 || (size_t)n >= cap - used) return -1;
+    used += (size_t)n;
+    if (!plan.status.validated) {
+        n = snprintf(json + used, cap - used, ",\"plan_error\":\"%s\"", plan.status.reason);
+        if (n < 0 || (size_t)n >= cap - used) return -1;
+        used += (size_t)n;
+    }
+    n = snprintf(json + used, cap - used, ",\"links\":[");
+    if (n < 0 || (size_t)n >= cap - used) return -1;
+    used += (size_t)n;
+    for (i = 0; i < plan.link_count; i++) {
+        const struct link_plan *link = &plan.links[i];
+        int v4 = 0, v6 = 0;
+        size_t j;
+        char name[IFNAMSIZ * 2];
+        if (json_escape(name, sizeof(name), link->link.name) != 0) return -1;
+        for (j = 0; j < link->addr_count; j++) {
+            if (!addr_is_service_address(&link->addrs[j])) continue;
+            if (link->addrs[j].family == AF_INET) v4 = 1; else v6 = 1;
+        }
+        n = snprintf(json + used, cap - used, "%s{\"name\":\"%s\",\"role\":\"%s\",\"families\":[%s%s%s]}",
+                     i ? "," : "", name, link_role_name(link->role),
+                     v4 ? "\"ipv4\"" : "", v4 && v6 ? "," : "", v6 ? "\"ipv6\"" : "");
+        if (n < 0 || (size_t)n >= cap - used) return -1;
+        used += (size_t)n;
+    }
+    n = snprintf(json + used, cap - used, "]");
+    if (n < 0 || (size_t)n >= cap - used) return -1;
+    return (int)(used + (size_t)n);
+}
+
 int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce) {
     char syap[HEARTBEAT_MAX_FIELD] = "";
     char syam[HEARTBEAT_MAX_FIELD] = "";
@@ -209,7 +271,7 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
     if (snprintf(json,
                  cap,
                  "{"
-                 "\"schema_version\":1,"
+                 "\"schema_version\":2,"
                  "\"target_lane\":\"" TC_TELEMETRY_LANE "\","
                  "\"debug_nonce\":\"%s\","
                  "\"heartbeat_id\":\"%s\","
@@ -236,6 +298,19 @@ int telemetry_payload(char *json, size_t cap, const char *reason, const char *no
                  esc_reason) >= (int)cap) {
         fprintf(stderr, "heartbeat: JSON payload too large\n");
         return 1;
+    }
+    {
+        /* Drop the closing "}\n", append the v2 fields, close again. */
+        size_t used = strlen(json);
+        int written;
+        if (used < 2) return 1;
+        used -= 2;
+        written = append_v2_fields(json, cap, used);
+        if (written < 0 || (size_t)written + 3 > cap) {
+            fprintf(stderr, "heartbeat: JSON payload too large\n");
+            return 1;
+        }
+        strcpy(json + written, "}\n");
     }
 
     return 0;

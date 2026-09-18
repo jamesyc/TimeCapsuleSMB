@@ -4,8 +4,14 @@
 #include "system/filesys.h"
 #include "lib/dbwrap/dbwrap.h"
 
+/* Linux aliases ENOATTR to ENODATA; keep them distinct there so a missing
+ * attribute and missing data cannot be confused. NetBSD and macOS already
+ * separate them, and the real xattr_tdb library returns the platform value,
+ * so overriding it there would make the production check miss its own errno. */
+#if ENOATTR == ENODATA
 #undef ENOATTR
 #define ENOATTR 193
+#endif
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #x, errno); fflush(stderr); _exit(90); } } while (0)
 
 struct test_xattr {
@@ -160,6 +166,22 @@ static int interrupted_reads;
 static bool partial_reads;
 static bool directory_read_error;
 static bool commit_error;
+static int fsync_error;              /* errno the fsync hook fails with (0 = real fsync) */
+static int sync_calls;
+
+static int migration_test_fsync(int fd)
+{
+	if (fsync_error != 0) {
+		errno = fsync_error;
+		return -1;
+	}
+	return fsync(fd);
+}
+
+static void migration_test_sync(void)
+{
+	sync_calls++;
+}
 static int collection_allocations_before_failure = -1;
 static ssize_t migration_test_pread(int fd, void *value, size_t size, off_t offset)
 {
@@ -199,6 +221,8 @@ static void *migration_test_talloc_realloc_array(
 }
 #define pread migration_test_pread
 #define readdir migration_test_readdir
+#define fsync migration_test_fsync
+#define sync migration_test_sync
 #define dbwrap_transaction_commit migration_test_commit
 #undef talloc_realloc
 #define talloc_realloc(ctx, ptr, type, count) \
@@ -210,6 +234,8 @@ static void *migration_test_talloc_realloc_array(
 #undef talloc_realloc
 #undef pread
 #undef readdir
+#undef fsync
+#undef sync
 #undef dbwrap_transaction_commit
 
 static int write_all(int fd, const void *value, size_t size)
@@ -726,7 +752,10 @@ static void test_resume(void)
 	char object[128], tdb[128], absent[] = "/tmp/tc-absent.XXXXXX";
 	char absent_object[128], returned[128];
 	struct stat st;
-	struct file_id id, orphan = {.devid = 123456, .inode = 654321};
+	/* A detached disk is another device. The unit test has only one, so
+	 * the pending row carries a foreign devid; the same-device row of a
+	 * deleted file would instead be a proven orphan (see test_orphans). */
+	struct file_id id, orphan = {.devid = 123456, .inode = 654321}, returned_id;
 	struct db_context *db;
 	DATA_BLOB blob = data_blob_null;
 	int fd;
@@ -736,7 +765,7 @@ static void test_resume(void)
 	CHECK(mkdtemp(absent) != NULL);
 	snprintf(absent_object, sizeof(absent_object), "%s/object", absent);
 	fd = open(absent_object, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0);
-	CHECK(fstat(fd, &st) == 0); orphan = tc_file_id(&st); close(fd);
+	CHECK(fstat(fd, &st) == 0); returned_id = tc_file_id(&st); close(fd);
 	snprintf(returned, sizeof(returned), "%s/returned", root);
 	snprintf(object, sizeof(object), "%s/object", root);
 	snprintf(tdb, sizeof(tdb), "%s/xattr.tdb", root);
@@ -768,7 +797,16 @@ static void test_resume(void)
 	CHECK(tc_airport_fremovexattr(fd, "user.DosStream.windows:$DATA") == 0);
 	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
 	CHECK(find_xattr("user.DosStream.windows:$DATA") == NULL);
-	/* The missing volume becomes visible in a later boot's root scan. */
+	/* The missing volume becomes visible in a later boot's root scan. Its
+	 * rows are keyed by the device it is attached at, so the returning
+	 * disk's row is the real file id under the scanned root; the foreign
+	 * row that stood in for it is retired the same way a re-attached disk
+	 * would be found. */
+	db = dbwrap_local_open(frame, tdb, 0, TDB_DEFAULT, O_RDWR, 0,
+		DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE); CHECK(db != NULL);
+	CHECK(xattr_tdb_setattr(db, &returned_id, "com.apple.test", "missing", 7, 0) == 0);
+	CHECK(xattr_tdb_removeattr(db, &orphan, "com.apple.test") == 0);
+	TALLOC_FREE(db);
 	CHECK(rename(absent, returned) == 0);
 	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
 	argv[1] = "cleanup";
@@ -883,6 +921,227 @@ static void test_scan(void)
 	rmdir(root); TALLOC_FREE(frame);
 }
 
+static int read_stdout_capture(int (*call)(const char *), const char *argument,
+			       char *buffer, size_t size)
+{
+	char capture[] = "/tmp/tc-migrate-stdout.XXXXXX";
+	int capture_fd = mkstemp(capture);
+	int saved = dup(STDOUT_FILENO);
+	int rc;
+	ssize_t got;
+
+	CHECK(capture_fd != -1 && saved != -1);
+	fflush(stdout);
+	CHECK(dup2(capture_fd, STDOUT_FILENO) != -1);
+	rc = call(argument);
+	fflush(stdout);
+	CHECK(dup2(saved, STDOUT_FILENO) != -1);
+	close(saved);
+	got = pread(capture_fd, buffer, size - 1, 0);
+	CHECK(got >= 0);
+	buffer[got] = '\0';
+	close(capture_fd);
+	unlink(capture);
+	return rc;
+}
+
+static void test_fingerprint(void)
+{
+	char root[64] = "/tmp/tc-migrate-fingerprint.XXXXXX";
+	char path[96];
+	char expected[96];
+	char output[96];
+	const uint8_t content[] = {'t', 'd', 'b', 0, 255, 7};
+	uint64_t hash = 0xcbf29ce484222325ULL;
+	size_t i;
+	int fd;
+
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(path, sizeof(path), "%s/xattr.tdb", root);
+	fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(fd != -1);
+	CHECK(write_all(fd, content, sizeof(content)) == 0);
+	for (i = 0; i < sizeof(content); i++) {
+		hash ^= content[i];
+		hash *= 0x100000001b3ULL;
+	}
+	snprintf(expected, sizeof(expected), "fingerprint=%zu-%016" PRIx64 "\n",
+		 sizeof(content), hash);
+	CHECK(read_stdout_capture(tc_print_fingerprint, path, output, sizeof(output)) == 0);
+	CHECK(strcmp(output, expected) == 0);
+
+	/* The generation must move with any byte of the database. */
+	CHECK(pwrite(fd, "T", 1, 0) == 1);
+	CHECK(read_stdout_capture(tc_print_fingerprint, path, output, sizeof(output)) == 0);
+	CHECK(strncmp(output, "fingerprint=6-", 14) == 0);
+	CHECK(strcmp(output, expected) != 0);
+	close(fd);
+
+	unlink(path);
+	errno = 0;
+	CHECK(read_stdout_capture(tc_print_fingerprint, path, output, sizeof(output)) == -1);
+	CHECK(output[0] == '\0');
+	rmdir(root);
+}
+
+static void test_boundary(void)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct tc_migration m = {.mem_ctx = frame, .phase = TC_PHASE_COPY};
+	char root[] = "/tmp/tc-boundary.XXXXXX", object[128];
+	struct stat st;
+	int fd;
+
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(object, sizeof(object), "%s/object", root);
+	fd = open(object, O_CREAT | O_RDWR, 0600);
+	CHECK(fd >= 0);
+	close(fd);
+	CHECK(lstat(root, &st) == 0);
+	/* An entry on a different device is a nested mount: skipped, not walked
+	 * and not an error. The same walk on the right device visits both. */
+	m.root_dev = (uint64_t)st.st_dev + 1;
+	CHECK(tc_scan_path(&m, root, false) == 0);
+	CHECK(m.counts.boundary_skipped == 1 && m.counts.entries == 0);
+	CHECK(tc_scan_root(&m, root) == 0);
+	CHECK(m.counts.boundary_skipped == 1 && m.counts.entries == 2);
+	CHECK(m.num_complete_devs == 1 && m.complete_devs[0] == (uint64_t)st.st_dev);
+	unlink(object);
+	rmdir(root);
+	TALLOC_FREE(frame);
+}
+
+static void write_orphan_rows(const char *tdb_path,
+			      uint64_t devid,
+			      uint64_t first_inode,
+			      unsigned count,
+			      uint64_t unresolved_devid)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct db_context *db;
+	const uint8_t value[] = {9};
+	unsigned i;
+
+	db = dbwrap_local_open(
+		frame, tdb_path, 0, TDB_DEFAULT, O_RDWR | O_CREAT, 0600,
+		DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+	CHECK(db != NULL);
+	for (i = 0; i < count; i++) {
+		struct file_id id = {.devid = devid, .inode = first_inode + i};
+		CHECK(xattr_tdb_setattr(db, &id, "com.apple.test", value, sizeof(value), 0) == 0);
+	}
+	if (unresolved_devid != 0) {
+		struct file_id id = {.devid = unresolved_devid, .inode = 0x3344};
+		CHECK(xattr_tdb_setattr(db, &id, "com.apple.test", value, sizeof(value), 0) == 0);
+	}
+	TALLOC_FREE(db);
+	TALLOC_FREE(frame);
+}
+
+static void test_orphans(void)
+{
+	char root[64] = "/tmp/tc-migrate-orphans.XXXXXX";
+	char tdb_path[96];
+	char first_slot[128];
+	char second_slot[128];
+	char object[96];
+	struct stat st;
+	uint64_t missing_inode;
+	int fd;
+	char *argv[] = {
+		discard_const_p(char, "tc_xattr_hfs_migrate"),
+		discard_const_p(char, "cleanup"),
+		tdb_path,
+		discard_const_p(char, "stream"),
+		root,
+		NULL,
+	};
+
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(tdb_path, sizeof(tdb_path), "%s/xattr.tdb", root);
+	snprintf(first_slot, sizeof(first_slot), "%s.orphaned.1", tdb_path);
+	snprintf(second_slot, sizeof(second_slot), "%s.orphaned.2", tdb_path);
+	snprintf(object, sizeof(object), "%s/object", root);
+	fd = open(object, O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(fd != -1);
+	CHECK(fstat(fd, &st) == 0);
+	close(fd);
+	/* Two rows on this device whose inodes no longer exist. The file just
+	 * created is the only inode the walk can claim, so a far-away inode
+	 * number is safely absent. */
+	missing_inode = (uint64_t)st.st_ino + 0x10000000ULL;
+
+	/* Every remaining row proven orphaned: the closed database moves to
+	 * the first free slot instead of being deleted. */
+	reset_xattrs();
+	write_orphan_rows(tdb_path, st.st_dev, missing_inode, 2, 0);
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
+	CHECK(access(first_slot, F_OK) == 0);
+
+	/* A second run never overwrites the first quarantine. */
+	write_orphan_rows(tdb_path, st.st_dev, missing_inode, 1, 0);
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
+	CHECK(access(first_slot, F_OK) == 0);
+	CHECK(access(second_slot, F_OK) == 0);
+	CHECK(stat(first_slot, &st) == 0 && st.st_size > 0);
+
+	/* One unresolved row (a device nobody walked) keeps the database live
+	 * even when every other row is a proven orphan. */
+	CHECK(lstat(root, &st) == 0);
+	write_orphan_rows(tdb_path, st.st_dev, missing_inode, 1, 0x1122);
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	CHECK(access(tdb_path, F_OK) == 0);
+	CHECK(access(second_slot, F_OK) == 0);
+	CHECK(stat(tdb_path, &st) == 0);
+	{
+		char third_slot[128];
+		snprintf(third_slot, sizeof(third_slot), "%s.orphaned.3", tdb_path);
+		CHECK(access(third_slot, F_OK) == -1);
+	}
+
+	/* A walk that fails proves nothing: the rows stay unresolved and the
+	 * database is untouched. */
+	directory_read_error = true;
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 4);
+	directory_read_error = false;
+	CHECK(access(tdb_path, F_OK) == 0);
+	unlink(tdb_path);
+
+	/* Review 2 R10: a directory fsync failure after the rename is an error,
+	 * not a durable success -- the data is at the slot, the run fails. */
+	{
+		char third_slot[128];
+		snprintf(third_slot, sizeof(third_slot), "%s.orphaned.3", tdb_path);
+		CHECK(lstat(root, &st) == 0);
+		write_orphan_rows(tdb_path, st.st_dev, missing_inode, 1, 0);
+		fsync_error = EIO;
+		CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 4);
+		fsync_error = 0;
+		CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
+		CHECK(access(third_slot, F_OK) == 0);
+		unlink(third_slot);
+
+		/* A filesystem that refuses directory fsync falls back to sync(2)
+		 * and the quarantine counts as complete. */
+		write_orphan_rows(tdb_path, st.st_dev, missing_inode, 1, 0);
+		fsync_error = ENOTSUP;
+		sync_calls = 0;
+		CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+		fsync_error = 0;
+		CHECK(sync_calls >= 1);
+		CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
+		CHECK(access(third_slot, F_OK) == 0);
+		unlink(third_slot);
+	}
+
+	unlink(first_slot);
+	unlink(second_slot);
+	unlink(object);
+	rmdir(root);
+}
+
 int main(int argc, char **argv)
 {
 	CHECK(argc == 2);
@@ -903,7 +1162,14 @@ int main(int argc, char **argv)
 		test_tdb_collection_failures();
 	}
 	if (strcmp(argv[1], "resume") == 0 || strcmp(argv[1], "all") == 0) { test_resume(); }
-	if (strcmp(argv[1], "scan") == 0 || strcmp(argv[1], "all") == 0) { test_scan(); }
+	if (strcmp(argv[1], "scan") == 0 || strcmp(argv[1], "all") == 0) {
+		test_scan();
+		test_boundary();
+	}
+	if (strcmp(argv[1], "orphans") == 0 || strcmp(argv[1], "all") == 0) {
+		test_orphans();
+		test_fingerprint();
+	}
 	if (strcmp(argv[1], "errors") == 0 || strcmp(argv[1], "all") == 0) {
 		test_errors();
 	}
@@ -915,6 +1181,7 @@ int main(int argc, char **argv)
 	    strcmp(argv[1], "tdb") != 0 &&
 	    strcmp(argv[1], "errors") != 0 &&
 	    strcmp(argv[1], "resume") != 0 &&
+	    strcmp(argv[1], "orphans") != 0 &&
 	    strcmp(argv[1], "scan") != 0)
 	{
 		CHECK(false);

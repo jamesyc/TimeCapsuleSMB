@@ -1,6 +1,0 @@
-mdns
-sendto=fake_sendto
-setsockopt=fake_setsockopt
-usleep=fake_usleep
-rand=fake_rand
-srand=fake_srand

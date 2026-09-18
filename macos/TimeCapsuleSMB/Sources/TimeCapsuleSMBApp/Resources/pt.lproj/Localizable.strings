@@ -1,3 +1,11 @@
+"timeline.deploy.detail.preflight_flash_capacity" = "Verificando se há espaço livre suficiente na memória flash para atualizar o serviço de descoberta.";
+"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Removendo da memória flash o binário antigo de descoberta que foi substituído.";
+"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Gravando definitivamente a limpeza da memória flash.";
+"timeline.deploy.title.preflight_flash_capacity" = "Verificar capacidade da flash";
+"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Limpar descoberta antiga";
+"timeline.deploy.title.flush_legacy_flash_cleanup" = "Gravar limpeza da flash";
+"timeline.deploy.detail.upload_discovery" = "Copiando o serviço de descoberta para o volume de payload e para a memória flash.";
+"timeline.deploy.title.upload_discovery" = "Carregar serviço de descoberta";
 "action.activate" = "Ativar";
 "action.cancel" = "Cancelar";
 "action.confirm" = "Confirmar";
@@ -346,7 +354,6 @@
 "dialog.forget.error_title" = "Não foi possível esquecer o dispositivo";
 "dialog.forget.message" = "Remover %@ deste Mac? Isso não desinstala Samba do dispositivo.";
 "dialog.forget.title" = "Esqueceu este dispositivo?";
-"doctor.check.smb_bind_lan_only_unreachable" = "O SMB está vinculado à LAN do Time Capsule, mas este Mac está em outra rede. Desative \"Vincular SMB somente à LAN\" para este dispositivo e execute \"Instalar / atualizar Samba\", ou conecte-se pelo lado LAN do Time Capsule.";
 "doctor.check.device_starting_up" = "O dispositivo ainda está iniciando. Aguarde alguns minutos e execute a verificação novamente.";
 "doctor.check.payload_missing_from_disk" = "A pasta Samba está ausente do disco de dados; o disco pode ter sido apagado. Execute \"Instalar / atualizar Samba\" para reinstalar.";
 "doctor.domain.connection" = "Conexão";
@@ -904,9 +911,9 @@
 "toggle.enable_debug_logging" = "Ativar registro de depuração";
 "toggle.enable_nbns" = "Ativar NBNS";
 "toggle.internal_share_use_disk_root" = "Compartilhamento interno usa raiz de disco";
-"toggle.smb_bind_lan_only" = "Vincular SMB somente à LAN";
 "toggle.smb_browse_compatibility" = "Permitir navegação em compartilhamentos SMB";
 "toggle.mdns_advertise_afp" = "Anunciar AFP via Bonjour";
+"toggle.mdns_advertise_afp.help" = "Anunciar AFP via Bonjour. Deixe desligado: o macOS 26.x/27 oculta Time Capsules que anunciam AFP.";
 "toggle.any_protocol" = "Permitir qualquer protocolo SMB";
 "toggle.require_smb_encryption" = "Exigir criptografia SMB";
 "toggle.force_disable_smb_signing_and_encryption" = "Forçar a desativação da assinatura e da criptografia SMB";

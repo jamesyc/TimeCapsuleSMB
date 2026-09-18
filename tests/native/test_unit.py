@@ -20,8 +20,10 @@ def test_payload_device_boundary(tmp_path):
     import json
     native = ROOT / 'build/native'
     output = tmp_path / 'payload'
+    # Mock plan collection, not the payload schema: isolate router-ID derivation
+    # while exercising the same serialization shipped on devices.
     result = subprocess.run(['cc', '-Wall', '-Wextra', '-Werror', '-Wno-sign-compare',
-        '-Wno-unterminated-string-initialization', '-I', str(native / 'telemetry'),
+        '-Wno-unterminated-string-initialization', '-I', str(native / 'telemetry'), '-I', str(native / 'common'),
         str(native / 'telemetry/payload.c'), str(native / 'vendor/tweetnacl.c'),
         str(native / 'vendor/random.c'), str(Path(__file__).parent / 'unit/test_payload.c'), '-o', str(output)],
         capture_output=True, text=True, timeout=60)
@@ -30,4 +32,7 @@ def test_payload_device_boundary(tmp_path):
     assert run.returncode == 0, run.stderr
     payload = json.loads(run.stdout)
     expected_input = 'namespace=timecapsulesmb-router-heartbeat-v1\nsyAP=106\nsyAM=TimeCapsule6,106\nsyNm=Name\n"quoted"\n'
+    assert payload['schema_version'] == 2
+    assert payload['router_mode'] == 'unknown' and payload['links'] == []
+    assert payload['plan_error'] == 'mode'
     assert payload['router_id'] == 'tc1-' + sha512(expected_input.encode()).hexdigest()[:64]

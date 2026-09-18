@@ -26,8 +26,7 @@ DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate", "a
 
 BINARY_SMBD_SOURCE = "binary:smbd"
 BINARY_XATTR_MIGRATOR_SOURCE = "binary:xattr-migrator"
-BINARY_MDNS_SOURCE = "binary:mdns"
-BINARY_NBNS_SOURCE = "binary:nbns"
+BINARY_DISCOVERY_SOURCE = "binary:discovery"
 BINARY_SERVICE_SOURCE = "binary:service"
 BINARY_TELEMETRY_SOURCE = "binary:telemetry"
 BINARY_RSYNC_SOURCE = "binary:rsync"
@@ -74,8 +73,7 @@ class DeploymentPlan:
     disk_key: str
     smbd_path: Path
     xattr_migrator_path: Path
-    mdns_path: Path
-    nbns_path: Path
+    discovery_path: Path
     rsync_path: Path
     service_path: Path
     telemetry_path: Path
@@ -90,6 +88,7 @@ class DeploymentPlan:
     uploads: list[FileTransfer]
     pre_upload_actions: list[RemoteAction]
     post_upload_actions: list[RemoteAction]
+    post_verify_actions: list[RemoteAction]
     startup_mode: DeploymentStartupMode
     activation_actions: list[RemoteAction]
     reboot_required: bool
@@ -127,7 +126,7 @@ RUNTIME_ACTIVATION_CHECKS = [
     PlannedCheck("managed_runtime_manager_process", "manager is running for managed runtime"),
     PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
     PlannedCheck("managed_smbd_bound_445", "smbd is bound to required TCP 445 sockets"),
-    PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
+    PlannedCheck("managed_mdns_registrant_ready", "managed mDNS registrant becomes ready"),
     PlannedCheck("managed_mdns_settle_healthy", "mdns remains healthy after settle delay"),
 ]
 NETBSD4_ACTIVATION_CHECKS = RUNTIME_ACTIVATION_CHECKS
@@ -218,8 +217,7 @@ def build_deployment_plan(
     host: str,
     payload_home: PayloadHome,
     smbd_path: Path,
-    mdns_path: Path,
-    nbns_path: Path,
+    discovery_path: Path,
     *,
     xattr_migrator_path: Path,
     rsync_path: Path,
@@ -243,14 +241,13 @@ def build_deployment_plan(
         "manager.sh": "/mnt/Flash/manager.sh",
         "migrate.sh": "/mnt/Flash/migrate.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
-        "mdns": "/mnt/Flash/mdns-advertiser",
+        "discovery": "/mnt/Flash/discoveryd",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
     }
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
         "xattr_migrator": f"{payload_dir}/xattr-hfs-migrate",
-        "mdns": f"{payload_dir}/mdns-advertiser",
-        "nbns": f"{payload_dir}/nbns-advertiser",
+        "discovery": f"{payload_dir}/discoveryd",
         "service": f"{payload_dir}/service",
         "telemetry": f"{payload_dir}/telemetry",
         "rsync": f"{payload_dir}/rsync",
@@ -277,8 +274,7 @@ def build_deployment_plan(
     permissions = [
         RemotePermission(payload_targets["smbd"], "755"),
         RemotePermission(payload_targets["xattr_migrator"], "755"),
-        RemotePermission(payload_targets["mdns"], "755"),
-        RemotePermission(payload_targets["nbns"], "755"),
+        RemotePermission(payload_targets["discovery"], "755"),
         RemotePermission(payload_targets["rsync"], "755"),
         RemotePermission(payload_targets["rsyncd.conf"], "600"),
         RemotePermission(flash_targets["rc.local"], "755"),
@@ -287,7 +283,7 @@ def build_deployment_plan(
         RemotePermission(flash_targets["manager.sh"], "755"),
         RemotePermission(flash_targets["migrate.sh"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
-        RemotePermission(flash_targets["mdns"], "755"),
+        RemotePermission(flash_targets["discovery"], "755"),
         RemotePermission(payload_targets["service"], "755"),
         RemotePermission(payload_targets["telemetry"], "755"),
         RemotePermission(flash_targets["tcapsulesmb.conf"], "600"),
@@ -302,8 +298,7 @@ def build_deployment_plan(
         disk_key=payload_home.disk_key,
         smbd_path=smbd_path,
         xattr_migrator_path=xattr_migrator_path,
-        mdns_path=mdns_path,
-        nbns_path=nbns_path,
+        discovery_path=discovery_path,
         rsync_path=rsync_path,
         service_path=service_path,
         telemetry_path=telemetry_path,
@@ -323,9 +318,8 @@ def build_deployment_plan(
         ),
         uploads=[
             FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
-            FileTransfer(BINARY_MDNS_SOURCE, payload_targets["mdns"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in mdns"),
-            FileTransfer(BINARY_MDNS_SOURCE, flash_targets["mdns"], "flash_atomic", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "flash mdns"),
-            FileTransfer(BINARY_NBNS_SOURCE, payload_targets["nbns"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in nbns"),
+            FileTransfer(BINARY_DISCOVERY_SOURCE, payload_targets["discovery"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in discoveryd"),
+            FileTransfer(BINARY_DISCOVERY_SOURCE, flash_targets["discovery"], "flash_atomic", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "flash discoveryd"),
             FileTransfer(BINARY_RSYNC_SOURCE, payload_targets["rsync"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in rsync"),
             FileTransfer(GENERATED_RSYNC_CONFIG_SOURCE, payload_targets["rsyncd.conf"], "generated", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated rsync daemon config"),
             FileTransfer(BINARY_SERVICE_SOURCE, payload_targets["service"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "service helper for RAM staging"),
@@ -345,6 +339,9 @@ def build_deployment_plan(
             StopManagerAction(),
             StopWatchdogAction(),
             StopProcessAction("smbd"),
+            StopProcessAction("discoveryd"),
+            StopProcessAction("wcifsfs"),
+            StopProcessAction("wcifsnd"),
             # Stop both canonical and interim short process names during upgrades.
             StopProcessAction("mdns-advertiser"),
             StopProcessAction("nbns-advertiser"),
@@ -368,9 +365,21 @@ def build_deployment_plan(
             ensure_payload_volume,
             RemovePathAction(f"{payload_dir}/nbns"),
             ensure_payload_volume,
+            RemovePathAction(f"{payload_dir}/mdns-advertiser"),
+            ensure_payload_volume,
+            RemovePathAction(f"{payload_dir}/nbns-advertiser"),
+            ensure_payload_volume,
             PrepareDirsAction(tuple(remote_directories), tuple(legacy_symlinks)),
         ],
-        post_upload_actions=[ensure_payload_volume, InstallPermissionsAction(tuple(permissions))],
+        post_upload_actions=[
+            ensure_payload_volume,
+            InstallPermissionsAction(tuple(permissions)),
+        ],
+        post_verify_actions=[
+            # The deploy service defers this exact upgrade cleanup until the
+            # replacement has passed post-sync payload verification.
+            RemovePathAction("/mnt/Flash/mdns-advertiser"),
+        ],
         startup_mode=startup_mode,
         activation_actions=_deploy_activation_actions(startup_mode, wait_after_reboot=wait_after_reboot),
         reboot_required=reboot_required,
@@ -415,7 +424,7 @@ def build_uninstall_plan(
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
-        "mdns": "/mnt/Flash/mdns-advertiser",
+        "discovery": "/mnt/Flash/discoveryd",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
     }
     verify_absent_targets = [
@@ -440,6 +449,9 @@ def build_uninstall_plan(
             StopManagerAction(),
             StopWatchdogAction(),
             StopProcessAction("smbd"),
+            StopProcessAction("discoveryd"),
+            StopProcessAction("wcifsfs"),
+            StopProcessAction("wcifsnd"),
             # Stop both canonical and interim short process names during upgrades.
             StopProcessAction("mdns-advertiser"),
             StopProcessAction("nbns-advertiser"),
@@ -456,7 +468,8 @@ def build_uninstall_plan(
             RemovePathAction(flash_targets["start-samba.sh"]),
             RemovePathAction(flash_targets["watchdog.sh"]),
             RemovePathAction(flash_targets["dfree.sh"]),
-            RemovePathAction(flash_targets["mdns"]),
+            RemovePathAction(flash_targets["discovery"]),
+            RemovePathAction("/mnt/Flash/mdns-advertiser"),
             RemovePathAction("/mnt/Flash/mdns"),
             RemovePathAction(flash_targets["tcapsulesmb.conf"]),
             RemovePathAction("/mnt/Memory/samba4"),

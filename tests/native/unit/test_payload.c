@@ -1,7 +1,9 @@
 #include "device.h"
+#include "plan.h"
 #include <assert.h>
 #include <sys/utsname.h>
 volatile sig_atomic_t telemetry_stop;
+volatile sig_atomic_t acp_stop_requested;
 static int mode;
 void trim_line(char *v) { (void)v; }
 int uname(struct utsname *name) {
@@ -20,6 +22,19 @@ int read_acp_value(const char *key, char *out, size_t cap) {
 }
 int read_deploy_release_tag(char *out, size_t cap) { snprintf(out, cap, "v-test"); return 0; }
 int read_uptime_seconds(long *out) { *out = 123; return 0; }
+/* The identity test supplies an incomplete plan without probing the host. */
+int device_plan_collect(struct device_plan *out, const struct device_plan *previous, const struct plan_options *options) {
+    assert(previous == NULL && options->diskless == 0);
+    memset(out, 0, sizeof(*out));
+    strcpy(out->status.reason, "mode");
+    return 0;
+}
+const char *router_mode_name(enum router_mode value) {
+    assert(value == ROUTER_MODE_UNKNOWN);
+    return "unknown";
+}
+const char *link_role_name(enum link_role value) { (void)value; assert(0); return ""; }
+int addr_is_service_address(const struct if_addr *addr) { (void)addr; assert(0); return 0; }
 int main(void) {
     char json[4096];
     assert(!telemetry_payload(json, sizeof(json), "manual", "0123456789abcdef0123456789abcdef"));

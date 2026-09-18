@@ -101,7 +101,7 @@ class CliFlowTests(unittest.TestCase):
         status = "PASS" if ready else "FAIL"
         detail = "managed runtime is ready" if ready else "managed runtime is not ready"
         smbd = readiness_result(ready, detail, (f"{status}:managed smbd ready",))
-        mdns = readiness_result(ready, detail, (f"{status}:managed mDNS takeover active",))
+        mdns = readiness_result(ready, detail, (f"{status}:managed mDNS registrant active",))
         return ManagedRuntimeProbeResult(
             ready=ready,
             detail=detail,
@@ -469,7 +469,7 @@ class CliFlowTests(unittest.TestCase):
                 "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
                 return_value={
                     "remote_rc_local_log_tail": "rc log",
-                    "remote_mdns_log_tail": "mdns log",
+                    "remote_discovery_log_tail": "mdns log",
                 },
             ),
         ):
@@ -488,7 +488,7 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.error, "runtime failed managed runtime is not ready")
         self.assertIn("runtime failed managed runtime is not ready", output.getvalue())
         self.assertEqual(command_context.debug_fields["remote_rc_local_log_tail"], "rc log")
-        self.assertEqual(command_context.debug_fields["remote_mdns_log_tail"], "mdns log")
+        self.assertEqual(command_context.debug_fields["remote_discovery_log_tail"], "mdns log")
 
     def test_verify_managed_runtime_flow_collects_network_diagnostics_after_auto_ip_unavailable(self) -> None:
         command_context = FakeCommandContext()

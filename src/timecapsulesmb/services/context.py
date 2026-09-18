@@ -23,6 +23,7 @@ COMMAND_VALUE_BLACKLIST = {
     "TC_NETBIOS_NAME",
     # These are already first-class operation fields.
     "TC_CONFIGURE_ID",
+    # Retired device-model settings in old files are ignored as command input.
     "TC_MDNS_DEVICE_MODEL",
     "TC_AIRPORT_SYAP",
 }

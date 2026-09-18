@@ -17,19 +17,6 @@ tc_find_payload_smbd() {
     return 1
 }
 
-tc_find_payload_nbns() {
-    payload_dir=$1
-
-    if [ -x "$payload_dir/nbns-advertiser" ]; then
-        tc_smbd_debug_log "selected nbns binary $payload_dir/nbns-advertiser"
-        echo "$payload_dir/nbns-advertiser"
-        return 0
-    fi
-
-    tc_log "nbns binary not found in $payload_dir"
-    return 1
-}
-
 tc_select_cache_directory() {
     payload_dir=$1
     kernel_release=$(/usr/bin/uname -r 2>/dev/null || true)
@@ -42,8 +29,7 @@ tc_select_cache_directory() {
 tc_clear_payload_log_dir() {
     TC_PAYLOAD_LOG_DIR=
     TC_PAYLOAD_LOG_VOLUME=
-    TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
-    TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
+    TC_DISCOVERY_LOG_FILE="$RAM_VAR/discovery.log"
 }
 
 tc_set_payload_log_dir() {
@@ -52,8 +38,7 @@ tc_set_payload_log_dir() {
 
     TC_PAYLOAD_LOG_DIR="$payload_dir/logs"
     TC_PAYLOAD_LOG_VOLUME="$payload_volume"
-    TC_MDNS_LOG_FILE="$TC_PAYLOAD_LOG_DIR/mdns.log"
-    TC_NBNS_LOG_FILE="$TC_PAYLOAD_LOG_DIR/nbns.log"
+    TC_DISCOVERY_LOG_FILE="$TC_PAYLOAD_LOG_DIR/discovery.log"
 }
 
 tc_payload_log_dir_ready() {
@@ -180,22 +165,11 @@ tc_generate_runtime_smbpasswd() {
     smbpasswd_tmp="$RAM_PRIVATE/smbpasswd.tmp.$$"
     rm -f "$smbpasswd_tmp" >/dev/null 2>&1 || true
 
-    if sy_pw=$(/usr/bin/acp -q syPW 2>/dev/null); then
-        :
-    else
-        sy_pw_status=$?
-        tc_log "Samba runtime staging failed: acp syPW read failed status=$sy_pw_status"
-        return "$sy_pw_status"
-    fi
-    if [ -z "$sy_pw" ]; then
-        tc_log "Samba runtime staging failed: acp syPW returned empty password"
-        return 1
-    fi
-    if nt_hash=$(printf '%s\n' "$sy_pw" | "$TC_SERVICE_BIN" --print-nt-hash-from-stdin 2>/dev/null); then
+    if nt_hash=$("$TC_SERVICE_BIN" --print-device-nt-hash 2>/dev/null); then
         :
     else
         nt_hash_status=$?
-        tc_log "Samba runtime staging failed: NT hash generation failed status=$nt_hash_status"
+        tc_log "Samba runtime staging failed: device NT hash generation failed status=$nt_hash_status"
         return "$nt_hash_status"
     fi
     if ! tc_validate_nt_hash "$nt_hash"; then
@@ -274,7 +248,6 @@ tc_generate_runtime_username_map() {
 tc_stage_runtime() {
     payload_dir=$1
     smbd_src=$2
-    nbns_src=${3:-}
 
     # Flash is only about 1 MiB on these devices. Copy the helpers into RAM
     # before authentication/bind probes, and never execute them from the disk
@@ -283,34 +256,10 @@ tc_stage_runtime() {
     tc_stage_runtime_executable "$payload_dir/telemetry" "$TC_TELEMETRY_BIN" || return 1
     tc_stage_runtime_executable "$smbd_src" "$TC_SMBD_BIN" || return 1
 
-    tc_generate_runtime_smbpasswd || return 1
+    tc_generate_runtime_smbpasswd || return $?
     tc_generate_runtime_username_map || return 1
     tc_log "generated Samba auth files into RAM private directory"
 
-    if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
-        tc_stage_runtime_executable "$nbns_src" "$TC_NBNS_BIN" || return 1
-        tc_log "staged nbns runtime binary"
-    else
-        tc_log "nbns runtime staging skipped"
-    fi
-}
-
-tc_smbd_fruit_model() {
-    if [ -n "${MDNS_DEVICE_MODEL:-}" ]; then
-        printf '%s\n' "$MDNS_DEVICE_MODEL"
-        return 0
-    fi
-    airport_syap=${AIRPORT_SYAP:-}
-    if [ -z "$airport_syap" ]; then
-        airport_syap=$(get_airport_syap 2>/dev/null || true)
-    fi
-    if detected_model=$(get_airport_mdns_model "$airport_syap" 2>/dev/null); then
-        if [ -n "$detected_model" ]; then
-            printf '%s\n' "$detected_model"
-            return 0
-        fi
-    fi
-    echo MacSamba
 }
 
 tc_generate_smb_conf_from_share_rows() {
@@ -333,7 +282,7 @@ tc_generate_smb_conf_from_share_rows() {
     smbd_vfs_objects="catia fruit streams_xattr acl_xattr xattr_tdb"
     smbd_aio_fork_line=
     smbd_restrict_anonymous=2
-    smbd_fruit_model=$(tc_smbd_fruit_model)
+    smbd_fruit_model=$SMB_FRUIT_MODEL
     smbd_conf_tmp="$TC_SMBD_CONF.tmp.$$"
 
     mkdir -p "$payload_dir/logs" || return 1

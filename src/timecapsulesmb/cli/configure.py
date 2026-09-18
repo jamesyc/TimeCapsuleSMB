@@ -16,7 +16,6 @@ from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
     ConfigError,
     DEFAULTS,
-    infer_mdns_device_model_from_airport_syap,
     parse_bool,
     parse_env_file,
 )
@@ -302,12 +301,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     add_boolean_override_arguments(
         parser,
-        dest="smb_bind_lan_only",
-        positive_flags=("--smb-bind-lan-only",),
-        negative_flags=("--no-smb-bind-lan-only",),
-    )
-    add_boolean_override_arguments(
-        parser,
         dest="smb_browse_compatibility",
         positive_flags=("--smb-browse-compatibility",),
         negative_flags=("--no-smb-browse-compatibility",),
@@ -586,7 +579,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                         enable_ssh=True,
                         verbose_wait=not args.json,
                         internal_share_use_disk_root=args.internal_share_use_disk_root,
-                        smb_bind_lan_only=args.smb_bind_lan_only,
                         smb_browse_compatibility=args.smb_browse_compatibility,
                         mdns_advertise_afp=args.mdns_advertise_afp,
                         any_protocol=any_protocol,
@@ -599,7 +591,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                         ata_standby=args.ata_standby,
                         probe=probe_for_context,
                         write_env=lambda path, output: write_configure_env_file(path, output, persist_password=True),
-                        infer_model_from_syap=infer_mdns_device_model_from_airport_syap,
                     ),
                     callbacks=OperationCallbacks(
                         set_stage=command_context.set_stage,
@@ -653,11 +644,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print_automatic_value_choice(
                     "TC_AIRPORT_SYAP",
                     ConfigureValueChoice(value=result.identity.syap, source=result.identity.syap_source or "probed"),
-                )
-            if result.identity.model is not None and not args.json:
-                print_automatic_value_choice(
-                    "TC_MDNS_DEVICE_MODEL",
-                    ConfigureValueChoice(value=result.identity.model, source=result.identity.model_source or "probed"),
                 )
             break
         if args.json:

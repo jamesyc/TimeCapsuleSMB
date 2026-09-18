@@ -312,7 +312,7 @@ EOF
 }
 
 mdns_process_present() {
-    process_by_ucomm_present "$1" mdns-advertiser
+    process_by_ucomm_present "$1" discoveryd
 }
 
 apple_mdns_present() {

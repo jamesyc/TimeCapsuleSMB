@@ -7,7 +7,6 @@ struct DeployOptions: Equatable {
     let noReboot: Bool
     let noWait: Bool
     let internalShareUseDiskRoot: Bool
-    let smbBindLanOnly: Bool
     let smbBrowseCompatibility: Bool
     let mdnsAdvertiseAFP: Bool
     let anyProtocol: Bool
@@ -26,7 +25,6 @@ struct DeployOptions: Equatable {
         noReboot: Bool,
         noWait: Bool,
         internalShareUseDiskRoot: Bool,
-        smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
         smbBrowseCompatibility: Bool,
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool,
@@ -44,7 +42,6 @@ struct DeployOptions: Equatable {
         self.noReboot = noReboot
         self.noWait = noWait
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
-        self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
@@ -119,9 +116,6 @@ final class DeployWorkflowStore: ObservableObject {
         }
     }
     @Published var internalShareUseDiskRoot = false {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var smbBindLanOnly = DeviceProfileSettings.default.smbBindLanOnly {
         didSet { reconcilePlanFreshness() }
     }
     @Published var smbBrowseCompatibility = false {
@@ -279,7 +273,6 @@ final class DeployWorkflowStore: ObservableObject {
                 nbnsEnabled: options.nbnsEnabled,
                 rsyncEnabled: options.rsyncEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
-                smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
@@ -337,7 +330,6 @@ final class DeployWorkflowStore: ObservableObject {
                 nbnsEnabled: options.nbnsEnabled,
                 rsyncEnabled: options.rsyncEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
-                smbBindLanOnly: options.smbBindLanOnly,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
                 mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
                 anyProtocol: options.anyProtocol,
@@ -403,7 +395,6 @@ final class DeployWorkflowStore: ObservableObject {
             noReboot: rebootOptions.noReboot,
             noWait: rebootOptions.noWait,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
-            smbBindLanOnly: smbBindLanOnly,
             smbBrowseCompatibility: smbBrowseCompatibility,
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,

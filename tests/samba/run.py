@@ -42,6 +42,7 @@ NATIVE_METADATA_CASES = (
 )
 XATTR_MIGRATE_CASES = (
     "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
+    "orphans",
 )
 
 

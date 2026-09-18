@@ -23,6 +23,16 @@ SERVICE_TYPES = [
     "_device-info._tcp.local.",
 ]
 
+# Apple's printd advertises a shared USB printer through mDNSResponder as
+# these; browsed only by the doctor's printer check (guide G6), never by the
+# device list, so they are kept out of SERVICE_TYPES.
+PRINTER_SERVICE_TYPES = [
+    "_pdl-datastream._tcp.local.",
+    "_riousbprint._tcp.local.",
+    "_printer._tcp.local.",
+    "_ipp._tcp.local.",
+]
+
 AIRPORT_SERVICE = "_airport"
 SMB_SERVICE = "_smb"
 DEFAULT_BROWSE_TIMEOUT_SEC = 6.0
@@ -896,8 +906,9 @@ def discover_snapshot_detailed(
     family: BonjourIPFamily | None = None,
     interfaces: Sequence[str] | None = None,
     deadline: float | None = None,
+    service_types: Sequence[str] | None = None,
 ) -> tuple[BonjourDiscoverySnapshot, BonjourDiscoveryDiagnostics]:
-    service_types = _matching_service_types(service)
+    service_types = list(service_types) if service_types is not None else _matching_service_types(service)
     start = time.monotonic()
     zeroconf_interfaces = interfaces if interfaces is not None else _zeroconf_interfaces_for_target(target_ip, family=family)
     zc = _open_zeroconf(zeroconf_interfaces, family=family)

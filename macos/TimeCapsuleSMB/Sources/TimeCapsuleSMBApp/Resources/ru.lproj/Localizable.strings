@@ -1,3 +1,11 @@
+"timeline.deploy.detail.preflight_flash_capacity" = "Проверка свободного места во флеш-памяти для обновления службы обнаружения.";
+"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Удаление заменённого старого файла службы обнаружения из флеш-памяти.";
+"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Сохранение изменений после очистки флеш-памяти.";
+"timeline.deploy.title.preflight_flash_capacity" = "Проверить место во флеш-памяти";
+"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Удалить старую службу обнаружения";
+"timeline.deploy.title.flush_legacy_flash_cleanup" = "Сохранить очистку флеш-памяти";
+"timeline.deploy.detail.upload_discovery" = "Копирование службы обнаружения в том данных и во флеш-память.";
+"timeline.deploy.title.upload_discovery" = "Загрузить службу обнаружения";
 "action.activate" = "Активировать";
 "action.cancel" = "Отмена";
 "action.confirm" = "Подтвердить";
@@ -346,7 +354,6 @@
 "dialog.forget.error_title" = "Не удалось забыть устройство";
 "dialog.forget.message" = "Удалить %@ с этого Mac? При этом Samba не удаляется с устройства.";
 "dialog.forget.title" = "Забыть это устройство?";
-"doctor.check.smb_bind_lan_only_unreachable" = "SMB привязан к LAN Time Capsule, но этот Mac находится в другой сети. Отключите «Привязывать SMB только к LAN» для этого устройства и запустите «Установить / обновить Samba» либо подключитесь со стороны LAN Time Capsule.";
 "doctor.check.device_starting_up" = "Устройство еще запускается. Подождите несколько минут и запустите проверку снова.";
 "doctor.check.payload_missing_from_disk" = "Папка Samba отсутствует на диске данных; возможно, диск был стерт. Запустите «Установить / обновить Samba», чтобы установить заново.";
 "doctor.domain.connection" = "Соединение";
@@ -904,9 +911,9 @@
 "toggle.enable_debug_logging" = "Включить ведение журнала отладки";
 "toggle.enable_nbns" = "Включить NBNS";
 "toggle.internal_share_use_disk_root" = "Внутренний общий ресурс использует корень диска";
-"toggle.smb_bind_lan_only" = "Привязывать SMB только к LAN";
 "toggle.smb_browse_compatibility" = "Разрешить просмотр общих ресурсов SMB";
 "toggle.mdns_advertise_afp" = "Рекламировать AFP через Bonjour";
+"toggle.mdns_advertise_afp.help" = "Объявлять AFP через Bonjour. Оставьте выключенным: macOS 26.x/27 скрывает Time Capsule, объявляющие AFP.";
 "toggle.any_protocol" = "Разрешить любой протокол SMB";
 "toggle.require_smb_encryption" = "Требовать шифрование SMB";
 "toggle.force_disable_smb_signing_and_encryption" = "Принудительно отключить подпись и шифрование SMB";

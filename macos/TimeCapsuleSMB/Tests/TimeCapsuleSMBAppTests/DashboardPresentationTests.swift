@@ -26,9 +26,9 @@ final class DashboardPresentationTests: XCTestCase {
         let payload = try testDoctorPayload(checks: [
             testDoctorCheck(
                 status: "FAIL",
-                message: "SMB is configured to bind to LAN-only interface(s) 192.168.1.0/24, but this Mac has no address on those runtime Samba network(s). Disable Bind SMB to LAN Only for this profile and redeploy, or connect from the Time Capsule LAN side.",
+                message: "managed runtime payload directory /Volumes/dk2/.samba4 is missing from the data disk",
                 domain: "SMB Auth",
-                code: "smb_bind_lan_only_unreachable"
+                code: "payload_missing_from_disk"
             )
         ]).decode(DoctorPayload.self)
         let summary = DoctorSummary(payload: payload)
@@ -39,9 +39,9 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.domain, .smbAuth)
         XCTAssertEqual(
             row.message,
-            "SMB is bound to the Time Capsule LAN, but this Mac is on another network. Turn off Bind SMB to LAN Only for this device and run Install / Update Samba, or connect from the Time Capsule LAN side."
+            "The Samba folder is missing from the data disk; the disk may have been erased. Run \"Install / Update Samba\" to reinstall."
         )
-        XCTAssertFalse(row.message.contains("configured to bind"))
+        XCTAssertFalse(row.message.contains("managed runtime payload directory"))
     }
 
     func testCheckupPresentationLocalizesDeviceStartingUpCheck() throws {

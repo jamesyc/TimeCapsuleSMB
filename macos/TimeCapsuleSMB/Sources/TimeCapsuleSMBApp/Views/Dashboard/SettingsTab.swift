@@ -153,11 +153,11 @@ private struct DeviceProfileAdvancedSettingsView: View {
                     }
                     GridRow {
                         Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.draft.internalShareUseDiskRoot)
-                        Toggle(L10n.string("toggle.smb_bind_lan_only"), isOn: $store.draft.smbBindLanOnly)
+                        Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $store.draft.smbBrowseCompatibility)
                     }
                     GridRow {
-                        Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $store.draft.smbBrowseCompatibility)
                         Toggle(L10n.string("toggle.mdns_advertise_afp"), isOn: $store.draft.mdnsAdvertiseAFP)
+                            .help(L10n.string("toggle.mdns_advertise_afp.help"))
                     }
                     GridRow {
                         Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $store.draft.fruitMetadataNetatalk)

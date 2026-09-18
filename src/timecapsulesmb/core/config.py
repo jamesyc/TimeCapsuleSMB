@@ -15,12 +15,9 @@ from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
 REPO_ROOT = package_project_root()
 ENV_PATH = REPO_ROOT / ".env"
 MAX_DNS_LABEL_BYTES = 63
-MAX_DNS_TXT_BYTES = 255
 MAX_NETBIOS_NAME_BYTES = 15
-MODEL_TXT_PREFIX = "model="
 MANAGED_PAYLOAD_DIR_NAME = ".samba4"
 DEFAULT_SAMBA_AUTH_USER = "admin"
-DEFAULT_MDNS_DEVICE_MODEL = "TimeCapsule"
 
 
 @dataclass(frozen=True)
@@ -48,9 +45,6 @@ AIRPORT_DEVICE_IDENTITIES = (
 AIRPORT_IDENTITIES_BY_SYAP = {identity.syap: identity for identity in AIRPORT_DEVICE_IDENTITIES}
 AIRPORT_IDENTITIES_BY_MODEL = {identity.mdns_model: identity for identity in AIRPORT_DEVICE_IDENTITIES}
 VALID_AIRPORT_SYAP_CODES = frozenset(AIRPORT_IDENTITIES_BY_SYAP)
-VALID_MDNS_DEVICE_MODELS = frozenset(
-    {"TimeCapsule", "AirPort"} | {identity.mdns_model for identity in AIRPORT_DEVICE_IDENTITIES}
-)
 AIRPORT_SYAP_TO_MODEL = {
     identity.syap: identity.mdns_model
     for identity in AIRPORT_DEVICE_IDENTITIES
@@ -62,7 +56,6 @@ DEFAULTS = {
     "TC_HOST": DEFAULT_SSH_TARGET_PLACEHOLDER,
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
-    "TC_SMB_BIND_LAN_ONLY": "false",
     "TC_SMB_BROWSE_COMPATIBILITY": "false",
     "TC_MDNS_ADVERTISE_AFP": "false",
     "TC_ANY_PROTOCOL": "false",
@@ -80,7 +73,6 @@ ENV_FILE_KEYS = [
     "TC_PASSWORD",
     "TC_SSH_OPTS",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
-    "TC_SMB_BIND_LAN_ONLY",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
@@ -93,12 +85,24 @@ ENV_FILE_KEYS = [
     "TC_ATA_STANDBY",
     "TC_CONFIGURE_ID",
 ]
+# Settings removed by v3.1.0: the LAN-only bind knob (Samba now binds every
+# link the device plan grants SMB, exactly like Apple's file servers) and
+# the host label (the advertised hostname is Apple's own). `configure`
+# strips them from an existing .env with a notice.
+REMOVED_ENV_FILE_KEYS = {
+    "TC_MDNS_INSTANCE_NAME": "the service instance name follows the AirPort name",
+    "TC_NETBIOS_NAME": "the NetBIOS name is derived from the device hostname",
+    "TC_SMB_BIND_LAN_ONLY": "v3.1.0 removed the LAN-only bind setting; Samba binds every LAN link like Apple's file servers",
+    "TC_MDNS_HOST_LABEL": "v3.1.0 removed the mDNS host label; the advertised hostname is the AirPort name",
+    "TC_MDNS_DEVICE_MODEL": "the mDNS device model is observed from the device instead of configured",
+}
 ENV_FILE_OMIT_KEYS = frozenset({
     # Runtime-derived/deprecated naming keys may still exist in older .env
     # files, but new configure writes should not keep them alive.
     "TC_AIRPORT_SYAP",
     "TC_MDNS_DEVICE_MODEL",
     "TC_MDNS_HOST_LABEL",
+    "TC_SMB_BIND_LAN_ONLY",
     "TC_MDNS_INSTANCE_NAME",
     "TC_NETBIOS_NAME",
     "TC_SHARE_NAME",
@@ -180,13 +184,6 @@ class AppConfig:
         return value
 
 
-def airport_identity_from_config(config: AppConfig) -> AirportDeviceIdentity | None:
-    return (
-        AIRPORT_IDENTITIES_BY_SYAP.get(config.get("TC_AIRPORT_SYAP"))
-        or AIRPORT_IDENTITIES_BY_MODEL.get(config.get("TC_MDNS_DEVICE_MODEL"))
-    )
-
-
 def airport_identity_from_model_or_syap(
     *,
     model: str | None = None,
@@ -221,24 +218,6 @@ def airport_exact_display_name_from_identity(
     if identity is not None:
         return identity.display_name
     return airport_family_display_name_from_identity(model=model, syap=syap)
-
-
-def airport_family_display_name_from_config(config: AppConfig) -> str:
-    model = config.get("TC_MDNS_DEVICE_MODEL")
-    identity = airport_identity_from_config(config)
-    family = identity.family if identity is not None else ""
-    if family == "time_capsule" or model == "TimeCapsule":
-        return "Time Capsule"
-    if family == "airport_extreme" or model == "AirPort":
-        return "AirPort Extreme"
-    return "AirPort storage device"
-
-
-def airport_exact_display_name_from_config(config: AppConfig) -> str:
-    identity = airport_identity_from_config(config)
-    if identity is not None:
-        return identity.display_name
-    return airport_family_display_name_from_config(config)
 
 
 @dataclass(frozen=True)
@@ -326,25 +305,6 @@ def _has_only_safe_chars(value: str, pattern: str) -> bool:
     return re.fullmatch(pattern, value) is not None
 
 
-def build_mdns_device_model_txt(value: str) -> Optional[str]:
-    txt = MODEL_TXT_PREFIX + value
-    if len(txt.encode("utf-8")) > MAX_DNS_TXT_BYTES:
-        return None
-    return txt
-
-
-def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if value not in VALID_MDNS_DEVICE_MODELS:
-        return f"{field_name} is not a supported AirPort storage device model."
-    if build_mdns_device_model_txt(value) is None:
-        return f"{field_name} must be 249 bytes or fewer."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    return None
-
-
 def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
@@ -420,26 +380,10 @@ def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
     return None
 
 
-def infer_mdns_device_model_from_airport_syap(syap: str) -> Optional[str]:
-    return AIRPORT_SYAP_TO_MODEL.get(syap)
-
-
-def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Optional[str]:
-    expected_model = infer_mdns_device_model_from_airport_syap(syap)
-    if expected_model is None:
-        return None
-    if device_model != expected_model:
-        return (f'TC_MDNS_DEVICE_MODEL "{device_model}" must match the '
-                f'configured syAP expected value "{expected_model}".')
-    return None
-
-
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_HOST": validate_ssh_target,
     "TC_AIRPORT_SYAP": validate_airport_syap,
-    "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
-    "TC_SMB_BIND_LAN_ONLY": validate_bool,
     "TC_SMB_BROWSE_COMPATIBILITY": validate_bool,
     "TC_MDNS_ADVERTISE_AFP": validate_bool,
     "TC_ANY_PROTOCOL": validate_bool,
@@ -459,12 +403,10 @@ class ConfigProfile:
     required_values: tuple[str, ...] = ()
     validated_keys: tuple[str, ...] = ()
     require_env_file: bool = True
-    cross_check_syap_model: bool = False
 
 
 CONFIGURE_VALIDATED_KEYS = (
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
-    "TC_SMB_BIND_LAN_ONLY",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
@@ -479,7 +421,6 @@ CONFIGURE_VALIDATED_KEYS = (
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
-    "TC_SMB_BIND_LAN_ONLY",
     "TC_SMB_BROWSE_COMPATIBILITY",
     "TC_MDNS_ADVERTISE_AFP",
     "TC_ANY_PROTOCOL",
@@ -594,18 +535,6 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
                 kind="invalid_value",
                 key=key,
                 message=error,
-                path=config.path,
-            ))
-    if profile_config.cross_check_syap_model and "TC_AIRPORT_SYAP" not in missing_keys and "TC_MDNS_DEVICE_MODEL" not in missing_keys:
-        syap_model_error = validate_mdns_device_model_matches_syap(
-            config.get("TC_AIRPORT_SYAP", ""),
-            config.get("TC_MDNS_DEVICE_MODEL", ""),
-        )
-        if syap_model_error:
-            errors.append(ConfigIssue(
-                kind="inconsistent_values",
-                key="TC_MDNS_DEVICE_MODEL",
-                message=syap_model_error,
                 path=config.path,
             ))
     smb_policy_keys = {

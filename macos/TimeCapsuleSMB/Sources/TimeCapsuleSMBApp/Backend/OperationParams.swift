@@ -58,7 +58,6 @@ enum OperationParams {
             password: String,
             debugLogging: Bool,
             internalShareUseDiskRoot: Bool? = nil,
-            smbBindLanOnly: Bool? = nil,
             smbBrowseCompatibility: Bool? = nil,
             mdnsAdvertiseAFP: Bool? = nil,
             anyProtocol: Bool? = nil,
@@ -83,7 +82,6 @@ enum OperationParams {
             params.merge(managedSettings(
                 debugLogging: debugLogging,
                 internalShareUseDiskRoot: internalShareUseDiskRoot,
-                smbBindLanOnly: smbBindLanOnly,
                 smbBrowseCompatibility: smbBrowseCompatibility,
                 mdnsAdvertiseAFP: mdnsAdvertiseAFP,
                 anyProtocol: anyProtocol,
@@ -107,7 +105,6 @@ enum OperationParams {
             managedSettings(
                 debugLogging: settings.debugLogging,
                 internalShareUseDiskRoot: settings.internalShareUseDiskRoot,
-                smbBindLanOnly: settings.smbBindLanOnly,
                 smbBrowseCompatibility: settings.smbBrowseCompatibility,
                 mdnsAdvertiseAFP: settings.mdnsAdvertiseAFP,
                 anyProtocol: settings.anyProtocol,
@@ -124,7 +121,6 @@ enum OperationParams {
         private static func managedSettings(
             debugLogging: Bool?,
             internalShareUseDiskRoot: Bool?,
-            smbBindLanOnly: Bool?,
             smbBrowseCompatibility: Bool?,
             mdnsAdvertiseAFP: Bool?,
             anyProtocol: Bool?,
@@ -140,7 +136,6 @@ enum OperationParams {
             let booleans: [(String, Bool?)] = [
                 ("debug_logging", debugLogging),
                 ("internal_share_use_disk_root", internalShareUseDiskRoot),
-                ("smb_bind_lan_only", smbBindLanOnly),
                 ("smb_browse_compatibility", smbBrowseCompatibility),
                 ("mdns_advertise_afp", mdnsAdvertiseAFP),
                 ("any_protocol", anyProtocol),
@@ -188,7 +183,6 @@ enum OperationParams {
             nbnsEnabled: Bool,
             rsyncEnabled: Bool = false,
             internalShareUseDiskRoot: Bool = false,
-            smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
             smbBrowseCompatibility: Bool = false,
             mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
             anyProtocol: Bool = false,
@@ -208,7 +202,6 @@ enum OperationParams {
                 "nbns_enabled": .bool(nbnsEnabled),
                 "rsync_enabled": .bool(rsyncEnabled),
                 "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
-                "smb_bind_lan_only": .bool(smbBindLanOnly),
                 "smb_browse_compatibility": .bool(smbBrowseCompatibility),
                 "mdns_advertise_afp": .bool(mdnsAdvertiseAFP),
                 "any_protocol": .bool(anyProtocol),

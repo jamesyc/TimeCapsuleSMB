@@ -161,7 +161,6 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         ))
         let call = try XCTUnwrap(fixture.runner.calls.first)
         XCTAssertEqual(call.operation, "update-config-settings")
-        XCTAssertEqual(call.params["smb_bind_lan_only"], .bool(false))
         XCTAssertEqual(call.params["vfs_aio_fork_enabled"], .bool(true))
         XCTAssertTrue(try String(contentsOf: saved.configURL, encoding: .utf8).contains("TC_TEST_SETTINGS_SYNCED=1"))
     }

@@ -6,15 +6,47 @@ libraries are never deployed. No helper uses pthreads.
 
 | Executable | Owner |
 | --- | --- |
-| `mdns-advertiser` | DNS-SD records, packet responses, multicast sockets and Apple port takeover |
-| `nbns-advertiser` | NetBIOS queries, node status and IPv4 response selection |
-| `service` | On-demand NT hashing, live CIDRs and Samba bind selection |
+| `discoveryd` | Registers `_smb`/`_adisk` (and `_afpovertcp` on request) with Apple's on-device `mDNSResponder`, and owns Apple's `wcifsnd` child for native NBNS. |
+| `service` | Native Samba identity/model projection, device-password NT hashing, `--print-smb-bind-interfaces` (Samba bind tokens + retention status) and `--print-link-plan` |
 | `telemetry` | Heartbeat collection/POST, scheduling and signed debug execution |
 
-`common/` contains live interface discovery and the shared LAN/WAN policy.
-It has no daemon, cache or runtime state file. The advertisers independently
-observe current interfaces. `service` is a command-line helper, not an IPC
-server. Protocol-specific socket-family probes remain with their advertisers.
+`common/` is the shared device-facts collector (v3.1.0): `iflist.c` walks
+`sysctl(NET_RT_IFLIST)` itself (Apple's kernel `if_msghdr` differs from the
+SDK's, so `getifaddrs()` returns garbage names), `acp.c` runs `acp -q`
+children with timeouts and a non-blocking mode, `config.c` decodes the flash
+config literally, and `topology.c`/`policy.c`/`identity.c`/`plan.c` turn
+those facts into a `struct device_plan` (link roles, service masks, bind
+tokens, identity) with the retained-policy rules of the redesign plan.
+`loop.c` is the daemons' select loop (PF_ROUTE debounce + 30 s poll).
+Host test builds (`TC_NATIVE_TEST`) accept `--facts-file` snapshots. Device
+builds omit the fixture parser and accept only live facts; `--print-link-plan`
+remains available for live diagnostics.
+There is no daemon, cache or runtime state file; each process owns its own
+last validated plan. Fixtures from both device lanes live under
+`tests/native/fixtures/iflist/`.
+
+ACP capture uses one process/timeout engine with independent multiline and
+whitespace-trimming options and caller-owned buffers. Scalar facts retain their
+256-byte first-line, trimmed behavior; raw password and MaSt reads preserve
+whitespace. `service --print-device-nt-hash` reads `syPW` and hashes it without
+passing plaintext through the shell or temporary files. Its raw capture is
+limited to 8 KiB; the existing hash-input limit remains 4096 bytes.
+`service --print-samba-identity` returns a versioned four-line response with
+NetBIOS name, server string and observed fruit model. Legacy name/model overrides
+are ignored; deploy no longer forwards them.
+
+`discoveryd --print-mast [--timeout-seconds N]` performs the fixed `acp -A MaSt`
+read without starting discovery. It lives on Flash so boot/diskd readiness can
+use it before the disk-backed service helper is copied into RAM. It captures up
+to 64 KiB of text; failed, empty or oversized reads never become an empty disk
+inventory. This replaces the shell timeout supervisor and its capture/PID files.
+
+Cold start grants no sharing services until critical facts validate. Failed
+rereads retain permissions only on unchanged interfaces; the old bridge/PF
+heuristic is gone. The manager passes a compact policy summary through stdin
+with `service --print-smb-bind-interfaces --retain-policy`; output starts with
+tokens/status followed by the updated policy. This summary stays in shell
+memory and never becomes a device state file.
 
 Module headers declare cross-module functions. `TC_LOCAL` keeps internal
 helpers static in device builds; only host regression tests define
@@ -22,9 +54,9 @@ helpers static in device builds; only host regression tests define
 where the linker deliberately does not use section garbage collection because
 it can discard required ELF notes. Do not include implementation `.c` files.
 
-The device manager runs `mdns-advertiser` from Flash. NBNS, service, telemetry and Samba
-are copied to RAM from the disk before use; service is staged before auth and
-bind probes. This leaves Flash space for the next atomic mDNS update. Telemetry
+The device manager runs `discoveryd` from Flash. Apple's `wcifsnd` stays in the firmware;
+service, telemetry and Samba are copied to RAM from the disk before use. Service is staged before auth and
+bind probes. This leaves Flash space for the next atomic discovery update. Telemetry
 creates only `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`. It locks the
 existing `/mnt/Memory` directory to exclude concurrent cycles, including manual
 runs, without creating a lock file or job directory. That directory must be
@@ -32,14 +64,20 @@ root-owned, with sticky permissions if writable by other users.
 
 ## Telemetry protocol
 
+Schema 2 reports `nbns_enabled`, `debug_logging` (Samba or mDNS), and
+`advertise_afp`, using null for unreadable settings. `plan_error` contains a
+short critical-facts failure reason and is omitted on success. There is no
+`ps` probe, constant daemon label, or live registration-state upload.
+This probe has no retained history and does not assert that services stopped.
+
 `telemetry --daemon` sends a boot heartbeat and then one every 12 hours.
 `--once [reason]` performs one cycle; `--print-payload [reason]` only prints.
 `--cleanup` removes stale debug files without collecting or posting telemetry.
 An existing cycle or inherited debug lock causes `--once` and `--cleanup` to
 exit 75. Cleanup errors return 1 and prevent a new cycle from starting.
 
-The POST to `/v1/router-heartbeats` preserves schema version 1 and its device
-fields. It adds `target_lane` (`6`, `4le`, `4be`) and `debug_nonce` (16 random
+The POST to `/v1/router-heartbeats` uses schema version 2 and preserves the
+original device fields. It adds `target_lane` (`6`, `4le`, `4be`) and `debug_nonce` (16 random
 bytes as 32 lowercase hex characters). Empty or legacy successful responses
 without DEBUG end the cycle. New responses contain a top-level JSON boolean:
 

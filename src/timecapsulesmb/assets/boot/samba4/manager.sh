@@ -71,7 +71,7 @@ tc_manager_read_mast_raw() {
         tc_log "manager MaSt probe failed: /usr/bin/acp unavailable"
         return 1
     fi
-    if mast_raw=$(/usr/bin/acp -A MaSt 2>/dev/null); then
+    if mast_raw=$(tc_read_mast); then
         printf '%s\n' "$mast_raw"
         return 0
     else
@@ -157,15 +157,6 @@ tc_manager_select_current_payload() {
     tc_set_payload_log_dir "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME"
 }
 
-tc_manager_materialize_adisk_state() {
-    tc_ensure_parent_dir "$TC_ADISK_TSV"
-    if tc_manager_current_payload_ready && [ -n "${manager_adisk_rows:-}" ]; then
-        printf '%s\n' "$manager_adisk_rows" >"$TC_ADISK_TSV" || return 1
-    else
-        : >"$TC_ADISK_TSV" || return 1
-    fi
-}
-
 tc_manager_generate_smb_conf() {
     if ! tc_manager_select_current_payload; then
         tc_log "manager Samba config skipped: payload state is unavailable"
@@ -189,17 +180,11 @@ tc_manager_file_metadata_signature() {
 tc_manager_samba_file_signature() {
     payload_dir=$1
     smbd_src=$2
-    nbns_src=$3
 
     printf 'payload\t%s\n' "$payload_dir"
     tc_manager_file_metadata_signature "$smbd_src"
     tc_manager_file_metadata_signature "$payload_dir/service"
     tc_manager_file_metadata_signature "$payload_dir/telemetry"
-    if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ]; then
-        tc_manager_file_metadata_signature "$nbns_src"
-    else
-        printf 'nbns\t%s\n' "disabled-or-missing"
-    fi
 }
 
 tc_manager_samba_config_signature() {
@@ -208,7 +193,7 @@ tc_manager_samba_config_signature() {
         "${TC_PAYLOAD_VOLUME:-}" \
         "${TC_PAYLOAD_DEVICE:-}" \
         "${TC_SMB_BIND_INTERFACES:-}" \
-        "${MDNS_DEVICE_MODEL:-}" \
+        "${SMB_FRUIT_MODEL:-}" \
         "${SMB_NETBIOS_NAME:-}" \
         "${SMB_SERVER_STRING:-}" \
         "${ANY_PROTOCOL:-}" \
@@ -218,64 +203,6 @@ tc_manager_samba_config_signature() {
         "${manager_share_rows:-}"
 }
 
-tc_manager_reconcile_printer_state() {
-    TC_MANAGER_PRINTER_PROBE_RESULT=unknown
-    TC_MANAGER_PRINTER_REFRESH_RESULT=skipped
-    TC_MANAGER_PRINTER_CHANGED=0
-
-    current_printer_signature=$(tc_riousbprint_current_signature) || {
-        TC_MANAGER_PRINTER_PROBE_RESULT=signature_failed
-        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_signature_failed
-        return 1
-    }
-
-    if [ "${TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY:-0}" != "1" ]; then
-        TC_MANAGER_PRINTER_PROBE_RESULT=initial
-        TC_MANAGER_PRINTER_REFRESH_RESULT=record_initial
-        TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE=$current_printer_signature
-        TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=1
-        tc_log "manager USB printer signature recorded from initial input"
-        return 0
-    fi
-
-    if [ "$current_printer_signature" = "$TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE" ]; then
-        TC_MANAGER_PRINTER_PROBE_RESULT=unchanged
-        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_unchanged
-        tc_manager_debug_log "manager USB printer signature unchanged; mDNS refresh skipped"
-        return 0
-    fi
-
-    pending_printer_signature=$current_printer_signature
-    TC_MANAGER_PRINTER_PROBE_RESULT=pending_change
-    tc_log "manager USB printer signature changed; debouncing ${MANAGER_PRINTER_DEBOUNCE_SECONDS}s before mDNS refresh"
-    sleep "$MANAGER_PRINTER_DEBOUNCE_SECONDS"
-    debounced_printer_signature=$(tc_riousbprint_current_signature) || {
-        TC_MANAGER_PRINTER_PROBE_RESULT=debounce_signature_failed
-        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_debounce_signature_failed
-        return 1
-    }
-
-    if [ "$debounced_printer_signature" = "$TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE" ]; then
-        TC_MANAGER_PRINTER_PROBE_RESULT=change_cleared
-        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_change_cleared
-        tc_log "manager USB printer signature change cleared after debounce; mDNS refresh skipped"
-        return 0
-    fi
-    if [ "$debounced_printer_signature" != "$pending_printer_signature" ]; then
-        TC_MANAGER_PRINTER_PROBE_RESULT=unstable
-        TC_MANAGER_PRINTER_REFRESH_RESULT=skipped_unstable
-        tc_log "manager USB printer signature still changing after debounce; postponing mDNS refresh"
-        return 0
-    fi
-
-    TC_MANAGER_PRINTER_PROBE_RESULT=change_confirmed
-    TC_MANAGER_PRINTER_REFRESH_RESULT=refresh_confirmed_change
-    TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE=$debounced_printer_signature
-    TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=1
-    TC_MANAGER_PRINTER_CHANGED=1
-    tc_log "manager USB printer signature recorded from confirmed-change input"
-    return 0
-}
 
 tc_manager_clear_payload_state() {
     manager_payload_ready=0
@@ -287,13 +214,11 @@ tc_manager_clear_payload_state() {
     TC_PAYLOAD_DEVICE=
     tc_clear_payload_log_dir
     manager_share_rows=
-    manager_adisk_rows=
     TC_MANAGER_RUNTIME_STAGED=0
     TC_MANAGER_LAST_BINARY_SIGNATURE=
     TC_MANAGER_LAST_CONFIG_SIGNATURE=
     TC_MANAGER_LAST_RSYNC_SIGNATURE=
     TC_MANAGER_PENDING_CONFIG_SIGNATURE=
-    tc_manager_materialize_adisk_state || true
 }
 
 tc_manager_set_payload_state() {
@@ -443,18 +368,11 @@ tc_manager_set_unique_share_name() {
 
 tc_manager_append_share_rows() {
     share_row=$(printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid")
-    adisk_row=$(printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF")
     if [ -z "$manager_share_rows" ]; then
         manager_share_rows=$share_row
     else
         manager_share_rows="$manager_share_rows
 $share_row"
-    fi
-    if [ -z "$manager_adisk_rows" ]; then
-        manager_adisk_rows=$adisk_row
-    else
-        manager_adisk_rows="$manager_adisk_rows
-$adisk_row"
     fi
 }
 
@@ -463,7 +381,6 @@ tc_manager_build_share_state_from_topology() {
     candidate_count=0
     share_count=0
     manager_share_rows=
-    manager_adisk_rows=
     TC_MANAGER_USED_SHARE_NAMES=
 
     tc_log "manager share state: scanning mounted writable MaSt volumes"
@@ -618,10 +535,338 @@ $xattr_record_keys
 EOF
 }
 
+# v3.1.0 migration checkpoint (mdns-redesign.md package 7, owner-approved):
+# a small text file beside xattr.tdb records which volumes (by MaSt UUID) a
+# manager finished migrating against which generation of the database, so
+# a reboot does not walk every disk again just because rows for a detached
+# disk remain. It is a migration checkpoint, not runtime state: it lives on
+# the disk with the TDB, is absent whenever the TDB is, and the manager is
+# its only writer. Format (one record per line):
+#   xattr-migration-completed: format=1 migration=1 written=<epoch>
+#   source: <size>-<fnv1a64 of xattr.tdb>
+#   volume: uuid=<MaSt UUID>
+# Anything unexpected -- other format/migration numbers, a source that does
+# not match the current database, a malformed line -- discards the whole
+# file and the volumes are rescanned. Rescanning repeats work; trusting a
+# stale file would skip it, so the file is only ever ignored, never patched.
+tc_manager_xattr_checkpoint_path() {
+    printf '%s/private/%s\n' "$TC_RESOLVED_PAYLOAD_DIR" "${TC_XATTR_CHECKPOINT_NAME:-xattr-migration-completed.txt}"
+}
+
+# The migrator hashes the database; the device has no cksum/md5. Runs the
+# RAM copy directly: this is a read-only sub-second call outside the
+# signalled copy/cleanup wrapper, and the manager serializes both.
+tc_manager_xattr_fingerprint() {
+    fingerprint_tdb=$1
+    fingerprint_binary="$TC_RESOLVED_PAYLOAD_DIR/xattr-hfs-migrate"
+    fingerprint_ram="${TC_MANAGER_XATTR_RAM:-/mnt/Memory/tc-xattr-hfs-migrate}.fp"
+
+    [ -f "$fingerprint_tdb" ] || return 1
+    [ -x "$fingerprint_binary" ] || return 1
+    /bin/cp "$fingerprint_binary" "$fingerprint_ram" || return 1
+    /bin/chmod 755 "$fingerprint_ram" || { /bin/rm -f "$fingerprint_ram"; return 1; }
+    fingerprint_output=$("$fingerprint_ram" fingerprint "$fingerprint_tdb" 2>/dev/null) || fingerprint_output=
+    /bin/rm -f "$fingerprint_ram"
+    case "$fingerprint_output" in
+        fingerprint=?*)
+            printf '%s\n' "${fingerprint_output#fingerprint=}"
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+tc_manager_xattr_forget_completed_volumes() {
+    TC_MANAGER_XATTR_MIGRATED_VOLUMES=
+    TC_MANAGER_XATTR_CHECKPOINT_SOURCE=
+}
+
+# Consult the durable checkpoint once per database. Only UUID-keyed volumes
+# are ever durable: a volume without a UUID could be any disk that reused
+# the /dev/dkN name, so it stays process-local.
+tc_manager_xattr_load_checkpoint() {
+    checkpoint_tdb=$1
+    checkpoint_file=$(tc_manager_xattr_checkpoint_path) || return 1
+
+    TC_MANAGER_XATTR_CHECKPOINT_LOADED=1
+    [ -f "$checkpoint_file" ] || return 0
+    if [ ! -r "$checkpoint_file" ]; then
+        tc_log "metadata migration checkpoint ignored: cannot read $checkpoint_file"
+        return 0
+    fi
+    checkpoint_fingerprint=$(tc_manager_xattr_fingerprint "$checkpoint_tdb") || {
+        tc_log "metadata migration checkpoint ignored: cannot fingerprint $checkpoint_tdb"
+        return 0
+    }
+    checkpoint_line_number=0
+    checkpoint_reason=
+    checkpoint_volumes=
+    checkpoint_volume_count=0
+    while IFS= read -r checkpoint_line || [ -n "$checkpoint_line" ]; do
+        checkpoint_line_number=$((checkpoint_line_number + 1))
+        case "$checkpoint_line_number:$checkpoint_line" in
+            "1:xattr-migration-completed: format=${TC_XATTR_CHECKPOINT_FORMAT:-1} migration=${TC_XATTR_MIGRATION_VERSION:-1} written="*)
+                ;;
+            1:*)
+                checkpoint_reason="unsupported header"
+                break
+                ;;
+            "2:source: $checkpoint_fingerprint")
+                ;;
+            "2:source: "*)
+                checkpoint_reason="source mismatch recorded=${checkpoint_line#source: } current=$checkpoint_fingerprint"
+                break
+                ;;
+            2:*)
+                checkpoint_reason="missing source line"
+                break
+                ;;
+            *":volume: uuid="?*)
+                checkpoint_volume_count=$((checkpoint_volume_count + 1))
+                if [ -z "$checkpoint_volumes" ]; then
+                    checkpoint_volumes="uuid:${checkpoint_line#volume: uuid=}"
+                else
+                    checkpoint_volumes="$checkpoint_volumes
+uuid:${checkpoint_line#volume: uuid=}"
+                fi
+                ;;
+            *)
+                checkpoint_reason="malformed line $checkpoint_line_number"
+                break
+                ;;
+        esac
+    done <"$checkpoint_file"
+    if [ -z "$checkpoint_reason" ] && [ "$checkpoint_line_number" -lt 2 ]; then
+        checkpoint_reason="truncated file"
+    fi
+    if [ -n "$checkpoint_reason" ]; then
+        tc_log "metadata migration checkpoint ignored ($checkpoint_reason); pending volumes will be rescanned"
+        return 0
+    fi
+    tc_manager_record_migrated_xattr_volumes "$checkpoint_volumes" || return 1
+    TC_MANAGER_XATTR_CHECKPOINT_SOURCE=$checkpoint_fingerprint
+    tc_log "metadata migration checkpoint loaded: volumes=$checkpoint_volume_count source=$checkpoint_fingerprint"
+}
+
+# Our own cleanup is the only expected writer, and it always ends with a new
+# checkpoint carrying the new fingerprint. A database that changed without
+# that is a restore or a foreign write: the completed set is no longer about
+# this data, so it is dropped and the volumes are rescanned.
+tc_manager_xattr_verify_source() {
+    verify_tdb=$1
+
+    [ -n "${TC_MANAGER_XATTR_CHECKPOINT_SOURCE:-}" ] || return 0
+    verify_fingerprint=$(tc_manager_xattr_fingerprint "$verify_tdb") || verify_fingerprint=unavailable
+    [ "$verify_fingerprint" != "$TC_MANAGER_XATTR_CHECKPOINT_SOURCE" ] || return 0
+    tc_log "metadata migration source changed outside migration: recorded=$TC_MANAGER_XATTR_CHECKPOINT_SOURCE current=$verify_fingerprint; completed volumes forgotten"
+    tc_manager_xattr_forget_completed_volumes
+}
+
+tc_manager_xattr_write_checkpoint() {
+    write_tdb=$1
+    checkpoint_file=$(tc_manager_xattr_checkpoint_path) || return 1
+    checkpoint_tmp="$checkpoint_file.tmp"
+
+    write_fingerprint=$(tc_manager_xattr_fingerprint "$write_tdb") || {
+        tc_log "metadata migration checkpoint not written: cannot fingerprint $write_tdb"
+        return 1
+    }
+    checkpoint_volume_count=0
+    {
+        printf 'xattr-migration-completed: format=%s migration=%s written=%s\n' \
+            "${TC_XATTR_CHECKPOINT_FORMAT:-1}" "${TC_XATTR_MIGRATION_VERSION:-1}" "$(tc_now_seconds)"
+        printf 'source: %s\n' "$write_fingerprint"
+        while IFS= read -r checkpoint_key || [ -n "$checkpoint_key" ]; do
+            case "$checkpoint_key" in
+                uuid:?*)
+                    checkpoint_volume_count=$((checkpoint_volume_count + 1))
+                    printf 'volume: uuid=%s\n' "${checkpoint_key#uuid:}"
+                    ;;
+            esac
+        done <<EOF
+${TC_MANAGER_XATTR_MIGRATED_VOLUMES:-}
+EOF
+    } >"$checkpoint_tmp" || {
+        tc_log "metadata migration checkpoint not written: cannot write $checkpoint_tmp"
+        /bin/rm -f "$checkpoint_tmp"
+        return 1
+    }
+    # Same-directory atomic replacement after the data is durable (sync,
+    # rename, sync): a crash leaves either the old file or the new one.
+    /bin/sync || { /bin/rm -f "$checkpoint_tmp"; return 1; }
+    /bin/mv -f "$checkpoint_tmp" "$checkpoint_file" || {
+        tc_log "metadata migration checkpoint not written: cannot replace $checkpoint_file"
+        /bin/rm -f "$checkpoint_tmp"
+        return 1
+    }
+    /bin/sync || return 1
+    TC_MANAGER_XATTR_CHECKPOINT_SOURCE=$write_fingerprint
+    tc_log "metadata migration checkpoint written: $checkpoint_file source=$write_fingerprint"
+}
+
+tc_manager_xattr_remove_checkpoint() {
+    checkpoint_file=$(tc_manager_xattr_checkpoint_path) || return 1
+    TC_MANAGER_XATTR_CHECKPOINT_SOURCE=
+    [ -f "$checkpoint_file" ] || return 0
+    /bin/rm -f "$checkpoint_file" || return 1
+    /bin/sync || return 1
+    tc_log "metadata migration checkpoint removed: legacy TDB is gone"
+}
+
+# Which block device is mounted at a root, from /sbin/mount ("/dev/dk2 on
+# /Volumes/dk2 type hfs (local)"). Mount paths and dk names are attachment
+# evidence, not identity, so this is checked before and after every scan.
+tc_manager_volume_mount_device() {
+    mount_root=$1
+    /sbin/mount 2>/dev/null | while IFS= read -r mount_line || [ -n "$mount_line" ]; do
+        case "$mount_line" in
+            *" on $mount_root type "*)
+                printf '%s\n' "${mount_line%% on *}"
+                break
+                ;;
+        esac
+    done
+}
+
+# Fresh MaSt topology for the post-scan identity check; separate so tests
+# can substitute rows without acp.
+tc_manager_xattr_current_topology_rows() {
+    current_mast_raw=$(tc_manager_read_mast_raw) || return 1
+    current_runtime_rows=$(tc_manager_parse_mast_runtime_rows "$current_mast_raw") || return 1
+    tc_manager_runtime_rows_stable_signature "$current_runtime_rows"
+}
+
+tc_manager_xattr_topology_has_row() {
+    wanted_device=$1
+    wanted_root=$2
+    wanted_uuid=$3
+    while IFS="$TC_TAB" read -r disk builtin device root name uuid ||
+        [ -n "$disk$builtin$device$root$name$uuid" ]; do
+        [ "$device" = "$wanted_device" ] || continue
+        [ "$root" = "$wanted_root" ] || continue
+        [ "$uuid" = "$wanted_uuid" ] || continue
+        return 0
+    done <<EOF
+$4
+EOF
+    return 1
+}
+
+# Scanned roots are recorded as "<device>\t<root>\t<uuid>" rows. A volume
+# whose device or UUID differs after the scan may have been swapped mid-walk
+# (a reused dk name); its completion is not recorded and it is rescanned.
+tc_manager_xattr_verify_scanned_volumes() {
+    scanned_rows=$1
+
+    verified_topology_rows=$(tc_manager_xattr_current_topology_rows) || {
+        tc_log "metadata migration identity check failed: MaSt unavailable after scan"
+        return 1
+    }
+    while IFS="$TC_TAB" read -r scanned_device scanned_root scanned_uuid ||
+        [ -n "$scanned_device$scanned_root$scanned_uuid" ]; do
+        [ -n "$scanned_device" ] || continue
+        mounted_device=$(tc_manager_volume_mount_device "$scanned_root") || mounted_device=
+        if [ "$mounted_device" != "/dev/$scanned_device" ]; then
+            tc_log "metadata migration identity check failed: $scanned_root is on '$mounted_device' after scan, expected /dev/$scanned_device"
+            return 1
+        fi
+        if ! tc_manager_xattr_topology_has_row "$scanned_device" "$scanned_root" "$scanned_uuid" "$verified_topology_rows"; then
+            tc_log "metadata migration identity check failed: MaSt no longer lists device=$scanned_device root=$scanned_root uuid=$scanned_uuid"
+            return 1
+        fi
+    done <<EOF
+$scanned_rows
+EOF
+    return 0
+}
+
+# Failed scans back off (1 min doubling to 30 min) instead of walking the
+# tree again every manager pass.
+tc_manager_xattr_migration_deferred() {
+    TC_MANAGER_XATTR_DEFERRED=0
+    [ -n "${TC_MANAGER_XATTR_RETRY_AT:-}" ] || return 1
+    deferred_now=$(tc_now_seconds)
+    if [ "$deferred_now" -lt "$TC_MANAGER_XATTR_RETRY_AT" ]; then
+        TC_MANAGER_XATTR_DEFERRED=1
+        return 0
+    fi
+    return 1
+}
+
+tc_manager_xattr_note_failure() {
+    failure_min=${TC_XATTR_RETRY_MIN_SECONDS:-60}
+    failure_max=${TC_XATTR_RETRY_MAX_SECONDS:-1800}
+    if [ -z "${TC_MANAGER_XATTR_RETRY_SECONDS:-}" ]; then
+        TC_MANAGER_XATTR_RETRY_SECONDS=$failure_min
+    else
+        TC_MANAGER_XATTR_RETRY_SECONDS=$((TC_MANAGER_XATTR_RETRY_SECONDS * 2))
+        [ "$TC_MANAGER_XATTR_RETRY_SECONDS" -le "$failure_max" ] || TC_MANAGER_XATTR_RETRY_SECONDS=$failure_max
+    fi
+    TC_MANAGER_XATTR_RETRY_AT=$(( $(tc_now_seconds) + TC_MANAGER_XATTR_RETRY_SECONDS ))
+    tc_log "metadata migration will retry in ${TC_MANAGER_XATTR_RETRY_SECONDS}s"
+    return 1
+}
+
+tc_manager_xattr_note_success() {
+    TC_MANAGER_XATTR_RETRY_SECONDS=
+    TC_MANAGER_XATTR_RETRY_AT=
+}
+
+# Cheap change signature of the legacy TDB for the normal disk pass (review
+# 2, R4): inode, size and mtime as `ls -li` prints them -- the device has no
+# stat(1), and hashing 11 MB every 10 s is not an option. Any difference
+# from the signature recorded at the last migration decision (including
+# "absent" <-> "present") is worth one fingerprint; an mtime *ordering*
+# against the checkpoint could not see a restored older file. Residual: a
+# rewrite in place with the same inode, size and minute.
+tc_manager_xattr_tdb_signature() {
+    signature_tdb=$1
+    [ -f "$signature_tdb" ] || { printf '\n'; return 0; }
+    signature_line=$(/bin/ls -li "$signature_tdb" 2>/dev/null) || { printf '\n'; return 0; }
+    set -- $signature_line
+    printf '%s %s %s %s %s\n' "$1" "$6" "$7" "$8" "$9"
+}
+
+tc_manager_xattr_remember_signature() {
+    TC_MANAGER_XATTR_TDB_SIGNATURE=$(tc_manager_xattr_tdb_signature "${TC_MANAGER_XATTR_TDB_PATH:-}")
+    TC_MANAGER_XATTR_SIGNATURE_KNOWN=1
+}
+
+# The normal disk pass never reaches the migration function while every
+# mounted volume is complete, so a database replaced (or introduced, or
+# removed) underneath a running manager would only be noticed at the next
+# start. Compare the signature every pass; on a change, fingerprint once:
+# a different source forgets the completed set so the volumes are pending
+# again, an identical copy is just re-recorded. No hashing on an unchanged
+# database.
+tc_manager_xattr_notice_source_change() {
+    [ "${TC_MANAGER_XATTR_SIGNATURE_KNOWN:-0}" = 1 ] || return 0
+    [ -n "${TC_MANAGER_XATTR_TDB_PATH:-}" ] || return 0
+    notice_current=$(tc_manager_xattr_tdb_signature "$TC_MANAGER_XATTR_TDB_PATH")
+    [ "$notice_current" != "${TC_MANAGER_XATTR_TDB_SIGNATURE:-}" ] || return 0
+    if [ -z "$notice_current" ]; then
+        tc_log "metadata migration: legacy TDB disappeared outside migration; nothing to migrate until one appears"
+        TC_MANAGER_XATTR_CHECKPOINT_SOURCE=
+    elif [ -z "${TC_MANAGER_XATTR_TDB_SIGNATURE:-}" ] || [ -z "${TC_MANAGER_XATTR_CHECKPOINT_SOURCE:-}" ]; then
+        # Appeared after a no-TDB completion or a retirement, or changed
+        # with no checkpoint to compare against: the completed set says
+        # nothing about this database.
+        tc_log "metadata migration: legacy TDB appeared or changed outside migration; completed volumes forgotten"
+        tc_manager_xattr_forget_completed_volumes
+        TC_MANAGER_XATTR_CHECKPOINT_LOADED=0
+    else
+        tc_manager_xattr_verify_source "$TC_MANAGER_XATTR_TDB_PATH" || return 0
+    fi
+    TC_MANAGER_XATTR_TDB_SIGNATURE=$notice_current
+    return 0
+}
+
 tc_manager_pending_xattr_volume_mounted() {
     pending_topology_rows=$1
 
     [ "${TC_BOOT_XATTR_MIGRATION:-0}" = 1 ] || return 1
+    tc_manager_xattr_migration_deferred && return 1
+    tc_manager_xattr_notice_source_change
     while IFS="$TC_TAB" read -r disk builtin device root name uuid ||
         [ -n "$disk$builtin$device$root$name$uuid" ]; do
         [ -n "$device" ] || continue
@@ -666,9 +911,25 @@ tc_manager_migrate_boot_xattrs() {
     migration_tdb_path="$TC_RESOLVED_PAYLOAD_DIR/private/xattr.tdb"
     if [ "$migration_tdb_path" != "${TC_MANAGER_XATTR_TDB_PATH:-}" ]; then
         TC_MANAGER_XATTR_TDB_PATH=$migration_tdb_path
-        TC_MANAGER_XATTR_MIGRATED_VOLUMES=
+        TC_MANAGER_XATTR_CHECKPOINT_LOADED=0
+        TC_MANAGER_XATTR_SIGNATURE_KNOWN=0
+        tc_manager_xattr_forget_completed_volumes
+        tc_manager_xattr_note_success
     fi
+    if tc_manager_xattr_migration_deferred; then
+        tc_manager_debug_log "metadata migration deferred until retry time after earlier failure"
+        return 1
+    fi
+    if [ -f "$migration_tdb_path" ]; then
+        if [ "${TC_MANAGER_XATTR_CHECKPOINT_LOADED:-0}" != 1 ]; then
+            tc_manager_xattr_load_checkpoint "$migration_tdb_path" || return 1
+        else
+            tc_manager_xattr_verify_source "$migration_tdb_path" || return 1
+        fi
+    fi
+    tc_manager_xattr_remember_signature
     migration_volume_keys=
+    migration_scanned_rows=
     set --
     while IFS="$TC_TAB" read -r disk builtin device root name uuid ||
         [ -n "$disk$builtin$device$root$name$uuid" ]; do
@@ -679,6 +940,11 @@ tc_manager_migrate_boot_xattrs() {
             tc_log "metadata migration pending for unavailable volume: device=/dev/$device root=$root"
             continue
         fi
+        migration_mounted_device=$(tc_manager_volume_mount_device "$root") || migration_mounted_device=
+        if [ "$migration_mounted_device" != "/dev/$device" ]; then
+            tc_log "metadata migration pending for volume with unexpected mount: root=$root mounted='$migration_mounted_device' expected=/dev/$device"
+            continue
+        fi
         if [ "$#" -eq 0 ]; then
             set -- "$root"
         else
@@ -686,9 +952,12 @@ tc_manager_migrate_boot_xattrs() {
         fi
         if [ -z "$migration_volume_keys" ]; then
             migration_volume_keys=$migration_xattr_key
+            migration_scanned_rows="$device$TC_TAB$root$TC_TAB$uuid"
         else
             migration_volume_keys="$migration_volume_keys
 $migration_xattr_key"
+            migration_scanned_rows="$migration_scanned_rows
+$device$TC_TAB$root$TC_TAB$uuid"
         fi
     done <<EOF
 $migration_topology_rows
@@ -709,6 +978,7 @@ EOF
         # tc_manager_pending_xattr_volume_mounted would report them as newly
         # available on every pass and the manager would restart mDNS each time.
         tc_manager_record_migrated_xattr_volumes "$migration_volume_keys" || return 1
+        tc_manager_xattr_remember_signature
         return 0
     fi
     migration_metadata=stream
@@ -736,13 +1006,13 @@ EOF
     trap - USR1 USR2
     rm -f "$TC_MANAGER_XATTR_RAM"
     tc_log "metadata migration export finished status=$migration_status"
-    [ "$migration_status" = 0 ] || return 1
+    [ "$migration_status" = 0 ] || { tc_manager_xattr_note_failure || return 1; }
     if /bin/sync; then
         tc_log "boot metadata migration copy sync finished status=0"
     else
         migration_sync_status=$?
         tc_log "boot metadata migration copy sync failed status=$migration_sync_status"
-        return 1
+        tc_manager_xattr_note_failure || return 1
     fi
 
     tc_log "boot metadata migration beginning phase=cleanup metadata=$migration_metadata tdb=$migration_tdb roots=$*"
@@ -766,16 +1036,37 @@ EOF
     trap - USR1 USR2
     rm -f "$TC_MANAGER_XATTR_RAM"
     tc_log "metadata migration cleanup finished status=$migration_status"
-    [ "$migration_status" = 0 ] || return 1
+    [ "$migration_status" = 0 ] || { tc_manager_xattr_note_failure || return 1; }
     if /bin/sync; then
         tc_log "boot metadata migration cleanup sync finished status=0"
     else
         migration_sync_status=$?
         tc_log "boot metadata migration cleanup sync failed status=$migration_sync_status"
-        return 1
+        tc_manager_xattr_note_failure || return 1
     fi
+    # The walk proved what it proved only for the disks that were there the
+    # whole time. Anything swapped underneath it is rescanned later.
+    tc_manager_xattr_verify_scanned_volumes "$migration_scanned_rows" || {
+        tc_manager_xattr_note_failure || return 1
+    }
     tc_log "boot metadata migration complete status=0"
-    tc_manager_record_migrated_xattr_volumes "$migration_volume_keys"
+    tc_manager_record_migrated_xattr_volumes "$migration_volume_keys" || return 1
+    tc_manager_xattr_note_success
+    if [ ! -f "$migration_tdb" ]; then
+        # Every row was retired, or every remaining row was a proven orphan
+        # and the migrator set the closed database aside as
+        # xattr.tdb.orphaned.N. Nothing is left to checkpoint against.
+        tc_log "metadata migration retired the legacy TDB: $migration_tdb"
+        tc_manager_xattr_remove_checkpoint || return 1
+        tc_manager_xattr_remember_signature
+        return 0
+    fi
+    # Rows remain for volumes that were not there (unresolved) -- the
+    # migrator's cleanup line in this log gives the honest split. A failed
+    # checkpoint write only costs a rescan on the next manager start.
+    tc_manager_xattr_write_checkpoint "$migration_tdb" || tc_log "metadata migration completed without a durable checkpoint"
+    tc_manager_xattr_remember_signature
+    return 0
 }
 
 tc_manager_apply_runtime_from_topology() {
@@ -801,6 +1092,17 @@ tc_manager_apply_runtime_from_topology() {
     fi
 
     if ! tc_manager_migrate_boot_xattrs "$topology_rows"; then
+        if [ "${TC_MANAGER_XATTR_DEFERRED:-0}" = 1 ]; then
+            # Same outcome as the failure below, without repeating its log
+            # line every pass while the backoff runs.
+            tc_manager_debug_log "metadata migration retry pending; runtime state unchanged"
+            if [ "$refresh_reason" = initial ] || ! tc_manager_current_payload_ready; then
+                tc_manager_clear_payload_state
+            else
+                manager_topology_rows=$previous_manager_topology_rows
+            fi
+            return 1
+        fi
         if [ "$refresh_reason" = initial ] || ! tc_manager_current_payload_ready; then
             tc_log "metadata migration failed; retaining pending metadata and withholding initial Samba startup"
             tc_manager_clear_payload_state
@@ -821,7 +1123,6 @@ tc_manager_apply_runtime_from_topology() {
     tc_manager_configure_ata_from_topology "$topology_rows"
 
     tc_manager_set_payload_state
-    tc_manager_materialize_adisk_state || return 1
     if tc_payload_log_dir_ready; then
         tc_log "manager payload smbd log directory ready at $TC_PAYLOAD_LOG_DIR"
     else
@@ -1023,14 +1324,6 @@ tc_manager_select_samba_sources() {
         return 1
     }
 
-    manager_nbns_src=
-    if [ "$NBNS_ENABLED" = "1" ]; then
-        if manager_nbns_src=$(tc_find_payload_nbns "$manager_payload_dir"); then
-            :
-        else
-            manager_nbns_src=
-        fi
-    fi
 }
 
 tc_manager_samba_runtime_files_missing() {
@@ -1039,9 +1332,6 @@ tc_manager_samba_runtime_files_missing() {
     [ -x "$TC_TELEMETRY_BIN" ] || return 0
     [ -f "$RAM_PRIVATE/smbpasswd" ] || return 0
     [ -f "$RAM_PRIVATE/username.map" ] || return 0
-    if [ "$NBNS_ENABLED" = "1" ] && [ -n "${manager_nbns_src:-}" ]; then
-        [ -x "$TC_NBNS_BIN" ] || return 0
-    fi
     return 1
 }
 
@@ -1087,9 +1377,15 @@ tc_manager_reset_samba_runtime_after_stage_failure() {
         tc_log "manager Samba staging recovery: stopping smbd before RAM runtime reset"
         stop_runtime_process_by_ucomm "smbd" smbd || reset_status=1
     fi
-    if tc_nbns_enabled && runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
-        tc_log "manager Samba staging recovery: stopping nbns responder before RAM runtime reset"
-        stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || reset_status=1
+    if runtime_process_present_by_ucomm "$DISCOVERY_PROC_NAME" ||
+        runtime_process_present_by_ucomm wcifsnd ||
+        runtime_process_present_by_ucomm wcifsfs; then
+        tc_log "manager Samba staging recovery: stopping discovery generation before RAM runtime reset"
+        if runtime_process_present_by_ucomm "$DISCOVERY_PROC_NAME"; then
+            stop_runtime_process_by_ucomm "$DISCOVERY_PROC_NAME" "$DISCOVERY_PROC_NAME" || reset_status=1
+        fi
+        stop_discovery_conflicts || reset_status=1
+        TC_MANAGER_LAST_DISCOVERY_SIGNATURE=
     fi
     if runtime_process_present_by_ucomm "$RSYNC_PROC_NAME"; then
         tc_log "manager Samba staging recovery: stopping rsync before RAM runtime reset"
@@ -1121,7 +1417,6 @@ tc_manager_reset_samba_runtime_after_stage_failure() {
     TC_MANAGER_SMBD_RESTART_REQUIRED=0
     TC_MANAGER_SMBD_RELOAD_REQUIRED=0
     TC_MANAGER_SMBD_APPLY_FAILURE=
-    tc_manager_materialize_adisk_state || return 1
     tc_log "manager Samba staging recovery: RAM runtime reset complete"
 }
 
@@ -1130,7 +1425,7 @@ tc_manager_stage_samba_runtime_files_if_needed() {
         return 1
     fi
 
-    fresh_binary_signature=$(tc_manager_samba_file_signature "$manager_payload_dir" "$manager_smbd_src" "$manager_nbns_src")
+    fresh_binary_signature=$(tc_manager_samba_file_signature "$manager_payload_dir" "$manager_smbd_src")
     manager_stage_needed=0
     manager_binary_changed=0
     if [ "${TC_MANAGER_RUNTIME_STAGED:-0}" != "1" ]; then
@@ -1148,7 +1443,7 @@ tc_manager_stage_samba_runtime_files_if_needed() {
     fi
 
     tc_log "manager Samba runtime file staging required"
-    if tc_stage_runtime "$manager_payload_dir" "$manager_smbd_src" "$manager_nbns_src"; then
+    if tc_stage_runtime "$manager_payload_dir" "$manager_smbd_src"; then
         :
     else
         stage_status=$?
@@ -1180,7 +1475,8 @@ tc_manager_stage_samba_runtime_files_if_needed() {
 
 tc_manager_render_smb_conf_if_needed() {
     fresh_config_signature=$(tc_manager_samba_config_signature)
-    if [ "$fresh_config_signature" = "${TC_MANAGER_LAST_CONFIG_SIGNATURE:-}" ] && [ -f "$TC_SMBD_CONF" ]; then
+    if [ "$fresh_config_signature" = "${TC_MANAGER_LAST_CONFIG_SIGNATURE:-}" ] &&
+        [ -z "${TC_MANAGER_PENDING_CONFIG_SIGNATURE:-}" ] && [ -f "$TC_SMBD_CONF" ]; then
         tc_manager_debug_log "manager Samba config render unchanged"
         return 0
     fi
@@ -1206,6 +1502,7 @@ tc_manager_commit_smbd_runtime_apply() {
 tc_manager_restore_smb_bind_after_config_failure() {
     if [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ]; then
         TC_SMB_BIND_INTERFACES=${TC_MANAGER_SMB_BIND_PREVIOUS:-}
+        TC_MANAGER_LAST_VALIDATED_BIND_TOKENS=$TC_SMB_BIND_INTERFACES
         TC_MANAGER_SMB_BIND_CHANGED=0
         TC_MANAGER_SMB_BIND_PREVIOUS=
         tc_log "manager Samba: restored previous bind interfaces after config render failure"
@@ -1278,7 +1575,6 @@ tc_manager_start_smbd_if_needed() {
         return 0
     fi
 
-    tc_manager_refresh_runtime_identity_for_recovery
     tc_manager_validate_smbd_runtime_state || return 1
     rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF" >/dev/null 2>&1 || true
@@ -1341,48 +1637,73 @@ tc_manager_apply_smbd_runtime_changes() {
     return 1
 }
 
+# Guide B.9: the manager owns the last validated Samba bind projection as
+# process-local shell state. `validated`
+# run: compare with the last validated tokens and reconfigure on change.
+# `incomplete`: retain permission only on unchanged interfaces, using the
+# native helper's filtered projection; log age since the last validated run.
 tc_manager_reconcile_smb_bind_interfaces() {
     TC_MANAGER_SMB_BIND_CHANGED=0
     TC_MANAGER_SMB_BIND_DEFERRED=0
     TC_MANAGER_SMB_BIND_PREVIOUS=
 
-    if fresh_bind_interfaces=$(tc_probe_smb_bind_interfaces); then
-        if [ -z "${TC_SMB_BIND_INTERFACES:-}" ]; then
-            TC_MANAGER_SMB_BIND_PREVIOUS=
-            TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
-            TC_MANAGER_SMB_BIND_CHANGED=1
-            tc_log "manager Samba: initialized bind interfaces: $TC_SMB_BIND_INTERFACES"
-            return 0
-        fi
-        if [ "$fresh_bind_interfaces" = "$TC_SMB_BIND_INTERFACES" ]; then
-            return 0
-        fi
-
-        old_bind_interfaces=$TC_SMB_BIND_INTERFACES
-        TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
-        TC_MANAGER_SMB_BIND_PREVIOUS=$old_bind_interfaces
-        TC_MANAGER_SMB_BIND_CHANGED=1
-        tc_log "manager Samba: bind interfaces changed: $old_bind_interfaces -> $TC_SMB_BIND_INTERFACES"
-        if ! tc_manager_validate_smbd_runtime_state; then
-            TC_SMB_BIND_INTERFACES=$old_bind_interfaces
-            TC_MANAGER_SMB_BIND_CHANGED=0
-            TC_MANAGER_SMB_BIND_PREVIOUS=
-            tc_log "manager Samba: cannot apply bind change; disk runtime validation failed"
+    if ! tc_probe_smb_bind_interfaces; then
+        tc_log "manager Samba: bind probe failed; keeping current bind projection"
+        return 1
+    fi
+    case "$TC_SMB_BIND_STATUS" in
+        validated)
+            TC_MANAGER_BIND_POLICY=$TC_SMB_BIND_POLICY
+            TC_MANAGER_LAST_VALIDATED_BIND_TIME=$(tc_now_seconds)
+            ;;
+        incomplete)
+            TC_MANAGER_SMB_BIND_DEFERRED=1
+            if [ -n "${TC_MANAGER_LAST_VALIDATED_BIND_TOKENS:-}" ]; then
+                bind_age=$(tc_elapsed_seconds_since "${TC_MANAGER_LAST_VALIDATED_BIND_TIME:-0}")
+                tc_log "Samba bind: keeping last validated projection (age=${bind_age}s reason=${TC_SMB_BIND_REASON:-unknown})"
+            else
+                tc_log "Samba bind: no validated projection yet (reason=${TC_SMB_BIND_REASON:-unknown})"
+            fi
+            # Native policy retention filters out new/recreated interfaces.
+            # Without readable kernel ownership, keep the existing sockets.
+            [ -n "${TC_MANAGER_LAST_VALIDATED_BIND_TOKENS:-}" ] || return 0
+            case "$TC_SMB_BIND_REASON" in iflist|iflist-truncated|addrs) return 0 ;; esac
+            TC_MANAGER_BIND_POLICY=$TC_SMB_BIND_POLICY
+            ;;
+        *)
+            tc_log "manager Samba: bind probe returned unknown status '$TC_SMB_BIND_STATUS'"
             return 1
-        fi
+            ;;
+    esac
+
+    fresh_bind_interfaces=$TC_SMB_BIND_PROBE_TOKENS
+    if [ -z "${TC_MANAGER_LAST_VALIDATED_BIND_TOKENS:-}" ]; then
+        TC_MANAGER_LAST_VALIDATED_BIND_TOKENS=$fresh_bind_interfaces
+        TC_MANAGER_SMB_BIND_PREVIOUS=
+        TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
+        TC_MANAGER_SMB_BIND_CHANGED=1
+        tc_log "manager Samba: initialized bind interfaces: $TC_SMB_BIND_INTERFACES"
         return 0
-    else
-        bind_probe_status=$?
+    fi
+    if [ "$fresh_bind_interfaces" = "$TC_MANAGER_LAST_VALIDATED_BIND_TOKENS" ]; then
+        return 0
     fi
 
-    if tc_auto_ip_unavailable_status "$bind_probe_status"; then
-        TC_MANAGER_SMB_BIND_DEFERRED=1
-        tc_mark_smb_deferred_no_ip
-        return 0
+    old_bind_interfaces=$TC_MANAGER_LAST_VALIDATED_BIND_TOKENS
+    TC_MANAGER_LAST_VALIDATED_BIND_TOKENS=$fresh_bind_interfaces
+    TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
+    TC_MANAGER_SMB_BIND_PREVIOUS=$old_bind_interfaces
+    TC_MANAGER_SMB_BIND_CHANGED=1
+    tc_log "manager Samba: bind interfaces changed: $old_bind_interfaces -> $TC_SMB_BIND_INTERFACES"
+    if ! tc_manager_validate_smbd_runtime_state; then
+        TC_MANAGER_LAST_VALIDATED_BIND_TOKENS=$old_bind_interfaces
+        TC_SMB_BIND_INTERFACES=$old_bind_interfaces
+        TC_MANAGER_SMB_BIND_CHANGED=0
+        TC_MANAGER_SMB_BIND_PREVIOUS=
+        tc_log "manager Samba: cannot apply bind change; disk runtime validation failed"
+        return 1
     fi
-
-    tc_log "manager Samba: bind probe failed with exit code $bind_probe_status"
-    return 1
+    return 0
 }
 
 tc_manager_reconcile_smbd() {
@@ -1392,98 +1713,44 @@ tc_manager_reconcile_smbd() {
     fi
 }
 
-tc_manager_launch_mdns_advertiser() {
+tc_manager_launch_discovery() {
     context=$1
     kill_prior=$2
     wait_attempts=$3
     diskless=$4
 
-    tc_manager_materialize_adisk_state || return 1
-    tc_launch_mdns_advertiser "$context" "$kill_prior" "$wait_attempts" "$diskless" "${MDNS_DEBUG_LOGGING:-0}"
+    tc_launch_discovery "$context" "$kill_prior" "$wait_attempts" "$diskless" "${MDNS_DEBUG_LOGGING:-0}" "${manager_share_rows:-}"
 }
 
-tc_manager_launch_current_mdns_advertiser() {
+tc_manager_launch_current_discovery() {
     context=$1
     wait_attempts=$2
 
     if tc_manager_current_payload_ready; then
-        tc_manager_launch_mdns_advertiser "$context" 1 "$wait_attempts" 0
+        tc_manager_launch_discovery "$context" 1 "$wait_attempts" 0
     else
-        tc_manager_launch_mdns_advertiser "$context" 1 "$wait_attempts" 1
+        tc_manager_launch_discovery "$context" 1 "$wait_attempts" 1
     fi
 }
 
-tc_manager_reap_apple_mdnsresponder() {
-    if runtime_process_present_by_ucomm mDNSResponder; then
-        tc_log "manager mDNS recovery: Apple mDNSResponder is running alongside the advertiser; reaping to keep UDP 5353 uncontested"
-        tc_kill_apple_mdnsresponder
+
+# Only argv changes need a restart: ACP naming/link changes are handled by
+# the native registrant. Keep failed launches pending across manager passes.
+tc_manager_reconcile_discovery() {
+    discovery_signature=$(printf '%s\n%s\n%s\n%s\n%s\n' "${manager_share_rows:-}" "${manager_payload_ready:-0}" "${SMB_NETBIOS_NAME:-}" "$TC_ADISK_DISK_ADVF" "${MDNS_DEBUG_LOGGING:-0}")
+    if runtime_process_present_by_ucomm wcifsfs; then
+        tc_log "manager discovery recovery: wcifsfs returned; replacing native registration generation"
+        stop_runtime_process_by_ucomm wcifsfs wcifsfs || return 1
+        stop_runtime_process_by_ucomm "$DISCOVERY_PROC_NAME" "$DISCOVERY_PROC_NAME" || return 1
+        stop_discovery_conflicts || return 1
+    elif runtime_process_present_by_ucomm "$DISCOVERY_PROC_NAME" &&
+        [ "$discovery_signature" = "${TC_MANAGER_LAST_DISCOVERY_SIGNATURE:-}" ]; then
+        return 0
     fi
+    tc_manager_launch_current_discovery "manager discovery recovery" 10 || return 1
+    TC_MANAGER_LAST_DISCOVERY_SIGNATURE=$discovery_signature
 }
 
-tc_manager_reconcile_mdns() {
-    mdns_auto_ip_status=0
-
-    if runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
-        if tc_mdns_bound_udp_5353; then
-            tc_manager_reap_apple_mdnsresponder
-            return 0
-        fi
-        tc_log "manager mDNS recovery: mdns advertiser is running without required UDP 5353 listeners"
-        if tc_mdns_auto_ip_available; then
-            TC_MDNS_AUTO_IP_SEEN=1
-            stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || return 1
-        else
-            mdns_auto_ip_status=$?
-            if tc_auto_ip_unavailable_status "$mdns_auto_ip_status"; then
-                tc_mark_mdns_deferred_no_ip
-                return 0
-            fi
-            TC_MANAGER_MDNS_UNAVAILABLE=1
-            tc_log "manager mDNS recovery: mDNS auto-ip check failed with exit code $mdns_auto_ip_status"
-            return 0
-        fi
-    fi
-
-    if runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
-        return 0
-    fi
-
-    tc_manager_refresh_runtime_identity_for_recovery
-    if ! tc_ensure_mdns_auto_ip_seen; then
-        return 0
-    fi
-    tc_manager_launch_current_mdns_advertiser "manager mDNS recovery" 10
-}
-
-tc_manager_wait_for_nbns_ready() {
-    wait_attempts=$1
-
-    if ! tc_nbns_enabled; then
-        return 0
-    fi
-    if [ "${TC_MANAGER_NBNS_DEFERRED_NO_IP:-0}" = "1" ]; then
-        tc_log "manager NBNS: readiness wait skipped; NBNS deferred waiting for usable address"
-        return 0
-    fi
-
-    wait_attempt=0
-    while [ "$wait_attempt" -le "$wait_attempts" ]; do
-        if runtime_process_present_by_ucomm "$NBNS_PROC_NAME" &&
-            tc_nbns_bound_udp_137; then
-            tc_manager_debug_log "manager NBNS: responder ready on required UDP 137 sockets"
-            return 0
-        fi
-
-        if [ "$wait_attempt" -eq "$wait_attempts" ]; then
-            break
-        fi
-        wait_attempt=$((wait_attempt + 1))
-        sleep 1
-    done
-
-    tc_log "manager NBNS: responder did not become ready on required UDP 137 sockets after ${wait_attempts}s"
-    return 1
-}
 
 tc_manager_update_payload_status() {
     if tc_manager_select_current_payload; then
@@ -1503,7 +1770,7 @@ tc_manager_samba_runtime_ready_for_bind_tick() {
 
 tc_manager_record_successful_bind_status() {
     if [ "${TC_MANAGER_SMB_BIND_DEFERRED:-0}" = "1" ]; then
-        manager_bind_status=deferred_no_ip
+        manager_bind_status=retained
     elif [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ]; then
         manager_bind_status=changed
     else
@@ -1511,61 +1778,41 @@ tc_manager_record_successful_bind_status() {
     fi
 }
 
-tc_manager_run_identity_step() {
-    manager_step_start_seconds=$(tc_now_seconds)
-    tc_manager_debug_log "manager pass $manager_iteration_id step=identity start"
-    manager_step_status=0
-    tc_manager_debug_log "manager identity: refreshing runtime naming and local hostname"
-    if ! tc_prepare_local_hostname_resolution; then
-        manager_step_status=1
-    fi
-    if [ "$manager_step_status" -eq 0 ] && ! tc_init_runtime_identity; then
-        manager_step_status=1
-    fi
-    if [ "$manager_step_status" -eq 0 ]; then
-        TC_MANAGER_RECOVERY_IDENTITY_REFRESHED=1
-        if tc_manager_identity_signature_changed; then
-            TC_MANAGER_IDENTITY_CHANGED=1
-            tc_log "manager identity change: refreshing managed advertisers and Samba config"
-            if tc_manager_current_payload_ready && [ -f "$TC_SMBD_CONF" ]; then
-                if ! tc_manager_generate_smb_conf; then
-                    manager_step_status=1
-                fi
-                if [ "$manager_step_status" -eq 0 ] && runtime_process_present_by_ucomm smbd; then
-                    if ! tc_reload_smbd_config; then
-                        manager_step_status=1
-                    fi
-                fi
-            fi
-            if [ "$manager_step_status" -eq 0 ] && tc_manager_current_payload_ready && [ -f "$TC_SMBD_CONF" ]; then
-                TC_MANAGER_LAST_CONFIG_SIGNATURE=$(tc_manager_samba_config_signature)
-            fi
-            if [ "$manager_step_status" -eq 0 ]; then
-                stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
-                if tc_nbns_enabled; then
-                    stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || true
-                fi
-                if ! tc_manager_write_identity_signature; then
-                    manager_step_status=1
-                fi
-            fi
+tc_manager_reconcile_discovery_ownership() {
+    if runtime_process_present_by_ucomm wcifsfs; then
+        tc_log "manager discovery ownership: wcifsfs returned; resetting discovery generation"
+        if runtime_process_present_by_ucomm "$DISCOVERY_PROC_NAME"; then
+            stop_runtime_process_by_ucomm "$DISCOVERY_PROC_NAME" "$DISCOVERY_PROC_NAME" || return 1
         fi
-    fi
-    if [ "$manager_step_status" -eq 0 ]; then
-        manager_identity_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" identity "$manager_step_start_seconds" ok
+        stop_discovery_conflicts || return 1
+        TC_MANAGER_LAST_DISCOVERY_SIGNATURE=
+        manager_service_seconds_until_due=0
         return 0
     fi
 
-    manager_status=1
-    manager_identity_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" identity "$manager_step_start_seconds" failed
-    return 1
+    if ! runtime_process_present_by_ucomm "$DISCOVERY_PROC_NAME"; then
+        if runtime_process_present_by_ucomm wcifsnd; then
+            tc_log "manager discovery ownership: stopping orphaned wcifsnd"
+            stop_runtime_process_by_ucomm wcifsnd wcifsnd || return 1
+        fi
+        TC_MANAGER_LAST_DISCOVERY_SIGNATURE=
+        manager_service_seconds_until_due=0
+    fi
 }
 
 tc_manager_run_disk_step() {
     manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=disk start"
+    # diskd serves MaSt: with it dead the topology reads as empty and the
+    # disk refresh would tear Samba down (seen on the NetBSD 4 device), so
+    # put diskd back before reading the topology, not after.
+    tc_manager_reconcile_diskd
+    if ! tc_manager_reconcile_discovery_ownership; then
+        manager_status=1
+        manager_disk_status=failed
+        tc_manager_log_step_end "$manager_iteration_id" disk "$manager_step_start_seconds" failed
+        return 1
+    fi
     if tc_manager_reconcile_disk_state; then
         manager_disk_status=ok
         tc_manager_log_step_end "$manager_iteration_id" disk "$manager_step_start_seconds" ok
@@ -1583,12 +1830,13 @@ tc_manager_run_samba_full_step() {
     tc_manager_debug_log "manager pass $manager_iteration_id step=samba start"
     manager_step_status=0
     tc_manager_debug_log "manager Samba: reconciling staged runtime, bind interfaces, and smbd"
-    TC_MANAGER_SMBD_RESTART_REQUIRED=0
-    TC_MANAGER_SMBD_RELOAD_REQUIRED=0
-    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
+    # Pending apply state survives failed passes until commit succeeds.
 
     if ! tc_manager_stage_samba_runtime_files_if_needed; then
         manager_step_status=1
+    fi
+    if [ "$manager_step_status" -eq 0 ]; then
+        tc_init_runtime_identity || manager_step_status=1
     fi
     if [ "$manager_step_status" -eq 0 ]; then
         tc_manager_debug_log "manager Samba: reconciling bind interfaces"
@@ -1601,6 +1849,15 @@ tc_manager_run_samba_full_step() {
             manager_bind_status=failed
             manager_step_status=1
         fi
+    fi
+    if [ "$manager_step_status" -eq 0 ] && [ -z "${TC_SMB_BIND_INTERFACES:-}" ]; then
+        # No validated bind projection yet (every probe so far was incomplete):
+        # smb.conf cannot be rendered without interfaces, so wait for the next
+        # pass instead of failing the step (B.9).
+        tc_log "manager Samba: waiting for a validated bind projection before configuring smbd"
+        manager_samba_status=waiting_bind
+        tc_manager_log_step_end "$manager_iteration_id" samba "$manager_step_start_seconds" skipped
+        return 0
     fi
     if [ "$manager_step_status" -eq 0 ]; then
         tc_manager_debug_log "manager Samba: rendering config"
@@ -1630,9 +1887,7 @@ tc_manager_run_samba_full_step() {
 tc_manager_run_samba_bind_step() {
     manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=samba_bind start"
-    TC_MANAGER_SMBD_RESTART_REQUIRED=0
-    TC_MANAGER_SMBD_RELOAD_REQUIRED=0
-    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
+    # Pending apply state survives failed passes until commit succeeds.
 
     if ! tc_manager_current_payload_ready; then
         manager_bind_status=skipped_no_payload
@@ -1649,8 +1904,14 @@ tc_manager_run_samba_bind_step() {
 
     tc_manager_debug_log "manager Samba bind: checking bind interfaces"
     if tc_manager_reconcile_smb_bind_interfaces; then
-        if [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ]; then
-            TC_MANAGER_SMBD_RESTART_REQUIRED=1
+        if [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ] ||
+            [ "${TC_MANAGER_SMBD_RESTART_REQUIRED:-0}" = "1" ] ||
+            [ "${TC_MANAGER_SMBD_RELOAD_REQUIRED:-0}" = "1" ] ||
+            [ -n "${TC_MANAGER_PENDING_CONFIG_SIGNATURE:-}" ]; then
+            # A failed apply is retried even when today's tokens are unchanged.
+            if [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ]; then
+                TC_MANAGER_SMBD_RESTART_REQUIRED=1
+            fi
             if ! tc_manager_render_smb_conf_if_needed; then
                 tc_manager_restore_smb_bind_after_config_failure
                 manager_status=1
@@ -1698,20 +1959,6 @@ tc_manager_run_no_payload_step() {
     return 1
 }
 
-tc_manager_run_nbns_reconcile_before_mdns() {
-    tc_manager_debug_log "manager NBNS: reconciling responder before mDNS so startup can overlap mDNS capture"
-    if tc_manager_reconcile_nbns; then
-        manager_nbns_reconcile_status=ok
-        tc_manager_debug_log "manager NBNS: reconcile requested; readiness check will run after mDNS"
-        return 0
-    fi
-
-    manager_status=1
-    manager_nbns_status=failed
-    manager_nbns_reconcile_status=failed
-    tc_log "manager NBNS: reconcile failed before mDNS"
-    return 1
-}
 
 tc_manager_run_rsync_step() {
     manager_step_start_seconds=$(tc_now_seconds)
@@ -1732,75 +1979,74 @@ tc_manager_run_rsync_step() {
     return 1
 }
 
-tc_manager_run_mdns_step() {
-    manager_step_start_seconds=$(tc_now_seconds)
-    tc_manager_debug_log "manager pass $manager_iteration_id step=mdns start"
-    tc_manager_debug_log "manager mDNS: reconciling advertiser"
-    if [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] || [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ] || [ "${TC_MANAGER_PRINTER_CHANGED:-0}" = "1" ]; then
-        tc_log "manager mDNS refresh required after disk, identity, or USB printer change"
-        stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
+# Guide B.8 failure contract: the boot relaunch is best effort, so while any
+# diskd that is not on loopback exists (ACPd's original survived, or came
+# back) Apple's _afpovertcp/_smb/_adisk can be on the LAN. Retry the relaunch
+# at the start of every disk pass, with a 5-minute hold after a failed
+# attempt so a diskd that will not come up cannot block every pass for
+# 30 s. Doctor's loopback check is the gate that reports the degraded state.
+tc_manager_reconcile_diskd() {
+    diskd_state=$(tc_apple_diskd_state)
+    if [ "$diskd_state" = "loopback" ]; then
+        TC_MANAGER_DISKD_RETRY_AT=
+        return 0
     fi
-    if tc_manager_reconcile_mdns; then
-        manager_mdns_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" mdns "$manager_step_start_seconds" ok
+    diskd_now=$(tc_now_seconds)
+    if [ -n "${TC_MANAGER_DISKD_RETRY_AT:-}" ] && [ "$diskd_now" -lt "$TC_MANAGER_DISKD_RETRY_AT" ]; then
+        tc_manager_debug_log "manager diskd: state=$diskd_state; relaunch retry deferred"
+        return 0
+    fi
+    tc_log "manager diskd: state=$diskd_state; Apple's SMB/AFP names may be on the LAN, retrying the loopback relaunch"
+    if tc_relaunch_diskd_loopback; then
+        TC_MANAGER_DISKD_RETRY_AT=
+        return 0
+    fi
+    TC_MANAGER_DISKD_RETRY_AT=$((diskd_now + ${TC_DISKD_RETRY_SECONDS:-300}))
+    tc_log "manager diskd: relaunch failed; next attempt in ${TC_DISKD_RETRY_SECONDS:-300}s (doctor reports the degraded state)"
+    return 0
+}
+
+tc_manager_run_discovery_step() {
+    manager_step_start_seconds=$(tc_now_seconds)
+    tc_manager_debug_log "manager pass $manager_iteration_id step=discovery start"
+    tc_manager_debug_log "manager discovery: reconciling controller"
+    # ACPd starts afpserver after boot.sh has already run (observed on the
+    # NetBSD 4 device: pid order rc.local < mDNSResponder < smbd < afpserver),
+    # so the boot-time stop is not enough; re-check on every service pass.
+    tc_stop_apple_afpserver || tc_log "manager discovery: Apple afpserver could not be stopped; AFP port 548 stays open"
+    if tc_manager_reconcile_discovery; then
+        manager_discovery_status=ok
+        tc_manager_log_step_end "$manager_iteration_id" discovery "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
-    manager_mdns_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" mdns "$manager_step_start_seconds" failed
+    manager_discovery_status=failed
+    tc_manager_log_step_end "$manager_iteration_id" discovery "$manager_step_start_seconds" failed
     return 1
 }
 
-tc_manager_run_nbns_wait_step() {
-    manager_step_start_seconds=$(tc_now_seconds)
-    tc_manager_debug_log "manager pass $manager_iteration_id step=nbns start"
-    if [ "$manager_nbns_reconcile_status" = "ok" ] && tc_manager_wait_for_nbns_ready 10; then
-        manager_nbns_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_seconds" ok
-        return 0
-    fi
 
-    manager_status=1
-    manager_nbns_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_seconds" failed
-    return 1
-}
-
-tc_manager_run_printer_step() {
-    manager_step_start_seconds=$(tc_now_seconds)
-    tc_manager_debug_log "manager pass $manager_iteration_id step=usb_printer start"
-    if tc_manager_reconcile_printer_state; then
-        manager_printer_status=${TC_MANAGER_PRINTER_REFRESH_RESULT:-ok}
-        tc_manager_log_step_end "$manager_iteration_id" usb_printer "$manager_step_start_seconds" ok
-        return 0
-    fi
-
-    manager_status=1
-    manager_printer_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" usb_printer "$manager_step_start_seconds" failed
-    return 1
-}
 
 tc_manager_run_full_service_steps() {
     service_step_status=0
 
-    tc_manager_run_identity_step || service_step_status=1
+    tc_prepare_local_hostname_resolution || service_step_status=1
     tc_manager_update_payload_status
     if [ "$manager_payload_expected" -eq 1 ]; then
         tc_manager_run_samba_full_step || service_step_status=1
-        tc_manager_run_rsync_step || service_step_status=1
     else
         tc_manager_run_no_payload_step || service_step_status=1
         manager_rsync_status=no_payload
     fi
-
-    if [ "$manager_payload_expected" -eq 1 ]; then
-        tc_manager_run_nbns_reconcile_before_mdns || service_step_status=1
+    if [ "$manager_payload_expected" -eq 0 ] || [ "$manager_samba_status" = ok ]; then
+        tc_manager_run_discovery_step || service_step_status=1
+    else
+        manager_discovery_status=retained
+        tc_log "manager discovery: retaining current generation until Samba configuration succeeds"
     fi
-    tc_manager_run_mdns_step || service_step_status=1
     if [ "$manager_payload_expected" -eq 1 ]; then
-        tc_manager_run_nbns_wait_step || service_step_status=1
+        tc_manager_run_rsync_step || service_step_status=1
     fi
 
     if [ "$service_step_status" -eq 0 ]; then
@@ -1818,11 +2064,11 @@ MANAGER_BIND_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_BIND_POLL_SE
 MANAGER_SERVICE_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_SERVICE_POLL_SECONDS:-30}" 30)
 MANAGER_MAST_RETRY_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_MAST_RETRY_SECONDS:-5}" 5)
 MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS:-5}" 5)
-MANAGER_PRINTER_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_PRINTER_DEBOUNCE_SECONDS:-$MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}" "$MANAGER_TOPOLOGY_DEBOUNCE_SECONDS")
 MANAGER_STOP_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_STOP_POLL_SECONDS:-1}" 1)
 TC_MANAGER_STOP_REQUESTED=0
 TC_MANAGER_ITERATION=0
 TC_MANAGER_RUNTIME_STAGED=0
+TC_RUNTIME_IDENTITY_READY=0
 TC_MANAGER_LAST_BINARY_SIGNATURE=
 TC_MANAGER_LAST_CONFIG_SIGNATURE=
 TC_MANAGER_LAST_RSYNC_SIGNATURE=
@@ -1831,11 +2077,14 @@ TC_MANAGER_SMBD_RESTART_REQUIRED=0
 TC_MANAGER_SMBD_RELOAD_REQUIRED=0
 TC_MANAGER_SMBD_APPLY_FAILURE=
 TC_MANAGER_SMB_BIND_PREVIOUS=
+# Environment strings are not validated history. A restarted manager waits
+# before starting/reconfiguring smbd; an already running smbd stays alone.
+TC_SMB_BIND_INTERFACES=
+TC_MANAGER_LAST_VALIDATED_BIND_TOKENS=
+TC_MANAGER_LAST_VALIDATED_BIND_TIME=0
+TC_MANAGER_BIND_POLICY=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE_READY=0
-TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE=
-TC_MANAGER_PRINTER_CONFIRMED_SIGNATURE_READY=0
-TC_MANAGER_PRINTER_CHANGED=0
 TC_MANAGER_XATTR_TDB_PATH=
 TC_MANAGER_XATTR_MIGRATED_VOLUMES=
 manager_payload_ready=0
@@ -1843,16 +2092,14 @@ manager_payload_dir=
 manager_payload_volume=
 manager_payload_device=
 manager_smbd_src=
-manager_nbns_src=
 manager_topology_rows=
 manager_share_rows=
-manager_adisk_rows=
 manager_service_seconds_until_due=0
 manager_bind_seconds_until_due=0
 tc_manager_clear_payload_state
 
 tc_log "manager startup beginning"
-tc_log "manager intervals: disk=${MANAGER_DISK_POLL_SECONDS}s bind=${MANAGER_BIND_POLL_SECONDS}s services=${MANAGER_SERVICE_POLL_SECONDS}s mast_retry=${MANAGER_MAST_RETRY_SECONDS}s topology_debounce=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}s printer_debounce=${MANAGER_PRINTER_DEBOUNCE_SECONDS}s stop_poll=${MANAGER_STOP_POLL_SECONDS}s"
+tc_log "manager intervals: disk=${MANAGER_DISK_POLL_SECONDS}s bind=${MANAGER_BIND_POLL_SECONDS}s services=${MANAGER_SERVICE_POLL_SECONDS}s mast_retry=${MANAGER_MAST_RETRY_SECONDS}s topology_debounce=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}s stop_poll=${MANAGER_STOP_POLL_SECONDS}s"
 
 # Keep the scheduler PID in this shell, not a stale runtime marker. The helper
 # owns its debug child and RAM files; TERM stops future cycles but lets an
@@ -1878,22 +2125,15 @@ while ! tc_manager_stop_requested; do
     manager_iteration_start_seconds=$(tc_now_seconds)
     manager_status=0
     manager_payload_expected=0
-    manager_identity_status=skipped
     manager_disk_status=skipped
     manager_payload_status=skipped
-    manager_printer_status=skipped
     manager_samba_status=skipped
     manager_bind_status=skipped
-    manager_mdns_status=skipped
-    manager_nbns_status=skipped
+    manager_discovery_status=skipped
     manager_rsync_status=skipped
     manager_services_status=skipped
     manager_scheduler_status=disk_only
-    TC_MANAGER_RECOVERY_IDENTITY_REFRESHED=0
     TC_MANAGER_DISK_STATE_CHANGED=0
-    TC_MANAGER_IDENTITY_CHANGED=0
-    TC_MANAGER_PRINTER_CHANGED=0
-    manager_nbns_reconcile_status=skipped
     manager_services_due=0
     manager_bind_due=0
 
@@ -1905,20 +2145,14 @@ while ! tc_manager_stop_requested; do
     fi
 
     tc_manager_debug_log "manager pass $manager_iteration_id start"
-    tc_manager_reset_pass_state
 
     tc_manager_run_disk_step || true
     tc_manager_update_payload_status
-    tc_manager_run_printer_step || true
 
     if [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ]; then
         manager_services_due=1
         manager_bind_due=1
         tc_log "manager scheduler: disk state changed; running full service reconciliation now"
-    fi
-    if [ "${TC_MANAGER_PRINTER_CHANGED:-0}" = "1" ]; then
-        manager_services_due=1
-        tc_log "manager scheduler: USB printer state changed; running full service reconciliation now"
     fi
 
     if [ "$manager_services_due" -eq 0 ] &&
@@ -1967,11 +2201,9 @@ while ! tc_manager_stop_requested; do
     if tc_smbd_debug_logging_enabled ||
         [ "$manager_pass_status" != "ok" ] ||
         [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] ||
-        [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ] ||
-        [ "${TC_MANAGER_PRINTER_CHANGED:-0}" = "1" ] ||
         [ "$manager_bind_status" = "changed" ] ||
-        [ "$manager_bind_status" = "deferred_no_ip" ]; then
-        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} printer=$manager_printer_status printer_probe=${TC_MANAGER_PRINTER_PROBE_RESULT:-unknown} printer_refresh=${TC_MANAGER_PRINTER_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status rsync=$manager_rsync_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_seconds=$manager_iteration_duration_seconds"
+        [ "$manager_bind_status" = "retained" ]; then
+        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status rsync=$manager_rsync_status discovery=$manager_discovery_status services=$manager_services_status duration_seconds=$manager_iteration_duration_seconds"
     fi
     tc_manager_debug_log "manager sleeping ${MANAGER_DISK_POLL_SECONDS}s after $manager_pass_status pass next_service=${manager_next_service_seconds}s next_bind=${manager_next_bind_seconds}s"
     if ! tc_manager_sleep_until_due "$MANAGER_DISK_POLL_SECONDS"; then

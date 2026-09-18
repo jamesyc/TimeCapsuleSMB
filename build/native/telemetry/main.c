@@ -1,6 +1,7 @@
 #include "telemetry.h"
+#include "../common/acp.h"
 volatile sig_atomic_t telemetry_stop = 0;
-static void stop(int sig) { (void)sig; telemetry_stop = 1; }
+static void stop(int sig) { (void)sig; telemetry_stop = 1; acp_stop_requested = 1; }
 
 int main(int argc, char **argv) {
     int rc = 0, daemon = 0, cleanup_only = 0;
@@ -64,6 +65,9 @@ int main(int argc, char **argv) {
             }
         }
         if (!daemon) return rc;
+        /* An unreapable ACP child stops the shared reader; do not keep
+         * scheduling collections a kernel cannot finish. */
+        if (acp_stop_requested) telemetry_stop = 1;
         if (!telemetry_stop) sleep(1);
     } while (!telemetry_stop);
     return rc;
