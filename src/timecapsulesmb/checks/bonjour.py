@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.config import AppConfig, parse_bool
 from timecapsulesmb.core.net import endpoint_host, ipv4_literal, ipv6_literal, resolve_host_ips, same_scoped_ip, is_link_local_ipv6
 from timecapsulesmb.discovery.bonjour import (
     BonjourIPFamily,
@@ -15,6 +15,7 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourServiceInstance,
     DEFAULT_BROWSE_TIMEOUT_SEC,
     FINAL_PENDING_RESOLVE_TIMEOUT_MS,
+    PRINTER_SERVICE_TYPES,
     SMB_SERVICE,
     discover_snapshot_detailed,
     resolve_service_instance,
@@ -27,6 +28,9 @@ class BonjourExpectedIdentity:
     instance_name: str | None
     host_label: str | None
     target_ip: str | None
+    # v3.1.0: AFP is advertised only on request (macOS 26.x/27 hides
+    # AFP-advertising Time Capsules); the doctor fails when it shows up uninvited.
+    advertise_afp: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,7 @@ def build_bonjour_expected_identity(
         instance_name=runtime_naming_identity.mdns_instance_name if runtime_naming_identity is not None else None,
         host_label=runtime_naming_identity.mdns_host_label if runtime_naming_identity is not None else None,
         target_ip=target_ip,
+        advertise_afp=parse_bool(config.get("TC_MDNS_ADVERTISE_AFP", "false")),
     )
 
 
@@ -98,6 +103,23 @@ def discover_smb_services_detailed(
         return snapshot, None, diagnostics
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
+
+
+def discover_printer_services_detailed(
+    timeout: float = 4.0,
+    *,
+    target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None]:
+    """Browse the service types Apple's printd registers for a shared USB
+    printer (doctor's G6 check)."""
+    try:
+        snapshot, _diagnostics = discover_snapshot_detailed(
+            None, timeout=timeout, target_ip=target_ip, family=family, service_types=PRINTER_SERVICE_TYPES,
+        )
+        return snapshot, None
+    except Exception as e:
+        return None, CheckResult("FAIL", f"Bonjour printer check failed: {e}")
 
 
 def select_smb_instance(

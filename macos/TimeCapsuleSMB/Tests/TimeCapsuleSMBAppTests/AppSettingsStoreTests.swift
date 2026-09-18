@@ -65,19 +65,32 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .loaded)
         XCTAssertEqual(store.settings.language, .system)
         XCTAssertEqual(store.settings.appearance, .system)
-        XCTAssertFalse(store.settings.defaultDeviceSettings.smbBindLanOnly)
         XCTAssertFalse(store.settings.defaultDeviceSettings.mdnsAdvertiseAFP)
         XCTAssertFalse(store.settings.telemetryEnabled)
     }
 
-    func testLegacyDeviceSettingsWithoutSMBBindLANOnlyUseDefaultOff() throws {
+    func testLegacyDeviceSettingsWithoutOptionalKeysUseDefaults() throws {
         let data = #"{"nbnsEnabled":true,"debugLogging":false,"mountWaitSeconds":30}"#.data(using: .utf8)!
 
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
-        XCTAssertFalse(settings.smbBindLanOnly)
         XCTAssertFalse(settings.mdnsAdvertiseAFP)
         XCTAssertFalse(settings.rsyncEnabled)
+    }
+
+    func testLegacyDeviceSettingsWithRemovedSMBBindLANOnlyKeyStillDecode() throws {
+        // v3.1.0 removed the LAN-only bind setting; profiles saved by older
+        // app versions still carry the key and must load, ignoring it.
+        let data = #"{"nbnsEnabled":true,"debugLogging":true,"mountWaitSeconds":45,"smbBindLanOnly":true,"mdnsAdvertiseAFP":true}"#.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+
+        XCTAssertTrue(settings.nbnsEnabled)
+        XCTAssertTrue(settings.debugLogging)
+        XCTAssertEqual(settings.mountWaitSeconds, 45)
+        XCTAssertTrue(settings.mdnsAdvertiseAFP)
+        let reencoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any]
+        XCTAssertNil(reencoded?["smbBindLanOnly"])
     }
 
     func testCorruptSettingsFailsWithoutReplacingDefaults() async throws {

@@ -130,6 +130,10 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     for command in render_remote_actions(plan.post_upload_actions):
         lines.append(f"  {command}")
     lines.append("")
+    lines.append("Remote actions (after post-sync verification):")
+    for command in render_remote_actions(plan.post_verify_actions):
+        lines.append(f"  {command}")
+    lines.append("")
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
             lines.append("Remote actions (post-reboot runtime start if firmware autostart is missing):")
@@ -167,11 +171,11 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data = asdict(plan)
     data["smbd_path"] = str(plan.smbd_path)
     data["xattr_migrator_path"] = str(plan.xattr_migrator_path)
-    data["mdns_path"] = str(plan.mdns_path)
-    data["nbns_path"] = str(plan.nbns_path)
+    data["discovery_path"] = str(plan.discovery_path)
     data["rsync_path"] = str(plan.rsync_path)
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
+    data["post_verify_actions"] = remote_actions_to_jsonable(plan.post_verify_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
     data["runtime_startup"] = _runtime_startup_json(plan)
     _add_reboot_request_json(data, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)

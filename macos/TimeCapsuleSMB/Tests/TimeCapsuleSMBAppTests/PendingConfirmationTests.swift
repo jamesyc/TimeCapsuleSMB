@@ -160,7 +160,6 @@ final class PendingConfirmationTests: XCTestCase {
             nbnsEnabled: false,
             rsyncEnabled: true,
             internalShareUseDiskRoot: true,
-            smbBindLanOnly: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
             anyProtocol: true,
@@ -177,7 +176,6 @@ final class PendingConfirmationTests: XCTestCase {
         let params = OperationParams.Configure.updateSettings(settings)
 
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
-        XCTAssertEqual(params["smb_bind_lan_only"], .bool(true))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))

@@ -13,6 +13,7 @@ from timecapsulesmb.checks.doctor_state import DoctorBonjourResult, DoctorInputs
 from timecapsulesmb.checks.doctor_steps import (
     _add_active_smb_conf_results,
     _add_bonjour_results,
+    _doctor_check_usb_printer,
     _build_doctor_target,
     _doctor_add_bonjour_naming_info,
     _doctor_apply_startup_grace,
@@ -114,6 +115,7 @@ def run_doctor_checks(
         bonjour_backend_debug=bonjour_result.backend_debug,
     )
     _doctor_add_bonjour_naming_info(bonjour_result, sink)
+    _doctor_check_usb_printer(target, remote, bonjour_result, sink)
     _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
     _doctor_check_nbns(target, remote, smb_config, naming, network_plan, sink)
     _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, network_plan, direct_smb, sink)

@@ -20,7 +20,7 @@ int main(int argc, char **argv) {
     const char *key = getenv("TC_TEST_ACP_KEY");
     const char *value = "";
     int i;
-    if (argc != 3 || strcmp(argv[1], "-q")) return 91;
+    if (argc != 3 || (strcmp(argv[1], "-q") && strcmp(argv[1], "-A"))) return 91;
     if (!key) key = "syAP";
     if (!mode || (strcmp(key, "*") && strcmp(key, argv[2]))) mode = "normal";
     if (!strcmp(mode, "ignore_term")) signal(SIGTERM, SIG_IGN);
@@ -28,6 +28,14 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "crash")) { kill(getpid(), SIGKILL); return 93; }
     if (!strcmp(mode, "inspect_fds")) {
         for (i = 3; i < 64; i++) if (fcntl(i, F_GETFD) >= 0) return 94;
+    }
+    if (!strcmp(mode, "file")) {
+        FILE *fp = fopen(getenv("TC_TEST_ACP_FILE"), "rb");
+        int ch;
+        if (!fp) return 96;
+        while ((ch = fgetc(fp)) != EOF) putchar(ch);
+        fclose(fp);
+        return getenv("TC_TEST_ACP_EXIT") ? atoi(getenv("TC_TEST_ACP_EXIT")) : 0;
     }
     if (!strcmp(mode, "value")) {
         const char *text = getenv("TC_TEST_ACP_VALUE");
@@ -70,6 +78,11 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[2], "syNm")) value = "Test Capsule";
     if (!strcmp(argv[2], "waMA")) value = "02:00:00:00:00:01";
     if (!strcmp(argv[2], "raMA")) value = "02:00:00:00:00:02";
+    if (getenv("TC_TEST_PLAN_MODE")) {
+        int nat = !strcmp(getenv("TC_TEST_PLAN_MODE"), "nat");
+        if (!strcmp(argv[2], "raNA") || !strcmp(argv[2], "raDS")) value = nat ? "1" : "0";
+        if (!strcmp(argv[2], "usbF")) value = "0x450";
+    }
     if (!*value) return 1; /* sySN is unavailable: exercise the normal fallback. */
     puts(value);
     if (!strcmp(mode, "drain"))

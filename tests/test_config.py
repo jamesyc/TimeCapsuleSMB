@@ -18,7 +18,6 @@ from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
     ConfigValidationError,
-    build_mdns_device_model_txt,
     DEFAULTS,
     load_app_config,
     parse_bool,
@@ -30,8 +29,6 @@ from timecapsulesmb.core.config import (
     validate_app_config,
     validate_airport_syap,
     validate_bool,
-    validate_mdns_device_model_matches_syap,
-    validate_mdns_device_model,
     validate_ssh_target,
     write_env_file,
 )
@@ -140,7 +137,7 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("TC_SAMBA_USER", rendered)
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
-        self.assertIn("TC_SMB_BIND_LAN_ONLY=false", rendered)
+        self.assertNotIn("TC_SMB_BIND_LAN_ONLY", rendered)
         self.assertIn("TC_SMB_BROWSE_COMPATIBILITY=false", rendered)
         self.assertIn("TC_MDNS_ADVERTISE_AFP=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
@@ -250,26 +247,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(AIRPORT_SYAP_TO_MODEL["119"], "TimeCapsule8,119")
         self.assertEqual(AIRPORT_SYAP_TO_MODEL["120"], "AirPort7,120")
 
-    def test_validate_mdns_device_model_matches_syap_requires_exact_match(self) -> None:
-        self.assertIsNone(validate_mdns_device_model_matches_syap("119", "TimeCapsule8,119"))
-        self.assertIsNone(validate_mdns_device_model_matches_syap("120", "AirPort7,120"))
-        self.assertEqual(
-            validate_mdns_device_model_matches_syap("119", "TimeCapsule"),
-            'TC_MDNS_DEVICE_MODEL "TimeCapsule" must match the configured '
-            'syAP expected value "TimeCapsule8,119".'
-        )
-        self.assertEqual(
-            validate_mdns_device_model_matches_syap("119", "TimeCapsule6,113"),
-            'TC_MDNS_DEVICE_MODEL "TimeCapsule6,113" must match the configured '
-            'syAP expected value "TimeCapsule8,119".'
-        )
-        self.assertEqual(
-            validate_mdns_device_model_matches_syap("120", "TimeCapsule8,119"),
-            'TC_MDNS_DEVICE_MODEL "TimeCapsule8,119" must match the configured '
-            'syAP expected value "AirPort7,120".'
-        )
-        self.assertIsNone(validate_mdns_device_model_matches_syap("", "TimeCapsule"))
-
     def test_write_env_file_round_trips_configure_id(self) -> None:
         values = dict(DEFAULTS)
         values["TC_PASSWORD"] = "secret"
@@ -349,38 +326,6 @@ class ConfigTests(unittest.TestCase):
     def test_endpoint_host_removes_user_prefix(self) -> None:
         self.assertEqual(endpoint_host("root@10.0.0.5"), "10.0.0.5")
         self.assertEqual(endpoint_host("10.0.0.5"), "10.0.0.5")
-
-    def test_build_mdns_device_model_txt(self) -> None:
-        self.assertEqual(build_mdns_device_model_txt("TimeCapsule"), "model=TimeCapsule")
-
-    def test_validate_mdns_device_model_accepts_supported_values(self) -> None:
-        for value in (
-            "TimeCapsule",
-            "AirPort",
-            "AirPort5,104",
-            "AirPort5,105",
-            "TimeCapsule6,106",
-            "AirPort5,108",
-            "TimeCapsule6,109",
-            "TimeCapsule6,113",
-            "AirPort5,114",
-            "TimeCapsule6,116",
-            "AirPort5,117",
-            "TimeCapsule8,119",
-            "AirPort7,120",
-        ):
-            self.assertIsNone(validate_mdns_device_model(value, "mDNS device model hint"))
-
-    def test_validate_mdns_device_model_rejects_unsupported_values(self) -> None:
-        self.assertEqual(
-            validate_mdns_device_model("AirPortTimeCapsule", "mDNS device model hint"),
-            "mDNS device model hint is not a supported AirPort storage device model.",
-        )
-        self.assertEqual(
-            validate_mdns_device_model("TimeCapsule7,117", "mDNS device model hint"),
-            "mDNS device model hint is not a supported AirPort storage device model.",
-        )
-        self.assertEqual(validate_mdns_device_model("", "mDNS device model hint"), "mDNS device model hint cannot be blank.")
 
     def test_validate_ssh_target_accepts_user_at_host_targets(self) -> None:
         self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Device SSH target"))
@@ -464,12 +409,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "inconsistent_values")
         self.assertIn("Force Disable", errors[0].message)
         values["TC_REQUIRE_SMB_ENCRYPTION"] = "false"
+        # v3.1.0 removed TC_SMB_BIND_LAN_ONLY: a stale value is ignored, never validated.
         values["TC_SMB_BIND_LAN_ONLY"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
-        errors = validate_app_config(config, profile="deploy")
-        self.assertEqual(errors[0].kind, "invalid_value")
-        self.assertEqual(errors[0].key, "TC_SMB_BIND_LAN_ONLY")
-        values["TC_SMB_BIND_LAN_ONLY"] = "true"
+        self.assertEqual(validate_app_config(config, profile="deploy"), [])
         values["TC_SMB_BROWSE_COMPATIBILITY"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")

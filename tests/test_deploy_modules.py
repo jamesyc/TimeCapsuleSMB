@@ -55,8 +55,7 @@ from timecapsulesmb.deploy.executor import (
     upload_flash_file,
 )
 from timecapsulesmb.deploy.planner import (
-    BINARY_MDNS_SOURCE,
-    BINARY_NBNS_SOURCE,
+    BINARY_DISCOVERY_SOURCE,
     BINARY_SERVICE_SOURCE,
     BINARY_TELEMETRY_SOURCE,
     BINARY_RSYNC_SOURCE,
@@ -116,7 +115,7 @@ from timecapsulesmb.device.probe import (
     probe_netbsd4_rc_local_autostart_conn,
     probe_managed_runtime_conn,
     probe_managed_runtime_once_conn,
-    probe_managed_mdns_takeover_conn,
+    probe_managed_mdns_conn,
     probe_managed_rsync_conn,
     probe_managed_smbd_conn,
     probe_remote_airport_identity_conn,
@@ -202,8 +201,7 @@ class DeployModuleTests(unittest.TestCase):
             "root@10.0.0.2",
             payload_home,
             Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
+            Path("bin/discovery/discoveryd"),
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=startup_mode,
@@ -219,8 +217,7 @@ class DeployModuleTests(unittest.TestCase):
             artifacts=DeployArtifactPaths(
                 smbd=Path("bin/smbd"),
                 xattr_migrator=Path("bin/xattr-hfs-migrate"),
-                mdns_advertiser=Path("bin/mdns"),
-                nbns_advertiser=Path("bin/nbns"),
+                discovery=Path("bin/discovery/discoveryd"),
                 rsync=Path("bin/rsync"),
              service=Path("bin/service"), telemetry=Path("bin/telemetry")),
             payload_home=payload_home,
@@ -264,7 +261,7 @@ class DeployModuleTests(unittest.TestCase):
         return subprocess.run([str(binary), *(args or [])], capture_output=True, text=True, timeout=10)
 
     def _compile_mdns_advertiser_binary(self, tmp: Path) -> Path:
-        return compile_native("mdns", tmp / "mdns")
+        return compile_native("discovery", tmp / "discoveryd")
 
     def _run_mdns_nt_hash(self, password: bytes) -> subprocess.CompletedProcess[bytes]:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -277,8 +274,6 @@ class DeployModuleTests(unittest.TestCase):
                 check=False,
             )
 
-    def _compile_nbns_advertiser_binary(self, tmp: Path) -> Path:
-        return compile_native("nbns", tmp / "nbns")
 
     def _run_mdns_advertiser_until_ready_or_exit(self, bin_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
         proc = subprocess.Popen(
@@ -387,9 +382,6 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("/mnt/Flash/boot.sh", content)
         common = load_boot_asset_text("common.sh")
         self.assertEqual(common, assemble_common_sh_text())
-        self.assertIn("get_airport_syvs()", common)
-        self.assertIn("ether[[:space:]]", common)
-        self.assertIn("address:*[[:space:]]", common)
         self.assertNotIn("tr '[:lower:]' '[:upper:]'", common)
         self.assertNotIn("/usr/bin/wc", common)
         self.assertNotIn("/usr/bin/tr", common)
@@ -414,32 +406,15 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertEqual(common_path.read_text(), assembled)
                 self.assertNotEqual(common_path, asset_root / "common.sh")
 
-    def test_common_sh_contains_shared_network_and_airport_helpers(self) -> None:
-        content = load_boot_asset_text("common.sh")
-        self.assertIn("RAM_ROOT=/mnt/Memory/samba4", content)
-        self.assertIn('RAM_SBIN="$RAM_ROOT/sbin"', content)
-        self.assertIn('RAM_ETC="$RAM_ROOT/etc"', content)
-        self.assertIn('RAM_VAR="$RAM_ROOT/var"', content)
-        self.assertIn('RAM_PRIVATE="$RAM_ROOT/private"', content)
-        self.assertIn("LOCKS_ROOT=/mnt/Locks", content)
-        self.assertIn("MDNS_PROC_NAME=mdns-advertiser", content)
-        self.assertIn("NBNS_PROC_NAME=nbns-advertiser", content)
-        self.assertIn("tc_select_advertise_mac()", content)
-        self.assertIn("tc_select_live_iface_mac()", content)
-        self.assertIn("get_airport_prni_raw()", content)
-        self.assertNotIn("get_iface_mac()", content)
-        self.assertNotIn("tc_select_advertise_network()", content)
-        self.assertNotIn("tc_find_iface_for_ipv4()", content)
-        self.assertIn("get_radio_mac()", content)
-        self.assertIn("get_airport_srcv()", content)
-        self.assertIn("get_airport_syvs()", content)
-        self.assertIn("wait_for_process()", content)
-        self.assertIn("tc_ensure_parent_dir()", content)
-        self.assertNotIn("wait_for_smbd_ready()", content)
-        self.assertNotIn("daemon_ready", content)
-        self.assertIn("derive_airport_fields()", content)
-        self.assertIn("get_airport_syvs()", content)
-        self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
+    def test_common_sh_initializes_runtime_paths_and_process_owners(self) -> None:
+        # Exercise the generated asset instead of asserting source spellings.
+        script = load_boot_asset_text("common.sh") + "\nprintf '%s\\n' \"$RAM_ROOT\" \"$RAM_SBIN\" \"$RAM_ETC\" \"$RAM_VAR\" \"$RAM_PRIVATE\" \"$LOCKS_ROOT\" \"$DISCOVERY_PROC_NAME\" \"$TC_DISCOVERY_BIN\"\n"
+        result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True, check=True)
+        self.assertEqual(result.stdout.splitlines(), [
+            "/mnt/Memory/samba4", "/mnt/Memory/samba4/sbin", "/mnt/Memory/samba4/etc",
+            "/mnt/Memory/samba4/var", "/mnt/Memory/samba4/private", "/mnt/Locks",
+            "discoveryd", "/mnt/Flash/discoveryd",
+        ])
 
     def test_common_process_helpers_ignore_zombies(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
@@ -454,7 +429,7 @@ class DeployModuleTests(unittest.TestCase):
                     [
                         "101 Z    wcifsnd         (wcifsnd)",
                         "102 Z    wcifsfs         (wcifsfs)",
-                        "103 S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
+                        "103 S    discoveryd      /mnt/Flash/discoveryd --netbios-name TimeCapsule",
                         "106 S    sh              /bin/sh /mnt/Flash/manager.sh",
                     ]
                 )
@@ -465,11 +440,11 @@ class DeployModuleTests(unittest.TestCase):
                 + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
                 + """
 runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
-runtime_process_present_by_ucomm nbns-advertiser; echo "live-name=$?"
+runtime_process_present_by_ucomm discoveryd; echo "live-name=$?"
 runtime_manager_present; echo "manager-full=$?"
 echo "manager-pids=$(runtime_manager_pids)"
 runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
-wait_for_process nbns-advertiser 1; echo "live-wait=$?"
+wait_for_process discoveryd 1; echo "live-wait=$?"
 wait_for_process wcifsnd 1; echo "zombie-wait=$?"
 """
             )
@@ -515,7 +490,7 @@ echo "file-size=$(tc_log_file_size "$SAMPLE")"
             tmp_path = Path(tmp)
             payload = tmp_path / "payload"
             payload.mkdir()
-            for name in ("smbd", "nbns-advertiser"):
+            for name in ("smbd",):
                 binary = payload / name
                 binary.write_text("#!/bin/sh\n")
                 binary.chmod(0o755)
@@ -530,11 +505,9 @@ TC_LOG_PREFIX=manager
 TC_LOG_MAX_BYTES=65536
 SMBD_DEBUG_LOGGING=0
 echo "smbd-normal=$(tc_find_payload_smbd "$PAYLOAD")"
-echo "nbns-normal=$(tc_find_payload_nbns "$PAYLOAD")"
 normal_log=$(cat "$TC_LOG_FILE" 2>/dev/null || true)
 SMBD_DEBUG_LOGGING=1
 echo "smbd-debug=$(tc_find_payload_smbd "$PAYLOAD")"
-echo "nbns-debug=$(tc_find_payload_nbns "$PAYLOAD")"
 printf '%s\n' "$normal_log" >"$PAYLOAD/normal.log"
 """
             )
@@ -545,43 +518,9 @@ printf '%s\n' "$normal_log" >"$PAYLOAD/normal.log"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"smbd-normal={payload}/smbd", result.stdout)
-        self.assertIn(f"nbns-normal={payload}/nbns-advertiser", result.stdout)
         self.assertIn(f"smbd-debug={payload}/smbd", result.stdout)
-        self.assertIn(f"nbns-debug={payload}/nbns-advertiser", result.stdout)
         self.assertNotIn("selected smbd binary", normal_log)
-        self.assertNotIn("selected nbns binary", normal_log)
         self.assertIn(f"selected smbd binary {payload}/smbd", debug_log)
-        self.assertIn(f"selected nbns binary {payload}/nbns-advertiser", debug_log)
-
-    def test_common_select_advertise_mac_falls_back_to_ifconfig_mac(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            fake_ifconfig = tmp_path / "ifconfig"
-            fake_ifconfig.write_text(
-                "#!/bin/sh\n"
-                "cat <<'OUT'\n"
-                "bcmeth1: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST>\n"
-                "        address: 80:ea:96:e6:58:70\n"
-                "bridge0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST>\n"
-                "        address: 80:ea:96:e6:58:71\n"
-                "OUT\n"
-            )
-            fake_ifconfig.chmod(0o755)
-            common = load_boot_asset_text("common.sh").replace("/sbin/ifconfig", shlex.quote(str(fake_ifconfig)))
-            script = tmp_path / "check.sh"
-            script.write_text(
-                common
-                + """
-	tc_log() { :; }
-	get_airport_acp_value() { return 1; }
-	printf 'mac=%s\n' "$(tc_select_advertise_mac)"
-	"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("mac=80:ea:96:e6:58:70\n", result.stdout)
 
     def test_common_log_trim_preserves_existing_log_when_readers_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -844,17 +783,6 @@ echo ok
             with self.assertRaisesRegex(RuntimeError, "could not read runtime naming identity: rc=1"):
                 probe_remote_runtime_naming_identity_conn(connection)
 
-    def test_common_sh_mac_helpers_use_live_scan_and_radio_argument(self) -> None:
-        content = load_boot_asset_text("common.sh")
-        self.assertIn("tc_select_live_iface_mac()", content)
-        self.assertIn("ifconfig -a", content)
-        self.assertIn("radio_iface=$1", content)
-        self.assertIn('ifconfig "$radio_iface"', content)
-
-    def test_common_sh_allows_partial_airport_field_derivation(self) -> None:
-        content = load_boot_asset_text("common.sh")
-        self.assertIn('if [ -n "$AIRPORT_WAMA" ] || [ -n "$AIRPORT_RAMA" ] || [ -n "$AIRPORT_RAM2" ] || [ -n "$AIRPORT_SRCV" ] || [ -n "$AIRPORT_SYVS" ]; then', content)
-
     def test_runtime_scripts_source_common_sh(self) -> None:
         boot = load_boot_asset_text("boot.sh")
         manager = load_boot_asset_text("manager.sh")
@@ -909,107 +837,81 @@ echo ok
         )
 
     def test_mdns_advertiser_rejects_extra_adisk_share_fields(self) -> None:
-        source = native_case_source("mdns_advertiser_rejects_extra_adisk_share_fields")
-        run = self._compile_and_run_c_helper(source, "mdns_adisk_extra_fields")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("has extra fields", run.stderr)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            binary = self._compile_mdns_advertiser_binary(Path(tmpdir))
+            run = subprocess.run(
+                [str(binary), "--adisk-share", "Data", "dk2",
+                 "12345678-1234-1234-1234-123456789012", "0x82", "extra"],
+                capture_output=True, text=True, timeout=10,
+            )
+        self.assertEqual(run.returncode, 3, run.stderr)
+        self.assertIn("Usage:", run.stderr)
 
     def test_mdns_advertiser_adisk_argument_validation_respects_diskless_mode(self) -> None:
         source = native_case_source("mdns_advertiser_adisk_argument_validation_respects_diskless_mode")
         adisk_uuid = "12345678-1234-1234-1234-123456789012"
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            shares_file = tmp / "adisk.tsv"
-            shares_file.write_text(f"Data\tdk2\t{adisk_uuid}\t0x82\n")
-            bad_shares_file = tmp / "bad-adisk.tsv"
-            bad_shares_file.write_text("Data\tdk2\tbad\t0x82\n")
+        cases = [
+            (
+                "no_adisk_config_does_not_require_adisk_sys_wama",
+                ["diskful", "-", ""],
+                0,
+                "",
+            ),
+            (
+                "diskful_adisk_share_requires_adisk_sys_wama",
+                ["diskful", adisk_uuid, ""],
+                7,
+                "",
+            ),
+            (
+                "diskful_adisk_share_rejects_invalid_adisk_sys_wama",
+                ["diskful", adisk_uuid, "not-a-mac"],
+                7,
+                "adisk sys waMA must be a MAC address",
+            ),
+            (
+                "diskful_adisk_share_accepts_valid_adisk_sys_wama",
+                ["diskful", adisk_uuid, "80:EA:96:E6:58:68"],
+                0,
+                "",
+            ),
+            (
+                "diskless_adisk_share_suppresses_missing_adisk_sys_wama",
+                ["diskless", adisk_uuid, ""],
+                0,
+                "",
+            ),
+            (
+                "diskless_adisk_share_suppresses_invalid_adisk_sys_wama",
+                ["diskless", adisk_uuid, "not-a-mac"],
+                0,
+                "",
+            ),
+            (
+                "diskless_still_validates_configured_adisk_disk_fields",
+                ["diskless", "bad", ""],
+                8,
+                "adisk uuid must be 36 characters",
+            ),
+        ]
 
-            cases = [
-                (
-                    "no_adisk_config_does_not_require_adisk_sys_wama",
-                    ["diskful", "-", ""],
-                    0,
-                    "",
-                ),
-                (
-                    "diskful_adisk_shares_file_requires_adisk_sys_wama",
-                    ["diskful", str(shares_file), ""],
-                    7,
-                    "",
-                ),
-                (
-                    "diskful_adisk_shares_file_rejects_invalid_adisk_sys_wama",
-                    ["diskful", str(shares_file), "not-a-mac"],
-                    7,
-                    "adisk sys waMA must be a MAC address",
-                ),
-                (
-                    "diskful_adisk_shares_file_accepts_valid_adisk_sys_wama",
-                    ["diskful", str(shares_file), "80:EA:96:E6:58:68"],
-                    0,
-                    "",
-                ),
-                (
-                    "diskless_adisk_shares_file_suppresses_missing_adisk_sys_wama",
-                    ["diskless", str(shares_file), ""],
-                    0,
-                    "",
-                ),
-                (
-                    "diskless_adisk_shares_file_suppresses_invalid_adisk_sys_wama",
-                    ["diskless", str(shares_file), "not-a-mac"],
-                    0,
-                    "",
-                ),
-                (
-                    "diskless_still_validates_configured_adisk_disk_fields",
-                    ["diskless", str(bad_shares_file), ""],
-                    8,
-                    "adisk uuid must be 36 characters",
-                ),
-            ]
+        for label, extra_args, expected_rc, expected_stderr in cases:
+            with self.subTest(label=label):
+                run = self._compile_and_run_c_helper(
+                    source,
+                    f"mdns_adisk_args_{label}",
+                    extra_args,
+                )
+                self.assertEqual(run.returncode, expected_rc, run.stderr)
+                if expected_stderr:
+                    self.assertIn(expected_stderr, run.stderr)
 
-            for label, extra_args, expected_rc, expected_stderr in cases:
-                with self.subTest(label=label):
-                    run = self._compile_and_run_c_helper(
-                        source,
-                        f"mdns_adisk_args_{label}",
-                        extra_args,
-                    )
-                    self.assertEqual(run.returncode, expected_rc, run.stderr)
-                    if expected_stderr:
-                        self.assertIn(expected_stderr, run.stderr)
-
-    def test_mdns_advertiser_normalizes_airport_mac_fields_to_apple_style(self) -> None:
-        source = native_case_source("mdns_advertiser_normalizes_airport_mac_fields_to_apple_style")
-        run = self._compile_and_run_c_helper(source, "mdns_airport_txt_normalization")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(
-            run.stdout.strip(),
-            "waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C,syAP=119",
-        )
-
-    def test_mdns_advertiser_rejects_invalid_airport_mac_field(self) -> None:
-        source = native_case_source("mdns_advertiser_rejects_invalid_airport_mac_field")
-        run = self._compile_and_run_c_helper(source, "mdns_airport_txt_invalid_mac")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_advertiser_escapes_dotted_generated_names_as_single_wire_label(self) -> None:
-        source = native_case_source("mdns_advertiser_escapes_dotted_generated_names_as_single_wire_label")
-        run = self._compile_and_run_c_helper(source, "mdns_dotted_name_wire_label")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_advertiser_sets_cache_flush_for_unique_records_only(self) -> None:
-        source = native_case_source("mdns_advertiser_sets_cache_flush_for_unique_records_only")
-        run = self._compile_and_run_c_helper(source, "mdns_cache_flush_classes")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_advertiser_no_args_returns_usage_without_running(self) -> None:
+    def test_mdns_advertiser_unknown_option_returns_usage_without_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
-        self.assertEqual(run.returncode, 4)
+            run = subprocess.run([str(bin_path), "--auto-ip"], capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 3)
         self.assertIn("Usage:", run.stderr)
         self.assertTrue(run.stderr.splitlines())
         for line in run.stderr.splitlines():
@@ -1021,7 +923,7 @@ echo ok
             bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2224\n")
+        self.assertEqual(run.stdout, "30100\n")
         self.assertEqual(run.stderr, "")
 
     def test_mdns_advertiser_accepts_debug_logging_before_version(self) -> None:
@@ -1034,28 +936,8 @@ echo ok
                 check=False,
             )
         self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2224\n")
+        self.assertEqual(run.stdout, "30100\n")
         self.assertEqual(run.stderr, "")
-
-    def test_mdns_advertiser_traffic_summary_counters_are_debug_only(self) -> None:
-        source = native_case_source("mdns_advertiser_traffic_summary_counters_are_debug_only")
-        run = self._compile_and_run_c_helper(source, "mdns_debug_counter_logging")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     def test_mdns_timestamped_logging_truncates_long_lines_without_heap(self) -> None:
         source = native_case_source("mdns_timestamped_logging_truncates_long_lines_without_heap")
@@ -1076,212 +958,13 @@ echo ok
 
 
 
-    def test_mdns_auto_ip_helpers_filter_and_detect_interface_changes(self) -> None:
-        source = native_case_source("mdns_auto_ip_helpers_filter_and_detect_interface_changes")
-        run = self._compile_and_run_c_helper(source, "mdns_auto_ip_helpers")
-        self.assertEqual(run.returncode, 0, run.stderr)
 
-    def test_mdns_auto_ip_cidr_helpers_format_valid_bind_output(self) -> None:
-        source = native_case_source("mdns_auto_ip_cidr_helpers_format_valid_bind_output")
-        run = self._compile_and_run_c_helper(source, "mdns_auto_ip_cidrs")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "10.0.1.1/24 192.168.1.40/24\n")
-
-    def test_auto_ip_context_collection_uses_getifaddrs_netmasks(self) -> None:
-        source = native_case_source("auto_ip_context_collection_uses_getifaddrs_netmasks")
-        run = self._compile_and_run_c_helper(source, "auto_ip_getifaddrs_netmasks")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_auto_ip_getifaddrs_handles_unnamed_netbsd4_address_entries(self) -> None:
-        source = native_case_source("auto_ip_getifaddrs_handles_unnamed_netbsd4_address_entries")
-        run = self._compile_and_run_c_helper(source, "auto_ip_getifaddrs_unnamed_entries")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_smb_bind_lan_recovers_netbsd4_owner_names_from_ifconfig(self) -> None:
-        source = native_case_source("mdns_smb_bind_lan_recovers_netbsd4_owner_names_from_ifconfig")
-        run = self._compile_and_run_c_helper(source, "mdns_smb_bind_lan_recovers_netbsd4_ifconfig_names")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(
-            run.stdout,
-            "10.0.1.1/24 192.168.1.193/24 fdbb:5737:6e53:9bf7::40/64\n"
-            "10.0.1.1/24\n",
-        )
-
-    def test_mdns_smb_bind_tokens_and_host_records_are_link_scoped_dual_stack(self) -> None:
-        source = native_case_source("mdns_smb_bind_tokens_and_host_records_are_link_scoped_dual_stack")
-        run = self._compile_and_run_c_helper(source, "mdns_dual_stack_bind_records")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "10.0.1.1/24 fdbb:1111:2222:3333::40/64 fe80:7::40/64\n")
-
-    def test_mdns_advertise_links_keep_link_local_ipv6_only_links(self) -> None:
-        source = native_case_source("mdns_advertise_links_keep_link_local_ipv6_only_links")
-        run = self._compile_and_run_c_helper(source, "mdns_advertise_link_filter")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_print_auto_ip_cidrs_returns_distinct_probe_failure_status(self) -> None:
-        source = native_case_source("mdns_print_auto_ip_cidrs_returns_distinct_probe_failure_status")
-        run = self._compile_and_run_c_helper(source, "mdns_print_auto_ip_cidrs_status")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "10.0.1.1/24\n")
-
-    def test_mdns_print_smb_bind_interfaces_returns_dual_stack_probe_status(self) -> None:
-        source = native_case_source("mdns_print_smb_bind_interfaces_returns_dual_stack_probe_status")
-        run = self._compile_and_run_c_helper(source, "mdns_print_smb_bind_status")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(
-            run.stdout,
-            "fdbb:1111:2222:3333::40/64 fe80::40/64\n"
-            "fe80::40/64\n"
-            "fe80::40/64\n",
-        )
-
-    def test_mdns_print_smb_bind_interfaces_lan_filters_wan_and_ipv4_link_local(self) -> None:
-        source = native_case_source("mdns_print_smb_bind_interfaces_lan_filters_wan_and_ipv4_link_local")
-        run = self._compile_and_run_c_helper(source, "mdns_print_smb_bind_lan_filter")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(
-            run.stdout,
-            "10.0.1.1/24 fdbb:1111:2222:3333::40/64 192.168.1.217/24 fdbb:aaaa:bbbb:cccc::217/64\n"
-            "10.0.1.1/24 fdbb:1111:2222:3333::40/64\n",
-        )
-
-    def test_mdns_print_smb_bind_interfaces_lan_falls_back_for_unnamed_netbsd4_links(self) -> None:
-        source = native_case_source("mdns_print_smb_bind_interfaces_lan_falls_back_for_unnamed_netbsd4_links")
-        run = self._compile_and_run_c_helper(source, "mdns_print_smb_bind_lan_unnamed_fallback")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(
-            run.stdout,
-            "10.0.1.1/24 fdbb:5737:6e53:9bf7::40/64 2001:db8:5737:6e53::40/64\n"
-            "10.0.1.1/24 fdbb:5737:6e53:9bf7::40/64\n"
-            "fdbb:5737:6e53:9bf7::40/64\n",
-        )
-
-    def test_auto_ip_routing_evidence_maps_unnamed_wan_without_breaking_bridge_mode(self) -> None:
-        source = native_case_source("auto_ip_routing_evidence_maps_unnamed_wan_without_breaking_bridge_mode")
-        run = self._compile_and_run_c_helper(source, "auto_ip_route_evidence")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_print_socket_families_uses_advertise_links_not_samba_tokens(self) -> None:
-        source = native_case_source("mdns_print_socket_families_uses_advertise_links_not_samba_tokens")
-        run = self._compile_and_run_c_helper(source, "mdns_print_socket_families")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "ipv4 ipv6\nipv6\nipv6\nipv4\n")
-
-    def test_mdns_scoped_ipv6_multicast_destination_uses_link_ifindex(self) -> None:
-        source = native_case_source("mdns_scoped_ipv6_multicast_destination_uses_link_ifindex")
-        run = self._compile_and_run_c_helper(source, "mdns_scoped_ipv6_dest")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_advertiser_builds_riousbprint_txt_from_printer_identity(self) -> None:
-        source = native_case_source("mdns_advertiser_builds_riousbprint_txt_from_printer_identity")
-        run = self._compile_and_run_c_helper(source, "mdns_riousbprint_txt")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_builds_pdl_datastream_txt_from_printer_identity(self) -> None:
-        source = native_case_source("mdns_advertiser_builds_pdl_datastream_txt_from_printer_identity")
-        run = self._compile_and_run_c_helper(source, "mdns_pdl_datastream_txt")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_extracts_riousbprint_cmd_from_ieee1284_device_id(self) -> None:
-        source = native_case_source("mdns_advertiser_extracts_riousbprint_cmd_from_ieee1284_device_id")
-        run = self._compile_and_run_c_helper(source, "mdns_riousbprint_ieee1284")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "BJL,BJRaster3,BSCCe,IVEC,IVECPLI")
-
-    def test_mdns_advertiser_rejects_null_usb_printer_helper_args(self) -> None:
-        source = native_case_source("mdns_advertiser_rejects_null_usb_printer_helper_args")
-        run = self._compile_and_run_c_helper(source, "mdns_usb_printer_helper_null_args")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_rejects_short_usb_device_id_transfer(self) -> None:
-        source = native_case_source("mdns_advertiser_rejects_short_usb_device_id_transfer")
-        run = self._compile_and_run_c_helper(source, "mdns_usb_device_id_short_transfer")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-
-
-    def test_mdns_dualstack_takeover_keeps_desired_ipv4_after_bind_race(self) -> None:
-        source = native_case_source("mdns_dualstack_takeover_keeps_desired_ipv4_after_bind_race")
-        run = self._compile_and_run_c_helper(source, "mdns_dualstack_takeover_desired_ipv4")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_runtime_socket_updates_roll_back_partial_memberships_and_fallback_to_ipv4(self) -> None:
-        source = native_case_source("mdns_runtime_socket_updates_roll_back_partial_memberships_and_fallback_to_ipv4")
-        run = self._compile_and_run_c_helper(source, "mdns_runtime_membership_rollback")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-
-
-
-
-
-    def test_mdns_advertiser_routes_qu_qm_and_mixed_query_responses(self) -> None:
-        source = native_case_source("mdns_advertiser_routes_qu_qm_and_mixed_query_responses")
-        run = self._compile_and_run_c_helper(source, "mdns_qu_qm_query_routes")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_enumerates_dns_sd_service_types(self) -> None:
-        source = native_case_source("mdns_advertiser_enumerates_dns_sd_service_types")
-        run = self._compile_and_run_c_helper(source, "mdns_service_type_enumeration")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_multicast_delay_and_unicast_hop_limits(self) -> None:
-        source = native_case_source("mdns_advertiser_multicast_delay_and_unicast_hop_limits")
-        run = self._compile_and_run_c_helper(source, "mdns_multicast_delay_and_hops")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_startup_burst_schedule_is_apple_compatible(self) -> None:
-        source = native_case_source("mdns_advertiser_startup_burst_schedule_is_apple_compatible")
-        run = self._compile_and_run_c_helper(source, "mdns_startup_schedule")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_diskless_answers_host_a_but_not_smb(self) -> None:
-        source = native_case_source("mdns_advertiser_diskless_answers_host_a_but_not_smb")
-        run = self._compile_and_run_c_helper(source, "mdns_diskless_host_a_no_smb")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_suppresses_fresh_known_answer_a_records(self) -> None:
-        source = native_case_source("mdns_advertiser_suppresses_fresh_known_answer_a_records")
-        run = self._compile_and_run_c_helper(source, "mdns_known_answer_suppression")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-    def test_mdns_advertiser_defers_tc_and_matches_structured_known_answers(self) -> None:
-        source = native_case_source("mdns_advertiser_defers_tc_and_matches_structured_known_answers")
-        run = self._compile_and_run_c_helper(source, "mdns_tc_and_structured_known_answers")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "ok")
-
-
-
-    def test_mdns_advertiser_retries_interrupted_sendto(self) -> None:
-        source = native_case_source("mdns_advertiser_retries_interrupted_sendto")
-        run = self._compile_and_run_c_helper(source, "mdns_sendto_eintr")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-
-
-    def test_nbns_advertiser_retries_interrupted_sendto(self) -> None:
-        source = native_case_source("nbns_advertiser_retries_interrupted_sendto")
-        run = self._compile_and_run_c_helper(source, "nbns_sendto_eintr")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_nbns_advertiser_rejects_removed_legacy_cli_modes(self) -> None:
+    def test_discovery_rejects_removed_nbns_cli_modes(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
+            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             runs = [
                 subprocess.run(
                     [str(bin_path), "--name", "TimeCapsule", "--ipv4", "192.168.1.217"],
@@ -1290,7 +973,13 @@ echo ok
                     check=False,
                 ),
                 subprocess.run(
-                    [str(bin_path), "--name", "TimeCapsule", "--auto-ip", "--ttl", "30"],
+                    [str(bin_path), "--name", "TimeCapsule", "--ttl", "30"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ),
+                subprocess.run(
+                    [str(bin_path), "--name", "TimeCapsule", "--auto-ip"],
                     capture_output=True,
                     text=True,
                     check=False,
@@ -1303,63 +992,40 @@ echo ok
                 ),
             ]
         for run in runs:
-            self.assertEqual(run.returncode, 2)
+            self.assertEqual(run.returncode, 3)
             self.assertIn("Usage:", run.stderr)
 
-    def test_nbns_advertiser_version_prints_version_code(self) -> None:
+
+    def test_discovery_usage_reports_native_interface(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
-        self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "2200\n")
-        self.assertEqual(run.stderr, "")
-
-    def test_nbns_advertiser_usage_reports_auto_ip_only(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
+            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             run = subprocess.run([str(bin_path), "--help"], capture_output=True, text=True, check=False)
 
         self.assertEqual(run.returncode, 0)
         self.assertIn("Usage:", run.stderr)
-        self.assertIn("--auto-ip", run.stderr)
+        self.assertNotIn("--auto-ip", run.stderr)
         self.assertNotIn("--ipv4", run.stderr)
         self.assertNotIn("--ttl", run.stderr)
         self.assertNotIn("--check-auto-ip", run.stderr)
 
-    def test_nbns_advertiser_builds_rfc_query_and_status_responses(self) -> None:
-        source = native_case_source("nbns_advertiser_builds_rfc_query_and_status_responses")
-        run = self._compile_and_run_c_helper(source, "nbns_response_packets")
-        self.assertEqual(run.returncode, 0, run.stderr)
 
-    def test_nbns_advertiser_handles_query_edge_cases(self) -> None:
-        source = native_case_source("nbns_advertiser_handles_query_edge_cases")
-        run = self._compile_and_run_c_helper(source, "nbns_query_edge_cases")
-        self.assertEqual(run.returncode, 0, run.stderr)
 
-    def test_nbns_auto_ip_helpers_filter_and_choose_subnet_response(self) -> None:
-        source = native_case_source("nbns_auto_ip_helpers_filter_and_choose_subnet_response")
-        run = self._compile_and_run_c_helper(source, "nbns_auto_ip_helpers")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_nbns_advertiser_rejects_overlong_name_before_truncation(self) -> None:
+    def test_discovery_rejects_overlong_name_before_truncation(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
+            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
             run = subprocess.run(
-                [str(bin_path), "--name", "ABCDEFGHIJKLMNOP", "--auto-ip"],
+                [str(bin_path), "--netbios-name", "ABCDEFGHIJKLMNOP"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            self.assertEqual(run.returncode, 2)
+            self.assertEqual(run.returncode, 3)
             self.assertIn("15 bytes or fewer", run.stderr)
             self.assertTrue(run.stderr.splitlines())
             for line in run.stderr.splitlines():
@@ -1419,12 +1085,11 @@ echo ok
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
-            BINARY_MDNS_SOURCE: Path("/tmp/mdns"),
-            BINARY_NBNS_SOURCE: Path("/tmp/nbns"),
+            BINARY_DISCOVERY_SOURCE: Path("/tmp/discoveryd"),
             BINARY_SERVICE_SOURCE: Path("/tmp/service"),
             BINARY_TELEMETRY_SOURCE: Path("/tmp/telemetry"),
             BINARY_RSYNC_SOURCE: Path("/tmp/rsync"),
@@ -1449,8 +1114,8 @@ echo ok
                         on_uploading=uploading.append,
                         on_uploaded=uploaded.append,
                     )
-        self.assertEqual(scp_mock.call_count, 15)
-        self.assertEqual(mount_mock.call_count, 7)
+        self.assertEqual(scp_mock.call_count, 14)
+        self.assertEqual(mount_mock.call_count, 6)
         self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
         self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
         sources = [call.args[1] for call in scp_mock.call_args_list]
@@ -1458,9 +1123,8 @@ echo ok
             sources,
             [
                 Path("/tmp/smbd"),
-                Path("/tmp/mdns"),
-                Path("/tmp/mdns"),
-                Path("/tmp/nbns"),
+                Path("/tmp/discoveryd"),
+                Path("/tmp/discoveryd"),
                 Path("/tmp/rsync"),
                 Path("/tmp/rsyncd.conf"),
                 Path("/tmp/service"),
@@ -1479,9 +1143,8 @@ echo ok
             destinations,
             [
                 "/Volumes/dk2/samba4/smbd",
-                "/Volumes/dk2/samba4/mdns-advertiser",
-                "/mnt/Flash/.mdns-advertiser.tmp",
-                "/Volumes/dk2/samba4/nbns-advertiser",
+                "/Volumes/dk2/samba4/discoveryd",
+                "/mnt/Flash/.discoveryd.tmp",
                 "/Volumes/dk2/samba4/rsync",
                 "/Volumes/dk2/samba4/rsyncd.conf",
                 "/Volumes/dk2/samba4/service",
@@ -1501,7 +1164,7 @@ echo ok
         self.assertEqual(ssh_mock.call_count, 17)
         cleanup_command = ssh_mock.call_args_list[0].args[1]
         self.assertIn("rm -f", cleanup_command)
-        self.assertIn("/mnt/Flash/.mdns-advertiser.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.discoveryd.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.rc.local.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.common.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
@@ -1514,7 +1177,7 @@ echo ok
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         custom_plan = replace(
             plan,
             uploads=[
@@ -1545,8 +1208,7 @@ echo ok
             "host",
             self._payload_home(),
             Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
+            Path("bin/discovery/discoveryd"),
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             service_path=Path("bin/service"),
@@ -1616,6 +1278,7 @@ echo ok
             run_remote_actions_func=mock.Mock(),
             upload_payload_func=fake_upload,
             migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
+            probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             flush_remote_writes=mock.Mock(),
             verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
         )
@@ -1624,7 +1287,7 @@ echo ok
         batch_measurements = [fields for kind, fields in measurements if kind == "upload_batch"]
         self.assertEqual(
             [fields["source_id"] for fields in upload_measurements],
-            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_MDNS_SOURCE],
+            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_DISCOVERY_SOURCE],
         )
         self.assertTrue(all(fields["destination_kind"] == "payload" for fields in upload_measurements))
         self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
@@ -1663,6 +1326,7 @@ echo ok
             callbacks=OperationCallbacks(),
             run_remote_actions_func=mock.Mock(),
             migrate_xattrs_func=migrate,
+            probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             upload_payload_func=upload,
             flush_remote_writes=mock.Mock(),
             verify_payload_home=verify,
@@ -1694,6 +1358,7 @@ echo ok
                 run_remote_actions_func=mock.Mock(side_effect=SshError("process manager did not stop")),
                 upload_payload_func=mock.Mock(),
                 migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             )
 
         self.assertEqual(raised.exception.code, "manager_stop_timeout")
@@ -1719,6 +1384,7 @@ echo ok
                 run_remote_actions_func=mock.Mock(),
                 upload_payload_func=timeout_upload,
                 migrate_xattrs_func=mock.Mock(return_value="migration=complete"),
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             )
 
         self.assertEqual(raised.exception.code, "payload_upload_timeout")
@@ -1727,7 +1393,7 @@ echo ok
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
@@ -1742,7 +1408,7 @@ echo ok
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
             upload_deployment_payload(plan, connection=connection, source_resolver={})
@@ -1779,7 +1445,7 @@ echo ok
             ready=True,
             detail="managed runtime is ready",
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
-            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
 
         self.assertTrue(verification.ready)
@@ -1788,7 +1454,7 @@ echo ok
             [
                 "NetBSD4 activation verification:",
                 "  ok: managed smbd ready",
-                "  ok: managed mDNS takeover active",
+                "  ok: managed mDNS registrant active",
             ],
         )
 
@@ -1797,7 +1463,7 @@ echo ok
             ready=False,
             detail="managed runtime is not ready",
             smbd=readiness_result(False, "managed smbd is not ready", ("FAIL:managed smbd is not ready",)),
-            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
 
         self.assertFalse(verification.ready)
@@ -1806,7 +1472,7 @@ echo ok
             [
                 "NetBSD4 activation verification:",
                 "  failed: managed smbd is not ready",
-                "  ok: managed mDNS takeover active",
+                "  ok: managed mDNS registrant active",
             ],
         )
 
@@ -1860,8 +1526,8 @@ echo ok
             + r'''
 zombie_smbd="100 1 Z 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
 live_smbd="101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
-zombie_mdns="200 1 Z 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-live_mdns="201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+zombie_mdns="200 1 Z 0:00.00 discoveryd /mnt/Flash/discoveryd"
+live_mdns="201 1 S 0:00.00 discoveryd /mnt/Flash/discoveryd"
 zombie_apple="300 1 Z 0:00.00 mDNSResponder /usr/sbin/mDNSResponder"
 live_apple="301 1 S 0:00.00 mDNSResponder /usr/sbin/mDNSResponder"
 mixed_smbd=$(cat <<'EOF'
@@ -2045,197 +1711,6 @@ fi
         self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
         self.assertIn("FAIL:one or more managed share volumes are not mounted", result.stdout)
         self.assertIn("FAIL:manager is not running for managed runtime", result.stdout)
-        self.assertIn("status=1", result.stdout)
-
-    def test_mdns_status_helper_reports_missing_binary_instead_of_network_defer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            missing_mdns = Path(tmpdir) / "missing-mdns"
-            script = f"""
-RUNTIME_MDNS_BIN={shlex.quote(str(missing_mdns))}
-{SMBD_STATUS_HELPERS}
-ps_out=''
-fstat_out=''
-if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
-    echo status=0
-else
-    echo status=$?
-fi
-"""
-
-            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"FAIL:mdns binary missing at {missing_mdns}", result.stdout)
-        self.assertIn("FAIL:mdns process is not running", result.stdout)
-        self.assertIn("FAIL:mdns is not bound to required UDP 5353 listener", result.stdout)
-        self.assertIn("PASS:Apple mDNSResponder is stopped", result.stdout)
-        self.assertIn("status=1", result.stdout)
-        self.assertNotIn("mDNS startup deferred; no usable address has appeared yet", result.stdout)
-
-    def test_mdns_status_helper_requires_auto_ip_when_process_is_bound(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mdns_bin = Path(tmpdir) / "mdns"
-            mdns_bin.write_text("#!/bin/sh\nexit 11\n")
-            mdns_bin.chmod(0o755)
-            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
-            script = f"""
-RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
-{SMBD_STATUS_HELPERS}
-ps_out={shlex.quote(ps_out)}
-fstat_out={shlex.quote(fstat_out)}
-if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
-    echo status=0
-else
-    echo status=$?
-fi
-"""
-
-            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PASS:mdns process is running", result.stdout)
-        self.assertIn("FAIL:mdns is waiting for a usable address", result.stdout)
-        self.assertIn("status=1", result.stdout)
-        self.assertNotIn("PASS:mdns bind address active", result.stdout)
-
-    def test_mdns_status_helper_reports_unexpected_auto_ip_check_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mdns_bin = Path(tmpdir) / "mdns"
-            mdns_bin.write_text("#!/bin/sh\nexit 3\n")
-            mdns_bin.chmod(0o755)
-            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
-            script = f"""
-RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
-{SMBD_STATUS_HELPERS}
-ps_out={shlex.quote(ps_out)}
-fstat_out={shlex.quote(fstat_out)}
-if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
-    echo status=0
-else
-    echo status=$?
-fi
-"""
-
-            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("FAIL:mdns mDNS socket family probe failed with exit code 3", result.stdout)
-        self.assertIn("PASS:mdns process is running", result.stdout)
-        self.assertIn("FAIL:mdns is not bound to required UDP 5353 listener", result.stdout)
-        self.assertIn("status=1", result.stdout)
-
-    def test_mdns_status_helper_passes_only_when_bound_and_auto_ip_active(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mdns_bin = Path(tmpdir) / "mdns"
-            mdns_bin.write_text("#!/bin/sh\necho ipv4\n")
-            mdns_bin.chmod(0o755)
-            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
-            script = f"""
-RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
-{SMBD_STATUS_HELPERS}
-ps_out={shlex.quote(ps_out)}
-fstat_out={shlex.quote(fstat_out)}
-if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
-    echo status=0
-else
-    echo status=$?
-fi
-"""
-
-            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PASS:mdns process is running", result.stdout)
-        self.assertIn("PASS:mdns bound to required UDP 5353 listeners", result.stdout)
-        self.assertIn("PASS:mdns bind address active", result.stdout)
-        self.assertIn("PASS:Apple mDNSResponder is stopped", result.stdout)
-        self.assertIn("status=0", result.stdout)
-
-    def test_mdns_status_helper_requires_both_udp_5353_listeners_when_advertiser_is_dual_stack(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mdns_bin = Path(tmpdir) / "mdns"
-            mdns_bin.write_text("#!/bin/sh\necho 'ipv4 ipv6'\n")
-            mdns_bin.chmod(0o755)
-            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-            fstat_out = "\n".join(
-                [
-                    "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353",
-                    "root mdns-advertiser 201 11 internet6 dgram udp 0x0 [*]:5353",
-                ]
-            )
-            script = f"""
-RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
-{SMBD_STATUS_HELPERS}
-ps_out={shlex.quote(ps_out)}
-fstat_out={shlex.quote(fstat_out)}
-if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
-    echo status=0
-else
-    echo status=$?
-fi
-"""
-
-            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PASS:mdns process is running", result.stdout)
-        self.assertIn("PASS:mdns bound to required UDP 5353 listeners", result.stdout)
-        self.assertIn("status=0", result.stdout)
-
-    def test_mdns_status_helper_accepts_ipv6_udp_5353_when_advertiser_is_ipv6_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mdns_bin = Path(tmpdir) / "mdns"
-            mdns_bin.write_text("#!/bin/sh\necho ipv6\n")
-            mdns_bin.chmod(0o755)
-            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-            fstat_out = "root mdns-advertiser 201 10 internet6 dgram udp 0x0 [*]:5353"
-            script = f"""
-RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
-{SMBD_STATUS_HELPERS}
-ps_out={shlex.quote(ps_out)}
-fstat_out={shlex.quote(fstat_out)}
-if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
-    echo status=0
-else
-    echo status=$?
-fi
-"""
-
-            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PASS:mdns process is running", result.stdout)
-        self.assertIn("PASS:mdns bound to required UDP 5353 listeners", result.stdout)
-        self.assertIn("PASS:mdns bind address active", result.stdout)
-        self.assertIn("status=0", result.stdout)
-
-    def test_mdns_status_helper_rejects_ipv4_udp_5353_when_advertiser_is_ipv6_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mdns_bin = Path(tmpdir) / "mdns"
-            mdns_bin.write_text("#!/bin/sh\necho ipv6\n")
-            mdns_bin.chmod(0o755)
-            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
-            script = f"""
-RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
-{SMBD_STATUS_HELPERS}
-ps_out={shlex.quote(ps_out)}
-fstat_out={shlex.quote(fstat_out)}
-if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
-    echo status=0
-else
-    echo status=$?
-fi
-"""
-
-            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PASS:mdns process is running", result.stdout)
-        self.assertIn("FAIL:mdns is not bound to required UDP 5353 listener", result.stdout)
         self.assertIn("status=1", result.stdout)
 
     def test_smbd_status_helper_reports_device_samba_version_from_runtime_binary(self) -> None:
@@ -2427,64 +1902,228 @@ describe_managed_smbd_status "" ""
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "rsync daemon is disabled but an rsync process is running")
 
-    def test_probe_managed_mdns_takeover_uses_timed_subprobes(self) -> None:
-        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
-        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            side_effect=[
-                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
-                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
-                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
-                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
-            ],
-        ) as run_ssh_mock:
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"))
+    PS_V31 = (
+        "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n"
+        "559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
+        "916 408 S 0:00 discoveryd /mnt/Flash/discoveryd nbns=ready mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n"
+        "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n"
+    )
+    FSTAT_V31 = (
+        "root     mDNSResponder  371    5* internet dgram udp *:5353\n"
+        "root     mDNSResponder  371    6* internet6 dgram udp *:5353\n"
+        "root     wcifsnd  917    5* internet dgram udp *:137\n"
+        "root     wcifsnd  917    6* internet dgram udp *:138\n"
+    )
+    PLAN_V31 = (
+        "TC_NBNS_ENABLED=1\n"
+        "plan: status=validated mode=bridge stale_seconds=0 diskless=0\n"
+        "acp: raNA=0 raDS=0 waNM=1 usbF=0x450 laIP=192.168.1.10 waIP=192.168.1.10 waLL=unavailable gnRo=unavailable\n"
+        'identity: instance="AirPort Time Capsule" netbios=airport-time-ca wama=E8:8D:28:58:F1:5C\n'
+        "link: name=bridge0 index=9 role=lan mask=smb,adisk\n"
+        "addr: link=9 family=inet addr=192.168.1.10 prefix=24\n"
+        "link: name=bridge1 index=10 role=isolated mask=none\n"
+        "bind: 127.0.0.1/8 ::1/128 192.168.1.10/24\n"
+    )
 
-        self.assertTrue(result.ready)
+    def _run_mdns_probe(self, responses: list[object]) -> tuple[object, mock.Mock]:
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=responses) as run_ssh_mock:
+            result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"))
+        return result, run_ssh_mock
+
+    def test_probe_managed_mdns_passes_when_apple_daemon_owns_5353_and_plan_grants_smb(self) -> None:
+        result, run_ssh_mock = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+        self.assertTrue(result.ready, result.lines)
         self.assertEqual(
             [call.kwargs["timeout"] for call in run_ssh_mock.call_args_list],
-            [
-                MDNS_BINARY_PROBE_TIMEOUT_SECONDS,
-                MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS,
-                MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS,
-                MDNS_FSTAT_PROBE_TIMEOUT_SECONDS,
-            ],
+            [MDNS_BINARY_PROBE_TIMEOUT_SECONDS, MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS, MDNS_FSTAT_PROBE_TIMEOUT_SECONDS, MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS],
         )
         remote_commands = [call.args[1] for call in run_ssh_mock.call_args_list]
-        self.assertIn("[ ! -e \"$RUNTIME_MDNS_BIN\" ]", remote_commands[0])
         self.assertIn("ps axww", remote_commands[1])
-        self.assertIn("--print-mdns-socket-families", remote_commands[2])
-        self.assertIn("/usr/bin/fstat -p 123", remote_commands[3])
-        self.assertIn("PASS:mdns bound to required UDP 5353 listeners", result.lines)
-        self.assertIn("PASS:Apple mDNSResponder is stopped", result.lines)
+        self.assertIn("/internet/p", remote_commands[2])
+        self.assertIn("--print-link-plan", remote_commands[3])
+        self.assertIn("PASS:Apple mDNSResponder is running", result.lines)
+        self.assertIn("PASS:Apple diskd runs on loopback (-i lo0)", result.lines)
+        self.assertIn("PASS:Apple mDNSResponder listens on UDP 5353 for IPv4 and IPv6", result.lines)
+        self.assertIn("PASS:no other process holds UDP 5353", result.lines)
+        self.assertIn("PASS:mdns link plan validated mode=bridge; SMB on bridge0(lan)", result.lines)
 
-    def test_probe_managed_mdns_takeover_retries_binary_probe_timeout_with_full_timeout(self) -> None:
-        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
-        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            side_effect=[
-                SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
-                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
-                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
-                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
-                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
-            ],
-        ) as run_ssh_mock:
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"))
-
-        self.assertTrue(result.ready)
-        self.assertEqual(
-            [call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]],
-            [MDNS_BINARY_PROBE_TIMEOUT_SECONDS, MDNS_BINARY_PROBE_TIMEOUT_SECONDS],
+    def test_probe_managed_mdns_fails_when_apple_daemon_is_dead_or_diskd_is_on_the_lan(self) -> None:
+        ps_out = (
+            "878 1 ZWa 0:00 (mDNSResponder) (mDNSResponder)\n"
+            "232 1 S 0:00 diskd /sbin/diskd -i  -d local.\n"
+            "916 408 S 0:00 discoveryd /mnt/Flash/discoveryd\n"
         )
-        self.assertNotIn(
-            f"FAIL:mdns binary probe timed out after {MDNS_BINARY_PROBE_TIMEOUT_SECONDS}s",
+        result, run_ssh_mock = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+        self.assertFalse(result.ready)
+        # No fstat step when the daemon is gone: there is nothing to inspect, and the fix is a reboot.
+        self.assertEqual(len(run_ssh_mock.call_args_list), 3)
+        self.assertIn("FAIL:Apple mDNSResponder is not running (reboot the device; it cannot be restarted by hand)", result.lines)
+        self.assertIn("FAIL:Apple diskd pid(s) 232 are not on loopback; their _smb/_adisk/_afpovertcp names may be visible", result.lines)
+        self.assertIn("PASS:discovery process is running", result.lines)
+
+    def test_probe_managed_mdns_fails_when_another_process_holds_5353_or_plan_grants_nothing(self) -> None:
+        fstat_out = self.FSTAT_V31 + "root     discoveryd 916    4* internet dgram udp *:5353\n"
+        plan = self.PLAN_V31.replace("role=lan mask=smb,adisk", "role=isolated mask=none").replace("status=validated", "status=incomplete reason=mode")
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            mock.Mock(returncode=0, stdout=plan, stderr=""),
+        ])
+        self.assertFalse(result.ready)
+        self.assertIn("FAIL:other processes hold UDP 5353: discoveryd", result.lines)
+        self.assertIn("FAIL:sharing facts are incomplete (mode); the registrant waits or retains its previous validated policy", result.lines)
+
+    def test_probe_managed_mdns_accepts_diskless_registrant_without_smb_links(self) -> None:
+        ps_out = self.PS_V31.replace(
+            "nbns=ready mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n917 916 S 0:00 wcifsnd /sbin/wcifsnd",
+            "nbns=waiting mode=diskless --diskless",
+        )
+        plan = self.PLAN_V31.replace("mask=smb,adisk", "mask=none").replace("diskless=0", "diskless=1")
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=plan, stderr=""),
+        ])
+        self.assertTrue(result.ready, result.lines)
+        self.assertIn("PASS:mdns link plan validated (diskless; nothing advertised)", result.lines)
+
+    def test_probe_managed_mdns_reports_missing_registrant_and_unparsable_plan(self) -> None:
+        ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout="garbage\n", stderr=""),
+        ])
+        self.assertFalse(result.ready)
+        self.assertIn("FAIL:discovery process is not running", result.lines)
+        self.assertIn("FAIL:mdns link plan output could not be parsed", result.lines)
+
+    def test_probe_managed_mdns_rejects_controller_without_native_nbns_state(self) -> None:
+        ps_out = self.PS_V31.replace("nbns=ready mode=payload ", "")
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+
+        self.assertFalse(result.ready)
+        self.assertIn("FAIL:discovery NBNS state is not available yet", result.lines)
+
+    def test_probe_managed_mdns_rejects_wcifsnd_sockets_owned_by_wrong_pid(self) -> None:
+        wrong_pid_fstat = self.FSTAT_V31.replace("wcifsnd  917", "wcifsnd  999")
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=wrong_pid_fstat, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+
+        self.assertFalse(result.ready)
+        self.assertIn("FAIL:discovery native NBNS is not ready", result.lines)
+
+    def test_probe_managed_mdns_accepts_waiting_without_service_eligible_ipv4(self) -> None:
+        ps_out = self.PS_V31.replace("nbns=ready", "nbns=waiting").replace(
+            "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", ""
+        )
+        fstat_out = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
+        plan = self.PLAN_V31.replace("addr=192.168.1.10", "addr=239.1.2.3")
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            mock.Mock(returncode=0, stdout=plan, stderr=""),
+        ])
+
+        self.assertTrue(result.ready, result.lines)
+        self.assertIn("PASS:native NBNS is waiting", result.lines)
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=13, stdout="", stderr=""),
+        ])
+        self.assertIn("FAIL:mdns link plan probe failed with exit code 13", result.lines)
+
+    def test_probe_managed_mdns_fails_the_diskd_gate_when_a_stray_diskd_runs_beside_ours(self) -> None:
+        """Review 2 R8: `-i lo0` present somewhere is not enough; ACPd's diskd
+        next to ours still advertises on the LAN (the runtime calls that acpd)."""
+        ps_out = self.PS_V31 + "640 1 S 0:00 diskd /sbin/diskd -i  -d local.\n" + "735 1 ZW 0:00 diskd (diskd)\n"
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+        self.assertFalse(result.ready)
+        self.assertIn(
+            "FAIL:Apple diskd pid(s) 640 are not on loopback; their _smb/_adisk/_afpovertcp names may be visible"
+            " (a loopback diskd also runs; the manager retries the cleanup every disk pass)",
             result.lines,
         )
+        # Token matching: `-i lo0` must be the argv pair, not a substring elsewhere.
+        ps_out = self.PS_V31.replace("/sbin/diskd -i lo0 -d local.", "/sbin/diskd -d local.-i lo0")
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+        self.assertIn("FAIL:Apple diskd pid(s) 559 are not on loopback; their _smb/_adisk/_afpovertcp names may be visible", result.lines)
 
-    def test_probe_managed_mdns_takeover_reports_binary_timeout_after_retry(self) -> None:
+    def test_probe_managed_mdns_parses_escaped_instance_names_and_survives_malformed_lines(self) -> None:
+        """Review 2 R9: the plan line escapes quotes/backslashes; a line that
+        still does not parse becomes a diagnostic, not an exception."""
+        plan = self.PLAN_V31.replace('instance="AirPort Time Capsule"', 'instance="Capsule \\"A\\" \\\\ B"')
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=plan, stderr=""),
+        ])
+        self.assertTrue(result.ready, result.lines)
+        broken = self.PLAN_V31.replace('instance="AirPort Time Capsule"', 'instance="Capsule "A"')
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=broken, stderr=""),
+        ])
+        # The identity line is malformed; the plan/link lines still parse.
+        self.assertTrue(result.ready, result.lines)
+
+    def test_probe_managed_mdns_retries_binary_probe_timeout_and_reports_fstat_timeout(self) -> None:
+        result, run_ssh_mock = self._run_mdns_probe([
+            SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+        self.assertTrue(result.ready, result.lines)
+        self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]],
+                         [MDNS_BINARY_PROBE_TIMEOUT_SECONDS, MDNS_BINARY_PROBE_TIMEOUT_SECONDS])
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
+            SshCommandTimeout("Timed out waiting for ssh command to finish: fstat"),
+        ])
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, f"mdns fstat probe timed out after {MDNS_FSTAT_PROBE_TIMEOUT_SECONDS}s")
+
+    def test_probe_managed_mdns_reports_binary_timeout_after_retry(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
             side_effect=[
@@ -2492,7 +2131,7 @@ describe_managed_smbd_status "" ""
                 SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
             ],
         ) as run_ssh_mock:
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"))
+            result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"))
 
         self.assertFalse(result.ready)
         self.assertEqual(
@@ -2508,68 +2147,18 @@ describe_managed_smbd_status "" ""
             result.lines,
         )
 
-    def test_probe_managed_mdns_takeover_reports_apple_responder_conflict(self) -> None:
-        ps_out = (
-            "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
-            "124 1 S 0:00 mDNSResponder /usr/sbin/mDNSResponder\n"
-        )
-        fstat_out = "root mdns-advertiser 123 4* internet dgram udp *:5353\n"
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            side_effect=[
-                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
-                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
-                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
-                mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
-            ],
-        ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"))
-        self.assertFalse(result.ready)
-        self.assertEqual(result.detail, "Apple mDNSResponder is still running")
-
-    def test_probe_managed_mdns_takeover_reports_socket_family_timeout(self) -> None:
-        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            side_effect=[
-                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
-                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
-                SshCommandTimeout("Timed out waiting for ssh command to finish: socket families"),
-            ],
-        ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"))
-        self.assertFalse(result.ready)
-        self.assertEqual(result.detail, f"mdns socket family probe timed out after {MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS}s")
-        self.assertIn(f"FAIL:mdns socket family probe timed out after {MDNS_SOCKET_FAMILIES_PROBE_TIMEOUT_SECONDS}s", result.lines)
-
     def test_probe_managed_mdns_takeover_reports_process_table_timeout(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
             side_effect=[
-                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
+                mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
                 SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
             ],
         ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"))
+            result = probe_managed_mdns_conn(SshConnection("host", "pw", "-o foo"))
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, f"mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s")
         self.assertIn(f"FAIL:mDNS process table probe timed out after {MDNS_PROCESS_TABLE_PROBE_TIMEOUT_SECONDS}s", result.lines)
-
-    def test_probe_managed_mdns_takeover_reports_fstat_timeout(self) -> None:
-        ps_out = "123 1 S 0:00 mdns-advertiser /mnt/Flash/mdns-advertiser\n"
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            side_effect=[
-                mock.Mock(returncode=0, stdout="/mnt/Flash/mdns-advertiser\n", stderr=""),
-                mock.Mock(returncode=0, stdout=ps_out, stderr=""),
-                mock.Mock(returncode=0, stdout="ipv4\n", stderr=""),
-                SshCommandTimeout("Timed out waiting for ssh command to finish: fstat"),
-            ],
-        ):
-            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"))
-        self.assertFalse(result.ready)
-        self.assertEqual(result.detail, f"mdns fstat probe timed out after {MDNS_FSTAT_PROBE_TIMEOUT_SECONDS}s")
-        self.assertIn(f"FAIL:mdns fstat probe timed out after {MDNS_FSTAT_PROBE_TIMEOUT_SECONDS}s", result.lines)
 
     def test_probe_netbsd4_rc_local_autostart_detects_login_marker(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
@@ -2596,7 +2185,7 @@ describe_managed_smbd_status "" ""
             ready=True,
             detail="managed runtime is ready",
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
-            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
         with mock.patch("timecapsulesmb.services.activation.probe_managed_runtime_conn", return_value=runtime_ready) as runtime_mock:
             decision = decide_manual_activation(SshConnection("host", "pw", "-o foo"), runtime_probe_timeout_seconds=9)
@@ -2779,11 +2368,11 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_runtime_once_checks_both_probes_and_rechecks_mdns_after_settle(self) -> None:
         smbd_ready = readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",))
-        mdns_ready = readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
+        mdns_ready = readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",))
         rsync_ready = readiness_result(True, "managed rsync disabled", ("SKIP:managed rsync disabled",))
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", return_value=smbd_ready) as smbd_mock:
-            with mock.patch("timecapsulesmb.device.probe.probe_managed_mdns_takeover_conn", side_effect=[mdns_ready, mdns_ready]) as mdns_mock:
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_mdns_conn", side_effect=[mdns_ready, mdns_ready]) as mdns_mock:
                 with mock.patch("timecapsulesmb.device.probe.probe_managed_rsync_conn", return_value=rsync_ready) as rsync_mock:
                     with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
                         result = probe_managed_runtime_once_conn(connection)
@@ -2797,15 +2386,15 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_runtime_continues_polling_after_single_probe_timeout(self) -> None:
         runtime_timeout = ManagedRuntimeProbeResult(
             ready=False,
-            detail="managed smbd readiness probe timed out; managed mDNS takeover active",
+            detail="managed smbd readiness probe timed out; managed mDNS registrant active",
             smbd=readiness_result(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",)),
-            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
         runtime_ready = ManagedRuntimeProbeResult(
             ready=True,
             detail="managed runtime is ready",
             smbd=readiness_result(True, "managed smbd ready", ("PASS:managed smbd ready",)),
-            mdns=readiness_result(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            mdns=readiness_result(True, "managed mDNS registrant active", ("PASS:managed mDNS registrant active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", side_effect=[runtime_timeout, runtime_ready]) as runtime_once:
@@ -2825,9 +2414,9 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_runtime_runs_two_final_checks_after_soft_window_expires(self) -> None:
         runtime_not_ready = ManagedRuntimeProbeResult(
             ready=False,
-            detail="managed smbd not ready; managed mDNS takeover not active",
+            detail="managed smbd not ready; managed mDNS registrant not active",
             smbd=readiness_result(False, "managed smbd not ready", ("FAIL:managed smbd not ready",)),
-            mdns=readiness_result(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",)),
+            mdns=readiness_result(False, "managed mDNS registrant not active", ("FAIL:managed mDNS registrant not active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.device.probe.probe_managed_runtime_once_conn", return_value=runtime_not_ready) as runtime_once:
@@ -2847,9 +2436,9 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_runtime_finishes_soft_attempt_that_runs_past_deadline(self) -> None:
         runtime_not_ready = ManagedRuntimeProbeResult(
             ready=False,
-            detail="managed smbd not ready; managed mDNS takeover not active",
+            detail="managed smbd not ready; managed mDNS registrant not active",
             smbd=readiness_result(False, "managed smbd not ready", ("FAIL:managed smbd not ready",)),
-            mdns=readiness_result(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",)),
+            mdns=readiness_result(False, "managed mDNS registrant not active", ("FAIL:managed mDNS registrant not active",)),
         )
         connection = SshConnection("host", "pw", "-o foo")
         monotonic_values = iter([0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.1, 5.2, 5.3, 5.4])
@@ -2890,7 +2479,7 @@ describe_managed_smbd_status "" ""
         payload_dir_name = "samba4"
         payload_dir = f"/Volumes/dk2/{payload_dir_name}"
         paths = self._payload_home("/Volumes/dk2", payload_dir_name)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertEqual(plan.device_path, "/dev/dk2")
@@ -2923,8 +2512,7 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
+            Path("bin/discovery/discoveryd"),
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -2947,7 +2535,7 @@ describe_managed_smbd_status "" ""
         self.assertIn("if missing: run /mnt/Flash/rc.local, then wait for managed runtime", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("smbd is bound to required TCP 445 sockets", text)
-        self.assertIn("managed mDNS takeover becomes ready", text)
+        self.assertIn("managed mDNS registrant becomes ready", text)
 
     def test_activate_now_plan_has_runtime_checks(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
@@ -2955,8 +2543,7 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
+            Path("bin/discovery/discoveryd"),
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
@@ -2982,7 +2569,7 @@ describe_managed_smbd_status "" ""
             "managed_runtime_manager_process",
             "managed_smbd_parent_process",
             "managed_smbd_bound_445",
-            "managed_mdns_takeover_ready",
+            "managed_mdns_registrant_ready",
             "managed_mdns_settle_healthy",
             "managed_rsync_disabled",
         ])
@@ -2998,8 +2585,7 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
+            Path("bin/discovery/discoveryd"),
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             rsync_enabled=True,
@@ -3016,8 +2602,7 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
+            Path("bin/discovery/discoveryd"),
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -3155,13 +2740,13 @@ describe_managed_smbd_status "" ""
 
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         self.assertEqual(plan.post_upload_actions[0], EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
         self.assertIn(InstallPermissionsAction(tuple(plan.permissions)), plan.post_upload_actions)
 
     def test_deployment_plan_guards_each_payload_write_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
         for index, action in enumerate(plan.pre_upload_actions):
@@ -3173,20 +2758,22 @@ describe_managed_smbd_status "" ""
         self.assertEqual(plan.post_upload_actions[0], expected_guard)
         for protocol in ("mdns", "nbns"):
             self.assertIn(RemovePathAction(f"{plan.payload_dir}/{protocol}"), plan.pre_upload_actions)
-            self.assertNotIn(RemovePathAction(plan.payload_targets[protocol]), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol + "-advertiser"), plan.pre_upload_actions)
+        self.assertNotIn(RemovePathAction(plan.payload_targets["discovery"]), plan.pre_upload_actions)
+        self.assertIn(StopProcessAction("discoveryd"), plan.pre_upload_actions)
+        self.assertIn(StopProcessAction("wcifsnd"), plan.pre_upload_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.pre_upload_actions)
-        self.assertNotIn(RemovePathAction(plan.flash_targets["mdns"]), plan.pre_upload_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/mdns-advertiser"), plan.post_verify_actions)
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         executable_permissions = {permission.path for permission in plan.permissions if permission.mode == "755"}
 
         self.assertIn("/Volumes/dk2/samba4/smbd", executable_permissions)
-        self.assertIn("/Volumes/dk2/samba4/mdns-advertiser", executable_permissions)
-        self.assertIn("/Volumes/dk2/samba4/nbns-advertiser", executable_permissions)
+        self.assertIn("/Volumes/dk2/samba4/discoveryd", executable_permissions)
+        self.assertIn("/mnt/Flash/discoveryd", executable_permissions)
 
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])

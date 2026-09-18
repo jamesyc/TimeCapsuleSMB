@@ -1,3 +1,11 @@
+"timeline.deploy.detail.preflight_flash_capacity" = "正在检查闪存是否有足够的可用空间用于更新发现服务。";
+"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "正在从闪存中移除已被替换的旧发现服务二进制文件。";
+"timeline.deploy.detail.flush_legacy_flash_cleanup" = "正在将旧文件清理结果写入闪存。";
+"timeline.deploy.title.preflight_flash_capacity" = "检查闪存容量";
+"timeline.deploy.title.cleanup_legacy_flash_discovery" = "清理旧发现服务";
+"timeline.deploy.title.flush_legacy_flash_cleanup" = "写入闪存清理结果";
+"timeline.deploy.detail.upload_discovery" = "正在将发现服务复制到载荷卷和闪存。";
+"timeline.deploy.title.upload_discovery" = "上传发现服务";
 "action.activate" = "启动 SMB";
 "action.cancel" = "取消";
 "action.confirm" = "确认";
@@ -346,7 +354,6 @@
 "dialog.forget.error_title" = "无法忘记设备";
 "dialog.forget.message" = "从此 Mac 移除 %@？这不会从设备卸载 Samba。";
 "dialog.forget.title" = "忘记此设备？";
-"doctor.check.smb_bind_lan_only_unreachable" = "SMB 已绑定到 Time Capsule LAN，但这台 Mac 位于另一个网络。请为此设备关闭“仅将 SMB 绑定到 LAN”，然后运行“安装/更新 Samba”，或从 Time Capsule 的 LAN 侧连接。";
 "doctor.check.device_starting_up" = "设备仍在启动中。请等待几分钟，然后再次运行检查。";
 "doctor.check.payload_missing_from_disk" = "数据磁盘上缺少 Samba 文件夹；磁盘可能已被抹掉。请运行“安装/更新 Samba”以重新安装。";
 "doctor.domain.connection" = "连接";
@@ -904,9 +911,9 @@
 "toggle.enable_debug_logging" = "启用调试日志";
 "toggle.enable_nbns" = "启用 NBNS";
 "toggle.internal_share_use_disk_root" = "内部共享使用磁盘根目录";
-"toggle.smb_bind_lan_only" = "仅将 SMB 绑定到 LAN";
 "toggle.smb_browse_compatibility" = "允许浏览 SMB 共享";
 "toggle.mdns_advertise_afp" = "通过 Bonjour 广播 AFP";
+"toggle.mdns_advertise_afp.help" = "通过 Bonjour 公告 AFP。请保持关闭：macOS 26.x/27 会隐藏公告 AFP 的 Time Capsule。";
 "toggle.any_protocol" = "允许任意 SMB 协议";
 "toggle.require_smb_encryption" = "要求 SMB 加密";
 "toggle.force_disable_smb_signing_and_encryption" = "强制停用 SMB 签名和加密";

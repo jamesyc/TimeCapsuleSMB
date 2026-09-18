@@ -1,3 +1,11 @@
+"timeline.deploy.detail.preflight_flash_capacity" = "Prüft, ob im Flash genügend freier Speicher für das Discovery-Update vorhanden ist.";
+"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Entfernt die ersetzte ältere Discovery-Binärdatei aus dem Flash.";
+"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Schreibt die Bereinigung des Flash-Speichers dauerhaft.";
+"timeline.deploy.title.preflight_flash_capacity" = "Flash-Speicher prüfen";
+"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Alte Discovery-Datei bereinigen";
+"timeline.deploy.title.flush_legacy_flash_cleanup" = "Flash-Bereinigung schreiben";
+"timeline.deploy.detail.upload_discovery" = "Kopiert den Discovery-Dienst auf das Payload-Volume und in den Flash-Speicher.";
+"timeline.deploy.title.upload_discovery" = "Discovery-Dienst hochladen";
 "action.activate" = "Aktivieren";
 "action.cancel" = "Abbrechen";
 "action.confirm" = "Bestätigen";
@@ -346,7 +354,6 @@
 "dialog.forget.error_title" = "Gerät konnte nicht vergessen werden";
 "dialog.forget.message" = "%@ von diesem Mac entfernen? Dadurch wird Samba nicht vom Gerät deinstalliert.";
 "dialog.forget.title" = "Dieses Gerät vergessen?";
-"doctor.check.smb_bind_lan_only_unreachable" = "SMB ist an das Time-Capsule-LAN gebunden, aber dieser Mac befindet sich in einem anderen Netzwerk. Deaktiviere \"SMB nur an LAN binden\" für dieses Gerät und führe \"Samba installieren/aktualisieren\" aus, oder verbinde dich über die LAN-Seite der Time Capsule.";
 "doctor.check.device_starting_up" = "Das Gerät startet noch. Warte ein paar Minuten und führe die Überprüfung erneut aus.";
 "doctor.check.payload_missing_from_disk" = "Der Samba-Ordner fehlt auf der Datenfestplatte; die Festplatte wurde möglicherweise gelöscht. Führe \"Samba installieren/aktualisieren\" aus, um ihn neu zu installieren.";
 "doctor.domain.connection" = "Verbindung";
@@ -904,9 +911,9 @@
 "toggle.enable_debug_logging" = "Debug-Protokollierung aktivieren";
 "toggle.enable_nbns" = "NBNS aktivieren";
 "toggle.internal_share_use_disk_root" = "Interne Freigabe verwendet Festplatten-Root";
-"toggle.smb_bind_lan_only" = "SMB nur an LAN binden";
 "toggle.smb_browse_compatibility" = "Durchsuchen von SMB-Freigaben erlauben";
 "toggle.mdns_advertise_afp" = "AFP über Bonjour ankündigen";
+"toggle.mdns_advertise_afp.help" = "AFP über Bonjour ankündigen. Ausgeschaltet lassen: macOS 26.x/27 blendet Time Capsules aus, die AFP ankündigen.";
 "toggle.any_protocol" = "Alle SMB-Protokolle zulassen";
 "toggle.require_smb_encryption" = "SMB-Verschlüsselung erforderlich";
 "toggle.force_disable_smb_signing_and_encryption" = "SMB-Signierung und -Verschlüsselung zwangsweise deaktivieren";

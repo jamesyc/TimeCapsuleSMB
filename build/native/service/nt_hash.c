@@ -324,3 +324,36 @@ int print_nt_hash_from_stdin(void) {
     }
     return 0;
 }
+
+/* Keep passwords inside this process. Raw capture preserves whitespace; the
+ * final-LF/CR treatment matches the old shell substitution + stdin interface. */
+int print_device_nt_hash(void) {
+    char input[8193];
+    struct acp_request request;
+    uint8_t digest[16];
+    size_t len, i;
+    int rc = 1;
+    volatile char *wipe = input;
+    memset(&request, 0, sizeof(request));
+    request.key = "syPW";
+    request.multiline = 1;
+    request.output = input;
+    request.capacity = sizeof(input);
+    (void)acp_collect_run(&request, 1, (long long)TC_ACP_TIMEOUT_SECONDS * 1000,
+                        (long long)TC_ACP_COLLECTION_BUDGET_SECONDS * 1000);
+    if (request.status != ACP_OK) {
+        if (request.status == ACP_UNAVAILABLE && request.exit_status > 0) rc = request.exit_status;
+        goto done;
+    }
+    len = request.length;
+    while (len && input[len - 1] == '\n') len--;
+    if (!len || len + 1 > NT_HASH_MAX_PASSWORD_BYTES) goto done;
+    if (input[len - 1] == '\r') len--;
+    if (!len || tc_nt_hash_utf8((const uint8_t *)input, len, digest) != 0) goto done;
+    for (i = 0; i < sizeof(digest); i++) printf("%02X", digest[i]);
+    putchar('\n');
+    rc = ferror(stdout) || fflush(stdout) != 0;
+done:
+    for (i = 0; i < sizeof(input); i++) wipe[i] = 0;
+    return rc;
+}

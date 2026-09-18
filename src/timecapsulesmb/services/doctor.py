@@ -206,7 +206,7 @@ def _native_dns_sd_context_from_debug(
 
 
 def _mdns_transport_context_from_debug(debug_fields: Mapping[str, object]) -> list[str]:
-    mdns_log = _mapping_value(debug_fields, "remote_mdns_log_tail")
+    mdns_log = _mapping_value(debug_fields, "remote_discovery_log_tail")
     if not isinstance(mdns_log, str):
         return []
     transport = _last_regex_group(r"mdns transport active: ([^\n]+)", mdns_log)
@@ -216,7 +216,7 @@ def _mdns_transport_context_from_debug(debug_fields: Mapping[str, object]) -> li
 
 
 def _mdns_counter_context_from_debug(debug_fields: Mapping[str, object]) -> list[str]:
-    mdns_log = _mapping_value(debug_fields, "remote_mdns_log_tail")
+    mdns_log = _mapping_value(debug_fields, "remote_discovery_log_tail")
     if not isinstance(mdns_log, str):
         return []
     counters = _last_regex_group(r"mdns counters: ([^\n]+)", mdns_log)
@@ -244,7 +244,7 @@ def _extract_generated_service_types(mdns_log: str) -> list[str]:
 
 def build_mdns_boot_context(debug_fields: Mapping[str, object]) -> list[str]:
     rc_log = _mapping_value(debug_fields, "remote_rc_local_log_tail")
-    mdns_log = _mapping_value(debug_fields, "remote_mdns_log_tail")
+    mdns_log = _mapping_value(debug_fields, "remote_discovery_log_tail")
     rc_text = rc_log if isinstance(rc_log, str) else ""
     mdns_text = mdns_log if isinstance(mdns_log, str) else ""
     combined = f"{rc_text}\n{mdns_text}"
@@ -261,6 +261,22 @@ def build_mdns_boot_context(debug_fields: Mapping[str, object]) -> list[str]:
     elif source:
         lines.append(f"INFO mdns source={source}")
 
+    # v3.1.0 registrant log lines (Apple's daemon is the responder).
+    plan = _last_regex_group(r"registrant: plan ((?:validated|incomplete) mode=[^\n]+)", mdns_text)
+    if plan:
+        lines.append(f"INFO mdns registrant {plan}")
+    unreachable = _last_regex_group(r"registrant: mDNSResponder unreachable[^\n]*", mdns_text)
+    reachable = _last_regex_group(r"registrant: mDNSResponder reachable again", mdns_text)
+    if unreachable and not reachable:
+        lines.append("WARN Apple mDNSResponder is unreachable; nothing respawns it, reboot the device")
+    conflict = _last_regex_group(r"registrant: name conflict [^\n]+", mdns_text)
+    if conflict:
+        lines.append(f"WARN mdns {conflict}")
+    stalled = _last_regex_group(r"registrant: (mDNSResponder accepted the connection but did not answer)[^\n]*", mdns_text)
+    if stalled:
+        lines.append("WARN mdns registrant exited because Apple mDNSResponder stopped answering; the manager relaunches it, a wedged daemon needs a reboot")
+
+    # Pre-v3.1.0 responder logs (kept so old device logs still summarize).
     takeover = _last_regex_group(r"mDNS takeover established after ([^\n]+)", mdns_text)
     if takeover:
         lines.append(f"INFO mDNS takeover established after {takeover}")

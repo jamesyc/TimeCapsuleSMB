@@ -1,6 +1,6 @@
 #ifndef TC_TEST_DEVICE_FAULTS_H
 #define TC_TEST_DEVICE_FAULTS_H
-#include "device.h"
+#include "acp.h"
 
 int test_pipe(int fds[2]);
 pid_t test_fork(void);
@@ -11,7 +11,7 @@ int test_select(int count, fd_set *readable, fd_set *writable, fd_set *errors, s
 ssize_t test_read(int fd, void *buffer, size_t count);
 pid_t test_waitpid(pid_t child, int *status, int options);
 
-/* Only the separately compiled production device.c gets these substitutions.
+/* Only the separately compiled production common/acp.c gets these substitutions.
  * The driver delegates to real syscalls and injects one selected failure. */
 #ifdef TC_TEST_DEVICE_FAULTS
 #define pipe test_pipe

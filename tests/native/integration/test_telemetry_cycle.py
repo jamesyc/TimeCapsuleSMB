@@ -96,10 +96,12 @@ def rig(tmp_path_factory):
         f'#define TC_ACP_PATH "{acp}"',
         f'#define TC_TELEMETRY_WORK_ROOT "{root}/work"',
         f'#define HEARTBEAT_FLASH_CONFIG_PATH "{root}/config"',
+        f'#define TC_FLASH_CONFIG_PATH "{root}/config"',
         '#define TC_HEARTBEAT_PUBLIC_KEY_BYTES ' + ','.join(str(v) for v in public),
     ]))
     (root / 'config').write_text("TC_DEPLOY_RELEASE_TAG='test-release'\n")
-    binary = compile_native('telemetry', root / 'telemetry', flags=['-include', str(config), '-DTC_ACP_TIMEOUT_SECONDS=1'])
+    binary = compile_native('telemetry', root / 'telemetry', flags=['-include', str(config), '-I', str(ROOT / 'build/native')],
+                            exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
     yield root, binary, state
     server.shutdown(); server.server_close(); thread.join(timeout=5)
 
@@ -160,10 +162,7 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
     process = subprocess.Popen([str(binary), '--once', 'manual'], env={**env, 'TC_TEST_FINISH': str(finish)},
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        deadline = time.monotonic() + 5
-        while not marker.exists() and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert marker.exists()
+        wait_until(marker.exists)
         process.terminate()
         assert process.poll() is None
         blocked = subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=5)
@@ -178,7 +177,7 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
 
 def test_print_payload_has_no_network(cycle):
     _, state, _, binary, env = cycle
-    result = subprocess.run([str(binary), '--print-payload', 'manual'], env=env, capture_output=True, text=True, timeout=5)
+    result = subprocess.run([str(binary), '--print-payload', 'manual'], env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0
     assert json.loads(result.stdout)['reason'] == 'manual'
     assert state['calls'] == []
@@ -233,7 +232,9 @@ def test_opt_out_keeps_local_cleanup_available(cycle, rig):
     assert state['calls'] == []
 
 
-def wait_until(predicate, seconds=5):
+def wait_until(predicate, seconds=15):
+    # ASan process startup on hosted macOS runners can take several seconds;
+    # tests with actual deadline requirements make their own tighter checks.
     deadline = time.monotonic() + seconds
     while not predicate() and time.monotonic() < deadline:
         time.sleep(.01)
@@ -303,7 +304,7 @@ def test_interrupted_signature_download_cleans_or_recovers_nonexecutable_binary(
     state['mode'] = 'hold_signature'
     process = subprocess.Popen([str(binary), '--once'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        assert state['signature_started'].wait(timeout=5)
+        assert state['signature_started'].wait(timeout=15)
         assert (root / 'work/debug').exists()
         assert (root / 'work/debug').stat().st_mode & 0o111 == 0
         if kill: process.kill()
@@ -403,9 +404,18 @@ def test_shared_ram_root_requires_sticky_permissions(cycle, rig):
 
 @pytest.fixture(scope='module')
 def production_collector(rig):
+    return rig[1]
+
+
+@pytest.fixture(scope='module')
+def short_collector(rig):
+    # Only deadline tests need a shortened clock. Ordinary HTTP/JSON tests
+    # use the production allowance so fixture startup isn't the assertion.
     root, _, _ = rig
-    return compile_native('telemetry', root / 'telemetry-production-timeout',
-                          flags=['-include', str(root / 'test_config.h')])
+    return compile_native('telemetry', root / 'telemetry-short-timeout',
+                          flags=['-include', str(root / 'test_config.h'),
+                                 '-DTC_ACP_TIMEOUT_SECONDS=1', '-I', str(ROOT / 'build/native')],
+                          exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
 
 
 @pytest.fixture
@@ -438,23 +448,23 @@ def assert_collectors_stopped(calls):
 
 
 @pytest.mark.parametrize('mode', ['hang', 'line_hang', 'closed_hang', 'ignore_term', 'descendant', 'oversized', 'crash', 'drip', 'drip_after_line', 'nul'])
-def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, rig, acp_calls, mode):
+def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_collector, acp_calls, mode):
     _, state, marker, binary, env = cycle
     calls = acp_calls
     state['mode'] = 'true'
     started = time.monotonic()
-    result = subprocess.run([str(binary), '--once'], env={**env, 'TC_TEST_ACP_MODE': mode,
+    result = subprocess.run([str(short_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': mode,
                             'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=6)
     assert result.returncode == 1
     assert time.monotonic() - started < 5
-    assert 'ACP syAP' in result.stderr
+    assert 'acp: syAP' in result.stderr
     if mode in ('drip', 'drip_after_line'): assert 'timed out' in result.stderr
     assert state['calls'] == [] and not marker.exists()
     assert_collectors_stopped(calls)
     assert subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5).returncode == 0
     # A fresh invocation can collect/post after the failed owner exits.
     state['mode'] = 'false'
-    assert subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=5).returncode == 0
+    assert subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=15).returncode == 0
     assert len(state['calls']) == 1
 
 
@@ -503,13 +513,13 @@ def test_acp_exec_failure_aborts_without_posting(cycle, rig):
 
 
 @pytest.mark.parametrize('key', ['syAM', 'syNm', 'sySN', 'waMA', 'raMA'])
-def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, acp_calls, key):
-    _, state, _, binary, env = cycle
+def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_collector, acp_calls, key):
+    _, state, _, _, env = cycle
     calls = acp_calls
-    result = subprocess.run([str(binary), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'hang',
+    result = subprocess.run([str(short_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'hang',
                             'TC_TEST_ACP_KEY': key, 'TC_TEST_ACP_CALLS': str(calls)},
                             capture_output=True, text=True, timeout=6)
-    assert result.returncode == 1 and f'ACP {key} timed out' in result.stderr
+    assert result.returncode == 1 and f'acp: {key} timed out' in result.stderr
     assert state['calls'] == []
     assert calls.read_text().splitlines()[-1].startswith(key + ' ')
     assert_collectors_stopped(calls)
@@ -565,12 +575,101 @@ def test_default_acp_deadline_allows_slow_success_and_stops_at_twenty_seconds(cy
     assert_collectors_stopped(calls)
 
 
-def test_each_acp_command_gets_its_own_deadline(cycle, acp_calls):
-    run, state, *_ = cycle
+def test_each_acp_command_gets_its_own_deadline(cycle, short_collector, acp_calls):
+    _, state, _, _, env = cycle
     # Six 300ms probes exceed this fixture's 1s timeout in aggregate, but each
     # individual probe fits. No whole-payload deadline should cut them short.
-    result = run('false', TC_TEST_ACP_MODE='slow_each', TC_TEST_ACP_KEY='*',
-                 TC_TEST_ACP_CALLS=str(acp_calls))
+    result = subprocess.run([str(short_collector), '--once', 'manual'],
+                            env={**env, 'TC_TEST_ACP_MODE': 'slow_each', 'TC_TEST_ACP_KEY': '*',
+                                 'TC_TEST_ACP_CALLS': str(acp_calls)},
+                            capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
-    assert [line.split()[0] for line in acp_calls.read_text().splitlines()] == ['syAP', 'syAM', 'syNm', 'sySN', 'waMA', 'raMA']
+    # Schema v2 then collects the device plan's ten keys under one 30 s
+    # budget, again one child at a time with its own per-key deadline.
+    assert [line.split()[0] for line in acp_calls.read_text().splitlines()] == [
+        'syAP', 'syAM', 'syNm', 'sySN', 'waMA', 'raMA',
+        'raNA', 'raDS', 'waNM', 'usbF', 'laIP', 'waIP', 'waLL', 'gnRo', 'syNm', 'waMA',
+    ]
     assert len(state['calls']) == 1
+
+
+def test_print_payload_uses_current_schema_without_posting(cycle):
+    """The diagnostic command emits the shipped schema without sending HTTP."""
+    _run, state, _marker, binary, env = cycle
+    result = subprocess.run([str(binary), '--print-payload', 'manual'], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload['schema_version'] == 2
+    assert 'router_mode' in payload and 'links' in payload
+    assert state['calls'] == []
+
+
+def test_schema_v2_payload_reports_plan_availability(cycle):
+    """v3.1.0 posts schema v2: the plan fields report raw availability. The
+    fake acp answers 0x77 for every key, which decodes as no router mode and
+    no permissions."""
+    run, state, *_ = cycle
+    assert run('false').returncode == 0
+    payload = state['payloads'][0]
+    assert payload['schema_version'] == 2
+    assert payload['router_id'].startswith('tc1-') and payload['deploy_release_tag'] == 'test-release'
+    assert payload['router_mode'] == 'unknown'
+    assert payload['wan_setup_allowed'] is None and payload['disks_over_wan'] is None
+    assert payload['guest_enabled'] is False
+    assert payload['plan_error'] == 'mode'
+    assert payload['nbns_enabled'] is False
+    assert payload['debug_logging'] is False
+    assert payload['advertise_afp'] is False
+    assert 'mdns_daemon' not in payload and 'mdns_registrant_status' not in payload
+    assert isinstance(payload['links'], list)
+    for link in payload['links']:
+        assert set(link) == {'name', 'role', 'families'}
+        assert link['role'] in {'lan', 'wan', 'guest', 'isolated'}
+        assert set(link['families']) <= {'ipv4', 'ipv6'}
+
+
+@pytest.mark.parametrize('nbns,smb_debug,mdns_debug,afp', [
+    (0, 0, 0, 0), (1, 0, 1, 1), (1, 1, 0, 0), (0, 1, 1, 1),
+])
+def test_compact_settings_and_healthy_plan(cycle, rig, nbns, smb_debug, mdns_debug, afp):
+    run, state, *_ = cycle
+    root, *_ = rig
+    (root / 'config').write_text(
+        f'NBNS_ENABLED={nbns}\nSMBD_DEBUG_LOGGING={smb_debug}\n'
+        f'MDNS_DEBUG_LOGGING={mdns_debug}\nMDNS_ADVERTISE_AFP={afp}\n')
+    assert run('false', TC_TEST_PLAN_MODE='nat').returncode == 0
+    payload = state['payloads'][0]
+    assert payload['nbns_enabled'] == bool(nbns)
+    assert payload['debug_logging'] == bool(smb_debug or mdns_debug)
+    assert payload['advertise_afp'] == bool(afp)
+    assert 'plan_error' not in payload
+    assert not {'mdns_daemon', 'mdns_registrant_status', 'telemetry', 'acp_ok'} & payload.keys()
+    fields = {key: payload[key] for key in ('nbns_enabled', 'debug_logging', 'advertise_afp')}
+    assert len(json.dumps(fields, separators=(',', ':'))) <= 66
+
+
+@pytest.mark.parametrize('changes,reason', [
+    ({'TC_TEST_ACP_MODE': 'empty', 'TC_TEST_ACP_KEY': 'usbF'}, 'usbF'),
+    ({'TC_TEST_ACP_MODE': 'value', 'TC_TEST_ACP_KEY': 'laIP', 'TC_TEST_ACP_VALUE': 'invalid'}, 'laIP'),
+    ({'TC_TEST_IFLIST': 'failed'}, 'iflist'),
+    ({'TC_TEST_IFLIST': 'truncated'}, 'iflist-truncated'),
+])
+def test_plan_error_is_short_and_omitted_after_recovery(cycle, changes, reason):
+    run, state, *_ = cycle
+    assert run('false', TC_TEST_PLAN_MODE='nat', **changes).returncode == 0
+    assert state['payloads'][-1]['plan_error'] == reason
+    assert run('false', TC_TEST_PLAN_MODE='nat').returncode == 0
+    assert 'plan_error' not in state['payloads'][-1]
+
+
+def test_unreadable_and_invalid_config_are_not_reported_as_false(cycle, rig):
+    run, state, *_ = cycle
+    root, *_ = rig
+    (root / 'config').unlink()
+    assert run('false', TC_TEST_PLAN_MODE='bridge').returncode == 0
+    assert all(state['payloads'][-1][key] is None for key in ('nbns_enabled', 'debug_logging', 'advertise_afp'))
+    (root / 'config').write_text('NBNS_ENABLED=invalid\nMDNS_DEBUG_LOGGING=bad\nSMBD_DEBUG_LOGGING=1\n')
+    assert run('false', TC_TEST_PLAN_MODE='bridge').returncode == 0
+    assert state['payloads'][-1]['nbns_enabled'] is None
+    assert state['payloads'][-1]['debug_logging'] is True
+    assert state['payloads'][-1]['advertise_afp'] is False

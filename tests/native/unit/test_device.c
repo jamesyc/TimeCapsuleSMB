@@ -2,7 +2,6 @@
 #include <assert.h>
 #include <syslog.h>
 
-volatile sig_atomic_t telemetry_stop;
 static const char *scenario;
 static pid_t owner, collector;
 static int injected, forks, pipe_calls, fd_sets, clocks, waits;
@@ -25,7 +24,7 @@ pid_t test_fork(void) {
     forks++;
     if (once("fork")) { errno = EAGAIN; return -1; }
     collector = fork();
-    if (collector > 0 && (once("cancel_after_fork") || once("cancel_before_group"))) telemetry_stop = 1;
+    if (collector > 0 && (once("cancel_after_fork") || once("cancel_before_group"))) acp_stop_requested = 1;
     return collector;
 }
 
@@ -95,7 +94,7 @@ int main(int argc, char **argv) {
     pid_t guard;
     assert(argc == 2);
     scenario = argv[1]; owner = getpid();
-    openlog("telemetry-collector-test", LOG_NDELAY, LOG_USER);
+    openlog("acp-collector-test", LOG_NDELAY, LOG_USER);
     guard = fork();
     assert(guard >= 0);
     if (!guard) {
@@ -109,7 +108,7 @@ int main(int argc, char **argv) {
     success = !strcmp(scenario, "normal") || !strcmp(scenario, "byte_reads") ||
               !strcmp(scenario, "select_eintr") || !strcmp(scenario, "read_eintr") ||
               !strcmp(scenario, "read_eagain") || !strcmp(scenario, "wait_eintr");
-    if (!strcmp(scenario, "cancel_before_fork")) telemetry_stop = 1;
+    if (!strcmp(scenario, "cancel_before_fork")) acp_stop_requested = 1;
     /* Repeated calls catch descriptors retained within a live scheduler. */
     for (repeat = 0; repeat < 3; repeat++) {
         injected = forks = pipe_calls = fd_sets = clocks = waits = 0;
@@ -123,7 +122,7 @@ int main(int argc, char **argv) {
         else if (strcmp(scenario, "normal") && strcmp(scenario, "byte_reads") &&
                  strcmp(scenario, "child_group")) assert(injected);
         if (!strcmp(scenario, "reap_stuck")) {
-            assert(telemetry_stop && waits > 0);
+            assert(acp_stop_requested && waits > 0);
             /* The fault hid child readiness. Reap it with the real syscall so
              * the test itself leaves no zombie; production had to return. */
             assert(waitpid(collector, &status, 0) == collector);

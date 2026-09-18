@@ -1,4 +1,5 @@
-"""Fault injection around real collector processes, pipes, and process groups."""
+"""Fault injection around the shared ACP reader (common/acp.c): real collector
+processes, pipes, and process groups."""
 import os
 from pathlib import Path
 import signal
@@ -12,20 +13,24 @@ from tests.native.build import ROOT, instrumentation_flags
 @pytest.fixture(scope='module')
 def device_driver(tmp_path_factory):
     work = tmp_path_factory.mktemp('acp-driver')
-    native = ROOT / 'build/native/telemetry'
+    native = ROOT / 'build/native/common'
     unit = Path(__file__).parent / 'unit'
     acp = work / 'acp'
     subprocess.run(['cc', str(Path(__file__).parent / 'integration/acp_fixture.c'), '-o', str(acp)],
                    check=True, capture_output=True, timeout=30)
     flags = ['cc', '-D_GNU_SOURCE', '-Wall', '-Wextra', '-Werror', *instrumentation_flags(),
-             '-I', str(native), '-I', str(unit), f'-DTC_ACP_PATH="{acp}"', '-DTC_ACP_TIMEOUT_SECONDS=1']
-    obj = work / 'device.o'
-    subprocess.run([*flags, '-DTC_TEST_DEVICE_FAULTS', '-include', str(unit / 'device_faults.h'),
-                    '-c', str(native / 'device.c'), '-o', str(obj)], check=True, capture_output=True, timeout=30)
-    binary = work / 'test-device'
-    subprocess.run([*flags, str(unit / 'test_device.c'), str(obj), '-o', str(binary)],
-                   check=True, capture_output=True, timeout=30)
-    return binary
+             '-I', str(native), '-I', str(unit), f'-DTC_ACP_PATH="{acp}"']
+    binaries = {}
+    for name, extra in [('production', []), ('short', ['-DTC_ACP_TIMEOUT_SECONDS=1'])]:
+        obj = work / f'{name}.o'
+        subprocess.run([*flags, *extra, '-DTC_TEST_DEVICE_FAULTS', '-include', str(unit / 'device_faults.h'),
+                        '-c', str(native / 'acp.c'), '-o', str(obj)], check=True, capture_output=True, timeout=30)
+        binary = work / f'test-device-{name}'
+        subprocess.run([*flags, *extra, str(unit / 'test_device.c'), str(obj), '-o', str(binary)],
+                       check=True, capture_output=True, timeout=30)
+        binaries[name] = binary
+    return binaries
+
 
 
 @pytest.mark.parametrize('scenario', [
@@ -37,8 +42,10 @@ def device_driver(tmp_path_factory):
 def test_collector_syscall_failures_and_retries(device_driver, tmp_path, scenario):
     calls = tmp_path / 'calls'
     env = {**os.environ, 'TC_TEST_ACP_CALLS': str(calls)}
+    # Only this fault needs deadline expiry before exercising failed reaping.
     if scenario == 'reap_stuck': env['TC_TEST_ACP_MODE'] = 'ignore_term'
-    process = subprocess.Popen([str(device_driver), scenario], env=env, start_new_session=True,
+    binary = device_driver['short' if scenario == 'reap_stuck' else 'production']
+    process = subprocess.Popen([str(binary), scenario], env=env, start_new_session=True,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         stdout, stderr = process.communicate(timeout=8)

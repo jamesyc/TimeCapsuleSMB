@@ -1,6 +1,7 @@
 """Compile the same explicit source lists as the device build, once per target."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import shutil
 import os
@@ -11,7 +12,7 @@ _BUILD = tempfile.TemporaryDirectory(prefix='tc-native-build-')
 
 
 def binary_name(target):
-    return target + '-advertiser' if target in {'mdns', 'nbns'} else target
+    return 'discoveryd' if target == 'discovery' else target
 
 
 def build_root(kind):
@@ -25,6 +26,13 @@ def build_root(kind):
 def sources(target: str) -> list[Path]:
     return [ROOT / 'build' / line for line in
             (ROOT / 'build/native' / f'{target}.sources').read_text().splitlines() if line]
+
+
+def stub_platform_flags():
+    """Apple's dns_sd stub reads sockaddr sa_len unless NOT_HAVE_SA_LEN is
+    defined, which Apple's own Linux build does; NetBSD and macOS have the
+    field (review finding 8)."""
+    return ['-DNOT_HAVE_SA_LEN'] if sys.platform.startswith('linux') else []
 
 
 def instrumentation_flags():
@@ -44,7 +52,7 @@ def compile_native(target, output, *, flags=(), extra_sources=(), exclude=()):
 def _compile(target, flags, extra_sources, exclude):
     output = Path(tempfile.mkdtemp(dir=build_root('products'))) / binary_name(target)
     selected = [p for p in sources(target) if p.name not in exclude]
-    common = ['cc', '-D_GNU_SOURCE', '-Wall', '-Wextra', '-Werror',
+    common = ['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-Wall', '-Wextra', '-Werror',
               '-Wno-sign-compare', '-Wno-unterminated-string-initialization',
               *instrumentation_flags(), *flags]
     objects = []
@@ -53,6 +61,9 @@ def _compile(target, flags, extra_sources, exclude):
         # Unmodified TweetNaCl uses signed shifts in field normalization. Keep
         # ASan and the other UB checks, but don't rewrite cryptography in a split.
         vendor_flags = ['-fno-sanitize=shift'] if Path(source).name == 'tweetnacl.c' else []
+        # The vendored Apple stub is compiled unchanged; see build/native/dnssd/README.md.
+        if 'dnssd' in Path(source).parts:
+            vendor_flags += ['-Wno-unused-but-set-variable', *stub_platform_flags()]
         result = subprocess.run([*common, *vendor_flags, '-c', str(source), '-o', str(obj)],
                                 capture_output=True, text=True, timeout=60)
         if result.returncode:

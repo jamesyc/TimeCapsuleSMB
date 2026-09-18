@@ -482,8 +482,6 @@ extension DoctorPayload {
 extension DoctorCheckPayload {
     var localizedMessage: String {
         switch code {
-        case "smb_bind_lan_only_unreachable":
-            return L10n.string("doctor.check.smb_bind_lan_only_unreachable")
         case "device_starting_up":
             return L10n.string("doctor.check.device_starting_up")
         case "payload_missing_from_disk":

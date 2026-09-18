@@ -5,7 +5,7 @@ import pytest
 from tests.native.build import ROOT, binary_name
 
 
-@pytest.mark.parametrize("target", ["mdns", "nbns", "service", "telemetry"])
+@pytest.mark.parametrize("target", ["discovery", "service", "telemetry"])
 @pytest.mark.parametrize("suffix,byte_order", [("", 1), ("-netbsd4le", 1), ("-netbsd4be", 2)])
 def test_device_binary_is_single_static_arm_elf(target, suffix, byte_order):
     data = (ROOT / "bin" / (target + suffix) / binary_name(target)).read_bytes()

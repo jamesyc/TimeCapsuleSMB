@@ -15,6 +15,7 @@ from timecapsulesmb.checks.bonjour import (
     check_bonjour_host_ip,
     check_smb_instance,
     check_smb_service_target,
+    discover_printer_services_detailed,
     discover_smb_services_detailed,
     resolve_expected_smb_record,
     resolve_smb_instance,
@@ -76,11 +77,13 @@ from timecapsulesmb.device.probe import (
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
+    UsbPrinterProbeResult,
     flash_runtime_config_present_conn,
     nbns_flash_config_enabled_conn,
     probe_connection_state,
-    probe_managed_mdns_takeover_conn,
+    probe_managed_mdns_conn,
     probe_managed_rsync_conn,
+    probe_usb_printer_conn,
     probe_managed_smbd_conn,
     probe_manager_startup_age_conn,
     probe_remote_network_capabilities_conn,
@@ -114,8 +117,10 @@ TRANSIENT_SMBD_READINESS_FAILURES = {
     "smbd is not bound to required TCP 445 sockets",
 }
 TRANSIENT_MDNS_READINESS_FAILURES = {
-    "mdns process is not running",
-    "mdns is not bound to required UDP 5353 listener",
+    "discovery process is not running",
+    "discovery NBNS state is not available yet",
+    "discovery native NBNS is still starting",
+    "discovery native NBNS is not ready",
 }
 TRANSIENT_RSYNC_READINESS_FAILURES = {
     "persistent rsync binary is missing",
@@ -129,7 +134,6 @@ STARTUP_GRACE_MASK = "mask"
 STARTUP_GRACE_PRESERVE = "preserve"
 STARTUP_GRACE_DETAIL_KEY = "startup_grace"
 DOCTOR_CODE_RUNTIME_NOT_INSTALLED = "runtime_not_installed"
-DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE = "smb_bind_lan_only_unreachable"
 DOCTOR_CODE_SMB_IPV6_NO_CLIENT_ROUTE = "smb_ipv6_no_client_route"
 DOCTOR_CODE_DEVICE_STARTING_UP = "device_starting_up"
 DOCTOR_CODE_PAYLOAD_MISSING_FROM_DISK = "payload_missing_from_disk"
@@ -147,12 +151,10 @@ STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
     "smbd is not bound to required TCP 445 sockets",
     "managed smbd readiness probe timed out",
     "device Samba version unavailable (managed runtime smbd binary missing)",
-    "mDNS startup deferred; no usable address has appeared yet",
-    "mdns process is not running",
-    "mdns bound to UDP 5353 but bind address is not active",
-    "mdns is waiting for a usable address",
-    "mdns is not bound to required UDP 5353 listener",
-    "Apple mDNSResponder is still running",
+    "discovery process is not running",
+    "discovery NBNS state is not available yet",
+    "discovery native NBNS is still starting",
+    "discovery native NBNS is not ready",
     "persistent rsync binary is missing",
     "persistent rsync config is missing",
     "managed rsync binary is missing from RAM",
@@ -648,6 +650,67 @@ def _add_time_machine_adisk_results(
     return failed
 
 
+def _add_apple_responder_results(
+    snapshot: BonjourDiscoverySnapshot,
+    *,
+    instance_name: str | None,
+    advertise_afp: bool,
+    add_result: Callable[[CheckResult], None],
+) -> bool:
+    """v3.1.0 checks on Apple's mDNSResponder as the only responder (guide C.9):
+    no uninvited `_afpovertcp`, no auto-renamed "(2)" instances (diskd left on
+    the LAN), and Apple's own `_device-info` model for the device."""
+    if instance_name is None:
+        return False
+    failed = False
+    afp_instances = [
+        instance for instance in snapshot.instances
+        if instance.name == instance_name and _bonjour_service_label(instance.service_type) == "_afpovertcp"
+    ]
+    if afp_instances and not advertise_afp:
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"_afpovertcp._tcp is advertised for {instance_name!r} although Advertise AFP over Bonjour is off; "
+                "macOS 26.x/27 hides Time Capsules that advertise AFP (Apple's afpserver/diskd may be back on the LAN; "
+                "run Install / Update Samba or reboot the device)",
+            )
+        )
+        failed = True
+    elif afp_instances:
+        add_result(CheckResult("PASS", f"_afpovertcp._tcp advertised for {instance_name!r} as configured"))
+    else:
+        add_result(CheckResult("PASS", f"no _afpovertcp._tcp advertised for {instance_name!r}"))
+
+    renamed = sorted({
+        f"{instance.name} ({_bonjour_service_label(instance.service_type)})"
+        for instance in snapshot.instances
+        if _bonjour_service_label(instance.service_type) in {"_smb", "_adisk"}
+        and re.fullmatch(re.escape(instance_name) + r" \(\d+\)", instance.name)
+    })
+    if renamed:
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"auto-renamed Bonjour instance(s) found: {', '.join(renamed)}; another registrant already holds "
+                f"{instance_name!r} (Apple's diskd is not on loopback, or two devices share the name)",
+            )
+        )
+        failed = True
+    else:
+        add_result(CheckResult("PASS", f"no auto-renamed \"(2)\" _smb/_adisk instance for {instance_name!r}"))
+
+    device_info = _bonjour_records_for_instance(snapshot.resolved, instance_name, "_device-info")
+    if device_info:
+        model = (device_info[0].properties.get("model") or "").strip()
+        if model.startswith("TimeCapsule"):
+            add_result(CheckResult("PASS", f"_device-info._tcp model is Apple's: {model}"))
+        else:
+            add_result(CheckResult("FAIL", f"_device-info._tcp model for {instance_name!r} is {model or 'missing'}; expected Apple's TimeCapsule model"))
+            failed = True
+    return failed
+
+
 def _add_bonjour_service_target_consistency_results(
     instance_name: str | None,
     service_targets: dict[str, tuple[str, ...]],
@@ -886,6 +949,13 @@ def _evaluate_bonjour_snapshot(
             ):
                 outcome.debug_needed = True
                 outcome.fallback_allowed = True
+            if _add_apple_responder_results(
+                smb_snapshot,
+                instance_name=resolution.instance.name,
+                advertise_afp=bonjour_expected.advertise_afp,
+                add_result=add,
+            ):
+                outcome.debug_needed = True
         else:
             outcome.debug_needed = True
             outcome.fallback_allowed = True
@@ -944,6 +1014,13 @@ def _evaluate_bonjour_snapshot(
             ):
                 outcome.debug_needed = True
                 outcome.fallback_allowed = True
+            if _add_apple_responder_results(
+                smb_snapshot,
+                instance_name=resolved_record.name,
+                advertise_afp=bonjour_expected.advertise_afp,
+                add_result=add,
+            ):
+                outcome.debug_needed = True
 
     return outcome
 
@@ -1359,12 +1436,6 @@ def _add_nbns_results(
                     checked = True
                     expected_ip = endpoint.address
                     nbns_result = check_nbns_name_resolution(expected_name, expected_ip, expected_ip)
-                    if nbns_result.status == "FAIL":
-                        nbns_result = CheckResult(
-                            "INFO",
-                            f"optional NBNS {family_label} check failed: {nbns_result.message}",
-                            nbns_result.details,
-                        )
                     add_result(nbns_result)
                 if not checked:
                     add_result(CheckResult("SKIP", "NBNS check skipped; no locally reachable runtime NBNS family"))
@@ -1410,12 +1481,7 @@ def _doctor_smb_client_targets(
             targets.append(target)
 
     pinned_server = next((server for server in servers if _ip_literal(server) is None), None)
-    bind_lan_only_unreachable = (
-        network_plan is not None
-        and config.get("TC_SMB_BIND_LAN_ONLY").strip().lower() in {"1", "true", "yes", "on"}
-        and not any(family_plan.on_link_sources for family_plan in network_plan.families())
-    )
-    if network_plan is not None and not bind_lan_only_unreachable:
+    if network_plan is not None:
         for family_plan in network_plan.families():
             if not family_plan.samba_expected:
                 continue
@@ -1480,69 +1546,6 @@ def _format_list_for_message(values: Iterable[str]) -> str:
         return "none"
     return ", ".join(items)
 
-
-def _lan_only_smb_bind_unreachable_result(
-    config: AppConfig,
-    network_plan: NetworkCheckPlan | None,
-    smb_targets: Iterable[SmbClientTargetInput],
-) -> CheckResult | None:
-    if network_plan is None or not _config_bool_enabled(config, "TC_SMB_BIND_LAN_ONLY"):
-        return None
-
-    samba_families = [
-        family_plan
-        for family_plan in network_plan.families()
-        if family_plan.samba_expected and family_plan.remote_addresses
-    ]
-    if not samba_families:
-        return None
-    if any(family_plan.on_link_sources for family_plan in samba_families):
-        return None
-
-    bound_addresses = [
-        address
-        for family_plan in samba_families
-        for address in family_plan.remote_addresses
-    ]
-    bound_cidrs = [
-        cidr
-        for family_plan in samba_families
-        for cidr in family_plan.remote_cidrs
-    ]
-    target_displays = [_smb_client_target_debug(target) for target in smb_targets]
-    configured_host = endpoint_host(config.get("TC_HOST"))
-    if configured_host and configured_host not in target_displays:
-        target_displays.append(configured_host)
-    target_ips = [
-        ip
-        for target in target_displays
-        for ip in [_ip_literal(target)]
-        if ip is not None
-    ]
-    outside_targets = [ip for ip in target_ips if ip not in bound_addresses]
-    outside_clause = ""
-    if outside_targets:
-        outside_clause = (
-            f"; checked SMB target(s) {_format_list_for_message(target_displays)} "
-            f"outside the bound address(es) {_format_list_for_message(bound_addresses)}"
-        )
-    return CheckResult(
-        "FAIL",
-        "SMB is configured to bind to LAN-only interface(s) "
-        f"{_format_list_for_message(bound_cidrs or bound_addresses)}, "
-        "but this Mac has no address on those runtime Samba network(s)"
-        f"{outside_clause}. Disable Bind SMB to LAN Only for this profile and redeploy, "
-        "or connect from the Time Capsule LAN side.",
-        {
-            "code": DOCTOR_CODE_SMB_BIND_LAN_ONLY_UNREACHABLE,
-            "domain": "SMB Auth",
-            "smb_bind_lan_only": True,
-            "bound_addresses": bound_addresses,
-            "bound_cidrs": bound_cidrs,
-            "checked_targets": target_displays,
-            "outside_checked_target_ips": outside_targets,
-        },
-    )
 
 
 def _smb_listing_looks_like_local_route_failure(result: CheckResult) -> bool:
@@ -1702,9 +1705,6 @@ def _add_authenticated_smb_results(
     else:
         listing_result = listing_outcomes[0][1]
     if listing_result.status != "PASS":
-        bind_result = _lan_only_smb_bind_unreachable_result(config, network_plan, checked_servers)
-        if bind_result is not None:
-            add_result(bind_result)
         if _smb_listing_looks_like_local_route_failure(listing_result):
             add_result(
                 CheckResult(
@@ -2071,7 +2071,7 @@ def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink:
         return
 
     mdns_probe = _run_doctor_retryable_check(
-        lambda: probe_managed_mdns_takeover_conn(target.connection),
+        lambda: probe_managed_mdns_conn(target.connection),
         lambda probe: _readiness_probe_retryable(probe, TRANSIENT_MDNS_READINESS_FAILURES),
     )
     mdns_probe_lines = getattr(mdns_probe, "lines", ())
@@ -2081,9 +2081,72 @@ def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink:
         sink.add,
         mdns_probe_lines,
         fallback_ready=mdns_probe.ready,
-        fallback_pass_message="managed mDNS takeover is active",
-        fallback_fail_message=f"managed mDNS takeover is not active ({mdns_probe.detail})",
+        fallback_pass_message="managed mDNS registrant is active",
+        fallback_fail_message=f"managed mDNS registrant is not active ({mdns_probe.detail})",
     )
+
+
+def _add_usb_printer_results(
+    printer: UsbPrinterProbeResult,
+    snapshot: BonjourDiscoverySnapshot | None,
+    discovery_error: CheckResult | None,
+    *,
+    host_label: str | None,
+    add_result: Callable[[CheckResult], None],
+) -> None:
+    """Guide G6 as a release gate: with a USB printer plugged in, Apple's printd
+    must still advertise it through mDNSResponder under our runtime (we never
+    touch printd; v3.0 re-advertised printers itself because it killed the
+    responder). Skipped, not passed, when no printer is attached."""
+    if printer.error:
+        add_result(CheckResult("SKIP", f"USB printer check skipped; could not read the printer list ({printer.error})"))
+        return
+    if not printer.present:
+        add_result(CheckResult("SKIP", "no USB printer is plugged in (acp prni); printer sharing not checked"))
+        return
+    label = f"{printer.name!r}"
+    if discovery_error is not None or snapshot is None:
+        add_result(CheckResult("FAIL", f"USB printer {label} is plugged in but the Bonjour printer browse failed: {discovery_error.message if discovery_error else 'no result'}"))
+        return
+    matches: list[str] = []
+    others: list[str] = []
+    for record in snapshot.resolved:
+        service = _bonjour_service_label(record.service_type)
+        record_label = f"{record.name} ({service}, {record.hostname})"
+        name_matches = record.name.strip().lower() == (printer.name or "").strip().lower()
+        record_host = _bonjour_host_label(record.hostname)
+        host_matches = host_label is not None and record_host is not None and record_host.lower() == host_label.lower()
+        (matches if name_matches or host_matches else others).append(record_label)
+    if not matches:
+        # Instances that were seen but not resolved still count as a browse hit.
+        for instance in snapshot.instances:
+            if instance.name.strip().lower() == (printer.name or "").strip().lower():
+                matches.append(f"{instance.name} ({_bonjour_service_label(instance.service_type)}, unresolved)")
+    if matches:
+        add_result(CheckResult("PASS", f"USB printer {label} is advertised by Apple's printd: {', '.join(sorted(matches))}"))
+    else:
+        seen = f"; other printer records seen: {', '.join(sorted(others))}" if others else "; no printer records seen"
+        add_result(
+            CheckResult(
+                "FAIL",
+                f"USB printer {label} is plugged in but no _pdl-datastream/_riousbprint/_printer/_ipp record names it or this "
+                f"device{seen} (Apple's printd is not advertising it; compare with stock firmware before blaming the runtime)",
+            )
+        )
+
+
+def _doctor_check_usb_printer(target: DoctorTarget, remote: RemoteAccess, bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
+    if not remote.remote_checks_enabled:
+        return
+    printer = probe_usb_printer_conn(target.connection)
+    snapshot = None
+    discovery_error = None
+    if printer.present and not printer.error:
+        snapshot, discovery_error = discover_printer_services_detailed()
+    host_label = None
+    if bonjour_result.target is not None and bonjour_result.target.hostname:
+        host_label = _bonjour_host_label(bonjour_result.target.hostname)
+    _add_usb_printer_results(printer, snapshot, discovery_error, host_label=host_label, add_result=sink.add)
 
 
 def _doctor_check_managed_rsync(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:

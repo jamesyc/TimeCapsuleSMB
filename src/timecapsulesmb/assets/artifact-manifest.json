@@ -1,28 +1,16 @@
 {
   "artifacts": {
-    "mdns": {
-      "path": "bin/mdns/mdns-advertiser",
-      "sha256": "1a2b58c71d0759a0ac46386435b9cc97d64ce1b134087f57bd4316f9e3b9ad33"
+    "discovery": {
+      "path": "bin/discovery/discoveryd",
+      "sha256": "643e6484830d9f3b94d3381d7564dd80d1de049e5ecc2574126132aacda2dab2"
     },
-    "mdns-netbsd4le": {
-      "path": "bin/mdns-netbsd4le/mdns-advertiser",
-      "sha256": "3e64845ff48902b196a0726e2c93eb0ea976836604a93fad3d81d152a7ce0421"
+    "discovery-netbsd4le": {
+      "path": "bin/discovery-netbsd4le/discoveryd",
+      "sha256": "f9bc1e6057fc01404dff2da04106684fa33b80d578b040d87d9b53eace3f1189"
     },
-    "mdns-netbsd4be": {
-      "path": "bin/mdns-netbsd4be/mdns-advertiser",
-      "sha256": "a3a2afbcd999b66e1e36517242d077b4565a911a7599b276530a9bf1fcaa0aa0"
-    },
-    "nbns": {
-      "path": "bin/nbns/nbns-advertiser",
-      "sha256": "d264eb02db5740ca85a57aefe4c584f7042a7f41e792c8c09fc253df6b1a2027"
-    },
-    "nbns-netbsd4le": {
-      "path": "bin/nbns-netbsd4le/nbns-advertiser",
-      "sha256": "6b54b9b672d13c2c4d2b55031021093c3ed1d7d63df0f5b7b904ab01e690641a"
-    },
-    "nbns-netbsd4be": {
-      "path": "bin/nbns-netbsd4be/nbns-advertiser",
-      "sha256": "f0a05bdf0bc899f9b232d5be1d78241a9ca5baee0196bdcfd1699baebc124a34"
+    "discovery-netbsd4be": {
+      "path": "bin/discovery-netbsd4be/discoveryd",
+      "sha256": "dd59a4abda7b88ad8aa7014aa623012d5d3d52796c6d23489b9f2581643cf011"
     },
     "rsync": {
       "path": "bin/rsync/rsync",
@@ -50,39 +38,39 @@
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "fb0101af9be169de8c865dbac61ae36bf0bde3f10a19253ca332d3a7f0c554a6"
+      "sha256": "d7fade3bc3e8c9156c8198346a73653f71959e36160b6b01e9925ba40cfd887a"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
-      "sha256": "b4fa7df4a7db140629583179493d9b21bf7d08162d33390f1c149a0156be3f0b"
+      "sha256": "21190208a34ec7e9bbf1c4c68f2a2b1f23e27ccd3da54ce7d0a56119ee37cde5"
     },
     "xattr-migrator-netbsd4be": {
       "path": "bin/xattr-migrate-netbsd4be/xattr-hfs-migrate",
-      "sha256": "3eab680a8b1f46e80f9b44f86bf4e81238046164e2b26ae33855c12062fa575a"
+      "sha256": "cef311ce62aaf51f9f9775efd3a1c7fa049aed75fc9f0b367dfa7bd9c8f8fd2d"
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "d0be36908d6f6fa5b8a1ac53ee4601942f089ecc2d247ab0d42bf46a69d74d8e"
+      "sha256": "36a8500dcaf2764ab63b37e43d5e98fb450eb5d4e5a3a0d727cede1b64c1103d"
     },
     "telemetry": {
       "path": "bin/telemetry/telemetry",
-      "sha256": "60e51a6e482d952dfad05b7cd9d75747fad9089fefccf64c0f6a5a120db97863"
+      "sha256": "7a6787ab45e8360707e761a5aa552270320a8ec069ac2500c7a8711d45674e64"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "48db64be3add60f4c619f84e5c111ea302709fc9a66782a80ee90b65bcf85576"
+      "sha256": "3cc6488dbf033bc43a7c517d39b2556665a29319b8c00576943204da6270f6b3"
     },
     "telemetry-netbsd4le": {
       "path": "bin/telemetry-netbsd4le/telemetry",
-      "sha256": "14fa9775db22159356e015798b41534068f80ef2152d185dbf99ffc6f5eaeadd"
+      "sha256": "2c3b96295e70ab4e9329b7a8ed21650a335a1486c9249a6805c1f1c50f47bc86"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "37615f327a49edd78ef4d4210238637b2599f7ecc14464de3d9f79c56acbb2ce"
+      "sha256": "ba6b9c28471eb1dadfcb79fff508797c06e7366097655320977d4c8ea582e95b"
     },
     "telemetry-netbsd4be": {
       "path": "bin/telemetry-netbsd4be/telemetry",
-      "sha256": "a758edd02fe2d472289b917b59859cae325777e0328eb4e68bc6e95e9d4308d0"
+      "sha256": "7785d2f88ecef6f1a8832512f2ac287f1b347543be5d3d279de1cb4e21a77bba"
     }
   }
 }

@@ -166,7 +166,6 @@ struct DiagnosticsExportBuilder {
         append("\(prefix) NBNS", value: settings.nbnsEnabled, to: &lines)
         append("\(prefix) rsync", value: settings.rsyncEnabled, to: &lines)
         append("\(prefix) Internal Share Uses Disk Root", value: settings.internalShareUseDiskRoot, to: &lines)
-        append("\(prefix) SMB Bind LAN Only", value: settings.smbBindLanOnly, to: &lines)
         append("\(prefix) SMB Browse Compatibility", value: settings.smbBrowseCompatibility, to: &lines)
         append("\(prefix) mDNS Advertise AFP", value: settings.mdnsAdvertiseAFP, to: &lines)
         append("\(prefix) Allow Any SMB Protocol", value: settings.anyProtocol, to: &lines)

@@ -1,13 +1,13 @@
 import tempfile
 from pathlib import Path
 import pytest
-from tests.test_mdns_build import MdnsBuildWrapperTests
+from tests.build_wrapper_harness import BuildWrapperHarness
 from tests.native.build import binary_name
 
-@pytest.mark.parametrize('name', ['mdns', 'nbns', 'service', 'telemetry'])
+@pytest.mark.parametrize('name', ['discovery', 'service', 'telemetry'])
 @pytest.mark.parametrize('suffix,triple', [('', 'arm--netbsdelf'), ('oldle', 'arm--netbsdelf'), ('oldbe', 'armeb--netbsdelf')])
 def test_compiler_failure_does_not_repackage_stale_output(name, suffix, triple):
-    helper = MdnsBuildWrapperTests()
+    helper = BuildWrapperHarness()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         env, _, _, _ = helper.env_for(root, triple=triple)

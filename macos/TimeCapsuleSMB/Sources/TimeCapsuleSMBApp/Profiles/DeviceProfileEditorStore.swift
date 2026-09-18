@@ -78,7 +78,6 @@ struct DeviceProfileEditorDraft: Equatable {
     var nbnsEnabled: Bool
     var rsyncEnabled: Bool
     var internalShareUseDiskRoot: Bool
-    var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
@@ -97,7 +96,6 @@ struct DeviceProfileEditorDraft: Equatable {
         nbnsEnabled: Bool,
         rsyncEnabled: Bool = false,
         internalShareUseDiskRoot: Bool = false,
-        smbBindLanOnly: Bool = DeviceProfileSettings.default.smbBindLanOnly,
         smbBrowseCompatibility: Bool = false,
         mdnsAdvertiseAFP: Bool = DeviceProfileSettings.default.mdnsAdvertiseAFP,
         anyProtocol: Bool = false,
@@ -115,7 +113,6 @@ struct DeviceProfileEditorDraft: Equatable {
         self.nbnsEnabled = nbnsEnabled
         self.rsyncEnabled = rsyncEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
-        self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
@@ -136,7 +133,6 @@ struct DeviceProfileEditorDraft: Equatable {
             nbnsEnabled: profile.settings.nbnsEnabled,
             rsyncEnabled: profile.settings.rsyncEnabled,
             internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
-            smbBindLanOnly: profile.settings.smbBindLanOnly,
             smbBrowseCompatibility: profile.settings.smbBrowseCompatibility,
             mdnsAdvertiseAFP: profile.settings.mdnsAdvertiseAFP,
             anyProtocol: profile.settings.anyProtocol,
@@ -194,7 +190,6 @@ struct DeviceProfileEditorDraft: Equatable {
             nbnsEnabled: nbnsEnabled,
             rsyncEnabled: rsyncEnabled,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
-            smbBindLanOnly: smbBindLanOnly,
             smbBrowseCompatibility: smbBrowseCompatibility,
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,
             anyProtocol: anyProtocol,
@@ -514,7 +509,6 @@ final class DeviceProfileEditorStore: ObservableObject {
             password: password,
             debugLogging: draft.debugLogging,
             internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
-            smbBindLanOnly: draft.smbBindLanOnly,
             smbBrowseCompatibility: draft.smbBrowseCompatibility,
             mdnsAdvertiseAFP: draft.mdnsAdvertiseAFP,
             anyProtocol: draft.anyProtocol,

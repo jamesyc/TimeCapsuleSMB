@@ -60,6 +60,7 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import (
+    UsbPrinterProbeResult,
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
     ManagerStartupAgeProbeResult,
@@ -259,8 +260,8 @@ class CheckTests(unittest.TestCase):
                     mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn", return_value=smbd_probe)
                 )
             if mdns_probe is not None:
-                mocks.probe_managed_mdns_takeover_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mdns_probe)
+                mocks.probe_managed_mdns_conn = stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn", return_value=mdns_probe)
                 )
             if remote_interface_probe is not None:
                 mocks.probe_remote_interface_conn = stack.enter_context(
@@ -440,8 +441,8 @@ class CheckTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(
             mock.patch(
-                "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn",
-                return_value=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+                "timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn",
+                return_value=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             )
         )
         self._exit_stack.enter_context(
@@ -808,9 +809,9 @@ class CheckTests(unittest.TestCase):
         ipv6_result = next(result for result in run.results if "fd00::2:445" in result.message)
         self.assertEqual(ipv6_result.status, "WARN")
 
-    def test_run_doctor_checks_reports_info_when_optional_nbns_fails(self) -> None:
+    def test_run_doctor_checks_fails_when_enabled_native_nbns_does_not_answer(self) -> None:
         debug_fields: dict[str, object] = {}
-        socket_debug_mock = mock.Mock(return_value="smbd:\n(no internet sockets reported)\nnbns:\nroot nbns-advertiser 201 7 internet dgram udp 0x0 *:137")
+        socket_debug_mock = mock.Mock(return_value="smbd:\n(no internet sockets reported)\nwcifsnd:\n(no internet sockets reported)")
 
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -836,12 +837,11 @@ class CheckTests(unittest.TestCase):
             },
         )
 
-        self.assertFalse(run.fatal)
-        nbns_result = next(result for result in run.results if "optional NBNS IPv4 check failed" in result.message)
-        self.assertEqual(nbns_result.status, "INFO")
+        self.assertTrue(run.fatal)
+        nbns_result = next(result for result in run.results if "NBNS query" in result.message)
+        self.assertEqual(nbns_result.status, "FAIL")
         self.assertIn("timed out against 10.0.0.2:137", nbns_result.message)
-        self.assertEqual(debug_fields["remote_service_sockets"], socket_debug_mock.return_value)
-        socket_debug_mock.assert_called_once()
+        socket_debug_mock.assert_not_called()
 
     def test_doctor_smb_servers_uses_probed_host_label(self) -> None:
         base_values = {"TC_HOST": "root@10.0.1.99"}
@@ -2201,7 +2201,7 @@ class CheckTests(unittest.TestCase):
                 exists=False,
                 detail="interface bridge0 was not found on the device",
             ),
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
         )
         self.assertFalse(run.fatal)
         self.assertFalse(any("TC_NET_IFACE is invalid" in result.message for result in run.results))
@@ -2265,7 +2265,7 @@ class CheckTests(unittest.TestCase):
         debug_fields: dict[str, object] = {}
         log_tail_mock = mock.Mock(return_value={
             "remote_rc_local_log_tail": "rc log",
-            "remote_mdns_log_tail": "mdns log",
+            "remote_discovery_log_tail": "mdns log",
         })
         ram_diagnostics_mock = mock.Mock(return_value="df /mnt/Memory:\nruntime paths:\nmissing /mnt/Memory/samba4/sbin/smbd")
         run = self.run_doctor_with_mocks(
@@ -2274,7 +2274,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
             extra_patches={
@@ -2283,9 +2283,9 @@ class CheckTests(unittest.TestCase):
             },
         )
         self.assertTrue(run.fatal)
-        self.assertTrue(any("managed mDNS takeover is not active" in result.message for result in run.results))
+        self.assertTrue(any("managed mDNS registrant is not active" in result.message for result in run.results))
         self.assertEqual(debug_fields["remote_rc_local_log_tail"], "rc log")
-        self.assertEqual(debug_fields["remote_mdns_log_tail"], "mdns log")
+        self.assertEqual(debug_fields["remote_discovery_log_tail"], "mdns log")
         self.assertEqual(debug_fields["remote_runtime_ram_diagnostics"], ram_diagnostics_mock.return_value)
         log_tail_mock.assert_called_once()
         ram_diagnostics_mock.assert_called_once()
@@ -2301,8 +2301,7 @@ class CheckTests(unittest.TestCase):
             "remote_manager_log_tail": "manager log",
             "remote_payload_log_dir": "/Volumes/dk2/.samba4",
             "remote_smbd_log_tail": timeout_text,
-            "remote_mdns_log_tail": timeout_text,
-            "remote_nbns_log_tail": timeout_text,
+            "remote_discovery_log_tail": timeout_text,
         }
         logs.update(overrides)
         return logs
@@ -2313,16 +2312,15 @@ class CheckTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.status, "FAIL")
         self.assertIn("data disk appears unresponsive", result.message)
-        self.assertIn("log.smbd, mdns.log, nbns.log", result.message)
+        self.assertIn("discovery.log, log.smbd", result.message)
         self.assertIn("/Volumes/dk2/.samba4/logs", result.message)
         self.assertIn("ramdisk reads succeeded", result.message)
-        self.assertEqual(result.details["data_disk_timed_out_logs"], ["log.smbd", "mdns.log", "nbns.log"])
+        self.assertEqual(result.details["data_disk_timed_out_logs"], ["discovery.log", "log.smbd"])
 
     def test_data_disk_unresponsive_result_flags_single_payload_log_timeout(self) -> None:
         result = _data_disk_unresponsive_result(
             self.data_disk_log_tails(
-                remote_mdns_log_tail="mdns log",
-                remote_nbns_log_tail="nbns log",
+                remote_discovery_log_tail="discovery log",
             )
         )
 
@@ -2356,8 +2354,7 @@ class CheckTests(unittest.TestCase):
         result = _data_disk_unresponsive_result(
             self.data_disk_log_tails(
                 remote_smbd_log_tail=error_text,
-                remote_mdns_log_tail=error_text,
-                remote_nbns_log_tail=error_text,
+                remote_discovery_log_tail=error_text,
             )
         )
 
@@ -2367,8 +2364,7 @@ class CheckTests(unittest.TestCase):
         result = _data_disk_unresponsive_result(
             self.data_disk_log_tails(
                 remote_smbd_log_tail="smbd log",
-                remote_mdns_log_tail="mdns log",
-                remote_nbns_log_tail="nbns log",
+                remote_discovery_log_tail="discovery log",
             )
         )
 
@@ -2383,7 +2379,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[CheckResult("FAIL", "SMB file create failed: NT_STATUS_UNSUCCESSFUL opening remote file")],
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             debug_fields=debug_fields,
             extra_patches={
                 "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": log_tail_mock,
@@ -2403,8 +2399,7 @@ class CheckTests(unittest.TestCase):
         log_tail_mock = mock.Mock(
             return_value=self.data_disk_log_tails(
                 remote_smbd_log_tail="smbd log",
-                remote_mdns_log_tail="mdns log",
-                remote_nbns_log_tail="nbns log",
+                remote_discovery_log_tail="discovery log",
             )
         )
         run = self.run_doctor_with_mocks(
@@ -2413,7 +2408,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[CheckResult("FAIL", "SMB file create failed: NT_STATUS_UNSUCCESSFUL opening remote file")],
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             debug_fields=debug_fields,
             extra_patches={
                 "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": log_tail_mock,
@@ -2530,7 +2525,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
             on_result=streamed.append,
@@ -2550,7 +2545,7 @@ class CheckTests(unittest.TestCase):
         demoted = [result for result in run.results if result.details.get("masked_by") == DOCTOR_CODE_DEVICE_STARTING_UP]
         self.assertTrue(demoted)
         self.assertTrue(all(result.status == "INFO" for result in demoted))
-        self.assertTrue(any("managed mDNS takeover is not active" in result.message for result in demoted))
+        self.assertTrue(any("managed mDNS registrant is not active" in result.message for result in demoted))
         self.assertEqual(failures[0].details["masked_failures"], [result.message for result in demoted])
         self.assertTrue(debug_fields["startup_grace_applied"])
         self.assertEqual(debug_fields["manager_startup_age"], {"seconds_ago": 41.0, "detail": "manager started 41s ago"})
@@ -2565,7 +2560,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             startup_grace=False,
             debug_fields=debug_fields,
@@ -2581,7 +2576,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertTrue(
             any(
-                result.status == "FAIL" and "managed mDNS takeover is not active" in result.message
+                result.status == "FAIL" and "managed mDNS registrant is not active" in result.message
                 for result in run.results
             )
         )
@@ -2600,7 +2595,7 @@ class CheckTests(unittest.TestCase):
             smb_port=mock.Mock(status="PASS", message="445 ok"),
             smb_instance=[],
             smb_listing=auth_failure,
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
             extra_patches={
@@ -2638,7 +2633,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=connection_failure,
             smbd_probe=mock.Mock(ready=True, detail="managed smbd is ready"),
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
@@ -2664,7 +2659,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
             extra_patches={
@@ -2679,7 +2674,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertTrue(
             any(
-                result.status == "FAIL" and "managed mDNS takeover is not active" in result.message
+                result.status == "FAIL" and "managed mDNS registrant is not active" in result.message
                 for result in run.results
             )
         )
@@ -2715,7 +2710,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             precomputed_probe_state=unsupported_state,
             extra_patches={
@@ -2784,7 +2779,7 @@ class CheckTests(unittest.TestCase):
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
             smbd_probe=smbd_probe,
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
             extra_patches={
@@ -2824,7 +2819,7 @@ class CheckTests(unittest.TestCase):
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
             smbd_probe=smbd_probe,
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             debug_fields=debug_fields,
             extra_patches={
                 "timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn": mast_probe_mock,
@@ -2845,7 +2840,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[CheckResult("FAIL", "SMB directory create failed: tree connect failed: NT_STATUS_BAD_NETWORK_NAME")],
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             debug_fields=debug_fields,
             extra_patches={
                 "timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn": mast_probe_mock,
@@ -2866,7 +2861,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS registrant not active"),
             run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb\n[Data]\n",
             debug_fields=debug_fields,
             extra_patches={
@@ -2894,7 +2889,7 @@ class CheckTests(unittest.TestCase):
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
             smbd_probe=smbd_probe,
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             debug_fields=debug_fields,
             extra_patches={
                 "timecapsulesmb.checks.doctor_debug.probe_mast_diagnostics_conn": mast_probe_mock,
@@ -2952,7 +2947,7 @@ class CheckTests(unittest.TestCase):
                 smb_listing=self.smb_listing_result(),
                 smb_file_ops=[],
                 smbd_probe=smbd_probe,
-                mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+                mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
                 run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
             )
         self.assertTrue(run.fatal)
@@ -3050,13 +3045,13 @@ class CheckTests(unittest.TestCase):
     def test_run_doctor_checks_retries_transient_mdns_process_failure(self) -> None:
         transient = mock.Mock(
             ready=False,
-            detail="mdns process is not running",
-            lines=("FAIL:mdns process is not running",),
+            detail="discovery process is not running",
+            lines=("FAIL:discovery process is not running",),
         )
         ready = mock.Mock(
             ready=True,
-            detail="managed mDNS takeover active",
-            lines=("PASS:mdns process is running", "PASS:mdns bound to required UDP 5353 listeners"),
+            detail="managed mDNS registrant active",
+            lines=("PASS:discovery process is running", "PASS:mdns bound to required UDP 5353 listeners"),
         )
         mdns_mock = mock.Mock(side_effect=[transient, ready])
 
@@ -3065,29 +3060,29 @@ class CheckTests(unittest.TestCase):
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
                 skip_bonjour=True,
                 skip_smb=True,
-                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock},
             )
 
         self.assertFalse(run.fatal)
         self.assertEqual(mdns_mock.call_count, 2)
         sleep_mock.assert_called_once_with(10)
-        self.assertFalse(any(result.message == "mdns process is not running" for result in run.results))
+        self.assertFalse(any(result.message == "discovery process is not running" for result in run.results))
         self.assertTrue(any(result.status == "PASS" and result.message == "mdns bound to required UDP 5353 listeners" for result in run.results))
 
-    def test_run_doctor_checks_retries_transient_mdns_udp_binding_failure(self) -> None:
+    def test_run_doctor_checks_retries_native_nbns_startup(self) -> None:
         transient = mock.Mock(
             ready=False,
-            detail="mdns is not bound to required UDP 5353 listener",
+            detail="discovery native NBNS is still starting",
             lines=(
-                "PASS:mdns process is running",
-                "FAIL:mdns is not bound to required UDP 5353 listener",
+                "PASS:discovery process is running",
+                "FAIL:discovery native NBNS is still starting",
             ),
         )
         ready = mock.Mock(
             ready=True,
-            detail="managed mDNS takeover active",
+            detail="managed mDNS registrant active",
             lines=(
-                "PASS:mdns process is running",
+                "PASS:discovery process is running",
                 "PASS:mdns bound to required UDP 5353 listeners",
             ),
         )
@@ -3098,20 +3093,20 @@ class CheckTests(unittest.TestCase):
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
                 skip_bonjour=True,
                 skip_smb=True,
-                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock},
             )
 
         self.assertFalse(run.fatal)
         self.assertEqual(mdns_mock.call_count, 2)
         sleep_mock.assert_called_once_with(10)
-        self.assertFalse(any(result.message == "mdns is not bound to required UDP 5353 listener" for result in run.results))
+        self.assertFalse(any(result.message == "discovery native NBNS is still starting" for result in run.results))
         self.assertTrue(any(result.status == "PASS" and result.message == "mdns bound to required UDP 5353 listeners" for result in run.results))
 
-    def test_run_doctor_checks_exhausts_transient_mdns_udp_binding_retries(self) -> None:
+    def test_run_doctor_checks_exhausts_transient_mdns_process_retries(self) -> None:
         mdns_probe = mock.Mock(
             ready=False,
-            detail="mdns is not bound to required UDP 5353 listener",
-            lines=("FAIL:mdns is not bound to required UDP 5353 listener",),
+            detail="discovery process is not running",
+            lines=("FAIL:discovery process is not running",),
         )
         mdns_mock = mock.Mock(return_value=mdns_probe)
 
@@ -3120,21 +3115,21 @@ class CheckTests(unittest.TestCase):
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
                 skip_bonjour=True,
                 skip_smb=True,
-                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock},
             )
 
         self.assertTrue(run.fatal)
         self.assertEqual(mdns_mock.call_count, 3)
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [10, 15])
-        self.assertTrue(any(result.status == "FAIL" and result.message == "mdns is not bound to required UDP 5353 listener" for result in run.results))
+        self.assertTrue(any(result.status == "FAIL" and result.message == "discovery process is not running" for result in run.results))
 
     def test_run_doctor_checks_does_not_retry_structural_mdns_failure_mixed_with_transient_failure(self) -> None:
         mdns_probe = mock.Mock(
             ready=False,
-            detail="mdns binary missing at /mnt/Flash/mdns-advertiser; mdns process is not running",
+            detail="discovery binary missing at /mnt/Flash/discoveryd; discovery process is not running",
             lines=(
-                "FAIL:mdns binary missing at /mnt/Flash/mdns-advertiser",
-                "FAIL:mdns process is not running",
+                "FAIL:discovery binary missing at /mnt/Flash/discoveryd",
+                "FAIL:discovery process is not running",
             ),
         )
         mdns_mock = mock.Mock(return_value=mdns_probe)
@@ -3144,7 +3139,7 @@ class CheckTests(unittest.TestCase):
                 ssh_login=mock.Mock(status="PASS", message="ssh ok"),
                 skip_bonjour=True,
                 skip_smb=True,
-                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn": mdns_mock},
+                extra_patches={"timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn": mdns_mock},
             )
 
         self.assertTrue(run.fatal)
@@ -3158,7 +3153,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
         )
         self.assertFalse(run.fatal)
         self.assertTrue(any(result.status == "PASS" and "Detected supported device: NetBSD 6.0" in result.message for result in run.results))
@@ -3190,7 +3185,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             precomputed_probe_state=precomputed,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_connection_state": mock.Mock(
@@ -3228,7 +3223,7 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             extra_patches={"timecapsulesmb.checks.doctor_steps.probe_connection_state": mock.Mock(return_value=probe_state)},
         )
         self.assertTrue(run.fatal)
@@ -3831,6 +3826,91 @@ class CheckTests(unittest.TestCase):
         messages = [result.message for result in run.results]
         self.assertIn("Bonjour IPv4: _adisk._tcp TXT does not advertise active Samba share(s): Data", messages)
         self.assertIn("Bonjour IPv4: _adisk._tcp TXT advertises stale share(s) not present in active Samba config: Backup", messages)
+
+    def _apple_responder_doctor_run(self, instances, records, *, advertise_afp: bool = False):
+        values = self.valid_doctor_values(
+            TC_HOST="root@10.0.0.2",
+            TC_MDNS_INSTANCE_NAME="Home",
+            TC_MDNS_HOST_LABEL="home",
+            TC_NETBIOS_NAME="Home",
+            TC_MDNS_ADVERTISE_AFP="true" if advertise_afp else "false",
+        )
+        return self.run_doctor_with_mocks(
+            values,
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_smb=True,
+            runtime_naming_identity=self.runtime_identity_from_values(values),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
+                    return_value=RemoteNetworkCapabilitiesProbeResult(
+                        smb_bind_interfaces="10.0.0.2/24",
+                        mdns_families=("ipv4",),
+                        nbns_families=("ipv4",),
+                    )
+                ),
+                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
+                ),
+                "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": mock.Mock(side_effect=check_bonjour_host_ip),
+                "timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(side_effect=OSError("no dns")),
+                "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=False),
+            },
+        )
+
+    def _apple_responder_records(self, *, model: str | None = "TimeCapsule6,116"):
+        records = [
+            BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.2"]),
+            BonjourResolvedService(
+                "Home", "home.local", "_adisk._tcp.local.", port=9,
+                properties={"sys": "waMA=80:EA:96:E6:58:68,adVF=0x1010",
+                            "dk2": "adVF=0x82,adVN=Data,adVU=117b94b1-3cf3-5600-b192-cc0dd671b852"},
+            ),
+        ]
+        if model is not None:
+            records.append(BonjourResolvedService("Home", "home.local", "_device-info._tcp.local.", port=0, properties={"model": model}))
+        return records
+
+    def test_run_doctor_checks_passes_apple_responder_expectations(self) -> None:
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local."),
+            BonjourServiceInstance("_adisk._tcp.local.", "Home", "Home._adisk._tcp.local."),
+            BonjourServiceInstance("_device-info._tcp.local.", "Home", "Home._device-info._tcp.local."),
+            # Another device with a similar name is not a rename of ours.
+            BonjourServiceInstance("_smb._tcp.local.", "Home (Office)", "Home (Office)._smb._tcp.local."),
+        ]
+        run = self._apple_responder_doctor_run(instances, self._apple_responder_records())
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: no _afpovertcp._tcp advertised for 'Home'", messages)
+        self.assertIn("Bonjour IPv4: no auto-renamed \"(2)\" _smb/_adisk instance for 'Home'", messages)
+        self.assertIn("Bonjour IPv4: _device-info._tcp model is Apple's: TimeCapsule6,116", messages)
+        self.assertFalse(any(result.status == "FAIL" and "Apple" in result.message for result in run.results), messages)
+
+    def test_run_doctor_checks_fails_on_uninvited_afp_and_renamed_instances_and_foreign_model(self) -> None:
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local."),
+            BonjourServiceInstance("_smb._tcp.local.", "Home (2)", "Home (2)._smb._tcp.local."),
+            BonjourServiceInstance("_adisk._tcp.local.", "Home (2)", "Home (2)._adisk._tcp.local."),
+            BonjourServiceInstance("_afpovertcp._tcp.local.", "Home", "Home._afpovertcp._tcp.local."),
+            BonjourServiceInstance("_device-info._tcp.local.", "Home", "Home._device-info._tcp.local."),
+        ]
+        run = self._apple_responder_doctor_run(instances, self._apple_responder_records(model="Macmini9,1"))
+        self.assertTrue(run.fatal)
+        failures = [result.message for result in run.results if result.status == "FAIL"]
+        self.assertTrue(any("_afpovertcp._tcp is advertised for 'Home' although Advertise AFP over Bonjour is off" in m and "macOS 26.x/27" in m for m in failures), failures)
+        self.assertTrue(any("auto-renamed Bonjour instance(s) found: Home (2) (_adisk), Home (2) (_smb)" in m for m in failures), failures)
+        self.assertTrue(any("_device-info._tcp model for 'Home' is Macmini9,1" in m for m in failures), failures)
+
+    def test_run_doctor_checks_accepts_afp_when_advertising_is_enabled(self) -> None:
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local."),
+            BonjourServiceInstance("_afpovertcp._tcp.local.", "Home", "Home._afpovertcp._tcp.local."),
+        ]
+        run = self._apple_responder_doctor_run(instances, self._apple_responder_records(model=None), advertise_afp=True)
+        messages = [result.message for result in run.results]
+        self.assertIn("Bonjour IPv4: _afpovertcp._tcp advertised for 'Home' as configured", messages)
+        self.assertFalse(any("_device-info._tcp model" in m for m in messages))   # nothing resolved: no verdict
+        self.assertFalse(any(result.status == "FAIL" and "_afpovertcp" in result.message for result in run.results))
 
     def test_run_doctor_checks_fails_when_adisk_service_is_missing_for_active_shares(self) -> None:
         instance_name = "Home"
@@ -4832,6 +4912,11 @@ class CheckTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
         }
+        # The USB printer step reads acp prni over its own SSH call; keep the
+        # scripted run_ssh sequence below for the checks it was written for.
+        printer_patch = mock.patch("timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn", return_value=UsbPrinterProbeResult(present=False, name=None))
+        printer_patch.start()
+        self.addCleanup(printer_patch.stop)
         with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
@@ -4839,7 +4924,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_instance", return_value=[]):
                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
-                                    with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
+                                    with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn", return_value=mock.Mock(ready=True, detail="managed mDNS registrant active")):
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn", return_value=self.runtime_identity_from_values(values)):
                                             with mock.patch(
                                                 "timecapsulesmb.device.probe.run_ssh",
@@ -4884,6 +4969,11 @@ class CheckTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
         }
+        # The USB printer step reads acp prni over its own SSH call; keep the
+        # scripted run_ssh sequence below for the checks it was written for.
+        printer_patch = mock.patch("timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn", return_value=UsbPrinterProbeResult(present=False, name=None))
+        printer_patch.start()
+        self.addCleanup(printer_patch.stop)
         with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
@@ -4891,7 +4981,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_instance", return_value=[]):
                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
-                                    with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
+                                    with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn", return_value=mock.Mock(ready=True, detail="managed mDNS registrant active")):
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn", return_value=self.runtime_identity_from_values(values)):
                                             with mock.patch(
                                                 "timecapsulesmb.device.probe.run_ssh",
@@ -4931,6 +5021,11 @@ class CheckTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
         }
+        # The USB printer step reads acp prni over its own SSH call; keep the
+        # scripted run_ssh sequence below for the checks it was written for.
+        printer_patch = mock.patch("timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn", return_value=UsbPrinterProbeResult(present=False, name=None))
+        printer_patch.start()
+        self.addCleanup(printer_patch.stop)
         with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
@@ -4938,7 +5033,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_instance", return_value=[]):
                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
-                                    with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
+                                    with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn", return_value=mock.Mock(ready=True, detail="managed mDNS registrant active")):
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn", return_value=self.runtime_identity_from_values(values)):
                                             with mock.patch(
                                                 "timecapsulesmb.device.probe.run_ssh",
@@ -4963,91 +5058,6 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(fatal)
         self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
         nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.9", "10.0.0.9")
-
-    def test_run_doctor_checks_explains_unreachable_lan_only_smb_bind(self) -> None:
-        values = self.valid_doctor_values(
-            TC_HOST="root@192.168.4.6",
-            TC_SMB_BIND_LAN_ONLY="true",
-            TC_MDNS_HOST_LABEL="drwho",
-            TC_MDNS_INSTANCE_NAME="DrWho",
-            TC_NETBIOS_NAME="drwho",
-        )
-        listing_result = CheckResult(
-            "FAIL",
-            "authenticated SMB listing failed after 1 attempt(s): attempt 1 192.168.4.6: connection refused",
-            {
-                "attempts": [
-                    {
-                        "server": "192.168.4.6",
-                        "ip_address": "192.168.4.6",
-                        "outcome": "error",
-                        "failure": "Connection refused",
-                    }
-                ]
-            },
-        )
-        debug_fields: dict[str, object] = {}
-
-        run = self.run_doctor_with_mocks(
-            values,
-            ssh_login=CheckResult("PASS", "ssh ok"),
-            xattr_result=CheckResult("PASS", "xattr ok"),
-            read_active_smb_conf="[global]\n    netbios name = drwho\n[TMData]\n    path = /Volumes/dk2/ShareRoot\n",
-            skip_bonjour=True,
-            smb_listing=listing_result,
-            debug_fields=debug_fields,
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="192.168.1.1/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
-                    return_value=("192.168.4.171",)
-                ),
-                "timecapsulesmb.checks.doctor_steps.time.sleep": mock.Mock(),
-            },
-        )
-
-        self.assertTrue(run.fatal)
-        bind_result = next(result for result in run.results if "Bind SMB to LAN Only" in result.message)
-        self.assertEqual(bind_result.status, "FAIL")
-        self.assertIn("192.168.1.0/24", bind_result.message)
-        self.assertIn("192.168.4.6", bind_result.message)
-        self.assertEqual(bind_result.details["code"], "smb_bind_lan_only_unreachable")
-        self.assertEqual(bind_result.details["domain"], "SMB Auth")
-        self.assertEqual(bind_result.details["bound_addresses"], ["192.168.1.1"])
-        self.assertEqual(bind_result.details["outside_checked_target_ips"], ["192.168.4.6"])
-        self.assertEqual(
-            debug_fields["runtime_network_plan"]["ipv4"],
-            {
-                "remote_addresses": ["192.168.1.1"],
-                "remote_cidrs": ["192.168.1.0/24"],
-                "local_sources": [],
-                "mdns_expected": True,
-                "samba_expected": True,
-                "nbns_expected": True,
-                "endpoints": [
-                    {
-                        "address": "192.168.1.1",
-                        "cidr": "192.168.1.0/24",
-                        "on_link_sources": [],
-                        "local_sources": [],
-                        "route_state": "unknown",
-                        "route_source": None,
-                        "route_error": None,
-                        "route_errno": None,
-                    }
-                ],
-            },
-        )
-        self.assertEqual(run.mocks.check_authenticated_smb_listing.call_count, 3)
-        self.assertEqual(
-            run.mocks.check_authenticated_smb_listing.call_args_list[0],
-            mock.call("admin", "pw", ["drwho.local", "192.168.4.6"], port=445),
-        )
 
     def test_run_doctor_checks_checks_nbns_only_for_reachable_ipv4(self) -> None:
         nbns_mock = mock.Mock(return_value=mock.Mock(status="PASS", message="nbns ok"))
@@ -5380,7 +5390,7 @@ class CheckTests(unittest.TestCase):
                                         "timecapsulesmb.checks.doctor_steps.probe_remote_interface_conn",
                                         return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
                                     ):
-                                        with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
+                                        with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn", return_value=mock.Mock(ready=True, detail="managed mDNS registrant active")):
                                             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn", side_effect=RuntimeError("flash config probe failed")):
                                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
@@ -5413,7 +5423,7 @@ class CheckTests(unittest.TestCase):
                                         "timecapsulesmb.checks.doctor_steps.probe_remote_interface_conn",
                                         return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
                                     ):
-                                        with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
+                                        with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn", return_value=mock.Mock(ready=True, detail="managed mDNS registrant active")):
                                             with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn", side_effect=SshError("ssh failed")):
                                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)

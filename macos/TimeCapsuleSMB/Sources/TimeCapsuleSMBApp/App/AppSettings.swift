@@ -401,7 +401,6 @@ struct AppSettingsDraft: Equatable {
     var nbnsEnabled: Bool
     var rsyncEnabled: Bool
     var internalShareUseDiskRoot: Bool
-    var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
@@ -427,7 +426,6 @@ struct AppSettingsDraft: Equatable {
         nbnsEnabled = settings.defaultDeviceSettings.nbnsEnabled
         rsyncEnabled = settings.defaultDeviceSettings.rsyncEnabled
         internalShareUseDiskRoot = settings.defaultDeviceSettings.internalShareUseDiskRoot
-        smbBindLanOnly = settings.defaultDeviceSettings.smbBindLanOnly
         smbBrowseCompatibility = settings.defaultDeviceSettings.smbBrowseCompatibility
         mdnsAdvertiseAFP = settings.defaultDeviceSettings.mdnsAdvertiseAFP
         anyProtocol = settings.defaultDeviceSettings.anyProtocol
@@ -480,7 +478,6 @@ struct AppSettingsDraft: Equatable {
                 nbnsEnabled: nbnsEnabled,
                 rsyncEnabled: rsyncEnabled,
                 internalShareUseDiskRoot: internalShareUseDiskRoot,
-                smbBindLanOnly: smbBindLanOnly,
                 smbBrowseCompatibility: smbBrowseCompatibility,
                 mdnsAdvertiseAFP: mdnsAdvertiseAFP,
                 anyProtocol: anyProtocol,

@@ -66,8 +66,6 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     ENV_PATH,
     MANAGED_PAYLOAD_DIR_NAME,
-    airport_exact_display_name_from_config,
-    airport_family_display_name_from_config,
     render_env_text,
 )
 from timecapsulesmb.core.paths import AppPaths
@@ -341,7 +339,7 @@ class CliTests(unittest.TestCase):
         status = "PASS" if ready else "FAIL"
         detail = "managed runtime is ready" if ready else "managed runtime is not ready"
         smbd = readiness_result(ready, detail, (f"{status}:managed smbd ready",))
-        mdns = readiness_result(ready, detail, (f"{status}:managed mDNS takeover active",))
+        mdns = readiness_result(ready, detail, (f"{status}:managed mDNS registrant active",))
         return ManagedRuntimeProbeResult(
             ready=ready,
             detail=detail,
@@ -352,6 +350,9 @@ class CliTests(unittest.TestCase):
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
         self._telemetry_client = mock.Mock()
+        self._flash_capacity = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
+        )
         for target in (
             "timecapsulesmb.cli.configure.TelemetryClient.from_config",
             "timecapsulesmb.cli.deploy.TelemetryClient.from_config",
@@ -874,7 +875,7 @@ class CliTests(unittest.TestCase):
         mocks = SimpleNamespace()
         raised = None
         if artifacts is None:
-            artifacts = [("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]
+            artifacts = [("smbd", True, "ok"), ("discovery", True, "ok")]
         config_values = values or self.make_valid_env()
         payload_home = self._payload_home(mount_root, MANAGED_PAYLOAD_DIR_NAME)
         if mast_volumes is None:
@@ -1865,13 +1866,13 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_SAMBA_USER", fake_values)
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", fake_values)
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", fake_values)
         rendered_env = render_env_text(fake_values)
         self.assertNotIn("TC_AIRPORT_SYAP", rendered_env)
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", rendered_env)
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
-        self.assertEqual(fake_values["TC_SMB_BIND_LAN_ONLY"], "false")
+        self.assertNotIn("TC_SMB_BIND_LAN_ONLY", fake_values)
         self.assertEqual(fake_values["TC_SMB_BROWSE_COMPATIBILITY"], "false")
         self.assertEqual(fake_values["TC_MDNS_ADVERTISE_AFP"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
@@ -1957,28 +1958,6 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_SMB_BROWSE_COMPATIBILITY"], "true")
-
-    def test_configure_hidden_no_smb_bind_lan_only_arg_writes_false(self) -> None:
-        result = self.run_configure_cli(
-            ["--no-smb-bind-lan-only"],
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_SMB_BIND_LAN_ONLY"], "false")
-
-    def test_configure_hidden_smb_bind_lan_only_arg_writes_true(self) -> None:
-        result = self.run_configure_cli(
-            ["--smb-bind-lan-only"],
-            prompt_side_effect=self.configure_prompt_defaults(),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_SMB_BIND_LAN_ONLY"], "true")
 
     def test_configure_hidden_no_mdns_advertise_afp_arg_writes_false(self) -> None:
         result = self.run_configure_cli(
@@ -2740,7 +2719,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
         self.assertNotIn("mDNS device model hint", seen_defaults)
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
 
     def test_configure_reprompts_link_local_ssh_target(self) -> None:
         prompt_values = iter([
@@ -2834,11 +2813,11 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         text = result.text
         self.assertIn("Discovery skipped.", text)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", text)
-        self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule8,119", text)
+        self.assertNotIn("Using probed TC_MDNS_DEVICE_MODEL", text)
 
     def test_configure_fails_when_probe_returns_unsupported_device(self) -> None:
         prompt_values = iter([
@@ -3037,9 +3016,9 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "106")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,106")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 106", result.text)
-        self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule6,106", result.text)
+        self.assertNotIn("Using probed TC_MDNS_DEVICE_MODEL", result.text)
 
     def test_configure_probed_netbsd4le_airport_identity_identity_autofills_generation(self) -> None:
         prompt_values = iter([
@@ -3064,9 +3043,9 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "113")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,113")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 113", result.text)
-        self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule6,113", result.text)
+        self.assertNotIn("Using probed TC_MDNS_DEVICE_MODEL", result.text)
 
     def test_configure_uses_discovered_airport_syap_without_prompting(self) -> None:
         record = BonjourResolvedService(
@@ -3102,7 +3081,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
     def test_configure_discovered_syap_beats_invalid_existing_syap(self) -> None:
@@ -3140,7 +3119,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("Airport Utility syAP code", seen_labels)
         self.assertNotIn("mDNS device model hint", seen_labels)
 
@@ -3182,7 +3161,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertNotIn("Airport Utility syAP code", seen_defaults)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
@@ -3222,7 +3201,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("Airport Utility syAP code", seen_labels)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
@@ -3291,7 +3270,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertNotIn("Airport Utility syAP code", seen_defaults)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
@@ -3641,7 +3620,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
@@ -3679,9 +3658,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
-        self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule8,119", result.text)
+        self.assertNotIn("Using probed TC_MDNS_DEVICE_MODEL", result.text)
 
     def test_configure_skipped_discovery_ignores_legacy_syap_model_when_unusable(self) -> None:
         existing = {
@@ -3711,7 +3690,6 @@ class CliTests(unittest.TestCase):
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
-            extra_patches={"timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap": mock.Mock(return_value=None)},
         )
         self.assertEqual(result.rc, 0)
         self.assertNotIn("TC_AIRPORT_SYAP", result.values)
@@ -3818,7 +3796,6 @@ class CliTests(unittest.TestCase):
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
-            extra_patches={"timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap": mock.Mock(return_value=None)},
         )
         self.assertEqual(result.rc, 0)
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
@@ -3852,7 +3829,6 @@ class CliTests(unittest.TestCase):
             prompt_side_effect=fake_prompt,
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
-            extra_patches={"timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap": mock.Mock(return_value=None)},
         )
         self.assertEqual(result.rc, 0)
         self.assertNotIn("mDNS device model hint", seen_defaults)
@@ -4173,7 +4149,7 @@ class CliTests(unittest.TestCase):
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
 
     def test_configure_uses_prompted_syap_to_fill_hidden_mdns_device_model_when_undetected(self) -> None:
         prompt_values = iter([
@@ -4263,7 +4239,7 @@ class CliTests(unittest.TestCase):
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "ip_version": "V4Only"}
             kwargs["debug_fields"]["remote_rc_local_log_tail"] = "rc line 1\nrc line 2"
-            kwargs["debug_fields"]["remote_mdns_log_tail"] = "mdns line"
+            kwargs["debug_fields"]["remote_discovery_log_tail"] = "mdns line"
             return results, True
 
         with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
@@ -4274,7 +4250,7 @@ class CliTests(unittest.TestCase):
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("bonjour_zeroconf={instance_count:0,ip_version:V4Only}", telemetry_error)
         self.assertIn("remote_rc_local_log_tail=rc line 1\nrc line 2", telemetry_error)
-        self.assertIn("remote_mdns_log_tail=mdns line", telemetry_error)
+        self.assertIn("remote_discovery_log_tail=mdns line", telemetry_error)
 
     def test_doctor_failure_telemetry_includes_bounded_mast_probe_debug_fields(self) -> None:
         output = io.StringIO()
@@ -4467,7 +4443,7 @@ class CliTests(unittest.TestCase):
                         "expected_share_found": True,
                     },
                 ],
-                "remote_mdns_log_tail": (
+                "remote_discovery_log_tail": (
                     "mdns transport active: reason=startup status=degraded ipv4=off ipv6=bridge0 "
                     "required_ipv4=1 required_ipv6=0 missing_required_ipv4=1 missing_required_ipv6=0 "
                     "last_ipv4_errno=48 last_ipv6_errno=0\n"
@@ -4507,7 +4483,7 @@ class CliTests(unittest.TestCase):
                 "authenticated_smb_listing_attempts": [
                     {"outcome": "pass", "expected_share_found": True},
                 ],
-                "remote_mdns_log_tail": (
+                "remote_discovery_log_tail": (
                     "mdns auto-ip active: link[0] iface=bridge0 mdns_ipv4=1 mdns_ipv6=1\n"
                 ),
             },
@@ -4534,7 +4510,7 @@ class CliTests(unittest.TestCase):
                     "manager mDNS recovery: starting mdns advertiser in auto-ip mode",
                 ]
             )
-            kwargs["debug_fields"]["remote_mdns_log_tail"] = "\n".join(
+            kwargs["debug_fields"]["remote_discovery_log_tail"] = "\n".join(
                 [
                     "serving summary: source=generated",
                     "serving service: type=_smb._tcp.local. instance=Home port=445 host=home.local.",
@@ -4544,6 +4520,10 @@ class CliTests(unittest.TestCase):
                     "serving service: type=_riousbprint._tcp.local. instance=Canon MP490 series port=10000 host=home.local. cmd=BJL,BJRaster3",
                     "serving service: type=_pdl-datastream._tcp.local. instance=Canon MP490 series port=9100 host=home.local. cmd=BJL,BJRaster3",
                     "mDNS takeover established after SIGTERM + 0ms using exclusive bind",
+                    "2026-09-16 07:35:21 registrant: plan validated mode=bridge desired=2 [if=9 _smb._tcp] [if=9 _adisk._tcp,_airport]",
+                    "2026-09-16 07:35:22 registrant: name conflict if=9 _smb._tcp \"Home\"; retrying with backoff",
+                    "2026-09-16 07:35:30 registrant: mDNSResponder unreachable; registrations degraded until it answers (never started by us; reboot recovers)",
+                    "registrant: mDNSResponder accepted the connection but did not answer; exiting for relaunch",
                 ]
             )
             return results, True
@@ -4560,6 +4540,10 @@ class CliTests(unittest.TestCase):
             telemetry_error,
         )
         self.assertIn("INFO mDNS takeover established after SIGTERM + 0ms using exclusive bind", telemetry_error)
+        self.assertIn("INFO mdns registrant validated mode=bridge desired=2 [if=9 _smb._tcp] [if=9 _adisk._tcp,_airport]", telemetry_error)
+        self.assertIn("WARN mdns registrant: name conflict if=9 _smb._tcp \"Home\"; retrying with backoff", telemetry_error)
+        self.assertIn("WARN Apple mDNSResponder is unreachable; nothing respawns it, reboot the device", telemetry_error)
+        self.assertIn("WARN mdns registrant exited because Apple mDNSResponder stopped answering; the manager relaunches it, a wedged daemon needs a reboot", telemetry_error)
 
     def test_doctor_includes_soft_preinspection_error_in_failure_telemetry(self) -> None:
         output = io.StringIO()
@@ -4648,17 +4632,6 @@ class CliTests(unittest.TestCase):
                     rc = doctor.main([])
         self.assertEqual(rc, 0)
         self.assertIn("INFO advertised Bonjour instance: Home-Samba", output.getvalue())
-
-    def test_exact_device_display_name_uses_configured_identity(self) -> None:
-        self.assertEqual(
-            airport_exact_display_name_from_config(
-                AppConfig.from_values({
-                    "TC_AIRPORT_SYAP": "120",
-                    "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
-                })
-            ),
-            "AirPort Extreme 6th generation",
-        )
 
     def test_set_ssh_returns_error_when_env_missing(self) -> None:
         output = io.StringIO()
@@ -5048,7 +5021,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_dry_run_prints_mast_payload_placeholder(self) -> None:
         result = self.run_deploy_cli(
             ["--dry-run"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
         )
@@ -5097,7 +5070,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["device_path"], "resolved from MaSt at deploy time")
         self.assertEqual(payload["payload_dir"], "resolved from MaSt at deploy time/.samba4")
         self.assertEqual(payload["apple_mount_wait_seconds"], DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-        self.assertEqual(payload["payload_targets"]["nbns"], "resolved from MaSt at deploy time/.samba4/nbns-advertiser")
+        self.assertEqual(payload["payload_targets"]["discovery"], "resolved from MaSt at deploy time/.samba4/discoveryd")
         self.assertIn(
             {
                 "source_id": GENERATED_FLASH_CONFIG_SOURCE,
@@ -5128,7 +5101,7 @@ class CliTests(unittest.TestCase):
                 "managed_runtime_manager_process",
                 "managed_smbd_parent_process",
                 "managed_smbd_bound_445",
-                "managed_mdns_takeover_ready",
+                "managed_mdns_registrant_ready",
                 "managed_mdns_settle_healthy",
                 "managed_rsync_disabled",
             ],
@@ -5168,7 +5141,7 @@ class CliTests(unittest.TestCase):
             ".samba4",
             wait_seconds=7,
         )
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 4)
         self.assertEqual(result.mocks.upload_deployment_payload.call_count, 2)
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         result.mocks.verify_payload_home_conn.assert_has_calls(
@@ -5178,9 +5151,11 @@ class CliTests(unittest.TestCase):
             ]
         )
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        result.mocks.flush_remote_filesystem_writes.assert_called_once_with(
-            result.mocks.wait_for_mast_volumes_conn.call_args.args[0]
-        )
+        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
+        self.assertTrue(all(
+            call.args == (result.mocks.wait_for_mast_volumes_conn.call_args.args[0],)
+            for call in result.mocks.flush_remote_filesystem_writes.call_args_list
+        ))
         self.assertIn("Deleting old deployed files...", result.text)
         self.assertIn("Flushing payload to disk...", result.text)
         self.assertIn("Deployed Samba payload to /Volumes/dk2/.samba4", result.text)
@@ -5188,7 +5163,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Starting deployed runtime without reboot.", result.text)
         self.assertIn("Runtime activation complete.", result.text)
         self.assertEqual(
-            result.mocks.run_remote_actions.call_args_list[2].args[1],
+            result.mocks.run_remote_actions.call_args_list[3].args[1],
             [
                 StopManagerAction(),
                 StopWatchdogAction(),
@@ -5224,7 +5199,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("generated:adisk.uuid", captured["source_ids"])
         self.assertNotIn("generated:nbns.enabled", captured["source_ids"])
         flash_config = str(captured["flash_config"])
-        self.assertIn("TC_CONFIG_VERSION=2\n", flash_config)
+        self.assertIn("TC_CONFIG_VERSION=3\n", flash_config)
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", flash_config)
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", flash_config)
         self.assertIn("TELEMETRY=true\n", flash_config)
@@ -5333,23 +5308,6 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", captured["flash_config"])
-
-    def test_deploy_uses_configured_smb_bind_lan_only(self) -> None:
-        captured: dict[str, str] = {}
-
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
-
-        result = self.run_deploy_cli(
-            ["--no-reboot"],
-            values=self.make_valid_env(TC_SMB_BIND_LAN_ONLY="false"),
-            patch_actions=True,
-            patch_upload=True,
-            upload_side_effect=fake_upload,
-        )
-
-        self.assertEqual(result.rc, 0)
-        self.assertIn("SMB_BIND_LAN_ONLY=0\n", captured["flash_config"])
 
     def test_deploy_uses_configured_mdns_advertise_afp(self) -> None:
         captured: dict[str, str] = {}
@@ -5485,14 +5443,12 @@ class CliTests(unittest.TestCase):
             [
                 "--no-reboot",
                 "--internal-share-use-disk-root",
-                "--smb-bind-lan-only",
                 "--smb-browse-compatibility",
                 "--netatalk",
                 "--debug-logging",
             ],
             values=self.make_valid_env(
                 TC_INTERNAL_SHARE_USE_DISK_ROOT="false",
-                TC_SMB_BIND_LAN_ONLY="false",
                 TC_SMB_BROWSE_COMPATIBILITY="false",
                 TC_FRUIT_METADATA_NETATALK="false",
                 TC_DEBUG_LOGGING="false",
@@ -5505,14 +5461,12 @@ class CliTests(unittest.TestCase):
             [
                 "--no-reboot",
                 "--no-internal-share-use-disk-root",
-                "--no-smb-bind-lan-only",
                 "--no-smb-browse-compatibility",
                 "--no-netatalk",
                 "--no-debug-logging",
             ],
             values=self.make_valid_env(
                 TC_INTERNAL_SHARE_USE_DISK_ROOT="true",
-                TC_SMB_BIND_LAN_ONLY="true",
                 TC_SMB_BROWSE_COMPATIBILITY="true",
                 TC_FRUIT_METADATA_NETATALK="true",
                 TC_DEBUG_LOGGING="true",
@@ -5526,7 +5480,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(disabled.rc, 0)
         for line in (
             "INTERNAL_SHARE_USE_DISK_ROOT=1\n",
-            "SMB_BIND_LAN_ONLY=1\n",
             "SMB_BROWSE_COMPATIBILITY=1\n",
             "FRUIT_METADATA_NETATALK=1\n",
             "SMBD_DEBUG_LOGGING=1\n",
@@ -5534,7 +5487,6 @@ class CliTests(unittest.TestCase):
             self.assertIn(line, captured[0])
         for line in (
             "INTERNAL_SHARE_USE_DISK_ROOT=0\n",
-            "SMB_BIND_LAN_ONLY=0\n",
             "SMB_BROWSE_COMPATIBILITY=0\n",
             "FRUIT_METADATA_NETATALK=0\n",
             "SMBD_DEBUG_LOGGING=0\n",
@@ -5676,7 +5628,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_no_reboot_activates_after_upload_phase(self) -> None:
         result = self.run_deploy_cli(
             ["--no-reboot"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
             reboot_side_effect=AssertionError("deploy --no-reboot should not request a reboot"),
@@ -5684,14 +5636,14 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         result.mocks.remote_request_reboot.assert_not_called()
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 4)
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        result.mocks.flush_remote_filesystem_writes.assert_called_once()
+        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
         result.mocks.verify_managed_runtime.assert_called_once()
         self.assertIn("Starting deployed runtime without reboot.", result.text)
         self.assertIn("Runtime activation complete.", result.text)
         self.assertEqual(
-            result.mocks.run_remote_actions.call_args_list[2].args[1],
+            result.mocks.run_remote_actions.call_args_list[3].args[1],
             [
                 StopManagerAction(),
                 StopWatchdogAction(),
@@ -5703,7 +5655,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_no_reboot_no_wait_treats_no_wait_as_inapplicable(self) -> None:
         result = self.run_deploy_cli(
             ["--no-reboot", "--no-wait"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
             reboot_side_effect=AssertionError("deploy --no-reboot should not request a reboot"),
@@ -5719,7 +5671,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
         result = self.run_deploy_cli(
             ["--yes", "--no-wait"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
             wait_side_effect=AssertionError("deploy --no-wait should not wait for SSH"),
@@ -5730,7 +5682,7 @@ class CliTests(unittest.TestCase):
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.wait_for_ssh_state_conn.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
         self.assertIn("Requesting reboot...", result.text)
         self.assertIn("Reboot requested; not waiting for the device to go down or come back.", result.text)
         self.assertIn("Post-reboot runtime verification skipped.", result.text)
@@ -5754,7 +5706,7 @@ class CliTests(unittest.TestCase):
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.wait_for_ssh_state_conn.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
         self.assertNotIn("Activating deployed runtime after reboot.", result.text)
         self.assertNotIn("NetBSD4 activation complete.", result.text)
         self.assertIn("Post-reboot runtime verification skipped.", result.text)
@@ -5804,7 +5756,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_declined_reboot_returns_without_rebooting(self) -> None:
         result = self.run_deploy_cli(
             [],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
             reboot_side_effect=AssertionError("declined deploy should not request a reboot"),
@@ -5815,12 +5767,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("Deployment complete without reboot.", result.text)
         result.mocks.remote_request_reboot.assert_not_called()
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        result.mocks.flush_remote_filesystem_writes.assert_called_once()
+        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
 
     def test_deploy_reboot_timeout_returns_failure(self) -> None:
         result = self.run_deploy_cli(
             ["--yes"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             patch_actions=True,
             patch_upload=True,
             reboot_side_effect=SshCommandTimeout("reboot timed out"),
@@ -5968,7 +5920,7 @@ class CliTests(unittest.TestCase):
                 "managed_runtime_manager_process",
                 "managed_smbd_parent_process",
                 "managed_smbd_bound_445",
-                "managed_mdns_takeover_ready",
+                "managed_mdns_registrant_ready",
                 "managed_mdns_settle_healthy",
                 "managed_rsync_disabled",
             ],
@@ -5987,12 +5939,12 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 4)
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        result.mocks.flush_remote_filesystem_writes.assert_called_once()
+        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
         result.mocks.remote_request_reboot.assert_called_once()
         self.assertEqual(
-            result.mocks.run_remote_actions.call_args_list[2].args[1],
+            result.mocks.run_remote_actions.call_args_list[3].args[1],
             [RunScriptAction("/mnt/Flash/rc.local")],
         )
         self.assertIn("Activating deployed runtime after reboot.", result.text)
@@ -6041,7 +5993,7 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.verify_managed_runtime.assert_called_once()
         self.assertIn("/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local", result.text)
@@ -6063,7 +6015,7 @@ class CliTests(unittest.TestCase):
         result = self.run_deploy_cli(
             ["--dry-run"],
             values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             compatibility=unsupported,
             raises=SystemExit,
         )
@@ -6084,7 +6036,7 @@ class CliTests(unittest.TestCase):
         result = self.run_deploy_cli(
             ["--dry-run", "--allow-unsupported"],
             values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
             compatibility=unsupported,
             raises=SystemExit,
         )
@@ -6118,7 +6070,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("managed smbd parent process is running", text)
         self.assertIn("smbd is bound to required TCP 445 sockets", text)
-        self.assertIn("managed mDNS takeover becomes ready", text)
+        self.assertIn("managed mDNS registrant becomes ready", text)
         self.assertIn("This will start the deployed Samba payload on the AirPort storage device.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
 

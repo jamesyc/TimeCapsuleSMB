@@ -1,3 +1,11 @@
+"timeline.deploy.detail.preflight_flash_capacity" = "Controleren of er genoeg vrije flashruimte is voor de discovery-update.";
+"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Het vervangen verouderde discovery-programma uit het flashgeheugen verwijderen.";
+"timeline.deploy.detail.flush_legacy_flash_cleanup" = "De opschoning van het flashgeheugen definitief wegschrijven.";
+"timeline.deploy.title.preflight_flash_capacity" = "Flashcapaciteit controleren";
+"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Oude discovery opruimen";
+"timeline.deploy.title.flush_legacy_flash_cleanup" = "Flashopschoning wegschrijven";
+"timeline.deploy.detail.upload_discovery" = "De discovery-service naar het payloadvolume en flashgeheugen kopiëren.";
+"timeline.deploy.title.upload_discovery" = "Discovery-service uploaden";
 "action.activate" = "Activeren";
 "action.cancel" = "Annuleren";
 "action.confirm" = "Bevestigen";
@@ -346,7 +354,6 @@
 "dialog.forget.error_title" = "Kon apparaat niet vergeten";
 "dialog.forget.message" = "%@ verwijderen van deze Mac? Hierdoor wordt Samba niet van het apparaat verwijderd.";
 "dialog.forget.title" = "Dit apparaat vergeten?";
-"doctor.check.smb_bind_lan_only_unreachable" = "SMB is aan het Time Capsule-LAN gebonden, maar deze Mac zit op een ander netwerk. Schakel \"SMB alleen aan LAN binden\" uit voor dit apparaat en voer \"Samba installeren / bijwerken\" uit, of verbind vanaf de LAN-kant van de Time Capsule.";
 "doctor.check.device_starting_up" = "Het apparaat is nog aan het opstarten. Wacht een paar minuten en voer de controle opnieuw uit.";
 "doctor.check.payload_missing_from_disk" = "De Samba-map ontbreekt op de dataschijf; de schijf is mogelijk gewist. Voer \"Samba installeren / bijwerken\" uit om opnieuw te installeren.";
 "doctor.domain.connection" = "Verbinding";
@@ -904,9 +911,9 @@
 "toggle.enable_debug_logging" = "Debug-logboekregistratie inschakelen";
 "toggle.enable_nbns" = "NBNS inschakelen";
 "toggle.internal_share_use_disk_root" = "Intern delen maakt gebruik van schijfroot";
-"toggle.smb_bind_lan_only" = "SMB alleen aan LAN binden";
 "toggle.smb_browse_compatibility" = "Bladeren door SMB-shares toestaan";
 "toggle.mdns_advertise_afp" = "AFP via Bonjour adverteren";
+"toggle.mdns_advertise_afp.help" = "AFP via Bonjour aankondigen. Laat uit: macOS 26.x/27 verbergt Time Capsules die AFP aankondigen.";
 "toggle.any_protocol" = "Elk SMB-protocol toestaan";
 "toggle.require_smb_encryption" = "SMB-versleuteling vereisen";
 "toggle.force_disable_smb_signing_and_encryption" = "SMB-ondertekening en -versleuteling geforceerd uitschakelen";

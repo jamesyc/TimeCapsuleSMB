@@ -159,7 +159,7 @@ def managed_runtime_probe(ready: bool = True) -> ManagedRuntimeProbeResult:
     status = "PASS" if ready else "FAIL"
     detail = "managed runtime is ready" if ready else "managed runtime is not ready"
     smbd = readiness_result(ready, detail, (f"{status}:managed smbd ready",))
-    mdns = readiness_result(ready, detail, (f"{status}:managed mDNS takeover active",))
+    mdns = readiness_result(ready, detail, (f"{status}:managed mDNS registrant active",))
     return ManagedRuntimeProbeResult(
         ready=ready,
         detail=detail,
@@ -194,6 +194,9 @@ class AppApiTests(unittest.TestCase):
             mock.patch("timecapsulesmb.telemetry.urllib.request.urlopen", side_effect=AssertionError("tests must not send telemetry"))
         )
         self._runtime_wait_sleep = self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.runtime_verification.sleep"))
+        self._flash_capacity = self._exit_stack.enter_context(
+            mock.patch("timecapsulesmb.services.deploy._probe_flash_capacity", return_value=(1024 * 1024, 128 * 1024))
+        )
         self._install_identity = self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.app.ops.deploy.load_install_identity",
@@ -1871,29 +1874,6 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(values["TC_SMB_BROWSE_COMPATIBILITY"], "true")
 
-    def test_configure_smb_bind_lan_only_param_writes_false(self) -> None:
-        collector = CollectingSink()
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / ".env"
-            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
-                rc = service.run_api_request(
-                    {
-                        "operation": "configure",
-                        "params": {
-                            "config": str(config_path),
-                            "host": "root@10.0.0.2",
-                            "password": "goodpw",
-                            "smb_bind_lan_only": False,
-                        },
-                    },
-                    collector.sink,
-                )
-
-            values = parse_env_file(config_path)
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(values["TC_SMB_BIND_LAN_ONLY"], "false")
-
     def test_configure_netatalk_metadata_param_writes_true(self) -> None:
         collector = CollectingSink()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1934,7 +1914,6 @@ class AppApiTests(unittest.TestCase):
                         "params": {
                             "config": str(config_path),
                             "internal_share_use_disk_root": True,
-                            "smb_bind_lan_only": True,
                             "smb_browse_compatibility": True,
                             "mdns_advertise_afp": True,
                             "any_protocol": True,
@@ -1958,7 +1937,6 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_CUSTOM_SETTING"], "kept value")
         self.assertEqual(values["TC_PASSWORD"], "")
         self.assertEqual(values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "true")
-        self.assertEqual(values["TC_SMB_BIND_LAN_ONLY"], "true")
         self.assertEqual(values["TC_SMB_BROWSE_COMPATIBILITY"], "true")
         self.assertEqual(values["TC_MDNS_ADVERTISE_AFP"], "true")
         self.assertEqual(values["TC_ANY_PROTOCOL"], "true")
@@ -3046,8 +3024,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3087,8 +3064,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3119,8 +3095,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
@@ -3150,8 +3125,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3189,8 +3163,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
@@ -3230,8 +3203,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3271,8 +3243,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
@@ -3314,8 +3285,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3354,8 +3324,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3396,8 +3365,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
@@ -3439,8 +3407,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3537,8 +3504,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3601,12 +3567,11 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("packaged:manager.sh", upload_sources)
         self.assertNotIn("packaged:start-samba.sh", upload_sources)
         self.assertNotIn("packaged:watchdog.sh", upload_sources)
-        self.assertEqual(remote_actions.call_count, 3)
+        self.assertEqual(remote_actions.call_count, 4)
         wait.assert_not_called()
         verify_runtime.assert_called_once()
         render_runtime.assert_called_once()
         self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], False)
-        self.assertEqual(render_runtime.call_args.kwargs["smb_bind_lan_only"], False)
         self.assertEqual(render_runtime.call_args.kwargs["smb_browse_compatibility"], True)
         self.assertEqual(render_runtime.call_args.kwargs["mdns_advertise_afp"], False)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
@@ -3627,8 +3592,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3682,8 +3646,7 @@ class AppApiTests(unittest.TestCase):
             [
                 "upload_xattr_migrator",
                 "upload_smbd",
-                "upload_mdns_advertiser",
-                "upload_nbns_advertiser",
+                "upload_discovery",
                 "upload_rsync",
                 "upload_boot_files",
                 "upload_runtime_config",
@@ -3697,8 +3660,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3760,8 +3722,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns-netbsd4be/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns-netbsd4be/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
@@ -3819,8 +3780,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3879,8 +3839,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
@@ -3996,7 +3955,7 @@ class AppApiTests(unittest.TestCase):
                 "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
                 return_value={
                     "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
-                    "remote_mdns_log_tail": "mdns: before interface probe",
+                    "remote_discovery_log_tail": "mdns: before interface probe",
                 },
             ):
                 with mock.patch(
@@ -4020,11 +3979,11 @@ class AppApiTests(unittest.TestCase):
             context.diagnostics.debug_fields["remote_manager_log_tail"],
             "manager: mDNS startup deferred; no usable address has appeared yet",
         )
-        self.assertEqual(context.diagnostics.debug_fields["remote_mdns_log_tail"], "mdns: before interface probe")
+        self.assertEqual(context.diagnostics.debug_fields["remote_discovery_log_tail"], "mdns: before interface probe")
         self.assertEqual(context.diagnostics.debug_fields["runtime_startup_failure"], "network_auto_ip_unavailable")
         error = context.diagnostic_error(str(raised.exception))
         self.assertIn("remote_manager_log_tail=manager: mDNS startup deferred; no usable address has appeared yet", error)
-        self.assertIn("remote_mdns_log_tail=mdns: before interface probe", error)
+        self.assertIn("remote_discovery_log_tail=mdns: before interface probe", error)
         self.assertIn("remote_network_target_ip_matches=[]", error)
 
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
@@ -4059,8 +4018,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "mdns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
-            "nbns": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
             "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),

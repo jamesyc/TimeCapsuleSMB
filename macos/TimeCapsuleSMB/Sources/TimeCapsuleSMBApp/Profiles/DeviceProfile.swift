@@ -37,7 +37,6 @@ struct DeviceProfileSettings: Codable, Equatable {
     var nbnsEnabled: Bool
     var rsyncEnabled: Bool
     var internalShareUseDiskRoot: Bool
-    var smbBindLanOnly: Bool
     var smbBrowseCompatibility: Bool
     var mdnsAdvertiseAFP: Bool
     var anyProtocol: Bool
@@ -54,7 +53,6 @@ struct DeviceProfileSettings: Codable, Equatable {
         nbnsEnabled: true,
         rsyncEnabled: false,
         internalShareUseDiskRoot: false,
-        smbBindLanOnly: false,
         smbBrowseCompatibility: false,
         mdnsAdvertiseAFP: false,
         anyProtocol: false,
@@ -72,7 +70,6 @@ struct DeviceProfileSettings: Codable, Equatable {
         nbnsEnabled: Bool,
         rsyncEnabled: Bool = false,
         internalShareUseDiskRoot: Bool = false,
-        smbBindLanOnly: Bool = false,
         smbBrowseCompatibility: Bool = false,
         mdnsAdvertiseAFP: Bool = false,
         anyProtocol: Bool = false,
@@ -88,7 +85,6 @@ struct DeviceProfileSettings: Codable, Equatable {
         self.nbnsEnabled = nbnsEnabled
         self.rsyncEnabled = rsyncEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
-        self.smbBindLanOnly = smbBindLanOnly
         self.smbBrowseCompatibility = smbBrowseCompatibility
         self.mdnsAdvertiseAFP = mdnsAdvertiseAFP
         self.anyProtocol = anyProtocol
@@ -109,7 +105,8 @@ struct DeviceProfileSettings: Codable, Equatable {
         case nbnsEnabled
         case rsyncEnabled
         case internalShareUseDiskRoot
-        case smbBindLanOnly
+        // v3.1.0 removed smbBindLanOnly; older profile JSON may still carry the
+        // key and decodes fine because unknown keys are ignored.
         case smbBrowseCompatibility
         case mdnsAdvertiseAFP
         case anyProtocol
@@ -128,7 +125,6 @@ struct DeviceProfileSettings: Codable, Equatable {
         nbnsEnabled = try container.decodeIfPresent(Bool.self, forKey: .nbnsEnabled) ?? Self.default.nbnsEnabled
         rsyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .rsyncEnabled) ?? Self.default.rsyncEnabled
         internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
-        smbBindLanOnly = try container.decodeIfPresent(Bool.self, forKey: .smbBindLanOnly) ?? Self.default.smbBindLanOnly
         smbBrowseCompatibility = try container.decodeIfPresent(Bool.self, forKey: .smbBrowseCompatibility) ?? Self.default.smbBrowseCompatibility
         mdnsAdvertiseAFP = try container.decodeIfPresent(Bool.self, forKey: .mdnsAdvertiseAFP) ?? Self.default.mdnsAdvertiseAFP
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol

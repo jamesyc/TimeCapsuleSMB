@@ -2,7 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
-SERVICE_STAGE="${SERVICE_STAGE:-$MDNS_STAGE}"
+SERVICE_STAGE="${SERVICE_STAGE:-$DISCOVERY_STAGE}"
 SERVICE_LOG="${SERVICE_LOG:-$OUT/service.log}"
 SERVICE_BIN_NAME=service
 

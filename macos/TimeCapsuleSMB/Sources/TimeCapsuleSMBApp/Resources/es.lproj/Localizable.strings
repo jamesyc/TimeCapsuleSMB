@@ -1,3 +1,11 @@
+"timeline.deploy.detail.preflight_flash_capacity" = "Comprobando que la memoria flash tenga suficiente espacio libre para actualizar el servicio de detección.";
+"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Eliminando de la memoria flash el binario de detección antiguo que se ha sustituido.";
+"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Guardando los cambios de limpieza de la memoria flash.";
+"timeline.deploy.title.preflight_flash_capacity" = "Comprobar capacidad de flash";
+"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Limpiar detección antigua";
+"timeline.deploy.title.flush_legacy_flash_cleanup" = "Guardar limpieza de flash";
+"timeline.deploy.detail.upload_discovery" = "Copiando el servicio de detección al volumen de carga y a la memoria flash.";
+"timeline.deploy.title.upload_discovery" = "Subir servicio de detección";
 "action.activate" = "Activar";
 "action.cancel" = "Cancelar";
 "action.confirm" = "Confirmar";
@@ -346,7 +354,6 @@
 "dialog.forget.error_title" = "No se pudo olvidar el dispositivo";
 "dialog.forget.message" = "¿Quitar %@ de esta Mac? Esto no desinstala Samba del dispositivo.";
 "dialog.forget.title" = "¿Olvidaste este dispositivo?";
-"doctor.check.smb_bind_lan_only_unreachable" = "SMB está vinculado a la LAN de Time Capsule, pero este Mac está en otra red. Desactiva \"Vincular SMB solo a LAN\" para este dispositivo y ejecuta \"Instalar / actualizar Samba\", o conéctate desde el lado LAN de Time Capsule.";
 "doctor.check.device_starting_up" = "El dispositivo todavía se está iniciando. Espera unos minutos y vuelve a ejecutar el chequeo.";
 "doctor.check.payload_missing_from_disk" = "Falta la carpeta Samba en el disco de datos; puede que el disco se haya borrado. Ejecuta \"Instalar / actualizar Samba\" para reinstalar.";
 "doctor.domain.connection" = "Conexión";
@@ -904,9 +911,9 @@
 "toggle.enable_debug_logging" = "Habilitar registro de depuración";
 "toggle.enable_nbns" = "Habilitar NBNS";
 "toggle.internal_share_use_disk_root" = "El recurso compartido interno utiliza la raíz del disco";
-"toggle.smb_bind_lan_only" = "Vincular SMB solo a LAN";
 "toggle.smb_browse_compatibility" = "Permitir explorar recursos compartidos SMB";
 "toggle.mdns_advertise_afp" = "Anunciar AFP por Bonjour";
+"toggle.mdns_advertise_afp.help" = "Anunciar AFP por Bonjour. Déjalo desactivado: macOS 26.x/27 oculta las Time Capsule que anuncian AFP.";
 "toggle.any_protocol" = "Permitir cualquier protocolo SMB";
 "toggle.require_smb_encryption" = "Requerir cifrado SMB";
 "toggle.force_disable_smb_signing_and_encryption" = "Forzar la desactivación de la firma y el cifrado SMB";

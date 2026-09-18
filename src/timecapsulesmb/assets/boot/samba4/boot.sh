@@ -23,6 +23,10 @@ if ! tc_cleanup_old_runtime; then
     tc_log "aborting boot preparation because old managed runtime could not be stopped safely"
     exit 1
 fi
+# Apple's mDNSResponder stays alive; diskd moves to loopback so its own
+# _smb/_adisk/_afpovertcp registrations never reach the LAN (guide B.8).
+# Degraded, not fatal: the manager retries every service pass.
+tc_relaunch_diskd_loopback || tc_log "diskd relaunch will be retried by the manager"
 tc_tune_kernel_memory
 tc_log "kernel memory tuned for Samba"
 if ! tc_prepare_locks_ramdisk; then

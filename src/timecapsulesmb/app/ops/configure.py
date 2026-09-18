@@ -128,7 +128,6 @@ def update_config_settings_operation(
         values = build_managed_config_env_values(
             existing,
             internal_share_use_disk_root=optional_bool_param(params, "internal_share_use_disk_root"),
-            smb_bind_lan_only=optional_bool_param(params, "smb_bind_lan_only"),
             smb_browse_compatibility=optional_bool_param(params, "smb_browse_compatibility"),
             mdns_advertise_afp=optional_bool_param(params, "mdns_advertise_afp"),
             any_protocol=optional_bool_param(params, "any_protocol"),
@@ -249,11 +248,6 @@ def configure_operation(params: dict[str, object], context: AppOperationContext)
                     params,
                     "internal_share_use_disk_root",
                     parse_bool(existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])),
-                ),
-                smb_bind_lan_only=bool_param(
-                    params,
-                    "smb_bind_lan_only",
-                    parse_bool(existing.get("TC_SMB_BIND_LAN_ONLY", DEFAULTS["TC_SMB_BIND_LAN_ONLY"])),
                 ),
                 smb_browse_compatibility=bool_param(
                     params,

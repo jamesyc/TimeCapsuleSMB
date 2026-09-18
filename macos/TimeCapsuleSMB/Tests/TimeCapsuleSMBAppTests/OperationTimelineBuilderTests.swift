@@ -153,8 +153,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
     func testDeployUploadStagesAreUserFacingAndPresentTense() {
         let timeline = OperationTimelineBuilder.timeline(from: [
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
-            BackendEvent(type: "stage", operation: "deploy", stage: "upload_mdns_advertiser"),
-            BackendEvent(type: "stage", operation: "deploy", stage: "upload_nbns_advertiser"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_discovery"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_rsync"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_boot_files"),
             BackendEvent(type: "stage", operation: "deploy", stage: "upload_runtime_config")
@@ -162,8 +161,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
         XCTAssertEqual(timeline.map(\.title), [
             "Upload smbd",
-            "Upload mdns",
-            "Upload nbns",
+            "Upload discovery service",
             "Upload rsync",
             "Upload Boot Files",
             "Upload Runtime Config"
@@ -198,18 +196,20 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "read_mast",
             "select_payload_home",
             "build_deployment_plan",
+            "preflight_flash_capacity",
             "pre_upload_actions",
             "prepare_deployment_files",
             "upload_payload",
             "upload_smbd",
-            "upload_mdns_advertiser",
-            "upload_nbns_advertiser",
+            "upload_discovery",
             "upload_rsync",
             "upload_boot_files",
             "upload_runtime_config",
             "post_upload_actions",
             "verify_payload_upload",
             "flush_payload_upload",
+            "cleanup_legacy_flash_discovery",
+            "flush_legacy_flash_cleanup",
             "verify_payload_upload_after_sync",
             "reboot",
             "wait_for_reboot_down",

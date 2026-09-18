@@ -17,7 +17,7 @@ class BootAssetError(RuntimeError):
 
 COMMON_SH_FRAGMENTS = (
     "common.d/00-env-log.sh",
-    "common.d/20-airport-identity.sh",
+    "common.d/20-identity.sh",
     "common.d/30-processes.sh",
     "common.d/40-storage-discovery.sh",
     "common.d/45-network-bind.sh",

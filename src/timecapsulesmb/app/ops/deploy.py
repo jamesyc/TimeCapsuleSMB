@@ -225,11 +225,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         "internal_share_use_disk_root",
         parse_bool(config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])),
     )
-    smb_bind_lan_only = bool_param(
-        params,
-        "smb_bind_lan_only",
-        parse_bool(config.get("TC_SMB_BIND_LAN_ONLY", DEFAULTS["TC_SMB_BIND_LAN_ONLY"])),
-    )
     smb_browse_compatibility = bool_param(
         params,
         "smb_browse_compatibility",
@@ -385,7 +380,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                 rsync_enabled=rsync_enabled,
                 debug_logging=debug_logging,
                 internal_share_use_disk_root=internal_share_use_disk_root,
-                smb_bind_lan_only=smb_bind_lan_only,
                 smb_browse_compatibility=smb_browse_compatibility,
                 mdns_advertise_afp=mdns_advertise_afp,
                 any_protocol=any_protocol,

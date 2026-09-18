@@ -346,7 +346,6 @@
 "dialog.forget.error_title" = "Could Not Forget Device";
 "dialog.forget.message" = "Remove %@ from this Mac? This does not uninstall Samba from the device.";
 "dialog.forget.title" = "Forget This Device?";
-"doctor.check.smb_bind_lan_only_unreachable" = "SMB is bound to the Time Capsule LAN, but this Mac is on another network. Turn off Bind SMB to LAN Only for this device and run Install / Update Samba, or connect from the Time Capsule LAN side.";
 "doctor.check.device_starting_up" = "The device is still starting up. Wait a few minutes, then run Checkup again.";
 "doctor.check.payload_missing_from_disk" = "The Samba folder is missing from the data disk; the disk may have been erased. Run \"Install / Update Samba\" to reinstall.";
 "doctor.domain.connection" = "Connection";
@@ -818,6 +817,9 @@
 "timeline.deploy.detail.post_upload_actions" = "Installing flash hooks and applying file modes.";
 "timeline.deploy.detail.pre_upload_actions" = "Stopping managed services and removing stale installed files.";
 "timeline.deploy.detail.prepare_deployment_files" = "Generating runtime config.";
+"timeline.deploy.detail.preflight_flash_capacity" = "Checking that Flash has enough free space for the discovery update.";
+"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Removing the replaced legacy discovery binary from Flash.";
+"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Flushing legacy Flash cleanup writes.";
 "timeline.activate.detail.probe_runtime" = "Checking whether TimeCapsuleSMB is already running before activating it.";
 "timeline.activate.detail.post_activation_settle" = "Waiting briefly after activation before probing runtime readiness.";
 "timeline.deploy.detail.probe_runtime" = "Checking whether the device will start TimeCapsuleSMB automatically.";
@@ -828,6 +830,7 @@
 "timeline.deploy.detail.upload_boot_files" = "Copying boot scripts to /mnt/Flash.";
 "timeline.deploy.detail.upload_mdns_advertiser" = "Copying mdns to the payload volume and flash.";
 "timeline.deploy.detail.upload_nbns_advertiser" = "Copying nbns to the payload volume.";
+"timeline.deploy.detail.upload_discovery" = "Copying the discovery service to the payload volume and flash.";
 "timeline.deploy.detail.upload_payload" = "Uploading managed SMB payload files.";
 "timeline.deploy.detail.upload_runtime_config" = "Writing runtime settings to /mnt/Flash.";
 "timeline.deploy.detail.upload_smbd" = "Copying smbd to the payload volume.";
@@ -849,6 +852,9 @@
 "timeline.deploy.title.post_upload_actions" = "Apply File Permissions";
 "timeline.deploy.title.pre_upload_actions" = "Stop Existing Runtime";
 "timeline.deploy.title.prepare_deployment_files" = "Build Runtime Config";
+"timeline.deploy.title.preflight_flash_capacity" = "Check Flash Capacity";
+"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Clean Up Legacy Discovery";
+"timeline.deploy.title.flush_legacy_flash_cleanup" = "Flush Flash Cleanup";
 "timeline.activate.title.probe_runtime" = "Check Existing Runtime";
 "timeline.activate.title.post_activation_settle" = "Let Runtime Settle";
 "timeline.deploy.title.probe_runtime" = "Check Boot Startup";
@@ -859,6 +865,7 @@
 "timeline.deploy.title.upload_boot_files" = "Upload Boot Files";
 "timeline.deploy.title.upload_mdns_advertiser" = "Upload mdns";
 "timeline.deploy.title.upload_nbns_advertiser" = "Upload nbns";
+"timeline.deploy.title.upload_discovery" = "Upload discovery service";
 "timeline.deploy.title.upload_payload" = "Upload Payload";
 "timeline.deploy.title.upload_runtime_config" = "Upload Runtime Config";
 "timeline.deploy.title.upload_smbd" = "Upload smbd";
@@ -904,9 +911,9 @@
 "toggle.enable_debug_logging" = "Enable Debug Logging";
 "toggle.enable_nbns" = "Enable NBNS";
 "toggle.internal_share_use_disk_root" = "Internal Share Uses Disk Root";
-"toggle.smb_bind_lan_only" = "Bind SMB to LAN Only";
 "toggle.smb_browse_compatibility" = "Allow SMB Share Browsing";
 "toggle.mdns_advertise_afp" = "Advertise AFP over Bonjour";
+"toggle.mdns_advertise_afp.help" = "Advertise AFP over Bonjour. Leave off: macOS 26.x/27 hides Time Capsules that advertise AFP.";
 "toggle.any_protocol" = "Allow Any SMB Protocol";
 "toggle.require_smb_encryption" = "Require SMB Encryption";
 "toggle.force_disable_smb_signing_and_encryption" = "Force Disable SMB Signing and Encryption";

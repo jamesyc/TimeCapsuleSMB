@@ -78,7 +78,16 @@ ordinary ACL data, and a fragmented Windows stream, then verifies TDB deletion
 and detached-volume orphan retention through the program entry point. Additional
 cases cover per-file TDB retirement, failed transaction commits, subsequent boots
 with a previously absent volume, prevention of stale-value replay, directory-read
-errors, and ordinary directories whose names begin with `._`. Real stream/backend
+errors, and ordinary directories whose names begin with `._`. The `orphans` case
+(v3.1.0) covers the proven-orphan versus unresolved split of unmatched rows,
+quarantine of an all-orphan database to the first free `xattr.tdb.orphaned.N`
+slot, retention when an unresolved row remains, no quarantine after a failed
+walk, the `fingerprint` mode, and the filesystem-boundary skip. A detached disk
+is modelled with a foreign device number in the row key; the unit test has one
+device, so a same-device row for a missing inode is a proven orphan, which is
+also why the test's `ENOATTR` override applies only where the platform aliases
+it to `ENODATA` (Linux) — on NetBSD the real library returns the real value.
+Real stream/backend
 integration tests cover the 3,802-byte Apple-xattr boundary and unchanged Windows
 ADS fragmentation. Resource tests inject read failures after an earlier mismatch
 and check that cleanup retains the sidecar.

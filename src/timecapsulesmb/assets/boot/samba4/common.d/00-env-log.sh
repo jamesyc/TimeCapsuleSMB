@@ -9,28 +9,24 @@ RAM_VAR="$RAM_ROOT/var"
 RAM_PRIVATE="$RAM_ROOT/private"
 LOCKS_ROOT=/mnt/Locks
 
-MDNS_PROC_NAME=mdns-advertiser
-NBNS_PROC_NAME=nbns-advertiser
+DISCOVERY_PROC_NAME=discoveryd
 RSYNC_PROC_NAME=rsync
 
 TC_CONFIG_FILE=/mnt/Flash/tcapsulesmb.conf
 TC_STATE_DIR="$RAM_VAR"
-TC_ADISK_TSV="$TC_STATE_DIR/adisk.tsv"
 TC_TAB=$(printf '\t')
 
 TC_LOG_FILE="$TC_STATE_DIR/runtime.log"
 TC_LOG_PREFIX=runtime
 TC_LOG_MAX_BYTES=32768
-TC_MDNS_BIN=/mnt/Flash/mdns-advertiser
+TC_DISCOVERY_BIN=/mnt/Flash/discoveryd
 TC_SERVICE_BIN="$RAM_SBIN/service"
 TC_TELEMETRY_BIN="$RAM_SBIN/telemetry"
-TC_NBNS_BIN="$RAM_SBIN/nbns-advertiser"
 TC_RSYNC_BIN="$RAM_SBIN/rsync"
 TC_RSYNC_CONF="$RAM_ETC/rsyncd.conf"
 TC_SMBD_BIN="$RAM_SBIN/smbd"
 TC_SMBD_CONF="$RAM_ETC/smb.conf"
-TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
-TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
+TC_DISCOVERY_LOG_FILE="$RAM_VAR/discovery.log"
 TC_RSYNC_LOG_FILE="$RAM_VAR/rsync.log"
 TC_PAYLOAD_LOG_DIR=
 TC_PAYLOAD_LOG_VOLUME=
@@ -44,22 +40,21 @@ TC_ADISK_TXT_ADVF_PREFIX_BYTES=6
 TC_ADISK_TXT_ADVN_MID_BYTES=6
 TC_ADISK_TXT_ADVU_PREFIX_BYTES=6
 TC_SAMBA_VM_BUFCACHE=5
-TC_MDNS_AUTO_IP_SEEN=0
-TC_MDNS_AUTO_IP_WAIT_LOGGED=0
-TC_NBNS_AUTO_IP_WAIT_LOGGED=0
 TC_SMB_BIND_INTERFACES=${TC_SMB_BIND_INTERFACES:-}
-TC_SMB_BIND_WAIT_LOGGED=0
-TC_SMB_IPV4_STARTUP_POLL_SECONDS=2
-TC_SMB_IPV4_SETTLE_SECONDS=3
-TC_MANAGER_MDNS_DEFERRED_NO_IP=0
-TC_MANAGER_MDNS_UNAVAILABLE=0
-TC_MANAGER_NBNS_DEFERRED_NO_IP=0
-TC_MANAGER_SMB_DEFERRED_NO_IP=0
-TC_MANAGER_LAST_IDENTITY_SIGNATURE=
-TC_MANAGER_IDENTITY_SIGNATURE_READY=0
+# The manager owns the last validated Samba bind projection (guide B.9):
+# process-local shell state, never a file. `service --print-smb-bind-interfaces`
+# reports tokens plus a status line; only `validated` runs may change it.
+TC_SMB_BIND_STATUS=
+TC_SMB_BIND_REASON=
+TC_SMB_BIND_POLICY=
+TC_MANAGER_BIND_POLICY=
+TC_SMB_BIND_PROBE_TOKENS=
+TC_MANAGER_LAST_VALIDATED_BIND_TOKENS=
+TC_MANAGER_LAST_VALIDATED_BIND_TIME=
+TC_MANAGER_LAST_DISCOVERY_SIGNATURE=
 TC_RUNTIME_IDENTITY_READY=
-TC_AIRPORT_FIELDS_READY=0
-TC_AIRPORT_FIELDS_ADVERTISE_MAC=
+TC_DISCOVERY_PID=
+SMB_FRUIT_MODEL=
 SMB_SERVER_STRING=
 TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=31
 TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
@@ -138,7 +133,6 @@ tc_init_runtime_env() {
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
     MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS:-${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
-    SMB_BIND_LAN_ONLY=${SMB_BIND_LAN_ONLY:-1}
     SMB_BROWSE_COMPATIBILITY=${SMB_BROWSE_COMPATIBILITY:-0}
     MDNS_ADVERTISE_AFP=${MDNS_ADVERTISE_AFP:-0}
     ANY_PROTOCOL=${ANY_PROTOCOL:-0}
@@ -150,14 +144,13 @@ tc_init_runtime_env() {
     RSYNC_ENABLED=${RSYNC_ENABLED:-0}
     TC_SMBD_DISK_LOGGING_ENABLED=${SMBD_DEBUG_LOGGING:-0}
 
-    case "$SMB_BIND_LAN_ONLY" in
-        1|true|TRUE|yes|YES) SMB_BIND_LAN_ONLY=1 ;;
-        0|false|FALSE|no|NO) SMB_BIND_LAN_ONLY=0 ;;
-        *)
-            tc_add_runtime_env_warning "runtime config: invalid SMB_BIND_LAN_ONLY=$SMB_BIND_LAN_ONLY; using 1"
-            SMB_BIND_LAN_ONLY=1
-            ;;
-    esac
+    # v3.1.0 removed the LAN-only bind knob (Q7): Samba binds every link the
+    # device plan grants SVC_SMB, exactly like Apple's file servers did. An
+    # older flash config may still carry the key; say so once and move on.
+    if [ -n "${SMB_BIND_LAN_ONLY+set}" ]; then
+        tc_add_runtime_env_warning "runtime config: ignoring removed setting SMB_BIND_LAN_ONLY"
+        unset SMB_BIND_LAN_ONLY
+    fi
 
     case "$MDNS_ADVERTISE_AFP" in
         1|true|TRUE|yes|YES)
@@ -283,6 +276,13 @@ tc_now_seconds() {
         ""|*[!0123456789]*) echo 0 ;;
         *) echo "$now_seconds" ;;
     esac
+}
+
+# MaSt is needed before RAM service exists. The Flash helper performs this
+# bounded read with the shared C collector, without temporary capture files.
+TC_ACP_QUERY_SECONDS=${TC_ACP_QUERY_SECONDS:-20}
+tc_read_mast() {
+    "$TC_DISCOVERY_BIN" --print-mast --timeout-seconds "$TC_ACP_QUERY_SECONDS"
 }
 
 tc_elapsed_seconds_since() {

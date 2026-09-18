@@ -36,7 +36,11 @@ def cleanup_rig(tmp_path):
     def run(*, cleanup=False, **env):
         script = load_boot_asset_text('common.d/55-telemetry.sh').replace('/mnt/Memory', str(memory))
         for source, name in [('/usr/bin/pkill', 'pkill'), ('/bin/ps', 'ps'), ('/sbin/mount', 'mount')]:
-            script = script.replace(source, shlex.quote(str(tools[name])))
+            # These are shell fixtures, not device executables. Direct exec
+            # of newly created scripts stalls under concurrent macOS runs;
+            # invoke the known interpreter while keeping real child processes.
+            script = script.replace(source, '/bin/sh ' + shlex.quote(str(tools[name])))
+        script = script.replace('"$cleanup_bin" --', '/bin/sh "$cleanup_bin" --')
         script += '\nsleep() { :; }\n' + ('tc_cleanup_telemetry_for_uninstall' if cleanup else 'tc_prepare_telemetry_reset')
         return subprocess.run(['/bin/sh', '-c', script], env={**os.environ, **env}, capture_output=True, text=True, timeout=5)
     return memory, calls, ps, mounts, helper, run

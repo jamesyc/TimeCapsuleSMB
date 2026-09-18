@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import hashlib
-from tests.native.build import ROOT, sources, instrumentation_flags, build_root
+from tests.native.build import ROOT, sources, instrumentation_flags, build_root, stub_platform_flags
 
 _CASES = Path(__file__).with_suffix('')
 _BUILD = tempfile.TemporaryDirectory(prefix='tc-native-cases-')
@@ -15,7 +15,9 @@ _DIRECTORY = build_root('cases')
 def compile_object(path, flags):
     key = hashlib.sha256((str(path) + repr(flags)).encode()).hexdigest()[:20]
     obj = _DIRECTORY / f'{key}.o'
-    result = subprocess.run(['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-Wall', '-Wextra', '-Werror', *instrumentation_flags(), *flags,
+    # The vendored Apple stub is compiled unchanged; see build/native/dnssd/README.md.
+    vendor_flags = ['-Wno-unused-but-set-variable', *stub_platform_flags()] if 'dnssd' in Path(path).parts else []
+    result = subprocess.run(['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-Wall', '-Wextra', '-Werror', *instrumentation_flags(), *flags, *vendor_flags,
                              '-c', str(path), '-o', str(obj)],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
@@ -32,8 +34,6 @@ def compile_case(source):
     config = case.with_suffix('.build').read_text().splitlines()
     target = config[0]
     modules = [p for p in sources(target) if p.name != 'main.c']
-    if 'service' in config:
-        modules.append(ROOT / 'build/native/service/network_commands.c')
     flags = [f'-D{line}' for line in config[1:] if '=' in line]
     directory = _DIRECTORY / case.stem
     directory.mkdir()

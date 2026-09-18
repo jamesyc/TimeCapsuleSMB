@@ -58,6 +58,19 @@ class StorageRuntimeTests(unittest.TestCase):
             cls._runtime_asset_texts = load_boot_asset_text("common.sh")
         return cls._runtime_asset_texts
 
+    def extract_shell_function(self, source: str, name: str) -> str:
+        start = source.index(f"{name}()")
+        brace_start = source.index("{", start)
+        depth = 0
+        for offset, char in enumerate(source[brace_start:], start=brace_start):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start : offset + 1]
+        self.fail(f"function {name} did not terminate")
+
     def write_runtime_harness(self, tmp_path: Path, *, hostname_output: str | None = None) -> tuple[Path, Path, Path, Path]:
         flash = tmp_path / "Flash"
         memory = tmp_path / "Memory"
@@ -92,7 +105,25 @@ class StorageRuntimeTests(unittest.TestCase):
             boot = boot.replace(old, new)
             manager = manager.replace(old, new)
         common += "\nget_airport_prni_raw() { printf '%s\\n' '{' '    printers=[]' '}'; }\n"
+        # The host has no Apple diskd: report ours as already on loopback so
+        # the manager's per-pass relaunch retry stays quiet. The boot/diskd
+        # tests put the real probe back on top of a fake ps.
+        common += "tc_apple_diskd_probe() { TC_APPLE_DISKD_STATE=loopback; TC_APPLE_DISKD_STRAY_PIDS=; }\n"
 
+        # Storage tests exercise the shell consumer of a successful native
+        # capture; the real collector is covered in test_acp_capture/bounded_acp.
+        common += "tc_read_mast() { " + shlex.quote(str(tmp_path / "acp")) + " -A MaSt; }\n"
+        service = memory / "samba4/sbin/service"
+        service.parent.mkdir(parents=True, exist_ok=True)
+        service.write_text("#!/bin/sh\ncase \"$1\" in\n"
+                           f"--print-samba-identity) cat {shlex.quote(str(flash / 'native-identity'))};;\n"
+                           "--print-device-nt-hash) echo 0123456789ABCDEF0123456789ABCDEF;;\nesac\n")
+        service.chmod(0o755)
+        (flash / "native-identity").write_text("samba-identity 1\nTimeCapsule\nTimeCapsule\nTimeCapsule6,106\n")
+        discovery = flash / "discoveryd"
+        discovery.write_text("#!/bin/sh\nexit 0\n")
+        discovery.chmod(0o755)
+        common += "TC_MANAGER_LAST_DISCOVERY_SIGNATURE=$(printf '%s\\n%s\\n%s\\n%s\\n%s\\n' '' 0 '' 0x82 0)\n"
         (flash / "common.sh").write_text(common)
         boot_path = flash / "boot.sh"
         boot_path.write_text(boot)
@@ -103,7 +134,7 @@ class StorageRuntimeTests(unittest.TestCase):
         (flash / "tcapsulesmb.conf").write_text(
             textwrap.dedent(
                 f"""\
-                TC_CONFIG_VERSION=2
+                TC_CONFIG_VERSION=3
                 PAYLOAD_DIR_NAME='.samba4'
                 SMB_SAMBA_USER='admin'
                 MDNS_DEVICE_MODEL='TimeCapsule6,106'
@@ -169,77 +200,6 @@ class StorageRuntimeTests(unittest.TestCase):
             )
         return "\n".join(lines) + ("\n" if lines else "")
 
-    def test_common_select_advertise_mac_prefers_acp_lama(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            acp = tmp_path / "acp"
-            acp.write_text(
-                textwrap.dedent(
-                    """\
-                    #!/bin/sh
-                    case "$1:$2" in
-                        -q:laMA) echo 80:EA:96:E6:58:68 ;;
-                        -q:waMA) echo 80:EA:96:E6:58:69 ;;
-                        *) exit 1 ;;
-                    esac
-                    """
-                )
-            )
-            acp.chmod(0o755)
-            script = tmp_path / "advertise-mac.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    mac=$(tc_select_advertise_mac || true)
-                    printf 'mac=%s\\n' "$mac"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "mac=80:EA:96:E6:58:68\n")
-
-    def test_common_select_advertise_mac_falls_back_to_live_interface_mac(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fake_ifconfig = tmp_path / "ifconfig"
-            fake_ifconfig.write_text(
-                "#!/bin/sh\n"
-                "cat <<'OUT'\n"
-                "bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500\n"
-                "        address: 80:ea:96:e6:58:70\n"
-                "OUT\n"
-            )
-            fake_ifconfig.chmod(0o755)
-            common_path = flash / "common.sh"
-            common_path.write_text(common_path.read_text().replace("/sbin/ifconfig", str(fake_ifconfig)))
-            script = tmp_path / "advertise-mac-fallback.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    mac=$(tc_select_advertise_mac || true)
-                    printf 'mac=%s\\n' "$mac"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "mac=80:ea:96:e6:58:70\n")
-
     def write_fake_acp(self, tmp_path: Path, raw: str | bytes, *, final_newline: bool = True) -> Path:
         acp = tmp_path / "acp"
         raw_text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
@@ -268,11 +228,12 @@ class StorageRuntimeTests(unittest.TestCase):
         service.parent.mkdir(parents=True, exist_ok=True)
         service.write_text(
             "#!/bin/sh\n"
-            "if [ \"$1\" = '--print-nt-hash-from-stdin' ]; then\n"
+            "if [ \"$1\" = '--print-device-nt-hash' ]; then\n"
             "    cat >/dev/null\n"
             f"    echo {shlex.quote(nt_hash)}\n"
             "    exit 0\n"
             "fi\n"
+            "if [ \"$1\" = '--print-samba-identity' ]; then printf '%s\\n' 'samba-identity 1' TimeCapsule TimeCapsule 'TimeCapsule6,106'; fi\n"
             "exit 0\n"
         )
         service.chmod(0o755)
@@ -386,342 +347,6 @@ class StorageRuntimeTests(unittest.TestCase):
                 current_lines.append(line)
         self.assertIsNone(current_name, stdout)
         return sections
-
-    def run_riousbprint_prni_parser(self, prni_raw: str) -> subprocess.CompletedProcess[str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            prni_path = tmp_path / "prni.txt"
-            prni_path.write_text(textwrap.dedent(prni_raw).lstrip("\n"))
-            script = tmp_path / "parse-prni.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {shlex.quote(str(flash / "common.sh"))}
-                    raw=$(/bin/cat {shlex.quote(str(prni_path))})
-                    if tc_load_riousbprint_identity_from_prni "$raw"; then
-                        printf 'status=attached\\n'
-                        printf 'name=%s\\n' "$RIOUSBPRINT_INSTANCE_NAME"
-                        printf 'mfg=%s\\n' "$RIOUSBPRINT_MFG"
-                        printf 'mdl=%s\\n' "$RIOUSBPRINT_MDL"
-                        printf 'serial=%s\\n' "$RIOUSBPRINT_SERIAL"
-                        printf 'vendor=%s\\n' "$RIOUSBPRINT_VENDOR_ID"
-                        printf 'product=%s\\n' "$RIOUSBPRINT_PRODUCT_ID"
-                        printf 'port=%s\\n' "$PDL_DATASTREAM_PORT"
-                    else
-                        printf 'status=none\\n'
-                    fi
-                    """
-                )
-            )
-            script.chmod(0o755)
-            return subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-    def test_common_prni_parser_decodes_acp_quoted_usb_printer_values(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            """
-            {
-                printers=[
-                    {
-                        appSocketPort=9100
-                        generatedNumber=0
-                        make="Brother"
-                        model="HL-L2370DN series"
-                        name="Brother HL-L2370DN series"
-                        pluggedIn=true
-                        productID=160
-                        serialNumber="E78098M7N216821"
-                        vendorID=1273
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            proc.stdout,
-            "status=attached\n"
-            "name=Brother HL-L2370DN series\n"
-            "mfg=Brother\n"
-            "mdl=HL-L2370DN series\n"
-            "serial=E78098M7N216821\n"
-            "vendor=1273\n"
-            "product=160\n"
-            "port=9100\n",
-        )
-
-    def test_common_prni_parser_keeps_legacy_unquoted_usb_printer_values(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            """
-            {
-                printers=[
-                    {
-                        appSocketPort=9100
-                        make=Canon
-                        model=MP490 series
-                        name=Canon MP490 series
-                        pluggedIn=true
-                        productID=5948
-                        serialNumber=C0958C
-                        vendorID=1193
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=attached\n", proc.stdout)
-        self.assertIn("name=Canon MP490 series\n", proc.stdout)
-        self.assertIn("mfg=Canon\n", proc.stdout)
-        self.assertIn("mdl=MP490 series\n", proc.stdout)
-        self.assertIn("serial=C0958C\n", proc.stdout)
-
-    def test_common_prni_parser_decodes_escaped_string_characters(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            r"""
-            {
-                printers=[
-                    {
-                        appSocketPort=9100
-                        make="HP"
-                        model="LaserJet \"Office\""
-                        name="HP LaserJet \"Office\""
-                        pluggedIn=true
-                        productID=1234
-                        serialNumber="SN\\123"
-                        vendorID=5678
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn('name=HP LaserJet "Office"\n', proc.stdout)
-        self.assertIn('mdl=LaserJet "Office"\n', proc.stdout)
-        self.assertIn("serial=SN\\123\n", proc.stdout)
-
-    def test_common_prni_parser_keeps_weird_but_valid_string_content(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            r"""
-            {
-                printers=[
-                    {
-                        unknownBefore="ignore=this"
-                        appSocketPort=9100
-                        make="Acme=Printers"
-                        model="Model } 42"
-                        name="Kitchen=Printer } \"Beta\""
-                        pluggedIn=true
-                        productID=65535
-                        serialNumber="SN=12\\34"
-                        vendorID=0
-                        unknownAfter="also=ignored"
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            proc.stdout,
-            "status=attached\n"
-            "name=Kitchen=Printer } \"Beta\"\n"
-            "mfg=Acme=Printers\n"
-            "mdl=Model } 42\n"
-            "serial=SN=12\\34\n"
-            "vendor=0\n"
-            "product=65535\n"
-            "port=9100\n",
-        )
-
-    def test_common_prni_parser_accepts_missing_optional_usb_metadata(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            """
-            {
-                printers=[
-                    {
-                        name="Bare Printer"
-                        pluggedIn=true
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            proc.stdout,
-            "status=attached\n"
-            "name=Bare Printer\n"
-            "mfg=\n"
-            "mdl=\n"
-            "serial=\n"
-            "vendor=\n"
-            "product=\n"
-            "port=\n",
-        )
-
-    def test_common_prni_parser_accepts_numeric_boundaries(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            """
-            {
-                printers=[
-                    {
-                        appSocketPort=65535
-                        make="Boundary"
-                        model="Port"
-                        name="Boundary Printer"
-                        pluggedIn=true
-                        productID=0
-                        serialNumber="B65535"
-                        vendorID=65535
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=attached\n", proc.stdout)
-        self.assertIn("vendor=65535\n", proc.stdout)
-        self.assertIn("product=0\n", proc.stdout)
-        self.assertIn("port=65535\n", proc.stdout)
-
-    def test_common_prni_parser_rejects_malformed_quoted_string(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            """
-            {
-                printers=[
-                    {
-                        appSocketPort=9100
-                        make="Brother"
-                        model="HL-L2370DN series"
-                        name="Brother HL-L2370DN series
-                        pluggedIn=true
-                        productID=160
-                        serialNumber="E78098M7N216821"
-                        vendorID=1273
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "status=none\n")
-
-    def test_common_prni_parser_rejects_invalid_decimal_value(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            """
-            {
-                printers=[
-                    {
-                        appSocketPort=91OO
-                        make="Brother"
-                        model="HL-L2370DN series"
-                        name="Brother HL-L2370DN series"
-                        pluggedIn=true
-                        productID=160
-                        serialNumber="E78098M7N216821"
-                        vendorID=1273
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "status=none\n")
-
-    def test_common_prni_parser_rejects_zero_or_out_of_range_port(self) -> None:
-        for app_socket_port in ("0", "65536"):
-            with self.subTest(app_socket_port=app_socket_port):
-                proc = self.run_riousbprint_prni_parser(
-                    f"""
-                    {{
-                        printers=[
-                            {{
-                                appSocketPort={app_socket_port}
-                                make="Brother"
-                                model="HL-L2370DN series"
-                                name="Brother HL-L2370DN series"
-                                pluggedIn=true
-                                productID=160
-                                serialNumber="E78098M7N216821"
-                                vendorID=1273
-                            }}
-                        ]
-                    }}
-                    """
-                )
-
-                self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual(proc.stdout, "status=none\n")
-
-    def test_common_prni_parser_rejects_out_of_range_usb_ids(self) -> None:
-        for field_name in ("productID", "vendorID"):
-            with self.subTest(field_name=field_name):
-                product_id = "65536" if field_name == "productID" else "160"
-                vendor_id = "65536" if field_name == "vendorID" else "1273"
-                proc = self.run_riousbprint_prni_parser(
-                    f"""
-                    {{
-                        printers=[
-                            {{
-                                appSocketPort=9100
-                                make="Brother"
-                                model="HL-L2370DN series"
-                                name="Brother HL-L2370DN series"
-                                pluggedIn=true
-                                productID={product_id}
-                                serialNumber="E78098M7N216821"
-                                vendorID={vendor_id}
-                            }}
-                        ]
-                    }}
-                    """
-                )
-
-                self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual(proc.stdout, "status=none\n")
-
-    def test_common_prni_parser_skips_invalid_candidate_and_uses_next_printer(self) -> None:
-        proc = self.run_riousbprint_prni_parser(
-            """
-            {
-                printers=[
-                    {
-                        appSocketPort=bad
-                        make="Bad"
-                        model="Bad"
-                        name="Bad Printer"
-                        pluggedIn=true
-                    }
-                    {
-                        appSocketPort=9100
-                        make="Brother"
-                        model="HL-L2370DN series"
-                        name="Brother HL-L2370DN series"
-                        pluggedIn=true
-                        productID=160
-                        serialNumber="E78098M7N216821"
-                        vendorID=1273
-                    }
-                ]
-            }
-            """
-        )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=attached\n", proc.stdout)
-        self.assertIn("name=Brother HL-L2370DN series\n", proc.stdout)
-        self.assertNotIn("Bad Printer", proc.stdout)
 
     def parse_topology_tsv(self, text: str, volumes_root: Path) -> tuple[MaStVolume, ...]:
         volumes: list[MaStVolume] = []
@@ -1180,7 +805,6 @@ MaSt = (
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
                 "TC_AIRPORT_SYAP": "106",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
-                "TC_SMB_BIND_LAN_ONLY": "true",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_ANY_PROTOCOL": "true",
                 "TC_FRUIT_METADATA_NETATALK": "true",
@@ -1208,7 +832,7 @@ MaSt = (
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", rendered)
         self.assertIn("TELEMETRY=true\n", rendered)
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
-        self.assertIn("SMB_BIND_LAN_ONLY=1\n", rendered)
+        self.assertNotIn("SMB_BIND_LAN_ONLY", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
@@ -1223,8 +847,32 @@ MaSt = (
         self.assertIn("RSYNC_ENABLED=0\n", rendered)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertNotIn("SMB_NETBIOS_NAME", rendered)
-        self.assertNotIn("MDNS_INSTANCE_NAME", rendered)
+        self.assertIn("TC_CONFIG_VERSION=3\n", rendered)
+        # Name overrides travel only when the user set them (v3.1.0: the native
+        # helpers read them from this file).
+        self.assertNotIn("TC_MDNS_INSTANCE_NAME", rendered)
+        self.assertNotIn("TC_NETBIOS_NAME", rendered)
         self.assertNotIn("MDNS_HOST_LABEL", rendered)
+
+    def test_flash_runtime_config_ignores_deprecated_name_overrides(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_MDNS_INSTANCE_NAME": "James's Capsule",
+                "TC_NETBIOS_NAME": "JAMESCAP",
+                "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
+            }
+        )
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=False,
+            debug_logging=False,
+        )
+        # Old configs remain loadable, but neither shell nor native runtime
+        # receives an override. Exercise the rendered shell environment too.
+        proc = subprocess.run(["/bin/sh", "-c", rendered + "printf '%s|%s\\n' \"${TC_MDNS_INSTANCE_NAME-unset}\" \"${TC_NETBIOS_NAME-unset}\""],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(proc.stdout, "unset|unset\n")
         self.assertNotIn("TC_SHARE_NAME", rendered)
 
     def test_flash_runtime_config_can_disable_telemetry(self) -> None:
@@ -1298,7 +946,6 @@ MaSt = (
         config = AppConfig.from_values(
             {
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
-                "TC_SMB_BIND_LAN_ONLY": "false",
                 "TC_SMB_BROWSE_COMPATIBILITY": "false",
                 "TC_ANY_PROTOCOL": "false",
                 "TC_FRUIT_METADATA_NETATALK": "false",
@@ -1312,7 +959,6 @@ MaSt = (
             nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=True,
-            smb_bind_lan_only=True,
             smb_browse_compatibility=True,
             mdns_advertise_afp=True,
             any_protocol=True,
@@ -1321,7 +967,7 @@ MaSt = (
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
-        self.assertIn("SMB_BIND_LAN_ONLY=1\n", rendered)
+        self.assertNotIn("SMB_BIND_LAN_ONLY", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=1\n", rendered)
         self.assertIn("MDNS_ADVERTISE_AFP=1\n", rendered)
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
@@ -1394,7 +1040,6 @@ MaSt = (
         config = AppConfig.from_values(
             {
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
-                "TC_SMB_BIND_LAN_ONLY": "true",
                 "TC_SMB_BROWSE_COMPATIBILITY": "true",
                 "TC_MDNS_ADVERTISE_AFP": "true",
                 "TC_ANY_PROTOCOL": "true",
@@ -1409,7 +1054,6 @@ MaSt = (
             nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=False,
-            smb_bind_lan_only=False,
             smb_browse_compatibility=False,
             mdns_advertise_afp=False,
             any_protocol=False,
@@ -1418,7 +1062,7 @@ MaSt = (
         )
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
-        self.assertIn("SMB_BIND_LAN_ONLY=0\n", rendered)
+        self.assertNotIn("SMB_BIND_LAN_ONLY", rendered)
         self.assertIn("SMB_BROWSE_COMPATIBILITY=0\n", rendered)
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
@@ -1476,48 +1120,30 @@ MaSt = (
         self.assertIn("ATA_IDLE_SECONDS=0\n", rendered)
         self.assertIn("ATA_STANDBY=0\n", rendered)
 
-    def test_common_runtime_identity_normalizers_match_python(self) -> None:
+    def test_common_runtime_identity_projection_is_atomic_and_literal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            system_name = "James's AirPort.Time Capsule"
-            hostname = "Time Capsule.local"
-            script = tmp_path / "runtime-identity-normalizers.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    awk() {{ echo "awk must not be called" >&2; return 127; }}
-                    grep() {{ echo "grep must not be called" >&2; return 127; }}
-                    wc() {{ echo "wc must not be called" >&2; return 127; }}
-                    tr() {{ echo "tr must not be called" >&2; return 127; }}
-                    cut() {{ echo "cut must not be called" >&2; return 127; }}
-                    printf 'instance=%s\\n' "$(tc_normalize_mdns_instance_name {shlex.quote(system_name)})"
-                    printf 'host=%s\\n' "$(tc_normalize_mdns_host_label {shlex.quote(hostname)})"
-                    printf 'netbios=%s\\n' "$(tc_normalize_netbios_name {shlex.quote(hostname)})"
-                    printf 'server=%s\\n' "$(tc_normalize_server_string {shlex.quote("  James's AirPort Time Capsule  ")})"
-                    printf 'punct_netbios=%s\\n' "$(tc_normalize_netbios_name '---')"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
+            flash, *_ = self.write_runtime_harness(tmp_path)
+            projection = flash / "native-identity"
+            projection.write_text("samba-identity 1\nMYCAPSULE\nJames's 中文 $(false)\nTimeCapsule8,119\n")
+            script = f"""
+set -eu
+. {flash}/common.sh
+tc_init_runtime_identity
+printf '%s|%s|%s\\n' "$SMB_NETBIOS_NAME" "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL"
+printf '%s\\n' 'samba-identity 1' partial > {projection}
+if tc_init_runtime_identity; then exit 9; fi
+printf '%s|%s|%s\\n' "$SMB_NETBIOS_NAME" "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL"
+"""
+            proc = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        lines = dict(line.split("=", 1) for line in proc.stdout.splitlines())
-        self.assertEqual(lines["instance"], normalize_runtime_mdns_instance_name(system_name))
-        self.assertEqual(lines["host"], normalize_runtime_mdns_host_label(hostname))
-        self.assertEqual(lines["netbios"], normalize_runtime_netbios_name(hostname))
-        self.assertEqual(lines["server"], "James's AirPort Time Capsule")
-        self.assertEqual(lines["punct_netbios"], "")
+        self.assertEqual(proc.stdout.splitlines(), ["MYCAPSULE|James's 中文 $(false)|TimeCapsule8,119"] * 2)
 
     def test_common_runtime_identity_uses_final_netbios_fallback_for_punctuation_only_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path, hostname_output="---.local")
+            (flash / "native-identity").write_text("samba-identity 1\nTimeCapsule\n极端 时间胶囊\nMacSamba\n")
             script = tmp_path / "runtime-identity-netbios-fallback.sh"
             script.write_text(
                 textwrap.dedent(
@@ -1537,7 +1163,7 @@ MaSt = (
                         esac
                     }}
                     tc_init_runtime_identity
-                    printf 'identity=%s|%s|%s\\n' "$MDNS_INSTANCE_NAME" "$MDNS_HOST_LABEL" "$SMB_NETBIOS_NAME"
+                    printf 'identity=%s|%s|%s\\n' "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL" "$SMB_NETBIOS_NAME"
                     cat "$RAM_VAR/test.log"
                     """
                 )
@@ -1547,29 +1173,22 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("identity=极端 时间胶囊|timecapsule|TimeCapsule\n", proc.stdout)
-        self.assertIn("runtime identity: mdns_instance=极端 时间胶囊 mdns_host=timecapsule netbios=TimeCapsule server_string=极端 时间胶囊", proc.stdout)
+        self.assertIn("identity=极端 时间胶囊|MacSamba|TimeCapsule\n", proc.stdout)
+        self.assertIn("runtime identity: netbios=TimeCapsule server_string=极端 时间胶囊 model=MacSamba", proc.stdout)
 
     def test_common_runtime_identity_overwrites_legacy_values_and_feeds_runtime_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path, hostname_output="Time Capsule.local")
+            (flash / "native-identity").write_text("samba-identity 1\nTimeCapsule\nJames's AirPort.Time Capsule\nTimeCapsule8,119\n")
             payload = volumes / "dk2/.samba4"
             (payload / "private").mkdir(parents=True)
-            mdns_args = tmp_path / "mdns.args"
-            nbns_args = tmp_path / "nbns.args"
-            (flash / "mdns-advertiser").write_text(
+            discovery_args = tmp_path / "discovery.args"
+            (flash / "discoveryd").write_text(
                 "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >{shlex.quote(str(mdns_args))}\n"
+                f"printf '%s\\n' \"$*\" >{shlex.quote(str(discovery_args))}\n"
             )
-            (flash / "mdns-advertiser").chmod(0o755)
-            nbns_bin = memory / "samba4/sbin/nbns-advertiser"
-            nbns_bin.parent.mkdir(parents=True)
-            nbns_bin.write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >{shlex.quote(str(nbns_args))}\n"
-            )
-            nbns_bin.chmod(0o755)
+            (flash / "discoveryd").chmod(0o755)
             script = tmp_path / "runtime-identity.sh"
             script.write_text(
                 textwrap.dedent(
@@ -1597,8 +1216,7 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    get_radio_mac() {{ return 1; }}
-                    stop_nbns_conflicts() {{ return 0; }}
+                    stop_discovery_conflicts() {{ return 0; }}
                     tc_set_payload_log_dir {payload} {volumes}/dk2
                     share_rows=$(cat <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
@@ -1607,14 +1225,11 @@ MaSt = (
                     TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     tc_init_runtime_identity
                     tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
-                    tc_launch_mdns_advertiser "mdns test" 0 0
-                    wait "$mdns_launch_pid" || true
-                    tc_launch_nbns "nbns test" 0
-                    wait "$!" || true
-                    printf 'identity=%s|%s|%s\\n' "$MDNS_INSTANCE_NAME" "$MDNS_HOST_LABEL" "$SMB_NETBIOS_NAME"
+                    tc_launch_discovery "discovery test" 0 0 0 "$MDNS_DEBUG_LOGGING" "$share_rows"
+                    wait "$TC_DISCOVERY_PID" || true
+                    printf 'identity=%s|%s|%s\\n' "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL" "$SMB_NETBIOS_NAME"
                     cat "$TC_SMBD_CONF"
-                    printf 'mdns_args=%s\\n' "$(cat {mdns_args})"
-                    printf 'nbns_args=%s\\n' "$(cat {nbns_args})"
+                    printf 'discovery_args=%s\\n' "$(cat {discovery_args})"
                     cat "$RAM_VAR/test.log"
                     """
                 )
@@ -1624,15 +1239,16 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("identity=James's AirPort.Time Capsule|time-capsule|TimeCapsule", proc.stdout)
+        self.assertIn("identity=James's AirPort.Time Capsule|TimeCapsule8,119|TimeCapsule", proc.stdout)
         self.assertIn("netbios name = TimeCapsule\n", proc.stdout)
         self.assertIn("server string = James's AirPort.Time Capsule\n", proc.stdout)
-        self.assertIn("--instance James's AirPort.Time Capsule", proc.stdout)
-        self.assertIn("--host time-capsule", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("nbns_args=--name TimeCapsule", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("runtime identity: mdns_instance=James's AirPort.Time Capsule mdns_host=time-capsule netbios=TimeCapsule server_string=James's AirPort.Time Capsule", proc.stdout)
+        # v3.1.0: the registrant reads its own identity from ACP/config; the
+        # shell passes it nothing but the payload state.
+        self.assertIn("discovery_args=--netbios-name TimeCapsule --adisk-share Data dk2 aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 0x82", proc.stdout)
+        self.assertNotIn("--instance", proc.stdout)
+        self.assertNotIn("--host", proc.stdout)
+        self.assertNotIn("--auto-ip", proc.stdout)
+        self.assertIn("runtime identity: netbios=TimeCapsule server_string=James's AirPort.Time Capsule model=TimeCapsule8,119", proc.stdout)
         self.assertNotIn("LegacyInstance", proc.stdout)
         self.assertNotIn("legacy-host", proc.stdout)
         self.assertNotIn("LegacyNetbios", proc.stdout)
@@ -1643,8 +1259,7 @@ MaSt = (
             "root@10.0.0.2",
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
             Path("/tmp/smbd"),
-            Path("/tmp/mdns"),
-            Path("/tmp/nbns"),
+            Path("/tmp/discoveryd"),
             xattr_migrator_path=Path("/tmp/xattr-hfs-migrate"),
             rsync_path=Path("/tmp/rsync"),
          service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
@@ -2082,6 +1697,7 @@ MaSt = (
                         """\
 
                         tc_cleanup_old_runtime() { echo cleanup; return 0; }
+                        tc_relaunch_diskd_loopback() { echo diskd; return 0; }
                         tc_tune_kernel_memory() { echo tune; }
                         tc_prepare_locks_ramdisk() { echo locks; return 0; }
                         tc_prepare_ram_root() { echo ram; }
@@ -2103,9 +1719,526 @@ MaSt = (
             log_text = (memory / "samba4/var/rc.local.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "cleanup\ntune\nlocks\nram\nlegacy\n")
+        self.assertEqual(proc.stdout, "cleanup\ndiskd\ntune\nlocks\nram\nlegacy\n")
         self.assertIn("starting manager", log_text)
         self.assertIn("manager launched as pid", log_text)
+
+    # ---- v3.1.0 boot: Apple mDNSResponder stays, diskd moves to loopback ----
+
+    def write_apple_process_fakes(self, tmp_path: Path, flash: Path, *, diskd: str, afpserver: bool, mast_after: int = 1) -> dict[str, Path]:
+        """Fake ps/pkill/diskd/acp driven by a state directory.
+
+        `diskd` is the initial diskd state (acpd|loopback|absent); pkill of
+        diskd/afpserver flips the state; launching diskd records its argv and
+        moves the state to loopback; `acp -A MaSt` answers after `mast_after`
+        calls once diskd is on loopback.
+        """
+        state = tmp_path / "apple-state"
+        state.mkdir()
+        (state / "diskd").write_text(diskd)
+        (state / "afpserver").write_text("running" if afpserver else "absent")
+        (state / "mast-calls").write_text("0")
+        pkill_log = tmp_path / "pkill.log"
+        ps = tmp_path / "ps"
+        ps.write_text(
+            "#!/bin/sh\n"
+            f"state={shlex.quote(str(state))}\n"
+            "echo '  1 Is   init /sbin/init'\n"
+            "echo ' 371 Sa   mDNSResponder /sbin/mDNSResponder -d'\n"
+            "case \"$(cat \"$state/diskd\")\" in\n"
+            "  acpd) echo ' 232 S    diskd /sbin/diskd -i  -d local.' ;;\n"
+            "  loopback) echo ' 559 S    diskd /sbin/diskd -i lo0 -d local.' ;;\n"
+            "  both) echo ' 559 S    diskd /sbin/diskd -i lo0 -d local.'; echo ' 640 S    diskd /sbin/diskd -i  -d local.' ;;\n"
+            "  zombie) echo ' 232 ZW   (diskd) (diskd)' ;;\n"
+            "esac\n"
+            "[ \"$(cat \"$state/afpserver\")\" = running ] && echo ' 353 Ia   afpserver /sbin/afpserver -debug'\n"
+            "exit 0\n"
+        )
+        ps.chmod(0o755)
+        pkill = tmp_path / "pkill"
+        pkill.write_text(
+            "#!/bin/sh\n"
+            f"state={shlex.quote(str(state))}\n"
+            f"printf '%s\\n' \"$*\" >>{shlex.quote(str(pkill_log))}\n"
+            "for arg; do case \"$arg\" in\n"
+            "  '^diskd$') echo absent >\"$state/diskd\" ;;\n"
+            "  '^afpserver$') echo absent >\"$state/afpserver\" ;;\n"
+            "esac; done\n"
+            "exit 0\n"
+        )
+        pkill.chmod(0o755)
+        diskd_bin = tmp_path / "diskd"
+        diskd_bin.write_text(
+            "#!/bin/sh\n"
+            f"state={shlex.quote(str(state))}\n"
+            f"printf '%s\\n' \"$*\" >>{shlex.quote(str(tmp_path / 'diskd.log'))}\n"
+            "echo loopback >\"$state/diskd\"\n"
+            "exit 0\n"
+        )
+        diskd_bin.chmod(0o755)
+        acp = tmp_path / "acp"
+        acp.write_text(
+            "#!/bin/sh\n"
+            f"state={shlex.quote(str(state))}\n"
+            "if [ \"$1:$2\" = '-A:MaSt' ]; then\n"
+            "  calls=$(cat \"$state/mast-calls\"); calls=$((calls + 1)); echo \"$calls\" >\"$state/mast-calls\"\n"
+            f"  if [ \"$(cat \"$state/diskd\")\" = loopback ] && [ \"$calls\" -ge {mast_after} ]; then\n"
+            "    printf '<?xml version=\"1.0\"?>\\n<plist version=\"1.0\"><array/></plist>\\n'; exit 0\n"
+            "  fi\n"
+            "  exit 1\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        acp.chmod(0o755)
+        for name in ("common.sh", "boot.sh"):
+            path = flash / name
+            path.write_text(path.read_text().replace("/bin/ps ", str(ps) + " ").replace("/sbin/diskd ", str(diskd_bin) + " ").replace(str(tmp_path / "pkill"), str(pkill)))
+        kill_log = tmp_path / "kill.log"
+        # Put the production probe back (the harness stubs it to loopback),
+        # reading the fake ps.
+        fragment = load_boot_asset_text("common.d/30-processes.sh")
+        probe = fragment[fragment.index("tc_apple_diskd_probe() {"):]
+        probe = probe[:probe.index("\n}\n") + 3].replace("/bin/ps ", str(ps) + " ")
+        with (flash / "common.sh").open("a") as common:
+            common.write("\n" + probe)
+            common.write("\nsleep() { :; }\nwait_for_runtime_process_absent_by_ucomm() { ! runtime_process_present_by_ucomm \"$1\"; }\n")
+            # Signals go to fake PIDs from the fake ps: record them and flip the
+            # state the way the real process would (232/640 are the ACPd diskd).
+            common.write(
+                "tc_signal_pid() {\n"
+                f"    printf '%s %s\\n' \"$1\" \"$2\" >>{shlex.quote(str(kill_log))}\n"
+                f"    state={shlex.quote(str(state))}\n"
+                "    case \"$2\" in\n"
+                "        232) echo absent >\"$state/diskd\" ;;\n"
+                "        640) echo loopback >\"$state/diskd\" ;;\n"
+                "    esac\n"
+                "}\n"
+            )
+        return {"state": state, "pkill_log": pkill_log, "diskd_log": tmp_path / "diskd.log", "kill_log": kill_log}
+
+    def run_boot(self, flash: Path) -> subprocess.CompletedProcess[str]:
+        with (flash / "common.sh").open("a") as common:
+            common.write(
+                "\ntc_tune_kernel_memory() { :; }\ntc_prepare_locks_ramdisk() { return 0; }\n"
+                "tc_prepare_legacy_prefix() { :; }\nrun_manager_stub() { :; }\nrun_manager_present() { return 1; }\n"
+                "runtime_manager_present() { return 1; }\nstop_manager_process() { return 0; }\n"
+                "tc_prepare_telemetry_reset() { return 0; }\n"
+            )
+        (flash / "manager.sh").write_text("#!/bin/sh\nexit 0\n")
+        (flash / "manager.sh").chmod(0o755)
+        return subprocess.run(["/bin/sh", str(flash / "boot.sh")], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_boot_relaunches_acpd_diskd_on_loopback_exactly_once_and_waits_for_mast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fakes = self.write_apple_process_fakes(tmp_path, flash, diskd="acpd", afpserver=True, mast_after=3)
+            proc = self.run_boot(flash)
+            log_text = (memory / "samba4/var/rc.local.log").read_text()
+            pkill_log = fakes["pkill_log"].read_text()
+            kill_log = fakes["kill_log"].read_text()
+            diskd_log = fakes["diskd_log"].read_text()
+            mast_calls = int((fakes["state"] / "mast-calls").read_text())
+            final_state = (fakes["state"] / "diskd").read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # Killed by PID (never by name, which would take a loopback diskd too).
+        self.assertNotIn("^diskd$", pkill_log)
+        self.assertEqual(kill_log, "TERM 232\n")
+        self.assertEqual(diskd_log, "-i lo0 -d local.\n")
+        self.assertEqual(final_state, "loopback")
+        self.assertGreaterEqual(mast_calls, 3)
+        self.assertIn("stopping ACPd's diskd so Apple's SMB/AFP names stay off the LAN", log_text)
+        self.assertIn("stopping diskd pid 232 (not on loopback)", log_text)
+        self.assertIn("diskd relaunched on loopback; MaSt available after", log_text)
+        self.assertIn("starting manager", log_text)
+        # The one thing boot must never do (F11).
+        self.assertNotIn("mDNSResponder", pkill_log)
+
+    def test_boot_leaves_diskd_alone_when_already_on_loopback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fakes = self.write_apple_process_fakes(tmp_path, flash, diskd="loopback", afpserver=False)
+            proc = self.run_boot(flash)
+            log_text = (memory / "samba4/var/rc.local.log").read_text()
+            pkill_log = fakes["pkill_log"].read_text() if fakes["pkill_log"].exists() else ""
+            diskd_launched = fakes["diskd_log"].exists()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("^diskd$", pkill_log)
+        self.assertFalse(diskd_launched)
+        self.assertIn("diskd already running on loopback", log_text)
+        self.assertNotIn("mDNSResponder", pkill_log)
+
+    def test_boot_launches_diskd_when_absent_and_degrades_when_mast_never_appears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fakes = self.write_apple_process_fakes(tmp_path, flash, diskd="absent", afpserver=False, mast_after=1000)
+            # The MaSt wait is elapsed-time bounded (each probe may spend its
+            # own allowance while ACPd is wedged): a fake clock that advances
+            # 7 s per reading stands in for slow probes.
+            clock = tmp_path / "clock"
+            clock.write_text("1000")
+            with (flash / "common.sh").open("a") as common:
+                common.write(f"tc_now_seconds() {{ c=$(cat {shlex.quote(str(clock))}); echo \"$c\"; echo $((c + 7)) >{shlex.quote(str(clock))}; }}\n")
+            proc = self.run_boot(flash)
+            log_text = (memory / "samba4/var/rc.local.log").read_text()
+            diskd_log = fakes["diskd_log"].read_text()
+            mast_calls = int((fakes["state"] / "mast-calls").read_text())
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(diskd_log, "-i lo0 -d local.\n")
+        self.assertIn("diskd not running; launching it on loopback", log_text)
+        self.assertRegex(log_text, r"diskd relaunch failed; Apple SMB/AFP names may be visible \(MaSt not served after 3\ds\)")
+        self.assertLess(mast_calls, 8)   # bounded by elapsed time, not by a probe count
+        # Degraded, not fatal: the manager still starts.
+        self.assertIn("starting manager", log_text)
+
+    def test_boot_gives_up_on_a_diskd_that_survives_the_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fakes = self.write_apple_process_fakes(tmp_path, flash, diskd="acpd", afpserver=False)
+            with (flash / "common.sh").open("a") as common:
+                common.write(f"tc_signal_pid() {{ printf '%s %s\\n' \"$1\" \"$2\" >>{shlex.quote(str(fakes['kill_log']))}; }}\n")
+            proc = self.run_boot(flash)
+            log_text = (memory / "samba4/var/rc.local.log").read_text()
+            diskd_launched = fakes["diskd_log"].exists()
+            kill_log = fakes["kill_log"].read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(diskd_launched)
+        self.assertEqual(kill_log, "TERM 232\n")
+        self.assertIn("diskd relaunch failed; Apple SMB/AFP names may be visible (old diskd still running)", log_text)
+        # Best effort at boot (B.8 failure contract): the manager retries.
+        self.assertIn("diskd relaunch will be retried by the manager", log_text)
+        self.assertIn("starting manager", log_text)
+
+    def test_stray_acpd_diskd_next_to_ours_is_reported_and_killed_by_pid(self) -> None:
+        """ACPd's diskd came back next to our loopback one: the state is `acpd`
+        (it advertises on the LAN regardless of ours), only its PID is signalled,
+        and once it is gone no second diskd is launched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fakes = self.write_apple_process_fakes(tmp_path, flash, diskd="both", afpserver=False)
+            script = (
+                f". {shlex.quote(str(flash / 'common.sh'))}\n"
+                "tc_init_runtime_env\n"
+                f"tc_set_log {shlex.quote(str(memory / 'samba4/var/rc.local.log'))} test\n"
+                "tc_apple_diskd_probe; echo \"state=$TC_APPLE_DISKD_STATE strays=[$TC_APPLE_DISKD_STRAY_PIDS]\"\n"
+                "if tc_relaunch_diskd_loopback; then echo relaunch=ok; else echo relaunch=failed; fi\n"
+                "tc_apple_diskd_probe; echo \"state=$TC_APPLE_DISKD_STATE strays=[$TC_APPLE_DISKD_STRAY_PIDS]\"\n"
+            )
+            proc = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True, check=False)
+            kill_log = fakes["kill_log"].read_text()
+            diskd_launched = fakes["diskd_log"].exists()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), ["state=acpd strays=[ 640]", "relaunch=ok", "state=loopback strays=[]"])
+        self.assertEqual(kill_log, "TERM 640\n")
+        self.assertFalse(diskd_launched)
+
+    def test_boot_kills_afpserver_unless_afp_advertising_is_enabled(self) -> None:
+        for advertise_afp, expect_kill in ((0, True), (1, False)):
+            with self.subTest(advertise_afp=advertise_afp):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+                    with (flash / "tcapsulesmb.conf").open("a") as conf:
+                        conf.write(f"MDNS_ADVERTISE_AFP={advertise_afp}\n")
+                    fakes = self.write_apple_process_fakes(tmp_path, flash, diskd="loopback", afpserver=True)
+                    proc = self.run_boot(flash)
+                    log_text = (memory / "samba4/var/rc.local.log").read_text()
+                    pkill_log = fakes["pkill_log"].read_text() if fakes["pkill_log"].exists() else ""
+                    afp_state = (fakes["state"] / "afpserver").read_text().strip()
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual("^afpserver$" in pkill_log, expect_kill, pkill_log)
+                self.assertEqual(afp_state, "absent" if expect_kill else "running")
+                # tc_cleanup_old_runtime wipes /mnt/Memory/samba4 (and this log) before
+                # "cleanup complete"; the pkill transcript and state are the evidence.
+                self.assertIn("old managed runtime cleanup complete", log_text)
+                self.assertNotIn("mDNSResponder", pkill_log)
+
+    def test_runtime_env_ignores_removed_smb_bind_lan_only_setting_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("SMB_BIND_LAN_ONLY=1\n")
+            script = tmp_path / "env.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    tc_set_log "$RAM_VAR/test.log" test
+                    tc_log_runtime_env_warnings
+                    tc_log_runtime_env_warnings
+                    printf 'lan_only=%s\\n' "${{SMB_BIND_LAN_ONLY-unset}}"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("lan_only=unset\n", proc.stdout)
+        self.assertEqual(proc.stdout.count("ignoring removed setting SMB_BIND_LAN_ONLY"), 1, proc.stdout)
+
+    # ---- v3.1.0 manager: retained bind projection, registrant restarts ----
+
+    def write_manager_bind_harness(self, tmp_path: Path, flash: Path, probe_sequence: list[str], *, passes: int) -> tuple[Path, Path]:
+        """Manager stubs for the Samba lane with a scripted bind probe.
+
+        `probe_sequence` entries are the two-line probe outputs (tokens, then
+        the status line) returned on successive probes; the last one repeats.
+        The fake clock advances 10 s per tc_now_seconds() call so stale ages
+        are observable. Returns (events, clock) paths.
+        """
+        events = tmp_path / "events"
+        probes = tmp_path / "probes"
+        probes.mkdir()
+        for index, text in enumerate(probe_sequence, start=1):
+            (probes / str(index)).write_text(text)
+        probe_count = tmp_path / "probe-count"
+        clock = tmp_path / "clock"
+        sleep_count = tmp_path / "sleep-count"
+        with (flash / "common.sh").open("a") as common:
+            common.write(
+                textwrap.dedent(
+                    f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_stage_runtime() {{
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        : >"$RAM_PRIVATE/smbpasswd"
+                        : >"$RAM_PRIVATE/username.map"
+                        return 0
+                    }}
+                    tc_generate_smb_conf_from_share_rows() {{
+                        echo "smb.conf:$TC_SMB_BIND_INTERFACES" >>{shlex.quote(str(events))}
+                        printf 'interfaces = %s\\n' "$TC_SMB_BIND_INTERFACES" >"$TC_SMBD_CONF"
+                        return 0
+                    }}
+                    tc_now_seconds() {{
+                        now=$(/bin/cat {shlex.quote(str(clock))} 2>/dev/null || echo 1000)
+                        echo "$((now + 10))" >{shlex.quote(str(clock))}
+                        echo "$now"
+                    }}
+                    tc_probe_smb_bind_interfaces() {{
+                        count=$(/bin/cat {shlex.quote(str(probe_count))} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{shlex.quote(str(probe_count))}
+                        path={shlex.quote(str(probes))}/$count
+                        [ -f "$path" ] || path={shlex.quote(str(probes))}/{len(probe_sequence)}
+                        echo "probe:$count" >>{shlex.quote(str(events))}
+                        TC_SMB_BIND_PROBE_TOKENS=$(sed -n '1p' "$path")
+                        probe_line=$(sed -n '2p' "$path")
+                        TC_SMB_BIND_STATUS=${{probe_line#status=}}
+                        TC_SMB_BIND_STATUS=${{TC_SMB_BIND_STATUS%% *}}
+                        TC_SMB_BIND_REASON=${{probe_line#*reason=}}
+                        TC_SMB_BIND_POLICY='policy 1 0'
+                    }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd|discoveryd) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_reload_smbd_config() {{ echo reload >>{shlex.quote(str(events))}; return 0; }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1" >>{shlex.quote(str(events))}; }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(sleep_count))}
+                                if [ "$count" -lt {passes} ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status bind=$manager_bind_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                )
+            )
+        return events, clock
+
+    def run_manager(self, flash: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["/bin/sh", str(flash / "manager.sh")], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_manager_keeps_validated_bind_projection_across_incomplete_probes(self) -> None:
+        validated = "127.0.0.1/8 ::1/128 10.0.1.1/24 fe80:9::1/64\nstatus=validated\n"
+        incomplete = "127.0.0.1/8 ::1/128 10.0.1.1/24 fe80:9::1/64\nstatus=incomplete reason=mode\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("MANAGER_BIND_POLL_SECONDS=10\n")
+            self.write_sequence_acp(tmp_path, (self.internal_mast_raw_with_volatile_fields(users=1),))
+            events, _clock = self.write_manager_bind_harness(tmp_path, flash, [validated, incomplete, incomplete, incomplete], passes=4)
+            proc = self.run_manager(flash)
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            smb_conf = (memory / "samba4/etc/smb.conf").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0 bind=retained\n", proc.stdout)
+        self.assertEqual(events_text.count("probe:"), 4, events_text)
+        # One smb.conf render from the validated probe, none from the incomplete ones.
+        self.assertEqual(events_text.count("smb.conf:"), 1, events_text)
+        self.assertIn("smb.conf:127.0.0.1/8 ::1/128 10.0.1.1/24 fe80:9::1/64\n", events_text)
+        self.assertEqual(smb_conf, "interfaces = 127.0.0.1/8 ::1/128 10.0.1.1/24 fe80:9::1/64\n")
+        ages = [int(line.split("age=")[1].split("s")[0]) for line in log_text.splitlines() if "keeping last validated projection" in line]
+        self.assertEqual(len(ages), 3, log_text)
+        self.assertTrue(ages[0] < ages[1] < ages[2], ages)
+        self.assertTrue(all("reason=mode" in line for line in log_text.splitlines() if "keeping last validated projection" in line))
+
+    def test_manager_applies_a_validated_bind_change_once(self) -> None:
+        first = "127.0.0.1/8 ::1/128 10.0.1.1/24\nstatus=validated\n"
+        second = "127.0.0.1/8 ::1/128 10.0.1.1/24 192.168.1.10/24\nstatus=validated\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("MANAGER_BIND_POLL_SECONDS=10\n")
+            self.write_sequence_acp(tmp_path, (self.internal_mast_raw_with_volatile_fields(users=1),))
+            events, _clock = self.write_manager_bind_harness(tmp_path, flash, [first, second, second, second], passes=4)
+            proc = self.run_manager(flash)
+            events_text = events.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0 bind=ok\n", proc.stdout)
+        self.assertEqual(events_text.count("smb.conf:"), 2, events_text)
+        self.assertIn("smb.conf:127.0.0.1/8 ::1/128 10.0.1.1/24\n", events_text)
+        self.assertIn("smb.conf:127.0.0.1/8 ::1/128 10.0.1.1/24 192.168.1.10/24\n", events_text)
+        # smbd restarts once for the initial projection and once for the change; never for the repeats.
+        self.assertEqual(events_text.count("stop smbd\n"), 2, events_text)
+        self.assertEqual(events_text.split("probe:3")[1].count("stop smbd"), 0, events_text)
+
+    def test_manager_restart_without_history_starts_cold_and_reconfigures_on_first_validated_probe(self) -> None:
+        incomplete = "127.0.0.1/8 ::1/128\nstatus=incomplete reason=iflist\n"
+        validated = "127.0.0.1/8 ::1/128 10.0.1.1/24\nstatus=validated\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("MANAGER_BIND_POLL_SECONDS=10\nTC_SMB_BIND_INTERFACES=\"192.0.2.99/24\"\n")
+            self.write_sequence_acp(tmp_path, (self.internal_mast_raw_with_volatile_fields(users=1),))
+            events, _clock = self.write_manager_bind_harness(tmp_path, flash, [incomplete, incomplete, validated], passes=3)
+            proc = self.run_manager(flash)
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # No validated projection yet: Samba is not configured from an incomplete probe.
+        self.assertEqual(events_text.count("smb.conf:"), 1, events_text)
+        self.assertIn("smb.conf:127.0.0.1/8 ::1/128 10.0.1.1/24\n", events_text)
+        self.assertEqual(log_text.count("Samba bind: no validated projection yet (reason=iflist)"), 2, log_text)
+        self.assertEqual(log_text.count("waiting for a validated bind projection before configuring smbd"), 2, log_text)
+        self.assertNotIn("keeping last validated projection", log_text)
+        self.assertIn("manager Samba: initialized bind interfaces: 127.0.0.1/8 ::1/128 10.0.1.1/24", log_text)
+
+    def test_manager_keeps_registrant_running_across_name_only_changes(self) -> None:
+        validated = "127.0.0.1/8 ::1/128 10.0.1.1/24\nstatus=validated\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            self.write_sequence_acp(tmp_path, (self.internal_mast_raw_with_volatile_fields(users=1),))
+            events, _clock = self.write_manager_bind_harness(tmp_path, flash, [validated], passes=6)
+            names = tmp_path / "names"
+            names.write_text("AirPort")
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                        tc_init_runtime_identity() {{
+                            MDNS_INSTANCE_NAME=$(/bin/cat {shlex.quote(str(names))})
+                            MDNS_HOST_LABEL=airport
+                            SMB_NETBIOS_NAME=AIRPORT
+                            SMB_SERVER_STRING=AirPort
+                            SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
+                        }}
+                        tc_launch_discovery() {{
+                            echo "discovery-launch:$MDNS_INSTANCE_NAME" >>{shlex.quote(str(events))}
+                            echo running >{shlex.quote(str(tmp_path / 'discovery-state'))}
+                        }}
+                        stop_runtime_process_by_ucomm() {{
+                            echo "stop $1" >>{shlex.quote(str(events))}
+                            [ "$1" = discoveryd ] && echo stopped >{shlex.quote(str(tmp_path / 'discovery-state'))}
+                            return 0
+                        }}
+                        runtime_process_present_by_ucomm() {{
+                            case "$1" in
+                                smbd) return 0 ;;
+                                discoveryd) [ "$(/bin/cat {shlex.quote(str(tmp_path / 'discovery-state'))} 2>/dev/null)" = running ] ;;
+                                wcifsfs|wcifsnd) return 1 ;;
+                                *) return 1 ;;
+                            esac
+                        }}
+                        sleep() {{
+                            case "$1" in
+                                1|5) return 0 ;;
+                                10)
+                                    count=$(/bin/cat {shlex.quote(str(tmp_path / 'pass-count'))} 2>/dev/null || echo 0)
+                                    count=$((count + 1))
+                                    echo "$count" >{shlex.quote(str(tmp_path / 'pass-count'))}
+                                    case "$count" in
+                                        2) printf '%s' 'Renamed Capsule' >{shlex.quote(str(names))} ;;
+                                        6) echo "status=$manager_status bind=$manager_bind_status"; exit 0 ;;
+                                    esac
+                                    ;;
+                            esac
+                            return 0
+                        }}
+                        """
+                    )
+                )
+            proc = self.run_manager(flash)
+            events_text = events.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0 bind=ok\n", proc.stdout)
+        # The registrant tracks ACP names itself; the manager launches once
+        # for the share arguments and never restarts it for a rename.
+        self.assertEqual([line for line in events_text.splitlines() if line.startswith("discovery-launch") or line == "stop discoveryd"],
+                         ["discovery-launch:AirPort"], events_text)
+        self.assertEqual(events_text.count("discovery-launch"), 1, events_text)
 
     def test_manager_log_uses_second_timestamps_and_byte_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2119,8 +2252,8 @@ MaSt = (
                         """\
 
                         tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
-                        tc_prepare_local_hostname_resolution() { :; }
-                        tc_manager_reset_pass_state() {
+
+                        tc_prepare_local_hostname_resolution() {
                             i=0
                             payload='abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz'
                             while [ "$i" -lt 130 ]; do
@@ -2137,12 +2270,11 @@ MaSt = (
                         tc_manager_stop_samba_lane_without_payload() { :; }
                         runtime_process_present_by_ucomm() {
                             case "$1" in
-                                mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                                 *) return 1 ;;
                             esac
                         }
                         stop_runtime_process_by_ucomm() { :; }
-                        tc_mdns_bound_udp_5353() { return 0; }
                         sleep() {
                             if [ "$1" = "1" ]; then
                                 return 0
@@ -2207,12 +2339,11 @@ MaSt = (
                     tc_manager_stop_samba_lane_without_payload() { :; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }
                     stop_runtime_process_by_ucomm() { :; }
-                    tc_mdns_bound_udp_5353() { return 0; }
                     sleep() {
                         if [ "$1" = "1" ]; then
                             return 0
@@ -2274,12 +2405,11 @@ MaSt = (
                     tc_manager_stop_samba_lane_without_payload() { :; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }
                     stop_runtime_process_by_ucomm() { :; }
-                    tc_mdns_bound_udp_5353() { return 0; }
                     sleep() {
                         if [ "$1" = "1" ]; then
                             return 0
@@ -2308,7 +2438,7 @@ MaSt = (
         self.assertEqual(proc.stdout, "status=0\n")
         self.assertEqual(acp_count_text, "1")
 
-    def test_manager_identity_reconcile_seeds_signature_on_first_pass(self) -> None:
+    def test_manager_diskless_pass_does_not_require_samba_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -2327,27 +2457,24 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
-                            mDNSResponder) return 1 ;;
+                            discoveryd) return 0 ;;
+                            afpserver|wcifsfs|wcifsnd) return 1 ;;
                             *) echo unexpected-runtime; return 1 ;;
                         esac
                     }
                     stop_runtime_process_by_ucomm() { :; }
-                    tc_mdns_bound_udp_5353() { return 0; }
                     tc_nbns_enabled() { return 0; }
-                    TC_MANAGER_IDENTITY_SIGNATURE_READY=0
-                    TC_MANAGER_LAST_IDENTITY_SIGNATURE=
                     tc_manager_stop_samba_lane_without_payload() { :; }
                     sleep() {
                         if [ "$1" = "1" ]; then
                             return 0
                         fi
-                        echo "changed=$TC_MANAGER_IDENTITY_CHANGED"
-                        echo "ready=$TC_MANAGER_IDENTITY_SIGNATURE_READY"
+                        echo "identity_ready=${TC_RUNTIME_IDENTITY_READY:-0}"
                         exit 0
                     }
                     """
@@ -2363,65 +2490,7 @@ MaSt = (
             )
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "prepare\ninit\nchanged=0\nready=1\n")
-
-    def test_manager_reconcile_reaps_apple_mdnsresponder_when_advertiser_bound(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        """\
-
-                    tc_log() { :; }
-                    tc_prepare_local_hostname_resolution() { echo prepare; }
-                    tc_init_runtime_identity() {
-                        echo init
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
-                    }
-                    runtime_process_present_by_ucomm() {
-                        case "$1" in
-                            mdns-advertiser) return 0 ;;
-                            mDNSResponder) return 0 ;;
-                            *) echo unexpected-runtime; return 1 ;;
-                        esac
-                    }
-                    stop_runtime_process_by_ucomm() { :; }
-                    tc_kill_apple_mdnsresponder() { echo reaped; }
-                    tc_mdns_bound_udp_5353() { return 0; }
-                    tc_nbns_enabled() { return 0; }
-                    TC_MANAGER_IDENTITY_SIGNATURE_READY=0
-                    TC_MANAGER_LAST_IDENTITY_SIGNATURE=
-                    tc_manager_stop_samba_lane_without_payload() { :; }
-                    sleep() {
-                        if [ "$1" = "1" ]; then
-                            return 0
-                        fi
-                        echo "changed=$TC_MANAGER_IDENTITY_CHANGED"
-                        echo "ready=$TC_MANAGER_IDENTITY_SIGNATURE_READY"
-                        exit 0
-                    }
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("reaped", proc.stdout.splitlines())
+        self.assertEqual(proc.stdout, "prepare\nidentity_ready=0\n")
 
     def test_manager_iteration_reconciles_no_payload_without_samba_or_nbns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2447,7 +2516,6 @@ MaSt = (
 
                     tc_log() { :; }
                     tc_now_seconds() { echo 1000; }
-                    tc_manager_reset_pass_state() { echo reset; }
                     tc_prepare_local_hostname_resolution() { :; }
                     tc_init_runtime_identity() {
                         echo identity
@@ -2460,13 +2528,11 @@ MaSt = (
                     tc_manager_stop_samba_lane_without_payload() { echo no_payload; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }
                     stop_runtime_process_by_ucomm() { :; }
-                    tc_mdns_bound_udp_5353() { return 0; }
-                    tc_manager_reconcile_nbns() { echo unexpected-nbns; return 1; }
                     sleep() {
                         if [ "$1" = "1" ]; then
                             return 0
@@ -2488,7 +2554,7 @@ MaSt = (
             acp_count_text = acp_count.read_text().strip()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "reset\nidentity\nno_payload\nstatus=0\n")
+        self.assertEqual(proc.stdout, "no_payload\nstatus=0\n")
         self.assertEqual(acp_count_text, "1")
 
     def test_manager_sleep_exits_promptly_after_term_signal(self) -> None:
@@ -2506,24 +2572,23 @@ MaSt = (
                         f"""\
 
                     tc_log() {{ printf '%s\\n' "$*" >>"$TC_LOG_FILE"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
                     stop_runtime_process_by_ucomm() {{ :; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     sleep() {{
                         echo "sleep $1"
                         count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
@@ -2568,24 +2633,23 @@ MaSt = (
                         f"""\
 
                     tc_log() {{ :; }}
-                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
                     stop_runtime_process_by_ucomm() {{ :; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     sleep() {{
                         echo "sleep $1"
                         count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
@@ -2643,7 +2707,8 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_wake_or_mount_volume() {{ return 0; }}
@@ -2665,17 +2730,21 @@ MaSt = (
                     }}
                     tc_probe_smb_bind_interfaces() {{
                         echo bind-probe >>{shlex.quote(str(events))}
-                        echo "127.0.0.1/8"
+                        TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8
+                        TC_SMB_BIND_STATUS=validated
+                        TC_SMB_BIND_REASON=
+                        TC_SMB_BIND_POLICY='policy 1 0'
                     }}
+                    tc_launch_discovery() {{ echo discovery-launch >>{shlex.quote(str(events))}; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             smbd) echo smbd-process >>{shlex.quote(str(events))}; return 0 ;;
-                            mdns-advertiser) echo mdns-process >>{shlex.quote(str(events))}; return 0 ;;
+                            discoveryd) echo discovery-process >>{shlex.quote(str(events))}; return 0 ;;
+                            wcifsfs|wcifsnd) return 1 ;;
                             *) return 1 ;;
                         esac
                     }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
                         case "$1" in
@@ -2713,7 +2782,7 @@ MaSt = (
         self.assertEqual(acp_count_text, "2")
         self.assertEqual(events_text.count("identity\n"), 1, events_text)
         self.assertEqual(events_text.count("stage\n"), 1, events_text)
-        self.assertEqual(events_text.count("mdns-process\n"), 1, events_text)
+        self.assertEqual(events_text.count("discovery-launch\n"), 1, events_text)
         self.assertEqual(events_text.count("bind-probe\n"), 2, events_text)
         self.assertNotIn("manager pass 2 step=samba_bind start", log_text)
         self.assertNotIn("manager scheduler: Samba bind reconciliation due", log_text)
@@ -2740,17 +2809,18 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_manager_stop_samba_lane_without_payload() {{ :; }}
+                    tc_apple_diskd_state() {{ echo loopback; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
                     stop_runtime_process_by_ucomm() {{ :; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     sleep() {{
                         case "$1" in
                             1|5) return 0 ;;
@@ -2812,7 +2882,8 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_wake_or_mount_volume() {{ return 0; }}
@@ -2836,18 +2907,22 @@ MaSt = (
                     }}
                     tc_probe_smb_bind_interfaces() {{
                         echo bind-probe >>{shlex.quote(str(events))}
-                        echo "127.0.0.1/8"
+                        TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8
+                        TC_SMB_BIND_STATUS=validated
+                        TC_SMB_BIND_REASON=
+                        TC_SMB_BIND_POLICY='policy 1 0'
                     }}
+                    tc_launch_discovery() {{ echo discovery-launch >>{shlex.quote(str(events))}; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             smbd) return 0 ;;
-                            mdns-advertiser) echo mdns-process >>{shlex.quote(str(events))}; return 0 ;;
+                            discoveryd) echo discovery-process >>{shlex.quote(str(events))}; return 0 ;;
+                            wcifsfs|wcifsnd) return 1 ;;
                             *) return 1 ;;
                         esac
                     }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
                     tc_reload_smbd_config() {{ echo reload >>{shlex.quote(str(events))}; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
                         case "$1" in
@@ -2888,13 +2963,13 @@ MaSt = (
         self.assertEqual(events_text.count("identity\n"), 2, events_text)
         self.assertEqual(events_text.count("stage\n"), 1, events_text)
         self.assertEqual(events_text.count("reload\n"), 1, events_text)
-        self.assertEqual(events_text.count("mdns-process\n"), 2, events_text)
+        self.assertEqual(events_text.count("discovery-launch\n"), 2, events_text)
         self.assertEqual(events_text.count("bind-probe\n"), 2, events_text)
         self.assertNotIn("manager pass 2 step=identity start", log_text)
         self.assertNotIn("manager pass 2 step=samba start", log_text)
         self.assertIn("disk_probe=change_confirmed", log_text)
 
-    def test_manager_restarts_smbd_when_config_reload_fails(self) -> None:
+    def test_manager_restarts_smbd_when_inherited_bind_tokens_are_untrusted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -2916,7 +2991,8 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_wake_or_mount_volume() {{ return 0; }}
@@ -2941,17 +3017,16 @@ MaSt = (
                         : >"$RAM_PRIVATE/username.map"
                         return 0
                     }}
-                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    tc_probe_smb_bind_interfaces() {{ TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8; TC_SMB_BIND_STATUS=validated; TC_SMB_BIND_REASON=; TC_SMB_BIND_POLICY="policy 1 0"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             smbd) [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ] ;;
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
                     tc_smbd_bound_tcp_445() {{ [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ]; }}
                     tc_reload_smbd_config() {{ echo reload >>{shlex.quote(str(events))}; return 1; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{
                         echo "stop $1" >>{shlex.quote(str(events))}
                         if [ "$1" = "smbd" ]; then
@@ -2983,10 +3058,15 @@ MaSt = (
         self.assertIn("status=0\n", proc.stdout)
         self.assertEqual(
             events_text.splitlines(),
-            ["stage", "reload", "stop smbd", "launched", "stop mdns-advertiser"],
+            [
+                "stage", "stop smbd", "launched", "stop discoveryd",
+                "stop wcifsfs", "stop wcifsnd", "stop legacy mdns advertiser",
+                "stop legacy nbns advertiser",
+            ],
             events_text,
         )
-        self.assertIn("manager smbd recovery: smbd config reload failed; restarting", log_text)
+        self.assertNotIn("reload", events_text)
+        self.assertIn("manager smbd recovery: restarting smbd after staged runtime change", log_text)
 
     def test_manager_resets_ram_runtime_and_retries_staging_on_next_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2996,7 +3076,7 @@ MaSt = (
             with (flash / "tcapsulesmb.conf").open("a") as conf:
                 conf.write("NBNS_ENABLED=1\n")
             stale_file = memory / "samba4/stale-runtime-file"
-            stale_file.parent.mkdir(parents=True)
+            stale_file.parent.mkdir(parents=True, exist_ok=True)
             stale_file.write_text("stale\n")
             events = tmp_path / "events"
             stage_count = tmp_path / "stage-count"
@@ -3016,7 +3096,8 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_wake_or_mount_volume() {{ return 0; }}
@@ -3027,7 +3108,6 @@ MaSt = (
                     tc_apply_ata_drive_setting() {{ :; }}
                     tc_payload_log_dir_ready() {{ return 0; }}
                     tc_find_payload_smbd() {{ echo "$1/smbd"; }}
-                    tc_find_payload_nbns() {{ return 1; }}
                     tc_stage_runtime() {{
                         count=$(/bin/cat {shlex.quote(str(stage_count))} 2>/dev/null || echo 0)
                         count=$((count + 1))
@@ -3048,12 +3128,12 @@ MaSt = (
                         : >"$RAM_PRIVATE/username.map"
                         return 0
                     }}
-                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    tc_probe_smb_bind_interfaces() {{ TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8; TC_SMB_BIND_STATUS=validated; TC_SMB_BIND_REASON=; TC_SMB_BIND_POLICY="policy 1 0"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             smbd) [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ] ;;
                             nbns-advertiser) [ "$(/bin/cat {shlex.quote(str(nbns_state))})" = "running" ] ;;
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
@@ -3064,19 +3144,12 @@ MaSt = (
                             *) return 0 ;;
                         esac
                     }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    tc_nbns_bound_udp_137() {{ [ "$(/bin/cat {shlex.quote(str(nbns_state))})" = "running" ]; }}
                     stop_runtime_process_by_ucomm() {{
                         echo "stop $1" >>{shlex.quote(str(events))}
                         case "$1" in
                             smbd) printf 'stopped\\n' >{shlex.quote(str(smbd_state))} ;;
                             nbns-advertiser) printf 'stopped\\n' >{shlex.quote(str(nbns_state))} ;;
                         esac
-                    }}
-                    tc_manager_reconcile_nbns() {{
-                        echo nbns-reconcile >>{shlex.quote(str(events))}
-                        printf 'running\\n' >{shlex.quote(str(nbns_state))}
-                        return 0
                     }}
                     sleep() {{
                         case "$1" in
@@ -3117,7 +3190,8 @@ MaSt = (
         self.assertEqual(sleep_count_text, "2")
         self.assertFalse(stale_file.exists())
         self.assertIn(
-            "stage:1\nstop smbd\nstop nbns-advertiser\nnbns-reconcile\nstop mdns-advertiser\nsleep:1\nstage:2\n",
+            "stage:1\nstop smbd\nstop discoveryd\nstop wcifsfs\nstop wcifsnd\n"
+            "stop legacy mdns advertiser\nstop legacy nbns advertiser\nsleep:1\nstage:2\n",
             events_text,
         )
         self.assertIn("launched\n", events_text)
@@ -3145,7 +3219,8 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }
                     tc_manager_refresh_runtime_identity_for_recovery() { :; }
                     tc_wake_or_mount_volume() { return 0; }
@@ -3164,11 +3239,11 @@ MaSt = (
                         : >"$RAM_PRIVATE/username.map"
                         return 0
                     }
-                    tc_probe_smb_bind_interfaces() { echo "127.0.0.1/8"; }
+                    tc_probe_smb_bind_interfaces() { TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8; TC_SMB_BIND_STATUS=validated; TC_SMB_BIND_REASON=; TC_SMB_BIND_POLICY="policy 1 0"; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
                             smbd) return 1 ;;
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }
@@ -3180,7 +3255,6 @@ MaSt = (
                     }
                     tc_wait_for_smbd_ipv4_445() { return 1; }
                     tc_smbd_bound_tcp_445() { return 1; }
-                    tc_mdns_bound_udp_5353() { return 0; }
                     stop_runtime_process_by_ucomm() { :; }
                     sleep() {
                         case "$1" in
@@ -3203,98 +3277,11 @@ MaSt = (
             log_text = (memory / "samba4/var/manager.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=1 bind=ok samba=failed\n", proc.stdout)
-        self.assertIn("manager Samba: smbd runtime apply failed reason=start_failed; will retry on next reconciliation pass", log_text)
-        self.assertIn("samba=failed bind=ok", log_text)
+        self.assertIn("status=1 bind=changed samba=failed\n", proc.stdout)
+        self.assertIn("manager Samba: smbd runtime apply failed reason=restart_failed; will retry on next reconciliation pass", log_text)
+        self.assertIn("samba=failed bind=changed", log_text)
         self.assertNotIn("Samba bind discovery deferred; no usable address has appeared yet", log_text)
         self.assertNotIn("bind=deferred_no_ip", log_text)
-
-    def test_manager_mdns_launches_generated_airport_once_when_apple_responder_is_alive(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            launched = tmp_path / "mdns-launched"
-            events = tmp_path / "mdns-events"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME=AirPort
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mDNSResponder) return 0 ;;
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    sleep() {{
-                        case "$1" in
-                            1) return 0 ;;
-                            3) echo "settle $1"; return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            log_text = (memory / "samba4/var/manager.log").read_text()
-            events_text = events.read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(events_text.count("--print-mdns-socket-families"), 1, events_text)
-        self.assertEqual(events_text.count("--instance AirPort"), 1, events_text)
-        self.assertIn("mDNS auto-ip is available; starting advertiser", log_text)
 
     def test_manager_mdns_healthy_advertiser_does_not_probe_or_relaunch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3315,7 +3302,6 @@ MaSt = (
                         """\
 
                     tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
-                    tc_manager_reset_pass_state() { :; }
                     tc_prepare_local_hostname_resolution() { :; }
                     tc_init_runtime_identity() {
                         MDNS_INSTANCE_NAME=AirPort
@@ -3326,12 +3312,11 @@ MaSt = (
                     tc_manager_stop_samba_lane_without_payload() { :; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }
                     stop_runtime_process_by_ucomm() { :; }
-                    tc_mdns_bound_udp_5353() { return 0; }
                     sleep() {
                         case "$1" in
                             1) return 0 ;;
@@ -3355,777 +3340,6 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=0\n", proc.stdout)
         self.assertFalse(events_exists)
-
-    def test_manager_mdns_defers_when_auto_ip_is_unavailable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            events = tmp_path / "mdns-events"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) exit 11 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        """\
-
-                    tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
-                    tc_manager_reset_pass_state() { :; }
-                    tc_prepare_local_hostname_resolution() { :; }
-                    tc_init_runtime_identity() {
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }
-                    tc_manager_refresh_runtime_identity_for_recovery() { :; }
-                    tc_manager_stop_samba_lane_without_payload() { :; }
-                    runtime_process_present_by_ucomm() { return 1; }
-                    tc_mdns_bound_udp_5353() { return 1; }
-                    sleep() {
-                        case "$1" in
-                            1) return 0 ;;
-                            3) echo unexpected-settle; return 0 ;;
-                            10) echo "status=$manager_status deferred=$TC_MANAGER_MDNS_DEFERRED_NO_IP"; exit 0 ;;
-                        esac
-                        return 0
-                    }
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            events_text = events.read_text()
-            log_text = (memory / "samba4/var/manager.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0 deferred=1\n", proc.stdout)
-        self.assertNotIn("unexpected-settle", proc.stdout)
-        self.assertEqual(events_text, "--print-mdns-socket-families\n")
-        self.assertIn("mDNS startup deferred; no usable address has appeared yet", log_text)
-
-    def test_manager_mdns_generated_launch_includes_airport_identity_arguments(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            launched = tmp_path / "mdns-launched"
-            events = tmp_path / "mdns-events"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME=AirPort
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mDNSResponder) return 0 ;;
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    sleep() {{
-                        case "$1" in
-                            1) return 0 ;;
-                            3) echo "settle $1"; return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            events_text = events.read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("--instance ", events_text)
-        self.assertNotIn("--afp", events_text)
-        self.assertIn("--auto-ip", events_text)
-        self.assertIn("--airport-wama 80:EA:96:E6:58:68", events_text)
-
-    def test_manager_mdns_generated_launch_passes_attached_usb_printer_identity(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            launched = tmp_path / "mdns-launched"
-            events = tmp_path / "mdns-events"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME="James's AirPort Time Capsule"
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME="James's AirPort Time Capsule"
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    get_airport_prni_raw() {{
-                        printf '%s\\n' \\
-                            '{{' \\
-                            '    printers=[' \\
-                            '        {{' \\
-                            '            appSocketPort=9100' \\
-                            '            generatedNumber=0' \\
-                            '            make="Canon"' \\
-                            '            model="MP490 series"' \\
-                            '            name="Canon MP490 series"' \\
-                            '            pluggedIn=true' \\
-                            '            productID=5948' \\
-                            '            serialNumber="C0958C"' \\
-                            '            vendorID=1193' \\
-                            '        }}' \\
-                            '    ]' \\
-                            '}}'
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mDNSResponder) return 0 ;;
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    sleep() {{
-                        case "$1" in
-                            1) return 0 ;;
-                            3) echo "settle $1"; return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            events_text = events.read_text()
-            log_text = (memory / "samba4/var/manager.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("--instance ", events_text)
-        self.assertIn("--riousbprint-name Canon MP490 series", events_text)
-        self.assertIn("--riousbprint-note James's AirPort Time Capsule", events_text)
-        self.assertIn("--riousbprint-mfg Canon", events_text)
-        self.assertIn("--riousbprint-mdl MP490 series", events_text)
-        self.assertIn("--riousbprint-serial C0958C", events_text)
-        self.assertIn("--riousbprint-vendor-id 1193", events_text)
-        self.assertIn("--riousbprint-product-id 5948", events_text)
-        self.assertIn("--pdl-datastream-port 9100", events_text)
-        self.assertNotIn("--riousbprint-cmd", events_text)
-        self.assertIn("USB printer advertisement prepared name=Canon MP490 series", log_text)
-
-    def test_manager_mdns_generated_launch_skips_unplugged_usb_printer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            events = tmp_path / "mdns-events"
-            launched = tmp_path / "mdns-launched"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME=AirPort
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    get_airport_prni_raw() {{
-                        printf '%s\\n' \\
-                            '{{' \\
-                            '    printers=[' \\
-                            '        {{' \\
-                            '            make="Canon"' \\
-                            '            model="MP490 series"' \\
-                            '            name="Canon MP490 series"' \\
-                            '            pluggedIn=false' \\
-                            '            productID=5948' \\
-                            '            serialNumber="C0958C"' \\
-                            '            vendorID=1193' \\
-                            '        }}' \\
-                            '    ]' \\
-                            '}}'
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    sleep() {{
-                        case "$1" in
-                            1) return 0 ;;
-                            3) echo unexpected-settle; return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            events_text = events.read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("--instance ", events_text)
-        self.assertNotIn("--riousbprint-", events_text)
-        self.assertNotIn("--pdl-datastream-", events_text)
-
-    def test_manager_mdns_refreshes_when_usb_printer_plugs_in(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            phase = tmp_path / "printer-phase"
-            phase.write_text("0")
-            launched = tmp_path / "mdns-launched"
-            events = tmp_path / "mdns-events"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME="James's AirPort Time Capsule"
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME="James's AirPort Time Capsule"
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    get_airport_prni_raw() {{
-                        if [ "$(/bin/cat {shlex.quote(str(phase))})" = "0" ]; then
-                            printf '%s\\n' '{{' '    printers=[]' '}}'
-                        else
-                            printf '%s\\n' \\
-                                '{{' \\
-                                '    printers=[' \\
-                                '        {{' \\
-                                '            make="Canon"' \\
-                                '            model="MP490 series"' \\
-                                '            name="Canon MP490 series"' \\
-                                '            pluggedIn=true' \\
-                                '            productID=5948' \\
-                                '            serialNumber="C0958C"' \\
-                                '            vendorID=1193' \\
-                                '        }}' \\
-                                '    ]' \\
-                                '}}'
-                        fi
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; rm -f {shlex.quote(str(launched))}; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    wait_for_process() {{ return 0; }}
-                    sleep() {{
-                        case "$1" in
-                            1|5) return 0 ;;
-                            10)
-                                if [ "$(/bin/cat {shlex.quote(str(phase))})" = "0" ]; then
-                                    echo 1 >{shlex.quote(str(phase))}
-                                    return 0
-                                fi
-                                echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            events_text = events.read_text()
-            log_text = (memory / "samba4/var/manager.log").read_text()
-
-        generated_lines = [line for line in events_text.splitlines() if "--instance " in line]
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(len(generated_lines), 2, events_text)
-        self.assertNotIn("--riousbprint-", generated_lines[0])
-        self.assertNotIn("--pdl-datastream-", generated_lines[0])
-        self.assertIn("--riousbprint-name Canon MP490 series", generated_lines[1])
-        self.assertIn("manager USB printer signature changed; debouncing", log_text)
-        self.assertIn("manager scheduler: USB printer state changed; running full service reconciliation now", log_text)
-        self.assertIn("manager mDNS refresh required after disk, identity, or USB printer change", log_text)
-
-    def test_manager_mdns_refreshes_when_usb_printer_unplugs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            phase = tmp_path / "printer-phase"
-            phase.write_text("1")
-            launched = tmp_path / "mdns-launched"
-            events = tmp_path / "mdns-events"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME="James's AirPort Time Capsule"
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME="James's AirPort Time Capsule"
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    get_airport_prni_raw() {{
-                        if [ "$(/bin/cat {shlex.quote(str(phase))})" = "0" ]; then
-                            printf '%s\\n' '{{' '    printers=[]' '}}'
-                        else
-                            printf '%s\\n' \\
-                                '{{' \\
-                                '    printers=[' \\
-                                '        {{' \\
-                                '            make="Canon"' \\
-                                '            model="MP490 series"' \\
-                                '            name="Canon MP490 series"' \\
-                                '            pluggedIn=true' \\
-                                '            productID=5948' \\
-                                '            serialNumber="C0958C"' \\
-                                '            vendorID=1193' \\
-                                '        }}' \\
-                                '    ]' \\
-                                '}}'
-                        fi
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; rm -f {shlex.quote(str(launched))}; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    wait_for_process() {{ return 0; }}
-                    sleep() {{
-                        case "$1" in
-                            1|5) return 0 ;;
-                            10)
-                                if [ "$(/bin/cat {shlex.quote(str(phase))})" = "1" ]; then
-                                    echo 0 >{shlex.quote(str(phase))}
-                                    return 0
-                                fi
-                                echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            events_text = events.read_text()
-
-        generated_lines = [line for line in events_text.splitlines() if "--instance " in line]
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(len(generated_lines), 2, events_text)
-        self.assertIn("--riousbprint-name Canon MP490 series", generated_lines[0])
-        self.assertNotIn("--riousbprint-", generated_lines[1])
-        self.assertNotIn("--pdl-datastream-", generated_lines[1])
-
-    def test_manager_mdns_refresh_restarts_existing_advertiser_with_generated_records(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            events = tmp_path / "mdns-events"
-            launched = tmp_path / "mdns-launched"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
-                "esac\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME=AirPort
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    mdns_present=1
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mdns-advertiser) [ "$mdns_present" = "1" ] || [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; mdns_present=0; }}
-                    tc_mdns_bound_udp_5353() {{ return 1; }}
-                    sleep() {{
-                        case "$1" in
-                            1) return 0 ;;
-                            3) echo "settle $1"; return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            events_text = events.read_text()
-            log_text = (memory / "samba4/var/manager.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("stop mdns-advertiser\n", proc.stdout)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(events_text.count("--print-mdns-socket-families"), 1, events_text)
-        self.assertIn("--instance ", events_text)
-        self.assertIn("manager mDNS recovery: killing prior mdns-advertiser processes", log_text)
-
-    def test_manager_diskless_state_resets_advertiser_logs_to_ram(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            old_payload_logs = tmp_path / "old-payload/logs"
-            launched = tmp_path / "mdns-launched"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                "case \"$1\" in\n"
-                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
-                "  --instance) "
-                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
-                "esac\n"
-                "exit 0\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{
-                        tc_set_payload_log_dir {shlex.quote(str(old_payload_logs.parent))} {shlex.quote(str(old_payload_logs.parent))}
-                    }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_INSTANCE_NAME=AirPort
-                        AIRPORT_HOST_LABEL=airport
-                        AIRPORT_WAMA=80:EA:96:E6:58:68
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    sleep() {{
-                        case "$1" in
-                            1) return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            ram_mdns_log_exists = (memory / "samba4/var/mdns.log").exists()
-            old_payload_mdns_log_exists = (old_payload_logs / "mdns.log").exists()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertTrue(ram_mdns_log_exists)
-        self.assertFalse(old_payload_mdns_log_exists)
 
     def test_manager_ignores_volatile_mast_fields_when_comparing_topology(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4167,15 +3381,14 @@ MaSt = (
                         chmod 755 "$TC_SMBD_BIN"
                         return 0
                     }}
-                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    tc_probe_smb_bind_interfaces() {{ TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8; TC_SMB_BIND_STATUS=validated; TC_SMB_BIND_REASON=; TC_SMB_BIND_POLICY="policy 1 0"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            smbd|mdns) return 0 ;;
+                            smbd|discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
                         case "$1" in
@@ -4255,15 +3468,14 @@ MaSt = (
                         chmod 755 "$TC_SMBD_BIN"
                         return 0
                     }}
-                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    tc_probe_smb_bind_interfaces() {{ TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8; TC_SMB_BIND_STATUS=validated; TC_SMB_BIND_REASON=; TC_SMB_BIND_POLICY="policy 1 0"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            smbd|mdns) return 0 ;;
+                            smbd|discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
                         case "$1" in
@@ -4335,11 +3547,10 @@ MaSt = (
                     tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
                         case "$1" in
@@ -4411,11 +3622,11 @@ MaSt = (
                         chmod 755 "$TC_SMBD_BIN"
                         return 0
                     }}
-                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    tc_probe_smb_bind_interfaces() {{ TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8; TC_SMB_BIND_STATUS=validated; TC_SMB_BIND_REASON=; TC_SMB_BIND_POLICY="policy 1 0"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             smbd) [ -f {shlex.quote(str(smbd_seen))} ] ;;
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
@@ -4427,7 +3638,6 @@ MaSt = (
                     }}
                     tc_wait_for_smbd_ipv4_445() {{ return 0; }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
                         if [ "$1" = "1" ]; then
@@ -4453,244 +3663,6 @@ MaSt = (
         self.assertIn("stage-runtime\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
         self.assertNotIn("unexpected-manager-mount", proc.stdout)
-
-    def test_manager_waits_for_nbns_udp_137_after_reconcile(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
-            with (flash / "tcapsulesmb.conf").open("a") as conf:
-                conf.write("NBNS_ENABLED=1\n")
-            nbns_bound_checks = tmp_path / "nbns-bound-checks"
-            events = tmp_path / "events"
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_wake_or_mount_volume() {{ return 0; }}
-                    is_volume_root_mounted() {{ return 0; }}
-                    tc_verify_payload_dir() {{ return 0; }}
-                    tc_volume_is_writable() {{ return 0; }}
-                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
-                    tc_apply_ata_drive_setting() {{ :; }}
-                    tc_payload_log_dir_ready() {{ return 0; }}
-                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
-                    tc_find_payload_nbns() {{ echo "$1/nbns-advertiser"; }}
-                    tc_stage_runtime() {{
-                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
-                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
-                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_NBNS_BIN"
-                        chmod 755 "$TC_SMBD_BIN" "$TC_NBNS_BIN"
-                        return 0
-                    }}
-                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            smbd) return 0 ;;
-                            mdns-advertiser) echo mdns-process >>{shlex.quote(str(events))}; return 0 ;;
-                            nbns-advertiser) echo nbns-process >>{shlex.quote(str(events))}; return 0 ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_smbd_bound_tcp_445() {{ return 0; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    tc_manager_reconcile_nbns() {{ echo nbns-reconcile >>{shlex.quote(str(events))}; echo nbns-reconcile; return 0; }}
-                    tc_nbns_bound_ipv4_udp_137() {{
-                        echo nbns-socket >>{shlex.quote(str(events))}
-                        count=$(/bin/cat {shlex.quote(str(nbns_bound_checks))} 2>/dev/null || echo 0)
-                        count=$((count + 1))
-                        echo "$count" >{shlex.quote(str(nbns_bound_checks))}
-                        [ "$count" -ge 2 ]
-                    }}
-                    stop_runtime_process_by_ucomm() {{ :; }}
-                    sleep() {{
-                        case "$1" in
-                            1) echo "sleep $1"; return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            log_text = (memory / "samba4/var/manager.log").read_text()
-            nbns_bound_check_count = int(nbns_bound_checks.read_text().strip())
-            events_text = events.read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("nbns-reconcile\n", proc.stdout)
-        self.assertIn("sleep 1\n", proc.stdout)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertGreaterEqual(nbns_bound_check_count, 2)
-        self.assertLess(events_text.index("nbns-reconcile"), events_text.index("mdns-process"))
-        self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-process"))
-        self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-socket"))
-        self.assertNotIn("manager NBNS: reconcile requested; readiness check will run after mDNS", log_text)
-        self.assertNotIn("manager NBNS: responder ready on required UDP 137 sockets", log_text)
-        self.assertNotIn("manager pass 1 step=health", log_text)
-        self.assertNotIn("manager health:", log_text)
-
-    def test_manager_skips_complete_health_sweep_after_reconciliation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
-            self.write_fake_acp(tmp_path, fixture.raw)
-            mdns_process_checks = tmp_path / "mdns-process-checks"
-            mdns_socket_checks = tmp_path / "mdns-socket-checks"
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        f"""\
-
-                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_manager_reset_pass_state() {{ :; }}
-                    tc_prepare_local_hostname_resolution() {{ :; }}
-                    tc_init_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }}
-                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
-                    runtime_process_present_by_ucomm() {{
-                        case "$1" in
-                            mdns-advertiser)
-                                count=$(/bin/cat {shlex.quote(str(mdns_process_checks))} 2>/dev/null || echo 0)
-                                count=$((count + 1))
-                                echo "$count" >{shlex.quote(str(mdns_process_checks))}
-                                return 0
-                                ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_mdns_bound_udp_5353() {{
-                        count=$(/bin/cat {shlex.quote(str(mdns_socket_checks))} 2>/dev/null || echo 0)
-                        count=$((count + 1))
-                        echo "$count" >{shlex.quote(str(mdns_socket_checks))}
-                        return 0
-                    }}
-                    stop_runtime_process_by_ucomm() {{ :; }}
-                    sleep() {{
-                        case "$1" in
-                            1) return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }}
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            log_text = (memory / "samba4/var/manager.log").read_text()
-            mdns_process_check_count = int(mdns_process_checks.read_text().strip())
-            mdns_socket_check_count = int(mdns_socket_checks.read_text().strip())
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertEqual(mdns_process_check_count, 1)
-        self.assertEqual(mdns_socket_check_count, 1)
-        self.assertNotIn("manager pass 1 step=health", log_text)
-        self.assertNotIn("manager health:", log_text)
-
-    def test_manager_nbns_readiness_logs_unbound_socket_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
-            with (flash / "tcapsulesmb.conf").open("a") as conf:
-                conf.write("NBNS_ENABLED=1\n")
-            with (flash / "common.sh").open("a") as common:
-                common.write(
-                    textwrap.dedent(
-                        """\
-
-                    tc_prepare_ram_root() { mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }
-                    tc_prepare_local_hostname_resolution() { :; }
-                    tc_init_runtime_identity() {
-                        MDNS_INSTANCE_NAME=AirPort
-                        MDNS_HOST_LABEL=airport
-                        SMB_NETBIOS_NAME=AIRPORT
-                        SMB_SERVER_STRING=AirPort
-                    }
-                    tc_wake_or_mount_volume() { return 0; }
-                    is_volume_root_mounted() { return 0; }
-                    tc_verify_payload_dir() { return 0; }
-                    tc_volume_is_writable() { return 0; }
-                    tc_prepare_share_path() { echo "$2/ShareRoot"; }
-                    tc_apply_ata_drive_setting() { :; }
-                    tc_payload_log_dir_ready() { return 0; }
-                    tc_find_payload_smbd() { echo "$1/smbd"; }
-                    tc_find_payload_nbns() { echo "$1/nbns-advertiser"; }
-                    tc_stage_runtime() {
-                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
-                        printf '#!/bin/sh\nexit 0\n' >"$TC_SMBD_BIN"
-                        printf '#!/bin/sh\nexit 0\n' >"$TC_NBNS_BIN"
-                        chmod 755 "$TC_SMBD_BIN" "$TC_NBNS_BIN"
-                        return 0
-                    }
-                    tc_probe_smb_bind_interfaces() { echo "127.0.0.1/8"; }
-                    runtime_process_present_by_ucomm() {
-                        case "$1" in
-                            smbd|mdns|nbns) return 0 ;;
-                            *) return 1 ;;
-                        esac
-                    }
-                    tc_smbd_bound_tcp_445() { return 0; }
-                    tc_mdns_bound_udp_5353() { return 0; }
-                    tc_manager_reconcile_nbns() { echo nbns-reconcile; return 0; }
-                    tc_nbns_bound_ipv4_udp_137() { return 1; }
-                    stop_runtime_process_by_ucomm() { :; }
-                    sleep() {
-                        case "$1" in
-                            1) echo "sleep $1"; return 0 ;;
-                            10) echo "status=$manager_status"; exit 0 ;;
-                        esac
-                        return 0
-                    }
-                    """
-                    )
-                )
-
-            proc = subprocess.run(
-                ["/bin/sh", str(flash / "manager.sh")],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            log_text = (memory / "samba4/var/manager.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("nbns-reconcile\n", proc.stdout)
-        self.assertIn("status=1\n", proc.stdout)
-        self.assertIn("manager NBNS: responder did not become ready on required UDP 137 sockets after 10s", log_text)
-        self.assertIn("nbns=failed", log_text)
-        self.assertNotIn("manager health:", log_text)
 
     def test_common_stage_runtime_installs_executables_with_temp_rename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4734,7 +3706,7 @@ MaSt = (
                     /bin/rm -rf {payload}
                     "$TC_TELEMETRY_BIN" --version
                     printf 'hash-after-disk-removal='
-                    printf 'password\\n' | "$TC_SERVICE_BIN" --print-nt-hash-from-stdin
+                    "$TC_SERVICE_BIN" --print-device-nt-hash
                     printf 'dest='
                     /bin/cat "$TC_SMBD_BIN"
                     printf 'smbpasswd='
@@ -4839,7 +3811,7 @@ MaSt = (
             (payload / "telemetry").chmod(0o755)
             (payload / "service").write_text(
                 "#!/bin/sh\n"
-                "if [ \"$1\" = '--print-nt-hash-from-stdin' ]; then cat >/dev/null; exit 8; fi\n"
+                "if [ \"$1\" = '--print-device-nt-hash' ]; then cat >/dev/null; exit 8; fi\n"
                 "exit 0\n"
             )
             (payload / "service").chmod(0o755)
@@ -4870,7 +3842,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=8\n", proc.stdout)
         self.assertIn(
-            "Samba runtime staging failed: NT hash generation failed status=8",
+            "Samba runtime staging failed: device NT hash generation failed status=8",
             proc.stdout,
         )
 
@@ -4894,6 +3866,7 @@ MaSt = (
             (payload / "service").chmod(0o755)
             (payload / "telemetry").write_text("#!/bin/sh\necho telemetry-ok\n")
             (payload / "telemetry").chmod(0o755)
+            (payload / "service").write_text("#!/bin/sh\nexit 6\n")
             script = tmp_path / "stage-runtime-acp-failure.sh"
             script.write_text(
                 textwrap.dedent(
@@ -4920,7 +3893,7 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=6\n", proc.stdout)
-        self.assertIn("Samba runtime staging failed: acp syPW read failed status=6", proc.stdout)
+        self.assertIn("Samba runtime staging failed: device NT hash generation failed status=6", proc.stdout)
 
     def test_common_stage_runtime_logs_invalid_hash_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5127,7 +4100,7 @@ MaSt = (
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             (memory / "samba4/sbin").mkdir(parents=True, exist_ok=True)
-            (memory / "samba4/sbin/service").write_text("#!/bin/sh\necho '192.168.1.40 bad/value'\n")
+            (memory / "samba4/sbin/service").write_text("#!/bin/sh\necho '192.168.1.40 bad/value'\necho status=validated\n")
             (memory / "samba4/sbin/service").chmod(0o755)
             script = tmp_path / "smb-bind-invalid.sh"
             script.write_text(
@@ -5157,79 +4130,6 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("bind=\n", proc.stdout)
-
-    def test_common_smb_bind_probe_defaults_to_lan_only_helper(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (memory / "samba4/sbin").mkdir(parents=True, exist_ok=True)
-            (memory / "samba4/sbin/service").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$1\" > {shlex.quote(str(memory / 'samba4/var/mdns-arg'))}\n"
-                "echo '192.168.1.40/24'\n"
-            )
-            (memory / "samba4/sbin/service").chmod(0o755)
-            script = tmp_path / "smb-bind-lan-only.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    bind=$(tc_probe_smb_bind_interfaces)
-                    printf 'bind=%s\\n' "$bind"
-                    printf 'arg=%s\\n' "$(cat "$RAM_VAR/mdns-arg")"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("bind=127.0.0.1/8 ::1/128 192.168.1.40/24\n", proc.stdout)
-        self.assertIn("arg=--print-smb-bind-interfaces-lan\n", proc.stdout)
-
-    def test_common_smb_bind_probe_can_use_all_interface_helper(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (memory / "samba4/sbin").mkdir(parents=True, exist_ok=True)
-            (memory / "samba4/sbin/service").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$1\" > {shlex.quote(str(memory / 'samba4/var/mdns-arg'))}\n"
-                "echo '192.168.1.40/24'\n"
-            )
-            (memory / "samba4/sbin/service").chmod(0o755)
-            script = tmp_path / "smb-bind-all.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    SMB_BIND_LAN_ONLY=0
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    bind=$(tc_probe_smb_bind_interfaces)
-                    printf 'bind=%s\\n' "$bind"
-                    printf 'arg=%s\\n' "$(cat "$RAM_VAR/mdns-arg")"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("bind=127.0.0.1/8 ::1/128 192.168.1.40/24\n", proc.stdout)
-        self.assertIn("arg=--print-smb-bind-interfaces\n", proc.stdout)
 
     def test_manager_serves_external_payload_disk_as_hidden_samba_share(self) -> None:
         fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_external_only")
@@ -5264,23 +4164,22 @@ MaSt = (
                         MDNS_HOST_LABEL=airport
                         SMB_NETBIOS_NAME=AirPort
                         SMB_SERVER_STRING=AirPort
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_wake_or_mount_volume() {{ return 0; }}
                     is_volume_root_mounted() {{ return 0; }}
                     tc_apply_ata_drive_setting() {{ :; }}
-                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    tc_probe_smb_bind_interfaces() {{ TC_SMB_BIND_PROBE_TOKENS=127.0.0.1/8; TC_SMB_BIND_STATUS=validated; TC_SMB_BIND_REASON=; TC_SMB_BIND_POLICY="policy 1 0"; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
-                            mdns-advertiser) return 0 ;;
+                            discoveryd) return 0 ;;
                             *) return 1 ;;
                         esac
                     }}
                     wait_for_process() {{ return 0; }}
                     tc_wait_for_smbd_ipv4_445() {{ return 0; }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
-                    tc_mdns_bound_udp_5353() {{ return 0; }}
-                    tc_manager_reconcile_nbns() {{ return 0; }}
                     tc_manager_wait_for_nbns_ready() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
@@ -5289,8 +4188,6 @@ MaSt = (
                             10)
                                 printf 'payload=%s|%s|%s\\n' "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME" "$TC_PAYLOAD_DEVICE"
                                 printf 'shares\\n%s\\n' "$manager_share_rows"
-                                printf 'adisk\\n'
-                                cat "$TC_ADISK_TSV"
                                 printf 'marker=%s\\n' "$([ -f {marker} ] && echo yes || echo no)"
                                 printf 'runtime=%s\\n' "$([ -x "$TC_SMBD_BIN" ] && echo yes || echo no)"
                                 cat "$TC_SMBD_CONF"
@@ -5314,7 +4211,6 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"payload={volumes}/dk5/.samba4|{volumes}/dk5|/dev/dk5\n", proc.stdout)
         self.assertIn(f"shares\nUSB Backup\t{volumes}/dk5\tdk5\t0\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n", proc.stdout)
-        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x82\n", proc.stdout)
         self.assertIn("marker=yes\n", proc.stdout)
         self.assertIn("runtime=yes\n", proc.stdout)
         self.assertIn("[USB Backup]\n", proc.stdout)
@@ -5671,7 +4567,7 @@ MaSt = (
         self.assertNotIn("fruit:metadata = netatalk", proc.stdout)
         self.assertNotIn("fruit:time_capsule_native_metadata", proc.stdout)
 
-    def test_common_generate_smb_conf_derives_fruit_model_from_acp_syap(self) -> None:
+    def test_common_generate_smb_conf_uses_native_observed_fruit_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -5691,6 +4587,7 @@ MaSt = (
                     MDNS_HOST_LABEL=airport
                     SMB_NETBIOS_NAME=AirPort
                     SMB_SERVER_STRING=AirPort
+                    SMB_FRUIT_MODEL=TimeCapsule8,119
                     TC_RUNTIME_IDENTITY_READY=1
                     get_airport_acp_value() {{
                         case "$1" in
@@ -5717,7 +4614,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "TimeCapsule8,119\n")
 
-    def test_common_generate_smb_conf_falls_back_to_macsamba_fruit_model(self) -> None:
+    def test_common_generate_smb_conf_uses_native_fallback_fruit_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -5737,6 +4634,7 @@ MaSt = (
                     MDNS_HOST_LABEL=airport
                     SMB_NETBIOS_NAME=AirPort
                     SMB_SERVER_STRING=AirPort
+                    SMB_FRUIT_MODEL=MacSamba
                     TC_RUNTIME_IDENTITY_READY=1
                     get_airport_acp_value() {{ return 1; }}
                     tc_init_runtime_env
@@ -5866,7 +4764,7 @@ MaSt = (
                         cat <<'EOF'
                     100 Z smbd smbd
                     101 S smbd smbd
-                    102 S mdns-advertiser mdns
+                    102 S discoveryd discoveryd
                     103 S other other
                     EOF
                     }}
@@ -5879,8 +4777,8 @@ MaSt = (
                                 echo "root smbd 101 11 internet6 stream tcp 0x0 [*]:445"
                                 ;;
                             102)
-                                echo "root mdns-advertiser 102 10 internet dgram udp 0x0 *:5353"
-                                echo "root mdns-advertiser 102 11 internet6 dgram udp 0x0 [*]:5353"
+                                echo "root discoveryd 102 10 internet dgram udp 0x0 *:5353"
+                                echo "root discoveryd 102 11 internet6 dgram udp 0x0 [*]:5353"
                                 ;;
                             *) echo "root other $1 10 internet dgram udp 0x0 *:5353" ;;
                         esac
@@ -5893,13 +4791,13 @@ MaSt = (
                     tc_smbd_bound_ipv6_445 || status=$?
                     echo "smbd6=$status"
                     status=0
-                    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 5353 || status=$?
+                    tc_process_bound_ipv4_udp_port "$DISCOVERY_PROC_NAME" 5353 || status=$?
                     echo "mdns4=$status"
                     status=0
-                    tc_process_bound_ipv6_udp_port "$MDNS_PROC_NAME" 5353 || status=$?
+                    tc_process_bound_ipv6_udp_port "$DISCOVERY_PROC_NAME" 5353 || status=$?
                     echo "mdns6=$status"
                     status=0
-                    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 9999 || status=$?
+                    tc_process_bound_ipv4_udp_port "$DISCOVERY_PROC_NAME" 9999 || status=$?
                     echo "mdns4_wrong_port=$status"
                     echo "calls=$(cat {calls})"
                     """
@@ -5924,18 +4822,11 @@ MaSt = (
             "102\n",
         )
 
-    def test_common_mdns_bound_udp_5353_requires_all_reported_socket_families(self) -> None:
+    def test_common_discovery_cleanup_stops_native_and_legacy_conflicts_in_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            families_file = tmp_path / "families"
-            families_file.write_text("ipv4 ipv6\n", encoding="utf-8")
-            (flash / "mdns-advertiser").write_text(
-                f"#!/bin/sh\n[ \"$1\" = \"--print-mdns-socket-families\" ] || exit 2\ncat {families_file}\n",
-                encoding="utf-8",
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-bound-families.sh"
+            script = tmp_path / "discovery-cleanup.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -5943,113 +4834,28 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    mkdir -p "$RAM_VAR"
-                    v4_status=1
-                    v6_status=1
-                    tc_process_bound_ipv4_udp_port() {{ return "$v4_status"; }}
-                    tc_process_bound_ipv6_udp_port() {{ return "$v6_status"; }}
-
-                    v4_status=0
-                    v6_status=1
-                    status=0
-                    tc_mdns_bound_udp_5353 || status=$?
-                    echo "dual_prefers_ipv4=$status"
-
-                    v4_status=1
-                    v6_status=0
-                    status=0
-                    tc_mdns_bound_udp_5353 || status=$?
-                    echo "dual_missing_ipv4=$status"
-
-                    printf 'ipv4\\n' >{families_file}
-                    v4_status=0
-                    v6_status=1
-                    status=0
-                    tc_mdns_bound_udp_5353 || status=$?
-                    echo "ipv4_only=$status"
-
-                    printf 'ipv6\\n' >{families_file}
-                    v4_status=1
-                    v6_status=0
-                    status=0
-                    tc_mdns_bound_udp_5353 || status=$?
-                    echo "ipv6_only=$status"
-
-                    v4_status=0
-                    v6_status=1
-                    status=0
-                    tc_mdns_bound_udp_5353 || status=$?
-                    echo "ipv6_only_missing=$status"
-
-                    printf 'ethernet\\n' >{families_file}
-                    v4_status=0
-                    v6_status=0
-                    status=0
-                    tc_mdns_bound_udp_5353 || status=$?
-                    echo "unsupported_family=$status"
+                    stop_runtime_process_by_ucomm() {{ echo "$1:$2"; }}
+                    stop_discovery_conflicts
                     """
                 )
             )
             script.chmod(0o755)
 
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             proc.stdout,
-            "dual_prefers_ipv4=1\n"
-            "dual_missing_ipv4=1\n"
-            "ipv4_only=0\n"
-            "ipv6_only=0\n"
-            "ipv6_only_missing=1\n"
-            "unsupported_family=1\n",
+            "wcifsfs:wcifsfs\nwcifsnd:wcifsnd\n"
+            "legacy mdns advertiser:mdns-advertiser\n"
+            "legacy nbns advertiser:nbns-advertiser\n",
         )
-
-    def test_common_manager_restarts_nbns_when_running_without_udp_137_and_auto_ip_exists(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "manager-nbns-restart-unbound.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    NBNS_ENABLED=1
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    nbns_present=1
-                    runtime_process_present_by_ucomm() {{
-                        [ "$1" = "$NBNS_PROC_NAME" ] && [ "$nbns_present" = "1" ]
-                    }}
-                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
-                    tc_nbns_auto_ip_available() {{ echo auto-ip; return 0; }}
-                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; nbns_present=0; }}
-                    tc_manager_refresh_runtime_identity_for_recovery() {{ echo identity; }}
-                    tc_restart_nbns() {{ echo restart; }}
-                    tc_manager_reconcile_nbns
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "auto-ip\nstop nbns-advertiser\nidentity\nrestart\n")
-        self.assertIn("manager NBNS recovery: nbns responder is running without required UDP 137 sockets", log_text)
 
     def test_common_manager_disables_rsync_by_stopping_process_and_removing_ram_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             runtime_root = memory / "samba4"
-            (runtime_root / "sbin").mkdir(parents=True)
+            (runtime_root / "sbin").mkdir(parents=True, exist_ok=True)
             (runtime_root / "etc").mkdir(parents=True)
             (runtime_root / "sbin/rsync").write_text("stale\n")
             (runtime_root / "etc/rsyncd.conf").write_text("stale\n")
@@ -6145,7 +4951,7 @@ MaSt = (
             (payload / "rsync").chmod(0o755)
             (payload / "rsyncd.conf").write_text("[shareroot]\npath = /Volumes/dk2/ShareRoot\n")
             runtime_root = memory / "samba4"
-            (runtime_root / "sbin").mkdir(parents=True)
+            (runtime_root / "sbin").mkdir(parents=True, exist_ok=True)
             (runtime_root / "etc").mkdir(parents=True)
             (runtime_root / "var").mkdir(parents=True)
             (runtime_root / "sbin/rsync").write_text("#!/bin/sh\nexit 0\n")
@@ -6206,99 +5012,18 @@ MaSt = (
         self.assertEqual(recorded_stop_calls, ["stop"])
         self.assertEqual(recorded_wait_calls, ["wait"])
 
-    def test_common_manager_defers_nbns_when_running_without_udp_137_and_no_auto_ip(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "manager-nbns-defer-unbound.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    NBNS_ENABLED=1
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    runtime_process_present_by_ucomm() {{
-                        [ "$1" = "$NBNS_PROC_NAME" ]
-                    }}
-                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
-                    tc_nbns_auto_ip_available() {{ echo auto-ip; return 11; }}
-                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
-                    tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
-                    tc_manager_reconcile_nbns
-                    echo "deferred=$TC_MANAGER_NBNS_DEFERRED_NO_IP"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "auto-ip\ndeferred=1\n")
-        self.assertIn("manager NBNS recovery: nbns responder is running without required UDP 137 sockets", log_text)
-        self.assertIn("NBNS startup deferred; no usable address has appeared yet", log_text)
-        self.assertNotIn("unexpected", proc.stdout)
-
-    def test_common_manager_reports_nbns_hard_auto_ip_failure_when_unbound(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "manager-nbns-unbound-hard-fail.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    NBNS_ENABLED=1
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    runtime_process_present_by_ucomm() {{
-                        [ "$1" = "$NBNS_PROC_NAME" ]
-                    }}
-                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
-                    tc_nbns_auto_ip_available() {{ echo auto-ip; return 13; }}
-                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
-                    tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
-                    status=0
-                    tc_manager_reconcile_nbns || status=$?
-                    echo "status=$status"
-                    echo "deferred=$TC_MANAGER_NBNS_DEFERRED_NO_IP"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "auto-ip\nstatus=1\ndeferred=0\n")
-        self.assertIn("manager NBNS recovery: nbns responder is running without required UDP 137 sockets", log_text)
-        self.assertIn("manager NBNS recovery: auto-ip check failed with exit code 13", log_text)
-        self.assertNotIn("unexpected", proc.stdout)
-
-
-    def test_common_mdns_launch_uses_single_generated_advertiser_call(self) -> None:
+    def test_common_discovery_launch_uses_single_controller_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             marker = tmp_path / "mdns.started"
-            (flash / "mdns-advertiser").write_text(
+            (flash / "discoveryd").write_text(
                 "#!/bin/sh\n"
                 "printf 'mdns-args:%s\\n' \"$*\"\n"
                 f"echo started >{shlex.quote(str(marker))}\n"
                 "exit 0\n"
             )
-            (flash / "mdns-advertiser").chmod(0o755)
+            (flash / "discoveryd").chmod(0o755)
             script = tmp_path / "mdns-generated-single-call.sh"
             script.write_text(
                 textwrap.dedent(
@@ -6308,32 +5033,15 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
-                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    get_radio_mac() {{
-                        case "$1" in
-                            bwl0) echo 80:EA:96:EB:2E:7D ;;
-                            bwl1) echo 80:EA:96:EB:2E:7C ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    get_airport_acp_value() {{
-                        case "$1" in
-                            syNm) echo "James's AirPort Time Capsule" ;;
-                            syFl) echo 0x00000A0C ;;
-                            raNA) echo false ;;
-                            syVs) echo 7.9.1 ;;
-                            srcv) echo 79100.2 ;;
-                            bjSd) echo 0x10 ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    get_airport_rast() {{ echo 3; }}
-                    tc_launch_mdns_advertiser "mdns test" 1 0
-                    wait "$mdns_launch_pid" || true
+                    tc_ensure_runtime_identity() {{ SMB_NETBIOS_NAME=TIMECAPSULE; TC_RUNTIME_IDENTITY_READY=1; }}
+                    runtime_process_present_by_ucomm() {{ return 1; }}
+                    stop_discovery_conflicts() {{ return 0; }}
+                    tc_launch_discovery "discovery test" 1 0
+                    wait "$TC_DISCOVERY_PID" || true
                     [ -f {shlex.quote(str(marker))} ] || exit 99
-                    cat "$TC_MDNS_LOG_FILE"
+                    cat "$TC_DISCOVERY_LOG_FILE"
                     cat "$RAM_VAR/test.log"
                     """
                 )
@@ -6343,219 +5051,24 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("launching mdns\n", proc.stdout)
-        self.assertIn("--instance ", proc.stdout)
+        self.assertIn("launching discovery\n", proc.stdout)
+        # The registrant needs no identity, airport or auto-ip arguments.
+        self.assertIn("mdns-args:--netbios-name TIMECAPSULE\n", proc.stdout)
         self.assertNotIn("--afp", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
+        self.assertNotIn("--auto-ip", proc.stdout)
+        self.assertNotIn("--instance", proc.stdout)
 
-    def test_common_mdns_launch_passes_afp_when_advertise_afp_enabled(self) -> None:
+    def test_common_discovery_diskless_start_omits_name_and_share_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             args_file = tmp_path / "mdns-args.txt"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" > {shlex.quote(str(args_file))}\n"
-                "exit 0\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-afp-enabled.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    MDNS_ADVERTISE_AFP=1
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    tc_ensure_runtime_identity() {{
-                        MDNS_INSTANCE_NAME=AFP
-                        MDNS_HOST_LABEL=afp
-                        MDNS_DEVICE_MODEL=TimeCapsule
-                        TC_RUNTIME_IDENTITY_READY=1
-                    }}
-                    tc_prepare_mdns_identity() {{
-                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
-                        AIRPORT_WAMA=
-                        AIRPORT_RAMA=
-                        AIRPORT_RAM2=
-                        AIRPORT_RAST=
-                        AIRPORT_RANA=
-                        AIRPORT_SYFL=
-                        AIRPORT_SYAP=
-                        AIRPORT_SYVS=
-                        AIRPORT_SRCV=
-                        AIRPORT_BJSD=
-                        return 0
-                    }}
-                    stop_runtime_process_by_ucomm() {{ :; }}
-                    tc_launch_mdns_advertiser "mdns startup" 1 0 0
-                    wait "$mdns_launch_pid" || true
-                    cat {shlex.quote(str(args_file))}
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("--afp", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
-
-    def test_common_mdns_advertiser_passes_prni_printer_args_to_generated_launch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                "printf 'mdns-args:%s\\n' \"$*\"\n"
-                "exit 0\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-prni-printer.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    get_radio_mac() {{ return 1; }}
-                    get_airport_acp_value() {{
-                        case "$1" in
-                            syNm) echo "James's AirPort Time Capsule" ;;
-                            syFl) echo 0x00000A0C ;;
-                            raNA) echo false ;;
-                            syVs) echo 7.9.1 ;;
-                            srcv) echo 79100.2 ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    get_airport_prni_raw() {{
-                        printf '%s\\n' \\
-                            '{{' \\
-                            '    printers=[' \\
-                            '        {{' \\
-                            '            appSocketPort=9100' \\
-                            '            generatedNumber=0' \\
-                            '            make="Canon"' \\
-                            '            model="MP490 series"' \\
-                            '            name="Canon MP490 series"' \\
-                            '            pluggedIn=true' \\
-                            '            productID=5948' \\
-                            '            serialNumber="C0958C"' \\
-                            '            vendorID=1193' \\
-                            '        }}' \\
-                            '    ]' \\
-                            '}}'
-                    }}
-                    tc_launch_mdns_advertiser "mdns test" 1 0
-                    wait "$mdns_launch_pid" || true
-                    cat "$TC_MDNS_LOG_FILE"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("--instance ", proc.stdout)
-        self.assertIn("--riousbprint-name Canon MP490 series", proc.stdout)
-        self.assertIn("--riousbprint-note James's AirPort Time Capsule", proc.stdout)
-        self.assertIn("--riousbprint-mfg Canon", proc.stdout)
-        self.assertIn("--riousbprint-mdl MP490 series", proc.stdout)
-        self.assertIn("--riousbprint-serial C0958C", proc.stdout)
-        self.assertIn("--riousbprint-vendor-id 1193", proc.stdout)
-        self.assertIn("--riousbprint-product-id 5948", proc.stdout)
-        self.assertIn("--pdl-datastream-port 9100", proc.stdout)
-        self.assertNotIn("--riousbprint-cmd", proc.stdout)
-        self.assertNotIn("--debug-logging", proc.stdout)
-        self.assertIn("USB printer advertisement prepared name=Canon MP490 series", proc.stdout)
-
-    def test_common_mdns_advertiser_skips_unplugged_prni_printer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                "printf 'mdns-args:%s\\n' \"$*\"\n"
-                "exit 0\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-prni-unplugged.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    get_radio_mac() {{ return 1; }}
-                    get_airport_acp_value() {{
-                        case "$1" in
-                            syNm) echo "James's AirPort Time Capsule" ;;
-                            syVs) echo 7.9.1 ;;
-                            srcv) echo 79100.2 ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    get_airport_prni_raw() {{
-                        printf '%s\\n' \\
-                            '{{' \\
-                            '    printers=[' \\
-                            '        {{' \\
-                            '            make="Canon"' \\
-                            '            model="MP490 series"' \\
-                            '            name="Canon MP490 series"' \\
-                            '            pluggedIn=false' \\
-                            '            productID=5948' \\
-                            '            serialNumber="C0958C"' \\
-                            '            vendorID=1193' \\
-                            '        }}' \\
-                            '    ]' \\
-                            '}}'
-                    }}
-                    tc_launch_mdns_advertiser "mdns test" 1 0
-                    wait "$mdns_launch_pid" || true
-                    cat "$TC_MDNS_LOG_FILE"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("--instance ", proc.stdout)
-        self.assertNotIn("--riousbprint-", proc.stdout)
-        self.assertNotIn("--pdl-datastream-", proc.stdout)
-
-    def test_common_mdns_diskless_start_omits_stale_adisk_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            args_file = tmp_path / "mdns-args.txt"
-            (flash / "mdns-advertiser").write_text(
+            (flash / "discoveryd").write_text(
                 "#!/bin/sh\n"
                 f"printf '%s\\n' \"$*\" >{shlex.quote(str(args_file))}\n"
                 "exit 0\n"
             )
-            (flash / "mdns-advertiser").chmod(0o755)
+            (flash / "discoveryd").chmod(0o755)
             script = tmp_path / "mdns-diskless-no-adisk.sh"
             script.write_text(
                 textwrap.dedent(
@@ -6567,14 +5080,13 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    cat >"$TC_ADISK_TSV" <<'EOF'
-                    Stale	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
-                    EOF
+                    stale_shares=$(printf 'Stale\\t/Volumes/dk2\\tdk2\\t1\\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
                     tc_ensure_runtime_identity() {{
                         MDNS_INSTANCE_NAME=Diskless
                         MDNS_HOST_LABEL=diskless
                         MDNS_DEVICE_MODEL=TimeCapsule
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
@@ -6591,8 +5103,9 @@ MaSt = (
                         return 0
                     }}
                     stop_runtime_process_by_ucomm() {{ echo "stop $1"; }}
-                    tc_launch_mdns_advertiser "mdns startup" 1 0 1
-                    wait "$mdns_launch_pid" || true
+                    stop_discovery_conflicts() {{ return 0; }}
+                    tc_launch_discovery "discovery startup" 1 0 1 0 "$stale_shares"
+                    wait "$TC_DISCOVERY_PID" || true
                     cat {shlex.quote(str(args_file))}
                     cat "$RAM_VAR/test.log"
                     """
@@ -6604,23 +5117,24 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--diskless", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
+        self.assertNotIn("--auto-ip", proc.stdout)
         self.assertNotIn("--afp", proc.stdout)
-        self.assertNotIn("--adisk-shares-file", proc.stdout)
+        self.assertNotIn("--adisk-share", proc.stdout)
         self.assertNotIn("--debug-logging", proc.stdout)
-        self.assertIn("mdns startup: starting mdns advertiser in diskless auto-ip mode", proc.stdout)
+        self.assertIn("discovery startup: starting discovery controller in diskless mode", proc.stdout)
+        self.assertNotIn("--netbios-name", proc.stdout)
 
-    def test_common_mdns_advertiser_passes_debug_logging_when_enabled(self) -> None:
+    def test_common_discovery_passes_debug_logging_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             args_file = tmp_path / "mdns-args.txt"
-            (flash / "mdns-advertiser").write_text(
+            (flash / "discoveryd").write_text(
                 "#!/bin/sh\n"
                 f"printf '%s\\n' \"$*\" >{shlex.quote(str(args_file))}\n"
                 "exit 0\n"
             )
-            (flash / "mdns-advertiser").chmod(0o755)
+            (flash / "discoveryd").chmod(0o755)
             script = tmp_path / "mdns-debug-logging.sh"
             script.write_text(
                 textwrap.dedent(
@@ -6637,7 +5151,9 @@ MaSt = (
                         MDNS_INSTANCE_NAME=Debug
                         MDNS_HOST_LABEL=debug
                         MDNS_DEVICE_MODEL=TimeCapsule
-                        TC_RUNTIME_IDENTITY_READY=1
+                        SMB_FRUIT_MODEL=TimeCapsule6,106
+                    SMB_NETBIOS_NAME=TIMECAPSULE
+                    TC_RUNTIME_IDENTITY_READY=1
                     }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
@@ -6654,8 +5170,9 @@ MaSt = (
                         return 0
                     }}
                     stop_runtime_process_by_ucomm() {{ :; }}
-                    tc_launch_mdns_advertiser "mdns startup" 1 0 0
-                    wait "$mdns_launch_pid" || true
+                    stop_discovery_conflicts() {{ :; }}
+                    tc_launch_discovery "discovery startup" 1 0 0
+                    wait "$TC_DISCOVERY_PID" || true
                     cat {shlex.quote(str(args_file))}
                     cat "$RAM_VAR/test.log"
                     """
@@ -6667,22 +5184,18 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--debug-logging", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
+        self.assertNotIn("--auto-ip", proc.stdout)
         self.assertNotIn("--afp", proc.stdout)
-        self.assertIn("mdns startup: debug logging enabled at", proc.stdout)
+        self.assertIn("discovery startup: debug logging enabled at", proc.stdout)
 
-    def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:
+    def test_common_discovery_writes_one_payload_log_in_normal_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             payload = volumes / "dk2/.samba4"
             payload.mkdir(parents=True)
-            (flash / "mdns-advertiser").write_text("#!/bin/sh\nprintf 'mdns-args:%s\\n' \"$*\"\necho mdns-stdout\necho mdns-stderr >&2\n")
-            (flash / "mdns-advertiser").chmod(0o755)
-            nbns_bin = memory / "samba4/sbin/nbns-advertiser"
-            nbns_bin.parent.mkdir(parents=True)
-            nbns_bin.write_text("#!/bin/sh\nprintf 'nbns-args:%s\\n' \"$*\"\necho nbns-stdout\necho nbns-stderr >&2\n")
-            nbns_bin.chmod(0o755)
+            (flash / "discoveryd").write_text("#!/bin/sh\nprintf 'discovery-args:%s\\n' \"$*\"\necho discovery-stdout\necho discovery-stderr >&2\n")
+            (flash / "discoveryd").chmod(0o755)
             script = tmp_path / "process-logs.sh"
             script.write_text(
                 textwrap.dedent(
@@ -6715,18 +5228,13 @@ MaSt = (
                         esac
                     }}
                     get_airport_rast() {{ echo 3; }}
-                    stop_nbns_conflicts() {{ return 0; }}
+                    tc_ensure_runtime_identity() {{ SMB_NETBIOS_NAME=TIMECAPSULE; TC_RUNTIME_IDENTITY_READY=1; }}
+                    stop_discovery_conflicts() {{ return 0; }}
                     tc_set_payload_log_dir {payload} {volumes}/dk2
-                    printf 'mdns-path=%s\\n' "$TC_MDNS_LOG_FILE"
-                    printf 'nbns-path=%s\\n' "$TC_NBNS_LOG_FILE"
-                    tc_launch_mdns_advertiser "mdns test" 0 0
-                    wait "$mdns_launch_pid" || true
-                    tc_launch_nbns "nbns test" 0
-                    wait "$!" || true
-                    printf 'mdns\\n'
-                    cat "$TC_MDNS_LOG_FILE"
-                    printf 'nbns\\n'
-                    cat "$TC_NBNS_LOG_FILE"
+                    printf 'discovery-path=%s\\n' "$TC_DISCOVERY_LOG_FILE"
+                    tc_launch_discovery "discovery test" 0 0
+                    wait "$TC_DISCOVERY_PID" || true
+                    cat "$TC_DISCOVERY_LOG_FILE"
                     """
                 )
             )
@@ -6735,78 +5243,13 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("mdns-path=", proc.stdout)
-        self.assertIn("/.samba4/logs/mdns.log", proc.stdout)
-        self.assertIn("/.samba4/logs/nbns.log", proc.stdout)
-        self.assertIn("mdns\n", proc.stdout)
-        self.assertIn("launching mdns\n", proc.stdout)
-        self.assertIn("--instance ", proc.stdout)
-        self.assertIn("James's AirPort Time Capsule", proc.stdout)
-        self.assertIn("--airport-syfl 0xA0C", proc.stdout)
-        self.assertIn("mdns-stdout", proc.stdout)
-        self.assertIn("mdns-stderr", proc.stdout)
-        self.assertIn("nbns\n", proc.stdout)
-        self.assertIn("launching nbns", proc.stdout)
-        self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("nbns-stdout", proc.stdout)
-        self.assertIn("nbns-stderr", proc.stdout)
-
-    def test_common_mdns_generated_launch_failure_does_not_run_snapshot_capture(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                "printf 'mdns-args:%s\\n' \"$*\"\n"
-                "if [ \"$1\" = \"--instance\" ]; then\n"
-                "  echo generated-fail >&2\n"
-                "  exit 2\n"
-                "fi\n"
-                "echo unexpected-capture\n"
-                "exit 9\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-generation-failure.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_select_live_iface_mac() {{ echo 02:00:00:00:00:01; }}
-                    mkdir -p "$RAM_VAR"
-                    get_radio_mac() {{ return 1; }}
-                    get_airport_acp_value() {{
-                        case "$1" in
-                            syNm) echo "James's AirPort Time Capsule" ;;
-                            syVs) echo 7.9.1 ;;
-                            srcv) echo 79100.2 ;;
-                            *) return 1 ;;
-                        esac
-                    }}
-                    tc_set_log "$RAM_VAR/test.log" test
-                    tc_launch_mdns_advertiser "mdns test" 0 0
-                    wait "$mdns_launch_pid" || true
-                    cat "$TC_MDNS_LOG_FILE"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("launching mdns", proc.stdout)
-        self.assertIn("--instance", proc.stdout)
-        self.assertIn("generated-fail", proc.stdout)
-        self.assertNotIn("launching mdns capture", proc.stdout)
-        self.assertNotIn("--save-all-snapshot", proc.stdout)
-        self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertNotIn("--load-snapshot", proc.stdout)
-        self.assertNotIn("unexpected-capture", proc.stdout)
+        self.assertIn("discovery-path=", proc.stdout)
+        self.assertIn("/.samba4/logs/discovery.log", proc.stdout)
+        self.assertIn("launching discovery\n", proc.stdout)
+        self.assertNotIn("--instance ", proc.stdout)
+        self.assertIn("discovery-stdout", proc.stdout)
+        self.assertIn("discovery-stderr", proc.stdout)
+        self.assertNotIn("--auto-ip", proc.stdout)
 
     def test_common_wake_or_mount_uses_diskd_without_mount_hfs_fallback_when_it_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7063,11 +5506,16 @@ MaSt = (
         self.assertEqual(proc.stdout, "status=1 checks=1\n")
         self.assertIn(f"test mount: timed out after 0s waiting for {volumes}/dk2 to mount", log_text)
 
-    def test_common_nbns_enabled_comes_from_flash_config(self) -> None:
+    def test_common_discovery_launch_passes_canonical_name_and_adisk_argv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "nbns-enabled.sh"
+            args_file = tmp_path / "discovery.args"
+            (flash / "discoveryd").write_text(
+                "#!/bin/sh\n" + f"printf '%s\\n' \"$*\" >{shlex.quote(str(args_file))}\n"
+            )
+            (flash / "discoveryd").chmod(0o755)
+            script = tmp_path / "discovery-launch.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -7076,9 +5524,14 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
-                    tc_nbns_enabled && echo enabled || echo disabled
-                    NBNS_ENABLED=1
-                    tc_nbns_enabled && echo enabled || echo disabled
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    tc_ensure_runtime_identity() {{ SMB_NETBIOS_NAME=TIMECAPSULE; TC_RUNTIME_IDENTITY_READY=1; }}
+                    stop_discovery_conflicts() {{ return 0; }}
+                    shares=$(printf 'Data\\t/Volumes/dk2\\tdk2\\t1\\t12345678-1234-1234-1234-123456789abc')
+                    tc_launch_discovery "test discovery" 1 0 0 1 "$shares"
+                    wait "$TC_DISCOVERY_PID"
+                    cat {shlex.quote(str(args_file))}
                     """
                 )
             )
@@ -7087,7 +5540,80 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "disabled\nenabled\n")
+        self.assertIn("--netbios-name TIMECAPSULE", proc.stdout)
+        self.assertIn("--adisk-share Data dk2 12345678-1234-1234-1234-123456789abc 0x82", proc.stdout)
+        self.assertIn("--debug-logging", proc.stdout)
+
+    def test_manager_absent_discovery_schedules_immediate_service_recovery(self) -> None:
+        manager = load_boot_asset_text("manager.sh")
+        function = self.extract_shell_function(manager, "tc_manager_reconcile_discovery_ownership")
+        script = function + textwrap.dedent(
+            """\
+
+            DISCOVERY_PROC_NAME=discoveryd
+            TC_MANAGER_LAST_DISCOVERY_SIGNATURE=old
+            manager_service_seconds_until_due=20
+            runtime_process_present_by_ucomm() { return 1; }
+            tc_log() { :; }
+            stop_runtime_process_by_ucomm() { echo unexpected-stop; return 1; }
+            stop_discovery_conflicts() { echo unexpected-cleanup; return 1; }
+            tc_manager_reconcile_discovery_ownership
+            printf 'signature=%s due=%s\n' "$TC_MANAGER_LAST_DISCOVERY_SIGNATURE" "$manager_service_seconds_until_due"
+            """
+        )
+
+        proc = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "signature= due=0\n")
+
+    def test_manager_cleans_orphaned_wcifsnd_before_controller_recovery(self) -> None:
+        function = self.extract_shell_function(
+            load_boot_asset_text("manager.sh"), "tc_manager_reconcile_discovery_ownership"
+        )
+        script = function + textwrap.dedent(
+            """\
+
+            DISCOVERY_PROC_NAME=discoveryd
+            TC_MANAGER_LAST_DISCOVERY_SIGNATURE=old
+            manager_service_seconds_until_due=20
+            runtime_process_present_by_ucomm() { [ "$1" = wcifsnd ]; }
+            tc_log() { :; }
+            stop_runtime_process_by_ucomm() { echo "stop:$1"; }
+            stop_discovery_conflicts() { echo unexpected-cleanup; return 1; }
+            tc_manager_reconcile_discovery_ownership
+            printf 'signature=%s due=%s\n' "$TC_MANAGER_LAST_DISCOVERY_SIGNATURE" "$manager_service_seconds_until_due"
+            """
+        )
+
+        proc = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "stop:wcifsnd\nsignature= due=0\n")
+
+    def test_manager_wcifsfs_reappearance_resets_owned_generation(self) -> None:
+        function = self.extract_shell_function(
+            load_boot_asset_text("manager.sh"), "tc_manager_reconcile_discovery_ownership"
+        )
+        script = function + textwrap.dedent(
+            """\
+
+            DISCOVERY_PROC_NAME=discoveryd
+            TC_MANAGER_LAST_DISCOVERY_SIGNATURE=old
+            manager_service_seconds_until_due=20
+            runtime_process_present_by_ucomm() { [ "$1" = wcifsfs ] || [ "$1" = discoveryd ]; }
+            tc_log() { :; }
+            stop_runtime_process_by_ucomm() { echo "stop:$1"; }
+            stop_discovery_conflicts() { echo cleanup-conflicts; }
+            tc_manager_reconcile_discovery_ownership
+            printf 'signature=%s due=%s\n' "$TC_MANAGER_LAST_DISCOVERY_SIGNATURE" "$manager_service_seconds_until_due"
+            """
+        )
+
+        proc = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "stop:discoveryd\ncleanup-conflicts\nsignature= due=0\n")
 
 
 if __name__ == "__main__":

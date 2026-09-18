@@ -1,6 +1,0 @@
-mdns
-service
-getifaddrs=fake_getifaddrs
-freeifaddrs=fake_freeifaddrs
-popen=fake_popen
-pclose=fake_pclose
