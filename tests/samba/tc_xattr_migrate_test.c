@@ -677,15 +677,15 @@ static void test_errors(void)
 	memset(changed, 2, sizeof(changed));
 	CHECK(write_all(fileno(left), value, sizeof(value)) == 0);
 	CHECK(write_all(fileno(right), value, sizeof(value)) == 0);
-	CHECK(tc_verify_resource(
+	CHECK(tc_verify_resource(&migration,
 		      fileno(left), fileno(right), 0, sizeof(value)) == 0);
 	CHECK(pwrite(fileno(right), changed, sizeof(changed), 0) == sizeof(changed));
 	errno = 0;
-	CHECK(tc_verify_resource(
+	CHECK(tc_verify_resource(&migration,
 		      fileno(left), fileno(right), 0, sizeof(value)) == 1);
 	CHECK(ftruncate(fileno(right), sizeof(value) - 1) == 0);
 	errno = 0;
-	CHECK(tc_verify_resource(
+	CHECK(tc_verify_resource(&migration,
 		      fileno(left), fileno(right), 0, sizeof(value)) == 1);
 	fclose(left);
 	fclose(right);
