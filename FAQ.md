@@ -179,6 +179,10 @@ If it still fails, check Keychain Access for older Time Machine entries that ref
 
 It should work with mDNS/Bonjour after you install. Try restarting the device and/or restarting your Mac.
 
+If it disappeared after a macOS update (macOS 26.x/27): make sure **Advertise AFP over Bonjour** is off and run Install / Update Samba again. Those macOS versions treat a Time Capsule that advertises AFP as an SMB1-only server and hide it. v3.1.0 never advertises AFP unless you turn that setting on.
+
+If Bonjour discovery stopped after weeks of working (SMB by IP still works): the device's own Bonjour responder (Apple's `mDNSResponder`) has died. Nothing on the device restarts it, so reboot the Time Capsule. `doctor` reports this as "Apple mDNSResponder is not running (reboot the device…)".
+
 Alternatively:
 
 1. Try connecting directly:
@@ -196,6 +200,8 @@ Alternatively:
 Unfortunately, there are some report of the device resetting itself during a `deploy`/Install. This appears to be a rare side effect. 
 
 The good news is, although this is scary, it's harmless and usually only happens once. You can run `deploy`/Install again after it resets, and it should work fine. 
+
+What we know about the cause: the AirPort settings live on the same tiny flash partition as our boot files. If that filesystem is unclean when the device boots (a power loss or reboot right after a write), the firmware recreates it, which wipes both our runtime and the AirPort settings (the device password survives). `deploy` therefore syncs and waits before every reboot; avoid rebooting the device within a few minutes of an AirPort Utility change or a power loss.
 
 For more information, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177
 
@@ -261,6 +267,15 @@ The `deploy` script installs files in:
 
 All other files/folders are stored on ramdisks and will be deleted after a reboot.
 
+Inside `.samba4/private` you may also find leftovers of the one-time metadata
+migration from older TimeCapsuleSMB releases: `xattr.tdb` (legacy metadata
+still waiting for a disk that is not attached), `xattr-migration-completed.txt`
+(the manager's note of which disks it has already checked, so it does not walk
+the whole disk again on every reboot) and `xattr.tdb.orphaned.N` (a legacy
+database whose every record pointed at files that no longer exist; it is set
+aside rather than deleted so nothing is lost). None of them are needed for
+serving files; see DETAIL.md for what they mean.
+
 The `uninstall` script removes these managed files and optionally reboots the device, which gets rid of all the other files. 
 
 ## Getting Help
@@ -308,9 +323,8 @@ In the macOS app, each saved device has advanced settings for the managed SMB ru
 - **ATA standby seconds**: default blank. Optionally sets the built-in ATA disk standby timer. Leave blank to avoid applying a standby timer; use `0` to disable the standby timer.
 - **Enable NBNS**: default on. Starts the LAN-only NetBIOS name responder so older SMB/Windows-style network browsing can find the device.
 - **Internal Share Uses Disk Root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.
-- **Bind SMB to LAN Only**: default off. When enabled, binds Samba only to LAN-side interfaces discovered by the managed runtime, reducing the chance that SMB listens on WAN or tunnel interfaces. When disabled, Samba can bind to all detected SMB-capable interfaces, including WAN interfaces.
 - **Allow SMB Share Browsing**: default off. Relaxes anonymous browse restrictions so clients can enumerate shares more easily. Shares still require authentication.
-- **Advertise AFP over Bonjour**: default off. When off, generated Time Machine ADisk records advertise SMB-only `adVF=0x82`. When on, the mDNS advertiser also publishes `_afpovertcp` and generated ADisk records use AFP+SMB `adVF=0x83`. SMB, AFP, ADISK, device-info, and printer records remain LAN-only over IPv4 and IPv6; WAN links receive only the AirPort Utility service.
+- **Advertise AFP over Bonjour**: default off — leave it off; macOS 26.x/27 hides Time Capsules that advertise AFP. When off, Time Machine ADisk records advertise SMB-only `adVF=0x82`. When on, `_afpovertcp` is registered too and ADisk records use AFP+SMB `adVF=0x83`. Which interfaces get SMB/ADISK follows the AirPort Utility switches (LAN always; WAN and guest only in router mode with "share disks over WAN"), the same way Apple's own file servers did; the former "Bind SMB to LAN Only" setting is gone.
 - **Allow Any SMB Protocol**: default off. Removes the SMB2/SMB3-only protocol restriction. Leave off unless an old client needs legacy SMB compatibility.
 - **Force Debug Logging**: default off. Enables verbose smbd/mDNS logging on the device. Use only for troubleshooting because it writes more logs.
 - **Use Netatalk for metadata**: default on. Selects the preferred legacy migration representation (`fruit:metadata = netatalk`); if unchecked, it selects `stream`. HFS runtime metadata is native after migration, while this setting remains the backend choice for a future non-HFS filesystem.
