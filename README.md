@@ -316,12 +316,12 @@ Unfortunately, it was not an option to "copy one binary somewhere and call it a 
 3. At boot, wait for the internal disk to appear and mount.
 4. Copy the runtime binaries, including `service` and `telemetry`, into `/mnt/Memory`.
 5. Start Samba from the `/mnt/Memory`, not from the big disk Apple may later decide to unmount.
-6. Advertise `_smb._tcp` with a separate tiny mDNS helper.
+6. Run a small `discoveryd` from flash. It registers Bonjour services through Apple's mDNSResponder and owns Apple's `wcifsnd` process for native NBNS.
 
 That is the reason the repository contains both:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
+- [bin/discovery/discoveryd](bin/discovery/discoveryd)
 
 and boot files such as:
 
@@ -405,19 +405,16 @@ The commands have logging and telemetry enabled by default. Errors and exception
 
 The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](build) and depends on a NetBSD VM.
 
-The native helpers are `mdns-advertiser`, `nbns-advertiser`, `service` (hashing and network probes), and `telemetry` (heartbeat reporting and signed debug execution). Each links into one static executable; see [build/native/README.md](build/native/README.md).
+The native helpers are `discoveryd`, `service` (hashing and network probes), and `telemetry` (heartbeat reporting and signed debug execution). `discoveryd` uses Apple's existing mDNSResponder and wcifsnd services. Each helper links into one static executable; see [build/native/README.md](build/native/README.md).
 
 The main build outputs are:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
 - [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
-- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
-- [bin/mdns-netbsd4le/mdns-advertiser](bin/mdns-netbsd4le/mdns-advertiser)
-- [bin/mdns-netbsd4be/mdns-advertiser](bin/mdns-netbsd4be/mdns-advertiser)
-- [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
-- [bin/nbns-netbsd4le/nbns-advertiser](bin/nbns-netbsd4le/nbns-advertiser)
-- [bin/nbns-netbsd4be/nbns-advertiser](bin/nbns-netbsd4be/nbns-advertiser)
+- [bin/discovery/discoveryd](bin/discovery/discoveryd)
+- [bin/discovery-netbsd4le/discoveryd](bin/discovery-netbsd4le/discoveryd)
+- [bin/discovery-netbsd4be/discoveryd](bin/discovery-netbsd4be/discoveryd)
 - [bin/service/service](bin/service/service)
 - [bin/service-netbsd4le/service](bin/service-netbsd4le/service)
 - [bin/service-netbsd4be/service](bin/service-netbsd4be/service)
