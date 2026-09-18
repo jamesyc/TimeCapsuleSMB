@@ -2034,7 +2034,6 @@ printf '%s|%s|%s\\n' "$SMB_NETBIOS_NAME" "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL"
                     tc_volume_is_writable() {{ return 0; }}
                     tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
                     tc_apply_ata_drive_setting() {{ :; }}
-                    tc_payload_log_dir_ready() {{ return 0; }}
                     tc_find_payload_smbd() {{ echo "$1/smbd"; }}
                     tc_stage_runtime() {{
                         mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"

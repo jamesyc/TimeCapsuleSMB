@@ -162,10 +162,7 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
     process = subprocess.Popen([str(binary), '--once', 'manual'], env={**env, 'TC_TEST_FINISH': str(finish)},
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        deadline = time.monotonic() + 5
-        while not marker.exists() and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert marker.exists()
+        wait_until(marker.exists)
         process.terminate()
         assert process.poll() is None
         blocked = subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=5)
@@ -235,7 +232,9 @@ def test_opt_out_keeps_local_cleanup_available(cycle, rig):
     assert state['calls'] == []
 
 
-def wait_until(predicate, seconds=5):
+def wait_until(predicate, seconds=15):
+    # ASan process startup on hosted macOS runners can take several seconds;
+    # tests with actual deadline requirements make their own tighter checks.
     deadline = time.monotonic() + seconds
     while not predicate() and time.monotonic() < deadline:
         time.sleep(.01)
@@ -305,7 +304,7 @@ def test_interrupted_signature_download_cleans_or_recovers_nonexecutable_binary(
     state['mode'] = 'hold_signature'
     process = subprocess.Popen([str(binary), '--once'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        assert state['signature_started'].wait(timeout=5)
+        assert state['signature_started'].wait(timeout=15)
         assert (root / 'work/debug').exists()
         assert (root / 'work/debug').stat().st_mode & 0o111 == 0
         if kill: process.kill()
@@ -465,7 +464,7 @@ def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_
     assert subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5).returncode == 0
     # A fresh invocation can collect/post after the failed owner exits.
     state['mode'] = 'false'
-    assert subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=5).returncode == 0
+    assert subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=15).returncode == 0
     assert len(state['calls']) == 1
 
 
@@ -583,7 +582,7 @@ def test_each_acp_command_gets_its_own_deadline(cycle, short_collector, acp_call
     result = subprocess.run([str(short_collector), '--once', 'manual'],
                             env={**env, 'TC_TEST_ACP_MODE': 'slow_each', 'TC_TEST_ACP_KEY': '*',
                                  'TC_TEST_ACP_CALLS': str(acp_calls)},
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
     # Schema v2 then collects the device plan's ten keys under one 30 s
     # budget, again one child at a time with its own per-key deadline.
