@@ -1127,7 +1127,7 @@ echo ok
                 "/Volumes/dk2/samba4/smbd",
                 "/Volumes/dk2/samba4/rsync",
                 "/Volumes/dk2/samba4/rsyncd.conf",
-                "/mnt/Flash/.service.tmp",
+                "/mnt/Flash/service",
                 "/mnt/Flash/.boot.sh.tmp",
                 "/mnt/Flash/.tcapsulesmb.conf.tmp",
                 "/mnt/Flash/.rc.local.tmp",
@@ -1136,10 +1136,10 @@ echo ok
         for call, transfer in zip(scp_mock.call_args_list, plan.uploads):
             expected_timeout = PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS if transfer.source_id.startswith("binary:") else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
             self.assertEqual(call.kwargs.get("timeout"), expected_timeout)
-        self.assertEqual(ssh_mock.call_count, 9)
+        self.assertEqual(ssh_mock.call_count, 7)
         cleanup_command = ssh_mock.call_args_list[0].args[1]
         self.assertIn("rm -f", cleanup_command)
-        self.assertIn("/mnt/Flash/.service.tmp", cleanup_command)
+        self.assertNotIn("/mnt/Flash/.service.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.rc.local.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
@@ -2425,7 +2425,7 @@ describe_managed_smbd_status "" ""
         self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, generated, timeout 120s) -> {payload_dir}/rsyncd.conf", text)
         self.assertIn("/usr/bin/pkill '^rsync$' >/dev/null 2>&1 || true", text)
         self.assertNotIn("ln -s /mnt/Memory/samba4", text)
-        self.assertIn("unified flash service (binary:service, flash_atomic", text)
+        self.assertIn("unified flash service (binary:service, scp", text)
         self.assertIn(f"chmod 755 {payload_dir}/cache", text)
         self.assertIn(f"chmod 700 {payload_dir}/private", text)
 
@@ -2684,6 +2684,11 @@ describe_managed_smbd_status "" ""
         self.assertIn(RemovePathAction(f"{plan.payload_dir}/discoveryd"), plan.post_verify_actions)
         self.assertIn(StopProcessAction("discoveryd"), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("wcifsnd"), plan.pre_upload_actions)
+        service_upload = next(upload for upload in plan.uploads if upload.destination == "/mnt/Flash/service")
+        self.assertEqual(service_upload.mode, "scp")
+        stop_service = plan.pre_upload_actions.index(StopServiceAction())
+        remove_service = plan.pre_upload_actions.index(RemovePathAction("/mnt/Flash/service"))
+        self.assertLess(stop_service, remove_service)
         self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.pre_upload_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/mdns-advertiser"), plan.post_verify_actions)
 

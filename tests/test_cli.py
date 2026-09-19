@@ -106,6 +106,7 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
+    PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
 )
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.flash_payloads import find_apple_firmware_match
@@ -5094,6 +5095,16 @@ class CliTests(unittest.TestCase):
                 "mode": "flash_atomic",
                 "timeout_seconds": 120,
                 "description": "generated flash runtime config",
+            },
+            payload["uploads"],
+        )
+        self.assertIn(
+            {
+                "source_id": BINARY_SERVICE_SOURCE,
+                "destination": "/mnt/Flash/service",
+                "mode": "scp",
+                "timeout_seconds": PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
+                "description": "unified flash service",
             },
             payload["uploads"],
         )

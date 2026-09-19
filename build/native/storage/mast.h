@@ -28,6 +28,7 @@ struct tc_inventory {
 
 int tc_mast_parse(struct tc_inventory *inventory, const char *text);
 int tc_mast_collect(struct tc_inventory *inventory);
+int tc_mast_print(FILE *stream);
 int tc_storage_activate(struct tc_volume *volume);
 int tc_storage_verify_identity(const struct tc_volume *volume);
 

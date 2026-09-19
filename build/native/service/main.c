@@ -1,6 +1,7 @@
 #include "service.h"
 #include "modes.h"
 #include "supervisor.h"
+#include "../storage/mast.h"
 static void stop_acp(int signo) { (void)signo; acp_stop_requested = 1; }
 
 /* Model discovery belongs with Samba's native naming projection, not a second
@@ -125,6 +126,8 @@ int main(int argc, char **argv) {
         argv[2] = "--print-link-plan";
         return service_utility_main(argc - 1, argv + 1);
     }
+    if (argc == 3 && !strcmp(argv[1], "inspect") && !strcmp(argv[2], "storage"))
+        return tc_mast_print(stdout) == 0 ? EXIT_OK : EXIT_PLAN_FAILED;
     if (argc == 2 && !strcmp(argv[1], "--build-info")) {
         printf("service=%d protocol=1 modes=mdns,netbios,telemetry\n", SERVICE_VERSION_CODE);
         return EXIT_OK;

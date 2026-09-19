@@ -95,13 +95,14 @@ int tc_mast_parse(struct tc_inventory *inventory, const char *text) {
     if (text == NULL || (copy = strdup(text)) == NULL) return -1;
     for (line = strtok_r(copy, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
         char *value, *key, *cursor = trim(line);
+        char *structural = cursor;
         int open_braces = 0, close_braces = 0, open_collections = 0, close_collections = 0;
-        char *p;
-        for (p = cursor; *p; p++) {
-            if (*p == '{') open_braces++; else if (*p == '}') close_braces++;
-            else if (*p == '(' || *p == '[') open_collections++;
-            else if (*p == ')' || *p == ']') close_collections++;
-        }
+        char *assignment = strchr(cursor, '=');
+        if (assignment != NULL) structural = trim(assignment + 1);
+        if (*structural == '{') open_braces = 1;
+        else if (*structural == '}') close_braces = 1;
+        else if (*structural == '(' || *structural == '[') open_collections = 1;
+        else if (*structural == ')' || *structural == ']') close_collections = 1;
         if (strstr(cursor, "partitions") && strchr(cursor, '=')) partitions_pending = 1;
         collection_depth += open_collections;
         if (partitions_pending && open_collections) {
@@ -154,6 +155,9 @@ int tc_mast_parse(struct tc_inventory *inventory, const char *text) {
     free(copy);
     inventory->valid = disk_depth == 0 && part_depth == 0 && brace_depth == 0 && collection_depth == 0;
     inventory->empty = inventory->valid && inventory->count == 0;
+    if (!inventory->valid)
+        fprintf(stderr, "MaSt parse incomplete disk_depth=%d part_depth=%d brace_depth=%d collection_depth=%d volumes=%zu\n",
+                disk_depth, part_depth, brace_depth, collection_depth, inventory->count);
     return inventory->valid ? 0 : -1;
 }
 
@@ -169,8 +173,22 @@ int tc_mast_collect(struct tc_inventory *inventory) {
     free(output); return result;
 }
 
+int tc_mast_print(FILE *stream) {
+    struct tc_inventory inventory;
+    size_t i;
+    if (tc_mast_collect(&inventory) != 0) return -1;
+    fprintf(stream, "storage: valid=%d empty=%d volumes=%zu\n", inventory.valid, inventory.empty, inventory.count);
+    for (i = 0; i < inventory.count; i++) {
+        struct tc_volume *volume = &inventory.volumes[i];
+        fprintf(stream, "volume: disk=%s device=%s root=%s name=\"%s\" uuid=%s builtin=%d\n",
+                volume->disk, volume->device, volume->root, volume->name, volume->uuid, volume->builtin);
+    }
+    return fflush(stream) == 0 ? 0 : -1;
+}
+
 static int mounted_identity(struct tc_volume *volume) {
     struct stat root, parent;
+    volume->available = 0;
     if (stat(volume->root, &root) != 0 || stat("/Volumes", &parent) != 0 ||
         !S_ISDIR(root.st_mode) || root.st_dev == parent.st_dev) return -1;
     volume->mount_identity = (uint64_t)root.st_dev;
@@ -202,8 +220,12 @@ static int claim_volume(const char *root) {
 
 int tc_storage_activate(struct tc_volume *volume) {
     char probe[96];
+    if (mkdir(volume->root, 0755) != 0 && errno != EEXIST) return -1;
     if (mounted_identity(volume) != 0) {
-        if (claim_volume(volume->root) != 0 || mounted_identity(volume) != 0) return -1;
+        int attempt;
+        if (claim_volume(volume->root) != 0) return -1;
+        for (attempt = 0; attempt < 300 && mounted_identity(volume) != 0; attempt++) usleep(100000);
+        if (!volume->available) return -1;
     }
     if (snprintf(probe, sizeof(probe), "%s/.tc-service-write-test.%ld", volume->root, (long)getpid()) >= (int)sizeof(probe)) return -1;
     if (mkdir(probe, 0700) == 0) { volume->writable = rmdir(probe) == 0; }

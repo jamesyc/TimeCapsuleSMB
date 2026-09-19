@@ -54,9 +54,10 @@ helpers static in device builds; only host regression tests define
 where the linker deliberately does not use section garbage collection because
 it can discard required ELF notes. Do not include implementation `.c` files.
 
-The device manager runs `discoveryd` from Flash. Apple's `wcifsnd` stays in the firmware;
-service, telemetry and Samba are copied to RAM from the disk before use. Service is staged before auth and
-bind probes. This leaves Flash space for the next atomic discovery update. Telemetry
+The unified `service` runs from Flash and owns Apple's firmware `wcifsnd` child.
+It copies Samba and optional rsync directly from the disk payload to RAM before
+use. Deploy stops the service and replaces its Flash executable directly; an
+interrupted deploy is repaired by rerunning deploy. Telemetry
 creates only `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`. It locks the
 existing `/mnt/Memory` directory to exclude concurrent cycles, including manual
 runs, without creating a lock file or job directory. That directory must be

@@ -898,9 +898,9 @@ def upload_and_verify_deployment_payload(
         )
         if available_flash_bytes < required_flash_bytes:
             raise DeployDeviceError(
-                "Not enough free space on /mnt/Flash for the atomic upgrade "
+                "Not enough free space on /mnt/Flash for the boot/config updates "
                 f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
-                "No services were stopped and the existing discovery binary was retained.",
+                "No services were stopped and the existing installation was retained.",
                 code="insufficient_flash_space",
             )
 

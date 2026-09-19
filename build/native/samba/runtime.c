@@ -45,19 +45,20 @@ static int prepare_directories(void) {
         make_directory(TC_SAMBA_RAM_ROOT "/sbin", 0755) == 0 &&
         make_directory(TC_SAMBA_RAM_ROOT "/private", 0700) == 0 &&
         make_directory(TC_SAMBA_RAM_ROOT "/var", 0755) == 0 &&
+        make_directory(TC_SAMBA_RAM_ROOT "/var/run", 0755) == 0 &&
+        make_directory(TC_SAMBA_RAM_ROOT "/var/run/ncalrpc", 0755) == 0 &&
         make_directory(TC_SAMBA_RAM_ROOT "/locks", 0755) == 0 ? 0 : -1;
 }
 
-static int copy_atomic(const char *source, const char *destination, mode_t mode) {
-    char temporary[256];
+static int copy_runtime_file(const char *source, const char *destination, mode_t mode) {
     unsigned char buffer[65536];
     int input = -1, output = -1, result = -1;
     ssize_t got;
-    if (snprintf(temporary, sizeof(temporary), "%s.new", destination) >= (int)sizeof(temporary)) return -1;
-    unlink(temporary);
     input = open(source, O_RDONLY);
-    output = open(temporary, O_WRONLY | O_CREAT | O_EXCL, mode);
-    if (input < 0 || output < 0) goto out;
+    if (input < 0) goto out;
+    if (unlink(destination) != 0 && errno != ENOENT) goto out;
+    output = open(destination, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (output < 0) goto out;
     while ((got = read(input, buffer, sizeof(buffer))) > 0) {
         size_t used = 0;
         while (used < (size_t)got) {
@@ -71,12 +72,11 @@ static int copy_atomic(const char *source, const char *destination, mode_t mode)
         output = -1; goto out;
     }
     output = -1;
-    if (rename(temporary, destination) != 0) goto out;
     result = 0;
 out:
     if (input >= 0) close(input);
     if (output >= 0) close(output);
-    if (result != 0) unlink(temporary);
+    if (result != 0) unlink(destination);
     return result;
 }
 
@@ -135,7 +135,8 @@ static int render_config(const struct tc_runtime_config *config,
         "    server multi channel support = no\n    load printers = no\n    disable spoolss = yes\n"
         "    pid directory = %s/var\n    lock directory = %s/locks\n"
         "    state directory = %s/var\n    cache directory = %s/var\n"
-        "    private dir = %s/private\n    dbwrap_tdb_max_dead:* = 0\n"
+        "    private dir = %s/private\n    ncalrpc dir = %s/var/run/ncalrpc\n"
+        "    dbwrap_tdb_max_dead:* = 0\n"
         "    log file = %s/var/log.smbd\n    max log size = 100\n    smb ports = 445\n"
         "    aio read size = %d\n    aio write size = %d\n    deadtime = 720\n"
         "    max open files = 512\n    max smbd processes = 8\n    smb3 directory leases = no\n"
@@ -145,6 +146,7 @@ static int render_config(const struct tc_runtime_config *config,
         "    fruit:delete_empty_adfiles = yes\n",
         TC_SAMBA_RAM_ROOT, TC_SAMBA_RAM_ROOT, TC_SAMBA_RAM_ROOT,
         TC_SAMBA_RAM_ROOT, TC_SAMBA_RAM_ROOT, TC_SAMBA_RAM_ROOT,
+        TC_SAMBA_RAM_ROOT,
         config->aio_fork ? 1 : 0, config->aio_fork ? 1 : 0);
     for (i = 0; i < shares->count; i++) {
         const struct tc_share *share = &shares->values[i];
@@ -172,13 +174,14 @@ int tc_samba_prepare(const struct tc_runtime_config *config,
                      const struct device_plan *plan,
                      const struct tc_share_set *shares) {
     char source[512];
-    if (!config->payload_dir[0] || plan->status.cold_start || shares->count == 0 || prepare_directories() != 0) return -1;
+    if (!config->payload_dir[0] || (!plan->status.validated && plan->status.cold_start) ||
+        shares->count == 0 || prepare_directories() != 0) return -1;
     if (snprintf(source, sizeof(source), "%s/smbd", config->payload_dir) >= (int)sizeof(source) ||
-        copy_atomic(source, TC_SAMBA_BIN, 0755) != 0 || write_auth() != 0 ||
+        copy_runtime_file(source, TC_SAMBA_BIN, 0755) != 0 || write_auth() != 0 ||
         render_config(config, plan, shares) != 0) return -1;
     if (config->rsync) {
         if (snprintf(source, sizeof(source), "%s/rsync", config->payload_dir) >= (int)sizeof(source) ||
-            copy_atomic(source, TC_RSYNC_BIN, 0755) != 0) return -1;
+            copy_runtime_file(source, TC_RSYNC_BIN, 0755) != 0) return -1;
     }
     return 0;
 }

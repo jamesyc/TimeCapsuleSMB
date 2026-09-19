@@ -46,3 +46,26 @@ def test_native_mast_parser_distinguishes_invalid_from_empty(mast_parser, tmp_pa
     assert empty_result.returncode == 0
     assert "valid=1 empty=1 count=0" in empty_result.stdout
     assert invalid_result.returncode == 3
+
+
+def test_native_mast_parser_ignores_braces_in_binary_uuid_rendering(mast_parser, tmp_path):
+    source = tmp_path / "mast-binary-brace"
+    source.write_text("""[
+{
+deviceName="wd0"
+partitions=
+[
+{
+deviceName="dk2"
+name="AirPort Disk"
+format="hfs"
+uuid=117b94b1 3cf35600 b192cc0d d671b852 |^{^^<^V^^^^^^q^R| (16 bytes)
+}
+]
+builtin=true
+}
+]
+MaSt=""")
+    result = subprocess.run([str(mast_parser), str(source)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert "dk2\t/Volumes/dk2\tAirPort Disk\t117b94b1-3cf3-5600-b192-cc0dd671b852\t1" in result.stdout

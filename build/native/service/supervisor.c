@@ -148,11 +148,46 @@ static void stop_surviving_managed_processes(void) {
 }
 
 static void relaunch_diskd_loopback(void) {
-    char *stop[] = {"/usr/bin/pkill", "-x", "diskd", NULL};
+    int output[2];
+    long stray[16];
+    size_t stray_count = 0;
+    size_t i;
+    int have_loopback = 0;
     pid_t child;
-    (void)run_and_wait(stop);
+    if (pipe(output) != 0) return;
     child = fork();
     if (child == 0) {
+        close(output[0]);
+        if (dup2(output[1], STDOUT_FILENO) < 0) _exit(127);
+        close_other_descriptors(STDOUT_FILENO);
+        execl("/bin/ps", "ps", "axww", "-o", "pid=", "-o", "stat=", "-o", "ucomm=", "-o", "command=", (char *)NULL);
+        _exit(127);
+    }
+    close(output[1]);
+    if (child > 0) {
+        FILE *processes = fdopen(output[0], "r");
+        char line[1024];
+        if (processes != NULL) while (fgets(line, sizeof(line), processes) != NULL) {
+            long pid;
+            char state[16], name[32];
+            if (sscanf(line, "%ld %15s %31s", &pid, state, name) != 3 ||
+                strcmp(name, "diskd") || strchr(state, 'Z')) continue;
+            if (strstr(line, "diskd -i lo0")) have_loopback = 1;
+            else if (stray_count < sizeof(stray) / sizeof(stray[0])) stray[stray_count++] = pid;
+        }
+        if (processes != NULL) fclose(processes); else close(output[0]);
+        (void)waitpid(child, NULL, 0);
+    } else close(output[0]);
+    if (have_loopback) return;
+    for (i = 0; i < stray_count; i++) kill((pid_t)stray[i], SIGTERM);
+    sleep(1);
+    for (i = 0; i < stray_count; i++) kill((pid_t)stray[i], SIGKILL);
+    child = fork();
+    if (child == 0) {
+        int null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            (void)dup2(null_fd, STDIN_FILENO); (void)dup2(null_fd, STDOUT_FILENO); (void)dup2(null_fd, STDERR_FILENO);
+        }
         close_other_descriptors(-1);
         execl("/sbin/diskd", "diskd", "-i", "lo0", "-d", "local.", (char *)NULL);
         _exit(127);
@@ -166,6 +201,9 @@ static int open_admin_socket(void) {
     if (fd < 0) return -1;
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
+#if defined(__NetBSD__)
+    address.sun_len = sizeof(address);
+#endif
     if (strlen(TC_SERVICE_SOCKET_PATH) >= sizeof(address.sun_path)) { close(fd); errno = ENAMETOOLONG; return -1; }
     strcpy(address.sun_path, TC_SERVICE_SOCKET_PATH);
     unlink(TC_SERVICE_SOCKET_PATH);
@@ -350,7 +388,7 @@ static void accept_admin(struct supervisor *supervisor) {
     char command[32];
     ssize_t got;
     if (client < 0) return;
-    got = read(client, command, sizeof(command) - 1);
+    do { got = read(client, command, sizeof(command) - 1); } while (got < 0 && errno == EINTR);
     if (got > 0) {
         command[got] = '\0'; command[strcspn(command, "\r\n ")] = '\0';
         if (!strcmp(command, "status") || !strcmp(command, "reload") || !strcmp(command, "stop"))
@@ -380,6 +418,17 @@ static unsigned long controller_signature(const struct tc_share_set *shares,
     return hash ? hash : 1;
 }
 
+static void suspend_service_generation(struct supervisor *supervisor) {
+    size_t i;
+    for (i = 0; i < TC_CHILD_COUNT; i++) {
+        struct supervised_child *child = &supervisor->children[i];
+        if (child->role == TC_ROLE_TELEMETRY) continue;
+        child->enabled = 0;
+        stop_child(child);
+        child->state = CHILD_DISABLED;
+    }
+}
+
 /* Returns 1 with a prepared Samba generation, 0 for a confirmed no-service
  * state, and -1 for an observation failure that must retain current policy. */
 static int collect_controller_state(struct supervisor *supervisor) {
@@ -389,23 +438,38 @@ static int collect_controller_state(struct supervisor *supervisor) {
     struct plan_options options;
     unsigned long signature;
     size_t i;
-    if (tc_mast_collect(&inventory) != 0) return -1;
-    for (i = 0; i < inventory.count; i++) (void)tc_storage_activate(&inventory.volumes[i]);
-    if (tc_shares_build(&shares, &inventory, supervisor->config.internal_root) != 0) return -1;
+    if (tc_mast_collect(&inventory) != 0) { fputs("controller: MaSt inventory unavailable or invalid\n", stderr); return -1; }
+    for (i = 0; i < inventory.count; i++) {
+        if (tc_storage_activate(&inventory.volumes[i]) != 0)
+            fprintf(stderr, "controller: volume unavailable device=%s root=%s uuid=%s\n",
+                    inventory.volumes[i].device, inventory.volumes[i].root, inventory.volumes[i].uuid);
+    }
+    if (tc_shares_build(&shares, &inventory, supervisor->config.internal_root) != 0) {
+        fputs("controller: canonical share construction failed\n", stderr); return -1;
+    }
     memset(&options, 0, sizeof(options));
     options.diskless = shares.count == 0;
     if (device_plan_collect(&plan, supervisor->have_plan ? &supervisor->last_validated : NULL, &options) != 0 ||
-        plan.status.cold_start) return -1;
+        (!plan.status.validated && plan.status.cold_start)) {
+        fprintf(stderr, "controller: network plan unavailable reason=%s\n", plan.status.reason); return -1;
+    }
     signature = controller_signature(&shares, &plan);
-    if (!signature) return -1;
+    if (!signature) { fputs("controller: service signature failed\n", stderr); return -1; }
     if (shares.count == 0 || !supervisor->config.payload_dir[0]) {
         supervisor->inventory = inventory; supervisor->shares = shares; supervisor->plan = plan;
         if (plan.status.validated) { supervisor->last_validated = plan; supervisor->have_plan = 1; }
         supervisor->service_signature = signature;
         return 0;
     }
-    if (signature != supervisor->service_signature &&
-        tc_samba_prepare(&supervisor->config, &plan, &shares) != 0) return -1;
+    if (signature != supervisor->service_signature) {
+        suspend_service_generation(supervisor);
+        if (tc_samba_prepare(&supervisor->config, &plan, &shares) != 0) {
+            fprintf(stderr, "controller: Samba generation preparation failed payload=%s shares=%zu\n",
+                    supervisor->config.payload_dir, shares.count); return -1;
+        }
+        fprintf(stderr, "controller: prepared generation=%llu shares=%zu payload=%s\n",
+                (unsigned long long)supervisor->generation, shares.count, supervisor->config.payload_dir);
+    }
     supervisor->inventory = inventory; supervisor->shares = shares; supervisor->plan = plan;
     if (plan.status.validated) { supervisor->last_validated = plan; supervisor->have_plan = 1; }
     if (plan.id.netbios[0]) strncpy(supervisor->netbios, plan.id.netbios, sizeof(supervisor->netbios) - 1);
@@ -437,9 +501,7 @@ static void set_service_enablement(struct supervisor *supervisor, int prepared) 
 }
 
 static void restart_service_generation(struct supervisor *supervisor, int prepared) {
-    size_t i;
-    for (i = 0; i < TC_CHILD_COUNT; i++)
-        if (supervisor->children[i].role != TC_ROLE_TELEMETRY) stop_child(&supervisor->children[i]);
+    suspend_service_generation(supervisor);
     set_service_enablement(supervisor, prepared);
     supervisor->generation++;
 }
@@ -545,9 +607,14 @@ int tc_supervisor_command(const char *command) {
     struct sockaddr_un address;
     char buffer[2048];
     ssize_t got;
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd;
+    signal(SIGPIPE, SIG_IGN);
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return 1;
     memset(&address, 0, sizeof(address)); address.sun_family = AF_UNIX;
+#if defined(__NetBSD__)
+    address.sun_len = sizeof(address);
+#endif
     if (strlen(TC_SERVICE_SOCKET_PATH) >= sizeof(address.sun_path)) { close(fd); return 1; }
     strcpy(address.sun_path, TC_SERVICE_SOCKET_PATH);
     if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
