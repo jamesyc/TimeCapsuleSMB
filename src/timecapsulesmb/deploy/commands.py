@@ -135,8 +135,15 @@ def render_remote_action(action: RemoteAction) -> str:
     if isinstance(action, StopServiceAction):
         script = (
             "if [ -x /mnt/Flash/service ]; then /mnt/Flash/service stop >/dev/null 2>&1 || true; fi; "
-            "attempt=0; while [ -S /mnt/Memory/timecapsulesmb/service.sock ] && [ \"$attempt\" -lt 20 ]; do "
+            "attempt=0; while [ -S /mnt/Memory/timecapsulesmb/service.sock ] && [ \"$attempt\" -lt 5 ]; do "
             "sleep 1; attempt=$((attempt + 1)); done; "
+            "if [ -S /mnt/Memory/timecapsulesmb/service.sock ]; then "
+            "/usr/bin/pkill -x service >/dev/null 2>&1 || true; "
+            "attempt=0; while [ -S /mnt/Memory/timecapsulesmb/service.sock ] && [ \"$attempt\" -lt 20 ]; do "
+            "sleep 1; attempt=$((attempt + 1)); done; fi; "
+            "if [ -S /mnt/Memory/timecapsulesmb/service.sock ]; then "
+            "/usr/bin/pkill -9 -x service >/dev/null 2>&1 || true; "
+            "rm -f /mnt/Memory/timecapsulesmb/service.sock; fi; "
             "[ ! -S /mnt/Memory/timecapsulesmb/service.sock ]"
         )
         return f"/bin/sh -c {shlex.quote(script)}"

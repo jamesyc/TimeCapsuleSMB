@@ -1317,7 +1317,7 @@ echo "$RUNTIME_DISCOVERY_BIN"
         line for line in ps_out.splitlines()
         if len(line.split()) >= 5 and not line.split()[2].startswith("Z") and (
             line.split()[4] == "discoveryd" or
-            (len(line.split()) >= 7 and line.split()[4] == "service" and line.split()[6] == "mdns")
+            (line.split()[4] == "service" and "role=mdns" in line.split()[5:])
         )
     ]
     mdns_pids = [line.split()[0] for line in mdns_lines]
@@ -1441,8 +1441,8 @@ echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
         unified = len(title.split()) >= 7 and title.split()[4] == "service"
         netbios_lines = [
             line for line in ps_out.splitlines()
-            if len(line.split()) >= 7 and line.split()[4] == "service"
-            and line.split()[6] == "netbios" and not line.split()[2].startswith("Z")
+            if len(line.split()) >= 5 and line.split()[4] == "service"
+            and "role=netbios" in line.split()[5:] and not line.split()[2].startswith("Z")
         ]
         marker = re.search(r"\bnbns=(disabled|waiting|starting|ready)\b", title)
         nbns_state = marker.group(1) if marker else ""
@@ -1507,6 +1507,9 @@ RSYNC_ENABLED=0
 RUNTIME_PAYLOAD_DIR={shlex.quote(payload_dir)}
 if [ -f "$RUNTIME_CONFIG_FILE" ]; then
     . "$RUNTIME_CONFIG_FILE"
+fi
+if [ -z "$RUNTIME_PAYLOAD_DIR" ]; then
+    RUNTIME_PAYLOAD_DIR=${{TC_PAYLOAD_DIR:-}}
 fi
 case "$RSYNC_ENABLED" in
     1|true|TRUE|yes|YES) RSYNC_ENABLED=1 ;;

@@ -13,16 +13,16 @@ static void on_signal(int signo) {
 /* Native process titles expose only current in-memory readiness. Doctor also
  * checks the child's PPID and sockets; no stale status/PID file is needed. */
 static void publish_readiness(const struct wcifsnd *nbns, const struct config *cfg,
-                              const char *netbios) {
+                              const char *netbios, const char *role) {
 #if defined(__NetBSD__)
     const char *state = nbns->phase == WC_ACTIVE ? "ready" :
         nbns->phase != WC_OFF ? "starting" :
         cfg->diskless || nbns->enabled == 0 ? "disabled" : "waiting";
-    setproctitle("nbns=%s mode=%s %s--netbios-name %s", state,
+    setproctitle("role=%s nbns=%s mode=%s %s--netbios-name %s", role, state,
                  cfg->diskless ? "diskless" : "payload",
                  cfg->diskless ? "--diskless " : "", netbios);
 #else
-    (void)nbns; (void)cfg; (void)netbios;
+    (void)nbns; (void)cfg; (void)netbios; (void)role;
 #endif
 }
 
@@ -77,6 +77,8 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
     int control_fd = -1;
     uint64_t supervisor_instance = 0, control_generation = 0;
     uint16_t control_role = run_mdns && !run_netbios ? TC_ROLE_MDNS : TC_ROLE_NETBIOS;
+    const char *process_role = run_mdns && !run_netbios ? "mdns" :
+        !run_mdns && run_netbios ? "netbios" : "combined";
     long long mast_timeout_ms = (long long)TC_ACP_TIMEOUT_SECONDS * 1000;
     int i;
 
@@ -162,7 +164,7 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
     }
     wcifsnd_init(&nbns, run_netbios ? netbios : "");
     if (!run_netbios) nbns.enabled = 0;
-    publish_readiness(&nbns, &cfg, netbios);
+    publish_readiness(&nbns, &cfg, netbios, process_role);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -220,7 +222,7 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
             }
         }
         if (run_netbios && wcifsnd_dispatch(&nbns, &reads, now) < 0) { result = EXIT_DAEMON_STALLED; break; }
-        publish_readiness(&nbns, &cfg, netbios);
+        publish_readiness(&nbns, &cfg, netbios, process_role);
         if (run_mdns) registrant_dispatch(&reg, &reads, now);
     }
 

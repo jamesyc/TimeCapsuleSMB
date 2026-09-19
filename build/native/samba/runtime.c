@@ -82,25 +82,27 @@ out:
 
 static int write_auth(void) {
     char hash[33];
-    char temporary[256];
     FILE *file;
+    unsigned lct = (unsigned)time(NULL);
     if (device_nt_hash(hash) != 0) return -1;
-    snprintf(temporary, sizeof(temporary), "%s.new", TC_SAMBA_RAM_ROOT "/private/smbpasswd");
-    file = fopen(temporary, "w");
+    file = fopen(TC_SAMBA_RAM_ROOT "/private/smbpasswd", "w");
     if (file == NULL) return -1;
     if (fchmod(fileno(file), 0600) != 0 ||
-        fprintf(file, "root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[U          ]:LCT-00000000:\n", hash) < 0 ||
-        fflush(file) != 0 || fsync(fileno(file)) != 0 || fclose(file) != 0 ||
-        rename(temporary, TC_SAMBA_RAM_ROOT "/private/smbpasswd") != 0) {
-        unlink(temporary); return -1;
+        fprintf(file, "root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[U          ]:LCT-%08X:\n", hash, lct) < 0 ||
+        fflush(file) != 0 || fsync(fileno(file)) != 0) {
+        fclose(file); unlink(TC_SAMBA_RAM_ROOT "/private/smbpasswd"); return -1;
     }
-    snprintf(temporary, sizeof(temporary), "%s.new", TC_SAMBA_RAM_ROOT "/private/username.map");
-    file = fopen(temporary, "w");
+    if (fclose(file) != 0) {
+        unlink(TC_SAMBA_RAM_ROOT "/private/smbpasswd"); return -1;
+    }
+    file = fopen(TC_SAMBA_RAM_ROOT "/private/username.map", "w");
     if (file == NULL) return -1;
     if (fchmod(fileno(file), 0600) != 0 || fputs("!root = root\nroot = *\n", file) == EOF ||
-        fflush(file) != 0 || fsync(fileno(file)) != 0 || fclose(file) != 0 ||
-        rename(temporary, TC_SAMBA_RAM_ROOT "/private/username.map") != 0) {
-        unlink(temporary); return -1;
+        fflush(file) != 0 || fsync(fileno(file)) != 0) {
+        fclose(file); unlink(TC_SAMBA_RAM_ROOT "/private/username.map"); return -1;
+    }
+    if (fclose(file) != 0) {
+        unlink(TC_SAMBA_RAM_ROOT "/private/username.map"); return -1;
     }
     return 0;
 }
@@ -108,12 +110,11 @@ static int write_auth(void) {
 static int render_config(const struct tc_runtime_config *config,
                          const struct device_plan *plan,
                          const struct tc_share_set *shares) {
-    char temporary[256], interfaces[TC_BIND_TOKENS_MAX];
+    char interfaces[TC_BIND_TOKENS_MAX];
     FILE *file;
     size_t i;
     if (device_plan_bind_tokens(plan, interfaces, sizeof(interfaces)) != 0) return -1;
-    snprintf(temporary, sizeof(temporary), "%s.new", TC_SAMBA_CONF);
-    file = fopen(temporary, "w");
+    file = fopen(TC_SAMBA_CONF, "w");
     if (file == NULL || fchmod(fileno(file), 0600) != 0) return -1;
     fprintf(file,
         "[global]\n"
@@ -165,8 +166,12 @@ static int render_config(const struct tc_runtime_config *config,
             "    directory mask = 0777\n    force create mode = 0666\n    force directory mode = 0777\n",
             config->netatalk ? "netatalk" : "stream", config->payload_dir);
     }
-    if (fflush(file) != 0 || fsync(fileno(file)) != 0 || fclose(file) != 0 ||
-        rename(temporary, TC_SAMBA_CONF) != 0) { unlink(temporary); return -1; }
+    if (fflush(file) != 0 || fsync(fileno(file)) != 0) {
+        fclose(file); unlink(TC_SAMBA_CONF); return -1;
+    }
+    if (fclose(file) != 0) {
+        unlink(TC_SAMBA_CONF); return -1;
+    }
     return 0;
 }
 

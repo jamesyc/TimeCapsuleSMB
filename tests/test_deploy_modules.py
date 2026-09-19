@@ -1793,6 +1793,20 @@ describe_managed_smbd_status "" ""
         self.assertIn('[ "$3" = rsync ]', remote_cmd)
         self.assertNotIn("pid file", remote_cmd.lower())
 
+    def test_probe_managed_rsync_falls_back_to_flash_payload_directory(self) -> None:
+        stdout = "\n".join((
+            "PASS:persistent rsync binary is executable",
+            "PASS:persistent rsync config is present",
+            "SKIP:rsync daemon is disabled and not running",
+        ))
+        with mock.patch("timecapsulesmb.device.probe.read_runtime_payload_dir_conn", return_value=None):
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=0, stdout=stdout)) as run_ssh_mock:
+                result = probe_managed_rsync_conn(SshConnection("host", "pw", "-o foo"))
+
+        self.assertTrue(result.ready)
+        remote_cmd = run_ssh_mock.call_args.args[1]
+        self.assertIn('RUNTIME_PAYLOAD_DIR=${TC_PAYLOAD_DIR:-}', remote_cmd)
+
     def test_probe_managed_rsync_requires_ram_process_and_tcp_873_when_enabled(self) -> None:
         stdout = "\n".join(
             (
@@ -1838,6 +1852,20 @@ describe_managed_smbd_status "" ""
         "root     wcifsnd  917    5* internet dgram udp *:137\n"
         "root     wcifsnd  917    6* internet dgram udp *:138\n"
     )
+    PS_UNIFIED = (
+        "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n"
+        "559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
+        "142 1 S 0:00 service /mnt/Flash/service run\n"
+        "1036 142 S 0:00 service service: role=mdns nbns=disabled mode=payload --netbios-name\n"
+        "1100 142 S 0:00 service service: role=netbios nbns=ready mode=payload --netbios-name TIMECAPSULE\n"
+        "1101 1100 S 0:00 wcifsnd /sbin/wcifsnd\n"
+    )
+    FSTAT_UNIFIED = (
+        "root     mDNSResponder  371    5* internet dgram udp *:5353\n"
+        "root     mDNSResponder  371    6* internet6 dgram udp *:5353\n"
+        "root     wcifsnd  1101    5* internet dgram udp *:137\n"
+        "root     wcifsnd  1101    6* internet dgram udp *:138\n"
+    )
     PLAN_V31 = (
         "TC_NBNS_ENABLED=1\n"
         "plan: status=validated mode=bridge stale_seconds=0 diskless=0\n"
@@ -1875,6 +1903,18 @@ describe_managed_smbd_status "" ""
         self.assertIn("PASS:Apple mDNSResponder listens on UDP 5353 for IPv4 and IPv6", result.lines)
         self.assertIn("PASS:no other process holds UDP 5353", result.lines)
         self.assertIn("PASS:mdns link plan validated mode=bridge; SMB on bridge0(lan)", result.lines)
+
+    def test_probe_managed_mdns_recognizes_split_unified_workers_and_owned_wcifsnd(self) -> None:
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=self.PS_UNIFIED, stderr=""),
+            mock.Mock(returncode=0, stdout=self.FSTAT_UNIFIED, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+
+        self.assertTrue(result.ready, result.lines)
+        self.assertIn("PASS:discovery process is running", result.lines)
+        self.assertIn("PASS:Apple wcifsnd is ready on UDP 137 and 138", result.lines)
 
     def test_probe_managed_mdns_fails_when_apple_daemon_is_dead_or_diskd_is_on_the_lan(self) -> None:
         ps_out = (
@@ -2636,6 +2676,14 @@ describe_managed_smbd_status "" ""
             remote_action_to_jsonable(StopProcessAction("smbd")),
             {"kind": "stop_process", "args": ["smbd"]},
         )
+
+    def test_stop_service_action_falls_back_to_exact_process_name(self) -> None:
+        command = render_remote_action(StopServiceAction())
+
+        self.assertIn("/mnt/Flash/service stop", command)
+        self.assertIn("/usr/bin/pkill -x service", command)
+        self.assertIn("/usr/bin/pkill -9 -x service", command)
+        self.assertNotIn("pkill -f", command)
         self.assertEqual(
             remote_action_to_jsonable(StopWatchdogAction()),
             {"kind": "stop_watchdog", "args": []},

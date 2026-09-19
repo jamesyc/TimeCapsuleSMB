@@ -1,5 +1,7 @@
 from pathlib import Path
+import re
 import subprocess
+import time
 
 from tests.native.build import ROOT
 
@@ -41,5 +43,9 @@ def test_samba_generation_replaces_ram_binary_and_writes_runtime_files(tmp_path)
     assert "[Data]\n    path = /Volumes/dk2/ShareRoot" in config
     assert f"xattr_tdb:file = {payload}/private/xattr.tdb" in config
     assert (ram / "sbin/smbd").read_text() == "fake-smbd"
-    assert "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" in (ram / "private/smbpasswd").read_text()
+    smbpasswd = (ram / "private/smbpasswd").read_text()
+    assert "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" in smbpasswd
+    match = re.search(r"LCT-([0-9A-F]{8})", smbpasswd)
+    assert match is not None
+    assert abs(int(match.group(1), 16) - int(time.time())) < 10
     assert (ram / "var/run/ncalrpc").is_dir()

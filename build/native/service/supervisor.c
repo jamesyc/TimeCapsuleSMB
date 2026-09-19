@@ -147,6 +147,14 @@ static void stop_surviving_managed_processes(void) {
     }
 }
 
+static void stop_orphaned_wcifsnd(void) {
+    char *stop[] = {"/usr/bin/pkill", "-x", "wcifsnd", NULL};
+    char *kill[] = {"/usr/bin/pkill", "-KILL", "-x", "wcifsnd", NULL};
+    (void)run_and_wait(stop);
+    sleep(1);
+    (void)run_and_wait(kill);
+}
+
 static void relaunch_diskd_loopback(void) {
     int output[2];
     long stray[16];
@@ -348,6 +356,12 @@ static int child_can_start(const struct supervisor *supervisor,
 
 static int start_child_checked(struct supervisor *supervisor,
                                struct supervised_child *child) {
+#ifndef TC_NATIVE_TEST
+    /* ACPd starts its own wcifsnd after rc.local. With no NetBIOS worker
+     * running, every wcifsnd is orphaned; clear it immediately before the
+     * managed worker creates the one foreground child that we own. */
+    if (child->role == TC_ROLE_NETBIOS) stop_orphaned_wcifsnd();
+#endif
     if (spawn_child(supervisor, child) != 0) return -1;
     if (child->role == TC_ROLE_SAMBA) {
         if (tc_samba_listener_ready(10) != 0) {
