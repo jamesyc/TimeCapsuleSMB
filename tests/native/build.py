@@ -55,6 +55,8 @@ def _compile(target, flags, extra_sources, exclude):
     common = ['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-Wall', '-Wextra', '-Werror',
               '-Wno-sign-compare', '-Wno-unterminated-string-initialization',
               *instrumentation_flags(), *flags]
+    if target == 'service':
+        common.append('-DTC_UNIFIED_SERVICE')
     objects = []
     for index, source in enumerate([*selected, *extra_sources]):
         obj = output.parent / f'{index}.o'

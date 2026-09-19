@@ -71,6 +71,7 @@ if ! {
         -D_LARGEFILE_SOURCE \
         -D_FILE_OFFSET_BITS=64 \
         -D_LARGE_FILES \
+        -DTC_UNIFIED_SERVICE \
         "$@" \
         -o "$SERVICE_STAGE/$SERVICE_BIN_NAME" \
         $SERVICE_LDFLAGS || exit 1

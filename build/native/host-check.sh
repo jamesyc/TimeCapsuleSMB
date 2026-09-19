@@ -11,8 +11,10 @@ case "$(uname -s)" in
 esac
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 for target in discovery service telemetry; do
+    target_flags=
     case "$target" in
         discovery) binary=discoveryd ;;
+        service) binary=service; target_flags=-DTC_UNIFIED_SERVICE ;;
         *) binary=$target ;;
     esac
     set --
@@ -22,6 +24,6 @@ for target in discovery service telemetry; do
     # vendored Apple dns_sd stub is compiled unchanged (build/native/dnssd/README.md),
     # hence -Wno-unused-but-set-variable.
     # shellcheck disable=SC2086
-    cc -D_GNU_SOURCE -D_DNS_SD_LIBDISPATCH=0 $stub_flags -Wall -Wextra -Werror -Wno-sign-compare -Wno-unterminated-string-initialization -Wno-unused-but-set-variable "$@" -o "$work/$binary"
+    cc -D_GNU_SOURCE -D_DNS_SD_LIBDISPATCH=0 $stub_flags $target_flags -Wall -Wextra -Werror -Wno-sign-compare -Wno-unterminated-string-initialization -Wno-unused-but-set-variable "$@" -o "$work/$binary"
     "$work/$binary" --version
  done

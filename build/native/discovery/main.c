@@ -63,7 +63,7 @@ static void usage(const char *prog) {
             prog, prog);
 }
 
-int main(int argc, char **argv) {
+int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
     struct config cfg;
     struct plan_options options;
     struct plan_loop loop;
@@ -145,8 +145,9 @@ int main(int argc, char **argv) {
         return EXIT_OK;
     }
 
-    if (!cfg.diskless && !netbios[0]) { usage(argv[0]); return EXIT_USAGE; }
-    wcifsnd_init(&nbns, netbios);
+    if (run_netbios && !cfg.diskless && !netbios[0]) { usage(argv[0]); return EXIT_USAGE; }
+    wcifsnd_init(&nbns, run_netbios ? netbios : "");
+    if (!run_netbios) nbns.enabled = 0;
     publish_readiness(&nbns, &cfg, netbios);
 
     signal(SIGINT, on_signal);
@@ -168,8 +169,8 @@ int main(int argc, char **argv) {
 
         FD_ZERO(&reads);
         plan_loop_prepare(&loop, now, &reads, &maxfd, &deadline);
-        registrant_prepare(&reg, &reads, &maxfd, &deadline);
-        wcifsnd_prepare(&nbns, &reads, &maxfd, &deadline);
+        if (run_mdns) registrant_prepare(&reg, &reads, &maxfd, &deadline);
+        if (run_netbios) wcifsnd_prepare(&nbns, &reads, &maxfd, &deadline);
         if (plan_loop_wait(&reads, maxfd, now, deadline) < 0) {
             perror("select");
             result = EXIT_PLAN_FAILED;
@@ -180,17 +181,23 @@ int main(int argc, char **argv) {
         }
         now = plan_loop_now_ms();
         if (plan_loop_dispatch(&loop, now, &reads)) {
-            wcifsnd_apply_plan(&nbns, &loop.current, now);
-            registrant_apply_plan(&reg, &loop.current, now);
+            if (run_netbios) wcifsnd_apply_plan(&nbns, &loop.current, now);
+            if (run_mdns) registrant_apply_plan(&reg, &loop.current, now);
         }
-        if (wcifsnd_dispatch(&nbns, &reads, now) < 0) { result = EXIT_DAEMON_STALLED; break; }
+        if (run_netbios && wcifsnd_dispatch(&nbns, &reads, now) < 0) { result = EXIT_DAEMON_STALLED; break; }
         publish_readiness(&nbns, &cfg, netbios);
-        registrant_dispatch(&reg, &reads, now);
+        if (run_mdns) registrant_dispatch(&reg, &reads, now);
     }
 
     fprintf(stderr, "discoveryd stopping; deregistering everything\n");
-    wcifsnd_shutdown(&nbns);
-    registrant_shutdown(&reg);
+    if (run_netbios) wcifsnd_shutdown(&nbns);
+    if (run_mdns) registrant_shutdown(&reg);
     plan_loop_close(&loop);
     return result;
 }
+
+#ifndef TC_UNIFIED_SERVICE
+int main(int argc, char **argv) {
+    return tc_discovery_main(argc, argv, 1, 1);
+}
+#endif

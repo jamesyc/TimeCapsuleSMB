@@ -3,7 +3,7 @@
 volatile sig_atomic_t telemetry_stop = 0;
 static void stop(int sig) { (void)sig; telemetry_stop = 1; acp_stop_requested = 1; }
 
-int main(int argc, char **argv) {
+int tc_telemetry_main(int argc, char **argv) {
     int rc = 0, daemon = 0, cleanup_only = 0;
     const char *reason = "manual";
     struct telemetry_schedule schedule;
@@ -72,3 +72,7 @@ int main(int argc, char **argv) {
     } while (!telemetry_stop);
     return rc;
 }
+
+#ifndef TC_UNIFIED_SERVICE
+int main(int argc, char **argv) { return tc_telemetry_main(argc, argv); }
+#endif

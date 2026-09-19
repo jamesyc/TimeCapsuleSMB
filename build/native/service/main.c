@@ -1,4 +1,5 @@
 #include "service.h"
+#include "modes.h"
 static void stop_acp(int signo) { (void)signo; acp_stop_requested = 1; }
 
 /* Model discovery belongs with Samba's native naming projection, not a second
@@ -46,9 +47,15 @@ static int print_samba_identity(void) {
 }
 
 static void usage(void) {
-    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-smb-bind-interfaces [--retain-policy] | --print-link-plan | --version\n", stderr);
+    fputs(
+        "Usage: service run | mdns [options] | netbios [options] | telemetry --daemon|--once|--cleanup\n"
+        "       service inspect plan | --print-nt-hash-from-stdin | --print-device-nt-hash\n"
+        "       service --print-samba-identity | --print-smb-bind-interfaces [--retain-policy]\n"
+        "       service --version | --build-info\n",
+        stderr);
 }
-int main(int argc, char **argv) {
+
+static int service_utility_main(int argc, char **argv) {
     const char *facts_file = NULL;
     const char *command = NULL;
     struct device_plan plan;
@@ -99,4 +106,24 @@ int main(int argc, char **argv) {
     }
     usage();
     return EXIT_USAGE;
+}
+
+int main(int argc, char **argv) {
+    if (argc >= 2 && !strcmp(argv[1], "mdns"))
+        return tc_discovery_main(argc - 1, argv + 1, 1, 0);
+    if (argc >= 2 && !strcmp(argv[1], "netbios"))
+        return tc_discovery_main(argc - 1, argv + 1, 0, 1);
+    if (argc >= 2 && !strcmp(argv[1], "discovery"))
+        return tc_discovery_main(argc - 1, argv + 1, 1, 1);
+    if (argc >= 2 && !strcmp(argv[1], "telemetry"))
+        return tc_telemetry_main(argc - 1, argv + 1);
+    if (argc >= 3 && !strcmp(argv[1], "inspect") && !strcmp(argv[2], "plan")) {
+        argv[2] = "--print-link-plan";
+        return service_utility_main(argc - 1, argv + 1);
+    }
+    if (argc == 2 && !strcmp(argv[1], "--build-info")) {
+        printf("service=%d protocol=1 modes=mdns,netbios,telemetry\n", SERVICE_VERSION_CODE);
+        return EXIT_OK;
+    }
+    return service_utility_main(argc, argv);
 }
