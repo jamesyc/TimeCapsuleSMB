@@ -1,5 +1,6 @@
 #include "service.h"
 #include "modes.h"
+#include "supervisor.h"
 static void stop_acp(int signo) { (void)signo; acp_stop_requested = 1; }
 
 /* Model discovery belongs with Samba's native naming projection, not a second
@@ -109,6 +110,9 @@ static int service_utility_main(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "run")) return tc_supervisor_run(argv[0]);
+    if (argc == 2 && (!strcmp(argv[1], "status") || !strcmp(argv[1], "reload") || !strcmp(argv[1], "stop")))
+        return tc_supervisor_command(argv[1]);
     if (argc >= 2 && !strcmp(argv[1], "mdns"))
         return tc_discovery_main(argc - 1, argv + 1, 1, 0);
     if (argc >= 2 && !strcmp(argv[1], "netbios"))

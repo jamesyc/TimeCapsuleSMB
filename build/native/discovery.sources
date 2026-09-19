@@ -8,6 +8,7 @@ native/common/config.c
 native/common/facts.c
 native/common/identity.c
 native/common/iflist.c
+native/common/ipc.c
 native/common/log.c
 native/common/loop.c
 native/common/plan.c

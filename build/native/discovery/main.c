@@ -1,6 +1,7 @@
 #include "../mdns/mdns.h"
 #include "wcifsnd.h"
 #include "../common/loop.h"
+#include "../common/ipc.h"
 
 volatile sig_atomic_t g_stop = 0;
 
@@ -73,6 +74,9 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
     int result = EXIT_OK;
     const char *facts_file = NULL;
     int print_plan = 0;
+    int control_fd = -1;
+    uint64_t supervisor_instance = 0, control_generation = 0;
+    uint16_t control_role = run_mdns && !run_netbios ? TC_ROLE_MDNS : TC_ROLE_NETBIOS;
     long long mast_timeout_ms = (long long)TC_ACP_TIMEOUT_SECONDS * 1000;
     int i;
 
@@ -111,6 +115,11 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
             i += 4;
         } else if (!strcmp(argv[i], "--debug-logging")) {
             cfg.debug_logging = 1;
+        } else if (!strcmp(argv[i], "--control-fd") && i + 1 < argc) {
+            char *end;
+            long parsed = strtol(argv[++i], &end, 10);
+            if (!*argv[i] || *end || parsed < 3 || parsed > 1024) return EXIT_USAGE;
+            control_fd = (int)parsed;
         } else if (!strcmp(argv[i], "--print-link-plan")) {
             print_plan = 1;
 #ifdef TC_NATIVE_TEST
@@ -146,6 +155,11 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
     }
 
     if (run_netbios && !cfg.diskless && !netbios[0]) { usage(argv[0]); return EXIT_USAGE; }
+    if (control_fd >= 0 && tc_ipc_worker_handshake(
+            control_fd, control_role, &supervisor_instance, &control_generation) != 0) {
+        fputs("service worker: invalid supervisor handshake\n", stderr);
+        return EXIT_USAGE;
+    }
     wcifsnd_init(&nbns, run_netbios ? netbios : "");
     if (!run_netbios) nbns.enabled = 0;
     publish_readiness(&nbns, &cfg, netbios);
@@ -168,6 +182,10 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
         long long now = plan_loop_now_ms();
 
         FD_ZERO(&reads);
+        if (control_fd >= 0) {
+            FD_SET(control_fd, &reads);
+            if (control_fd > maxfd) maxfd = control_fd;
+        }
         plan_loop_prepare(&loop, now, &reads, &maxfd, &deadline);
         if (run_mdns) registrant_prepare(&reg, &reads, &maxfd, &deadline);
         if (run_netbios) wcifsnd_prepare(&nbns, &reads, &maxfd, &deadline);
@@ -180,9 +198,26 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
             break;
         }
         now = plan_loop_now_ms();
+        if (control_fd >= 0 && FD_ISSET(control_fd, &reads)) {
+            struct tc_ipc_message message;
+            int ipc_rc = tc_ipc_recv(control_fd, &message);
+            if (ipc_rc <= 0 || message.instance != supervisor_instance ||
+                message.role != control_role || message.type == TC_IPC_STOP) {
+                g_stop = 1;
+                continue;
+            }
+            if (message.type == TC_IPC_REFRESH && message.generation > control_generation) {
+                control_generation = message.generation;
+                plan_loop_request(&loop, now);
+            }
+        }
         if (plan_loop_dispatch(&loop, now, &reads)) {
             if (run_netbios) wcifsnd_apply_plan(&nbns, &loop.current, now);
             if (run_mdns) registrant_apply_plan(&reg, &loop.current, now);
+            if (control_fd >= 0) {
+                (void)tc_ipc_send(control_fd, TC_IPC_READY, control_role,
+                                  supervisor_instance, control_generation, NULL, 0);
+            }
         }
         if (run_netbios && wcifsnd_dispatch(&nbns, &reads, now) < 0) { result = EXIT_DAEMON_STALLED; break; }
         publish_readiness(&nbns, &cfg, netbios);
@@ -193,6 +228,7 @@ int tc_discovery_main(int argc, char **argv, int run_mdns, int run_netbios) {
     if (run_netbios) wcifsnd_shutdown(&nbns);
     if (run_mdns) registrant_shutdown(&reg);
     plan_loop_close(&loop);
+    if (control_fd >= 0) close(control_fd);
     return result;
 }
 

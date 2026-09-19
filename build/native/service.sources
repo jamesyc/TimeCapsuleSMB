@@ -1,6 +1,7 @@
 native/service/main.c
 native/service/network_commands.c
 native/service/nt_hash.c
+native/service/supervisor.c
 native/discovery/main.c
 native/discovery/wcifsnd.c
 native/mdns/adisk_txt.c
@@ -26,6 +27,7 @@ native/common/config.c
 native/common/facts.c
 native/common/identity.c
 native/common/iflist.c
+native/common/ipc.c
 native/common/log.c
 native/common/plan.c
 native/common/policy.c
