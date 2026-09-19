@@ -2,8 +2,10 @@
 #define TC_ACP_H
 #include "platform.h"
 
-/* ACP readers shared by the helpers. Only `acp -q/-A <key>` is ever run:
+/* ACP readers shared by the helpers. This collector only runs `acp -q/-A <key>`:
  * `acp notelisten` reset a device's AirPort settings once and is forbidden.
+ * Native storage separately invokes the established `diskd.useVolume` RPC to
+ * reclaim a MaSt volume; it never routes arbitrary ACP commands through here.
  * The child-process discipline (pipe hygiene, 20 s per-key timeout, process
  * group cleanup, bounded output) came from telemetry/device.c.
  * Cancellation is `acp_stop_requested`, separate from telemetry's stop flag. */

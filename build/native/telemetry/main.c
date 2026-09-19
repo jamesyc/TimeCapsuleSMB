@@ -1,7 +1,6 @@
 #include "telemetry.h"
 #include "../common/acp.h"
 #include "../common/ipc.h"
-volatile sig_atomic_t telemetry_stop = 0;
 static void stop(int sig) { (void)sig; telemetry_stop = 1; acp_stop_requested = 1; }
 
 int tc_telemetry_main(int argc, char **argv) {

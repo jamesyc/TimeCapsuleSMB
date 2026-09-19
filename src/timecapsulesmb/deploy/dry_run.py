@@ -153,8 +153,8 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
 def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data = asdict(plan)
     data["smbd_path"] = str(plan.smbd_path)
-    data["discovery_path"] = str(plan.discovery_path)
     data["rsync_path"] = str(plan.rsync_path)
+    data["service_path"] = str(plan.service_path)
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
     data["post_verify_actions"] = remote_actions_to_jsonable(plan.post_verify_actions)

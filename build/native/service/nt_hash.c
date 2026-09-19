@@ -327,7 +327,7 @@ int print_nt_hash_from_stdin(void) {
 
 /* Keep passwords inside this process. Raw capture preserves whitespace; the
  * final-LF/CR treatment matches the old shell substitution + stdin interface. */
-int print_device_nt_hash(void) {
+int device_nt_hash(char output[33]) {
     char input[8193];
     struct acp_request request;
     uint8_t digest[16];
@@ -350,10 +350,16 @@ int print_device_nt_hash(void) {
     if (!len || len + 1 > NT_HASH_MAX_PASSWORD_BYTES) goto done;
     if (input[len - 1] == '\r') len--;
     if (!len || tc_nt_hash_utf8((const uint8_t *)input, len, digest) != 0) goto done;
-    for (i = 0; i < sizeof(digest); i++) printf("%02X", digest[i]);
-    putchar('\n');
-    rc = ferror(stdout) || fflush(stdout) != 0;
+    for (i = 0; i < sizeof(digest); i++) snprintf(output + i * 2, 3, "%02X", digest[i]);
+    output[32] = '\0';
+    rc = 0;
 done:
     for (i = 0; i < sizeof(input); i++) wipe[i] = 0;
     return rc;
+}
+
+int print_device_nt_hash(void) {
+    char output[33];
+    if (device_nt_hash(output) != 0) return 1;
+    return printf("%s\n", output) < 0 || fflush(stdout) != 0;
 }

@@ -49,12 +49,17 @@ def _wait_until(predicate, timeout=10):
     raise AssertionError("condition did not become true")
 
 
+def _ready_roles(binary: Path):
+    current = _status(binary)
+    return current if current.get("mdns", {}).get("state") == "ready" else None
+
+
 def test_supervisor_is_singleton_and_restarts_only_failed_role(tmp_path):
     binary, socket_path = _build_supervisor(tmp_path)
     supervisor = subprocess.Popen([str(binary), "run"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         _wait_until(socket_path.exists)
-        roles = _wait_until(lambda: (current := _status(binary))["mdns"]["state"] == "ready" and current)
+        roles = _wait_until(lambda: _ready_roles(binary))
         assert roles["netbios"]["state"] == "disabled"
         assert roles["telemetry"]["state"] == "disabled"
         old_pid = int(roles["mdns"]["pid"])
@@ -64,7 +69,7 @@ def test_supervisor_is_singleton_and_restarts_only_failed_role(tmp_path):
 
         os.kill(old_pid, signal.SIGKILL)
         restarted = _wait_until(
-            lambda: (current := _status(binary))["mdns"]["state"] == "ready"
+            lambda: (current := _status(binary)).get("mdns", {}).get("state") == "ready"
             and int(current["mdns"]["pid"]) != old_pid
             and current,
         )
@@ -86,7 +91,7 @@ def test_supervisor_rejects_incomplete_migration_receipt(tmp_path):
     binary, socket_path = _build_supervisor(tmp_path, receipt=receipt)
     result = subprocess.run([str(binary), "run"], capture_output=True, text=True, timeout=5)
     assert result.returncode != 0
-    assert "incomplete or invalid" in result.stderr
+    assert "incomplete or invalid" in (tmp_path / "state/service.log").read_text()
     assert not socket_path.exists()
 
 
@@ -94,7 +99,7 @@ def test_worker_exits_when_supervisor_control_channel_closes(tmp_path):
     binary, socket_path = _build_supervisor(tmp_path)
     supervisor = subprocess.Popen([str(binary), "run"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     _wait_until(socket_path.exists)
-    roles = _wait_until(lambda: (current := _status(binary))["mdns"]["state"] == "ready" and current)
+    roles = _wait_until(lambda: _ready_roles(binary))
     worker_pid = int(roles["mdns"]["pid"])
     supervisor.kill()
     supervisor.wait(timeout=5)

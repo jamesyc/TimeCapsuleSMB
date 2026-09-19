@@ -18,9 +18,13 @@ native/telemetry/payload.c
 native/telemetry/response.c
 native/telemetry/scheduler.c
 native/telemetry/signature.c
+native/telemetry/state.c
 native/telemetry/workspace.c
 native/vendor/random.c
 native/vendor/tweetnacl.c
+native/storage/mast.c
+native/storage/shares.c
+native/samba/runtime.c
 native/common/acp.c
 native/common/addr.c
 native/common/config.c

@@ -95,6 +95,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "upload_rsync"): StagePolicy(REMOTE_WRITE, False, "Upload rsync runtime files."),
     ("deploy", "upload_boot_files"): StagePolicy(REMOTE_WRITE, False, "Upload boot files."),
     ("deploy", "upload_runtime_config"): StagePolicy(REMOTE_WRITE, False, "Upload runtime config."),
+    ("deploy", "publish_startup"): StagePolicy(REMOTE_WRITE, False, "Publish the verified startup hook as the deployment commit point."),
     ("deploy", "post_upload_actions"): StagePolicy(REMOTE_WRITE, False, "Install flash hooks and payload permissions."),
     ("deploy", "verify_payload_upload"): StagePolicy(REMOTE_READ, True, "Verify uploaded payload files."),
     ("deploy", "flush_payload_upload"): StagePolicy(REMOTE_WRITE, False, "Flush remote filesystem writes."),

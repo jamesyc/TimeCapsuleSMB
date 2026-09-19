@@ -146,7 +146,7 @@ STARTUP_GRACE_TRANSIENT_PROBE_FAILURES = {
     "active smb.conf username map is not staged in RAM",
     "active smb.conf xattr_tdb:file is not persistent disk storage",
     "one or more managed share volumes are not mounted",
-    "manager is not running for managed runtime",
+    "native service supervisor is not running",
     "managed smbd parent process is not running",
     "smbd is not bound to required TCP 445 sockets",
     "managed smbd readiness probe timed out",

@@ -34,10 +34,12 @@ from timecapsulesmb.deploy.commands import (
     RemovePathAction,
     RunScriptAction,
     StopManagerAction,
+    StopServiceAction,
     StopProcessAction,
     StopWatchdogAction,
     remote_action_to_jsonable,
     render_remote_action,
+    render_remote_actions,
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
@@ -55,9 +57,7 @@ from timecapsulesmb.deploy.executor import (
     upload_flash_file,
 )
 from timecapsulesmb.deploy.planner import (
-    BINARY_DISCOVERY_SOURCE,
     BINARY_SERVICE_SOURCE,
-    BINARY_TELEMETRY_SOURCE,
     BINARY_RSYNC_SOURCE,
     BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
@@ -68,9 +68,6 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
-    PACKAGED_COMMON_SH_SOURCE,
-    PACKAGED_DFREE_SH_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
     PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
@@ -199,11 +196,11 @@ class DeployModuleTests(unittest.TestCase):
             "root@10.0.0.2",
             payload_home,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
-                        rsync_path=Path("bin/rsync"),
+            rsync_path=Path("bin/rsync"),
             startup_mode=startup_mode,
             wait_after_reboot=wait_after_reboot,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+            service_path=Path("bin/service"),
+        )
         return PreparedDeployPlan(
             payload_context=DeployPayloadContext(
                 compatibility=mock.Mock(),
@@ -213,9 +210,9 @@ class DeployModuleTests(unittest.TestCase):
             ),
             artifacts=DeployArtifactPaths(
                 smbd=Path("bin/smbd"),
-                discovery=Path("bin/discovery/discoveryd"),
                 rsync=Path("bin/rsync"),
-             service=Path("bin/service"), telemetry=Path("bin/telemetry")),
+                service=Path("bin/service"),
+            ),
             payload_home=payload_home,
             plan=plan,
         )
@@ -356,7 +353,7 @@ class DeployModuleTests(unittest.TestCase):
             timeout=FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
         )
         self.assertIn("/bin/sync", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
-        self.assertIn("/bin/sleep 5", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
+        self.assertIn("/bin/sleep 10", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
         self.assertGreaterEqual(FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS, 300)
 
     def test_run_remote_actions_reports_completed_actions(self) -> None:
@@ -779,13 +776,15 @@ echo ok
             with self.assertRaisesRegex(RuntimeError, "could not read runtime naming identity: rc=1"):
                 probe_remote_runtime_naming_identity_conn(connection)
 
-    def test_runtime_scripts_source_common_sh(self) -> None:
+    def test_boot_is_minimal_native_service_launcher(self) -> None:
         boot = load_boot_asset_text("boot.sh")
-        manager = load_boot_asset_text("manager.sh")
-        self.assertIn(". /mnt/Flash/common.sh", boot)
-        self.assertIn(". /mnt/Flash/common.sh", manager)
+        self.assertEqual(
+            boot,
+            "#!/bin/sh\nset -eu\n\nPATH=/bin:/sbin:/usr/bin:/usr/sbin\nexport PATH\n\nexec /mnt/Flash/service run\n",
+        )
+        self.assertNotIn("common.sh", boot)
+        self.assertNotIn("manager.sh", boot)
         self.assertNotIn("RAM_SAMBA_LIBEXEC", boot)
-        self.assertNotIn("RAM_SAMBA_LIBEXEC", manager)
 
     def test_rc_local_leaves_service_launch_to_boot_script(self) -> None:
         content = load_boot_asset_text("rc.local")
@@ -1081,21 +1080,16 @@ echo ok
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
-            BINARY_DISCOVERY_SOURCE: Path("/tmp/discoveryd"),
             BINARY_SERVICE_SOURCE: Path("/tmp/service"),
-            BINARY_TELEMETRY_SOURCE: Path("/tmp/telemetry"),
             BINARY_RSYNC_SOURCE: Path("/tmp/rsync"),
             GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
             GENERATED_RSYNC_CONFIG_SOURCE: Path("/tmp/rsyncd.conf"),
             PACKAGED_RC_LOCAL_SOURCE: Path("/tmp/rc.local"),
-            PACKAGED_COMMON_SH_SOURCE: Path("/tmp/common.sh"),
             PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
-            PACKAGED_MANAGER_SOURCE: Path("/tmp/manager.sh"),
-            PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
@@ -1109,8 +1103,8 @@ echo ok
                         on_uploading=uploading.append,
                         on_uploaded=uploaded.append,
                     )
-        self.assertEqual(scp_mock.call_count, 13)
-        self.assertEqual(mount_mock.call_count, 6)
+        self.assertEqual(scp_mock.call_count, 7)
+        self.assertEqual(mount_mock.call_count, 3)
         self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
         self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
         sources = [call.args[1] for call in scp_mock.call_args_list]
@@ -1118,18 +1112,12 @@ echo ok
             sources,
             [
                 Path("/tmp/smbd"),
-                Path("/tmp/discoveryd"),
-                Path("/tmp/discoveryd"),
                 Path("/tmp/rsync"),
                 Path("/tmp/rsyncd.conf"),
                 Path("/tmp/service"),
-                Path("/tmp/telemetry"),
-                Path("/tmp/rc.local"),
-                Path("/tmp/common.sh"),
                 Path("/tmp/boot.sh"),
-                Path("/tmp/manager.sh"),
-                Path("/tmp/dfree.sh"),
                 Path("/tmp/tcapsulesmb.conf"),
+                Path("/tmp/rc.local"),
             ],
         )
         destinations = [call.args[2] for call in scp_mock.call_args_list]
@@ -1137,49 +1125,40 @@ echo ok
             destinations,
             [
                 "/Volumes/dk2/samba4/smbd",
-                "/Volumes/dk2/samba4/discoveryd",
-                "/mnt/Flash/.discoveryd.tmp",
                 "/Volumes/dk2/samba4/rsync",
                 "/Volumes/dk2/samba4/rsyncd.conf",
-                "/Volumes/dk2/samba4/service",
-                "/Volumes/dk2/samba4/telemetry",
-                "/mnt/Flash/.rc.local.tmp",
-                "/mnt/Flash/.common.sh.tmp",
+                "/mnt/Flash/.service.tmp",
                 "/mnt/Flash/.boot.sh.tmp",
-                "/mnt/Flash/.manager.sh.tmp",
-                "/mnt/Flash/.dfree.sh.tmp",
                 "/mnt/Flash/.tcapsulesmb.conf.tmp",
+                "/mnt/Flash/.rc.local.tmp",
             ],
         )
         for call, transfer in zip(scp_mock.call_args_list, plan.uploads):
             expected_timeout = PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS if transfer.source_id.startswith("binary:") else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
             self.assertEqual(call.kwargs.get("timeout"), expected_timeout)
-        self.assertEqual(ssh_mock.call_count, 15)
+        self.assertEqual(ssh_mock.call_count, 9)
         cleanup_command = ssh_mock.call_args_list[0].args[1]
         self.assertIn("rm -f", cleanup_command)
-        self.assertIn("/mnt/Flash/.discoveryd.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.service.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.rc.local.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.common.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.manager.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
         self.assertEqual(uploading, plan.uploads)
         self.assertEqual(uploaded, plan.uploads)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         custom_plan = replace(
             plan,
             uploads=[
-                next(upload for upload in plan.uploads if upload.source_id == PACKAGED_DFREE_SH_SOURCE),
+                next(upload for upload in plan.uploads if upload.source_id == PACKAGED_BOOT_SOURCE),
                 next(upload for upload in plan.uploads if upload.source_id == GENERATED_FLASH_CONFIG_SOURCE),
             ],
         )
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
-            PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
+            PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
             GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
@@ -1187,11 +1166,11 @@ echo ok
                 with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn") as mount_mock:
                     upload_deployment_payload(custom_plan, connection=connection, source_resolver=source_resolver)
 
-        self.assertEqual([call.args[1] for call in scp_mock.call_args_list], [Path("/tmp/dfree.sh"), Path("/tmp/tcapsulesmb.conf")])
-        self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.dfree.sh.tmp", "/mnt/Flash/.tcapsulesmb.conf.tmp"])
+        self.assertEqual([call.args[1] for call in scp_mock.call_args_list], [Path("/tmp/boot.sh"), Path("/tmp/tcapsulesmb.conf")])
+        self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.boot.sh.tmp", "/mnt/Flash/.tcapsulesmb.conf.tmp"])
         self.assertEqual(ssh_mock.call_count, 5)
         cleanup_command = ssh_mock.call_args_list[0].args[1]
-        self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
+        self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
         mount_mock.assert_not_called()
 
@@ -1200,10 +1179,8 @@ echo ok
             "host",
             self._payload_home(),
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
-                        rsync_path=Path("bin/rsync"),
+            rsync_path=Path("bin/rsync"),
             service_path=Path("bin/service"),
-            telemetry_path=Path("bin/telemetry"),
         )
         assert all("xattr" not in item.source_id for item in plan.uploads)
         assert "xattr_migrator" not in plan.payload_targets
@@ -1257,7 +1234,7 @@ echo ok
         batch_measurements = [fields for kind, fields in measurements if kind == "upload_batch"]
         self.assertEqual(
             [fields["source_id"] for fields in upload_measurements],
-            [BINARY_SMBD_SOURCE, BINARY_DISCOVERY_SOURCE],
+            [BINARY_SMBD_SOURCE, BINARY_RSYNC_SOURCE],
         )
         self.assertTrue(all(fields["destination_kind"] == "payload" for fields in upload_measurements))
         self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
@@ -1340,7 +1317,7 @@ echo ok
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
@@ -1355,7 +1332,7 @@ echo ok
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
             upload_deployment_payload(plan, connection=connection, source_resolver={})
@@ -1526,7 +1503,7 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
         self.assertIn("manager=0", result.stdout)
         self.assertIn("self=1", result.stdout)
 
-    def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_manager(self) -> None:
+    def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_supervisor(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
@@ -1557,7 +1534,7 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
             )
             ps_out = (
                 "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf\n"
-                "202 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh\n"
+                "202 1 S 0:00.00 service /mnt/Flash/service run\n"
             )
             script = f"""
 RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
@@ -1579,7 +1556,7 @@ printf 'status=%s\\n' "$?"
         self.assertIn("PASS:active smb.conf username map uses RAM username.map", result.stdout)
         self.assertIn("PASS:active smb.conf xattr_tdb:file is persistent", result.stdout)
         self.assertIn("PASS:all managed share volumes are mounted", result.stdout)
-        self.assertIn("PASS:manager is running for managed runtime", result.stdout)
+        self.assertIn("PASS:native service supervisor is running", result.stdout)
         self.assertIn("PASS:smbd bound to required TCP 445 sockets", result.stdout)
         self.assertIn("PASS:device Samba version: 4.24.3", result.stdout)
         self.assertIn("status=0", result.stdout)
@@ -1612,7 +1589,7 @@ smbd_bound_445 "$both" "127.0.0.1/8 ::1/128 192.168.1.40/24 fdbb:1111:2222:3333:
         self.assertIn("ipv4_missing_v6=1", result.stdout)
         self.assertIn("both_required=0", result.stdout)
 
-    def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_manager(self) -> None:
+    def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_supervisor(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
@@ -1657,7 +1634,7 @@ fi
         self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
         self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
         self.assertIn("FAIL:one or more managed share volumes are not mounted", result.stdout)
-        self.assertIn("FAIL:manager is not running for managed runtime", result.stdout)
+        self.assertIn("FAIL:native service supervisor is not running", result.stdout)
         self.assertIn("status=1", result.stdout)
 
     def test_smbd_status_helper_reports_device_samba_version_from_runtime_binary(self) -> None:
@@ -1892,7 +1869,7 @@ describe_managed_smbd_status "" ""
         remote_commands = [call.args[1] for call in run_ssh_mock.call_args_list]
         self.assertIn("ps axww", remote_commands[1])
         self.assertIn("/internet/p", remote_commands[2])
-        self.assertIn("--print-link-plan", remote_commands[3])
+        self.assertIn("inspect plan", remote_commands[3])
         self.assertIn("PASS:Apple mDNSResponder is running", result.lines)
         self.assertIn("PASS:Apple diskd runs on loopback (-i lo0)", result.lines)
         self.assertIn("PASS:Apple mDNSResponder listens on UDP 5353 for IPv4 and IPv6", result.lines)
@@ -2426,7 +2403,7 @@ describe_managed_smbd_status "" ""
         payload_dir_name = "samba4"
         payload_dir = f"/Volumes/dk2/{payload_dir_name}"
         paths = self._payload_home("/Volumes/dk2", payload_dir_name)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertEqual(plan.device_path, "/dev/dk2")
@@ -2447,9 +2424,8 @@ describe_managed_smbd_status "" ""
         self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, scp, timeout 180s) -> {payload_dir}/rsync", text)
         self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, generated, timeout 120s) -> {payload_dir}/rsyncd.conf", text)
         self.assertIn("/usr/bin/pkill '^rsync$' >/dev/null 2>&1 || true", text)
-        self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
-        self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4le", text)
-        self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4be", text)
+        self.assertNotIn("ln -s /mnt/Memory/samba4", text)
+        self.assertIn("unified flash service (binary:service, flash_atomic", text)
         self.assertIn(f"chmod 755 {payload_dir}/cache", text)
         self.assertIn(f"chmod 700 {payload_dir}/private", text)
 
@@ -2459,10 +2435,10 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
-                        rsync_path=Path("bin/rsync"),
+            rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+            service_path=Path("bin/service"),
+        )
         self.assertTrue(plan.reboot_required)
         self.assertEqual(plan.startup_mode, DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE)
         self.assertEqual(
@@ -2489,15 +2465,16 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
-                        rsync_path=Path("bin/rsync"),
+            rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+            service_path=Path("bin/service"),
+        )
         self.assertFalse(plan.reboot_required)
         self.assertEqual(plan.startup_mode, DEPLOY_STARTUP_ACTIVATE_NOW)
         self.assertEqual(
             plan.activation_actions,
             [
+                StopServiceAction(),
                 StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
@@ -2511,7 +2488,7 @@ describe_managed_smbd_status "" ""
             "active_smb_conf_username_map_ram",
             "active_smb_conf_xattr_tdb_persistent",
             "managed_share_volumes_mounted",
-            "managed_runtime_manager_process",
+            "managed_runtime_service_process",
             "managed_smbd_parent_process",
             "managed_smbd_bound_445",
             "managed_mdns_registrant_ready",
@@ -2530,11 +2507,11 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
-                        rsync_path=Path("bin/rsync"),
+            rsync_path=Path("bin/rsync"),
             rsync_enabled=True,
             startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+            service_path=Path("bin/service"),
+        )
 
         self.assertTrue(plan.rsync_enabled)
         self.assertIn("managed_rsync_ready", [check.id for check in plan.post_deploy_checks])
@@ -2546,11 +2523,11 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
-                        rsync_path=Path("bin/rsync"),
+            rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
             wait_after_reboot=False,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+            service_path=Path("bin/service"),
+        )
 
         self.assertTrue(plan.reboot_required)
         self.assertFalse(plan.wait_after_reboot)
@@ -2571,12 +2548,12 @@ describe_managed_smbd_status "" ""
     def test_build_uninstall_plan_stops_supervisors_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(rendered[0].startswith("tc_manager_pids() { "))
-        self.assertIn("tc_kill_manager_pids TERM", rendered[0])
-        self.assertTrue(rendered[1].startswith("tc_watchdog_pids() { "))
-        self.assertIn("tc_kill_watchdog_pids TERM", rendered[1])
-        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", rendered[0])
-        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[1])
+        self.assertIn("/mnt/Flash/service stop", rendered[0])
+        self.assertTrue(rendered[1].startswith("tc_manager_pids() { "))
+        self.assertIn("tc_kill_manager_pids TERM", rendered[1])
+        self.assertTrue(rendered[2].startswith("tc_watchdog_pids() { "))
+        self.assertIn("tc_kill_watchdog_pids TERM", rendered[2])
+        self.assertNotIn("pkill service", rendered[0])
 
     def test_build_uninstall_plan_removes_flash_configuration(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
@@ -2683,13 +2660,13 @@ describe_managed_smbd_status "" ""
 
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         self.assertEqual(plan.post_upload_actions[0], EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
         self.assertIn(InstallPermissionsAction(tuple(plan.permissions)), plan.post_upload_actions)
 
     def test_deployment_plan_guards_each_payload_write_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
         for index, action in enumerate(plan.pre_upload_actions):
@@ -2703,7 +2680,8 @@ describe_managed_smbd_status "" ""
             self.assertIn(RemovePathAction(f"{plan.payload_dir}/{protocol}"), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol + "-advertiser"), plan.pre_upload_actions)
-        self.assertNotIn(RemovePathAction(plan.payload_targets["discovery"]), plan.pre_upload_actions)
+        self.assertNotIn(RemovePathAction(f"{plan.payload_dir}/discoveryd"), plan.pre_upload_actions)
+        self.assertIn(RemovePathAction(f"{plan.payload_dir}/discoveryd"), plan.post_verify_actions)
         self.assertIn(StopProcessAction("discoveryd"), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("wcifsnd"), plan.pre_upload_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.pre_upload_actions)
@@ -2711,12 +2689,12 @@ describe_managed_smbd_status "" ""
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"),)
         executable_permissions = {permission.path for permission in plan.permissions if permission.mode == "755"}
 
         self.assertIn("/Volumes/dk2/samba4/smbd", executable_permissions)
-        self.assertIn("/Volumes/dk2/samba4/discoveryd", executable_permissions)
-        self.assertIn("/mnt/Flash/discoveryd", executable_permissions)
+        self.assertIn("/mnt/Flash/service", executable_permissions)
+        self.assertNotIn("/Volumes/dk2/samba4/service", executable_permissions)
 
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])

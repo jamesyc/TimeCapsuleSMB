@@ -17,6 +17,8 @@ def compile_object(path, flags):
     obj = _DIRECTORY / f'{key}.o'
     # The vendored Apple stub is compiled unchanged; see build/native/dnssd/README.md.
     vendor_flags = ['-Wno-unused-but-set-variable', *stub_platform_flags()] if 'dnssd' in Path(path).parts else []
+    if Path(path).name == 'tweetnacl.c':
+        vendor_flags += ['-Wno-sign-compare', '-Wno-unterminated-string-initialization']
     result = subprocess.run(['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-Wall', '-Wextra', '-Werror', *instrumentation_flags(), *flags, *vendor_flags,
                              '-c', str(path), '-o', str(obj)],
                             capture_output=True, text=True, timeout=60)

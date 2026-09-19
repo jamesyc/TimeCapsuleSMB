@@ -155,7 +155,7 @@ class ProbeTests(unittest.TestCase):
         proc = subprocess.CompletedProcess(
             args=["ssh"],
             returncode=0,
-            stdout="2026-07-07 17:58:40\n(missing manager.log)\n",
+            stdout="2026-07-07 17:58:40\n(missing service.log)\n",
         )
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
@@ -224,8 +224,8 @@ class ProbeTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "manager.log" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
+            if "service.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="service log\n", stderr="")
             if "rsync.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
@@ -246,7 +246,7 @@ class ProbeTests(unittest.TestCase):
 
         self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
-        self.assertEqual(logs["remote_manager_log_tail"], "manager log")
+        self.assertEqual(logs["remote_manager_log_tail"], "service log")
         self.assertEqual(logs["remote_rsync_log_tail"], "rsync log")
         self.assertEqual(logs["remote_discovery_log_tail"], "discovery log")
         self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
@@ -270,8 +270,8 @@ class ProbeTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "manager.log" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
+            if "service.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="service log\n", stderr="")
             if "rsync.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
@@ -284,7 +284,7 @@ class ProbeTests(unittest.TestCase):
             logs = read_runtime_log_tails_conn(connection)
 
         self.assertEqual(logs["remote_payload_log_dir"], f"(unavailable from active {probe.RUNTIME_SMB_CONF})")
-        self.assertEqual(logs["remote_manager_log_tail"], "manager log")
+        self.assertEqual(logs["remote_manager_log_tail"], "service log")
         self.assertEqual(logs["remote_rsync_log_tail"], "rsync log")
         self.assertEqual(logs["remote_discovery_log_tail"], "ram discovery log")
         self.assertEqual(run_ssh_mock.call_count, 5)

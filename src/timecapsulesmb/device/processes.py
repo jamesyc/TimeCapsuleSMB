@@ -346,6 +346,23 @@ manager_process_present_for_volume() {
     runtime_script_process_present "$1" "$MANAGER_PATH"
 }
 
+service_mode_process_present() {
+    ps_out=$1
+    wanted_mode=$2
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 7 ] || continue
+        case "$3" in Z*) continue ;; esac
+        [ "$5" = service ] || continue
+        shift 5
+        [ "${2:-}" = "$wanted_mode" ] && return 0
+    done <<EOF
+$ps_out
+EOF
+    return 1
+}
+
 capture_fstat_for_ucomm() {
     ps_out=$1
     ucomm=$2

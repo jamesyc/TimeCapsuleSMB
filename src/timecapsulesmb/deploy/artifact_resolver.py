@@ -37,27 +37,21 @@ def resolve_payload_artifacts(distribution_root: Path, payload_family: str) -> d
         names = {
             "smbd": "smbd-netbsd4le",
             "xattr_migrator": "xattr-migrator-netbsd4le",
-            "discovery": "discovery-netbsd4le",
             "service": "service-netbsd4le",
-            "telemetry": "telemetry-netbsd4le",
             "rsync": "rsync-netbsd4le",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD4BE:
         names = {
             "smbd": "smbd-netbsd4be",
             "xattr_migrator": "xattr-migrator-netbsd4be",
-            "discovery": "discovery-netbsd4be",
             "service": "service-netbsd4be",
-            "telemetry": "telemetry-netbsd4be",
             "rsync": "rsync-netbsd4be",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD6:
         names = {
             "smbd": "smbd",
             "xattr_migrator": "xattr-migrator",
-            "discovery": "discovery",
             "service": "service",
-            "telemetry": "telemetry",
             "rsync": "rsync",
         }
     else:

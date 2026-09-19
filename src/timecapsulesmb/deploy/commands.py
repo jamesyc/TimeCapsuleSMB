@@ -10,7 +10,6 @@ from timecapsulesmb.device.processes import (
     render_pkill_wait_pkill9_watchdog,
 )
 from timecapsulesmb.device.storage import render_ensure_volume_root_mounted_script
-from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 
 
 @dataclass(frozen=True)
@@ -59,6 +58,11 @@ class StopManagerAction:
 
 
 @dataclass(frozen=True)
+class StopServiceAction:
+    pass
+
+
+@dataclass(frozen=True)
 class StopTelemetryAction:
     cleanup: bool = False
 
@@ -80,6 +84,7 @@ RemoteAction = Union[
     StopProcessAction,
     StopWatchdogAction,
     StopManagerAction,
+    StopServiceAction,
     StopTelemetryAction,
     RemovePathAction,
     RunScriptAction,
@@ -127,9 +132,22 @@ def render_remote_action(action: RemoteAction) -> str:
         return render_pkill_wait_pkill9_watchdog(attempts=5)
     if isinstance(action, StopManagerAction):
         return render_pkill_wait_pkill9_manager(attempts=5)
+    if isinstance(action, StopServiceAction):
+        script = (
+            "if [ -x /mnt/Flash/service ]; then /mnt/Flash/service stop >/dev/null 2>&1 || true; fi; "
+            "attempt=0; while [ -S /mnt/Memory/timecapsulesmb/service.sock ] && [ \"$attempt\" -lt 20 ]; do "
+            "sleep 1; attempt=$((attempt + 1)); done; "
+            "[ ! -S /mnt/Memory/timecapsulesmb/service.sock ]"
+        )
+        return f"/bin/sh -c {shlex.quote(script)}"
     if isinstance(action, StopTelemetryAction):
-        entrypoint = "tc_cleanup_telemetry_for_uninstall" if action.cleanup else "tc_prepare_telemetry_reset"
-        script = load_boot_asset_text("common.d/55-telemetry.sh") + "\n" + entrypoint
+        script = (
+            "helper=; "
+            "if [ -x /mnt/Flash/service ]; then helper='/mnt/Flash/service telemetry'; "
+            "elif [ -x /mnt/Memory/samba4/sbin/telemetry ]; then helper=/mnt/Memory/samba4/sbin/telemetry; fi; "
+            "if [ -n \"$helper\" ]; then $helper --cleanup; "
+            "elif [ -e /mnt/Memory/debug ] || [ -e /mnt/Memory/debug.sig ]; then exit 1; fi"
+        )
         return f"/bin/sh -c {shlex.quote(script)}"
     if isinstance(action, PrepareDirsAction):
         return _render_prepare_dirs_action(action)
@@ -160,6 +178,8 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
         return {"kind": "stop_watchdog", "args": []}
     if isinstance(action, StopManagerAction):
         return {"kind": "stop_manager", "args": []}
+    if isinstance(action, StopServiceAction):
+        return {"kind": "stop_service", "args": []}
     if isinstance(action, StopTelemetryAction):
         return {"kind": "stop_telemetry", "cleanup": action.cleanup}
     if isinstance(action, PrepareDirsAction):

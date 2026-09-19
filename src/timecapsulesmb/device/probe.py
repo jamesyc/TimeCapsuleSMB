@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 
 RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
-RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
+RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/private/smb.conf"
 RUNTIME_RSYNC_BIN = f"{RUNTIME_RAM_ROOT}/sbin/rsync"
 RUNTIME_RSYNC_CONF = f"{RUNTIME_RAM_ROOT}/etc/rsyncd.conf"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
@@ -56,7 +56,7 @@ NETBSD4_LOGIN_RC_LOCAL_MARKER = b"/mnt/Flash/rc.local"
 NETBSD4_LOGIN_PATH = "/etc/rc.d/LOGIN"
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
-    "remote_manager_log_tail": "/mnt/Memory/samba4/var/manager.log",
+    "remote_manager_log_tail": "/mnt/Memory/timecapsulesmb/service.log",
     "remote_rsync_log_tail": "/mnt/Memory/samba4/var/rsync.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
@@ -70,7 +70,7 @@ SMBD_STATUS_HELPERS = rf'''
     RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
     RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
     RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
-    RUNTIME_DISCOVERY_BIN=${{RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}}
+    RUNTIME_DISCOVERY_BIN=${{RUNTIME_DISCOVERY_BIN:-/mnt/Flash/service}}
     RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
 RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
 
@@ -320,10 +320,10 @@ describe_managed_smbd_status() {{
         echo "FAIL:one or more managed share volumes are not mounted"
         status=1
     fi
-    if manager_process_present_for_volume "$ps_out"; then
-        echo "PASS:manager is running for managed runtime"
+    if service_mode_process_present "$ps_out" run; then
+        echo "PASS:native service supervisor is running"
     else
-        echo "FAIL:manager is not running for managed runtime"
+        echo "FAIL:native service supervisor is not running"
         status=1
     fi
     if smbd_parent_process_present "$ps_out"; then
@@ -1258,7 +1258,7 @@ def probe_managed_mdns_conn(
     not_ready = "managed mDNS registrant not active"
 
     binary_script = r'''
-RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}
+RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/service}
 if [ ! -e "$RUNTIME_DISCOVERY_BIN" ]; then
     echo "missing"
     exit 2
@@ -1292,15 +1292,15 @@ echo "$RUNTIME_DISCOVERY_BIN"
     if binary_proc is None or binary_proc.returncode != 0:
         stdout = ("" if binary_proc is None else binary_proc.stdout).strip()
         if stdout == "missing":
-            detail = "discovery binary missing at /mnt/Flash/discoveryd"
+            detail = "unified service binary missing at /mnt/Flash/service"
         elif stdout == "not_executable":
-            detail = "discovery binary is not executable at /mnt/Flash/discoveryd"
+            detail = "unified service binary is not executable at /mnt/Flash/service"
         else:
             rc = "unknown" if binary_proc is None else str(binary_proc.returncode)
             detail = f"discovery binary probe failed with exit code {rc}"
         _append_step(steps, "mdns_binary", "fail", detail)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
-    _append_step(steps, "mdns_binary", "pass", "discovery binary is executable")
+    _append_step(steps, "mdns_binary", "pass", "unified service binary is executable")
 
     ps_step, ps_proc = _run_timed_probe_step(
         connection,
@@ -1313,7 +1313,14 @@ echo "$RUNTIME_DISCOVERY_BIN"
         steps.append(ps_step)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     ps_out = "" if ps_proc is None else ps_proc.stdout
-    mdns_pids = _parse_live_pids_for_ucomm(ps_out, "discoveryd")
+    mdns_lines = [
+        line for line in ps_out.splitlines()
+        if len(line.split()) >= 5 and not line.split()[2].startswith("Z") and (
+            line.split()[4] == "discoveryd" or
+            (len(line.split()) >= 7 and line.split()[4] == "service" and line.split()[6] == "mdns")
+        )
+    ]
+    mdns_pids = [line.split()[0] for line in mdns_lines]
     apple_pids = _parse_live_pids_for_ucomm(ps_out, "mDNSResponder")
     diskd_lines = [line for line in ps_out.splitlines() if len(line.split()) >= 5 and line.split()[4] == "diskd" and not line.split()[2].startswith("Z")]
     # Same classification as the runtime's tc_apple_diskd_probe: a diskd is
@@ -1321,7 +1328,7 @@ echo "$RUNTIME_DISCOVERY_BIN"
     # is ACPd's and advertises on the LAN regardless of ours (review 2, R8).
     loopback_diskd = [line for line in diskd_lines if _argv_has_pair(line.split()[5:], "-i", "lo0")]
     stray_diskd = [line for line in diskd_lines if line not in loopback_diskd]
-    diskless = any("--diskless" in line for line in ps_out.splitlines() if "discoveryd" in line)
+    diskless = any("--diskless" in line for line in mdns_lines)
 
     fstat_proc: subprocess.CompletedProcess[str] | None = None
     if apple_pids:
@@ -1340,10 +1347,7 @@ echo "$RUNTIME_DISCOVERY_BIN"
         )
     else:
         _append_step(steps, "diskd_loopback", "fail", "Apple diskd is not running")
-    discovery_lines = [
-        line for line in ps_out.splitlines()
-        if len(line.split()) >= 5 and line.split()[4] == "discoveryd" and not line.split()[2].startswith("Z")
-    ]
+    discovery_lines = mdns_lines
     if len(mdns_pids) == 1:
         _append_step(steps, "mdns_process", "pass", "discovery process is running")
     elif len(mdns_pids) > 1:
@@ -1379,12 +1383,12 @@ echo "$RUNTIME_DISCOVERY_BIN"
             _append_step(steps, "mdns_5353_exclusive", "pass", "no other process holds UDP 5353")
 
     plan_script = r'''
-RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}
+RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/service}
 RUNTIME_CONFIG_FILE=${RUNTIME_CONFIG_FILE:-/mnt/Flash/tcapsulesmb.conf}
 NBNS_ENABLED=0
 [ ! -r "$RUNTIME_CONFIG_FILE" ] || . "$RUNTIME_CONFIG_FILE"
 echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
-"$RUNTIME_DISCOVERY_BIN" --print-link-plan
+"$RUNTIME_DISCOVERY_BIN" inspect plan
 '''
     plan_step, plan_proc = _run_timed_probe_step(
         connection,
@@ -1434,6 +1438,12 @@ echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
             _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan {status} mode={plan['mode']} grants SMB on no link")
 
         title = discovery_lines[0] if len(discovery_lines) == 1 else ""
+        unified = len(title.split()) >= 7 and title.split()[4] == "service"
+        netbios_lines = [
+            line for line in ps_out.splitlines()
+            if len(line.split()) >= 7 and line.split()[4] == "service"
+            and line.split()[6] == "netbios" and not line.split()[2].startswith("Z")
+        ]
         marker = re.search(r"\bnbns=(disabled|waiting|starting|ready)\b", title)
         nbns_state = marker.group(1) if marker else ""
         eligible = nbns_enabled and not diskless and status == "validated" and smb_ipv4
@@ -1441,7 +1451,11 @@ echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
             line for line in ps_out.splitlines()
             if len(line.split()) >= 5 and line.split()[4] == "wcifsnd" and not line.split()[2].startswith("Z")
         ]
-        controller_pid = mdns_pids[0] if len(mdns_pids) == 1 else ""
+        controller_pid = (
+            netbios_lines[0].split()[0]
+            if unified and len(netbios_lines) == 1
+            else mdns_pids[0] if len(mdns_pids) == 1 else ""
+        )
         owned_wcifsnd = [line for line in wcifsnd_lines if line.split()[1] == controller_pid]
         fstat_out = "" if fstat_proc is None else fstat_proc.stdout
         owned_fstat = "\n".join(
@@ -1452,7 +1466,13 @@ echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
             _fstat_has_udp_port(owned_fstat, "wcifsnd", "ipv4", 137)
             and _fstat_has_udp_port(owned_fstat, "wcifsnd", "ipv4", 138)
         )
-        if not marker:
+        if unified and eligible and len(netbios_lines) == 1 and len(owned_wcifsnd) == 1 and len(wcifsnd_lines) == 1 and ports_ready:
+            _append_step(steps, "native_nbns", "pass", "Apple wcifsnd is ready on UDP 137 and 138")
+        elif unified and eligible:
+            _append_step(steps, "native_nbns", "fail", "native NetBIOS worker is not ready")
+        elif unified and not netbios_lines and not wcifsnd_lines:
+            _append_step(steps, "native_nbns", "pass", "native NBNS is disabled")
+        elif not marker:
             _append_step(steps, "native_nbns", "fail", "discovery NBNS state is not available yet")
         elif eligible and nbns_state == "starting":
             _append_step(steps, "native_nbns", "fail", "discovery native NBNS is still starting")
@@ -2072,8 +2092,8 @@ def runtime_ram_root_present_conn(connection: SshConnection) -> bool:
 
 MANAGER_LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 MANAGER_LOG_TIMESTAMP_CHARS = 19
-RUNTIME_MANAGER_LOG = f"{RUNTIME_RAM_ROOT}/var/manager.log"
-_MANAGER_LOG_MISSING_MARKER = "(missing manager.log)"
+RUNTIME_MANAGER_LOG = "/mnt/Memory/timecapsulesmb/service.log"
+_MANAGER_LOG_MISSING_MARKER = "(missing service.log)"
 
 
 @dataclass(frozen=True)

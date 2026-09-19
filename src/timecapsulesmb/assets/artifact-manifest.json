@@ -1,17 +1,5 @@
 {
   "artifacts": {
-    "discovery": {
-      "path": "bin/discovery/discoveryd",
-      "sha256": "643e6484830d9f3b94d3381d7564dd80d1de049e5ecc2574126132aacda2dab2"
-    },
-    "discovery-netbsd4le": {
-      "path": "bin/discovery-netbsd4le/discoveryd",
-      "sha256": "f9bc1e6057fc01404dff2da04106684fa33b80d578b040d87d9b53eace3f1189"
-    },
-    "discovery-netbsd4be": {
-      "path": "bin/discovery-netbsd4be/discoveryd",
-      "sha256": "dd59a4abda7b88ad8aa7014aa623012d5d3d52796c6d23489b9f2581643cf011"
-    },
     "rsync": {
       "path": "bin/rsync/rsync",
       "sha256": "5f0908da9e958b34b88915a29d5e66a14f7ef383ba77c9ade22d91ad956fe28f"
@@ -42,35 +30,23 @@
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
-      "sha256": "21190208a34ec7e9bbf1c4c68f2a2b1f23e27ccd3da54ce7d0a56119ee37cde5"
+      "sha256": "f2e929b46b776846096ab01cb81eec1c06c55b6476727300a40e4823075cad99"
     },
     "xattr-migrator-netbsd4be": {
       "path": "bin/xattr-migrate-netbsd4be/xattr-hfs-migrate",
-      "sha256": "cef311ce62aaf51f9f9775efd3a1c7fa049aed75fc9f0b367dfa7bd9c8f8fd2d"
+      "sha256": "6d761b8f528a6877c3b6f112cb806d2e3c5b131eb52c06b6c69a2c6301799b69"
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "36a8500dcaf2764ab63b37e43d5e98fb450eb5d4e5a3a0d727cede1b64c1103d"
-    },
-    "telemetry": {
-      "path": "bin/telemetry/telemetry",
-      "sha256": "7a6787ab45e8360707e761a5aa552270320a8ec069ac2500c7a8711d45674e64"
+      "sha256": "c37a060b9ce5941c344d252f638794d1dcefcf3313f9b6b10cda8cc967ff01e1"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "3cc6488dbf033bc43a7c517d39b2556665a29319b8c00576943204da6270f6b3"
-    },
-    "telemetry-netbsd4le": {
-      "path": "bin/telemetry-netbsd4le/telemetry",
-      "sha256": "2c3b96295e70ab4e9329b7a8ed21650a335a1486c9249a6805c1f1c50f47bc86"
+      "sha256": "f1ad97173aa543d2b054633cb602f72c76165d478fe0354f514fe25cb470f5f4"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "ba6b9c28471eb1dadfcb79fff508797c06e7366097655320977d4c8ea582e95b"
-    },
-    "telemetry-netbsd4be": {
-      "path": "bin/telemetry-netbsd4be/telemetry",
-      "sha256": "7785d2f88ecef6f1a8832512f2ac287f1b347543be5d3d279de1cb4e21a77bba"
+      "sha256": "ec768c4ac3bf40b372e4787c8c63aeda7e2a950f594aa215352830fb0687d017"
     }
   }
 }

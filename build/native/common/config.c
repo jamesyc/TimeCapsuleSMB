@@ -116,6 +116,33 @@ int config_read_value(const char *path, const char *key, char *out, size_t out_l
     return found;
 }
 
+int config_read_snapshot(const char *path, struct config_item *items, size_t count) {
+    FILE *fp;
+    char line[1024];
+    size_t i;
+    for (i = 0; i < count; i++) { items[i].value[0] = '\0'; items[i].present = 0; }
+    fp = fopen(path, "r");
+    if (fp == NULL) return -1;
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *cursor = line;
+        while (*cursor == ' ' || *cursor == '\t') cursor++;
+        for (i = 0; i < count; i++) {
+            size_t key_len = strlen(items[i].key);
+            char *value;
+            if (strncmp(cursor, items[i].key, key_len) != 0) continue;
+            value = cursor + key_len;
+            while (*value == ' ' || *value == '\t') value++;
+            if (*value++ != '=') continue;
+            if (config_decode_assignment_value(value, items[i].value, sizeof(items[i].value)) != 0) {
+                fclose(fp); return -1;
+            }
+            items[i].present = 1;
+        }
+    }
+    if (ferror(fp)) { fclose(fp); return -1; }
+    return fclose(fp) == 0 ? 0 : -1;
+}
+
 int config_bool_value(const char *text, int fallback) {
     if (text == NULL) {
         return fallback;
