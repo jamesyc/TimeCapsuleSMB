@@ -25,7 +25,6 @@ TransferMode = Literal["scp", "flash_atomic", "generated"]
 DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate", "activate_now"]
 
 BINARY_SMBD_SOURCE = "binary:smbd"
-BINARY_XATTR_MIGRATOR_SOURCE = "binary:xattr-migrator"
 BINARY_DISCOVERY_SOURCE = "binary:discovery"
 BINARY_SERVICE_SOURCE = "binary:service"
 BINARY_TELEMETRY_SOURCE = "binary:telemetry"
@@ -35,14 +34,12 @@ PACKAGED_COMMON_SH_SOURCE = "packaged:common.sh"
 PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
 PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
 PACKAGED_MANAGER_SOURCE = "packaged:manager.sh"
-PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE = "packaged:migrate.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
 GENERATED_RSYNC_CONFIG_SOURCE = "generated:rsyncd.conf"
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
 DEFAULT_ATA_IDLE_SECONDS = 300
 DEFAULT_DISKD_USE_VOLUME_ATTEMPTS = 2
 PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
-XATTR_MIGRATOR_UPLOAD_TIMEOUT_SECONDS = 180
 FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS = 120
 DEPLOY_STARTUP_REBOOT_THEN_VERIFY: DeploymentStartupMode = "reboot_then_verify"
 DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE: DeploymentStartupMode = "reboot_then_activate"
@@ -72,7 +69,6 @@ class DeploymentPlan:
     payload_dir: str
     disk_key: str
     smbd_path: Path
-    xattr_migrator_path: Path
     discovery_path: Path
     rsync_path: Path
     service_path: Path
@@ -84,7 +80,6 @@ class DeploymentPlan:
     remote_directories: list[str]
     legacy_symlinks: list[RemoteSymlink]
     permissions: list[RemotePermission]
-    migration_upload: FileTransfer
     uploads: list[FileTransfer]
     pre_upload_actions: list[RemoteAction]
     post_upload_actions: list[RemoteAction]
@@ -219,7 +214,6 @@ def build_deployment_plan(
     smbd_path: Path,
     discovery_path: Path,
     *,
-    xattr_migrator_path: Path,
     rsync_path: Path,
     service_path: Path,
     telemetry_path: Path,
@@ -239,14 +233,12 @@ def build_deployment_plan(
         "common.sh": "/mnt/Flash/common.sh",
         "boot.sh": "/mnt/Flash/boot.sh",
         "manager.sh": "/mnt/Flash/manager.sh",
-        "migrate.sh": "/mnt/Flash/migrate.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
         "discovery": "/mnt/Flash/discoveryd",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
     }
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
-        "xattr_migrator": f"{payload_dir}/xattr-hfs-migrate",
         "discovery": f"{payload_dir}/discoveryd",
         "service": f"{payload_dir}/service",
         "telemetry": f"{payload_dir}/telemetry",
@@ -273,7 +265,6 @@ def build_deployment_plan(
     ]
     permissions = [
         RemotePermission(payload_targets["smbd"], "755"),
-        RemotePermission(payload_targets["xattr_migrator"], "755"),
         RemotePermission(payload_targets["discovery"], "755"),
         RemotePermission(payload_targets["rsync"], "755"),
         RemotePermission(payload_targets["rsyncd.conf"], "600"),
@@ -281,7 +272,6 @@ def build_deployment_plan(
         RemotePermission(flash_targets["common.sh"], "755"),
         RemotePermission(flash_targets["boot.sh"], "755"),
         RemotePermission(flash_targets["manager.sh"], "755"),
-        RemotePermission(flash_targets["migrate.sh"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
         RemotePermission(flash_targets["discovery"], "755"),
         RemotePermission(payload_targets["service"], "755"),
@@ -297,7 +287,6 @@ def build_deployment_plan(
         payload_dir=payload_dir,
         disk_key=payload_home.disk_key,
         smbd_path=smbd_path,
-        xattr_migrator_path=xattr_migrator_path,
         discovery_path=discovery_path,
         rsync_path=rsync_path,
         service_path=service_path,
@@ -309,13 +298,6 @@ def build_deployment_plan(
         remote_directories=remote_directories,
         legacy_symlinks=legacy_symlinks,
         permissions=permissions,
-        migration_upload=FileTransfer(
-            BINARY_XATTR_MIGRATOR_SOURCE,
-            payload_targets["xattr_migrator"],
-            "scp",
-            XATTR_MIGRATOR_UPLOAD_TIMEOUT_SECONDS,
-            "one-shot HFS xattr migrator",
-        ),
         uploads=[
             FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
             FileTransfer(BINARY_DISCOVERY_SOURCE, payload_targets["discovery"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in discoveryd"),
@@ -328,7 +310,6 @@ def build_deployment_plan(
             FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
             FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
             FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
-            FileTransfer(PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE, flash_targets["migrate.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged xattr migration wrapper"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
             FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
         ],
@@ -420,7 +401,6 @@ def build_uninstall_plan(
         "common.sh": "/mnt/Flash/common.sh",
         "boot.sh": "/mnt/Flash/boot.sh",
         "manager.sh": "/mnt/Flash/manager.sh",
-        "migrate.sh": "/mnt/Flash/migrate.sh",
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
@@ -464,7 +444,6 @@ def build_uninstall_plan(
             RemovePathAction(flash_targets["common.sh"]),
             RemovePathAction(flash_targets["boot.sh"]),
             RemovePathAction(flash_targets["manager.sh"]),
-            RemovePathAction(flash_targets["migrate.sh"]),
             RemovePathAction(flash_targets["start-samba.sh"]),
             RemovePathAction(flash_targets["watchdog.sh"]),
             RemovePathAction(flash_targets["dfree.sh"]),

@@ -10,6 +10,9 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
     case findVolumes
     case planFsck
     case runFsck
+    case refreshXattrMigration
+    case runXattrMigration
+    case cancelXattrMigration
     case scanMetadata
     case repairMetadata
     case viewDiagnostics
@@ -36,6 +39,12 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return L10n.string("maintenance.action.plan_disk_repair")
         case .runFsck:
             return L10n.string("maintenance.action.run_disk_repair")
+        case .refreshXattrMigration:
+            return L10n.string("maintenance.action.refresh_xattr_migration")
+        case .runXattrMigration:
+            return L10n.string("maintenance.action.run_xattr_migration")
+        case .cancelXattrMigration:
+            return L10n.string("maintenance.action.cancel_xattr_migration")
         case .scanMetadata:
             return L10n.string("maintenance.action.scan_metadata")
         case .repairMetadata:
@@ -57,10 +66,14 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return "play.circle"
         case .runUninstall:
             return "trash"
-        case .findVolumes:
+        case .findVolumes, .refreshXattrMigration:
             return "externaldrive"
         case .runFsck:
             return "externaldrive.badge.exclamationmark"
+        case .runXattrMigration:
+            return "arrow.triangle.2.circlepath"
+        case .cancelXattrMigration:
+            return "stop.circle"
         case .scanMetadata:
             return "magnifyingglass"
         case .repairMetadata:
@@ -72,9 +85,9 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
 
     var isCommitAction: Bool {
         switch self {
-        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .repairMetadata:
+        case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .runXattrMigration, .cancelXattrMigration, .repairMetadata:
             return true
-        case .checkSSHAccess, .planActivation, .planUninstall, .findVolumes, .planFsck, .scanMetadata, .viewDiagnostics:
+        case .checkSSHAccess, .planActivation, .planUninstall, .findVolumes, .planFsck, .refreshXattrMigration, .scanMetadata, .viewDiagnostics:
             return false
         }
     }
@@ -101,6 +114,8 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.uninstall.title")
         case .fsck:
             return L10n.string("maintenance.presentation.fsck.title")
+        case .xattrMigration:
+            return L10n.string("maintenance.presentation.xattr_migration.title")
         case .repairXattrs:
             return L10n.string("maintenance.presentation.repair_xattrs.title")
         }
@@ -116,6 +131,8 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.uninstall.subtitle")
         case .fsck:
             return L10n.string("maintenance.presentation.fsck.subtitle")
+        case .xattrMigration:
+            return L10n.string("maintenance.presentation.xattr_migration.subtitle")
         case .repairXattrs:
             return L10n.string("maintenance.presentation.repair_xattrs.subtitle")
         }
@@ -127,7 +144,7 @@ extension MaintenanceWorkflow {
             return L10n.string("maintenance.presentation.risk.reboot")
         case .activate:
             return L10n.string("maintenance.presentation.risk.remote_write")
-        case .uninstall, .fsck:
+        case .uninstall, .fsck, .xattrMigration:
             return L10n.string("maintenance.presentation.risk.destructive")
         case .repairXattrs:
             return L10n.string("maintenance.presentation.risk.local_destructive")
@@ -189,6 +206,8 @@ enum MaintenanceActionPolicy {
             return [.runUninstall]
         case .fsck:
             return [.findVolumes, .planFsck, .runFsck]
+        case .xattrMigration:
+            return [.refreshXattrMigration, .runXattrMigration, .cancelXattrMigration]
         case .repairXattrs:
             return [.scanMetadata, .repairMetadata]
         }
@@ -215,6 +234,12 @@ enum MaintenanceActionPolicy {
                 (.findVolumes, store.canFindFsckVolumes),
                 (.planFsck, store.canPlanFsck),
                 (.runFsck, store.canRunFsck)
+            ])
+        case .xattrMigration:
+            return enabled([
+                (.refreshXattrMigration, store.canRefreshXattrMigration),
+                (.runXattrMigration, store.canRunXattrMigration),
+                (.cancelXattrMigration, store.canCancelXattrMigration)
             ])
         case .repairXattrs:
             return enabled([
@@ -345,6 +370,20 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                 ],
                 warnings: [L10n.string("maintenance.warning.destructive_fsck")]
             )
+        case .xattrMigration:
+            guard let result = store.xattrMigrationResult else { return nil }
+            return MaintenancePlanPresentation(
+                title: L10n.string("maintenance.plan.xattr_migration"),
+                rows: [
+                    PresentationRow(label: L10n.string("maintenance.result.eligibility"), value: result.eligibility),
+                    PresentationRow(label: L10n.string("maintenance.result.state"), value: result.state),
+                    PresentationRow(label: L10n.string("maintenance.result.phase"), value: result.phase ?? L10n.string("value.unknown")),
+                    PresentationRow(label: L10n.string("maintenance.result.entries"), value: "\(result.entries)"),
+                    PresentationRow(label: L10n.string("maintenance.result.selected_volumes"), value: "\(result.selectedVolumes.count)"),
+                    PresentationRow(label: L10n.string("maintenance.result.completed_scope"), value: "\(result.completedScope.count)")
+                ],
+                warnings: [L10n.string("maintenance.warning.xattr_migration")]
+            )
         case .repairXattrs:
             guard let scan = store.repairScan else { return nil }
             return MaintenancePlanPresentation(
@@ -396,6 +435,18 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
                     PresentationRow(label: L10n.string("maintenance.plan.row.device"), value: result.device),
                     PresentationRow(label: L10n.string("maintenance.result.returncode"), value: result.returncode.map(String.init) ?? L10n.string("value.unknown")),
                     PresentationRow(label: L10n.string("deploy.result.verified"), value: result.verified == true ? L10n.string("value.yes") : L10n.string("value.no"))
+                ]
+            )
+        case .xattrMigration:
+            guard let result = store.xattrMigrationResult else { return nil }
+            return MaintenanceCompletionPresentation(
+                title: L10n.string("maintenance.completion.xattr_migration"),
+                rows: [
+                    PresentationRow(label: L10n.string("maintenance.result.state"), value: result.state),
+                    PresentationRow(label: L10n.string("maintenance.result.entries"), value: "\(result.entries)"),
+                    PresentationRow(label: L10n.string("maintenance.result.conversions"), value: "\(result.conversions)"),
+                    PresentationRow(label: L10n.string("maintenance.result.warnings"), value: "\(result.warnings)"),
+                    PresentationRow(label: L10n.string("maintenance.result.errors"), value: "\(result.errors)")
                 ]
             )
         case .repairXattrs:
@@ -480,6 +531,8 @@ extension MaintenanceWorkflow {
             return "uninstall"
         case .fsck:
             return "fsck"
+        case .xattrMigration:
+            return "migrate-xattr"
         case .repairXattrs:
             return "repair-xattrs"
         }
@@ -497,6 +550,8 @@ extension MaintenanceStore {
             return uninstallState
         case .fsck:
             return fsckState
+        case .xattrMigration:
+            return xattrMigrationState
         case .repairXattrs:
             return repairState
         }

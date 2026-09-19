@@ -38,7 +38,7 @@
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "d7fade3bc3e8c9156c8198346a73653f71959e36160b6b01e9925ba40cfd887a"
+      "sha256": "73355aec8700d9296342ae344c2a4a7651db6def591e5bc378db6b2a79e98ab1"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",

@@ -949,3 +949,22 @@
 "timeline.deploy.detail.upload_rsync" = "rsync und seine Daemon-Konfiguration werden auf das Payload-Volume kopiert.";
 "timeline.deploy.title.upload_rsync" = "rsync hochladen";
 "toggle.enable_rsync" = "rsync aktivieren";
+
+"maintenance.action.refresh_xattr_migration" = "Refresh Status";
+"maintenance.action.run_xattr_migration" = "Migrate Metadata";
+"maintenance.action.cancel_xattr_migration" = "Cancel Migration";
+"maintenance.presentation.xattr_migration.title" = "Xattr Migration";
+"maintenance.presentation.xattr_migration.subtitle" = "Explicitly migrate legacy metadata on selected attached volumes before upgrading.";
+"maintenance.workflow.xattr_migration" = "Xattr Migration";
+"maintenance.completion.xattr_migration" = "Xattr Migration Status";
+"maintenance.plan.xattr_migration" = "Xattr Migration Scope";
+"maintenance.result.eligibility" = "Eligibility";
+"maintenance.result.state" = "State";
+"maintenance.result.phase" = "Phase";
+"maintenance.result.entries" = "Entries";
+"maintenance.result.conversions" = "Conversions";
+"maintenance.result.warnings" = "Warnings";
+"maintenance.result.errors" = "Errors";
+"maintenance.result.selected_volumes" = "Selected Volumes";
+"maintenance.result.completed_scope" = "Completed Scope";
+"maintenance.warning.xattr_migration" = "Migration stops legacy file sharing; it stays offline until deployment succeeds.";

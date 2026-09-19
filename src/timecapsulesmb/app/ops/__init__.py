@@ -12,6 +12,7 @@ from timecapsulesmb.app.ops.flash import flash_operation
 from timecapsulesmb.app.ops.maintenance import (
     activate_operation,
     fsck_operation,
+    migrate_xattr_operation,
     repair_xattrs_operation,
     uninstall_operation,
 )
@@ -47,6 +48,7 @@ OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec("doctor", doctor_operation, telemetry=True),
     OperationSpec("flash", flash_operation, telemetry=True),
     OperationSpec("fsck", fsck_operation, telemetry=True),
+    OperationSpec("migrate-xattr", migrate_xattr_operation, telemetry=True),
     OperationSpec("reachability", reachability_operation),
     OperationSpec("repair-xattrs", repair_xattrs_operation, telemetry=True),
     OperationSpec("set-ssh", set_ssh_operation, telemetry=True),

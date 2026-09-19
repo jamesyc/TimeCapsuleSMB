@@ -1,0 +1,794 @@
+--- a/source3/utils/tc_xattr_hfs_migrate.c
++++ b/source3/utils/tc_xattr_hfs_migrate.c
+@@ -36,10 +36,64 @@
+ #define TC_QUARANTINE_MAX_SLOTS 99
+ #define TC_FNV64_OFFSET 0xcbf29ce484222325ULL
+ #define TC_FNV64_PRIME 0x100000001b3ULL
++#define TC_MIGRATOR_VERSION 2
++#define TC_OPERATION_LOCK "/mnt/Memory/tc-xattr-upgrade.lock"
+ 
++static volatile sig_atomic_t tc_stop_requested;
++static volatile sig_atomic_t tc_migration_child;
++static const char *tc_live_status_path;
++static const char *tc_operation_id;
++
++static void tc_stop_handler(int sig)
++{
++	(void)sig;
++	tc_stop_requested = 1;
++	if (tc_migration_child > 0) {
++		kill((pid_t)tc_migration_child, SIGTERM);
++	}
++}
++
++static int tc_write_status(const char *state, const char *phase,
++			   uint64_t entries, uint64_t conversions,
++			   uint64_t warnings, uint64_t errors,
++			   const char *detail)
++{
++	char temporary[PATH_MAX];
++	FILE *file;
++
++	if (tc_live_status_path == NULL ||
++	    snprintf(temporary, sizeof(temporary), "%s.%ld",
++		     tc_live_status_path, (long)getpid()) >= (int)sizeof(temporary))
++	{
++		errno = ENAMETOOLONG;
++		return -1;
++	}
++	file = fopen(temporary, "w");
++	if (file == NULL) {
++		return -1;
++	}
++	fprintf(file,
++		"state=%s\noperation_id=%s\nphase=%s\n"
++		"entries=%"PRIu64"\nconversions=%"PRIu64"\n"
++		"warnings=%"PRIu64"\nerrors=%"PRIu64"\ndetail=%s\n",
++		state, tc_operation_id == NULL ? "" : tc_operation_id,
++		phase == NULL ? "" : phase, entries, conversions,
++		warnings, errors, detail == NULL ? "" : detail);
++	if (fflush(file) != 0 || fsync(fileno(file)) != 0 || fclose(file) != 0 ||
++	    rename(temporary, tc_live_status_path) != 0)
++	{
++		int error = errno;
++		unlink(temporary);
++		errno = error;
++		return -1;
++	}
++	return 0;
++}
++
+ enum tc_phase {
+ 	TC_PHASE_COPY,
+ 	TC_PHASE_CLEANUP,
++	TC_PHASE_COMBINED,
+ };
+ 
+ struct tc_tdb_key {
+@@ -1242,7 +1296,7 @@
+ 	}
+ 	resource_fd = open(
+ 		resource_path,
+-		migration->phase == TC_PHASE_COPY ? O_RDWR | O_CREAT : O_RDONLY,
++		migration->phase != TC_PHASE_CLEANUP ? O_RDWR | O_CREAT : O_RDONLY,
+ 		0600);
+ 	if (resource_fd == -1 || fstat(resource_fd, &native_st) != 0) {
+ 		goto out;
+@@ -1411,7 +1465,7 @@
+ 	{
+ 		goto out;
+ 	}
+-	if (migration->phase == TC_PHASE_CLEANUP) {
++	if (migration->phase != TC_PHASE_COPY) {
+ 		if (fsync(base_fd) != 0 ||
+ 		    tc_unlink_verified_sidecar(appledouble, &source_st) != 0) {
+ 			goto out;
+@@ -1444,7 +1498,7 @@
+ 	size_t i;
+ 	NTSTATUS status;
+ 
+-	if (migration->phase != TC_PHASE_CLEANUP || migration->db == NULL) {
++	if (migration->phase == TC_PHASE_COPY || migration->db == NULL) {
+ 		return 0;
+ 	}
+ 	push_file_id_16(key, &id);
+@@ -1487,6 +1541,10 @@
+ 	int fd = -1;
+ 	int result = 0;
+ 
++	if (tc_stop_requested) {
++		errno = EINTR;
++		return -1;
++	}
+ 	if (lstat(path, &st) != 0) {
+ 		fprintf(stderr, "lstat failed path=%s error=%s\n", path, strerror(errno));
+ 		return -1;
+@@ -1498,6 +1556,19 @@
+ 		return 0;
+ 	}
+ 	migration->counts.entries++;
++	if (tc_live_status_path != NULL &&
++	    (migration->counts.entries == 1 || migration->counts.entries % 256 == 0))
++	{
++		uint64_t conversions = migration->counts.xattrs_written +
++			migration->counts.streams_written +
++			migration->counts.finderinfo_written +
++			migration->counts.resources_written +
++			migration->counts.tdb_retired +
++			migration->counts.sidecars_deleted;
++		(void)tc_write_status("running", "convert", migration->counts.entries,
++			conversions, migration->counts.conflicts,
++			migration->counts.errors, "");
++	}
+ 	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
+ 		fd = open(path, O_RDONLY | O_NOFOLLOW);
+ 		if (fd == -1 || fstat(fd, &opened_st) != 0 ||
+@@ -1596,6 +1667,7 @@
+ static int tc_scan_root(struct tc_migration *migration, const char *path)
+ {
+ 	struct stat st;
++	struct stat final_st;
+ 	uint64_t *devs;
+ 
+ 	if (!tc_airport_path_is_hfs(path)) {
+@@ -1611,6 +1683,13 @@
+ 	if (tc_scan_path(migration, path, false) != 0) {
+ 		return -1;
+ 	}
++	if (lstat(path, &final_st) != 0 || final_st.st_dev != st.st_dev ||
++	    final_st.st_ino != st.st_ino)
++	{
++		fprintf(stderr, "volume identity changed during migration: %s\n", path);
++		errno = EIO;
++		return -1;
++	}
+ 	devs = talloc_realloc(migration->mem_ctx, migration->complete_devs,
+ 			      uint64_t, migration->num_complete_devs + 1);
+ 	if (devs == NULL) {
+@@ -1663,7 +1742,7 @@
+ /* Move the closed database aside under a name nobody has used. rename() over
+  * an existing file would destroy quarantined data, so a taken slot is skipped
+  * and a full set of slots is an error that leaves the database in place. The
+- * manager serializes migration runs, so the lstat/rename pair has no writer to
++ * maintenance operation lock serializes migration runs, so the lstat/rename pair has no writer to
+  * race against. Durability (review 2, R10): the directory is opened before
+  * the rename so an unopenable directory aborts before anything moves; after
+  * the rename the directory is fsync'd and a failure is reported with the
+@@ -1680,6 +1759,496 @@
+ 		return 0;
+ 	}
+ 	return -1;
++}
++
++struct tc_maintenance {
++	const char *receipt;
++	const char *status;
++	const char *source_release;
++	const char *backend;
++	const char *device_id;
++	const char *payload_id;
++	const char *tdb;
++	unsigned long source_version;
++	const char **volume_ids;
++	const char **roots;
++	size_t num_volumes;
++};
++
++static bool tc_receipt_value_valid(const char *value)
++{
++	return value != NULL && value[0] != '\0' && strchr(value, '\n') == NULL &&
++		strchr(value, '\r') == NULL;
++}
++
++static int tc_write_receipt(const struct tc_maintenance *operation,
++			    const char *state)
++{
++	char temporary[PATH_MAX];
++	const char *slash;
++	char directory[PATH_MAX];
++	int fd = -1;
++	int dir_fd = -1;
++	size_t i;
++	int result = -1;
++
++	if (snprintf(temporary, sizeof(temporary), "%s.new", operation->receipt) >=
++	    (int)sizeof(temporary))
++	{
++		errno = ENAMETOOLONG;
++		return -1;
++	}
++	slash = strrchr(operation->receipt, '/');
++	if (slash == NULL || slash == operation->receipt ||
++	    (size_t)(slash - operation->receipt) >= sizeof(directory))
++	{
++		errno = EINVAL;
++		return -1;
++	}
++	memcpy(directory, operation->receipt, slash - operation->receipt);
++	directory[slash - operation->receipt] = '\0';
++	unlink(temporary);
++	fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL, 0600);
++	if (fd == -1) {
++		goto out;
++	}
++	if (dprintf(fd,
++		"format=1\nmigration=1\nstate=%s\nsource_release=%s\n"
++		"source_version_code=%lu\nsource_backend=%s\n"
++		"device_identity=%s\npayload_identity=%s\n",
++		state, operation->source_release, operation->source_version,
++		operation->backend, operation->device_id, operation->payload_id) < 0)
++	{
++		goto out;
++	}
++	for (i = 0; i < operation->num_volumes; i++) {
++		if (dprintf(fd, "volume=%s\n", operation->volume_ids[i]) < 0) {
++			goto out;
++		}
++	}
++	if (fsync(fd) != 0 || close(fd) != 0) {
++		fd = -1;
++		goto out;
++	}
++	fd = -1;
++	dir_fd = open(directory, O_RDONLY);
++	if (dir_fd == -1 || rename(temporary, operation->receipt) != 0 ||
++	    tc_fsync_directory_or_sync(dir_fd) != 0)
++	{
++		goto out;
++	}
++	result = 0;
++out:
++	if (fd != -1) {
++		close(fd);
++	}
++	if (dir_fd != -1) {
++		close(dir_fd);
++	}
++	if (result != 0) {
++		unlink(temporary);
++	}
++	return result;
++}
++
++static int tc_wait_command(char *const command[])
++{
++	pid_t child = fork();
++	int status;
++
++	if (child == -1) {
++		return -1;
++	}
++	if (child == 0) {
++		execv(command[0], command);
++		_exit(127);
++	}
++	while (waitpid(child, &status, 0) == -1) {
++		if (errno != EINTR) {
++			return -1;
++		}
++	}
++	return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
++}
++
++static int tc_pkill(const char *signal_name, const char *option,
++		    const char *pattern)
++{
++	char *const command[] = {
++		"/usr/bin/pkill", (char *)signal_name, (char *)option,
++		(char *)pattern, NULL
++	};
++	int result = tc_wait_command(command);
++
++	return result == 0 || result == 1 ? 0 : -1;
++}
++
++/* Migration is offline. Stop only known file-service owners and writers;
++ * ACP and diskd remain available for router and storage management. */
++static int tc_stop_legacy_writers(void)
++{
++	static const char *const names[] = {
++		"smbd", "rsync", "discoveryd", "telemetry", "wcifsnd",
++		"wcifsfs", "afpserver"
++	};
++	static const char *const scripts[] = {
++		"^/bin/sh /mnt/Flash/manager.sh([[:space:]]|$)",
++		"^/bin/sh /mnt/Flash/watchdog.sh([[:space:]]|$)",
++		"^/bin/sh /mnt/Flash/boot.sh([[:space:]]|$)"
++	};
++	size_t i;
++
++	for (i = 0; i < ARRAY_SIZE(scripts); i++) {
++		if (tc_pkill("-TERM", "-f", scripts[i]) != 0) {
++			return -1;
++		}
++	}
++	for (i = 0; i < ARRAY_SIZE(names); i++) {
++		if (tc_pkill("-TERM", "-x", names[i]) != 0) {
++			return -1;
++		}
++	}
++	sleep(2);
++	for (i = 0; i < ARRAY_SIZE(scripts); i++) {
++		if (tc_pkill("-KILL", "-f", scripts[i]) != 0) {
++			return -1;
++		}
++	}
++	for (i = 0; i < ARRAY_SIZE(names); i++) {
++		if (tc_pkill("-KILL", "-x", names[i]) != 0) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++static int tc_disable_legacy_startup(void)
++{
++	int dir_fd = open("/mnt/Flash", O_RDONLY);
++
++	if (dir_fd == -1) {
++		return -1;
++	}
++	if (unlink("/mnt/Flash/rc.local") != 0 && errno != ENOENT) {
++		close(dir_fd);
++		return -1;
++	}
++	if (tc_fsync_directory_or_sync(dir_fd) != 0) {
++		close(dir_fd);
++		return -1;
++	}
++	close(dir_fd);
++	return 0;
++}
++
++static int tc_lock_operation(void)
++{
++	struct flock lock;
++	int fd = open(TC_OPERATION_LOCK, O_RDWR | O_CREAT, 0600);
++
++	if (fd == -1) {
++		return -1;
++	}
++	ZERO_STRUCT(lock);
++	lock.l_type = F_WRLCK;
++	lock.l_whence = SEEK_SET;
++	if (fcntl(fd, F_SETLK, &lock) != 0) {
++		close(fd);
++		return -1;
++	}
++	return fd;
++}
++
++static int tc_parse_maintenance(TALLOC_CTX *mem_ctx, int argc, char **argv,
++				struct tc_maintenance *operation)
++{
++	int i;
++
++	ZERO_STRUCTP(operation);
++	for (i = 2; i < argc; i++) {
++		const char *name = argv[i];
++		const char *value;
++
++		if (strcmp(name, "--volume") == 0) {
++			const char **ids;
++			const char **roots;
++			if (i + 2 >= argc) {
++				return -1;
++			}
++			ids = talloc_realloc(mem_ctx, operation->volume_ids,
++					     const char *, operation->num_volumes + 1);
++			roots = talloc_realloc(mem_ctx, operation->roots,
++					       const char *, operation->num_volumes + 1);
++			if (ids == NULL || roots == NULL) {
++				return -1;
++			}
++			operation->volume_ids = ids;
++			operation->roots = roots;
++			operation->volume_ids[operation->num_volumes] = argv[++i];
++			operation->roots[operation->num_volumes] = argv[++i];
++			operation->num_volumes++;
++			continue;
++		}
++		if (i + 1 >= argc) {
++			return -1;
++		}
++		value = argv[++i];
++		if (strcmp(name, "--receipt") == 0) operation->receipt = value;
++		else if (strcmp(name, "--status") == 0) operation->status = value;
++		else if (strcmp(name, "--source-release") == 0) operation->source_release = value;
++		else if (strcmp(name, "--backend") == 0) operation->backend = value;
++		else if (strcmp(name, "--device-id") == 0) operation->device_id = value;
++		else if (strcmp(name, "--payload-id") == 0) operation->payload_id = value;
++		else if (strcmp(name, "--tdb") == 0) operation->tdb = value;
++		else if (strcmp(name, "--source-version") == 0) {
++			char *end;
++			errno = 0;
++			operation->source_version = strtoul(value, &end, 10);
++			if (errno != 0 || value[0] == '-' || *value == '\0' || *end != '\0') return -1;
++		} else return -1;
++	}
++	if (!tc_receipt_value_valid(operation->receipt) ||
++	    !tc_receipt_value_valid(operation->status) ||
++	    !tc_receipt_value_valid(operation->source_release) ||
++	    !tc_receipt_value_valid(operation->backend) ||
++	    !tc_receipt_value_valid(operation->device_id) ||
++	    !tc_receipt_value_valid(operation->payload_id) ||
++	    !tc_receipt_value_valid(operation->tdb) ||
++	    operation->num_volumes == 0 ||
++	    (strcmp(operation->backend, "stream") != 0 &&
++	     strcmp(operation->backend, "netatalk") != 0))
++	{
++		return -1;
++	}
++	for (i = 0; i < (int)operation->num_volumes; i++) {
++		if (!tc_receipt_value_valid(operation->volume_ids[i]) ||
++		    !tc_receipt_value_valid(operation->roots[i])) return -1;
++	}
++	return 0;
++}
++
++static int tc_redirect_maintenance_log(const char *status_path)
++{
++	char log_path[PATH_MAX];
++	int null_fd;
++	int log_fd;
++
++	if (snprintf(log_path, sizeof(log_path), "%s.log", status_path) >=
++	    (int)sizeof(log_path)) return -1;
++	null_fd = open("/dev/null", O_RDONLY);
++	log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
++	if (null_fd == -1 || log_fd == -1 || dup2(null_fd, STDIN_FILENO) == -1 ||
++	    dup2(log_fd, STDOUT_FILENO) == -1 || dup2(log_fd, STDERR_FILENO) == -1)
++	{
++		if (null_fd != -1) close(null_fd);
++		if (log_fd != -1) close(log_fd);
++		return -1;
++	}
++	close(null_fd);
++	close(log_fd);
++	return 0;
++}
++
++static int tc_run_combined_child(const char *program,
++				 const struct tc_maintenance *operation)
++{
++	char **arguments = calloc(5 + operation->num_volumes, sizeof(char *));
++	pid_t child;
++	int status;
++	size_t i;
++
++	if (arguments == NULL) return -1;
++	arguments[0] = (char *)program;
++	arguments[1] = "combined";
++	arguments[2] = access(operation->tdb, F_OK) == 0 ? (char *)operation->tdb : "-";
++	arguments[3] = (char *)operation->backend;
++	for (i = 0; i < operation->num_volumes; i++) arguments[4 + i] = (char *)operation->roots[i];
++	child = fork();
++	if (child == -1) {
++		free(arguments);
++		return -1;
++	}
++	if (child == 0) {
++		setenv("TC_XATTR_STATUS_PATH", operation->status, 1);
++		setenv("TC_XATTR_OPERATION_ID", tc_operation_id, 1);
++		execv(program, arguments);
++		_exit(127);
++	}
++	tc_migration_child = child;
++	while (waitpid(child, &status, 0) == -1) {
++		if (errno != EINTR) {
++			tc_migration_child = 0;
++			free(arguments);
++			return -1;
++		}
++	}
++	tc_migration_child = 0;
++	free(arguments);
++	return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
++}
++
++static void tc_read_status_counts(const char *path, uint64_t *entries,
++				  uint64_t *conversions, uint64_t *warnings,
++				  uint64_t *errors)
++{
++	char line[128];
++	FILE *file = fopen(path, "r");
++
++	*entries = *conversions = *warnings = *errors = 0;
++	if (file == NULL) return;
++	while (fgets(line, sizeof(line), file) != NULL) {
++		(void)sscanf(line, "entries=%"SCNu64, entries);
++		(void)sscanf(line, "conversions=%"SCNu64, conversions);
++		(void)sscanf(line, "warnings=%"SCNu64, warnings);
++		(void)sscanf(line, "errors=%"SCNu64, errors);
++	}
++	fclose(file);
++}
++
++static int tc_maintenance_worker(const char *program,
++				 const struct tc_maintenance *operation,
++				 int ready_fd)
++{
++	int lock_fd;
++	int migration_status;
++	char operation_id[32];
++	char ready = '1';
++	const char *terminal;
++	uint64_t entries, conversions, warnings, errors;
++
++	if (setsid() == -1 || tc_redirect_maintenance_log(operation->status) != 0) {
++		return 1;
++	}
++	lock_fd = tc_lock_operation();
++	if (lock_fd == -1) {
++		ready = '0';
++		(void)write(ready_fd, &ready, 1);
++		return 1;
++	}
++	snprintf(operation_id, sizeof(operation_id), "%ld", (long)getpid());
++	tc_operation_id = operation_id;
++	tc_live_status_path = operation->status;
++	signal(SIGTERM, tc_stop_handler);
++	signal(SIGINT, tc_stop_handler);
++	if (tc_write_status("running", "offline_transition", 0, 0, 0, 0, "") != 0 ||
++	    tc_write_receipt(operation, "incomplete") != 0)
++	{
++		ready = '0';
++		(void)write(ready_fd, &ready, 1);
++		close(lock_fd);
++		return 1;
++	}
++	(void)write(ready_fd, &ready, 1);
++	close(ready_fd);
++	if (tc_disable_legacy_startup() != 0 || tc_stop_legacy_writers() != 0) {
++		(void)tc_write_status("failed", "offline_transition", 0, 0, 0, 1,
++			"legacy_writers_not_stopped");
++		close(lock_fd);
++		return 1;
++	}
++	(void)tc_write_status("running", "convert", 0, 0, 0, 0, "");
++	migration_status = tc_run_combined_child(program, operation);
++	tc_read_status_counts(operation->status, &entries, &conversions,
++		&warnings, &errors);
++	if (migration_status == 0 && !tc_stop_requested) {
++		sync();
++		if (tc_write_receipt(operation, "complete") == 0) {
++			(void)tc_write_status("complete", "finished", entries,
++				conversions, warnings, errors,
++				"selected_scope_complete");
++			close(lock_fd);
++			return 0;
++		}
++	}
++	terminal = tc_stop_requested ? "cancelled" : "failed";
++	(void)tc_write_status(terminal, "incomplete", entries, conversions,
++		warnings, errors + 1,
++		tc_stop_requested ? "cancelled_at_file_boundary" : "conversion_failed");
++	close(lock_fd);
++	return 1;
++}
++
++static int tc_start_maintenance(TALLOC_CTX *mem_ctx, const char *program,
++				int argc, char **argv)
++{
++	struct tc_maintenance operation;
++	int ready_pipe[2];
++	pid_t child;
++	char ready;
++
++	if (tc_parse_maintenance(mem_ctx, argc, argv, &operation) != 0 ||
++	    pipe(ready_pipe) != 0)
++	{
++		return 2;
++	}
++	child = fork();
++	if (child == -1) return 3;
++	if (child == 0) {
++		close(ready_pipe[0]);
++		_exit(tc_maintenance_worker(program, &operation, ready_pipe[1]));
++	}
++	close(ready_pipe[1]);
++	if (read(ready_pipe[0], &ready, 1) != 1 || ready != '1') {
++		close(ready_pipe[0]);
++		return 3;
++	}
++	close(ready_pipe[0]);
++	printf("state=running\noperation_id=%ld\nphase=offline_transition\n",
++		(long)child);
++	return 0;
++}
++
++static int tc_print_file(const char *path)
++{
++	char buffer[4096];
++	int fd = open(path, O_RDONLY);
++	ssize_t got;
++
++	if (fd == -1) return -1;
++	while ((got = read(fd, buffer, sizeof(buffer))) > 0) {
++		if (write(STDOUT_FILENO, buffer, got) != got) {
++			close(fd);
++			return -1;
++		}
++	}
++	close(fd);
++	return got < 0 ? -1 : 0;
++}
++
++static const char *tc_option_value(int argc, char **argv, const char *name)
++{
++	int i;
++	for (i = 2; i + 1 < argc; i++) if (strcmp(argv[i], name) == 0) return argv[i + 1];
++	return NULL;
++}
++
++static int tc_status_command(int argc, char **argv)
++{
++	const char *status = tc_option_value(argc, argv, "--status");
++	const char *receipt = tc_option_value(argc, argv, "--receipt");
++
++	if (status == NULL || receipt == NULL) return 2;
++	if (tc_print_file(status) == 0) return 0;
++	if (tc_print_file(receipt) == 0) return 0;
++	puts("state=not_running\ndetail=no_migration_state");
++	return 3;
++}
++
++static int tc_cancel_command(int argc, char **argv)
++{
++	const char *status = tc_option_value(argc, argv, "--status");
++	char line[128];
++	long pid = 0;
++	FILE *file;
++
++	if (status == NULL || (file = fopen(status, "r")) == NULL) return 3;
++	while (fgets(line, sizeof(line), file) != NULL) {
++		if (sscanf(line, "operation_id=%ld", &pid) == 1) break;
++	}
++	fclose(file);
++	if (pid <= 1 || kill((pid_t)pid, SIGTERM) != 0) return 3;
++	printf("state=running\noperation_id=%ld\ndetail=cancellation_requested\n", pid);
++	return 0;
+ }
+ 
+ static int tc_quarantine_tdb(struct tc_migration *migration)
+@@ -1762,9 +2331,7 @@
+ 	return 0;
+ }
+ 
+-/* FNV-1a over the whole file. The manager records this after each run it
+- * owns and refuses its checkpoint when the database no longer matches, so a
+- * restored or foreign xattr.tdb is rescanned instead of trusted. */
++/* FNV-1a remains available for diagnosis of legacy databases and receipts. */
+ static int tc_print_fingerprint(const char *path)
+ {
+ 	uint8_t buffer[TC_COPY_SIZE];
+@@ -1835,13 +2402,21 @@
+ static void tc_usage(const char *program)
+ {
+ 	fprintf(stderr,
+-		"usage: %s copy|cleanup TDB_PATH|- stream|netatalk "
++		"usage: %s copy|cleanup|combined TDB_PATH|- stream|netatalk "
+ 		"HFS_ROOT [HFS_ROOT ...]\n"
+-		"       %s copy|cleanup TDB_PATH|- stream|netatalk "
++		"       %s copy|cleanup|combined TDB_PATH|- stream|netatalk "
+ 		"--roots-file PATH\n"
+-		"       %s fingerprint TDB_PATH\n",
++		"       %s fingerprint TDB_PATH\n"
++		"       %s maintain --receipt PATH --status PATH --source-release TAG "
++		"--source-version N --backend stream|netatalk --device-id ID "
++		"--payload-id ID --tdb PATH --volume ID ROOT [--volume ID ROOT ...]\n"
++		"       %s status --status PATH --receipt PATH\n"
++		"       %s cancel --status PATH\n",
+ 		program,
+ 		program,
++		program,
++		program,
++		program,
+ 		program);
+ }
+ 
+@@ -1852,21 +2427,49 @@
+ 	int result = 0;
+ 	int i;
+ 
++	umask(077);
++	if (argc == 2 && strcmp(argv[1], "--version") == 0) {
++		printf("%d\n", TC_MIGRATOR_VERSION);
++		TALLOC_FREE(frame);
++		return 0;
++	}
++	if (argc >= 2 && strcmp(argv[1], "maintain") == 0) {
++		result = tc_start_maintenance(frame, argv[0], argc, argv);
++		TALLOC_FREE(frame);
++		return result;
++	}
++	if (argc >= 2 && strcmp(argv[1], "status") == 0) {
++		result = tc_status_command(argc, argv);
++		TALLOC_FREE(frame);
++		return result;
++	}
++	if (argc >= 2 && strcmp(argv[1], "cancel") == 0) {
++		result = tc_cancel_command(argc, argv);
++		TALLOC_FREE(frame);
++		return result;
++	}
+ 	if (argc == 3 && strcmp(argv[1], "fingerprint") == 0) {
+ 		result = tc_print_fingerprint(argv[2]);
+ 		TALLOC_FREE(frame);
+ 		return result == 0 ? 0 : 3;
+ 	}
+ 	if (argc < 5 ||
+-	    (strcmp(argv[1], "copy") != 0 && strcmp(argv[1], "cleanup") != 0) ||
++	    (strcmp(argv[1], "copy") != 0 && strcmp(argv[1], "cleanup") != 0 &&
++	     strcmp(argv[1], "combined") != 0) ||
+ 	    (strcmp(argv[3], "stream") != 0 && strcmp(argv[3], "netatalk") != 0))
+ 	{
+ 		tc_usage(argv[0]);
+ 		TALLOC_FREE(frame);
+ 		return 2;
+ 	}
+-	migration.phase = strcmp(argv[1], "copy") == 0 ?
+-		TC_PHASE_COPY : TC_PHASE_CLEANUP;
++	migration.phase = strcmp(argv[1], "copy") == 0 ? TC_PHASE_COPY :
++		strcmp(argv[1], "cleanup") == 0 ? TC_PHASE_CLEANUP : TC_PHASE_COMBINED;
++	tc_live_status_path = getenv("TC_XATTR_STATUS_PATH");
++	tc_operation_id = getenv("TC_XATTR_OPERATION_ID");
++	if (tc_live_status_path != NULL) {
++		signal(SIGTERM, tc_stop_handler);
++		signal(SIGINT, tc_stop_handler);
++	}
+ 	migration.tdb_path = strcmp(argv[2], "-") == 0 ? NULL : argv[2];
+ 	migration.legacy_metadata = argv[3];
+ 	if (migration.tdb_path != NULL) {
+@@ -1898,9 +2501,13 @@
+ 			}
+ 		}
+ 	}
++	if (tc_stop_requested) {
++		migration.counts.errors++;
++		result = -1;
++	}
+ 	tc_classify_unmatched_keys(&migration);
+ 	if (result == 0 &&
+-	    migration.phase == TC_PHASE_CLEANUP &&
++	    migration.phase != TC_PHASE_COPY &&
+ 	    migration.db != NULL &&
+ 	    migration.counts.tdb_retired == migration.counts.tdb_total)
+ 	{
+@@ -1914,7 +2521,7 @@
+ 			migration.counts.tdb_deleted = 1;
+ 		}
+ 	} else if (result == 0 &&
+-		   migration.phase == TC_PHASE_CLEANUP &&
++		   migration.phase != TC_PHASE_COPY &&
+ 		   migration.db != NULL &&
+ 		   migration.counts.unresolved == 0 &&
+ 		   migration.counts.orphaned > 0 &&
+@@ -1940,7 +2547,8 @@
+ 	       " tdb_retired=%"PRIu64" tdb_deleted=%"PRIu64
+ 	       " tdb_quarantined=%"PRIu64" boundary_skipped=%"PRIu64
+ 	       " errors=%"PRIu64"\n",
+-	       migration.phase == TC_PHASE_COPY ? "copy" : "cleanup",
++	       migration.phase == TC_PHASE_COPY ? "copy" :
++	       migration.phase == TC_PHASE_CLEANUP ? "cleanup" : "combined",
+ 	       migration.counts.entries,
+ 	       migration.counts.tdb_records,
+ 	       migration.counts.xattrs_written,
+@@ -1960,6 +2568,16 @@
+ 	       migration.counts.tdb_quarantined,
+ 	       migration.counts.boundary_skipped,
+ 	       migration.counts.errors);
++	if (tc_live_status_path != NULL) {
++		uint64_t conversions = migration.counts.xattrs_written +
++			migration.counts.streams_written + migration.counts.finderinfo_written +
++			migration.counts.resources_written + migration.counts.tdb_retired +
++			migration.counts.sidecars_deleted;
++		(void)tc_write_status(result == 0 ? "running" : "incomplete",
++			result == 0 ? "flush" : "convert", migration.counts.entries,
++			conversions, migration.counts.conflicts, migration.counts.errors,
++			result == 0 ? "conversion_complete" : "conversion_incomplete");
++	}
+ 	TALLOC_FREE(frame);
+ 	return result == 0 ? 0 : 4;
+ }
+

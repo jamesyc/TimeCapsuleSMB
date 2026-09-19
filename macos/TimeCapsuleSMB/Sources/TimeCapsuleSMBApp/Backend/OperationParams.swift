@@ -228,6 +228,24 @@ enum OperationParams {
         }
     }
 
+    enum XattrMigration {
+        static func status() -> [String: JSONValue] {
+            ["action": .string("status")]
+        }
+
+        static func start(mountWait: Int) -> [String: JSONValue] {
+            [
+                "action": .string("start"),
+                "detach": .bool(true),
+                "mount_wait": .number(Double(mountWait))
+            ]
+        }
+
+        static func cancel() -> [String: JSONValue] {
+            ["action": .string("cancel")]
+        }
+    }
+
     enum Uninstall {
         static func params(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
             [

@@ -1074,7 +1074,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .uninstall, .fsck, .xattrMigration, .repairXattrs])
         XCTAssertEqual(presentation.cards.first?.isSelected, true)
         XCTAssertEqual(presentation.detail.workflow, .sshAccess)
         XCTAssertEqual(presentation.detail.title, "SSH Access")
@@ -1086,7 +1086,7 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .activate, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.sshAccess, .activate, .uninstall, .fsck, .xattrMigration, .repairXattrs])
         XCTAssertEqual(presentation.cards.first?.isSelected, false)
         XCTAssertEqual(presentation.detail.workflow, .activate)
     }

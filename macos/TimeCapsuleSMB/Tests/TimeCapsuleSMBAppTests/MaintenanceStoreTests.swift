@@ -22,7 +22,7 @@ final class MaintenanceStoreTests: XCTestCase {
             .repaired,
             .failed
         ])
-        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(MaintenanceWorkflow.allCases, [.sshAccess, .activate, .uninstall, .fsck, .xattrMigration, .repairXattrs])
     }
 
     func testNoRebootAndNoWaitAreMutuallyExclusiveAndRequestsAreNormalized() async throws {
@@ -74,6 +74,43 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(store.activationResult?.alreadyActive, true)
         XCTAssertEqual(runner.calls[1].params["dry_run"], .bool(false))
         XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
+    }
+
+    func testXattrMigrationStatusAndDetachedConfirmationFlow() async throws {
+        func payload(state: String) -> JSONValue {
+            .object([
+                "schema_version": .number(1),
+                "eligibility": .string(state == "complete" ? "legacy" : "incomplete"),
+                "state": .string(state),
+                "operation_id": .string("42"),
+                "phase": .string(state == "running" ? "convert" : "finished"),
+                "entries": .number(12),
+                "conversions": .number(4),
+                "warnings": .number(1),
+                "errors": .number(0),
+                "detail": .string("selected_scope_\(state)"),
+                "selected_volumes": .array([.string("/Volumes/dk2")]),
+                "completed_scope": .array(state == "complete" ? [.string("uuid:internal")] : []),
+                "summary": .string("Xattr migration is \(state).")
+            ])
+        }
+        let runner = StoreTestRunner(responses: [
+            .init(events: [BackendEvent(type: "result", operation: "migrate-xattr", ok: true, payload: payload(state: "complete"))]),
+            .init(events: [confirmationRequired(operation: "migrate-xattr", id: "migration-confirm")], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
+            .init(events: [BackendEvent(type: "result", operation: "migrate-xattr", ok: true, payload: payload(state: "running"))])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+
+        store.refreshXattrMigration(password: "pw")
+        try await waitUntilStoreState { store.xattrMigrationState == .succeeded && !store.isRunning }
+        XCTAssertEqual(store.xattrMigrationResult?.completedScope, ["uuid:internal"])
+
+        store.runXattrMigration(password: "pw")
+        try await waitUntilStoreState { store.xattrMigrationState == .awaitingConfirmation && !store.isRunning }
+        store.confirmPending(for: .xattrMigration)
+        try await waitUntilStoreState { store.xattrMigrationState == .running && !store.isRunning }
+        XCTAssertEqual(runner.calls[2].params["detach"], .bool(true))
+        XCTAssertEqual(runner.calls[2].params["confirmation_id"], .string("migration-confirm"))
     }
 
     func testPublishesWhenBackendFinishesAfterActivationPlanResult() async throws {

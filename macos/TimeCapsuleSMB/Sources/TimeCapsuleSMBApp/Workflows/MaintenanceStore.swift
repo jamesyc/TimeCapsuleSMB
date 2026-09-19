@@ -59,6 +59,7 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var activateState: MaintenanceOperationState = .idle
     @Published private(set) var uninstallState: MaintenanceOperationState = .idle
     @Published private(set) var fsckState: MaintenanceOperationState = .idle
+    @Published private(set) var xattrMigrationState: MaintenanceOperationState = .idle
     @Published private(set) var repairState: MaintenanceOperationState = .idle
     @Published private(set) var sshAccessState: MaintenanceOperationState = .idle
 
@@ -69,6 +70,7 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var fsckTargets: [FsckTargetViewModel] = []
     @Published private(set) var fsckPlan: FsckPlanPayload?
     @Published private(set) var fsckResult: FsckResultPayload?
+    @Published private(set) var xattrMigrationResult: XattrMigrationPayload?
     @Published private(set) var repairScan: RepairXattrsPayload?
     @Published private(set) var repairResult: RepairXattrsPayload?
     @Published private(set) var sshAccessPayload: SSHAccessPayload?
@@ -82,6 +84,7 @@ final class MaintenanceStore: ObservableObject {
     let activationStore: ActivationStore
     let uninstallStore: UninstallStore
     let fsckStore: FsckStore
+    let xattrMigrationStore: XattrMigrationStore
     let repairXattrsStore: RepairXattrsStore
     let sshAccessStore: SSHAccessMaintenanceStore
 
@@ -101,6 +104,7 @@ final class MaintenanceStore: ObservableObject {
         self.activationStore = ActivationStore(backend: backendsByWorkflow[.activate] ?? backend)
         self.uninstallStore = UninstallStore(backend: backendsByWorkflow[.uninstall] ?? backend.makeSibling())
         self.fsckStore = FsckStore(backend: backendsByWorkflow[.fsck] ?? backend.makeSibling())
+        self.xattrMigrationStore = XattrMigrationStore(backend: backendsByWorkflow[.xattrMigration] ?? backend.makeSibling())
         self.repairXattrsStore = RepairXattrsStore(backend: backendsByWorkflow[.repairXattrs] ?? backend.makeSibling())
         self.sshAccessStore = SSHAccessMaintenanceStore(backend: backendsByWorkflow[.sshAccess] ?? backend.makeSibling())
         observeWorkflowStores()
@@ -134,6 +138,11 @@ final class MaintenanceStore: ObservableObject {
             backend: backendsByWorkflow[.fsck] ?? coordinator.lane(for: laneKey).backend,
             coordinator: coordinator,
             laneKey: laneKeysByWorkflow[.fsck]
+        )
+        self.xattrMigrationStore = XattrMigrationStore(
+            backend: backendsByWorkflow[.xattrMigration] ?? coordinator.lane(for: laneKey).backend,
+            coordinator: coordinator,
+            laneKey: laneKeysByWorkflow[.xattrMigration]
         )
         self.repairXattrsStore = RepairXattrsStore(
             backend: backendsByWorkflow[.repairXattrs] ?? coordinator.lane(for: laneKey).backend,
@@ -187,6 +196,7 @@ final class MaintenanceStore: ObservableObject {
         observe(activationStore)
         observe(uninstallStore)
         observe(fsckStore)
+        observe(xattrMigrationStore)
         observe(repairXattrsStore)
     }
 
@@ -248,6 +258,8 @@ final class MaintenanceStore: ObservableObject {
             uninstallStore.cancelPendingConfirmation(options: currentOptions)
         case .fsck:
             fsckStore.cancelPendingConfirmation(options: currentOptions)
+        case .xattrMigration:
+            xattrMigrationStore.cancelPendingConfirmation()
         case .repairXattrs:
             repairXattrsStore.cancelPendingConfirmation(path: trimmedRepairPath, options: currentRepairOptions)
         }
@@ -289,6 +301,10 @@ final class MaintenanceStore: ObservableObject {
     var canRunFsck: Bool {
         !isBusy && fsckStore.canRun(options: currentOptions)
     }
+
+    var canRefreshXattrMigration: Bool { !isBusy && xattrMigrationStore.canRefresh }
+    var canRunXattrMigration: Bool { !isBusy && mountWaitValue != nil && xattrMigrationStore.canStart }
+    var canCancelXattrMigration: Bool { !isBusy && xattrMigrationStore.canRequestCancel }
 
     var canRepairXattrs: Bool {
         !isBusy && repairXattrsStore.canRepair(path: trimmedRepairPath, options: currentRepairOptions)
@@ -370,6 +386,34 @@ final class MaintenanceStore: ObservableObject {
     }
 
     @discardableResult
+    func refreshXattrMigration(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .xattrMigration,
+            rejectAlreadyRunning: { xattrMigrationStore.rejectAlreadyRunning() },
+            start: { xattrMigrationStore.refresh(password: password, profile: profile) }
+        )
+    }
+
+    @discardableResult
+    func runXattrMigration(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+        guard let mountWaitValue else { return .rejected(WorkflowLocalError.operationAlreadyRunning.message) }
+        return startMaintenanceWorkflow(
+            .xattrMigration,
+            rejectAlreadyRunning: { xattrMigrationStore.rejectAlreadyRunning() },
+            start: { xattrMigrationStore.run(mountWait: mountWaitValue, password: password, profile: profile) }
+        )
+    }
+
+    @discardableResult
+    func cancelXattrMigration(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
+        startMaintenanceWorkflow(
+            .xattrMigration,
+            rejectAlreadyRunning: { xattrMigrationStore.rejectAlreadyRunning() },
+            start: { xattrMigrationStore.requestCancel(password: password, profile: profile) }
+        )
+    }
+
+    @discardableResult
     func scanRepairXattrs() -> OperationStartResult {
         startMaintenanceWorkflow(
             .repairXattrs,
@@ -409,6 +453,7 @@ final class MaintenanceStore: ObservableObject {
         activationStore.clear()
         uninstallStore.clear()
         fsckStore.clear()
+        xattrMigrationStore.clear()
         repairXattrsStore.clear()
         sshAccessStore.clear()
         syncFromWorkflowStores()
@@ -434,7 +479,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private var workflowStores: [any MaintenanceWorkflowStore] {
-        [sshAccessStore, activationStore, uninstallStore, fsckStore, repairXattrsStore]
+        [sshAccessStore, activationStore, uninstallStore, fsckStore, xattrMigrationStore, repairXattrsStore]
     }
 
     private var activeWorkflowStore: (any MaintenanceWorkflowStore)? {
@@ -455,6 +500,8 @@ final class MaintenanceStore: ObservableObject {
             return uninstallStore
         case .fsck:
             return fsckStore
+        case .xattrMigration:
+            return xattrMigrationStore
         case .repairXattrs:
             return repairXattrsStore
         }
@@ -530,6 +577,9 @@ final class MaintenanceStore: ObservableObject {
         fsckPlan = fsckStore.plan
         fsckResult = fsckStore.result
 
+        xattrMigrationState = xattrMigrationStore.state
+        xattrMigrationResult = xattrMigrationStore.payload
+
         repairState = repairXattrsStore.state
         repairScan = repairXattrsStore.scan
         repairResult = repairXattrsStore.result
@@ -545,6 +595,7 @@ final class MaintenanceStore: ObservableObject {
             activationStore.passwordInvalidProfileID,
             uninstallStore.passwordInvalidProfileID,
             fsckStore.passwordInvalidProfileID,
+            xattrMigrationStore.passwordInvalidProfileID,
             repairXattrsStore.passwordInvalidProfileID,
             sshAccessStore.passwordInvalidProfileID
         ].compactMap { $0 }.first
@@ -556,6 +607,7 @@ final class MaintenanceStore: ObservableObject {
         stages[.activate] = activationStore.currentStage
         stages[.uninstall] = uninstallStore.currentStage
         stages[.fsck] = fsckStore.currentStage
+        stages[.xattrMigration] = xattrMigrationStore.currentStage
         stages[.repairXattrs] = repairXattrsStore.currentStage
         return stages
     }
@@ -566,6 +618,7 @@ final class MaintenanceStore: ObservableObject {
         errors[.activate] = activationStore.error
         errors[.uninstall] = uninstallStore.error
         errors[.fsck] = fsckStore.error
+        errors[.xattrMigration] = xattrMigrationStore.error
         errors[.repairXattrs] = repairXattrsStore.error
         return errors
     }
@@ -585,5 +638,6 @@ private protocol MaintenanceWorkflowStore: ObservableObject {
 extension ActivationStore: MaintenanceWorkflowStore {}
 extension UninstallStore: MaintenanceWorkflowStore {}
 extension FsckStore: MaintenanceWorkflowStore {}
+extension XattrMigrationStore: MaintenanceWorkflowStore {}
 extension RepairXattrsStore: MaintenanceWorkflowStore {}
 extension SSHAccessMaintenanceStore: MaintenanceWorkflowStore {}

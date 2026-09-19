@@ -11,6 +11,7 @@ from timecapsulesmb.app.contracts import (
     fsck_result_payload,
     fsck_volume_list_payload,
     repair_xattrs_payload,
+    xattr_migration_payload,
     uninstall_plan_payload,
     uninstall_result_payload,
 )
@@ -24,6 +25,7 @@ from timecapsulesmb.app.ops.common import (
 from timecapsulesmb.app.ops.deploy import verify_runtime
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
+from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload, run_remote_actions
 from timecapsulesmb.deploy.planner import (
@@ -61,6 +63,12 @@ from timecapsulesmb.services.maintenance import (
 )
 from timecapsulesmb.services.deploy import require_supported_payload
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
+from timecapsulesmb.services.migrate_xattr import (
+    MigrateXattrError,
+    cancel_running_xattr_migration,
+    inspect_xattr_migration,
+    run_xattr_migration,
+)
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.runtime import (
     load_env_config,
@@ -72,6 +80,56 @@ from timecapsulesmb.transport.ssh import run_ssh
 
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+
+
+def migrate_xattr_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
+    operation = "migrate-xattr"
+    action = string_param(params, "action", "start").strip().lower() or "start"
+    if action not in {"start", "status", "cancel"}:
+        raise AppOperationError("Unknown migrate-xattr action.", code="validation_failed")
+    config = load_request_config(params, context)
+    target = resolve_request_target(config, context, profile="deploy", include_probe=True)
+    if action == "status":
+        context.stage("migration_status")
+        return OperationResult(True, xattr_migration_payload(inspect_xattr_migration(target)))
+    if action == "cancel":
+        context.stage("migration_cancel")
+        return OperationResult(True, xattr_migration_payload(cancel_running_xattr_migration(target)))
+
+    context.stage("migration_preflight")
+    current = inspect_xattr_migration(target)
+    if current.prerequisite.state in {"legacy", "incomplete"}:
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Metadata migration required",
+                message=(
+                    "Metadata migration is required before installing 3.x. Migration will stop TimeCapsuleSMB "
+                    "file sharing and disable its legacy automatic startup. TimeCapsuleSMB sharing stays unavailable "
+                    "until the new deployment succeeds. Connect external disks whose legacy metadata you need migrated; "
+                    "disconnected disks will not be migrated automatically later."
+                ),
+                action_title="Migrate",
+                risk="destructive",
+                summary="Offline xattr migration",
+                context={"host": target.connection.host},
+                presentation_id="migrate_xattr.offline",
+                presentation_values={"offline": True, "state": current.prerequisite.state},
+            ),
+        )
+    try:
+        result = run_xattr_migration(
+            target,
+            resolve_app_paths(config_path=config_path(params)).distribution_root,
+            callbacks=context.to_operation_callbacks(),
+            follow=not bool_param(params, "detach"),
+            mount_wait_seconds=int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS),
+        )
+    except MigrateXattrError as exc:
+        raise AppOperationError(str(exc), code=exc.code) from exc
+    return OperationResult(True, xattr_migration_payload(result))
 
 
 def activate_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:

@@ -362,6 +362,7 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.doctor.TelemetryClient.from_config",
             "timecapsulesmb.cli.flash.TelemetryClient.from_config",
             "timecapsulesmb.cli.fsck.TelemetryClient.from_config",
+            "timecapsulesmb.cli.migrate_xattr.TelemetryClient.from_config",
             "timecapsulesmb.cli.paths.TelemetryClient.from_config",
             "timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config",
             "timecapsulesmb.cli.set_ssh.TelemetryClient.from_config",
@@ -406,8 +407,14 @@ class CliTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(
             mock.patch(
-                "timecapsulesmb.services.deploy.migrate_xattr_tdb_to_hfs",
-                return_value="migration=complete",
+                "timecapsulesmb.services.deploy.probe_migration_prerequisite",
+                return_value=SimpleNamespace(
+                    state="installed",
+                    allowed=True,
+                    release_tag="v3.1.0",
+                    version_code=30100,
+                    reason="established test installation",
+                ),
             )
         )
 
@@ -1103,6 +1110,12 @@ class CliTests(unittest.TestCase):
             rc = main(["fsck", "--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
         commands["fsck"].assert_called_once_with(["--yes", "--no-reboot"])
+
+    def test_migrate_xattr_command_is_registered(self) -> None:
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"migrate-xattr": mock.Mock(return_value=0)}) as commands:
+            rc = main(["migrate-xattr", "--status"])
+        self.assertEqual(rc, 0)
+        commands["migrate-xattr"].assert_called_once_with(["--status"])
 
     def test_set_ssh_command_replaces_prep_device(self) -> None:
         self.assertIs(cli_main_module.COMMANDS["set-ssh"], set_ssh.main)
@@ -5142,7 +5155,7 @@ class CliTests(unittest.TestCase):
             wait_seconds=7,
         )
         self.assertEqual(result.mocks.run_remote_actions.call_count, 4)
-        self.assertEqual(result.mocks.upload_deployment_payload.call_count, 2)
+        self.assertEqual(result.mocks.upload_deployment_payload.call_count, 1)
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         result.mocks.verify_payload_home_conn.assert_has_calls(
             [
@@ -5389,8 +5402,6 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if _plan.uploads == [_plan.migration_upload]:
-                return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
         enabled = self.run_deploy_cli(
@@ -5435,8 +5446,6 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if _plan.uploads == [_plan.migration_upload]:
-                return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
         enabled = self.run_deploy_cli(
@@ -5799,15 +5808,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(str(result.exception), "scp failed")
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["result"], "failure")
-        self.assertIn("stage=upload_xattr_migrator", finished["error"])
+        self.assertIn("stage=upload_payload", finished["error"])
         self.assertIn("RuntimeError: scp failed", finished["error"])
 
     def test_deploy_ssh_timeout_shows_red_slow_device_guidance_and_keeps_telemetry_detail(self) -> None:
         timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/.manager.sh.tmp'"
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if plan.uploads == [plan.migration_upload]:
-                return
             if on_uploading is not None:
                 on_uploading(next(transfer for transfer in plan.uploads if transfer.destination == "/mnt/Flash/manager.sh"))
             raise SshCommandTimeout(timeout)

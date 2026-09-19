@@ -243,6 +243,31 @@ def activation_result_payload(*, already_active: bool, message: str | None = Non
     return _with_schema(payload)
 
 
+def xattr_migration_payload(result: object) -> dict[str, object]:
+    prerequisite = getattr(result, "prerequisite", None)
+    status = getattr(result, "status", None)
+    selected_volumes = list(getattr(result, "selected_volumes", ()))
+    state = getattr(status, "state", "unknown")
+    return _with_schema({
+        "eligibility": getattr(prerequisite, "state", "unknown"),
+        "state": state,
+        "operation_id": getattr(status, "operation_id", None),
+        "phase": getattr(status, "phase", None),
+        "entries": getattr(status, "entries", 0),
+        "conversions": getattr(status, "conversions", 0),
+        "warnings": getattr(status, "warnings", 0),
+        "errors": getattr(status, "errors", 0),
+        "detail": getattr(status, "detail", ""),
+        "selected_volumes": selected_volumes,
+        "completed_scope": (
+            list(getattr(getattr(prerequisite, "receipt", None), "volumes", ()))
+            if state == "complete"
+            else []
+        ),
+        "summary": "Xattr migration completed." if state == "complete" else f"Xattr migration is {state}.",
+    })
+
+
 def uninstall_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     requires_reboot = bool(raw.get("reboot_required"))
     payload_dirs = raw.get("payload_dirs")

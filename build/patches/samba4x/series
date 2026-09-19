@@ -154,3 +154,7 @@
 # walk no longer crosses into nested mounts; and a `fingerprint` mode gives
 # the manager's durable checkpoint a source generation to validate against.
 0039-xattr-migrate-orphan-classification.patch|xattr migrator orphan/unresolved split, quarantine and fingerprint
+# The explicit upgrade operation must outlive its SSH client and must be the
+# only writer of the flash receipt. A combined walk writes, verifies, and then
+# retires each file's legacy sources before moving to the next file.
+0040-explicit-xattr-maintenance.patch|detached explicit xattr migration with durable receipt

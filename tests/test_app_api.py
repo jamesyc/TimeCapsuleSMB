@@ -203,10 +203,16 @@ class AppApiTests(unittest.TestCase):
                 return_value=SimpleNamespace(telemetry_enabled=True),
             )
         )
-        self._xattr_migration = self._exit_stack.enter_context(
+        self._xattr_prerequisite = self._exit_stack.enter_context(
             mock.patch(
-                "timecapsulesmb.services.deploy.migrate_xattr_tdb_to_hfs",
-                return_value="migration=complete",
+                "timecapsulesmb.services.deploy.probe_migration_prerequisite",
+                return_value=SimpleNamespace(
+                    state="installed",
+                    allowed=True,
+                    release_tag="v3.1.0",
+                    version_code=30100,
+                    reason="established test installation",
+                ),
             )
         )
 
@@ -413,7 +419,7 @@ class AppApiTests(unittest.TestCase):
 
         rc = service.run_api_request({"request_id": "req-123", "operation": "capabilities", "params": {}}, collector.sink)
 
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, collector.events)
         self.assertTrue(collector.events)
         self.assertEqual({event["request_id"] for event in collector.events}, {"req-123"})
         self.assert_single_terminal_event(collector, "result")
@@ -1570,7 +1576,7 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
                         rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
 
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, collector.events)
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertEqual(payload["counts"], {"instances": 0, "resolved": 8, "devices": 2})
         self.assertEqual([device["name"] for device in payload["devices"]], ["James", "Office"])
@@ -3081,7 +3087,7 @@ class AppApiTests(unittest.TestCase):
                                     collector.sink,
                                 )
 
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, collector.events)
         payload = collector.events_of_type("result")[0]["payload"]
         self.assertTrue(payload["reboot_required"])
         self.assertFalse(payload["wait_after_reboot"])
@@ -3448,7 +3454,7 @@ class AppApiTests(unittest.TestCase):
                                                         )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(upload.call_count, 2)
+        self.assertEqual(upload.call_count, 1)
         self.assertEqual(second.events_of_type("error"), [])
 
     def test_deploy_rejects_boolean_mount_wait_before_remote_connection(self) -> None:
@@ -3561,7 +3567,7 @@ class AppApiTests(unittest.TestCase):
                                                                 )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(upload.call_count, 2)
+        self.assertEqual(upload.call_count, 1)
         upload_sources = upload.call_args.kwargs["source_resolver"]
         self.assertIn("packaged:boot.sh", upload_sources)
         self.assertIn("packaged:manager.sh", upload_sources)
@@ -3644,7 +3650,6 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(
             upload_stages,
             [
-                "upload_xattr_migrator",
                 "upload_smbd",
                 "upload_discovery",
                 "upload_rsync",
@@ -4238,7 +4243,7 @@ MaSt = (
         self.assertEqual(error["debug"]["cause"], "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["stage"], "upload_xattr_migrator")
+        self.assertEqual(finished["stage"], "upload_smbd")
         self.assertIn("Caused by: Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp", finished["error"])
 
     def test_deploy_writes_disabled_install_telemetry_preference_to_flash_config(self) -> None:
@@ -4282,6 +4287,45 @@ MaSt = (
         resolve_target.assert_not_called()
         runtime_probe.assert_not_called()
         remote_actions.assert_not_called()
+
+    def test_migrate_xattr_status_exposes_eligibility_scope_and_progress(self) -> None:
+        collector = CollectingSink()
+        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+        result = SimpleNamespace(
+            prerequisite=SimpleNamespace(state="ready", receipt=SimpleNamespace(volumes=("uuid:internal",))),
+            status=SimpleNamespace(
+                state="complete",
+                operation_id="42",
+                phase="finished",
+                entries=12,
+                conversions=4,
+                warnings=1,
+                errors=0,
+                detail="selected_scope_complete",
+            ),
+            selected_volumes=("/Volumes/dk2",),
+        )
+        with mock.patch(
+            "timecapsulesmb.app.ops.maintenance.load_request_config",
+            return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}),
+        ), mock.patch(
+            "timecapsulesmb.app.ops.maintenance.resolve_request_target",
+            return_value=target,
+        ), mock.patch(
+            "timecapsulesmb.app.ops.maintenance.inspect_xattr_migration",
+            return_value=result,
+        ):
+            rc = service.run_api_request(
+                {"operation": "migrate-xattr", "params": {"action": "status"}},
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 0)
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["eligibility"], "ready")
+        self.assertEqual(payload["completed_scope"], ["uuid:internal"])
+        self.assertEqual(payload["entries"], 12)
+        self.assertEqual(payload["conversions"], 4)
 
     def test_activate_accepts_confirmation_id(self) -> None:
         collector = CollectingSink()

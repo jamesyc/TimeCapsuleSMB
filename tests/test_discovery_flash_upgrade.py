@@ -80,7 +80,6 @@ def test_verification_failure_retains_legacy_flash_binary(tmp_path: Path) -> Non
     permission_action = object()
     plan = SimpleNamespace(
         uploads=[transfer],
-        migration_upload=transfer,
         pre_upload_actions=[object()],
         post_upload_actions=[permission_action],
         post_verify_actions=[legacy_cleanup],
@@ -96,7 +95,6 @@ def test_verification_failure_retains_legacy_flash_binary(tmp_path: Path) -> Non
             "timecapsulesmb.services.deploy._deployment_upload_sources",
             return_value={"discovery": source},
         ),
-        mock.patch("timecapsulesmb.services.deploy.replace", side_effect=lambda value, **_changes: value),
         pytest.raises(Exception, match="managed payload verification failed"),
     ):
         upload_and_verify_deployment_payload(
@@ -109,7 +107,6 @@ def test_verification_failure_retains_legacy_flash_binary(tmp_path: Path) -> Non
             render_rsync_config_func=lambda *_args, **_kwargs: "rsync",
             upload_payload_func=lambda *_args, **_kwargs: None,
             probe_flash_capacity_func=lambda *_args: (100_000, 20_000),
-            migrate_xattrs_func=lambda *_args, **_kwargs: "ok",
             verify_payload_home=lambda *_args, **_kwargs: PayloadVerificationResult(False, "bad replacement"),
         )
 

@@ -46,6 +46,7 @@ from timecapsulesmb.services.deploy import (
     upload_and_verify_deployment_payload,
 )
 from timecapsulesmb.services.reboot import RebootFlowError
+from timecapsulesmb.services.migrate_xattr import MigrateXattrError, run_xattr_migration
 from timecapsulesmb.services.runtime_verification import verify_managed_runtime_ready
 
 if TYPE_CHECKING:
@@ -274,6 +275,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
         parse_bool(config.get("TC_VFS_AIO_FORK_ENABLED", DEFAULTS["TC_VFS_AIO_FORK_ENABLED"])),
     )
 
+    migration_confirmed = False
     try:
         preflight = prepare_deploy_preflight(
             connection,
@@ -285,13 +287,55 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     except DeployArtifactValidationError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
     except DeviceError as exc:
-        raise _device_operation_error(context, exc, default_code="unsupported_device") from exc
+        if getattr(exc, "code", "") != "migration_required" or dry_run:
+            raise _device_operation_error(context, exc, default_code="unsupported_device") from exc
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Metadata migration required",
+                message=(
+                    "Metadata migration is required before installing 3.x. Migration will stop TimeCapsuleSMB "
+                    "file sharing and disable its legacy automatic startup. TimeCapsuleSMB sharing stays unavailable "
+                    "until the new deployment succeeds. Connect external disks whose legacy metadata you need migrated; "
+                    "disconnected disks will not be migrated automatically later."
+                ),
+                action_title="Migrate and Continue",
+                risk="destructive",
+                summary="Offline metadata migration followed by deployment",
+                context={"host": connection.host},
+                presentation_id="deploy.migrate_xattr",
+                presentation_values={"offline": True},
+            ),
+        )
+        try:
+            run_xattr_migration(
+                target,
+                app_paths.distribution_root,
+                callbacks=context.to_operation_callbacks(),
+                follow=True,
+                mount_wait_seconds=mount_wait,
+            )
+        except MigrateXattrError as migration_exc:
+            raise AppOperationError(str(migration_exc), code=migration_exc.code) from migration_exc
+        migration_confirmed = True
+        try:
+            preflight = prepare_deploy_preflight(
+                connection,
+                target,
+                app_paths.distribution_root,
+                deploy_options,
+                callbacks=context.to_operation_callbacks(),
+            )
+        except DeviceError as retry_exc:
+            raise _device_operation_error(context, retry_exc) from retry_exc
     payload_context = preflight.payload_context
     payload_family = preflight.payload_family
     is_netbsd4 = preflight.is_netbsd4
     startup_mode = preflight.startup_mode
     context.log(f"Using {payload_family_description(payload_family)} payload.")
-    if not dry_run:
+    if not dry_run and not migration_confirmed:
         device_name = airport_family_display_name_from_identity(
             model=target.probe_state.probe_result.airport_model if target.probe_state else None,
             syap=target.probe_state.probe_result.airport_syap if target.probe_state else None,

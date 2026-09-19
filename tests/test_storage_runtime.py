@@ -1260,8 +1260,7 @@ printf '%s|%s|%s\\n' "$SMB_NETBIOS_NAME" "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL"
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
             Path("/tmp/smbd"),
             Path("/tmp/discoveryd"),
-            xattr_migrator_path=Path("/tmp/xattr-hfs-migrate"),
-            rsync_path=Path("/tmp/rsync"),
+                        rsync_path=Path("/tmp/rsync"),
          service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
         source_ids = {upload.source_id for upload in plan.uploads}
 

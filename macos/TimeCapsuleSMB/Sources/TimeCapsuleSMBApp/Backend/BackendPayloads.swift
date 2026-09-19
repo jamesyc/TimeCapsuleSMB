@@ -1118,6 +1118,38 @@ struct MaintenanceResultPayload: Decodable, Equatable {
     }
 }
 
+struct XattrMigrationPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let eligibility: String
+    let state: String
+    let operationID: String?
+    let phase: String?
+    let entries: Int
+    let conversions: Int
+    let warnings: Int
+    let errors: Int
+    let detail: String
+    let selectedVolumes: [String]
+    let completedScope: [String]
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case eligibility
+        case state
+        case operationID = "operation_id"
+        case phase
+        case entries
+        case conversions
+        case warnings
+        case errors
+        case detail
+        case selectedVolumes = "selected_volumes"
+        case completedScope = "completed_scope"
+        case summary
+    }
+}
+
 struct PlannedCheckPayload: Decodable, Equatable {
     let id: String
     let description: String

@@ -49,6 +49,7 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
     case activate
     case uninstall
     case fsck
+    case xattrMigration = "xattr_migration"
     case repairXattrs = "repair_xattrs"
     case flash
 
@@ -70,6 +71,8 @@ enum DeviceWorkflowLane: String, Hashable, Equatable, CaseIterable {
             return .uninstall
         case "fsck":
             return .fsck
+        case "migrate-xattr":
+            return .xattrMigration
         case "repair-xattrs":
             return .repairXattrs
         case "flash":

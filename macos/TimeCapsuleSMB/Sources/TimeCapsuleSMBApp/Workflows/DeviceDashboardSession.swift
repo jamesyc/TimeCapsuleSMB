@@ -225,6 +225,19 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 let start = maintenanceStore.runFsck(password: password, profile: profile)
                 stateSynchronizer.invalidateCheckupIfStarted(start)
             }
+        case .refreshXattrMigration:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.refreshXattrMigration(password: password, profile: profile)
+            }
+        case .runXattrMigration:
+            if let password = maintenancePassword(for: profile) {
+                let start = maintenanceStore.runXattrMigration(password: password, profile: profile)
+                stateSynchronizer.invalidateCheckupIfStarted(start)
+            }
+        case .cancelXattrMigration:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.cancelXattrMigration(password: password, profile: profile)
+            }
         case .scanMetadata:
             selectedTab = .maintenance
             maintenanceStore.scanRepairXattrs()
@@ -467,6 +480,10 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case "fsck":
             selectedTab = .maintenance
             maintenanceStore.selectedWorkflow = .fsck
+            return true
+        case "migrate-xattr":
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .xattrMigration
             return true
         case "repair-xattrs":
             selectedTab = .maintenance

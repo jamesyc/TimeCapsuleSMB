@@ -1091,28 +1091,6 @@ tc_manager_apply_runtime_from_topology() {
         return 0
     fi
 
-    if ! tc_manager_migrate_boot_xattrs "$topology_rows"; then
-        if [ "${TC_MANAGER_XATTR_DEFERRED:-0}" = 1 ]; then
-            # Same outcome as the failure below, without repeating its log
-            # line every pass while the backoff runs.
-            tc_manager_debug_log "metadata migration retry pending; runtime state unchanged"
-            if [ "$refresh_reason" = initial ] || ! tc_manager_current_payload_ready; then
-                tc_manager_clear_payload_state
-            else
-                manager_topology_rows=$previous_manager_topology_rows
-            fi
-            return 1
-        fi
-        if [ "$refresh_reason" = initial ] || ! tc_manager_current_payload_ready; then
-            tc_log "metadata migration failed; retaining pending metadata and withholding initial Samba startup"
-            tc_manager_clear_payload_state
-        else
-            manager_topology_rows=$previous_manager_topology_rows
-            tc_log "metadata migration failed for changed topology; preserving the active Samba shares and retrying later"
-        fi
-        return 1
-    fi
-
     if ! tc_manager_build_share_state_from_topology "$topology_rows"; then
         tc_log "manager disk refresh: no writable MaSt share volumes are available; applying no-payload state"
         tc_manager_apply_diskless_state "$refresh_reason"
@@ -1245,13 +1223,6 @@ tc_manager_reconcile_disk_state() {
     fi
 
     if [ "$current_stable_signature" = "$TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE" ]; then
-        if tc_manager_pending_xattr_volume_mounted "$current_stable_signature"; then
-            TC_MANAGER_DISK_PROBE_RESULT=migration_volume_available
-            TC_MANAGER_DISK_REFRESH_RESULT=refresh_migration_volume
-            tc_manager_apply_runtime_from_topology migration_volume_available "$current_stable_signature" || return 1
-            tc_log "manager disk refresh completed for newly available metadata migration volume"
-            return 0
-        fi
         if ! tc_manager_check_active_mast_users "$current_runtime_rows" "${manager_share_rows:-}"; then
             TC_MANAGER_DISK_PROBE_RESULT=active_users_dropped
             TC_MANAGER_DISK_REFRESH_RESULT=refresh_active_users
