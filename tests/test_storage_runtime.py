@@ -1638,6 +1638,93 @@ MaSt = (
         self.assertNotIn("LegacyNetbios", proc.stdout)
         self.assertNotIn("LegacyServer", proc.stdout)
 
+    def test_common_runtime_identity_mdns_radio_macs_fall_back_to_atheros(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "radio-fallback.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    get_radio_mac() {{
+                        case "$1" in
+                            bwl0|bwl1) return 1 ;;
+                            ath0) echo 00:26:b0:fe:6e:a4 ;;
+                            ath1) echo 00:26:b0:fe:6e:a3 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "James's AirPort Time Capsule" ;;
+                            syFl) echo 0x00000A0C ;;
+                            raNA) echo false ;;
+                            syVs) echo 7.8.1 ;;
+                            srcv) echo 78100.3 ;;
+                            bjSd) echo 0xB5 ;;
+                            syAP) echo 109 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    get_airport_rast() {{ echo 3; }}
+                    derive_airport_fields "00:26:bb:6a:d8:58"
+                    printf 'rama=%s ram2=%s model=%s wama=%s\\n' \\
+                        "${{AIRPORT_RAMA:-missing}}" "${{AIRPORT_RAM2:-missing}}" \\
+                        "${{MDNS_DEVICE_MODEL:-missing}}" "${{AIRPORT_WAMA:-missing}}"
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("rama=00:26:b0:fe:6e:a4 ram2=00:26:b0:fe:6e:a3", proc.stdout)
+        self.assertIn("model=TimeCapsule6,109", proc.stdout)
+        self.assertIn("wama=00:26:bb:6a:d8:58", proc.stdout)
+
+    def test_common_runtime_identity_mdns_radio_macs_fall_back_to_atheros_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "radio-missing.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    get_radio_mac() {{ return 1; }}
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "James's AirPort Time Capsule" ;;
+                            syFl) echo 0x00000A0C ;;
+                            raNA) echo false ;;
+                            syVs) echo 7.8.1 ;;
+                            srcv) echo 78100.3 ;;
+                            bjSd) echo 0xB5 ;;
+                            syAP) echo 109 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    get_airport_rast() {{ echo 3; }}
+                    derive_airport_fields "00:26:bb:6a:d8:58"
+                    printf 'rama=%s ram2=%s\\n' "${{AIRPORT_RAMA:-missing}}" "${{AIRPORT_RAM2:-missing}}"
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("rama=missing ram2=missing", proc.stdout)
+
     def test_deployment_plan_uses_flash_pointer_and_single_private_payload(self) -> None:
         plan = build_deployment_plan(
             "root@10.0.0.2",

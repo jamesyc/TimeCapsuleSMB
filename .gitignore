@@ -55,5 +55,12 @@ coverage.xml
 .env
 .env.local*
 .env.backup*
+.env.*.bak
 .bootstrap
 .version-check-cache.json
+
+# Device flash backups (contains device-state snapshots)
+flash-backups/
+
+# uv lockfile (uv is not used upstream)
+uv.lock
