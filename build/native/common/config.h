@@ -13,6 +13,9 @@
 #endif
 #define TC_CONFIG_VALUE_MAX 256
 
+struct config_item { const char *key; char value[TC_CONFIG_VALUE_MAX]; int present; };
+int config_read_snapshot(const char *path, struct config_item *items, size_t count);
+
 /* Returns 0 when decoded, 1 for a missing key, -1 for an unreadable file
  * or invalid value. Missing keys can use defaults; failed reads are unknown. */
 int config_read_value(const char *path, const char *key, char *out, size_t out_len);

@@ -1,5 +1,35 @@
 #include "config.h"
 
+int config_read_snapshot(const char *path, struct config_item *items, size_t count) {
+    FILE *fp;
+    char line[1024];
+    size_t i;
+    int result = 0;
+    for (i = 0; i < count; i++) { items[i].present = 0; items[i].value[0] = 0; }
+    fp = fopen(path, "r");
+    if (!fp) return -1;
+    while (fgets(line, sizeof(line), fp)) {
+        char *key = line;
+        if (!strchr(line, '\n') && !feof(fp)) { result = -1; break; }
+        while (*key == ' ' || *key == '\t') key++;
+        for (i = 0; i < count; i++) {
+            char *value; size_t n = strlen(items[i].key);
+            if (strncmp(key, items[i].key, n)) continue;
+            value = key + n;
+            while (*value == ' ' || *value == '\t') value++;
+            if (*value != '=') continue;
+            if (config_decode_assignment_value(value + 1, items[i].value, sizeof(items[i].value))) result = -1;
+            items[i].present = 1;
+            break;
+        }
+        if (result) break;
+    }
+    if (ferror(fp)) result = -1;
+    if (fclose(fp)) result = -1;
+    if (result) for (i = 0; i < count; i++) { items[i].present = 0; items[i].value[0] = 0; }
+    return result;
+}
+
 static int config_append(char *out, size_t out_len, size_t *used, char ch) {
     if (*used + 1 >= out_len) {
         return -1;

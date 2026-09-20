@@ -13,4 +13,7 @@ int service_read_policy(FILE *stream, struct device_plan *history);
 int service_print_policy(FILE *stream, const struct device_plan *history);
 int print_nt_hash_from_stdin(void);
 int print_device_nt_hash(void);
+int device_nt_hash(char out[33]);
+struct tc_samba_identity { char netbios[16], server[256], model[48]; };
+int tc_samba_identity_read(struct tc_samba_identity *out);
 #endif

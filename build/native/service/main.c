@@ -1,9 +1,12 @@
 #include "service.h"
+#ifdef TC_SERVICE_MULTICALL
+#define main tc_service_helper_main
+#endif
 static void stop_acp(int signo) { (void)signo; acp_stop_requested = 1; }
 
 /* Model discovery belongs with Samba's native naming projection, not a second
  * set of shell normalization/ACP routines. No network policy is queried here. */
-static int print_samba_identity(void) {
+int tc_samba_identity_read(struct tc_samba_identity *out) {
     static const char *const models[] = {
         "AirPort5,104", "AirPort5,105", "TimeCapsule6,106", "AirPort5,108",
         "TimeCapsule6,109", "TimeCapsule6,113", "AirPort5,114", "TimeCapsule6,116",
@@ -42,7 +45,15 @@ static int print_samba_identity(void) {
         for (i = 0; i < sizeof(models) / sizeof(models[0]); i++)
             if (strstr(syam.text, models[i])) { model = models[i]; break; }
     }
-    return printf("samba-identity 1\n%s\n%s\n%s\n", id.netbios, server, model) < 0 || fflush(stdout) != 0;
+    memset(out, 0, sizeof(*out));
+    strcpy(out->netbios, id.netbios); strcpy(out->server, server); strcpy(out->model, model);
+    return 0;
+}
+
+static int print_samba_identity(void) {
+    struct tc_samba_identity identity;
+    if (tc_samba_identity_read(&identity)) return 1;
+    return printf("samba-identity 1\n%s\n%s\n%s\n", identity.netbios, identity.server, identity.model) < 0 || fflush(stdout) != 0;
 }
 
 static void usage(void) {
