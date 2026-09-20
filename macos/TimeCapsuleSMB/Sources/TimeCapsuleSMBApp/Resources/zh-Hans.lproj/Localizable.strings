@@ -1,9 +1,5 @@
-"timeline.deploy.detail.preflight_flash_capacity" = "正在检查闪存是否有足够的可用空间用于更新发现服务。";
-"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "正在从闪存中移除已被替换的旧发现服务二进制文件。";
-"timeline.deploy.detail.flush_legacy_flash_cleanup" = "正在将旧文件清理结果写入闪存。";
-"timeline.deploy.title.preflight_flash_capacity" = "检查闪存容量";
-"timeline.deploy.title.cleanup_legacy_flash_discovery" = "清理旧发现服务";
-"timeline.deploy.title.flush_legacy_flash_cleanup" = "写入闪存清理结果";
+"timeline.deploy.detail.check_flash_capacity" = "正在检查闪存是否有足够的可用空间用于更新发现服务。";
+"timeline.deploy.title.check_flash_capacity" = "检查闪存容量";
 "timeline.deploy.detail.upload_discovery" = "正在将发现服务复制到载荷卷和闪存。";
 "timeline.deploy.title.upload_discovery" = "上传发现服务";
 "action.activate" = "启动 SMB";
@@ -147,18 +143,12 @@
 "confirm.ssh_access.enable_reboot.action" = "启用 SSH 并重启";
 "confirm.ssh_access.enable_reboot.message" = "是否使用 AirPort ACP 在 %@ 上启用 SSH 并重启此 AirPort 设备？";
 "confirm.ssh_access.enable_reboot.title" = "启用 SSH 并重启？";
-"confirm.deploy.activate_now.action" = "部署并启动 SMB";
-"confirm.deploy.activate_now.message" = "将 TimeCapsuleSMB Deploy 到此 %@ 并在不重启的情况下启动 SMB？";
-"confirm.deploy.activate_now.title" = "部署并启动 SMB？";
 "confirm.deploy.netbsd4.action" = "部署、重启并启动";
 "confirm.deploy.netbsd4.message" = "将 TimeCapsuleSMB Deploy 到此 %@，重启它，然后在 SSH 恢复后 Activate Samba？";
 "confirm.deploy.netbsd4.title" = "部署、重启并启动 NetBSD4？";
 "confirm.deploy.netbsd4_no_wait.action" = "部署并请求重启";
 "confirm.deploy.netbsd4_no_wait.message" = "将 TimeCapsuleSMB Deploy 到此 %@，请求重启，并立即返回，不在 SSH 恢复后运行 Samba activation？";
 "confirm.deploy.netbsd4_no_wait.title" = "部署并请求 NetBSD4 重启？";
-"confirm.deploy.no_reboot.action" = "部署";
-"confirm.deploy.no_reboot.message" = "将 TimeCapsuleSMB Deploy 到此 %@，但不重启？";
-"confirm.deploy.no_reboot.title" = "部署但不重启？";
 "confirm.deploy.reboot.action" = "部署并重启";
 "confirm.deploy.reboot.message" = "部署 TimeCapsuleSMB 并重启此 %@？";
 "confirm.deploy.reboot.title" = "部署并重启？";
@@ -265,7 +255,6 @@
 "deploy.presentation.title.netbsd4" = "安装 Samba 并启动 Runtime";
 "deploy.presentation.title.standard" = "安装 Samba";
 "deploy.presentation.warning.netbsd4_activation" = "此 NetBSD4 设备需要 activation step 后 Samba 才能就绪。";
-"deploy.presentation.warning.netbsd4_activate_now" = "此 NetBSD4 安装会在不重启的情况下启动 Samba。";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "此 NetBSD4 安装会先重启，然后在 SSH 恢复后启动 Samba。";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "No Wait 会在请求重启后返回。SSH 恢复后不会自动启动 Samba。";
 "deploy.presentation.warning.no_wait_post_reboot_verification" = "No Wait 会在请求重启后返回。不会自动运行重启后的 SMB 验证。";
@@ -282,7 +271,6 @@
 "install.completion.title.finished" = "安装 / 更新已完成";
 "install.completion.title.verified" = "安装 / 更新已验证";
 "install.completion.warning.netbsd4" = "NetBSD4 设备之后重启后可能需要手动启动，除非 Boot Hook 已 patch。";
-"install.plan.downtime.activate_now" = "Samba 不重启启动时通常不到一分钟。";
 "install.plan.downtime.netbsd4" = "Samba 不重启启动时通常不到一分钟。";
 "install.plan.downtime.no_wait" = "App 会请求重启并立即返回。";
 "install.plan.downtime.none" = "预计无需重启。";
@@ -292,7 +280,6 @@
 "install.plan.row.uploads" = "上传";
 "install.plan.section.device_actions" = "设备操作";
 "install.plan.section.target" = "目标";
-"install.plan.title.activate_now" = "安装 / 更新 Samba 并启动 Runtime";
 "install.plan.title.netbsd4" = "安装 / 更新 Samba 并启动 Runtime";
 "install.plan.title.reboot_no_wait" = "安装 / 更新 Samba 并请求重启";
 "install.plan.title.reboot_then_activate" = "安装 / 更新 Samba、重启并启动 Runtime";
@@ -814,7 +801,6 @@
 "timeline.state.running" = "运行中";
 "timeline.state.succeeded" = "成功";
 "timeline.state.warning" = "警告";
-"timeline.deploy.detail.activate_runtime" = "正在不重启设备的情况下启动已部署的运行时。";
 "timeline.deploy.detail.build_deployment_plan" = "正在生成有序的部署操作。";
 "timeline.deploy.detail.check_compatibility" = "正在根据检测到的 NetBSD 版本选择 payload。";
 "timeline.deploy.detail.flush_payload_upload" = "正在将 payload 写入刷新到磁盘。";
@@ -845,7 +831,6 @@
 "timeline.deploy.detail.verify_runtime_reboot" = "设备已重新上线。正在等待托管运行时启动完成。";
 "timeline.deploy.detail.wait_for_reboot_down" = "正在等待 SSH 在重启请求后断开。";
 "timeline.deploy.detail.wait_for_reboot_up" = "设备已断开；正在等待它重新上线。";
-"timeline.deploy.title.activate_runtime" = "启动 SMB";
 "timeline.deploy.title.build_deployment_plan" = "准备安装计划";
 "timeline.deploy.title.check_compatibility" = "检查设备兼容性";
 "timeline.deploy.title.flush_payload_upload" = "刷新到磁盘";

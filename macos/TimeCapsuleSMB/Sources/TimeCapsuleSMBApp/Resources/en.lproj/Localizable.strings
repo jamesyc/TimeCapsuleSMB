@@ -139,18 +139,12 @@
 "confirm.ssh_access.enable_reboot.action" = "Enable SSH and Reboot";
 "confirm.ssh_access.enable_reboot.message" = "Enable SSH using AirPort ACP on %@ and reboot this AirPort device?";
 "confirm.ssh_access.enable_reboot.title" = "Enable SSH And Reboot?";
-"confirm.deploy.activate_now.action" = "Install / Update Samba and Start";
-"confirm.deploy.activate_now.message" = "Install or update Samba on this %@ and start it without rebooting the device?";
-"confirm.deploy.activate_now.title" = "Install / Update Samba and Start?";
 "confirm.deploy.netbsd4.action" = "Install / Update Samba, Reboot, and Start";
 "confirm.deploy.netbsd4.message" = "Install or update Samba on this %@, reboot it, then start Samba after SSH returns?";
 "confirm.deploy.netbsd4.title" = "Install / Update Samba, Reboot, and Start?";
 "confirm.deploy.netbsd4_no_wait.action" = "Install / Update Samba and Request Reboot";
 "confirm.deploy.netbsd4_no_wait.message" = "Install or update Samba on this %@, request reboot, and return immediately without starting Samba after SSH returns?";
 "confirm.deploy.netbsd4_no_wait.title" = "Install / Update Samba and Request NetBSD4 Reboot?";
-"confirm.deploy.no_reboot.action" = "Install / Update Samba";
-"confirm.deploy.no_reboot.message" = "Install or update Samba on this %@ without rebooting it?";
-"confirm.deploy.no_reboot.title" = "Install / Update Samba Without Rebooting?";
 "confirm.deploy.reboot.action" = "Install / Update Samba and Reboot";
 "confirm.deploy.reboot.message" = "Install or update Samba and reboot this %@?";
 "confirm.deploy.reboot.title" = "Install / Update Samba and Reboot?";
@@ -257,7 +251,6 @@
 "deploy.presentation.title.netbsd4" = "Install Samba and Start Runtime";
 "deploy.presentation.title.standard" = "Install Samba";
 "deploy.presentation.warning.netbsd4_activation" = "This NetBSD4 device needs an activation step before Samba is ready.";
-"deploy.presentation.warning.netbsd4_activate_now" = "This NetBSD4 install will start Samba without rebooting.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "This NetBSD4 install will reboot first, then start Samba after SSH returns.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "No Wait will return after requesting reboot. Samba activation will not run automatically after SSH returns.";
 "deploy.presentation.warning.no_wait_post_reboot_verification" = "No Wait will return after requesting reboot. Post-reboot SMB verification will not run automatically.";
@@ -274,7 +267,6 @@
 "install.completion.title.finished" = "Install / Update Finished";
 "install.completion.title.verified" = "Install / Update Verified";
 "install.completion.warning.netbsd4" = "NetBSD4 devices may need Activate after a later reboot unless the boot hook is patched.";
-"install.plan.downtime.activate_now" = "Usually under a minute while Samba starts without rebooting.";
 "install.plan.downtime.netbsd4" = "Usually under a minute while Samba starts without rebooting.";
 "install.plan.downtime.no_wait" = "The app will request reboot and return immediately.";
 "install.plan.downtime.none" = "No reboot expected.";
@@ -284,7 +276,6 @@
 "install.plan.row.uploads" = "Uploads";
 "install.plan.section.device_actions" = "Device Actions";
 "install.plan.section.target" = "Target";
-"install.plan.title.activate_now" = "Install / Update Samba and Start Runtime";
 "install.plan.title.netbsd4" = "Install / Update Samba and Start Runtime";
 "install.plan.title.reboot_no_wait" = "Install / Update Samba and Request Reboot";
 "install.plan.title.reboot_then_activate" = "Install / Update Samba, Reboot, and Start Runtime";
@@ -806,7 +797,6 @@
 "timeline.state.running" = "Running";
 "timeline.state.succeeded" = "Succeeded";
 "timeline.state.warning" = "Warning";
-"timeline.deploy.detail.activate_runtime" = "Starting the installed Samba runtime without reboot.";
 "timeline.deploy.detail.build_deployment_plan" = "Building the ordered installation and update actions.";
 "timeline.deploy.detail.check_compatibility" = "Choosing the payload for the detected NetBSD version.";
 "timeline.deploy.detail.flush_payload_upload" = "Flushing payload writes to disk.";
@@ -817,9 +807,7 @@
 "timeline.deploy.detail.post_upload_actions" = "Installing flash hooks and applying file modes.";
 "timeline.deploy.detail.pre_upload_actions" = "Stopping managed services and removing stale installed files.";
 "timeline.deploy.detail.prepare_deployment_files" = "Generating runtime config.";
-"timeline.deploy.detail.preflight_flash_capacity" = "Checking that Flash has enough free space for the discovery update.";
-"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Removing the replaced legacy discovery binary from Flash.";
-"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Flushing legacy Flash cleanup writes.";
+"timeline.deploy.detail.check_flash_capacity" = "Checking free Flash space for the replacement software.";
 "timeline.activate.detail.probe_runtime" = "Checking whether TimeCapsuleSMB is already running before activating it.";
 "timeline.activate.detail.post_activation_settle" = "Waiting briefly after activation before probing runtime readiness.";
 "timeline.deploy.detail.probe_runtime" = "Checking whether the device will start TimeCapsuleSMB automatically.";
@@ -841,7 +829,6 @@
 "timeline.deploy.detail.verify_runtime_reboot" = "Device is back online. Waiting for managed runtime to finish starting.";
 "timeline.deploy.detail.wait_for_reboot_down" = "Waiting for SSH to go down after reboot request.";
 "timeline.deploy.detail.wait_for_reboot_up" = "Device went down; waiting for it to come back up.";
-"timeline.deploy.title.activate_runtime" = "Start SMB";
 "timeline.deploy.title.build_deployment_plan" = "Prepare Install Plan";
 "timeline.deploy.title.check_compatibility" = "Check Device Compatibility";
 "timeline.deploy.title.flush_payload_upload" = "Flush to Disk";
@@ -852,9 +839,7 @@
 "timeline.deploy.title.post_upload_actions" = "Apply File Permissions";
 "timeline.deploy.title.pre_upload_actions" = "Stop Existing Runtime";
 "timeline.deploy.title.prepare_deployment_files" = "Build Runtime Config";
-"timeline.deploy.title.preflight_flash_capacity" = "Check Flash Capacity";
-"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Clean Up Legacy Discovery";
-"timeline.deploy.title.flush_legacy_flash_cleanup" = "Flush Flash Cleanup";
+"timeline.deploy.title.check_flash_capacity" = "Check Flash Capacity";
 "timeline.activate.title.probe_runtime" = "Check Existing Runtime";
 "timeline.activate.title.post_activation_settle" = "Let Runtime Settle";
 "timeline.deploy.title.probe_runtime" = "Check Boot Startup";

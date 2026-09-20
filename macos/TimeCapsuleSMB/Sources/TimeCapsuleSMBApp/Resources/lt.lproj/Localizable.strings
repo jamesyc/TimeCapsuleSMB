@@ -1,9 +1,5 @@
-"timeline.deploy.detail.preflight_flash_capacity" = "Tikrinama, ar „Flash“ atmintyje pakanka vietos aptikimo tarnybos naujinimui.";
-"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Iš „Flash“ atminties šalinamas pakeistas senas aptikimo dvejetainis failas.";
-"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Įrašomi „Flash“ atminties valymo pakeitimai.";
-"timeline.deploy.title.preflight_flash_capacity" = "Tikrinti „Flash“ talpą";
-"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Pašalinti seną aptikimo failą";
-"timeline.deploy.title.flush_legacy_flash_cleanup" = "Įrašyti „Flash“ valymą";
+"timeline.deploy.detail.check_flash_capacity" = "Tikrinama, ar „Flash“ atmintyje pakanka vietos aptikimo tarnybos naujinimui.";
+"timeline.deploy.title.check_flash_capacity" = "Tikrinti „Flash“ talpą";
 "timeline.deploy.detail.upload_discovery" = "Aptikimo tarnyba kopijuojama į paketo tomą ir „Flash“ atmintį.";
 "timeline.deploy.title.upload_discovery" = "Įkelti aptikimo tarnybą";
 "action.activate" = "Aktyvuoti";
@@ -147,18 +143,12 @@
 "confirm.ssh_access.enable_reboot.action" = "Įjungti SSH ir paleisti iš naujo";
 "confirm.ssh_access.enable_reboot.message" = "Įjungti SSH naudojant AirPort ACP %@ ir paleisti šį AirPort įrenginį iš naujo?";
 "confirm.ssh_access.enable_reboot.title" = "Įjungti SSH ir paleisti iš naujo?";
-"confirm.deploy.activate_now.action" = "Diegti ir paleisti SMB";
-"confirm.deploy.activate_now.message" = "Įdiegti TimeCapsuleSMB į šį %@ ir paleisti SMB jo nepaleidžiant iš naujo?";
-"confirm.deploy.activate_now.title" = "Diegti ir paleisti SMB?";
 "confirm.deploy.netbsd4.action" = "Diegti, paleisti iš naujo ir aktyvuoti";
 "confirm.deploy.netbsd4.message" = "Įdiegti TimeCapsuleSMB į šį %@, paleisti iš naujo, tada aktyvuoti Samba po SSH prisijungimo?";
 "confirm.deploy.netbsd4.title" = "Diegti, paleisti iš naujo ir aktyvuoti NetBSD4?";
 "confirm.deploy.netbsd4_no_wait.action" = "Diegti ir prašyti paleisti iš naujo";
 "confirm.deploy.netbsd4_no_wait.message" = "Įdiegti TimeCapsuleSMB į šį %@, prašyti paleisti iš naujo ir grįžti iš karto nepaleidžiant Samba aktyvavimo po SSH prisijungimo?";
 "confirm.deploy.netbsd4_no_wait.title" = "Diegti ir prašyti NetBSD4 paleisti iš naujo?";
-"confirm.deploy.no_reboot.action" = "Diegti";
-"confirm.deploy.no_reboot.message" = "Įdiegti TimeCapsuleSMB į šį %@ jo nepaleidžiant iš naujo?";
-"confirm.deploy.no_reboot.title" = "Diegti be paleidimo iš naujo?";
 "confirm.deploy.reboot.action" = "Diegti ir paleisti iš naujo";
 "confirm.deploy.reboot.message" = "Įdiegti TimeCapsuleSMB ir paleisti šį %@ iš naujo?";
 "confirm.deploy.reboot.title" = "Diegti ir paleisti iš naujo?";
@@ -265,7 +255,6 @@
 "deploy.presentation.title.netbsd4" = "Įdiegti Samba ir paleisti aplinką";
 "deploy.presentation.title.standard" = "Įdiegti Samba";
 "deploy.presentation.warning.netbsd4_activation" = "Šiam NetBSD4 įrenginiui reikalingas aktyvavimo žingsnis prieš Samba bus paruošta.";
-"deploy.presentation.warning.netbsd4_activate_now" = "Šis NetBSD4 diegimas paleis Samba nepaleidžiant iš naujo.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "Šis NetBSD4 diegimas pirmiausia paleis iš naujo, tada paleis Samba po SSH prisijungimo.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "Parinktis „Be laukimo“ grįš po paleidimo iš naujo užklausos. Samba aktyvavimas nebus paleistas automatiškai po SSH prisijungimo.";
 "deploy.presentation.warning.no_wait_post_reboot_verification" = "Parinktis „Be laukimo“ grįš po paleidimo iš naujo užklausos. SMB patikrinimas po paleidimo iš naujo nebus paleistas automatiškai.";
@@ -282,7 +271,6 @@
 "install.completion.title.finished" = "Diegimas / atnaujinimas baigtas";
 "install.completion.title.verified" = "Diegimas / atnaujinimas patvirtintas";
 "install.completion.warning.netbsd4" = "NetBSD4 įrenginiams gali reikėti aktyvavimo po vėlesnio paleidimo iš naujo, jei įkrovos įskiepis nepataisytas.";
-"install.plan.downtime.activate_now" = "Paprastai mažiau nei minutė, kol Samba paleidžiama be paleidimo iš naujo.";
 "install.plan.downtime.netbsd4" = "Paprastai mažiau nei minutė, kol Samba paleidžiama be paleidimo iš naujo.";
 "install.plan.downtime.no_wait" = "Programa paprašys paleisti iš naujo ir iš karto grįš.";
 "install.plan.downtime.none" = "Paleidimo iš naujo nenumatoma.";
@@ -292,7 +280,6 @@
 "install.plan.row.uploads" = "Įkėlimai";
 "install.plan.section.device_actions" = "Įrenginio veiksmai";
 "install.plan.section.target" = "Tikslas";
-"install.plan.title.activate_now" = "Įdiegti / atnaujinti Samba ir paleisti aplinką";
 "install.plan.title.netbsd4" = "Įdiegti / atnaujinti Samba ir paleisti aplinką";
 "install.plan.title.reboot_no_wait" = "Įdiegti / atnaujinti Samba ir prašyti paleisti iš naujo";
 "install.plan.title.reboot_then_activate" = "Įdiegti / atnaujinti Samba, paleisti iš naujo ir paleisti aplinką";
@@ -814,7 +801,6 @@
 "timeline.state.running" = "Vykdoma";
 "timeline.state.succeeded" = "Pavyko";
 "timeline.state.warning" = "Įspėjimas";
-"timeline.deploy.detail.activate_runtime" = "Paleidžiama įdiegta aplinka be paleidimo iš naujo.";
 "timeline.deploy.detail.build_deployment_plan" = "Kuriamas diegimo veiksmų planas.";
 "timeline.deploy.detail.check_compatibility" = "Pasirenkama apkrova aptiktai NetBSD versijai.";
 "timeline.deploy.detail.flush_payload_upload" = "Apkrovos įrašai išvalomi į diską.";
@@ -845,7 +831,6 @@
 "timeline.deploy.detail.verify_runtime_reboot" = "Įrenginys vėl veikia. Laukiama, kol valdoma aplinka baigs paleistis.";
 "timeline.deploy.detail.wait_for_reboot_down" = "Laukiama, kol SSH išsijungs po paleidimo iš naujo užklausos.";
 "timeline.deploy.detail.wait_for_reboot_up" = "Įrenginys išsijungė; laukiama, kol jis grįš.";
-"timeline.deploy.title.activate_runtime" = "Paleisti SMB";
 "timeline.deploy.title.build_deployment_plan" = "Parengti diegimo planą";
 "timeline.deploy.title.check_compatibility" = "Tikrinti įrenginio suderinamumą";
 "timeline.deploy.title.flush_payload_upload" = "Išvalyti į diską";

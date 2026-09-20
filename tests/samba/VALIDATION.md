@@ -323,3 +323,19 @@ path and error.
 | NetBSD 6 (NetBSD 7 SDK) | 2,128,772 |
 | NetBSD 4 LE | 2,135,460 |
 | NetBSD 4 BE | 2,135,012 |
+
+## Appliance installer validation (2026-09-19)
+
+The combined migration fixture also passed on NetBSD 4 LE. For that device, the
+fixture's temporary-path prefix was moved from `/tmp` to an isolated hidden HDD
+prefix under `/Volumes/dk2`; the root ramdisk is too small for the TDB and resource
+cases. Test files and databases were separate from production backups, and the
+fixture executable was removed afterward. As on NetBSD 6, private HFS syscalls
+were mocked while the fixture used real files and TDB transactions.
+
+The fixture was compiled in the existing configured NetBSD 4 LE lane with the
+branch's migrator source, leaving the VM's original sources and build definitions
+intact. Its companion stripped migrator matched the bundled artifact exactly:
+2,135,460 bytes, SHA-256
+`523673e8e2dadfe573f60b989817142c33f2215c90c0a700db4f4cc5d20bec10`.
+No production native code or toolchain changed for the installer work.

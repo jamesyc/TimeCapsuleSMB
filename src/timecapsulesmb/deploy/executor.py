@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
-from timecapsulesmb.deploy.planner import FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, DeploymentPlan, FileTransfer, UninstallPlan
+from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn, read_mast_volumes_conn
 from timecapsulesmb.transport.errors import SshCommandTimeout
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
@@ -19,9 +19,9 @@ DETACHED_SHUTDOWN_REBOOT_COMMAND = (
     ") & exit 0'"
 )
 REBOOT_REQUEST_TIMEOUT_SECONDS = 30
-PAYLOAD_FLUSH_SETTLE_SECONDS = 5
+PAYLOAD_FLUSH_SETTLE_SECONDS = 10
 FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
-    f"/bin/sh -c {shlex.quote(f'/bin/sync; /bin/sleep {PAYLOAD_FLUSH_SETTLE_SECONDS}; /bin/sync')}"
+    f"/bin/sh -c {shlex.quote(f'/bin/sync && /bin/sleep {PAYLOAD_FLUSH_SETTLE_SECONDS} && /bin/sync')}"
 )
 # Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
 # payload after a slow upload. Keep this bounded, but long enough for real disks.
@@ -141,54 +141,6 @@ echo migration_phase={shlex.quote(phase)} complete unavailable_roots={len(unavai
     return XattrMigrationResult(proc.stdout, tuple(mounted), tuple(unavailable))
 
 
-def _flash_upload_tmp_path(destination: str) -> str:
-    path = PurePosixPath(destination)
-    return str(path.with_name(f".{path.name}.tmp"))
-
-
-def _cleanup_flash_upload_tmp_paths(connection: SshConnection, destinations: Iterable[str]) -> None:
-    tmp_paths = tuple(dict.fromkeys(_flash_upload_tmp_path(destination) for destination in destinations))
-    if not tmp_paths:
-        return
-    quoted_paths = " ".join(shlex.quote(path) for path in tmp_paths)
-    run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {quoted_paths}')}")
-
-
-def _best_effort_cleanup_flash_upload_tmp_path(connection: SshConnection, tmp_destination: str) -> None:
-    try:
-        run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {shlex.quote(tmp_destination)}')}", check=False)
-    except Exception:
-        pass
-
-
-def upload_flash_file(
-    connection: SshConnection,
-    source: Path,
-    destination: str,
-    *,
-    timeout: int = 120,
-    mode: str = "755",
-) -> None:
-    tmp_destination = _flash_upload_tmp_path(destination)
-    quoted_tmp = shlex.quote(tmp_destination)
-    quoted_destination = shlex.quote(destination)
-    quoted_mode = shlex.quote(mode)
-
-    run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {quoted_tmp}')}")
-    try:
-        run_scp(connection, source, tmp_destination, timeout=timeout)
-        install_script = (
-            "rc=0; "
-            f"chmod {quoted_mode} {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
-            f"rm -f {quoted_tmp}; "
-            'exit "$rc"'
-        )
-        run_ssh(connection, f"/bin/sh -c {shlex.quote(install_script)}")
-    except Exception:
-        _best_effort_cleanup_flash_upload_tmp_path(connection, tmp_destination)
-        raise
-
-
 def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:
     try:
         return source_resolver[transfer.source_id]
@@ -230,8 +182,6 @@ def upload_deployment_payload(
     on_uploading: Callable[[FileTransfer], None] | None = None,
     on_uploaded: Callable[[FileTransfer], None] | None = None,
 ) -> None:
-    planned_modes = {permission.path: permission.mode for permission in plan.permissions}
-    flash_tmp_paths_cleaned = False
     for transfer in plan.uploads:
         source = _resolve_transfer_source(source_resolver, transfer)
         if on_uploading is not None:
@@ -239,23 +189,11 @@ def upload_deployment_payload(
         _ensure_payload_volume_before_transfer(connection, plan, transfer)
         if transfer.mode in {"scp", "generated"}:
             _scp_transfer(connection, source, transfer)
-        elif transfer.mode == "flash_atomic":
-            if not flash_tmp_paths_cleaned:
-                _cleanup_flash_upload_tmp_paths(
-                    connection,
-                    (planned.destination for planned in plan.uploads if planned.mode == "flash_atomic"),
-                )
-                flash_tmp_paths_cleaned = True
-            timeout = transfer.timeout_seconds if transfer.timeout_seconds is not None else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
-            upload_flash_file(
-                connection,
-                source,
-                transfer.destination,
-                timeout=timeout,
-                mode=planned_modes.get(transfer.destination, "755"),
-            )
         else:
             raise ValueError(f"Unsupported deployment upload mode {transfer.mode!r} for {transfer.source_id!r}")
+        # run_scp verifies the size for both SCP and the SSH-pipe fallback.
+        # HDD permissions belong to the later mount-guarded action: Apple's
+        # diskd may unmount the volume after the transfer closes its files.
         if on_uploaded is not None:
             on_uploaded(transfer)
 

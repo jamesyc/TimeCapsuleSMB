@@ -62,7 +62,7 @@ it can discard required ELF notes. Do not include implementation `.c` files.
 
 The device manager runs `discoveryd` from Flash. Apple's `wcifsnd` stays in the firmware;
 service, telemetry and Samba are copied to RAM from the disk before use. Service is staged before auth and
-bind probes. This leaves Flash space for the next atomic discovery update. Telemetry
+bind probes. Deployment removes the old Flash software before copying its replacement. Telemetry
 creates only `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`. It locks the
 existing `/mnt/Memory` directory to exclude concurrent cycles, including manual
 runs, without creating a lock file or job directory. That directory must be

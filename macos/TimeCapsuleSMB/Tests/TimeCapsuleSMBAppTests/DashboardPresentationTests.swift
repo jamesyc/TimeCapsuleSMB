@@ -648,20 +648,20 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.warnings.count, 2)
     }
 
-    func testInstallPlanPresentationUsesActivateNowMode() throws {
+    func testInstallPlanPresentationUsesRebootMode() throws {
         let plan = try testDeployPlanPayload(
-            requiresReboot: false,
-            startupMode: .activateNow
+            requiresReboot: true,
+            startupMode: .rebootThenVerify
         ).decode(DeployPlanPayload.self)
         let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
 
         let presentation = InstallPlanPresentation(plan: plan, profile: profile)
 
-        XCTAssertEqual(presentation.title, "Install / Update Samba and Start Runtime")
+        XCTAssertEqual(presentation.title, "Install / Update Samba")
         XCTAssertTrue(presentation.sections.contains { section in
             section.rows.contains(PresentationRow(
                 label: "Expected Downtime",
-                value: "Usually under a minute while Samba starts without rebooting."
+                value: "Several minutes while the device reboots."
             ))
         })
         XCTAssertEqual(presentation.warnings, [])
@@ -686,7 +686,6 @@ final class DashboardPresentationTests: XCTestCase {
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
         let options = DeployOptions(
             nbnsEnabled: true,
-            noReboot: false,
             noWait: true,
             internalShareUseDiskRoot: false,
             smbBrowseCompatibility: false,

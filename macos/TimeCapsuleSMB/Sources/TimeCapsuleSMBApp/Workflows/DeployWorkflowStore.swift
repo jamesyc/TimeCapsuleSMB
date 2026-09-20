@@ -4,7 +4,6 @@ import Foundation
 struct DeployOptions: Equatable {
     let nbnsEnabled: Bool
     let rsyncEnabled: Bool
-    let noReboot: Bool
     let noWait: Bool
     let internalShareUseDiskRoot: Bool
     let smbBrowseCompatibility: Bool
@@ -22,7 +21,6 @@ struct DeployOptions: Equatable {
     init(
         nbnsEnabled: Bool,
         rsyncEnabled: Bool = false,
-        noReboot: Bool,
         noWait: Bool,
         internalShareUseDiskRoot: Bool,
         smbBrowseCompatibility: Bool,
@@ -39,7 +37,6 @@ struct DeployOptions: Equatable {
     ) {
         self.nbnsEnabled = nbnsEnabled
         self.rsyncEnabled = rsyncEnabled
-        self.noReboot = noReboot
         self.noWait = noWait
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.smbBrowseCompatibility = smbBrowseCompatibility
@@ -99,21 +96,8 @@ final class DeployWorkflowStore: ObservableObject {
     @Published var rsyncEnabled = false {
         didSet { reconcilePlanFreshness() }
     }
-    @Published var noReboot = false {
-        didSet {
-            if noReboot && noWait {
-                noWait = false
-            }
-            reconcilePlanFreshness()
-        }
-    }
     @Published var noWait = false {
-        didSet {
-            if noWait && noReboot {
-                noReboot = false
-            }
-            reconcilePlanFreshness()
-        }
+        didSet { reconcilePlanFreshness() }
     }
     @Published var internalShareUseDiskRoot = false {
         didSet { reconcilePlanFreshness() }
@@ -268,7 +252,6 @@ final class DeployWorkflowStore: ObservableObject {
             operation: "deploy",
             params: OperationParams.Deploy.params(
                 dryRun: true,
-                noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
                 rsyncEnabled: options.rsyncEnabled,
@@ -325,7 +308,6 @@ final class DeployWorkflowStore: ObservableObject {
             operation: "deploy",
             params: OperationParams.Deploy.params(
                 dryRun: false,
-                noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
                 rsyncEnabled: options.rsyncEnabled,
@@ -388,12 +370,10 @@ final class DeployWorkflowStore: ObservableObject {
         guard let mountWaitValue, let ataIdleSecondsValue, hasValidAtaStandby else {
             return nil
         }
-        let rebootOptions = RebootExecutionOptionPolicy.normalized(noReboot: noReboot, noWait: noWait)
         return DeployOptions(
             nbnsEnabled: nbnsEnabled,
             rsyncEnabled: rsyncEnabled,
-            noReboot: rebootOptions.noReboot,
-            noWait: rebootOptions.noWait,
+            noWait: noWait,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             smbBrowseCompatibility: smbBrowseCompatibility,
             mdnsAdvertiseAFP: mdnsAdvertiseAFP,

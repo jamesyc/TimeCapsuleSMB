@@ -1,9 +1,5 @@
-"timeline.deploy.detail.preflight_flash_capacity" = "Comprobando que la memoria flash tenga suficiente espacio libre para actualizar el servicio de detección.";
-"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Eliminando de la memoria flash el binario de detección antiguo que se ha sustituido.";
-"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Guardando los cambios de limpieza de la memoria flash.";
-"timeline.deploy.title.preflight_flash_capacity" = "Comprobar capacidad de flash";
-"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Limpiar detección antigua";
-"timeline.deploy.title.flush_legacy_flash_cleanup" = "Guardar limpieza de flash";
+"timeline.deploy.detail.check_flash_capacity" = "Comprobando que la memoria flash tenga suficiente espacio libre para actualizar el servicio de detección.";
+"timeline.deploy.title.check_flash_capacity" = "Comprobar capacidad de flash";
 "timeline.deploy.detail.upload_discovery" = "Copiando el servicio de detección al volumen de carga y a la memoria flash.";
 "timeline.deploy.title.upload_discovery" = "Subir servicio de detección";
 "action.activate" = "Activar";
@@ -147,18 +143,12 @@
 "confirm.ssh_access.enable_reboot.action" = "Habilite SSH y reinicie";
 "confirm.ssh_access.enable_reboot.message" = "¿Habilitar SSH usando AirPort ACP en %@ y reiniciar este dispositivo AirPort?";
 "confirm.ssh_access.enable_reboot.title" = "¿Habilitar SSH y reiniciar?";
-"confirm.deploy.activate_now.action" = "Implementar e iniciar SMB";
-"confirm.deploy.activate_now.message" = "¿Implementar TimeCapsuleSMB en este %@ e iniciar SMB sin reiniciarlo?";
-"confirm.deploy.activate_now.title" = "¿Implementar e iniciar SMB?";
 "confirm.deploy.netbsd4.action" = "Implementar, reiniciar y activar";
 "confirm.deploy.netbsd4.message" = "¿Implementar TimeCapsuleSMB en este %@, reiniciarlo y luego activar Samba después de que regrese SSH?";
 "confirm.deploy.netbsd4.title" = "¿Implementar, reiniciar y activar NetBSD4?";
 "confirm.deploy.netbsd4_no_wait.action" = "Implementar y solicitar reinicio";
 "confirm.deploy.netbsd4_no_wait.message" = "¿Implementar TimeCapsuleSMB en este %@, solicitar reinicio y regresar inmediatamente sin ejecutar la activación de Samba después de que regrese SSH?";
 "confirm.deploy.netbsd4_no_wait.title" = "¿Implementar y solicitar NetBSD4 reiniciar?";
-"confirm.deploy.no_reboot.action" = "Implementar";
-"confirm.deploy.no_reboot.message" = "¿Implementar TimeCapsuleSMB en este %@ sin reiniciarlo?";
-"confirm.deploy.no_reboot.title" = "¿Implementar sin reiniciar?";
 "confirm.deploy.reboot.action" = "Implementar y reiniciar";
 "confirm.deploy.reboot.message" = "¿Implementar TimeCapsuleSMB y reiniciar este %@?";
 "confirm.deploy.reboot.title" = "¿Implementar y reiniciar?";
@@ -265,7 +255,6 @@
 "deploy.presentation.title.netbsd4" = "Instalar Samba e iniciar Runtime";
 "deploy.presentation.title.standard" = "Instalar Samba";
 "deploy.presentation.warning.netbsd4_activation" = "Este dispositivo NetBSD4 necesita un paso de activación antes de que Samba esté listo.";
-"deploy.presentation.warning.netbsd4_activate_now" = "Esta instalación de NetBSD4 iniciará Samba sin reiniciar.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "Esta instalación de NetBSD4 se reiniciará primero y luego iniciará Samba después de que regrese SSH.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "No Wait regresará después de solicitar el reinicio. La activación de Samba no se ejecutará automáticamente después de que regrese SSH.";
 "deploy.presentation.warning.no_wait_post_reboot_verification" = "No Wait regresará después de solicitar el reinicio. La verificación posterior al reinicio SMB no se ejecutará automáticamente.";
@@ -282,7 +271,6 @@
 "install.completion.title.finished" = "Instalación/Actualización finalizada";
 "install.completion.title.verified" = "Instalar / Actualizar verificado\nLos dispositivos ";
 "install.completion.warning.netbsd4" = "NetBSD4 pueden necesitar Activación después de un reinicio posterior, a menos que el boot hook esté parcheado.";
-"install.plan.downtime.activate_now" = "Por lo general, menos de un minuto mientras Samba se inicia sin reiniciar.";
 "install.plan.downtime.netbsd4" = "Por lo general, menos de un minuto mientras Samba se inicia sin reiniciar.";
 "install.plan.downtime.no_wait" = "El app solicitará el reinicio y regresará inmediatamente.";
 "install.plan.downtime.none" = "No se espera ningún reinicio.";
@@ -292,7 +280,6 @@
 "install.plan.row.uploads" = "Subidas";
 "install.plan.section.device_actions" = "Acciones del dispositivo";
 "install.plan.section.target" = "Objetivo";
-"install.plan.title.activate_now" = "Instalar / Actualizar Samba e iniciar Runtime";
 "install.plan.title.netbsd4" = "Instalar / Actualizar Samba e iniciar Runtime";
 "install.plan.title.reboot_no_wait" = "Instalar/Actualizar Samba y Solicitar reinicio";
 "install.plan.title.reboot_then_activate" = "Instalar/Actualizar Samba, Reiniciar e Iniciar Runtime";
@@ -814,7 +801,6 @@
 "timeline.state.running" = "corriendo";
 "timeline.state.succeeded" = "Exitoso";
 "timeline.state.warning" = "Advertencia";
-"timeline.deploy.detail.activate_runtime" = "Iniciando el runtime implementado sin reiniciar.";
 "timeline.deploy.detail.build_deployment_plan" = "Construyendo las acciones de implementación ordenadas.";
 "timeline.deploy.detail.check_compatibility" = "Elegir el payload para la versión NetBSD detectada.";
 "timeline.deploy.detail.flush_payload_upload" = "Flushing payload escribe en el disco.";
@@ -845,7 +831,6 @@
 "timeline.deploy.detail.verify_runtime_reboot" = "El dispositivo vuelve a estar en línea. Esperando a que managed runtime termine de iniciarse.";
 "timeline.deploy.detail.wait_for_reboot_down" = "Esperando que SSH descienda después de la solicitud de reinicio.";
 "timeline.deploy.detail.wait_for_reboot_up" = "El dispositivo se cayó; esperando a que vuelva a subir.";
-"timeline.deploy.title.activate_runtime" = "Iniciar SMB";
 "timeline.deploy.title.build_deployment_plan" = "Preparar plan de instalación";
 "timeline.deploy.title.check_compatibility" = "Compruebe la compatibilidad del dispositivo";
 "timeline.deploy.title.flush_payload_upload" = "Vaciar al disco";

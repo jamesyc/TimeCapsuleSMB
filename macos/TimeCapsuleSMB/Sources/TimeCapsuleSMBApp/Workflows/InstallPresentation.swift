@@ -62,8 +62,6 @@ struct InstallPlanPresentation: Equatable {
         switch plan.startupMode {
         case .rebootThenVerify, .rebootThenActivate:
             return L10n.string("install.plan.downtime.reboot")
-        case .activateNow:
-            return L10n.string("install.plan.downtime.activate_now")
         }
     }
 
@@ -74,8 +72,6 @@ struct InstallPlanPresentation: Equatable {
         switch plan.startupMode {
         case .rebootThenActivate:
             return L10n.string("install.plan.title.reboot_then_activate")
-        case .activateNow:
-            return L10n.string("install.plan.title.activate_now")
         case .rebootThenVerify:
             return L10n.string("install.plan.title.standard")
         }
@@ -92,8 +88,6 @@ struct InstallPlanPresentation: Equatable {
         switch plan.startupMode {
         case .rebootThenActivate:
             return L10n.string("deploy.presentation.warning.netbsd4_reboot_then_activate")
-        case .activateNow:
-            return L10n.string("deploy.presentation.warning.netbsd4_activate_now")
         case .rebootThenVerify:
             return L10n.string("deploy.presentation.warning.netbsd4_activation")
         }

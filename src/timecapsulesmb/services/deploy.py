@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-import shlex
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
@@ -28,7 +27,7 @@ from timecapsulesmb.deploy.executor import (
     run_remote_actions,
     upload_deployment_payload,
 )
-from timecapsulesmb.deploy.commands import RemoteAction, StopProcessAction
+from timecapsulesmb.deploy.commands import InstallPermissionsAction, RemoteAction, RemotePermission, StopProcessAction
 from timecapsulesmb.deploy.planner import (
     BINARY_DISCOVERY_SOURCE,
     BINARY_SERVICE_SOURCE,
@@ -49,7 +48,6 @@ from timecapsulesmb.deploy.planner import (
 from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
-    DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     DeploymentStartupMode,
@@ -116,7 +114,6 @@ DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
 DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     BINARY_SERVICE_SOURCE,
     BINARY_TELEMETRY_SOURCE,
-    PACKAGED_RC_LOCAL_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_BOOT_SOURCE,
@@ -183,9 +180,6 @@ class DeployRuntimeConfig:
 
 @dataclass(frozen=True)
 class DeployCompletionMessages:
-    activate_now_message: str = "Starting deployed runtime without reboot."
-    activate_now_heading: str = "Waiting for managed runtime to finish starting..."
-    activate_now_failure: str = "Managed runtime activation failed."
     post_reboot_activation_message: str = "Activating deployed runtime after reboot."
     netbsd4_autostart_message: str = "NetBSD4 firmware autostart is enabled; waiting for managed runtime."
     netbsd4_heading: str = "Waiting for managed runtime to finish starting..."
@@ -211,16 +205,11 @@ class DeployCompletionResult:
 @dataclass(frozen=True)
 class DeployOptions:
     dry_run: bool
-    no_reboot: bool
     no_wait: bool
     rsync_enabled: bool = False
     mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS
     allow_unsupported: bool = False
     payload_dir_name: str = MANAGED_PAYLOAD_DIR_NAME
-
-    @property
-    def effective_no_wait(self) -> bool:
-        return effective_no_wait_for_deploy(requested=self.no_wait, no_reboot=self.no_reboot)
 
 
 @dataclass(frozen=True)
@@ -279,54 +268,26 @@ class DeployDeviceError(DeviceError):
 FLASH_CAPACITY_MARGIN_BYTES = 16 * 1024
 
 
-def _allocated_flash_bytes(size: int) -> int:
-    return ((size + 1023) // 1024) * 1024
-
-
-def _required_flash_upload_peak(
-    transfers: list[FileTransfer], source_resolver: Mapping[str, Path], remote_sizes: Mapping[str, int]
-) -> int:
-    free_change = 0
-    peak = 0
-    for transfer in transfers:
-        if transfer.mode != "flash_atomic":
-            continue
-        new_size = _allocated_flash_bytes(source_resolver[transfer.source_id].stat().st_size)
-        peak = max(peak, new_size - free_change)
-        old_size = _allocated_flash_bytes(remote_sizes.get(transfer.destination, 0))
-        free_change += old_size - new_size
-    return peak + FLASH_CAPACITY_MARGIN_BYTES
-
-
 def _probe_flash_capacity(
     connection: SshConnection,
     transfers: list[FileTransfer],
     source_resolver: Mapping[str, Path],
 ) -> tuple[int, int]:
-    flash_transfers = [transfer for transfer in transfers if transfer.mode == "flash_atomic"]
-    quoted_targets = " ".join(shlex.quote(transfer.destination) for transfer in flash_transfers)
-    command = (
-        "/bin/df -k /mnt/Flash || exit $?; "
-        "echo __TC_FLASH_FILES__; "
-        f"/bin/ls -ln {quoted_targets} 2>/dev/null || true"
+    # Run after removing owned software: no temporary copies or old/new peak.
+    required = FLASH_CAPACITY_MARGIN_BYTES + sum(
+        ((source_resolver[t.source_id].stat().st_size + 1023) // 1024) * 1024
+        for t in transfers if t.destination.startswith("/mnt/Flash/")
     )
-    result = run_ssh(connection, f"/bin/sh -c {shlex.quote(command)}")
+    result = run_ssh(connection, "/bin/df -k /mnt/Flash")
     try:
-        df_output, files_output = result.stdout.split("__TC_FLASH_FILES__\n", 1)
-        df_fields = [line.split() for line in df_output.splitlines() if line.split()]
-        available_bytes = int(df_fields[-1][3]) * 1024
-        remote_sizes: dict[str, int] = {}
-        targets = {transfer.destination for transfer in flash_transfers}
-        for line in files_output.splitlines():
-            fields = line.split()
-            if len(fields) >= 9 and fields[-1] in targets:
-                remote_sizes[fields[-1]] = int(fields[4])
+        fields = [line.split() for line in result.stdout.splitlines() if line.split()]
+        available = int(fields[-1][3]) * 1024
     except (IndexError, ValueError) as exc:
         raise DeployDeviceError(
-            "Could not read available space on /mnt/Flash safely; no services were stopped.",
+            "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
             code="flash_capacity_probe_failed",
         ) from exc
-    return available_bytes, _required_flash_upload_peak(flash_transfers, source_resolver, remote_sizes)
+    return available, required
 
 
 def default_deploy_service_dependencies() -> DeployServiceDependencies:
@@ -416,9 +377,7 @@ def payload_verification_error(payload_home: PayloadHome, result: PayloadVerific
     return f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}"
 
 
-def startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentStartupMode:
-    if no_reboot:
-        return DEPLOY_STARTUP_ACTIVATE_NOW
+def startup_mode_for_deploy(*, is_netbsd4: bool) -> DeploymentStartupMode:
     if is_netbsd4:
         return DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE
     return DEPLOY_STARTUP_REBOOT_THEN_VERIFY
@@ -430,11 +389,9 @@ def activation_complete_message(*, is_netbsd4: bool) -> str:
     return "Runtime activation complete."
 
 
-def effective_no_wait_for_deploy(*, requested: bool, no_reboot: bool) -> bool:
-    return False if no_reboot else requested
-
-
 def deploy_upload_stage(transfer: FileTransfer) -> str:
+    if transfer.source_id == PACKAGED_RC_LOCAL_SOURCE:
+        return "enable_boot"
     if transfer.source_id == BINARY_SMBD_SOURCE:
         return "upload_smbd"
     if transfer.source_id == BINARY_XATTR_MIGRATOR_SOURCE:
@@ -477,7 +434,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
 def uploaded_file_message(transfer: FileTransfer) -> str | None:
     if transfer.source_id == BINARY_SMBD_SOURCE:
         return "Uploaded smbd."
-    if transfer.source_id == BINARY_DISCOVERY_SOURCE and transfer.mode == "flash_atomic":
+    if transfer.source_id == BINARY_DISCOVERY_SOURCE and transfer.destination.startswith("/mnt/Flash/"):
         return "Uploaded discovery service."
     if transfer.source_id == GENERATED_RSYNC_CONFIG_SOURCE:
         return "Uploaded rsync runtime files."
@@ -565,7 +522,6 @@ def prepare_deploy_preflight(
     payload_context = prepare_deploy_payload_context(
         connection,
         compatibility,
-        no_reboot=options.no_reboot,
     )
     callbacks.update(deploy_startup_mode=payload_context.startup_mode)
     artifacts = resolve_deploy_artifact_paths(
@@ -585,7 +541,7 @@ def prepare_deploy_preflight(
         rsync_enabled=options.rsync_enabled,
         startup_mode=payload_context.startup_mode,
         apple_mount_wait_seconds=options.mount_wait_seconds,
-        wait_after_reboot=not options.effective_no_wait,
+        wait_after_reboot=not options.no_wait,
     )
     return DeployPreflight(
         payload_context=payload_context,
@@ -616,8 +572,6 @@ def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: 
 def prepare_deploy_payload_context(
     connection: SshConnection,
     compatibility: DeviceCompatibility,
-    *,
-    no_reboot: bool,
 ) -> DeployPayloadContext:
     if not compatibility.payload_family:
         raise DeviceError("No deployable payload is available for this detected device.")
@@ -631,7 +585,7 @@ def prepare_deploy_payload_context(
         compatibility=compatibility,
         payload_family=payload_family,
         is_netbsd4=is_netbsd4,
-        startup_mode=startup_mode_for_deploy(no_reboot=no_reboot, is_netbsd4=is_netbsd4),
+        startup_mode=startup_mode_for_deploy(is_netbsd4=is_netbsd4),
     )
 
 
@@ -976,30 +930,6 @@ def upload_and_verify_deployment_payload(
             boot_asset_path_func=boot_asset_path_func,
             dependencies=dependencies,
         )
-        callbacks.stage("preflight_flash_capacity")
-        try:
-            available_flash_bytes, required_flash_bytes = probe_flash_capacity_func(
-                connection, plan.uploads, upload_sources
-            )
-        except DeployDeviceError:
-            raise
-        except Exception as exc:
-            raise DeployDeviceError(
-                "Could not read available space on /mnt/Flash safely; no services were stopped.",
-                code="flash_capacity_probe_failed",
-            ) from exc
-        callbacks.debug(
-            flash_available_bytes=available_flash_bytes,
-            flash_required_peak_bytes=required_flash_bytes,
-        )
-        if available_flash_bytes < required_flash_bytes:
-            raise DeployDeviceError(
-                "Not enough free space on /mnt/Flash for the atomic upgrade "
-                f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
-                "No services were stopped and the existing discovery binary was retained.",
-                code="insufficient_flash_space",
-            )
-
         callbacks.stage("pre_upload_actions")
         try:
             run_remote_actions_func(connection, plan.pre_upload_actions, on_action_done=on_pre_upload_action_done)
@@ -1007,6 +937,30 @@ def upload_and_verify_deployment_payload(
             if _manager_stop_timed_out(exc):
                 raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code="manager_stop_timeout") from exc
             raise
+        callbacks.stage("check_flash_capacity")
+        try:
+            available_flash_bytes, required_flash_bytes = probe_flash_capacity_func(
+                connection, [*plan.uploads, plan.boot_upload], upload_sources
+            )
+        except DeployDeviceError:
+            raise
+        except Exception as exc:
+            raise DeployDeviceError(
+                "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
+                code="flash_capacity_probe_failed",
+            ) from exc
+        callbacks.debug(
+            flash_available_bytes=available_flash_bytes,
+            flash_required_bytes=required_flash_bytes,
+        )
+        if available_flash_bytes < required_flash_bytes:
+            raise DeployDeviceError(
+                "Not enough free space on /mnt/Flash after cleanup "
+                f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
+                "Installation is incomplete; free space and rerun deploy.",
+                code="insufficient_flash_space",
+            )
+
         update_scp_upload_telemetry()
         if on_before_upload is not None:
             on_before_upload()
@@ -1114,44 +1068,50 @@ def upload_and_verify_deployment_payload(
         if on_after_upload is not None:
             on_after_upload()
 
-    callbacks.stage("post_upload_actions")
-    if on_before_post_upload_actions is not None:
-        on_before_post_upload_actions()
-    run_remote_actions_func(connection, plan.post_upload_actions)
-    if on_before_verify is not None:
-        on_before_verify(False)
-    _verify_deployed_payload(
-        callbacks,
-        connection,
-        payload_home,
-        wait_seconds=plan.apple_mount_wait_seconds,
-        post_sync=False,
-        verify_payload_home=verify_payload_home,
-        on_verified=on_verified,
-        dependencies=dependencies,
-    )
-    callbacks.stage("flush_payload_upload")
-    if on_before_flush is not None:
-        on_before_flush()
-    flush_remote_writes(connection)
-    if on_before_verify is not None:
-        on_before_verify(True)
-    _verify_deployed_payload(
-        callbacks,
-        connection,
-        payload_home,
-        wait_seconds=plan.apple_mount_wait_seconds,
-        post_sync=True,
-        verify_payload_home=verify_payload_home,
-        on_verified=on_verified,
-        dependencies=dependencies,
-    )
-    if plan.post_verify_actions:
-        callbacks.stage("cleanup_legacy_flash_discovery")
-        run_remote_actions_func(connection, plan.post_verify_actions)
-        callbacks.stage("flush_legacy_flash_cleanup")
+        callbacks.stage("post_upload_actions")
+        if on_before_post_upload_actions is not None:
+            on_before_post_upload_actions()
+        run_remote_actions_func(connection, plan.post_upload_actions)
+        if on_before_verify is not None:
+            on_before_verify(False)
+        _verify_deployed_payload(
+            callbacks,
+            connection,
+            payload_home,
+            wait_seconds=plan.apple_mount_wait_seconds,
+            post_sync=False,
+            verify_payload_home=verify_payload_home,
+            on_verified=on_verified,
+            dependencies=dependencies,
+        )
+        callbacks.stage("flush_payload_upload")
+        if on_before_flush is not None:
+            on_before_flush()
         flush_remote_writes(connection)
-    run_xattr_migration_phase("cleanup")
+        if on_before_verify is not None:
+            on_before_verify(True)
+        _verify_deployed_payload(
+            callbacks,
+            connection,
+            payload_home,
+            wait_seconds=plan.apple_mount_wait_seconds,
+            post_sync=True,
+            verify_payload_home=verify_payload_home,
+            on_verified=on_verified,
+            dependencies=dependencies,
+        )
+        run_xattr_migration_phase("cleanup")
+
+        callbacks.stage("enable_boot")
+        upload_payload_func(
+            replace(plan, uploads=[plan.boot_upload]),
+            **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs),
+        )
+        run_remote_actions_func(connection, [
+            InstallPermissionsAction((RemotePermission(plan.boot_upload.destination, "755"),)),
+        ])
+        callbacks.stage("flush_boot_hook")
+        flush_remote_writes(connection)
 
 
 def _run_activation_actions_and_verify(
@@ -1220,32 +1180,6 @@ def complete_deployment_after_upload(
     payload_family = payload_context.payload_family
     is_netbsd4 = payload_context.is_netbsd4
     startup_mode = payload_context.startup_mode
-
-    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        _run_activation_actions_and_verify(
-            connection,
-            plan.activation_actions,
-            callbacks=callbacks,
-            activation_message=messages.activate_now_message,
-            activation_stage="activate_runtime",
-            verification_stage="verify_runtime_activation",
-            verification_timeout_seconds=200,
-            verification_heading=messages.activate_now_heading,
-            failure_message=messages.activate_now_failure,
-            run_remote_actions_func=run_remote_actions_func,
-            verify_runtime_func=verify_runtime_func,
-            dependencies=dependencies,
-        )
-        return DeployCompletionResult(
-            payload_dir=plan.payload_dir,
-            payload_family=payload_family,
-            is_netbsd4=is_netbsd4,
-            rebooted=False,
-            reboot_requested=False,
-            waited=False,
-            verified=True,
-            message=activation_complete_message(is_netbsd4=is_netbsd4),
-        )
 
     if no_wait:
         if messages.reboot_request_message:

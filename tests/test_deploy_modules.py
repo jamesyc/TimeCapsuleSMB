@@ -52,7 +52,6 @@ from timecapsulesmb.deploy.executor import (
     run_remote_actions,
     remote_uninstall_payload,
     upload_deployment_payload,
-    upload_flash_file,
 )
 from timecapsulesmb.deploy.planner import (
     BINARY_DISCOVERY_SOURCE,
@@ -62,7 +61,6 @@ from timecapsulesmb.deploy.planner import (
     BINARY_SMBD_SOURCE,
     BINARY_XATTR_MIGRATOR_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS,
@@ -190,7 +188,7 @@ class DeployModuleTests(unittest.TestCase):
     def _prepared_deploy_plan(
         self,
         *,
-        startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
+        startup_mode=DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
         payload_family: str = "netbsd6_samba4",
         is_netbsd4: bool = False,
         wait_after_reboot: bool = True,
@@ -359,7 +357,7 @@ class DeployModuleTests(unittest.TestCase):
             timeout=FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
         )
         self.assertIn("/bin/sync", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
-        self.assertIn("/bin/sleep 5", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
+        self.assertIn("/bin/sleep 10", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
         self.assertGreaterEqual(FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS, 300)
 
     def test_run_remote_actions_reports_completed_actions(self) -> None:
@@ -1082,129 +1080,13 @@ echo ok
         self.assertFalse(result.ssh_authenticated)
         self.assertEqual(result.error, "SSH is not reachable yet.")
 
-    def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
-        paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
-        connection = SshConnection("host", "pw", "-o foo")
-        source_resolver = {
-            BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
-            BINARY_DISCOVERY_SOURCE: Path("/tmp/discoveryd"),
-            BINARY_SERVICE_SOURCE: Path("/tmp/service"),
-            BINARY_TELEMETRY_SOURCE: Path("/tmp/telemetry"),
-            BINARY_RSYNC_SOURCE: Path("/tmp/rsync"),
-            GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
-            GENERATED_RSYNC_CONFIG_SOURCE: Path("/tmp/rsyncd.conf"),
-            PACKAGED_RC_LOCAL_SOURCE: Path("/tmp/rc.local"),
-            PACKAGED_COMMON_SH_SOURCE: Path("/tmp/common.sh"),
-            PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
-            PACKAGED_MANAGER_SOURCE: Path("/tmp/manager.sh"),
-            PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
-        }
-        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
-                with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
-                    uploading = []
-                    uploaded = []
-                    upload_deployment_payload(
-                        plan,
-                        connection=connection,
-                        source_resolver=source_resolver,
-                        on_uploading=uploading.append,
-                        on_uploaded=uploaded.append,
-                    )
-        self.assertEqual(scp_mock.call_count, 13)
-        self.assertEqual(mount_mock.call_count, 6)
-        self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
-        self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
-        sources = [call.args[1] for call in scp_mock.call_args_list]
-        self.assertEqual(
-            sources,
-            [
-                Path("/tmp/smbd"),
-                Path("/tmp/discoveryd"),
-                Path("/tmp/discoveryd"),
-                Path("/tmp/rsync"),
-                Path("/tmp/rsyncd.conf"),
-                Path("/tmp/service"),
-                Path("/tmp/telemetry"),
-                Path("/tmp/rc.local"),
-                Path("/tmp/common.sh"),
-                Path("/tmp/boot.sh"),
-                Path("/tmp/manager.sh"),
-                Path("/tmp/dfree.sh"),
-                Path("/tmp/tcapsulesmb.conf"),
-            ],
-        )
-        destinations = [call.args[2] for call in scp_mock.call_args_list]
-        self.assertEqual(
-            destinations,
-            [
-                "/Volumes/dk2/samba4/smbd",
-                "/Volumes/dk2/samba4/discoveryd",
-                "/mnt/Flash/.discoveryd.tmp",
-                "/Volumes/dk2/samba4/rsync",
-                "/Volumes/dk2/samba4/rsyncd.conf",
-                "/Volumes/dk2/samba4/service",
-                "/Volumes/dk2/samba4/telemetry",
-                "/mnt/Flash/.rc.local.tmp",
-                "/mnt/Flash/.common.sh.tmp",
-                "/mnt/Flash/.boot.sh.tmp",
-                "/mnt/Flash/.manager.sh.tmp",
-                "/mnt/Flash/.dfree.sh.tmp",
-                "/mnt/Flash/.tcapsulesmb.conf.tmp",
-            ],
-        )
-        for call, transfer in zip(scp_mock.call_args_list, plan.uploads):
-            expected_timeout = PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS if transfer.source_id.startswith("binary:") else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
-            self.assertEqual(call.kwargs.get("timeout"), expected_timeout)
-        self.assertEqual(ssh_mock.call_count, 15)
-        cleanup_command = ssh_mock.call_args_list[0].args[1]
-        self.assertIn("rm -f", cleanup_command)
-        self.assertIn("/mnt/Flash/.discoveryd.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.rc.local.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.common.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.manager.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
-        self.assertEqual(uploading, plan.uploads)
-        self.assertEqual(uploaded, plan.uploads)
-
-    def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
-        paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
-        custom_plan = replace(
-            plan,
-            uploads=[
-                next(upload for upload in plan.uploads if upload.source_id == PACKAGED_DFREE_SH_SOURCE),
-                next(upload for upload in plan.uploads if upload.source_id == GENERATED_FLASH_CONFIG_SOURCE),
-            ],
-        )
-        connection = SshConnection("host", "pw", "-o foo")
-        source_resolver = {
-            PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
-            GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
-        }
-        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
-                with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn") as mount_mock:
-                    upload_deployment_payload(custom_plan, connection=connection, source_resolver=source_resolver)
-
-        self.assertEqual([call.args[1] for call in scp_mock.call_args_list], [Path("/tmp/dfree.sh"), Path("/tmp/tcapsulesmb.conf")])
-        self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.dfree.sh.tmp", "/mnt/Flash/.tcapsulesmb.conf.tmp"])
-        self.assertEqual(ssh_mock.call_count, 5)
-        cleanup_command = ssh_mock.call_args_list[0].args[1]
-        self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
-        mount_mock.assert_not_called()
-
     def test_upload_xattr_migrator_is_separate_from_runtime_payload(self) -> None:
         plan = build_deployment_plan(
             "host",
             self._payload_home(),
             Path("bin/smbd"),
             Path("bin/discovery/discoveryd"),
-            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
+            xattr_migrator_path=Path("bin/xattr-migrate/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             service_path=Path("bin/service"),
             telemetry_path=Path("bin/telemetry"),
@@ -1213,7 +1095,7 @@ echo ok
 
         self.assertNotIn(BINARY_XATTR_MIGRATOR_SOURCE, [item.source_id for item in plan.uploads])
         self.assertEqual(plan.migration_upload.source_id, BINARY_XATTR_MIGRATOR_SOURCE)
-        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh"), mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch(
                 "timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn",
                 return_value=True,
@@ -1222,7 +1104,7 @@ echo ok
                     replace(plan, uploads=[plan.migration_upload]),
                     connection=connection,
                     source_resolver={
-                        BINARY_XATTR_MIGRATOR_SOURCE: Path("bin/xattr-hfs-migrate")
+                        BINARY_XATTR_MIGRATOR_SOURCE: Path("bin/xattr-migrate/xattr-hfs-migrate")
                     },
                 )
 
@@ -1234,7 +1116,7 @@ echo ok
         )
         scp_mock.assert_called_once_with(
             connection,
-            Path("bin/xattr-hfs-migrate"),
+            Path("bin/xattr-migrate/xattr-hfs-migrate"),
             "/Volumes/dk2/samba4/xattr-hfs-migrate",
             timeout=180,
         )
@@ -1282,9 +1164,9 @@ echo ok
         batch_measurements = [fields for kind, fields in measurements if kind == "upload_batch"]
         self.assertEqual(
             [fields["source_id"] for fields in upload_measurements],
-            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_DISCOVERY_SOURCE],
+            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_DISCOVERY_SOURCE, PACKAGED_RC_LOCAL_SOURCE],
         )
-        self.assertTrue(all(fields["destination_kind"] == "payload" for fields in upload_measurements))
+        self.assertTrue(all(fields["destination_kind"] == "payload" for fields in upload_measurements[:-1]))
         self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
         self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
         self.assertEqual(batch_measurements[0]["result"], "success")
@@ -1356,7 +1238,7 @@ echo ok
             events.append(
                 "upload:migrator"
                 if plan.uploads == [plan.migration_upload]
-                else "upload:payload"
+                else "upload:boot" if plan.uploads == [plan.boot_upload] else "upload:payload"
             )
 
         upload_and_verify_deployment_payload(
@@ -1382,6 +1264,7 @@ echo ok
                 "verify",
                 "verify",
                 "migrate:cleanup:stream:selected",
+                "upload:boot",
             ],
         )
 
@@ -1453,33 +1336,6 @@ echo ok
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
             upload_deployment_payload(plan, connection=connection, source_resolver={})
-
-    def test_upload_flash_file_uploads_tmp_then_installs_with_rename_and_cleanup(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
-                upload_flash_file(connection, Path("/tmp/mdns"), "/mnt/Flash/mdns-advertiser", timeout=180)
-
-        scp_mock.assert_called_once_with(connection, Path("/tmp/mdns"), "/mnt/Flash/.mdns-advertiser.tmp", timeout=180)
-        ssh_commands = [call.args[1] for call in ssh_mock.call_args_list]
-        self.assertEqual(len(ssh_commands), 2)
-        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[0])
-        self.assertIn("chmod 755 /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
-        self.assertIn("mv -f /mnt/Flash/.mdns-advertiser.tmp /mnt/Flash/mdns-advertiser", ssh_commands[1])
-        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
-
-    def test_upload_flash_file_removes_tmp_after_upload_failure(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_scp", side_effect=ScpError("cat: stdout: Input/output error")):
-            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
-                with self.assertRaisesRegex(ScpError, "Input/output error"):
-                    upload_flash_file(connection, Path("/tmp/mdns"), "/mnt/Flash/mdns-advertiser", timeout=180)
-
-        ssh_commands = [call.args[1] for call in ssh_mock.call_args_list]
-        self.assertEqual(len(ssh_commands), 2)
-        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[0])
-        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
-        self.assertEqual(ssh_mock.call_args_list[1].kwargs, {"check": False})
 
     def test_render_managed_runtime_verification_passes_when_runtime_probe_succeeds(self) -> None:
         verification = ManagedRuntimeProbeResult(
@@ -2251,40 +2107,6 @@ describe_managed_smbd_status "" ""
         self.assertEqual(decision.reason, "firmware_autostart_enabled")
         self.assertIs(decision.autostart, autostart)
 
-    def test_complete_deployment_activate_now_runs_actions_and_verifies_runtime(self) -> None:
-        prepared_plan = self._prepared_deploy_plan(startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW)
-        callbacks, stages, logs, _debug_fields, _finish_fields = self._operation_callbacks()
-        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        run_actions = mock.Mock()
-        verify_runtime = mock.Mock()
-        request_reboot_func = mock.Mock()
-        request_reboot_and_wait_func = mock.Mock()
-
-        with mock.patch("timecapsulesmb.services.runtime_verification.sleep") as sleep_mock:
-            result = complete_deployment_after_upload(
-                connection,
-                prepared_plan,
-                no_wait=False,
-                callbacks=callbacks,
-                run_remote_actions_func=run_actions,
-                request_reboot_func=request_reboot_func,
-                request_reboot_and_wait_func=request_reboot_and_wait_func,
-                verify_runtime_func=verify_runtime,
-            )
-
-        run_actions.assert_called_once_with(connection, prepared_plan.plan.activation_actions)
-        request_reboot_func.assert_not_called()
-        request_reboot_and_wait_func.assert_not_called()
-        sleep_mock.assert_called_once_with(ACTIVATION_SETTLE_SECONDS)
-        verify_runtime.assert_called_once()
-        self.assertEqual(verify_runtime.call_args.kwargs["stage"], "verify_runtime_activation")
-        self.assertEqual(stages, ["activate_runtime", "post_activation_settle"])
-        self.assertIn("Starting deployed runtime without reboot.", logs)
-        self.assertIn(ACTIVATION_SETTLE_MESSAGE, logs)
-        self.assertFalse(result.reboot_requested)
-        self.assertFalse(result.rebooted)
-        self.assertTrue(result.verified)
-
     def test_complete_deployment_no_wait_requests_reboot_without_verifying_runtime(self) -> None:
         prepared_plan = self._prepared_deploy_plan(
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -2525,8 +2347,7 @@ describe_managed_smbd_status "" ""
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertEqual(plan.device_path, "/dev/dk2")
         self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s per attempt", text)
-        self.assertIn("tc_kill_manager_pids TERM", text)
-        self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertIn(render_remote_action(plan.pre_upload_actions[0]), text)
         self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertIn("/usr/bin/pkill '^mdns$' >/dev/null 2>&1 || true", text)
@@ -2537,7 +2358,7 @@ describe_managed_smbd_status "" ""
         self.assertIn(f"rm -rf {payload_dir}/private/nbns.enabled", text)
         self.assertNotIn("generated smbpasswd", text)
         self.assertNotIn("generated:username.map", text)
-        self.assertIn("generated flash runtime config (generated:tcapsulesmb.conf, flash_atomic, timeout 120s) -> /mnt/Flash/tcapsulesmb.conf", text)
+        self.assertIn("generated flash runtime config (generated:tcapsulesmb.conf, scp, timeout 120s) -> /mnt/Flash/tcapsulesmb.conf", text)
         self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, scp, timeout 180s) -> {payload_dir}/rsync", text)
         self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, generated, timeout 120s) -> {payload_dir}/rsyncd.conf", text)
         self.assertIn("/usr/bin/pkill '^rsync$' >/dev/null 2>&1 || true", text)
@@ -2578,48 +2399,6 @@ describe_managed_smbd_status "" ""
         self.assertIn("smbd is bound to required TCP 445 sockets", text)
         self.assertIn("managed mDNS registrant becomes ready", text)
 
-    def test_activate_now_plan_has_runtime_checks(self) -> None:
-        paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan(
-            "root@10.0.0.2",
-            paths,
-            Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
-            xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
-            rsync_path=Path("bin/rsync"),
-            startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
-        self.assertFalse(plan.reboot_required)
-        self.assertEqual(plan.startup_mode, DEPLOY_STARTUP_ACTIVATE_NOW)
-        self.assertEqual(
-            plan.activation_actions,
-            [
-                StopManagerAction(),
-                StopWatchdogAction(),
-                StopProcessAction("wcifsfs"),
-                RunScriptAction("/mnt/Flash/rc.local"),
-            ],
-        )
-        self.assertEqual([check.id for check in plan.post_deploy_checks], [
-            "managed_runtime_smbd_binary_present",
-            "managed_runtime_smb_conf_present",
-            "active_smb_conf_passdb_ram",
-            "active_smb_conf_username_map_ram",
-            "active_smb_conf_xattr_tdb_persistent",
-            "managed_share_volumes_mounted",
-            "managed_runtime_manager_process",
-            "managed_smbd_parent_process",
-            "managed_smbd_bound_445",
-            "managed_mdns_registrant_ready",
-            "managed_mdns_settle_healthy",
-            "managed_rsync_disabled",
-        ])
-        text = format_deployment_plan(plan)
-        self.assertIn("mode: activate_now", text)
-        self.assertIn("Reboot:\n  no", text)
-        self.assertIn("follow-up: run /mnt/Flash/rc.local without rebooting", text)
-        self.assertIn("managed runtime smb.conf is present", text)
-
     def test_enabled_rsync_plan_requires_daemon_readiness(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan(
@@ -2630,7 +2409,7 @@ describe_managed_smbd_status "" ""
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             rsync_enabled=True,
-            startup_mode=DEPLOY_STARTUP_ACTIVATE_NOW,
+            startup_mode=DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
          service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
 
         self.assertTrue(plan.rsync_enabled)
@@ -2801,11 +2580,11 @@ describe_managed_smbd_status "" ""
             self.assertIn(RemovePathAction(f"{plan.payload_dir}/{protocol}"), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol + "-advertiser"), plan.pre_upload_actions)
-        self.assertNotIn(RemovePathAction(plan.payload_targets["discovery"]), plan.pre_upload_actions)
+        self.assertIn(RemovePathAction(plan.payload_targets["discovery"]), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("discoveryd"), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("wcifsnd"), plan.pre_upload_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.pre_upload_actions)
-        self.assertIn(RemovePathAction("/mnt/Flash/mdns-advertiser"), plan.post_verify_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/mdns-advertiser"), plan.pre_upload_actions)
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

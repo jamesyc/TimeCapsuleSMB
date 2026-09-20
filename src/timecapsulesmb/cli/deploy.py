@@ -73,7 +73,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         usage="%(prog)s [options]",
     )
     add_config_argument(parser)
-    parser.add_argument("--no-reboot", action="store_true", help="Do not reboot; activate the deployed runtime in place")
     parser.add_argument(
         "--no-wait",
         action="store_true",
@@ -165,13 +164,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     force_disable_smb_signing_and_encryption = args.force_disable_smb_signing_and_encryption
     deploy_options = DeployOptions(
         dry_run=args.dry_run,
-        no_reboot=args.no_reboot,
         no_wait=args.no_wait,
         rsync_enabled=rsync_enabled,
         mount_wait_seconds=args.mount_wait,
         allow_unsupported=args.allow_unsupported,
     )
-    no_wait = deploy_options.effective_no_wait
+    no_wait = deploy_options.no_wait
     ensure_install_id()
     app_paths = resolve_app_paths(config_path=args.config)
     telemetry_enabled = load_install_identity().telemetry_enabled
@@ -209,11 +207,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
-        if no_input_enabled(args) and not args.yes and not args.no_reboot and not args.dry_run:
+        if no_input_enabled(args) and not args.yes and not args.dry_run:
             command_context.set_stage("noninteractive_confirmation")
             message = (
                 "Running `deploy` with reboot in non-interactive mode requires `--yes` "
-                "to approve the reboot or `--no-reboot` to avoid it."
+                "to approve the reboot."
             )
             print(message)
             command_context.fail_with_error(message)
@@ -277,6 +275,33 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
+        if plan.reboot_required and not args.yes:
+            device_name = _target_family_display_name(target)
+            if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+                if no_wait:
+                    prompt = (
+                        f"This will request a reboot of the {device_name} and return without "
+                        "post-reboot Samba activation or verification. Continue?"
+                    )
+                else:
+                    prompt = f"This will reboot the {device_name}, then activate Samba after SSH returns. Continue?"
+            elif no_wait:
+                prompt = f"This will request a reboot of the {device_name} and return without waiting for verification. Continue?"
+            else:
+                prompt = f"This will reboot the {device_name} now. Continue?"
+            proceed = command_context.confirm_or_fail(
+                prompt,
+                default=True,
+                noninteractive_message="Running `deploy` with reboot requires confirmation when stdin is not interactive. Use `deploy --yes` to skip the prompt.",
+                allow_prompt=not no_input_enabled(args),
+            )
+            if proceed is None:
+                return 1
+            if not proceed:
+                print("Deployment cancelled.", flush=True)
+                command_context.cancel_with_error("Cancelled by user before installation.")
+                return 0
+
         print("Deleting old deployed files...", flush=True)
         print("Stopping existing runtime...", flush=True)
 
@@ -336,33 +361,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Verified uploaded payload.", flush=True)
         print(f"Deployed Samba payload to {plan.payload_dir}", flush=True)
         print("Updated /mnt/Flash boot files.", flush=True)
-
-        if plan.reboot_required and not args.yes:
-            device_name = _target_family_display_name(target)
-            if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
-                if no_wait:
-                    prompt = (
-                        f"This will request a reboot of the {device_name} and return without "
-                        "post-reboot Samba activation or verification. Continue?"
-                    )
-                else:
-                    prompt = f"This will reboot the {device_name}, then activate Samba after SSH returns. Continue?"
-            elif no_wait:
-                prompt = f"This will request a reboot of the {device_name} and return without waiting for verification. Continue?"
-            else:
-                prompt = f"This will reboot the {device_name} now. Continue?"
-            proceed = command_context.confirm_or_fail(
-                prompt,
-                default=True,
-                noninteractive_message="Running `deploy` with reboot requires confirmation when stdin is not interactive. Use `deploy --yes` to skip the prompt or `deploy --no-reboot`.",
-                allow_prompt=not no_input_enabled(args),
-            )
-            if proceed is None:
-                return 1
-            if not proceed:
-                print("Deployment complete without reboot.", flush=True)
-                command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
-                return 0
 
         try:
             completion = complete_deployment_after_upload(

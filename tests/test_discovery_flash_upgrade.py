@@ -1,119 +1,266 @@
+"""Exercise the installer against a filesystem, including interrupted retries.
+
+Apple can unmount HFS between writes, and an interrupted software install need
+not boot. Its metadata must survive and rc.local must only enable verified files.
+"""
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
-from unittest import mock
 
 import pytest
 
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.deploy.planner import FileTransfer
-from timecapsulesmb.deploy.commands import RemovePathAction
-from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
-from timecapsulesmb.services.deploy import (
-    DeployDeviceError,
-    DeployRuntimeConfig,
-    _allocated_flash_bytes,
-    _required_flash_upload_peak,
-    upload_and_verify_deployment_payload,
+from timecapsulesmb.deploy import executor
+from timecapsulesmb.deploy.commands import (
+    EnsureVolumeMountedAction, RemovePathAction, StopManagerAction,
+    StopProcessAction, StopServiceRuntimeAction, StopTelemetryAction,
+    StopWatchdogAction, WaitForIdleJobsAction, render_remote_action,
 )
+from timecapsulesmb.deploy.planner import build_deployment_plan
+from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
+from timecapsulesmb.services.callbacks import OperationCallbacks
+from timecapsulesmb.services.deploy import (
+    DeployDeviceError, DeployRuntimeConfig,
+    upload_and_verify_deployment_payload, complete_deployment_after_upload,
+)
+from timecapsulesmb.transport.ssh import SshConnection, _verify_remote_size
+from timecapsulesmb.transport.errors import ScpError
 
 
-def _flash_transfer(source: str, destination: str) -> FileTransfer:
-    return FileTransfer(source, destination, "flash_atomic", 120, source)
+class Device:
+    def __init__(self, root, monkeypatch):
+        self.root = root
+        self.home = PayloadHome('/Volumes/dk2', '/dev/dk2', '.samba4')
+        binary = root / 'binary'
+        binary.write_bytes(b'new executable\n')
+        self.plan = build_deployment_plan(
+            'host', self.home, binary, binary, xattr_migrator_path=binary,
+            rsync_path=binary, service_path=binary, telemetry_path=binary,
+        )
+        self.connection = SshConnection('host', 'unused', '', remote_has_scp=True)
+        self.prepared = SimpleNamespace(
+            plan=self.plan, payload_home=self.home,
+            payload_context=SimpleNamespace(payload_family="netbsd6_samba4", is_netbsd4=False,
+                                            startup_mode="reboot_then_verify"),
+        )
+        self.failure = None
+        self.unmount_after = None
+        self.parked = root / "unmounted"
+        self.transfers = []
+        self.events = []
+        self.sources = {}
+        self.protected = {
+            '/mnt/Flash/ACPData.bin': b'Apple settings',
+            '/mnt/Flash/ssh_host_key': b'SSH identity',
+            '/Volumes/dk2/Backup.sparsebundle/data': b'user backup',
+            '/Volumes/dk2/.samba4/private/xattr.tdb': b'pending metadata',
+            '/Volumes/dk2/.samba4/private/xattr.tdb.orphaned.1': b'quarantine',
+            '/Volumes/dk2/.samba4/logs/previous.log': b'diagnostics',
+        }
+        for name, content in self.protected.items():
+            self.write(name, content)
+        for name in ('/mnt/Flash/rc.local', '/mnt/Flash/service', '/mnt/Flash/.discoveryd.tmp',
+                     '/mnt/Flash/mdns-advertiser', '/mnt/Flash/xattr-migrate-wrapper.sh',
+                     '/Volumes/dk2/.samba4/mdns-smbd-advertiser',
+                     '/Volumes/dk2/.samba4/sbin/smbd', '/Volumes/dk2/.samba4/smbd'):
+            self.write(name, b'old or truncated software')
+        monkeypatch.setattr(executor, 'run_scp', self.scp)
+        monkeypatch.setattr(executor, 'run_ssh', self.ssh)
+        monkeypatch.setattr(executor, 'ensure_volume_root_mounted_conn', self.mount)
+        monkeypatch.setattr('timecapsulesmb.transport.ssh.run_ssh', self.ssh)
+        monkeypatch.setattr('timecapsulesmb.transport.ssh.time.sleep', lambda _seconds: None)
+        monkeypatch.setattr('timecapsulesmb.services.deploy.run_ssh', self.ssh)
 
+    def mount(self, *args, **kwargs):
+        if self.parked.exists():
+            self.parked.rename(self.path('/Volumes/dk2'))
+            self.events.append('remount')
+        return True
 
-def test_flash_peak_accounts_for_atomic_temp_and_sequential_replacements(tmp_path: Path) -> None:
-    discovery = tmp_path / "discoveryd"
-    config = tmp_path / "tcapsulesmb.conf"
-    discovery.write_bytes(b"d" * 2300)
-    config.write_bytes(b"c" * 1100)
-    transfers = [
-        _flash_transfer("discovery", "/mnt/Flash/discoveryd"),
-        _flash_transfer("config", "/mnt/Flash/tcapsulesmb.conf"),
-    ]
+    def path(self, name):
+        return self.root / name.lstrip('/')
 
-    peak = _required_flash_upload_peak(
-        transfers,
-        {"discovery": discovery, "config": config},
-        {"/mnt/Flash/tcapsulesmb.conf": 900},
-    )
+    def write(self, name, content):
+        path = self.path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
 
-    # The config temporary file is created after the new 3 KiB discoveryd is
-    # installed; replacing its old 1 KiB allocation leaves a 5 KiB peak.
-    assert peak == 5 * 1024 + 16 * 1024
+    def scp(self, connection, source, destination, **kwargs):
+        self.transfers.append(destination)
+        self.sources[destination] = source.read_bytes()
+        self.write(destination, source.read_bytes())
+        if self.failure == 'transfer' and destination.endswith('/smbd'):
+            self.write(destination, b'partial')
+            raise RuntimeError('injected transfer')
+        if self.failure == 'flash_transfer' and destination == '/mnt/Flash/discoveryd':
+            self.write(destination, b'partial flash file')
+            raise RuntimeError('injected flash transfer')
+        if self.failure == 'truncate_flash' and destination == '/mnt/Flash/discoveryd':
+            self.write(destination, b'truncated')
+        if self.failure == 'truncate' and destination.endswith('/smbd'):
+            self.write(destination, b'truncated')
+        # Replace only the byte transport. Run its production size verification
+        # so malformed transfers still fail when the executor stops duplicating it.
+        _verify_remote_size(connection, source, destination, timeout=30)
+        if destination == self.unmount_after:
+            self.path('/Volumes/dk2').rename(self.parked)
+            self.events.append('unmount')
 
+    def ssh(self, connection, command, **kwargs):
+        if command == '/bin/df -k /mnt/Flash':
+            self.events.append('capacity')
+            assert not self.path('/mnt/Flash/rc.local').exists()
+            free = 0 if self.failure == 'capacity' else 4096
+            return SimpleNamespace(stdout=f'Filesystem 1K-blocks Used Avail Capacity Mounted on\n/dev/flash 5000 100 {free} 2% /mnt/Flash\n')
+        for prefix in ('/mnt/', '/Volumes/', '/root'):
+            command = command.replace(prefix, str(self.root) + prefix)
+        if self.failure == 'permissions' and 'chmod' in command:
+            raise RuntimeError('injected permissions')
+        result = subprocess.run(command, shell=True, executable='/bin/sh', text=True, capture_output=True)
+        if result.returncode and kwargs.get("check", True):
+            raise RuntimeError(result.stderr or result.stdout)
+        return result
 
-def test_insufficient_flash_fails_before_stop_or_upload(tmp_path: Path) -> None:
-    source = tmp_path / "discoveryd"
-    source.write_bytes(b"x")
-    transfer = _flash_transfer("discovery", "/mnt/Flash/discoveryd")
-    plan = SimpleNamespace(uploads=[transfer], pre_upload_actions=[object()])
-    prepared = SimpleNamespace(plan=plan, payload_home=SimpleNamespace())
-    stopped: list[object] = []
-    uploaded: list[object] = []
+    def actions(self, connection, actions, on_action_done=None):
+        for i, action in enumerate(actions, 1):
+            if isinstance(action, (StopManagerAction, StopServiceRuntimeAction, StopWatchdogAction,
+                                   StopProcessAction, StopTelemetryAction, WaitForIdleJobsAction)):
+                self.events.append('stop')
+                if self.failure == 'stop':
+                    raise RuntimeError('process service runtime did not stop')
+            elif isinstance(action, EnsureVolumeMountedAction):
+                self.mount()
+            else:
+                self.ssh(connection, render_remote_action(action))
+            if on_action_done:
+                on_action_done(action, i, len(actions))
 
-    with mock.patch(
-        "timecapsulesmb.services.deploy._deployment_upload_sources",
-        return_value={"discovery": source},
-    ):
-        with pytest.raises(DeployDeviceError, match="Not enough free space") as raised:
-            upload_and_verify_deployment_payload(
-                AppConfig.from_values({}),
-                SimpleNamespace(),
-                prepared,
-                DeployRuntimeConfig(nbns_enabled=True),
-                run_remote_actions_func=lambda *_args, **_kwargs: stopped.append(object()),
-                render_flash_config_func=lambda *_args, **_kwargs: "config",
-                render_rsync_config_func=lambda *_args, **_kwargs: "rsync",
-                upload_payload_func=lambda *_args, **_kwargs: uploaded.append(object()),
-                probe_flash_capacity_func=lambda *_args: (1024, 4096),
-            )
+    def migrate(self, connection, plan, phase, **kwargs):
+        self.events.append(phase)
+        assert not self.path('/mnt/Flash/rc.local').exists()
+        if self.failure == phase:
+            raise RuntimeError('injected migration ' + phase)
+        return 'migration complete'
 
-    assert raised.value.code == "insufficient_flash_space"
-    assert stopped == []
-    assert uploaded == []
+    def flush(self, connection):
+        self.events.append('flush')
+        if self.failure == 'flush':
+            raise RuntimeError('injected flush')
 
+    def stage(self, name):
+        if self.failure == 'boot' and name == 'enable_boot':
+            raise RuntimeError('injected boot')
 
-def test_verification_failure_retains_legacy_flash_binary(tmp_path: Path) -> None:
-    source = tmp_path / "discoveryd"
-    source.write_bytes(b"new")
-    transfer = _flash_transfer("discovery", "/mnt/Flash/discoveryd")
-    legacy_cleanup = RemovePathAction("/mnt/Flash/mdns-advertiser")
-    permission_action = object()
-    plan = SimpleNamespace(
-        uploads=[transfer],
-        migration_upload=transfer,
-        pre_upload_actions=[object()],
-        post_upload_actions=[permission_action],
-        post_verify_actions=[legacy_cleanup],
-        apple_mount_wait_seconds=0,
-        payload_dir="/Volumes/dk2/.samba4",
-    )
-    payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
-    prepared = SimpleNamespace(plan=plan, payload_home=payload_home)
-    action_batches: list[list[object]] = []
-
-    with (
-        mock.patch(
-            "timecapsulesmb.services.deploy._deployment_upload_sources",
-            return_value={"discovery": source},
-        ),
-        mock.patch("timecapsulesmb.services.deploy.replace", side_effect=lambda value, **_changes: value),
-        pytest.raises(Exception, match="managed payload verification failed"),
-    ):
+    def install(self):
         upload_and_verify_deployment_payload(
-            AppConfig.from_values({}),
-            SimpleNamespace(remote_has_scp=True),
-            prepared,
+            AppConfig.from_values({}), self.connection, self.prepared,
             DeployRuntimeConfig(nbns_enabled=True),
-            run_remote_actions_func=lambda _connection, actions, **_kwargs: action_batches.append(list(actions)),
-            render_flash_config_func=lambda *_args, **_kwargs: "config",
-            render_rsync_config_func=lambda *_args, **_kwargs: "rsync",
-            upload_payload_func=lambda *_args, **_kwargs: None,
-            probe_flash_capacity_func=lambda *_args: (100_000, 20_000),
-            migrate_xattrs_func=lambda *_args, **_kwargs: "ok",
-            verify_payload_home=lambda *_args, **_kwargs: PayloadVerificationResult(False, "bad replacement"),
+            callbacks=OperationCallbacks(set_stage=self.stage),
+            run_remote_actions_func=self.actions, migrate_xattrs_func=self.migrate,
+            verify_payload_home=lambda *a, **k: PayloadVerificationResult(True, 'present'),
+            flush_remote_writes=self.flush,
         )
 
-    assert action_batches[0] == plan.pre_upload_actions
-    assert action_batches[1] == [permission_action]
-    assert all(legacy_cleanup not in batch for batch in action_batches)
+    def assert_installed(self):
+        assert self.transfers[-1] == '/mnt/Flash/rc.local'
+        for name, content in self.sources.items():
+            assert self.path(name).read_bytes() == content
+            mode = 0o600 if name.endswith('.conf') else 0o755
+            assert self.path(name).stat().st_mode & 0o777 == mode
+        assert not self.path('/Volumes/dk2/.samba4/mdns-smbd-advertiser').exists()
+        assert not self.path('/Volumes/dk2/.samba4/sbin/smbd').exists()
+        assert not self.path('/mnt/Flash/xattr-migrate-wrapper.sh').exists()
+        assert not self.path('/mnt/Flash/service').exists()
+        assert not self.path('/mnt/Flash/mdns-advertiser').exists()
+        assert not self.path('/mnt/Flash/.discoveryd.tmp').exists()
+        self.assert_protected()
+
+    def assert_protected(self):
+        for name, content in self.protected.items():
+            assert self.path(name).read_bytes() == content
+
+
+@pytest.mark.parametrize('failure', ['capacity', 'transfer', 'flash_transfer', 'truncate', 'truncate_flash', 'permissions', 'copy', 'cleanup', 'flush', 'boot'])
+def test_interrupted_install_rerun_converges(tmp_path, monkeypatch, failure):
+    device = Device(tmp_path, monkeypatch)
+    device.failure = failure
+    with pytest.raises((RuntimeError, DeployDeviceError, ScpError)):
+        device.install()
+    assert not device.path('/mnt/Flash/rc.local').exists()
+    device.assert_protected()
+    device.failure = None
+    device.install()
+    device.assert_installed()
+    # An identical third install has exactly the same software and settings.
+    previous = dict(device.sources)
+    device.install()
+    device.assert_installed()
+    assert device.sources == previous
+
+
+def test_surviving_supervisor_blocks_deletion(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    before = device.path('/mnt/Flash/rc.local').read_bytes()
+    device.failure = 'stop'
+    with pytest.raises(RuntimeError, match='did not stop'):
+        device.install()
+    assert device.path('/mnt/Flash/rc.local').read_bytes() == before
+    assert device.transfers == []
+    assert 'capacity' not in device.events
+
+
+def test_absent_managed_software_installs_without_old_scripts(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    for action in device.plan.pre_upload_actions:
+        if isinstance(action, RemovePathAction):
+            path = device.path(action.path)
+            if path.is_file():
+                path.unlink()
+    device.install()
+    device.assert_installed()
+
+
+def test_bad_local_configuration_does_not_stop_runtime(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    monkeypatch.setattr('timecapsulesmb.services.deploy.render_rsync_daemon_config',
+                        lambda *a: (_ for _ in ()).throw(ValueError('invalid local config')))
+    with pytest.raises(ValueError, match='invalid local config'):
+        device.install()
+    assert device.events == []
+    assert device.path('/mnt/Flash/rc.local').exists()
+
+
+def test_reboot_request_failure_can_be_retried_without_a_marker(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    device.install()
+    requests = []
+
+    def reboot(*args, **kwargs):
+        requests.append("reboot")
+        if len(requests) == 1:
+            raise RuntimeError("request failed")
+
+    with pytest.raises(RuntimeError, match="request failed"):
+        complete_deployment_after_upload(device.connection, device.prepared,
+                                         no_wait=True, request_reboot_func=reboot)
+    # No automatic second request: observing an ambiguous reboot belongs to
+    # the reboot flow. A later explicit deploy safely replaces the software.
+    assert requests == ["reboot"]
+    device.install()
+    result = complete_deployment_after_upload(device.connection, device.prepared,
+                                              no_wait=True, request_reboot_func=reboot)
+    assert result.reboot_requested and not result.verified
+    device.assert_installed()
+
+
+@pytest.mark.parametrize('basename', ['smbd', 'telemetry'])
+def test_diskd_unmount_after_verified_transfer_is_remounted_before_permissions(tmp_path, monkeypatch, basename):
+    device = Device(tmp_path, monkeypatch)
+    # Apple's diskd may release an idle HDD after SCP closes it. telemetry is
+    # the last HDD transfer, so that case exercises the post-upload mount guard;
+    # smbd also exercises remounting before the next transfer.
+    device.unmount_after = device.home.payload_dir + '/' + basename
+    device.install()
+    assert device.events.count('unmount') == 1
+    assert device.events.count('remount') == 1
+    device.assert_installed()

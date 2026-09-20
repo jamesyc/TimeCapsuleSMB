@@ -1,9 +1,5 @@
-"timeline.deploy.detail.preflight_flash_capacity" = "Проверка свободного места во флеш-памяти для обновления службы обнаружения.";
-"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Удаление заменённого старого файла службы обнаружения из флеш-памяти.";
-"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Сохранение изменений после очистки флеш-памяти.";
-"timeline.deploy.title.preflight_flash_capacity" = "Проверить место во флеш-памяти";
-"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Удалить старую службу обнаружения";
-"timeline.deploy.title.flush_legacy_flash_cleanup" = "Сохранить очистку флеш-памяти";
+"timeline.deploy.detail.check_flash_capacity" = "Проверка свободного места во флеш-памяти для обновления службы обнаружения.";
+"timeline.deploy.title.check_flash_capacity" = "Проверить место во флеш-памяти";
 "timeline.deploy.detail.upload_discovery" = "Копирование службы обнаружения в том данных и во флеш-память.";
 "timeline.deploy.title.upload_discovery" = "Загрузить службу обнаружения";
 "action.activate" = "Активировать";
@@ -147,18 +143,12 @@
 "confirm.ssh_access.enable_reboot.action" = "Включите SSH и перезагрузите компьютер.";
 "confirm.ssh_access.enable_reboot.message" = "Включить SSH с помощью AirPort ACP на %@ и перезагрузить это устройство AirPort?";
 "confirm.ssh_access.enable_reboot.title" = "Включить SSH и перезагрузить компьютер?";
-"confirm.deploy.activate_now.action" = "Развертывание и запуск SMB";
-"confirm.deploy.activate_now.message" = "Развернуть TimeCapsuleSMB на этом %@ и запустить SMB без перезагрузки?";
-"confirm.deploy.activate_now.title" = "Развернуть и запустить SMB?";
 "confirm.deploy.netbsd4.action" = "Развертывание, перезагрузка и активация";
 "confirm.deploy.netbsd4.message" = "Развернуть TimeCapsuleSMB на этом %@, перезагрузить его, затем активировать Samba после того, как SSH вернется?";
 "confirm.deploy.netbsd4.title" = "Развернуть, перезагрузить и активировать NetBSD4?";
 "confirm.deploy.netbsd4_no_wait.action" = "Развертывание и запрос перезагрузки";
 "confirm.deploy.netbsd4_no_wait.message" = "Развернуть TimeCapsuleSMB на этом %@, запросить перезагрузку и немедленно вернуться, не запуская активацию Samba после возвращения SSH?";
 "confirm.deploy.netbsd4_no_wait.title" = "Развернуть и запросить NetBSD4 перезагрузку?";
-"confirm.deploy.no_reboot.action" = "Развертывание";
-"confirm.deploy.no_reboot.message" = "Развернуть TimeCapsuleSMB на этом %@ без перезагрузки?";
-"confirm.deploy.no_reboot.title" = "Развернуть без перезагрузки?";
 "confirm.deploy.reboot.action" = "Развертывание и перезагрузка";
 "confirm.deploy.reboot.message" = "Развернуть TimeCapsuleSMB и перезагрузить этот %@?";
 "confirm.deploy.reboot.title" = "Развернуть и перезагрузить?";
@@ -265,7 +255,6 @@
 "deploy.presentation.title.netbsd4" = "Установите Samba и запустите Runtime.";
 "deploy.presentation.title.standard" = "Установите Samba";
 "deploy.presentation.warning.netbsd4_activation" = "Этому устройству NetBSD4 требуется активация, прежде чем Samba будет готово.";
-"deploy.presentation.warning.netbsd4_activate_now" = "Эта установка NetBSD4 запустит Samba без перезагрузки.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "Эта установка NetBSD4 сначала перезагрузится, а затем запустит Samba после возврата SSH.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "No Wait вернется после запроса перезагрузки. Активация Samba не будет выполняться автоматически после возврата SSH.";
 "deploy.presentation.warning.no_wait_post_reboot_verification" = "No Wait вернется после запроса перезагрузки. Проверка SMB после перезагрузки не будет выполняться автоматически.";
@@ -282,7 +271,6 @@
 "install.completion.title.finished" = "Установка/обновление завершено";
 "install.completion.title.verified" = "Установка/обновление проверено";
 "install.completion.warning.netbsd4" = "NetBSD4 устройствам может потребоваться активация после последующей перезагрузки, если boot hook не исправлено.";
-"install.plan.downtime.activate_now" = "Обычно менее минуты, пока Samba запускается без перезагрузки.";
 "install.plan.downtime.netbsd4" = "Обычно менее минуты, пока Samba запускается без перезагрузки.";
 "install.plan.downtime.no_wait" = "app запросит перезагрузку и немедленно вернется.";
 "install.plan.downtime.none" = "Перезагрузки не ожидается.";
@@ -292,7 +280,6 @@
 "install.plan.row.uploads" = "Загрузки";
 "install.plan.section.device_actions" = "Действия устройства";
 "install.plan.section.target" = "Цель";
-"install.plan.title.activate_now" = "Установите/обновите Samba и запустите Runtime.";
 "install.plan.title.netbsd4" = "Установите/обновите Samba и запустите Runtime.";
 "install.plan.title.reboot_no_wait" = "Установите/обновите Samba и запросите перезагрузку.";
 "install.plan.title.reboot_then_activate" = "Установите/обновите Samba, перезагрузите компьютер и запустите Runtime.";
@@ -814,7 +801,6 @@
 "timeline.state.running" = "Бег";
 "timeline.state.succeeded" = "Успешно";
 "timeline.state.warning" = "Предупреждение";
-"timeline.deploy.detail.activate_runtime" = "Запуск развернутого runtime без перезагрузки.";
 "timeline.deploy.detail.build_deployment_plan" = "Построение упорядоченных действий по развертыванию.";
 "timeline.deploy.detail.check_compatibility" = "Выбор payload для обнаруженной версии NetBSD.";
 "timeline.deploy.detail.flush_payload_upload" = "Очистка payload записи на диск.";
@@ -845,7 +831,6 @@
 "timeline.deploy.detail.verify_runtime_reboot" = "Устройство снова подключено к сети. Ожидание завершения запуска managed runtime.";
 "timeline.deploy.detail.wait_for_reboot_down" = "Ожидание SSH после запроса на перезагрузку.";
 "timeline.deploy.detail.wait_for_reboot_up" = "Устройство вышло из строя; ждем, когда оно вернется.";
-"timeline.deploy.title.activate_runtime" = "Старт SMB";
 "timeline.deploy.title.build_deployment_plan" = "Подготовка плана установки";
 "timeline.deploy.title.check_compatibility" = "Проверьте совместимость устройства.";
 "timeline.deploy.title.flush_payload_upload" = "Сбросить на диск";

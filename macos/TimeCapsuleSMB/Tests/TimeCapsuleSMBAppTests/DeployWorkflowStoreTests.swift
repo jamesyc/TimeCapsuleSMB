@@ -63,7 +63,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1)
         XCTAssertEqual(runner.calls[0].operation, "deploy")
         XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(false))
+        XCTAssertNil(runner.calls[0].params["no_reboot"])
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["nbns_enabled"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["rsync_enabled"], .bool(true))
@@ -136,7 +136,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls, [])
     }
 
-    func testNoRebootAndNoWaitAreMutuallyExclusive() async throws {
+    func testNoWaitChangesPlanAndNeverSendsNoReboot() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
@@ -149,27 +149,21 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.noWait = true
 
         XCTAssertTrue(store.noWait)
-        XCTAssertFalse(store.noReboot)
-        XCTAssertFalse(RebootExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait))
-        XCTAssertTrue(RebootExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot))
 
         store.runPlan(password: "pw")
         try await waitUntilStoreState { store.state == .planReady }
 
-        XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(false))
+        XCTAssertNil(runner.calls[0].params["no_reboot"])
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
 
-        store.noReboot = true
+        store.noWait = false
 
-        XCTAssertTrue(store.noReboot)
         XCTAssertFalse(store.noWait)
-        XCTAssertTrue(RebootExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait))
-        XCTAssertFalse(RebootExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot))
 
         store.runPlan(password: "pw")
         try await waitUntilStoreState { runner.calls.count == 2 && store.state == .planReady }
 
-        XCTAssertEqual(runner.calls[1].params["no_reboot"], .bool(true))
+        XCTAssertNil(runner.calls[1].params["no_reboot"])
         XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(false))
     }
 

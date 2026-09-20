@@ -98,7 +98,6 @@ from timecapsulesmb.deploy.commands import (
 )
 from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     GENERATED_FLASH_CONFIG_SOURCE,
@@ -867,7 +866,7 @@ class CliTests(unittest.TestCase):
         login_autostart_enabled: bool = False,
         verify_runtime=None,
         reboot_side_effect=None,
-        wait_side_effect=None,
+        wait_side_effect=(True, True),
         input_side_effect=None,
         raises=None,
     ):
@@ -5075,7 +5074,7 @@ class CliTests(unittest.TestCase):
             {
                 "source_id": GENERATED_FLASH_CONFIG_SOURCE,
                 "destination": "/mnt/Flash/tcapsulesmb.conf",
-                "mode": "flash_atomic",
+                "mode": "scp",
                 "timeout_seconds": 120,
                 "description": "generated flash runtime config",
             },
@@ -5124,7 +5123,7 @@ class CliTests(unittest.TestCase):
             self._mast_volume("dk2", disk_device="wd0", name="Data", builtin=True),
         )
         result = self.run_deploy_cli(
-            ["--yes", "--no-reboot", "--mount-wait", "7"],
+            ["--yes", "--mount-wait", "7"],
             mast_volumes=volumes,
             mount_root="/Volumes/dk2",
             patch_actions=True,
@@ -5141,8 +5140,8 @@ class CliTests(unittest.TestCase):
             ".samba4",
             wait_seconds=7,
         )
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 4)
-        self.assertEqual(result.mocks.upload_deployment_payload.call_count, 2)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        self.assertEqual(result.mocks.upload_deployment_payload.call_count, 3)
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         result.mocks.verify_payload_home_conn.assert_has_calls(
             [
@@ -5160,17 +5159,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("Flushing payload to disk...", result.text)
         self.assertIn("Deployed Samba payload to /Volumes/dk2/.samba4", result.text)
         self.assertIn("Updated /mnt/Flash boot files.", result.text)
-        self.assertIn("Starting deployed runtime without reboot.", result.text)
-        self.assertIn("Runtime activation complete.", result.text)
-        self.assertEqual(
-            result.mocks.run_remote_actions.call_args_list[3].args[1],
-            [
-                StopManagerAction(),
-                StopWatchdogAction(),
-                StopProcessAction("wcifsfs"),
-                RunScriptAction("/mnt/Flash/rc.local"),
-            ],
-        )
+        self.assertIn("Requesting reboot...", result.text)
+        result.mocks.remote_request_reboot.assert_called_once()
+        result.mocks.verify_managed_runtime.assert_called_once()
+        self.assertIn("Deploy Finished.", result.text)
 
     def test_deploy_upload_source_resolver_contains_flash_config_and_no_legacy_generated_files(self) -> None:
         captured: dict[str, object] = {}
@@ -5181,7 +5173,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--debug-logging", "--no-reboot"],
+            ["--debug-logging", "--yes"],
             values=self.make_valid_env(TC_SAMBA_USER="admin"),
             patch_actions=True,
             patch_upload=True,
@@ -5225,7 +5217,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-reboot"],
+            ["--yes"],
             telemetry_enabled=False,
             patch_actions=True,
             patch_upload=True,
@@ -5242,7 +5234,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-nbns", "--no-reboot"],
+            ["--no-nbns", "--yes"],
             patch_actions=True,
             patch_upload=True,
             upload_side_effect=fake_upload,
@@ -5261,7 +5253,7 @@ class CliTests(unittest.TestCase):
             captured["rsync_config"] = source_resolver[GENERATED_RSYNC_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--enable-rsync", "--no-reboot"],
+            ["--enable-rsync", "--yes"],
             patch_actions=True,
             patch_upload=True,
             upload_side_effect=fake_upload,
@@ -5281,7 +5273,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--debug-logging", "--no-reboot"],
+            ["--debug-logging", "--yes"],
             values=self.make_valid_env(TC_DEBUG_LOGGING="false"),
             patch_actions=True,
             patch_upload=True,
@@ -5299,7 +5291,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-reboot"],
+            ["--yes"],
             values=self.make_valid_env(TC_SMB_BROWSE_COMPATIBILITY="true"),
             patch_actions=True,
             patch_upload=True,
@@ -5316,7 +5308,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-reboot"],
+            ["--yes"],
             values=self.make_valid_env(TC_MDNS_ADVERTISE_AFP="true"),
             patch_actions=True,
             patch_upload=True,
@@ -5333,7 +5325,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-reboot", "--mdns-advertise-afp"],
+            ["--yes", "--mdns-advertise-afp"],
             values=self.make_valid_env(TC_MDNS_ADVERTISE_AFP="false"),
             patch_actions=True,
             patch_upload=True,
@@ -5350,7 +5342,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-reboot", "--require-smb-encryption"],
+            ["--yes", "--require-smb-encryption"],
             values=self.make_valid_env(TC_REQUIRE_SMB_ENCRYPTION="false"),
             patch_actions=True,
             patch_upload=True,
@@ -5363,7 +5355,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_rejects_any_protocol_with_smb_encryption(self) -> None:
         with redirect_stderr(io.StringIO()):
             result = self.run_deploy_cli(
-                ["--no-reboot", "--any-protocol", "--require-smb-encryption"],
+                ["--yes", "--any-protocol", "--require-smb-encryption"],
                 raises=SystemExit,
             )
         self.assertEqual(result.exception.code, 2)
@@ -5375,7 +5367,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-reboot"],
+            ["--yes"],
             values=self.make_valid_env(TC_FRUIT_METADATA_NETATALK="true"),
             patch_actions=True,
             patch_upload=True,
@@ -5389,19 +5381,19 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if _plan.uploads == [_plan.migration_upload]:
+            if _plan.uploads in ([_plan.migration_upload], [_plan.boot_upload]):
                 return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
         enabled = self.run_deploy_cli(
-            ["--no-reboot", "--enable-vfs-aio-fork"],
+            ["--yes", "--enable-vfs-aio-fork"],
             values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="false"),
             patch_actions=True,
             patch_upload=True,
             upload_side_effect=fake_upload,
         )
         disabled = self.run_deploy_cli(
-            ["--no-reboot", "--disable-vfs-aio-fork"],
+            ["--yes", "--disable-vfs-aio-fork"],
             values=self.make_valid_env(TC_VFS_AIO_FORK_ENABLED="true"),
             patch_actions=True,
             patch_upload=True,
@@ -5420,7 +5412,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--no-reboot"],
+            ["--yes"],
             values=self.make_valid_env(TC_DEBUG_LOGGING="true"),
             patch_actions=True,
             patch_upload=True,
@@ -5435,13 +5427,13 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if _plan.uploads == [_plan.migration_upload]:
+            if _plan.uploads in ([_plan.migration_upload], [_plan.boot_upload]):
                 return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
         enabled = self.run_deploy_cli(
             [
-                "--no-reboot",
+                "--yes",
                 "--internal-share-use-disk-root",
                 "--smb-browse-compatibility",
                 "--netatalk",
@@ -5459,7 +5451,7 @@ class CliTests(unittest.TestCase):
         )
         disabled = self.run_deploy_cli(
             [
-                "--no-reboot",
+                "--yes",
                 "--no-internal-share-use-disk-root",
                 "--no-smb-browse-compatibility",
                 "--no-netatalk",
@@ -5625,48 +5617,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("name:PS3FAT", telemetry_error)
         self.assertIn("size:8000000000000", telemetry_error)
 
-    def test_deploy_no_reboot_activates_after_upload_phase(self) -> None:
-        result = self.run_deploy_cli(
-            ["--no-reboot"],
-            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
-            patch_actions=True,
-            patch_upload=True,
-            reboot_side_effect=AssertionError("deploy --no-reboot should not request a reboot"),
-        )
-
-        self.assertEqual(result.rc, 0)
-        result.mocks.remote_request_reboot.assert_not_called()
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 4)
-        self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
-        result.mocks.verify_managed_runtime.assert_called_once()
-        self.assertIn("Starting deployed runtime without reboot.", result.text)
-        self.assertIn("Runtime activation complete.", result.text)
-        self.assertEqual(
-            result.mocks.run_remote_actions.call_args_list[3].args[1],
-            [
-                StopManagerAction(),
-                StopWatchdogAction(),
-                StopProcessAction("wcifsfs"),
-                RunScriptAction("/mnt/Flash/rc.local"),
-            ],
-        )
-
-    def test_deploy_no_reboot_no_wait_treats_no_wait_as_inapplicable(self) -> None:
-        result = self.run_deploy_cli(
-            ["--no-reboot", "--no-wait"],
-            artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
-            patch_actions=True,
-            patch_upload=True,
-            reboot_side_effect=AssertionError("deploy --no-reboot should not request a reboot"),
-        )
-
-        self.assertEqual(result.rc, 0)
-        result.mocks.remote_request_reboot.assert_not_called()
-        result.mocks.verify_managed_runtime.assert_called_once()
-        self.assertIn("Starting deployed runtime without reboot.", result.text)
-        self.assertIn("Runtime activation complete.", result.text)
-        self.assertNotIn("not waiting for the device", result.text)
+    def test_deploy_rejects_removed_no_reboot_before_remote_access(self) -> None:
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_config") as config:
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                deploy.main(["--no-reboot"])
+        self.assertEqual(error.exception.code, 2)
+        config.assert_not_called()
 
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
         result = self.run_deploy_cli(
@@ -5753,7 +5709,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("stage=verify_payload_upload_after_sync", telemetry_error)
         self.assertIn("payload_post_sync_verification=missing payload directory", telemetry_error)
 
-    def test_deploy_declined_reboot_returns_without_rebooting(self) -> None:
+    def test_deploy_declined_confirmation_returns_before_mutation(self) -> None:
         result = self.run_deploy_cli(
             [],
             artifacts=[("smbd", True, "ok"), ("discovery", True, "ok")],
@@ -5764,10 +5720,12 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertIn("Deployment complete without reboot.", result.text)
+        self.assertIn("Deployment cancelled.", result.text)
         result.mocks.remote_request_reboot.assert_not_called()
-        self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
+        result.mocks.verify_payload_home_conn.assert_not_called()
+        result.mocks.flush_remote_filesystem_writes.assert_not_called()
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
 
     def test_deploy_reboot_timeout_returns_failure(self) -> None:
         result = self.run_deploy_cli(

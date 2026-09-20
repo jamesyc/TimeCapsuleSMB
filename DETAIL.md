@@ -1020,14 +1020,13 @@ Use `configure` for normal first-time setup. Use `set-ssh` only when you intenti
 
 ### `deploy`
 
-`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs the scripts and configuration that generate Samba auth files in RAM during boot or activation, applies permissions, and reboots by default. On NetBSD 4 devices, deploy checks the runtime after SSH returns and activates it only when firmware startup has not already done so.
+`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs the scripts and configuration that generate Samba auth files in RAM during boot or activation, applies permissions, and reboots. On NetBSD 4 devices, deploy checks the runtime after SSH returns and activates it only when firmware startup has not already done so.
 
 Arguments:
 - `--config PATH`: use a non-default config
-- `--no-reboot`: upload files, stop the current runtime, and activate the new runtime in place without rebooting
 - `--no-wait`: request reboot and return without waiting for SSH or runtime verification
 - `--yes`: do not prompt before reboot
-- `--no-input`: fail instead of prompting; non-dry-run rebooting deploys require `--yes` unless `--no-reboot` is used
+- `--no-input`: fail instead of prompting; non-dry-run deploys require `--yes`
 - `--dry-run`: build and print the deployment plan without changing the device
 - `--json`: emit the dry-run deployment plan as JSON; requires `--dry-run`
 - `--allow-unsupported`: continue when the detected device compatibility check is unsupported
@@ -1398,8 +1397,13 @@ Current deploy flow:
   - else first writable external HFS volume
   - else fails with `no writable persistent volume found`
 - computes the device-specific runtime and payload paths from that payload home
-- builds a deployment plan before execution
-- creates the persistent payload dir under `/Volumes/dkX/.samba4`
+- builds the plan and renders configuration locally before stopping services
+- confirms installation and reboot before stopping or replacing managed software (unless `--yes` is used)
+- stops current and historical supervisors before their workers and verifies they have stopped
+- disables `rc.local` and removes an explicit inventory of replaceable software; preserves data, metadata, quarantines, logs, SSH keys and Apple settings
+- prepares the payload directory under `/Volumes/dkX/.samba4`
+- checks actual free Flash space after cleanup, including a small margin
+- uploads the migrator and copies legacy TDB metadata into native HFS storage when a legacy database exists
 - uploads the checked-in binaries:
   - `smbd`
   - `discoveryd`
@@ -1409,7 +1413,6 @@ Current deploy flow:
 - generates and uploads the persistent rsync daemon configuration:
   - `/Volumes/dkX/.samba4/rsyncd.conf`
 - renders and uploads the packaged boot/runtime files:
-  - `rc.local`
   - `common.sh`
   - `boot.sh`
   - `manager.sh`
@@ -1421,14 +1424,16 @@ Current deploy flow:
   - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used
 - disables rsync by default while keeping its HDD payload installed:
   - `RSYNC_ENABLED=0` in flash config unless `--enable-rsync` is used
-- applies the required permissions on files and directories
-- reboots by default
-- if the reboot confirmation is rejected, deploy intentionally stops after upload without activating the runtime so the device can be inspected before a later manual reboot
+- verifies transfer sizes and applies file and directory permissions
+- verifies and flushes the replacement payload before migration cleanup can retire exported metadata
+- uploads `rc.local` last, then runs sync, waits ten seconds, and syncs again; any error stops deployment
+- reboots after every successful install; rejecting confirmation leaves the installed software untouched
+- supports rerunning an interrupted installation through the same sequence, without rollback state
 - verifies managed runtime readiness after reboot:
   - managed `smbd` on TCP `445`
   - Apple `mDNSResponder` running and alone on UDP `5353`, `diskd` on loopback, and `discoveryd` with a valid plan and matching native-NBNS readiness state
   - enabled rsync from RAM on TCP `873`, or disabled rsync with no live daemon
-- on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and runs `/mnt/Flash/rc.local` only when the firmware has not already started or begun starting the managed runtime
+- on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and runs `/mnt/Flash/rc.local` only when firmware autostart is missing; otherwise it waits for the firmware-started runtime
 
 Full Bonjour browse/resolve checks, authenticated SMB listings, SMB CRUD checks, share checks, NBNS checks, xattr persistence checks, and deployed-version checks are handled by `doctor`.
 
@@ -1439,8 +1444,8 @@ Current compatibility behavior:
 
 NetBSD 4 activation behavior:
 - `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, watches for an already-running `/mnt/Flash/rc.local`, `/mnt/Flash/boot.sh`, or `/mnt/Flash/manager.sh`, runs `/mnt/Flash/rc.local` only if startup is not already in progress, and verifies managed `smbd` plus the mDNS registrant
-- `tcapsule deploy --no-reboot` uploads the payload, stops the manager plus any legacy watchdog, `discoveryd`, `wcifsfs`, and orphaned `wcifsnd` processes, runs `/mnt/Flash/rc.local`, and verifies managed `smbd` plus `discoveryd` on both NetBSD 4 and NetBSD 6 devices
-- `tcapsule activate` repeats the no-reboot activation sequence without re-uploading files
+- Deployment always reboots. It stops current and historical managed processes, removes owned software, copies directly to final paths, verifies and flushes the payload, completes metadata migration, then writes `rc.local` last and flushes again before rebooting. Rerunning an interrupted installation finishes it; user data, pending metadata, quarantines and logs are preserved. `--no-wait` returns after requesting reboot without claiming runtime verification. Legacy API `no_reboot=true` requests are rejected before mutation.
+- `tcapsule activate` starts an already installed runtime without re-uploading files
 - Apple `mDNSResponder` is never stopped; `boot.sh` moves Apple's `diskd` to loopback and `discoveryd` registers through the daemon
 - tested 1st-generation NetBSD 4 hardware without a firmware boot-hook patch does not persist an `/etc` hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven

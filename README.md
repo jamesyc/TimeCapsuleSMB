@@ -144,7 +144,7 @@ This step installs (or updates) Samba onto the device. It validates the checked-
 On Gen 5 NetBSD 6 devices, `deploy` reboots the device so the new runtime comes up cleanly.
 On older Gen 1-4 NetBSD 4 devices, `deploy` also reboots to clear the RAM disk, waits for SSH to return, and then runs `/mnt/Flash/rc.local`. The older devices still need `tcapsule activate` after later reboots that are not part of `deploy`.
 
-By default, `tcapsule deploy` reboots after deployment and then waits for the device to come back. If you want to skip the reboot confirmation prompt, you can run:
+`tcapsule deploy` always reboots after installation and normally waits for the device to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
 .venv/bin/tcapsule deploy --yes

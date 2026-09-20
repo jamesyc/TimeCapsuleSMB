@@ -1,9 +1,5 @@
-"timeline.deploy.detail.preflight_flash_capacity" = "Verifica dello spazio libero nella memoria flash per l’aggiornamento del servizio di rilevamento.";
-"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Rimozione dalla memoria flash del precedente binario di rilevamento sostituito.";
-"timeline.deploy.detail.flush_legacy_flash_cleanup" = "Scrittura definitiva delle modifiche di pulizia della memoria flash.";
-"timeline.deploy.title.preflight_flash_capacity" = "Verifica spazio flash";
-"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Rimuovi rilevamento precedente";
-"timeline.deploy.title.flush_legacy_flash_cleanup" = "Salva pulizia flash";
+"timeline.deploy.detail.check_flash_capacity" = "Verifica dello spazio libero nella memoria flash per l’aggiornamento del servizio di rilevamento.";
+"timeline.deploy.title.check_flash_capacity" = "Verifica spazio flash";
 "timeline.deploy.detail.upload_discovery" = "Copia del servizio di rilevamento nel volume del payload e nella memoria flash.";
 "timeline.deploy.title.upload_discovery" = "Carica servizio di rilevamento";
 "action.activate" = "Attiva";
@@ -147,18 +143,12 @@
 "confirm.ssh_access.enable_reboot.action" = "Abilita SSH e riavvia";
 "confirm.ssh_access.enable_reboot.message" = "Abilitare SSH utilizzando AirPort ACP su %@ e riavviare questo dispositivo AirPort?";
 "confirm.ssh_access.enable_reboot.title" = "Abilitare SSH E riavviare?";
-"confirm.deploy.activate_now.action" = "Distribuisci e avvia SMB";
-"confirm.deploy.activate_now.message" = "Distribuire TimeCapsuleSMB a questo %@ e avviare SMB senza riavviarlo?";
-"confirm.deploy.activate_now.title" = "Distribuisci e avvia SMB?";
 "confirm.deploy.netbsd4.action" = "Distribuisci, riavvia e attiva";
 "confirm.deploy.netbsd4.message" = "Distribuisci TimeCapsuleSMB a questo %@, riavvialo, quindi attiva Samba dopo che SSH ritorna?";
 "confirm.deploy.netbsd4.title" = "Distribuisci, riavvia e attiva NetBSD4?";
 "confirm.deploy.netbsd4_no_wait.action" = "Distribuisci e richiedi il riavvio";
 "confirm.deploy.netbsd4_no_wait.message" = "Distribuire TimeCapsuleSMB a questo %@, richiedere il riavvio e tornare immediatamente senza eseguire l'attivazione di Samba dopo il ritorno di SSH?";
 "confirm.deploy.netbsd4_no_wait.title" = "Distribuisci e richiedi NetBSD4 Riavviare?";
-"confirm.deploy.no_reboot.action" = "Distribuisci";
-"confirm.deploy.no_reboot.message" = "Distribuire TimeCapsuleSMB a questo %@ senza riavviarlo?";
-"confirm.deploy.no_reboot.title" = "Distribuzione senza riavvio?";
 "confirm.deploy.reboot.action" = "Distribuisci e riavvia";
 "confirm.deploy.reboot.message" = "Distribuire TimeCapsuleSMB e riavviare questo %@?";
 "confirm.deploy.reboot.title" = "Distribuire e riavviare?";
@@ -265,7 +255,6 @@
 "deploy.presentation.title.netbsd4" = "Installa Samba e avvia Runtime";
 "deploy.presentation.title.standard" = "Installa Samba";
 "deploy.presentation.warning.netbsd4_activation" = "Questo dispositivo NetBSD4 necessita di un passaggio di attivazione prima che Samba sia pronto.";
-"deploy.presentation.warning.netbsd4_activate_now" = "Questa installazione di NetBSD4 avvierà Samba senza riavviare.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "Questa installazione di NetBSD4 si riavvierà prima, quindi avvierà Samba al termine di SSH.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "No Wait verrà restituito dopo aver richiesto il riavvio. L'attivazione di Samba non verrà eseguita automaticamente dopo il ritorno di SSH.";
 "deploy.presentation.warning.no_wait_post_reboot_verification" = "No Wait tornerà dopo aver richiesto il riavvio. La verifica post-riavvio SMB non verrà eseguita automaticamente.";
@@ -282,7 +271,6 @@
 "install.completion.title.finished" = "Installazione/aggiornamento terminato";
 "install.completion.title.verified" = "Installazione/aggiornamento verificato\nI dispositivi ";
 "install.completion.warning.netbsd4" = "NetBSD4 potrebbero dover essere attivati dopo un riavvio successivo, a meno che non venga applicata la patch boot hook.";
-"install.plan.downtime.activate_now" = "Di solito meno di un minuto mentre Samba si avvia senza riavviare.";
 "install.plan.downtime.netbsd4" = "Di solito meno di un minuto mentre Samba si avvia senza riavviare.";
 "install.plan.downtime.no_wait" = "Il app richiederà il riavvio e tornerà immediatamente.";
 "install.plan.downtime.none" = "Nessun riavvio previsto.";
@@ -292,7 +280,6 @@
 "install.plan.row.uploads" = "Caricamenti";
 "install.plan.section.device_actions" = "Azioni dispositivo";
 "install.plan.section.target" = "Destinazione";
-"install.plan.title.activate_now" = "Installa/Aggiorna Samba e avvia Runtime";
 "install.plan.title.netbsd4" = "Installa/Aggiorna Samba e avvia Runtime";
 "install.plan.title.reboot_no_wait" = "Installa/Aggiorna Samba e richiedi il riavvio";
 "install.plan.title.reboot_then_activate" = "Installa/Aggiorna Samba, riavvia e avvia Runtime";
@@ -814,7 +801,6 @@
 "timeline.state.running" = "In corsa";
 "timeline.state.succeeded" = "Riuscito";
 "timeline.state.warning" = "Attenzione";
-"timeline.deploy.detail.activate_runtime" = "Avvio del runtime distribuito senza riavvio.";
 "timeline.deploy.detail.build_deployment_plan" = "Creazione delle azioni di schieramento ordinate.";
 "timeline.deploy.detail.check_compatibility" = "Scegliendo payload per la versione NetBSD rilevata.";
 "timeline.deploy.detail.flush_payload_upload" = "Flushing payload scrive su disco.";
@@ -845,7 +831,6 @@
 "timeline.deploy.detail.verify_runtime_reboot" = "Il dispositivo è di nuovo online. In attesa che managed runtime finisca l'avvio.";
 "timeline.deploy.detail.wait_for_reboot_down" = "In attesa che SSH venga disattivato dopo la richiesta di riavvio.";
 "timeline.deploy.detail.wait_for_reboot_up" = "Il dispositivo si è rotto; aspettando che si ripresenti.";
-"timeline.deploy.title.activate_runtime" = "Inizio SMB";
 "timeline.deploy.title.build_deployment_plan" = "Prepara il piano di installazione";
 "timeline.deploy.title.check_compatibility" = "Verifica compatibilità del dispositivo";
 "timeline.deploy.title.flush_payload_upload" = "Scarica su disco";

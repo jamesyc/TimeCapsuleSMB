@@ -389,12 +389,8 @@ struct DeviceCompatibilityPayload: Decodable, Equatable {
 enum DeployStartupMode: String, Decodable, Equatable {
     case rebootThenVerify = "reboot_then_verify"
     case rebootThenActivate = "reboot_then_activate"
-    case activateNow = "activate_now"
 
     static func fallback(netbsd4: Bool, requiresReboot: Bool) -> DeployStartupMode {
-        if !requiresReboot {
-            return .activateNow
-        }
         return netbsd4 ? .rebootThenActivate : .rebootThenVerify
     }
 }

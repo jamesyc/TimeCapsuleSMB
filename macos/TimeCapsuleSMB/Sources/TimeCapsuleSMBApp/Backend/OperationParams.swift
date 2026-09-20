@@ -178,7 +178,6 @@ enum OperationParams {
     enum Deploy {
         static func params(
             dryRun: Bool,
-            noReboot: Bool,
             noWait: Bool,
             nbnsEnabled: Bool,
             rsyncEnabled: Bool = false,
@@ -197,7 +196,6 @@ enum OperationParams {
         ) -> [String: JSONValue] {
             var params: [String: JSONValue] = [
                 "dry_run": .bool(dryRun),
-                "no_reboot": .bool(noReboot),
                 "no_wait": .bool(noWait),
                 "nbns_enabled": .bool(nbnsEnabled),
                 "rsync_enabled": .bool(rsyncEnabled),

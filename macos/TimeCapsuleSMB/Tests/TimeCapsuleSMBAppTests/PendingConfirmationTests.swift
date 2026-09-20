@@ -24,7 +24,6 @@ final class PendingConfirmationTests: XCTestCase {
     func testDeployRunParamsCarryOptionsWithoutFrontendConsentFlags() {
         let params = OperationParams.Deploy.params(
             dryRun: false,
-            noReboot: false,
             noWait: true,
             nbnsEnabled: true,
             debugLogging: true,
@@ -37,7 +36,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertNil(params["confirm_deploy"])
         XCTAssertNil(params["confirm_reboot"])
         XCTAssertNil(params["confirm_netbsd4_activation"])
-        XCTAssertEqual(params["no_reboot"], .bool(false))
+        XCTAssertNil(params["no_reboot"])
         XCTAssertEqual(params["nbns_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(true))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
@@ -58,7 +57,6 @@ final class PendingConfirmationTests: XCTestCase {
     func testDeployPlanParamsCarryAdvancedRuntimeOverridesWhenEnabled() {
         let params = OperationParams.Deploy.params(
             dryRun: true,
-            noReboot: false,
             noWait: false,
             nbnsEnabled: true,
             internalShareUseDiskRoot: true,
@@ -282,16 +280,16 @@ final class PendingConfirmationTests: XCTestCase {
                 "message": .string("Backend message."),
                 "action_title": .string("Backend action"),
                 "confirmation_id": .string("abc123"),
-                "presentation_id": .string("deploy.activate_now"),
+                "presentation_id": .string("deploy.reboot"),
                 "presentation_values": .object(["device_name": .string("Time Capsule")])
             ])
         )
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
 
-        XCTAssertEqual(confirmation.title, "Install / Update Samba and Start?")
-        XCTAssertEqual(confirmation.message, "Install or update Samba on this Time Capsule and start it without rebooting the device?")
-        XCTAssertEqual(confirmation.actionTitle, "Install / Update Samba and Start")
+        XCTAssertEqual(confirmation.title, "Install / Update Samba and Reboot?")
+        XCTAssertEqual(confirmation.message, "Install or update Samba and reboot this Time Capsule?")
+        XCTAssertEqual(confirmation.actionTitle, "Install / Update Samba and Reboot")
     }
 
     func testPendingConfirmationUsesRestoreWriteRebootCopy() throws {

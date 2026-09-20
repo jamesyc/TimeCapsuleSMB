@@ -12,6 +12,120 @@ PS_CAPTURE_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= 
 WATCHDOG_PID_PS_COMMAND = "/bin/ps axww -o pid= -o stat= -o ucomm= -o command="
 
 
+def render_stop_service_runtime(*, attempts: int = 5) -> str:
+    # Stop every launcher before its workers, including launchers forked during
+    # shutdown. Apple's daemons and unrelated `service` processes are not ours.
+    return r'''
+set -f
+managed_processes() {
+    managed_ps=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command=) || return 1
+    while read -r pid state comm command; do
+        case "$state" in Z*|"") continue ;; esac
+        if [ "$comm" = sh ]; then
+            # Match argv, not text embedded in the SSH `sh -c` wrapper.
+            set -- $command
+            case "${1:-}" in /bin/sh|sh) shift ;; esac
+            case "${1:-}" in
+                /mnt/Flash/rc.local|/mnt/Flash/boot.sh|/mnt/Flash/start-samba.sh|\
+                /mnt/Flash/manager.sh|/mnt/Flash/watchdog.sh)
+                    kind=shell
+                    label=${1##*/}
+                    label=${label%.sh} ;;
+                *) continue ;;
+            esac
+        elif [ "$comm" = service ]; then
+            label=service
+            case "$command" in
+                '/mnt/Flash/service run'|'/mnt/Flash/service run '*|\
+                '/mnt/Memory/samba4/sbin/service run'|'/mnt/Memory/samba4/sbin/service run '*)
+                    kind=supervisor ;;
+                '/mnt/Flash/service'|'/mnt/Flash/service '*|\
+                '/mnt/Memory/samba4/sbin/service'|'/mnt/Memory/samba4/sbin/service '*|\
+                'service: role=mdns '*|'service: role=netbios '*|'service: role=telemetry '*)
+                    kind=worker ;;
+                *) continue ;;
+            esac
+        else
+            continue
+        fi
+        case "$scope:$kind" in
+            supervisor:shell|supervisor:supervisor|worker:worker)
+                printf '%s %s %s\n' "$pid" "$kind" "$label" ;;
+        esac
+    done <<EOF_PS
+$managed_ps
+EOF_PS
+    return 0
+}
+for scope in supervisor worker; do
+    attempt=0
+    limit=__ATTEMPTS__
+    [ "$scope" != supervisor ] || limit=$((limit * 2))
+    while :; do
+        processes=$(managed_processes) || exit 1
+        [ -n "$processes" ] || break
+        if [ "$attempt" -gt "$limit" ]; then
+            while read -r pid kind label; do
+                echo "process $label did not stop; retry after its active work finishes" >&2
+            done <<EOF_BUSY
+$processes
+EOF_BUSY
+            exit 1
+        fi
+        # Signal the whole snapshot before waiting. Rescan each pass: a boot
+        # script may have forked a manager after the preceding snapshot.
+        while read -r pid kind label; do
+            if [ "$kind" = shell ] && [ "$attempt" -gt 0 ] && [ "$attempt" -ge __ATTEMPTS__ ]; then
+                /bin/kill -9 "$pid" 2>/dev/null || true
+            else
+                # Native service/telemetry owners may be draining a debug
+                # child. Preserve their graceful-only shutdown policy.
+                /bin/kill -TERM "$pid" 2>/dev/null || true
+            fi
+        done <<EOF_STOP
+$processes
+EOF_STOP
+        [ "$attempt" -ge "$limit" ] || sleep 1
+        attempt=$((attempt + 1))
+    done
+done
+'''.replace("__ATTEMPTS__", str(attempts)).strip()
+
+
+def render_wait_for_idle_jobs(*, attempts: int = 5) -> str:
+    # An interrupted SSH session may leave a migration or diagnostic child.
+    # Never unlink its executable or kill it halfway through a metadata write.
+    return r'''
+attempt=0
+while :; do
+    jobs_ps=$(/bin/ps axww -o stat= -o ucomm= -o command=) || exit 1
+    busy=0
+    while read -r state comm rest; do
+        case "$state" in Z*|"") continue ;; esac
+        case "$comm" in
+            telemetry|debug|heartbeat|tc-xattr-hfs-mi*|xattr-hfs-migra*) busy=1 ;;
+        esac
+        if [ "$comm" = sh ]; then
+            set -- $rest
+            case "${1:-}" in /bin/sh|sh) shift ;; esac
+            case "${1:-}" in
+                /mnt/Flash/migrate.sh|/mnt/Flash/xattr-migrate-wrapper.sh) busy=1 ;;
+            esac
+        fi
+    done <<EOF
+$jobs_ps
+EOF
+    [ "$busy" = 1 ] || exit 0
+    if [ "$attempt" -ge __ATTEMPTS__ ]; then
+        echo 'migration or diagnostic work is still active; retry after it finishes' >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+'''.replace("__ATTEMPTS__", str(attempts)).strip()
+
+
 def _ucomm_pkill_pattern(name: str) -> str:
     allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
     if not name or any(char not in allowed for char in name):

@@ -73,8 +73,12 @@ def migration(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("phase", ["copy", "cleanup"])
-def test_deploy_migration_stages_temporary_binary_and_keeps_persistent_helper(migration, phase):
+@pytest.mark.parametrize("helper_mode", [0o600, 0o755])
+def test_deploy_migration_stages_temporary_binary_and_keeps_persistent_helper(migration, phase, helper_mode):
     m = migration
+    # Apple can unmount the HDD; execute the RAM copy. An SSH-pipe upload
+    # need not be executable before the later guarded permissions phase.
+    m.helper.chmod(helper_mode)
     result = executor.migrate_xattr_tdb_to_hfs(
         m.connection, m.plan, phase=phase, legacy_metadata="netatalk"
     )
@@ -82,6 +86,7 @@ def test_deploy_migration_stages_temporary_binary_and_keeps_persistent_helper(mi
     assert result.roots == tuple(m.volumes)
     assert result.unavailable_roots == ()
     assert m.helper.exists() and m.tdb.read_text() == "pending"
+    assert m.helper.stat().st_mode & 0o777 == helper_mode
     assert not (m.root / "tc-xattr-hfs-migrate").exists()
     assert m.mount.call_count == 3  # payload first, then every discovered volume
     assert f"migration_phase={phase} legacy_metadata=netatalk timeout_seconds=21600" in result.output

@@ -1,9 +1,5 @@
-"timeline.deploy.detail.preflight_flash_capacity" = "Controleren of er genoeg vrije flashruimte is voor de discovery-update.";
-"timeline.deploy.detail.cleanup_legacy_flash_discovery" = "Het vervangen verouderde discovery-programma uit het flashgeheugen verwijderen.";
-"timeline.deploy.detail.flush_legacy_flash_cleanup" = "De opschoning van het flashgeheugen definitief wegschrijven.";
-"timeline.deploy.title.preflight_flash_capacity" = "Flashcapaciteit controleren";
-"timeline.deploy.title.cleanup_legacy_flash_discovery" = "Oude discovery opruimen";
-"timeline.deploy.title.flush_legacy_flash_cleanup" = "Flashopschoning wegschrijven";
+"timeline.deploy.detail.check_flash_capacity" = "Controleren of er genoeg vrije flashruimte is voor de discovery-update.";
+"timeline.deploy.title.check_flash_capacity" = "Flashcapaciteit controleren";
 "timeline.deploy.detail.upload_discovery" = "De discovery-service naar het payloadvolume en flashgeheugen kopiëren.";
 "timeline.deploy.title.upload_discovery" = "Discovery-service uploaden";
 "action.activate" = "Activeren";
@@ -147,18 +143,12 @@
 "confirm.ssh_access.enable_reboot.action" = "Schakel SSH in en start opnieuw op";
 "confirm.ssh_access.enable_reboot.message" = " SSH inschakelen met AirPort ACP op %@ en dit AirPort apparaat opnieuw opstarten?";
 "confirm.ssh_access.enable_reboot.title" = "SSH inschakelen en opnieuw opstarten?";
-"confirm.deploy.activate_now.action" = "Implementeren en starten SMB";
-"confirm.deploy.activate_now.message" = " TimeCapsuleSMB implementeren op deze %@ en SMB starten zonder deze opnieuw op te starten?";
-"confirm.deploy.activate_now.title" = " Implementeren en starten SMB?";
 "confirm.deploy.netbsd4.action" = "Implementeren, opnieuw opstarten en activeren";
 "confirm.deploy.netbsd4.message" = " TimeCapsuleSMB implementeren op deze %@, opnieuw opstarten en vervolgens Samba activeren nadat SSH terugkeert?";
 "confirm.deploy.netbsd4.title" = " NetBSD4 implementeren, opnieuw opstarten en activeren?";
 "confirm.deploy.netbsd4_no_wait.action" = "Implementeren en opnieuw opstarten aanvragen";
 "confirm.deploy.netbsd4_no_wait.message" = " TimeCapsuleSMB implementeren op deze %@, opnieuw opstarten aanvragen en onmiddellijk terugkeren zonder de activering van Samba uit te voeren nadat SSH terugkeert?";
 "confirm.deploy.netbsd4_no_wait.title" = "Implementeren en NetBSD4 aanvragen Opnieuw opstarten?";
-"confirm.deploy.no_reboot.action" = "Inzetten";
-"confirm.deploy.no_reboot.message" = "TimeCapsuleSMB implementeren op deze %@ zonder deze opnieuw op te starten?";
-"confirm.deploy.no_reboot.title" = "Implementeren zonder opnieuw opstarten?";
 "confirm.deploy.reboot.action" = "Implementeren en opnieuw opstarten";
 "confirm.deploy.reboot.message" = "TimeCapsuleSMB implementeren en deze %@ opnieuw opstarten?";
 "confirm.deploy.reboot.title" = "Implementeren en opnieuw opstarten?";
@@ -265,7 +255,6 @@
 "deploy.presentation.title.netbsd4" = "Installeer Samba en start Runtime";
 "deploy.presentation.title.standard" = "Installeren Samba";
 "deploy.presentation.warning.netbsd4_activation" = "Dit NetBSD4-apparaat heeft een activeringsstap nodig voordat Samba gereed is.";
-"deploy.presentation.warning.netbsd4_activate_now" = "Deze NetBSD4 installatie start Samba zonder opnieuw op te starten.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "Deze NetBSD4-installatie wordt eerst opnieuw opgestart en start vervolgens Samba nadat SSH terugkeert.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "No Wait keert terug na een verzoek om opnieuw opstarten. De activering van Samba wordt niet automatisch uitgevoerd nadat SSH terugkeert.";
 "deploy.presentation.warning.no_wait_post_reboot_verification" = "No Wait keert terug na een verzoek om opnieuw opstarten. De SMB-verificatie na het opnieuw opstarten wordt niet automatisch uitgevoerd.";
@@ -282,7 +271,6 @@
 "install.completion.title.finished" = "Installatie/update voltooid";
 "install.completion.title.verified" = "Installeren/updaten geverifieerd";
 "install.completion.warning.netbsd4" = "NetBSD4 apparaten moeten mogelijk worden geactiveerd na een latere herstart, tenzij de boot hook is gepatcht.";
-"install.plan.downtime.activate_now" = "Meestal minder dan een minuut terwijl Samba start zonder opnieuw op te starten.";
 "install.plan.downtime.netbsd4" = "Meestal minder dan een minuut terwijl Samba start zonder opnieuw op te starten.";
 "install.plan.downtime.no_wait" = "De app vraagt ​​om een ​​herstart en keert onmiddellijk terug.";
 "install.plan.downtime.none" = "Geen herstart verwacht.";
@@ -292,7 +280,6 @@
 "install.plan.row.uploads" = "Uploads";
 "install.plan.section.device_actions" = "Apparaatacties";
 "install.plan.section.target" = "Doel";
-"install.plan.title.activate_now" = "Installeren / bijwerken Samba en starten Runtime";
 "install.plan.title.netbsd4" = "Installeren / bijwerken Samba en starten Runtime";
 "install.plan.title.reboot_no_wait" = "Installeer / update Samba en verzoek om opnieuw opstarten";
 "install.plan.title.reboot_then_activate" = "Installeren/bijwerken Samba, opnieuw opstarten en starten Runtime";
@@ -814,7 +801,6 @@
 "timeline.state.running" = "Hardlopen";
 "timeline.state.succeeded" = "Geslaagd";
 "timeline.state.warning" = "Waarschuwing";
-"timeline.deploy.detail.activate_runtime" = "De geïmplementeerde runtime starten zonder opnieuw opstarten.";
 "timeline.deploy.detail.build_deployment_plan" = "De bestelde implementatieacties opbouwen.";
 "timeline.deploy.detail.check_compatibility" = "Het kiezen van payload voor de gedetecteerde NetBSD versie.";
 "timeline.deploy.detail.flush_payload_upload" = "Flushen payload schrijft naar schijf.";
@@ -845,7 +831,6 @@
 "timeline.deploy.detail.verify_runtime_reboot" = "Apparaat is weer online. Wachten tot managed runtime klaar is met starten.";
 "timeline.deploy.detail.wait_for_reboot_down" = "Wachten tot SSH uitvalt na een herstartverzoek.";
 "timeline.deploy.detail.wait_for_reboot_up" = "Apparaat is uitgevallen; wachtend tot het weer opkomt.";
-"timeline.deploy.title.activate_runtime" = "Start SMB";
 "timeline.deploy.title.build_deployment_plan" = "Installatieplan voorbereiden";
 "timeline.deploy.title.check_compatibility" = "Controleer de apparaatcompatibiliteit";
 "timeline.deploy.title.flush_payload_upload" = "Flush naar schijf";

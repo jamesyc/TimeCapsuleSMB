@@ -12,7 +12,6 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.services.deploy import render_flash_runtime_config, render_rsync_daemon_config
 from timecapsulesmb.services.deploy import render_flash_runtime_config as render_gui_flash_runtime_config
-from timecapsulesmb.deploy.executor import upload_flash_file
 from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
@@ -1279,21 +1278,6 @@ printf '%s|%s|%s\\n' "$SMB_NETBIOS_NAME" "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL"
             ("/mnt/Flash/tcapsulesmb.conf", "600"),
             {(permission.path, permission.mode) for permission in plan.permissions},
         )
-
-    def test_upload_flash_file_uses_requested_mode_before_atomic_rename(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "")
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "tcapsulesmb.conf"
-            source.write_text("TC_CONFIG_VERSION=2\n")
-
-            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-                with mock.patch("timecapsulesmb.deploy.executor.run_scp") as run_scp_mock:
-                    upload_flash_file(connection, source, "/mnt/Flash/tcapsulesmb.conf", mode="600")
-
-        run_scp_mock.assert_called_once_with(connection, source, "/mnt/Flash/.tcapsulesmb.conf.tmp", timeout=120)
-        install_command = run_ssh_mock.call_args_list[1].args[1]
-        self.assertIn("chmod 600 /mnt/Flash/.tcapsulesmb.conf.tmp", install_command)
-        self.assertIn("mv -f /mnt/Flash/.tcapsulesmb.conf.tmp /mnt/Flash/tcapsulesmb.conf", install_command)
 
     def test_common_mast_runtime_topology_projection_matches_shell_supported_fixtures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

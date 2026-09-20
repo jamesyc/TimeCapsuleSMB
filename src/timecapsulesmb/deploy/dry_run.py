@@ -5,7 +5,6 @@ from dataclasses import asdict
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_remote_actions
 from timecapsulesmb.deploy.planner import (
-    DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     ActivationPlan,
@@ -42,8 +41,6 @@ def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, 
 
 
 def _startup_description(plan: DeploymentPlan) -> str:
-    if plan.startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        return "stop old managers and wcifsfs, run /mnt/Flash/rc.local now, then verify managed runtime"
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         if not plan.wait_after_reboot:
             return "request reboot and return without post-reboot activation or verification"
@@ -110,7 +107,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         if migration_upload.timeout_seconds is not None
         else ""
     )
-    lines.append("Native HFS migration:")
+    lines.append("Check free flash space after cleanup, then migrate native HFS metadata:")
     lines.append(
         f"  upload {migration_upload.description} "
         f"({migration_upload.source_id}, {migration_upload.mode}{migration_timeout}) "
@@ -119,7 +116,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("  skip the disk scan when no legacy xattr.tdb exists")
     lines.append("  copy and verify native metadata before replacing the Samba payload")
     lines.append("  reverify and retire exported TDB records after payload verification")
-    lines.append("  retain unmatched records and migrate unavailable disks when they are attached later")
+    lines.append("  retain unmatched records; migrate unavailable disks on a later explicit deploy")
     lines.append("")
     lines.append("Uploads:")
     for upload in plan.uploads:
@@ -130,9 +127,9 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     for command in render_remote_actions(plan.post_upload_actions):
         lines.append(f"  {command}")
     lines.append("")
-    lines.append("Remote actions (after post-sync verification):")
-    for command in render_remote_actions(plan.post_verify_actions):
-        lines.append(f"  {command}")
+    lines.append("After payload verification, flush and migration cleanup:")
+    lines.append(f"  upload {plan.boot_upload.description} -> {plan.boot_upload.destination}")
+    lines.append("  make rc.local executable, sync, wait ten seconds, sync, then reboot")
     lines.append("")
     if plan.activation_actions:
         if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
@@ -175,7 +172,6 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["rsync_path"] = str(plan.rsync_path)
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
-    data["post_verify_actions"] = remote_actions_to_jsonable(plan.post_verify_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
     data["runtime_startup"] = _runtime_startup_json(plan)
     _add_reboot_request_json(data, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY, wait_after_reboot=plan.wait_after_reboot)

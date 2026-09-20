@@ -216,10 +216,8 @@ private struct InstallExecutionOptionsView: View {
         DashboardDisclosureSection(title: L10n.string("install.advanced_options")) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
-                    Toggle(L10n.string("toggle.no_reboot"), isOn: $store.noReboot)
-                        .disabled(!allowsNoReboot)
-                    Toggle(L10n.string("toggle.no_wait"), isOn: noWaitBinding)
-                        .disabled(!allowsNoWait)
+                    Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
+                        .gridCellColumns(2)
                 }
                 GridRow {
                     Text(L10n.string("install.advanced_options.no_wait_note"))
@@ -250,23 +248,4 @@ private struct InstallExecutionOptionsView: View {
         .disabled(store.isBusy || isDeviceBusy)
     }
 
-    private var allowsNoReboot: Bool {
-        RebootExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait)
-    }
-
-    private var allowsNoWait: Bool {
-        RebootExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot)
-    }
-
-    private var noWaitBinding: Binding<Bool> {
-        Binding {
-            allowsNoWait ? store.noWait : false
-        } set: { value in
-            if allowsNoWait {
-                store.noWait = value
-            } else {
-                store.noWait = false
-            }
-        }
-    }
 }

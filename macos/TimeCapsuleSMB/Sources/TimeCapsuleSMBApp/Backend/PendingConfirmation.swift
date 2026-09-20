@@ -82,7 +82,6 @@ private struct ConfirmationPresentation {
         switch presentationKey {
         case "configure.enable_ssh_reboot",
              "ssh_access.enable_reboot",
-             "deploy.activate_now",
              "deploy.netbsd4",
              "deploy.netbsd4_no_wait",
              "deploy.no_reboot",

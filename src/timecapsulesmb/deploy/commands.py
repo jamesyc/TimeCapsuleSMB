@@ -8,6 +8,8 @@ from timecapsulesmb.device.processes import (
     render_pkill_wait_pkill9_by_ucomm,
     render_pkill_wait_pkill9_manager,
     render_pkill_wait_pkill9_watchdog,
+    render_stop_service_runtime,
+    render_wait_for_idle_jobs,
 )
 from timecapsulesmb.device.storage import render_ensure_volume_root_mounted_script
 from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
@@ -59,6 +61,16 @@ class StopManagerAction:
 
 
 @dataclass(frozen=True)
+class StopServiceRuntimeAction:
+    pass
+
+
+@dataclass(frozen=True)
+class WaitForIdleJobsAction:
+    pass
+
+
+@dataclass(frozen=True)
 class StopTelemetryAction:
     cleanup: bool = False
 
@@ -80,6 +92,8 @@ RemoteAction = Union[
     StopProcessAction,
     StopWatchdogAction,
     StopManagerAction,
+    StopServiceRuntimeAction,
+    WaitForIdleJobsAction,
     StopTelemetryAction,
     RemovePathAction,
     RunScriptAction,
@@ -118,6 +132,10 @@ def _render_remove_path_action(action: RemovePathAction) -> str:
 
 
 def render_remote_action(action: RemoteAction) -> str:
+    if isinstance(action, StopServiceRuntimeAction):
+        return f"/bin/sh -c {shlex.quote(render_stop_service_runtime())}"
+    if isinstance(action, WaitForIdleJobsAction):
+        return f"/bin/sh -c {shlex.quote(render_wait_for_idle_jobs())}"
     if isinstance(action, EnsureVolumeMountedAction):
         script = render_ensure_volume_root_mounted_script(action.volume_root, action.device_path, action.wait_seconds)
         return f"/bin/sh -c {shlex.quote(script)}"
@@ -147,6 +165,10 @@ def render_remote_actions(actions: list[RemoteAction]) -> list[str]:
 
 
 def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
+    if isinstance(action, StopServiceRuntimeAction):
+        return {"kind": "stop_service_runtime", "args": []}
+    if isinstance(action, WaitForIdleJobsAction):
+        return {"kind": "wait_for_idle_jobs", "args": []}
     if isinstance(action, EnsureVolumeMountedAction):
         return {
             "kind": "ensure_volume_mounted",

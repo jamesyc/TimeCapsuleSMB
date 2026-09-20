@@ -30,7 +30,6 @@ from timecapsulesmb.services.app import (
 from timecapsulesmb.services.context import exception_cause_detail, message_with_exception_cause
 from timecapsulesmb.services.deploy import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DeployArtifactValidationError,
     DeployCompletionMessages,
@@ -123,15 +122,6 @@ def confirmation_presentation_for_startup_mode(
             summary="NetBSD4 deployment with reboot and service activation",
             presentation_id="deploy.netbsd4",
         )
-    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        return DeployConfirmationPresentation(
-            title="Confirm deployment and runtime start",
-            message=f"Deploy TimeCapsuleSMB to this {device_name} and start Samba without rebooting it?",
-            action_title="Deploy and start SMB",
-            risk="remote_write",
-            summary="Deployment without reboot and runtime start",
-            presentation_id="deploy.activate_now",
-        )
     if no_wait:
         return DeployConfirmationPresentation(
             title="Confirm deployment and reboot request",
@@ -187,20 +177,23 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     operation = "deploy"
     nbns_enabled = bool_param(params, "nbns_enabled", True)
     dry_run = bool_param(params, "dry_run")
-    no_reboot = bool_param(params, "no_reboot")
+    if bool_param(params, "no_reboot"):
+        raise AppOperationError(
+            "Deployment now requires a reboot. Remove no_reboot and retry; no device changes were made.",
+            code="invalid_params",
+        )
     no_wait = bool_param(params, "no_wait")
     rsync_enabled = bool_param(params, "rsync_enabled")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     allow_unsupported = bool_param(params, "allow_unsupported")
     deploy_options = DeployOptions(
         dry_run=dry_run,
-        no_reboot=no_reboot,
         no_wait=no_wait,
         rsync_enabled=rsync_enabled,
         mount_wait_seconds=mount_wait,
         allow_unsupported=allow_unsupported,
     )
-    no_wait = deploy_options.effective_no_wait
+    no_wait = deploy_options.no_wait
     debug_logging = optional_bool_param(params, "debug_logging")
     ata_idle_seconds = (
         int_param(params, "ata_idle_seconds", int(DEFAULTS["TC_ATA_IDLE_SECONDS"]))
@@ -305,7 +298,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             "device_name": device_name,
             "netbsd4": is_netbsd4,
             "requires_reboot": preflight.requires_reboot,
-            "no_reboot": no_reboot,
+            "no_reboot": False,
             "no_wait": no_wait,
             "startup_mode": startup_mode,
             "rsync_enabled": rsync_enabled,
@@ -325,7 +318,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                     "payload_family": payload_family,
                     "netbsd4": is_netbsd4,
                     "requires_reboot": preflight.requires_reboot,
-                    "no_reboot": no_reboot,
+                    "no_reboot": False,
                     "no_wait": no_wait,
                     "startup_mode": startup_mode,
                 },

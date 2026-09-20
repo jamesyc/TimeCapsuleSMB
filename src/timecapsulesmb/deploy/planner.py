@@ -14,6 +14,8 @@ from timecapsulesmb.deploy.commands import (
     RemoteSymlink,
     RunScriptAction,
     StopManagerAction,
+    StopServiceRuntimeAction,
+    WaitForIdleJobsAction,
     StopTelemetryAction,
     StopProcessAction,
     StopWatchdogAction,
@@ -21,8 +23,8 @@ from timecapsulesmb.deploy.commands import (
 from timecapsulesmb.device.storage import PayloadHome
 
 
-TransferMode = Literal["scp", "flash_atomic", "generated"]
-DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate", "activate_now"]
+TransferMode = Literal["scp", "generated"]
+DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate"]
 
 BINARY_SMBD_SOURCE = "binary:smbd"
 BINARY_XATTR_MIGRATOR_SOURCE = "binary:xattr-migrator"
@@ -45,7 +47,6 @@ XATTR_MIGRATOR_UPLOAD_TIMEOUT_SECONDS = 180
 FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS = 120
 DEPLOY_STARTUP_REBOOT_THEN_VERIFY: DeploymentStartupMode = "reboot_then_verify"
 DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE: DeploymentStartupMode = "reboot_then_activate"
-DEPLOY_STARTUP_ACTIVATE_NOW: DeploymentStartupMode = "activate_now"
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ class DeploymentPlan:
     uploads: list[FileTransfer]
     pre_upload_actions: list[RemoteAction]
     post_upload_actions: list[RemoteAction]
-    post_verify_actions: list[RemoteAction]
+    boot_upload: FileTransfer
     startup_mode: DeploymentStartupMode
     activation_actions: list[RemoteAction]
     reboot_required: bool
@@ -172,13 +173,7 @@ def build_runtime_activation_plan() -> ActivationPlan:
     )
 
 
-def _deploy_reboot_required(startup_mode: DeploymentStartupMode) -> bool:
-    return startup_mode in {DEPLOY_STARTUP_REBOOT_THEN_VERIFY, DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE}
-
-
 def _deploy_activation_actions(startup_mode: DeploymentStartupMode, *, wait_after_reboot: bool) -> list[RemoteAction]:
-    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        return build_runtime_activation_actions()
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE and wait_after_reboot:
         return build_runtime_start_actions()
     return []
@@ -196,12 +191,9 @@ def _deploy_post_checks(
         checks = NETBSD6_REBOOT_DEPLOY_CHECKS
     if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         checks = REBOOT_THEN_ACTIVATION_CHECKS
-    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        checks = RUNTIME_ACTIVATION_CHECKS
     if startup_mode not in {
         DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
         DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
-        DEPLOY_STARTUP_ACTIVATE_NOW,
     }:
         raise ValueError(f"Unsupported deployment startup mode: {startup_mode!r}")
     rsync_check = (
@@ -253,8 +245,6 @@ def build_deployment_plan(
     }
     private_dir = f"{payload_dir}/private"
     cache_dir = f"{payload_dir}/cache"
-    reboot_required = _deploy_reboot_required(startup_mode)
-    wait_after_reboot = wait_after_reboot if reboot_required else False
     remote_directories = [
         payload_dir,
         private_dir,
@@ -275,7 +265,6 @@ def build_deployment_plan(
         RemotePermission(payload_targets["discovery"], "755"),
         RemotePermission(payload_targets["rsync"], "755"),
         RemotePermission(payload_targets["rsyncd.conf"], "600"),
-        RemotePermission(flash_targets["rc.local"], "755"),
         RemotePermission(flash_targets["common.sh"], "755"),
         RemotePermission(flash_targets["boot.sh"], "755"),
         RemotePermission(flash_targets["manager.sh"], "755"),
@@ -287,6 +276,24 @@ def build_deployment_plan(
         RemotePermission(cache_dir, "755"),
         RemotePermission(private_dir, "700"),
     ]
+    # Only replace software we own. Persistent metadata, quarantines and logs
+    # deliberately stay in place, including after an interrupted deployment.
+    flash_software = [*flash_targets.values(), *(
+        f"/mnt/Flash/{name}" for name in (
+            "service", "migrate.sh", "xattr-migrate-wrapper.sh", "start-samba.sh", "watchdog.sh",
+            "mdns", "nbns", "mdns-advertiser", "nbns-advertiser", "mdns-smbd-advertiser",
+        )
+    )]
+    flash_software += [
+        f"/mnt/Flash/.{Path(path).name}.tmp" for path in flash_software
+    ]
+    payload_software = [*payload_targets.values(), *(
+        f"{payload_dir}/{name}" for name in (
+            "smb.conf.template", "mdns", "nbns", "mdns-advertiser", "nbns-advertiser",
+            "mdns-smbd-advertiser", "sbin/smbd", "sbin/mdns-smbd-advertiser",
+            "private/adisk.uuid", "private/nbns.enabled",
+        )
+    )]
     return DeploymentPlan(
         host=host,
         volume_root=payload_home.volume_root,
@@ -316,24 +323,22 @@ def build_deployment_plan(
         uploads=[
             FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
             FileTransfer(BINARY_DISCOVERY_SOURCE, payload_targets["discovery"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in discoveryd"),
-            FileTransfer(BINARY_DISCOVERY_SOURCE, flash_targets["discovery"], "flash_atomic", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "flash discoveryd"),
+            FileTransfer(BINARY_DISCOVERY_SOURCE, flash_targets["discovery"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "flash discoveryd"),
             FileTransfer(BINARY_RSYNC_SOURCE, payload_targets["rsync"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in rsync"),
             FileTransfer(GENERATED_RSYNC_CONFIG_SOURCE, payload_targets["rsyncd.conf"], "generated", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated rsync daemon config"),
             FileTransfer(BINARY_SERVICE_SOURCE, payload_targets["service"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "service helper for RAM staging"),
             FileTransfer(BINARY_TELEMETRY_SOURCE, payload_targets["telemetry"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "telemetry helper for RAM staging"),
-            FileTransfer(PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged rc.local"),
-            FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
-            FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
-            FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
-            FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
-            FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
+            FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
+            FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
+            FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
+            FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
+            FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
         ],
         pre_upload_actions=[
             # Existing installs run mdns directly from /mnt/Flash.
             # Stop runtime supervisors first so they do not restart daemons while
             # deploy is overwriting the payload and auth files.
-            StopManagerAction(),
-            StopWatchdogAction(),
+            StopServiceRuntimeAction(),
             StopProcessAction("smbd"),
             StopProcessAction("discoveryd"),
             StopProcessAction("wcifsfs"),
@@ -343,28 +348,21 @@ def build_deployment_plan(
             StopProcessAction("nbns-advertiser"),
             StopProcessAction("mdns"),
             StopProcessAction("nbns"),
+            # v1's longer executable name can be truncated in kernel ucomm.
+            StopProcessAction("mdns-smbd-advertiser"),
+            StopProcessAction("mdns-smbd-adverti"),
+            StopProcessAction("mdns-smbd-advert"),
             StopProcessAction("rsync"),
             StopTelemetryAction(),
-            RemovePathAction("/mnt/Flash/migrate.sh"),
-            RemovePathAction("/mnt/Flash/mdns"),
-            RemovePathAction("/mnt/Flash/start-samba.sh"),
-            RemovePathAction("/mnt/Flash/watchdog.sh"),
-            ensure_payload_volume,
-            RemovePathAction(f"{payload_dir}/smb.conf.template"),
-            ensure_payload_volume,
-            RemovePathAction(f"{private_dir}/adisk.uuid"),
-            ensure_payload_volume,
-            RemovePathAction(f"{private_dir}/nbns.enabled"),
-            # The renamed executables replace the interim short payload names.
-            # Guard each disk mutation because Apple's diskd can unmount it.
-            ensure_payload_volume,
-            RemovePathAction(f"{payload_dir}/mdns"),
-            ensure_payload_volume,
-            RemovePathAction(f"{payload_dir}/nbns"),
-            ensure_payload_volume,
-            RemovePathAction(f"{payload_dir}/mdns-advertiser"),
-            ensure_payload_volume,
-            RemovePathAction(f"{payload_dir}/nbns-advertiser"),
+            WaitForIdleJobsAction(),
+            # rc.local is first to be removed and last to be installed. A
+            # partial software tree must never start on an intervening reboot.
+            *(RemovePathAction(path) for path in flash_software),
+            RemovePathAction("/mnt/Memory/samba4"),
+            *(
+                action for path in payload_software
+                for action in (ensure_payload_volume, RemovePathAction(path))
+            ),
             ensure_payload_volume,
             PrepareDirsAction(tuple(remote_directories), tuple(legacy_symlinks)),
         ],
@@ -372,14 +370,13 @@ def build_deployment_plan(
             ensure_payload_volume,
             InstallPermissionsAction(tuple(permissions)),
         ],
-        post_verify_actions=[
-            # The deploy service defers this exact upgrade cleanup until the
-            # replacement has passed post-sync payload verification.
-            RemovePathAction("/mnt/Flash/mdns-advertiser"),
-        ],
+        boot_upload=FileTransfer(
+            PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"], "scp",
+            FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "enable boot after verified installation",
+        ),
         startup_mode=startup_mode,
         activation_actions=_deploy_activation_actions(startup_mode, wait_after_reboot=wait_after_reboot),
-        reboot_required=reboot_required,
+        reboot_required=True,
         wait_after_reboot=wait_after_reboot,
         post_deploy_checks=_deploy_post_checks(
             startup_mode,
