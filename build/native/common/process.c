@@ -85,6 +85,10 @@ static int execute(void *data) {
 int tc_child_exec(struct tc_child *child, char *const argv[], const char *log) {
     return tc_child_fork(child, execute, (void *)argv, log, NULL, 0, 0);
 }
+int tc_child_exec_capture(struct tc_child *child, char *const argv[], void *out, size_t capacity,
+                          long long deadline) {
+    return tc_child_fork(child, execute, (void *)argv, NULL, out, capacity, deadline);
+}
 
 void tc_child_prepare(const struct tc_child *child, fd_set *reads, int *maxfd, long long *deadline) {
     if (child->output >= 0 && child->group) {

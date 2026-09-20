@@ -15,6 +15,7 @@ typedef int (*tc_child_fn)(void *);
 int tc_child_fork(struct tc_child *, tc_child_fn, void *, const char *log, void *capture, size_t capacity,
                   long long deadline);
 int tc_child_exec(struct tc_child *, char *const argv[], const char *log);
+int tc_child_exec_capture(struct tc_child *, char *const argv[], void *, size_t, long long deadline);
 void tc_child_prepare(const struct tc_child *, fd_set *, int *, long long *);
 /* Returns 1 after exit and complete output, 0 while running. */
 int tc_child_poll(struct tc_child *, long long now);
