@@ -103,8 +103,14 @@ and check that cleanup retains the sidecar.
 Host runs keep those cases isolated and repeat them once through `all` to check
 cross-case cleanup under sanitizers. Device runs use that same reset-isolated
 `all` invocation as their sole run so the 6.8 MiB static fixture is uploaded once.
-During deploy migration, TDB values replace conflicting native values; cleanup
-requires exact readback before retiring the TDB record. Native-only values and
+The `multi` case opens real read-only TDBs through the deploy input parser. It
+covers mtime and nanosecond precedence, UUID/path ties, unique older values,
+fragment ownership, raw FinderInfo, source changes, failed flushes, unresolved
+older sources retaining newer databases, and whole-file quarantine without
+changing the original bytes. Python deployment tests cover completion receipts,
+absent volumes, subsequent native edits, and interrupted software installation.
+During deploy migration, merged TDB values replace conflicting native values;
+cleanup requires exact readback before whole-database retirement. Native-only values and
 resource-fork conflicts retain their existing behavior. `fruit:metadata=stream|netatalk` selects
 the preferred legacy value only during migration, and `fruit:resource=file`
 supplies AppleDouble sidecars to the migrator. Non-HFS shares retain the original

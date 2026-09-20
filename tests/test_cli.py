@@ -411,6 +411,10 @@ class CliTests(unittest.TestCase):
             )
         )
 
+        from tests.test_xattr_migration import fake_inventory
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: fake_inventory()))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inspect_sources"))
+
     def tearDown(self) -> None:
         self._exit_stack.close()
 
@@ -5079,7 +5083,7 @@ class CliTests(unittest.TestCase):
                 "timeout_seconds": 120,
                 "description": "generated flash runtime config",
             },
-            payload["uploads"],
+            [payload["config_upload"]],
         )
         self.assertNotIn("rendered:smb.conf.template", {upload["source_id"] for upload in payload["uploads"]})
         self.assertNotIn("generated:adisk.uuid", {upload["source_id"] for upload in payload["uploads"]})
@@ -5141,8 +5145,8 @@ class CliTests(unittest.TestCase):
             ".samba4",
             wait_seconds=7,
         )
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
-        self.assertEqual(result.mocks.upload_deployment_payload.call_count, 3)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
+        self.assertEqual(result.mocks.upload_deployment_payload.call_count, 4)
         payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
         result.mocks.verify_payload_home_conn.assert_has_calls(
             [
@@ -5151,7 +5155,7 @@ class CliTests(unittest.TestCase):
             ]
         )
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
+        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 3)
         self.assertTrue(all(
             call.args == (result.mocks.wait_for_mast_volumes_conn.call_args.args[0],)
             for call in result.mocks.flush_remote_filesystem_writes.call_args_list
@@ -5382,7 +5386,7 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if _plan.uploads in ([_plan.migration_upload], [_plan.boot_upload]):
+            if _plan.uploads != [_plan.config_upload]:
                 return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
@@ -5428,7 +5432,7 @@ class CliTests(unittest.TestCase):
         captured: list[str] = []
 
         def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            if _plan.uploads in ([_plan.migration_upload], [_plan.boot_upload]):
+            if _plan.uploads != [_plan.config_upload]:
                 return
             captured.append(source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text())
 
@@ -5639,7 +5643,7 @@ class CliTests(unittest.TestCase):
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.wait_for_ssh_state_conn.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertIn("Requesting reboot...", result.text)
         self.assertIn("Reboot requested; not waiting for the device to go down or come back.", result.text)
         self.assertIn("Post-reboot runtime verification skipped.", result.text)
@@ -5663,7 +5667,7 @@ class CliTests(unittest.TestCase):
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.wait_for_ssh_state_conn.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         self.assertNotIn("Activating deployed runtime after reboot.", result.text)
         self.assertNotIn("NetBSD4 activation complete.", result.text)
         self.assertIn("Post-reboot runtime verification skipped.", result.text)
@@ -5681,7 +5685,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(str(result.exception), "managed payload verification failed at /Volumes/dk2/.samba4: missing smbd")
         result.mocks.remote_request_reboot.assert_not_called()
         result.mocks.verify_payload_home_conn.assert_called_once()
-        result.mocks.flush_remote_filesystem_writes.assert_not_called()
+        result.mocks.flush_remote_filesystem_writes.assert_called_once()
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
         self.assertIn("stage=verify_payload_upload", telemetry_error)
         self.assertIn("managed payload verification failed", telemetry_error)
@@ -5703,7 +5707,7 @@ class CliTests(unittest.TestCase):
             str(result.exception),
             "managed payload verification failed at /Volumes/dk2/.samba4: missing payload directory",
         )
-        result.mocks.flush_remote_filesystem_writes.assert_called_once()
+        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
         result.mocks.remote_request_reboot.assert_not_called()
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
@@ -5793,6 +5797,8 @@ class CliTests(unittest.TestCase):
         timeout = "Timed out waiting for ssh command to finish: runtime probe"
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if plan.uploads == [plan.migration_upload]:
+                return
             if on_uploading is not None:
                 on_uploading(plan.uploads[0])
             raise SshCommandTimeout(timeout)
@@ -5898,12 +5904,12 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 4)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 8)
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
-        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 2)
+        self.assertEqual(result.mocks.flush_remote_filesystem_writes.call_count, 3)
         result.mocks.remote_request_reboot.assert_called_once()
         self.assertEqual(
-            result.mocks.run_remote_actions.call_args_list[3].args[1],
+            result.mocks.run_remote_actions.call_args_list[-1].args[1],
             [RunScriptAction("/mnt/Flash/rc.local")],
         )
         self.assertIn("Activating deployed runtime after reboot.", result.text)
@@ -5952,7 +5958,7 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 7)
         result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.verify_managed_runtime.assert_called_once()
         self.assertIn("/etc/rc.d/LOGIN invokes /mnt/Flash/rc.local", result.text)

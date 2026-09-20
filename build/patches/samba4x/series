@@ -159,3 +159,7 @@
 # readback before cleanup retires them. Report directory/retirement failures.
 0040-deploy-migration-tdb-authority.patch|TDB-authoritative deploy migration and actionable scan errors
 0041-time-capsule-stale-tree-reload.patch|forward parent reloads and disconnect only revoked Apple disk bindings
+# A deploy can find several historical payload databases. Merge logical values
+# without changing source mtimes, and retire whole databases oldest-first only
+# after verified volume coverage is available to the deploy completion files.
+0042-merge-legacy-metadata-sources.patch|merge read-only legacy TDBs and report verified volume coverage

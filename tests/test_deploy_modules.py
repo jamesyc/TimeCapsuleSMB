@@ -148,6 +148,17 @@ def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> Readin
 
 
 class DeployModuleTests(unittest.TestCase):
+    def setUp(self):
+        from tests.test_xattr_migration import fake_inventory
+        for target, kwargs in (
+            ("inventory_metadata", {"side_effect": lambda *_a: fake_inventory()}),
+            ("inspect_sources", {}),
+            ("flush_remote_filesystem_writes", {}),
+        ):
+            patcher = mock.patch("timecapsulesmb.services.deploy." + target, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     _nbns_binary_tmpdir: tempfile.TemporaryDirectory[str] | None = None
     _nbns_binary_path: Path | None = None
 
@@ -485,7 +496,7 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_deployment_uses_one_native_runtime_and_small_boot_scripts(self) -> None:
         plan = self._prepared_deploy_plan().plan
-        transfers = [*plan.uploads, plan.boot_upload]
+        transfers = [*plan.uploads, plan.config_upload, plan.boot_upload]
         services = [transfer for transfer in transfers if transfer.source_id == BINARY_SERVICE_SOURCE]
         self.assertEqual([transfer.destination for transfer in services], ["/mnt/Flash/service"])
         flash_names = {Path(transfer.destination).name for transfer in transfers
@@ -784,16 +795,11 @@ class DeployModuleTests(unittest.TestCase):
                     },
                 )
 
-        mount_mock.assert_called_once_with(
-            connection,
-            "/Volumes/dk2",
-            "/dev/dk2",
-            wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-        )
+        mount_mock.assert_not_called()  # The helper executes directly from RAM.
         scp_mock.assert_called_once_with(
             connection,
             Path("bin/xattr-migrate/xattr-hfs-migrate"),
-            "/Volumes/dk2/samba4/xattr-hfs-migrate",
+            "/mnt/Memory/tc-xattr-hfs-migrate",
             timeout=180,
         )
 
@@ -803,11 +809,7 @@ class DeployModuleTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "migration phase"):
             migrate_xattr_tdb_to_hfs(
-                connection, plan, phase="remove", legacy_metadata="stream"
-            )
-        with self.assertRaisesRegex(ValueError, "metadata backend"):
-            migrate_xattr_tdb_to_hfs(
-                connection, plan, phase="copy", legacy_metadata="hfs"
+                connection, plan, phase="remove", inventory=None
             )
 
     def test_upload_and_verify_deployment_payload_records_upload_measurements(self) -> None:
@@ -840,14 +842,14 @@ class DeployModuleTests(unittest.TestCase):
         batch_measurements = [fields for kind, fields in measurements if kind == "upload_batch"]
         self.assertEqual(
             [fields["source_id"] for fields in upload_measurements],
-            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_RSYNC_SOURCE, PACKAGED_RC_LOCAL_SOURCE],
+            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_RSYNC_SOURCE, GENERATED_FLASH_CONFIG_SOURCE, PACKAGED_RC_LOCAL_SOURCE],
         )
-        self.assertTrue(all(fields["destination_kind"] == "payload" for fields in upload_measurements[:-1]))
+        self.assertEqual([fields["destination_kind"] for fields in upload_measurements], ["memory", "payload", "payload", "flash", "flash"])
         self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
         self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
         self.assertEqual(batch_measurements[0]["result"], "success")
 
-    def test_migration_uses_saved_metadata_choice_unless_explicitly_overridden(self) -> None:
+    def test_new_metadata_preference_never_overrides_old_migration_inventory(self) -> None:
         for saved, override, expected in (("true", None, "netatalk"), ("false", None, "stream"),
                                           ("true", False, "stream"), ("false", True, "netatalk")):
             with self.subTest(saved=saved, override=override):
@@ -864,8 +866,9 @@ class DeployModuleTests(unittest.TestCase):
                     flush_remote_writes=mock.Mock(),
                     verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
                 )
-                self.assertEqual([(c.kwargs["phase"], c.kwargs["legacy_metadata"])
-                                  for c in migrate.call_args_list], [("copy", expected), ("cleanup", expected)])
+                self.assertEqual([c.kwargs["phase"] for c in migrate.call_args_list], ["copy", "cleanup"])
+                self.assertIs(migrate.call_args_list[0].kwargs["inventory"], migrate.call_args_list[1].kwargs["inventory"])
+                self.assertNotIn("legacy_metadata", migrate.call_args_list[0].kwargs)
 
     def test_migration_failure_diagnostics_distinguish_timeout_from_scan_error(self) -> None:
         from timecapsulesmb.transport.errors import SshCommandTimeout
@@ -899,11 +902,8 @@ class DeployModuleTests(unittest.TestCase):
         events: list[str] = []
         migrated_root = self._mast_volume()
 
-        def migrate(_connection, _plan, *, phase, legacy_metadata, roots=None):
-            events.append(
-                f"migrate:{phase}:{legacy_metadata}:"
-                f"{'selected' if roots == (migrated_root,) else 'discover'}"
-            )
+        def migrate(_connection, _plan, *, phase, inventory):
+            events.append(f"migrate:{phase}")
             return XattrMigrationResult(f"phase={phase}", (migrated_root,))
 
         def verify(*_args, **_kwargs):
@@ -914,7 +914,7 @@ class DeployModuleTests(unittest.TestCase):
             events.append(
                 "upload:migrator"
                 if plan.uploads == [plan.migration_upload]
-                else "upload:boot" if plan.uploads == [plan.boot_upload] else "upload:payload"
+                else "upload:boot" if plan.uploads == [plan.boot_upload] else "upload:config" if plan.uploads == [plan.config_upload] else "upload:payload"
             )
 
         upload_and_verify_deployment_payload(
@@ -935,11 +935,12 @@ class DeployModuleTests(unittest.TestCase):
             events,
             [
                 "upload:migrator",
-                "migrate:copy:stream:discover",
+                "migrate:copy",
                 "upload:payload",
                 "verify",
                 "verify",
-                "migrate:cleanup:stream:selected",
+                "migrate:cleanup",
+                "upload:config",
                 "upload:boot",
             ],
         )
@@ -970,6 +971,8 @@ class DeployModuleTests(unittest.TestCase):
         connection = SshConnection("host", "pw", "-o foo")
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if plan.uploads == [plan.migration_upload]:
+                return
             if on_uploading is not None:
                 on_uploading(plan.uploads[0])
             raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
@@ -2034,7 +2037,7 @@ describe_managed_smbd_status "" ""
         self.assertIn(f"rm -rf {payload_dir}/private/nbns.enabled", text)
         self.assertNotIn("generated smbpasswd", text)
         self.assertNotIn("generated:username.map", text)
-        self.assertIn("generated flash runtime config (generated:tcapsulesmb.conf, scp, timeout 120s) -> /mnt/Flash/tcapsulesmb.conf", text)
+        self.assertIn("upload generated flash runtime config -> /mnt/Flash/tcapsulesmb.conf", text)
         self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, scp, timeout 180s) -> {payload_dir}/rsync", text)
         self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, generated, timeout 120s) -> {payload_dir}/rsyncd.conf", text)
         self.assertIn("/usr/bin/pkill '^rsync$' >/dev/null 2>&1 || true", text)
@@ -2244,22 +2247,22 @@ describe_managed_smbd_status "" ""
         plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
-        for index, action in enumerate(plan.pre_upload_actions):
+        for index, action in enumerate(plan.replace_software_actions):
             if isinstance(action, RemovePathAction) and action.path.startswith("/Volumes/"):
-                self.assertEqual(plan.pre_upload_actions[index - 1], expected_guard)
+                self.assertEqual(plan.replace_software_actions[index - 1], expected_guard)
         prepare = next(index for index, action in enumerate(plan.pre_upload_actions)
                        if isinstance(action, PrepareDirsAction))
         self.assertEqual(plan.pre_upload_actions[prepare - 1], expected_guard)
         self.assertEqual(plan.post_upload_actions[0], expected_guard)
         for protocol in ("mdns", "nbns"):
-            self.assertIn(RemovePathAction(f"{plan.payload_dir}/{protocol}"), plan.pre_upload_actions)
+            self.assertIn(RemovePathAction(f"{plan.payload_dir}/{protocol}"), plan.replace_software_actions)
             self.assertIn(StopProcessAction(protocol), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol + "-advertiser"), plan.pre_upload_actions)
-        self.assertIn(RemovePathAction(f"{plan.payload_dir}/discoveryd"), plan.pre_upload_actions)
+        self.assertIn(RemovePathAction(f"{plan.payload_dir}/discoveryd"), plan.replace_software_actions)
         self.assertIn(StopProcessAction("discoveryd"), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("wcifsnd"), plan.pre_upload_actions)
-        self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.pre_upload_actions)
-        self.assertIn(RemovePathAction("/mnt/Flash/mdns-advertiser"), plan.pre_upload_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.replace_software_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/mdns-advertiser"), plan.replace_software_actions)
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

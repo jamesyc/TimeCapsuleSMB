@@ -7,8 +7,7 @@ from typing import Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
-from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn, read_mast_volumes_conn
-from timecapsulesmb.transport.errors import SshCommandTimeout
+from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
@@ -29,7 +28,6 @@ FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300
 # Old disks may contain millions of files. Migration runs only during deploy;
 # allow a long bounded scan without imposing its timeout on ordinary SSH calls.
 XATTR_HFS_MIGRATION_TIMEOUT_SECONDS = 6 * 60 * 60
-XATTR_MIGRATION_LOG_TAIL_BYTES = 8192
 
 
 @dataclass(frozen=True)
@@ -39,106 +37,10 @@ class XattrMigrationResult:
     unavailable_roots: tuple[str, ...] = ()
 
 
-def migrate_xattr_tdb_to_hfs(
-    connection: SshConnection,
-    plan: DeploymentPlan,
-    *,
-    phase: str,
-    legacy_metadata: str,
-    roots: tuple[MaStVolume, ...] | None = None,
-) -> XattrMigrationResult:
-    """Migrate legacy metadata before native-HFS smbd is started."""
-    if phase not in {"copy", "cleanup"}:
-        raise ValueError(f"unsupported xattr migration phase: {phase}")
-    if legacy_metadata not in {"stream", "netatalk"}:
-        raise ValueError(f"unsupported legacy fruit metadata backend: {legacy_metadata}")
-    tdb_path = f"{plan.private_dir}/xattr.tdb"
-    migrator_path = plan.payload_targets["xattr_migrator"]
-    if not ensure_volume_root_mounted_conn(
-        connection, plan.volume_root, plan.device_path,
-        wait_seconds=plan.apple_mount_wait_seconds,
-    ):
-        raise RuntimeError("migration payload volume is unavailable")
-    probe = run_ssh(connection, f"test -f {shlex.quote(tdb_path)}", check=False)
-    if probe.returncode == 1:
-        return XattrMigrationResult(
-            f"migration_phase={phase} skipped reason=no_legacy_tdb",
-            (),
-        )
-    if probe.returncode != 0:
-        raise RuntimeError("could not probe legacy metadata")
-    candidates = tuple(read_mast_volumes_conn(connection)) if roots is None else roots
-    if not candidates:
-        raise RuntimeError("migration found no attached HFS volumes")
-    mounted: list[MaStVolume] = []
-    unavailable: list[str] = []
-    for volume in candidates:
-        if ensure_volume_root_mounted_conn(
-            connection, volume.volume_root, volume.device_path,
-            wait_seconds=plan.apple_mount_wait_seconds,
-        ):
-            mounted.append(volume)
-        else:
-            unavailable.append(volume.volume_root)
-    if not mounted:
-        if phase == "cleanup" and roots is not None:
-            return XattrMigrationResult(
-                "migration_phase=cleanup skipped reason=copied_roots_unavailable",
-                (),
-                tuple(unavailable),
-            )
-        raise RuntimeError("migration found no mounted HFS volumes")
-    root_args = shlex.join([volume.volume_root for volume in mounted])
-    migration_log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
-    script = f"""
-tdb={shlex.quote(tdb_path)}
-migration_ram=/mnt/Memory/tc-xattr-hfs-migrate
-migration_log={shlex.quote(migration_log)}
-migration_child=
-trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; rm -f "$migration_ram"' 0
-trap 'exit 1' 1 2 15
-cp {shlex.quote(migrator_path)} "$migration_ram" || exit $?
-chmod 755 "$migration_ram" || exit $?
-mkdir -p {shlex.quote(f'{plan.payload_dir}/logs')} || exit $?
-{{
-    printf 'migration_phase=%s legacy_metadata=%s timeout_seconds=%s\\n' {shlex.quote(phase)} {shlex.quote(legacy_metadata)} {XATTR_HFS_MIGRATION_TIMEOUT_SECONDS}
-    /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ'
-    printf 'tdb=%s\\n' "$tdb"
-    /bin/ls -ln "$tdb"
-    printf 'root=%s\\n' {root_args}
-}} >"$migration_log" || exit $?
-"$migration_ram" {shlex.quote(phase)} "$tdb" {shlex.quote(legacy_metadata)} {root_args} >>"$migration_log" 2>&1 &
-migration_child=$!
-migration_status=0
-wait "$migration_child" || migration_status=$?
-migration_child=
-printf 'migration_exit_code=%s\\n' "$migration_status" >>"$migration_log"
-/bin/date -u '+finished_at=%Y-%m-%dT%H:%M:%SZ' >>"$migration_log"
-cat "$migration_log"
-[ "$migration_status" = 0 ] || exit "$migration_status"
-/bin/sync || exit $?
-echo migration_phase={shlex.quote(phase)} complete unavailable_roots={len(unavailable)}
-""".strip()
-    try:
-        proc = run_ssh(
-            connection,
-            f"/bin/sh -c {shlex.quote(script)}",
-            timeout=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
-        )
-    except SshCommandTimeout as exc:
-        # A timed-out command never reaches cat. Fetch a bounded, best-effort
-        # snapshot without letting a failed diagnostic read hide the timeout.
-        try:
-            saved = run_ssh(connection,
-                            f"/usr/bin/tail -c {XATTR_MIGRATION_LOG_TAIL_BYTES} {shlex.quote(migration_log)}",
-                            check=False, timeout=10)
-            detail = saved.stdout[-XATTR_MIGRATION_LOG_TAIL_BYTES:].strip() if saved.returncode == 0 else "unavailable"
-        except Exception:
-            detail = "unavailable"
-        raise SshCommandTimeout(
-            f"{exc}\nSaved migration log snapshot ({migration_log}; may be incomplete):\n{detail}"
-        ) from exc
-    return XattrMigrationResult(proc.stdout, tuple(mounted), tuple(unavailable))
+def migrate_xattr_tdb_to_hfs(connection: SshConnection, plan: DeploymentPlan, *, phase: str, inventory) -> XattrMigrationResult:
+    from timecapsulesmb.deploy.migration import migrate_phase
+    output = migrate_phase(connection, plan, inventory, phase)
+    return XattrMigrationResult(output, inventory.volumes, tuple(inventory.unavailable))
 
 
 def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:

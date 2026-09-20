@@ -29,6 +29,9 @@ from timecapsulesmb.transport.errors import ScpError
 
 class Device:
     def __init__(self, root, monkeypatch):
+        from tests.test_xattr_migration import fake_inventory
+        monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a: fake_inventory())
+        monkeypatch.setattr('timecapsulesmb.services.deploy.inspect_sources', lambda *_a: None)
         self.root = root
         self.home = PayloadHome('/Volumes/dk2', '/dev/dk2', '.samba4')
         binary = root / 'binary'
@@ -164,6 +167,9 @@ class Device:
     def assert_installed(self):
         assert self.transfers[-1] == '/mnt/Flash/rc.local'
         for name, content in self.sources.items():
+            if name == "/mnt/Memory/tc-xattr-hfs-migrate":
+                assert not self.path(name).exists()
+                continue
             assert self.path(name).read_bytes() == content
             mode = 0o600 if name.endswith('.conf') else 0o755
             assert self.path(name).stat().st_mode & 0o777 == mode
@@ -264,3 +270,60 @@ def test_diskd_unmount_after_verified_transfer_is_remounted_before_permissions(t
     assert device.events.count('unmount') == 1
     assert device.events.count('remount') == 1
     device.assert_installed()
+
+
+def test_no_legacy_tdb_skips_migrator_upload_and_both_phases(tmp_path, monkeypatch):
+    from timecapsulesmb.deploy.migration import MigrationInventory
+    device = Device(tmp_path, monkeypatch)
+    tdb = '/Volumes/dk2/.samba4/private/xattr.tdb'
+    device.path(tdb).unlink(); device.protected.pop(tdb)
+    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a: MigrationInventory((), [], [], [], ''))
+    device.install()
+    assert '/mnt/Memory/tc-xattr-hfs-migrate' not in device.transfers
+    assert 'copy' not in device.events and 'cleanup' not in device.events
+    device.assert_installed()
+
+
+def test_copy_precedes_software_removal_and_cleanup_precedes_new_config(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    old_config = b'FRUIT_METADATA_NETATALK=1\n'
+    device.write('/mnt/Flash/tcapsulesmb.conf', old_config)
+    original = device.migrate
+    def migrate(connection, plan, phase, **kwargs):
+        assert device.path('/mnt/Flash/tcapsulesmb.conf').read_bytes() == old_config
+        expected = b'old or truncated software' if phase == 'copy' else b'new executable\n'
+        assert device.path('/mnt/Flash/service').read_bytes() == expected
+        return original(connection, plan, phase, **kwargs)
+    device.migrate = migrate
+    device.install()
+    assert device.path('/mnt/Flash/tcapsulesmb.conf').read_bytes() != old_config
+    device.assert_installed()
+
+
+def test_failed_copy_keeps_old_software_and_removes_ram_helper(tmp_path, monkeypatch):
+    device = Device(tmp_path, monkeypatch)
+    device.failure = 'copy'
+    with pytest.raises(DeployDeviceError): device.install()
+    assert device.path('/mnt/Flash/service').read_bytes() == b'old or truncated software'
+    assert not device.path('/mnt/Memory/tc-xattr-hfs-migrate').exists()
+    assert not device.path('/mnt/Flash/rc.local').exists()
+    device.assert_protected()
+
+
+def test_known_software_removed_from_every_detected_payload_only(tmp_path, monkeypatch):
+    from tests.test_xattr_migration import fake_inventory
+    device = Device(tmp_path, monkeypatch)
+    secondary = '/Volumes/dk3/.samba4'
+    for name in ('sbin/telemetry', 'sbin/service', 'manager.sh', 'mdns-advertiser'):
+        device.write(secondary + '/' + name, b'old program')
+    for name in ('private/xattr.tdb', 'private/xattr.tdb.orphaned.1', 'logs/old.log'):
+        device.write(secondary + '/' + name, b'preserve')
+    inv = fake_inventory()
+    inv.volumes = (SimpleNamespace(volume_root='/Volumes/dk3', device_path='/dev/dk3'),)
+    inv.payload_dirs = [secondary]
+    monkeypatch.setattr('timecapsulesmb.services.deploy.inventory_metadata', lambda *_a: inv)
+    device.install()
+    for name in ('sbin/telemetry', 'sbin/service', 'manager.sh', 'mdns-advertiser'):
+        assert not device.path(secondary + '/' + name).exists()
+    for name in ('private/xattr.tdb', 'private/xattr.tdb.orphaned.1', 'logs/old.log'):
+        assert device.path(secondary + '/' + name).read_bytes() == b'preserve'

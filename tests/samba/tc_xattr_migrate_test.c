@@ -1151,9 +1151,172 @@ static void test_orphans(void)
 	rmdir(root);
 }
 
+/* Apple diskd can remove a mount while other disks remain. Completion is
+ * volume-scoped; these cases exercise the real read-only TDB merge and coverage
+ * logic with only the private native-xattr calls replaced by the hooks above. */
+static void multi_source_line(FILE *input, unsigned index, const char *uuid,
+                              const char *relative, const char *path)
+{
+    struct tc_source_stat st;
+    CHECK(tc_source_stat_read(path, &st) == 0);
+    fprintf(input, "S %u %s ", index, uuid);
+    tc_hex_print(input, (const uint8_t *)relative, strlen(relative)); fprintf(input, " ");
+    tc_hex_print(input, (const uint8_t *)path, strlen(path));
+    fprintf(input, " stream %"PRIu64" %"PRIu64" %"PRIu64" %"PRId64" %ld %016"PRIx64"\n",
+            st.dev, st.inode, st.size, st.mtime, st.nsec, st.hash);
+}
+static void multi_prepare(struct tc_multi *multi, TALLOC_CTX *ctx,
+                          const char *root, const char *older, const char *newer)
+{
+    FILE *input = tmpfile();
+    struct stat st;
+    CHECK(input != NULL && stat(root, &st) == 0);
+    memset(multi, 0, sizeof(*multi)); multi->ctx = ctx;
+    fprintf(input, "TCMIGRATE1\n");
+    multi_source_line(input, 0, "11111111-1111-1111-1111-111111111111", ".samba4/private/old.tdb", older);
+    multi_source_line(input, 1, "22222222-2222-2222-2222-222222222222", ".samba4/private/new.tdb", newer);
+    fprintf(input, "R 33333333-3333-3333-3333-333333333333 ");
+    tc_hex_print(input, (const uint8_t *)root, strlen(root));
+    fprintf(input, " %"PRIu64" %"PRIu64"\nE\n", (uint64_t)st.st_dev, (uint64_t)st.st_ino);
+    rewind(input);
+    CHECK(tc_multi_read(multi, input) == 0);
+    fclose(input);
+}
+static void multi_value(const char *path, const struct file_id *id, const char *name, const void *value, size_t size)
+{
+    TALLOC_CTX *frame = talloc_stackframe();
+    struct db_context *db = dbwrap_local_open(frame, path, 0, TDB_DEFAULT,
+        O_RDWR | O_CREAT, 0600, DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
+    CHECK(db != NULL);
+    CHECK(xattr_tdb_setattr(db, id, name, value, size, 0) == 0);
+    TALLOC_FREE(frame);
+}
+static void test_multi(void)
+{
+    TALLOC_CTX *frame = talloc_stackframe();
+    char root[] = "/tmp/tc-multi.XXXXXX", private_dir[128], old[160], newer[160], object[128], quarantine[192];
+    struct tc_multi multi;
+    struct tc_counts counts;
+    struct stat st;
+    struct file_id id;
+    struct tc_source_stat before[2], after;
+    struct timeval dates[2] = {{.tv_sec = 1234567890}, {.tv_sec = 1234567890}};
+    const uint8_t low[] = {'l','o','w',0}, high[] = {'h','i',0}, extent_low[] = {'x'}, extent_high[] = {'y'};
+    uint8_t anchor_low[] = {'a',1}, anchor_high[] = {'b',1};
+    uint8_t finder[AFP_FinderSize] = {0x41};
+    int fd;
+    CHECK(mkdtemp(root) != NULL);
+    snprintf(private_dir, sizeof(private_dir), "%s/.samba4", root); CHECK(mkdir(private_dir, 0700) == 0);
+    snprintf(old, sizeof(old), "%s/old.tdb", private_dir);
+    snprintf(newer, sizeof(newer), "%s/new.tdb", private_dir);
+    snprintf(object, sizeof(object), "%s/object", root);
+    fd = open(object, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0 && fstat(fd, &st) == 0); close(fd);
+    id = tc_file_id(&st);
+    multi_value(old, &id, "com.apple.test", low, sizeof(low));
+    multi_value(old, &id, "com.apple.unique", low, sizeof(low));
+    multi_value(newer, &id, "com.apple.test", high, sizeof(high));
+    multi_value(old, &id, "user.DosStream.sample:$DATA", anchor_low, sizeof(anchor_low));
+    multi_value(old, &id, "user.DosStreamExt.1.sample:$DATA", extent_low, sizeof(extent_low));
+    multi_value(newer, &id, "user.DosStream.sample:$DATA", anchor_high, sizeof(anchor_high));
+    multi_value(newer, &id, "user.DosStreamExt.1.sample:$DATA", extent_high, sizeof(extent_high));
+    multi_value(newer, &id, TC_FINDERINFO_XATTR, finder, sizeof(finder));
+    CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+    CHECK(tc_source_stat_read(old, &before[0]) == 0 && tc_source_stat_read(newer, &before[1]) == 0);
+    multi_prepare(&multi, frame, root, old, newer);
+    {
+        struct tc_multi_source a = multi.sources[0], b = multi.sources[1];
+        struct tc_multi_source *left = &a, *right = &b;
+        CHECK(tc_rank_compare(&left, &right) < 0); /* UUID breaks equal timestamps. */
+        memcpy(b.uuid, a.uuid, sizeof(b.uuid));
+        CHECK(tc_rank_compare(&left, &right) > 0); /* Then bytewise payload path. */
+        b.stat.nsec++;
+        CHECK(tc_rank_compare(&left, &right) < 0); /* Preserve subsecond mtime. */
+        a.stat.mtime++;
+        CHECK(tc_rank_compare(&left, &right) > 0);
+    }
+    reset_xattrs();
+    CHECK(tc_multi_scan(&multi, &counts) == 0);
+    CHECK(find_xattr("com.apple.test") != NULL && find_xattr("com.apple.test")->size == sizeof(high));
+    CHECK(!memcmp(find_xattr("com.apple.test")->value, high, sizeof(high)));
+    CHECK(find_xattr("com.apple.unique") != NULL);
+    CHECK(find_xattr(TC_FINDERINFO_XATTR) != NULL && find_xattr(TC_FINDERINFO_XATTR)->value[0] == 0x41);
+    CHECK(find_xattr("user.DosStream.sample:$DATA") != NULL);
+    CHECK(find_xattr("user.DosStream.sample:$DATA")->size == 3);
+    CHECK(!memcmp(find_xattr("user.DosStream.sample:$DATA")->value, "by\0", 3));
+    CHECK(!multi.sources[0].coverage[0] && !multi.sources[1].coverage[0]);
+    CHECK(tc_source_stat_read(old, &after) == 0 && tc_source_stat_same(&before[0], &after));
+    CHECK(tc_source_stat_read(newer, &after) == 0 && tc_source_stat_same(&before[1], &after));
+    /* Cleanup verifies the merged winner, never the superseded old value. A
+     * flush failure cannot produce completion coverage or retire any source. */
+    multi.phase = TC_PHASE_CLEANUP;
+    fsync_error = EIO;
+    CHECK(tc_multi_scan(&multi, &counts) == -1);
+    CHECK(!multi.sources[0].coverage[0] && !multi.sources[1].coverage[0]);
+    fsync_error = 0;
+    CHECK(tc_multi_scan(&multi, &counts) == 0);
+    CHECK(multi.sources[0].coverage[0] == 1 && multi.sources[1].coverage[0] == 1);
+    CHECK(tc_source_stat_read(old, &after) == 0 && tc_source_stat_same(&before[0], &after));
+    CHECK(tc_source_stat_read(newer, &after) == 0 && tc_source_stat_same(&before[1], &after));
+    /* A missing disk represented by unresolved lower-ranked coverage keeps
+     * the newer DB active, so interruption cannot reverse precedence. */
+    multi.sources[0].coverage[0] = 0;
+    CHECK(tc_multi_retire(&multi) == 0);
+    CHECK(access(old, F_OK) == 0 && access(newer, F_OK) == 0);
+    multi.sources[0].coverage[0] = 1;
+    CHECK(tc_multi_retire(&multi) == 0);
+    CHECK(access(old, F_OK) != 0 && access(newer, F_OK) != 0);
+    TALLOC_FREE(frame);
+
+    /* Whole-file mtime dominates UUID ties. No fragments from an older DB
+     * may fill a missing extent in the selected newer logical value. */
+    frame = talloc_stackframe();
+    multi_value(old, &id, "com.apple.test", low, sizeof(low));
+    multi_value(newer, &id, "com.apple.test", high, sizeof(high));
+    dates[1].tv_sec++;
+    CHECK(utimes(old, dates) == 0);
+    dates[1].tv_sec--;
+    CHECK(utimes(newer, dates) == 0);
+    multi_prepare(&multi, frame, root, old, newer); reset_xattrs();
+    CHECK(tc_multi_scan(&multi, &counts) == 0);
+    CHECK(!memcmp(find_xattr("com.apple.test")->value, low, sizeof(low)));
+    /* A source changed after inspection invalidates the whole scan. */
+    dates[1].tv_sec++;
+    CHECK(utimes(newer, dates) == 0);
+    CHECK(tc_multi_validate_sources(&multi) == -1);
+    TALLOC_FREE(frame);
+    unlink(old); unlink(newer);
+
+    frame = talloc_stackframe();
+    multi_value(old, &id, "user.DosStream.sample:$DATA", anchor_low, sizeof(anchor_low));
+    multi_value(old, &id, "user.DosStreamExt.1.sample:$DATA", extent_low, sizeof(extent_low));
+    multi_value(newer, &id, "user.DosStream.sample:$DATA", anchor_high, sizeof(anchor_high));
+    CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+    multi_prepare(&multi, frame, root, old, newer); reset_xattrs();
+    CHECK(tc_multi_scan(&multi, &counts) == -1);
+    CHECK(access(old, F_OK) == 0 && access(newer, F_OK) == 0);
+    TALLOC_FREE(frame); unlink(old); unlink(newer);
+
+    frame = talloc_stackframe();
+    write_orphan_rows(old, st.st_dev, (uint64_t)st.st_ino + 0x10000000ULL, 1, 0);
+    multi_value(newer, &id, "com.apple.test", high, sizeof(high));
+    CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+    multi_prepare(&multi, frame, root, old, newer); reset_xattrs();
+    CHECK(tc_multi_scan(&multi, &counts) == 0);
+    multi.phase = TC_PHASE_CLEANUP;
+    CHECK(tc_multi_scan(&multi, &counts) == 0 && multi.sources[0].coverage[0] == 2);
+    CHECK(tc_multi_retire(&multi) == 0);
+    snprintf(quarantine, sizeof(quarantine), "%s.orphaned.1", old);
+    CHECK(access(old, F_OK) != 0 && access(newer, F_OK) != 0 && access(quarantine, F_OK) == 0);
+    CHECK(tc_source_stat_read(quarantine, &after) == 0 && tc_source_stat_same(&multi.sources[0].stat, &after));
+    TALLOC_FREE(frame); unlink(quarantine);
+    unlink(object); rmdir(private_dir); rmdir(root);
+}
+
 int main(int argc, char **argv)
 {
 	CHECK(argc == 2);
+	setup_logging(argv[0], DEBUG_STDERR);
+	if (!strcmp(argv[1], "multi") || !strcmp(argv[1], "all")) test_multi();
 	if (strcmp(argv[1], "appledouble") == 0 || strcmp(argv[1], "all") == 0) {
 		test_appledouble();
 	}
@@ -1182,7 +1345,8 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "errors") == 0 || strcmp(argv[1], "all") == 0) {
 		test_errors();
 	}
-	if (strcmp(argv[1], "all") != 0 &&
+	if (strcmp(argv[1], "multi") != 0 &&
+	    strcmp(argv[1], "all") != 0 &&
 	    strcmp(argv[1], "appledouble") != 0 &&
 	    strcmp(argv[1], "embedded_xattrs") != 0 &&
 	    strcmp(argv[1], "resource") != 0 &&

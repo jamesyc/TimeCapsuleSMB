@@ -210,6 +210,12 @@ class AppApiTests(unittest.TestCase):
             )
         )
 
+        from tests.test_xattr_migration import fake_inventory
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=lambda *_a: fake_inventory()))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.inspect_sources"))
+
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.services.deploy.flush_remote_filesystem_writes"))
+
     def tearDown(self) -> None:
         self._exit_stack.close()
 
@@ -3344,7 +3350,7 @@ class AppApiTests(unittest.TestCase):
                                                         )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(upload.call_count, 3)
+        self.assertEqual(upload.call_count, 4)
         self.assertEqual(second.events_of_type("error"), [])
 
     def test_deploy_rejects_boolean_mount_wait_before_remote_connection(self) -> None:
@@ -3457,14 +3463,14 @@ class AppApiTests(unittest.TestCase):
                                                                 )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(upload.call_count, 3)
+        self.assertEqual(upload.call_count, 4)
         upload_sources = upload.call_args.kwargs["source_resolver"]
         self.assertIn("packaged:boot.sh", upload_sources)
         self.assertIn("binary:service", upload_sources)
         self.assertNotIn("packaged:manager.sh", upload_sources)
         self.assertNotIn("packaged:start-samba.sh", upload_sources)
         self.assertNotIn("packaged:watchdog.sh", upload_sources)
-        self.assertEqual(remote_actions.call_count, 3)
+        self.assertEqual(remote_actions.call_count, 7)
         wait.assert_called_once()
         verify_runtime.assert_called_once()
         render_runtime.assert_called_once()
@@ -4118,6 +4124,8 @@ MaSt = (
         )
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
+            if plan.uploads == [plan.migration_upload]:
+                return
             if on_uploading is not None:
                 on_uploading(plan.uploads[0])
             raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
@@ -4136,7 +4144,7 @@ MaSt = (
         self.assertEqual(error["debug"]["cause"], "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["stage"], "upload_xattr_migrator")
+        self.assertEqual(finished["stage"], "upload_smbd")
         self.assertIn("Caused by: Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp", finished["error"])
 
     def test_deploy_writes_disabled_install_telemetry_preference_to_flash_config(self) -> None:

@@ -1,0 +1,634 @@
+--- a/source3/utils/tc_xattr_hfs_migrate.c
++++ b/source3/utils/tc_xattr_hfs_migrate.c
+@@ -84,7 +84,9 @@
+ 	uint64_t errors;
+ };
+ 
++struct tc_multi;
+ struct tc_migration {
++	struct tc_multi *multi;
+ 	TALLOC_CTX *mem_ctx;
+ 	struct db_context *db;
+ 	const char *tdb_path;
+@@ -104,6 +106,8 @@
+ 	struct tc_counts counts;
+ };
+ 
++static int tc_multi_file(struct tc_migration *, int, const char *, const struct stat *, bool);
++
+ static bool tc_missing_error(int error)
+ {
+ 	return error == ENOATTR || error == ENODATA || error == ENOENT;
+@@ -125,6 +129,11 @@
+ 
+ 	if (key.dsize != sizeof(migration->tdb_keys[0].data)) {
+ 		migration->tdb_collect_error = errno = EINVAL;
++		return -1;
++	}
++	/* Bound deploy coverage memory on the appliance. */
++	if (migration->multi && migration->num_tdb_keys >= 262144) {
++		migration->tdb_collect_error = errno = E2BIG;
+ 		return -1;
+ 	}
+ 	keys = talloc_realloc(
+@@ -621,6 +630,16 @@
+ 		if (ret != 0 && tc_missing_error(errno)) {
+ 			ret = tc_finderinfo_from_netatalk(
+ 				migration, frame, id, finderinfo);
++		}
++	}
++	/* Some payloads already used Apple's raw FinderInfo name. Do not mark
++	 * their TDB record verified without copying that value as well. */
++	if (ret != 0 && tc_missing_error(errno)) {
++		DATA_BLOB raw = data_blob_null;
++		ret = tc_tdb_get(migration, frame, id, TC_FINDERINFO_XATTR, &raw);
++		if (ret >= 0) {
++			if (raw.length != AFP_FinderSize) { ret = -1; errno = EINVAL; }
++			else { memcpy(finderinfo, raw.data, AFP_FinderSize); ret = 0; }
+ 		}
+ 	}
+ 	if (ret != 0) {
+@@ -1417,23 +1436,25 @@
+ 		return 0;
+ 	}
+ 	migration->counts.entries++;
++	if (migration->multi && migration->counts.entries % 10000 == 0)
++		fprintf(stderr, "scan progress entries=%"PRIu64" path=%s\n", migration->counts.entries, path);
+ 	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
+ 		fd = open(path, O_RDONLY | O_NOFOLLOW);
+ 		if (fd == -1 || fstat(fd, &opened_st) != 0 ||
+ 		    st.st_dev != opened_st.st_dev || st.st_ino != opened_st.st_ino ||
+-		    tc_migrate_tdb_record(
+-				migration, fd, path, &st) != 0)
++		    (migration->multi ? tc_multi_file(migration, fd, path, &st, scan_sidecar) :
++		     tc_migrate_tdb_record(migration, fd, path, &st)) != 0)
+ 		{
+ 			fprintf(stderr, "metadata migration failed path=%s error=%s\n",
+ 				path, strerror(errno));
+ 			result = -1;
+ 		}
+-		if (result == 0 && scan_sidecar &&
++		if (!migration->multi && result == 0 && scan_sidecar &&
+ 		    tc_migrate_appledouble(migration, fd, path) != 0)
+ 		{
+ 			result = -1;
+ 		}
+-		if (result == 0 && tc_retire_tdb_record(migration, fd, &st) != 0) {
++		if (!migration->multi && result == 0 && tc_retire_tdb_record(migration, fd, &st) != 0) {
+ 			fprintf(stderr, "metadata retirement failed path=%s error=%s\n",
+ 				path, strerror(errno));
+ 			result = -1;
+@@ -1673,13 +1694,13 @@
+ 	if (tc_fsync_directory_or_sync(dir_fd) != 0) {
+ 		fprintf(stderr, "quarantine sync failed directory=%s error=%s; database is at %s but not known to be durable\n",
+ 			directory, strerror(errno), destination);
+-		printf("tdb_quarantine_path=%s\n", destination);
++		fprintf(migration->multi ? stderr : stdout, "tdb_quarantine_path=%s\n", destination);
+ 		close(dir_fd);
+ 		TALLOC_FREE(frame);
+ 		return -1;
+ 	}
+ 	close(dir_fd);
+-	printf("tdb_quarantine_path=%s\n", destination);
++	fprintf(migration->multi ? stderr : stdout, "tdb_quarantine_path=%s\n", destination);
+ 	migration->counts.tdb_quarantined = 1;
+ 	TALLOC_FREE(frame);
+ 	return 0;
+@@ -1754,6 +1775,8 @@
+ 	fclose(roots);
+ 	return result;
+ }
++
++#include "tc_xattr_multi.inc"
+ 
+ static void tc_usage(const char *program)
+ {
+@@ -1775,6 +1798,12 @@
+ 	int result = 0;
+ 	int i;
+ 
++	if (argc == 3 && !strcmp(argv[1], "multi")) {
++		result = tc_multi_main(argv[2]); TALLOC_FREE(frame); return result;
++	}
++	if (argc == 3 && (!strcmp(argv[1], "inspect") || !strcmp(argv[1], "inspect-root"))) {
++		result = tc_multi_inspect(argv[2], !strcmp(argv[1], "inspect-root")); TALLOC_FREE(frame); return result;
++	}
+ 	if (argc == 3 && strcmp(argv[1], "fingerprint") == 0) {
+ 		result = tc_print_fingerprint(argv[2]);
+ 		TALLOC_FREE(frame);
+--- /dev/null
++++ b/source3/utils/tc_xattr_multi.inc
+@@ -0,0 +1,513 @@
++/* Deploy-only multi-TDB migration. Included by tc_xattr_hfs_migrate.c after
++ * the existing value/AppleDouble converters. Each invocation walks one volume;
++ * Python owns durable per-volume JSON receipts and never needs a roots file.
++ * Source databases stay read-only until whole-file retirement in rank order. */
++#include "lib/dbwrap/dbwrap_rbt.h"
++#define TC_MULTI_VERSION 1
++#define TC_MULTI_MAX_SOURCES 32
++#define TC_MULTI_MAX_KEYS 262144
++#define TC_MULTI_LINE_MAX (PATH_MAX * 4 + 1024)
++
++struct tc_source_stat {
++    uint64_t dev, inode, size, hash;
++    int64_t mtime;
++    long nsec;
++};
++struct tc_multi_source {
++    unsigned index;
++    char uuid[37];
++    char *relative, *path;
++    char **aliases;
++    size_t alias_count;
++    const char *mode;
++    struct tc_source_stat stat;
++    struct tc_migration scan;
++    uint8_t *coverage; /* 0 unresolved, 1 verified value, 2 proven orphan */
++    unsigned retired;
++};
++struct tc_multi {
++    TALLOC_CTX *ctx;
++    struct tc_multi_source sources[TC_MULTI_MAX_SOURCES];
++    size_t count, total_keys;
++    char root_uuid[37];
++    char *root;
++    uint64_t root_dev, root_inode;
++    enum tc_phase phase;
++    bool retire;
++};
++
++static int tc_source_stat_read(const char *path, struct tc_source_stat *out)
++{
++    struct stat before, after;
++    uint8_t buffer[TC_COPY_SIZE];
++    ssize_t got;
++    uint64_t bytes = 0, hash = TC_FNV64_OFFSET;
++    int fd = open(path, O_RDONLY);
++    if (fd < 0) return -1;
++    if (fstat(fd, &before) || !S_ISREG(before.st_mode)) { close(fd); return -1; }
++    while ((got = read(fd, buffer, sizeof(buffer))) != 0) {
++        ssize_t i;
++        if (got < 0 && errno == EINTR) continue;
++        if (got < 0) { close(fd); return -1; }
++        for (i = 0; i < got; i++) { hash ^= buffer[i]; hash *= TC_FNV64_PRIME; }
++        bytes += got;
++    }
++    if (fstat(fd, &after) || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
++        before.st_size != after.st_size || before.st_mtime != after.st_mtime || bytes != (uint64_t)after.st_size) {
++        close(fd); errno = ESTALE; return -1;
++    }
++    close(fd);
++    out->dev = before.st_dev; out->inode = before.st_ino; out->size = bytes;
++    out->mtime = before.st_mtime; out->hash = hash;
++#if defined(__NetBSD__) || defined(__APPLE__)
++    out->nsec = before.st_mtimespec.tv_nsec;
++    if (out->nsec != after.st_mtimespec.tv_nsec) { errno = ESTALE; return -1; }
++#else
++    out->nsec = before.st_mtim.tv_nsec;
++    if (out->nsec != after.st_mtim.tv_nsec) { errno = ESTALE; return -1; }
++#endif
++    return 0;
++}
++static bool tc_source_stat_same(const struct tc_source_stat *a, const struct tc_source_stat *b)
++{
++    return a->dev == b->dev && a->inode == b->inode && a->size == b->size &&
++        a->hash == b->hash && a->mtime == b->mtime && a->nsec == b->nsec;
++}
++static void tc_hex_print(FILE *file, const uint8_t *bytes, size_t size)
++{
++    size_t i;
++    for (i = 0; i < size; i++) fprintf(file, "%02x", (unsigned)bytes[i]);
++}
++static int tc_hex_value(unsigned char ch)
++{
++    if (ch >= '0' && ch <= '9') return ch - '0';
++    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
++    return -1;
++}
++static int tc_hex_decode(const char *text, uint8_t *out, size_t size)
++{
++    size_t i;
++    if (strlen(text) != 2 * size) return -1;
++    for (i = 0; i < size; i++) {
++        int hi = tc_hex_value(text[2*i]), lo = tc_hex_value(text[2*i+1]);
++        if (hi < 0 || lo < 0) return -1;
++        out[i] = (hi << 4) | lo;
++    }
++    return 0;
++}
++static char *tc_hex_path(TALLOC_CTX *ctx, const char *text)
++{
++    size_t size = strlen(text) / 2;
++    char *path;
++    if (!size || size >= PATH_MAX || strlen(text) != size * 2) return NULL;
++    path = talloc_array(ctx, char, size + 1);
++    if (path == NULL) return NULL;
++    if (tc_hex_decode(text, (uint8_t *)path, size) || memchr(path, 0, size)) { TALLOC_FREE(path); return NULL; }
++    path[size] = 0;
++    return path;
++}
++static bool tc_uuid_valid(const char *uuid)
++{
++    size_t i;
++    if (strlen(uuid) != 36) return false;
++    for (i = 0; i < 36; i++) {
++        if (i == 8 || i == 13 || i == 18 || i == 23) { if (uuid[i] != '-') return false; }
++        else if (tc_hex_value(uuid[i]) < 0) return false;
++    }
++    return true;
++}
++static int tc_key_compare(const void *a, const void *b) { return memcmp(a, b, 16); }
++static struct tc_tdb_key *tc_source_key(struct tc_multi_source *source, const uint8_t key[16])
++{
++    return bsearch(key, source->scan.tdb_keys, source->scan.num_tdb_keys,
++                   sizeof(source->scan.tdb_keys[0]), tc_key_compare);
++}
++static int tc_rank_compare(const void *a, const void *b)
++{
++    const struct tc_multi_source *x = *(const struct tc_multi_source *const *)a;
++    const struct tc_multi_source *y = *(const struct tc_multi_source *const *)b;
++    int result;
++    if (x->stat.mtime != y->stat.mtime) return x->stat.mtime < y->stat.mtime ? -1 : 1;
++    if (x->stat.nsec != y->stat.nsec) return x->stat.nsec < y->stat.nsec ? -1 : 1;
++    result = strcmp(x->uuid, y->uuid);
++    return result ? result : strcmp(x->relative, y->relative);
++}
++static int tc_multi_validate_sources(struct tc_multi *multi)
++{
++    size_t i;
++    for (i = 0; i < multi->count; i++) {
++        struct tc_source_stat current;
++        if (tc_source_stat_read(multi->sources[i].path, &current) ||
++            !tc_source_stat_same(&current, &multi->sources[i].stat)) {
++            fprintf(stderr, "source changed db=%zu/%zu path=%s\n", i+1, multi->count, multi->sources[i].path);
++            errno = ESTALE; return -1;
++        }
++    }
++    return 0;
++}
++
++/* A source contributes a whole logical value. In particular, stream extents
++ * and the competing FinderInfo representations never come from different DBs.
++ * This temporary red-black tree holds one file's merged record, not a second
++ * filesystem index or a persistent/intermediate metadata database. */
++static char *tc_logical_name(TALLOC_CTX *ctx, const char *name)
++{
++    char *native;
++    if (!strcmp(name, TC_AFPINFO_XATTR) || !strcmp(name, TC_NETATALK_META_XATTR) ||
++        !strcmp(name, TC_FINDERINFO_XATTR)) return talloc_strdup(ctx, TC_FINDERINFO_XATTR);
++    if (tc_stream_extent(name)) return NULL;
++    native = tc_stream_anchor(name) ? tc_apple_native_name(ctx, name) : NULL;
++    return native ? native : talloc_strdup(ctx, name);
++}
++static int tc_merge_attribute(struct db_context *target, struct tc_multi_source *source,
++                              TALLOC_CTX *ctx, const struct file_id *id, const char *name)
++{
++    DATA_BLOB value = data_blob_null;
++    if (xattr_tdb_getattr(source->scan.db, ctx, id, name, &value) < 0 ||
++        xattr_tdb_setattr(target, id, name, value.data, value.length, 0) != 0) return -1;
++    if (tc_stream_anchor(name)) {
++        uint8_t extent, count;
++        if (!value.length) { errno = EINVAL; return -1; }
++        count = value.data[value.length-1];
++        if (count >= TC_HFS_STREAM_XATTRS) { errno = EOVERFLOW; return -1; }
++        for (extent = 1; extent <= count; extent++) {
++            char *part = talloc_asprintf(ctx, "%s%u.%s", TC_EXT_PREFIX, extent, name + strlen(TC_STREAM_PREFIX));
++            DATA_BLOB data = data_blob_null;
++            if (part == NULL || xattr_tdb_getattr(source->scan.db, ctx, id, part, &data) < 0 ||
++                xattr_tdb_setattr(target, id, part, data.data, data.length, 0) != 0) return -1;
++        }
++    }
++    return 0;
++}
++static int tc_multi_file(struct tc_migration *migration, int fd, const char *path,
++                         const struct stat *st, bool sidecar)
++{
++    struct tc_multi *multi = migration->multi;
++    TALLOC_CTX *frame = talloc_stackframe();
++    struct tc_migration file = *migration;
++    struct tc_multi_source *ordered[TC_MULTI_MAX_SOURCES];
++    struct tc_tdb_key one = {0};
++    struct file_id id = tc_file_id(st);
++    char **names = NULL;
++    unsigned *owners = NULL;
++    size_t name_count = 0, i;
++    int result = -1;
++    bool have_record = false;
++    push_file_id_16(one.data, &id);
++    file.multi = NULL;
++    file.legacy_metadata = "stream"; /* Records need not contain FinderInfo. */
++    file.db = db_open_rbt(frame);
++    file.mem_ctx = frame; file.tdb_keys = &one; file.num_tdb_keys = 1;
++    if (file.db == NULL) goto done;
++    for (i = 0; i < multi->count; i++) ordered[i] = &multi->sources[i];
++    qsort(ordered, multi->count, sizeof(ordered[0]), tc_rank_compare);
++    /* Descending precedence: only the winning source can claim a name. */
++    for (i = multi->count; i > 0; i--) {
++        struct tc_multi_source *source = ordered[i-1];
++        struct tc_tdb_key *key = tc_source_key(source, one.data);
++        char *list;
++        ssize_t size, got;
++        size_t offset = 0;
++        if (key == NULL) continue;
++        have_record = true;
++        size = xattr_tdb_listattr(source->scan.db, &id, NULL, 0);
++        if (size < 0 || size > 4 * 1024 * 1024) goto done;
++        list = talloc_array(frame, char, size ? size : 1);
++        if (list == NULL) goto done;
++        got = xattr_tdb_listattr(source->scan.db, &id, list, size);
++        if (got != size) goto done;
++        while (offset < (size_t)size) {
++            const char *name = list + offset;
++            size_t length = strnlen(name, size - offset), j;
++            char *logical;
++            if (length == (size_t)size - offset) { errno = EINVAL; goto done; }
++            offset += length + 1;
++            if (tc_stream_extent(name)) continue;
++            logical = tc_logical_name(frame, name);
++            if (logical == NULL) goto done;
++            for (j = 0; j < name_count; j++) if (!strcmp(names[j], logical)) break;
++            if (j < name_count && owners[j] != source->index) continue;
++            if (j == name_count) {
++                names = talloc_realloc(frame, names, char *, name_count + 1);
++                owners = talloc_realloc(frame, owners, unsigned, name_count + 1);
++                if (names == NULL || owners == NULL) goto done;
++                names[name_count] = logical; owners[name_count++] = source->index;
++                if (!strcmp(logical, TC_FINDERINFO_XATTR)) file.legacy_metadata = source->mode;
++            }
++            if (tc_merge_attribute(file.db, source, frame, &id, name)) goto done;
++        }
++    }
++    if (!have_record) { TALLOC_FREE(file.db); file.num_tdb_keys = 0; }
++    if (tc_migrate_tdb_record(&file, fd, path, st) ||
++        (sidecar && tc_migrate_appledouble(&file, fd, path))) goto done;
++    /* Do not call legacy per-record retirement: source contents and mtimes
++     * must stay identical until whole DBs can be retired oldest-first. */
++    if (have_record && multi->phase == TC_PHASE_CLEANUP && fsync(fd)) goto done;
++    for (i = 0; i < multi->count; i++) {
++        struct tc_multi_source *source = &multi->sources[i];
++        struct tc_tdb_key *key = tc_source_key(source, one.data);
++        if (key == NULL) continue;
++        if (!key->matched) source->scan.counts.tdb_matched++;
++        key->matched = true;
++        if (multi->phase == TC_PHASE_CLEANUP) {
++            key->retired = true;
++            source->coverage[key - source->scan.tdb_keys] = 1;
++        }
++    }
++    migration->counts = file.counts;
++    result = 0;
++done:
++    TALLOC_FREE(frame);
++    return result;
++}
++
++static int tc_multi_open(struct tc_multi *multi, struct tc_multi_source *source)
++{
++    fprintf(stderr, "source db=%u/%zu uuid=%s path=%s mtime=%"PRId64".%09ld decoder=%s\n", source->index + 1, multi->count, source->uuid, source->path, source->stat.mtime, source->stat.nsec, source->mode);
++    source->scan.mem_ctx = multi->ctx;
++    source->scan.multi = multi;
++    source->scan.tdb_path = source->path;
++    source->scan.legacy_metadata = source->mode;
++    source->scan.db = dbwrap_local_open(multi->ctx, source->path, 0,
++        TDB_DEFAULT, O_RDONLY, 0, DBWRAP_LOCK_ORDER_2, DBWRAP_FLAG_NONE);
++    if (source->scan.db == NULL || tc_collect_tdb_keys(&source->scan)) return -1;
++    multi->total_keys += source->scan.num_tdb_keys;
++    if (multi->total_keys > TC_MULTI_MAX_KEYS) { errno = E2BIG; return -1; }
++    qsort(source->scan.tdb_keys, source->scan.num_tdb_keys,
++          sizeof(source->scan.tdb_keys[0]), tc_key_compare);
++    source->coverage = talloc_zero_array(multi->ctx, uint8_t, source->scan.num_tdb_keys + 1);
++    return source->coverage == NULL ? -1 : 0;
++}
++static int tc_number(const char *text, uint64_t *out, int base)
++{
++    char *end;
++    unsigned long long value;
++    if (!text[0] || text[0] == '-' || text[0] == '+') return -1;
++    errno = 0; value = strtoull(text, &end, base);
++    if (errno || *end) return -1;
++    *out = value; return 0;
++}
++/* Stdin has bounded ASCII fields; filesystem names are hex, never shell code
++ * or log-delimited records. Python parses only the separate JSON stdout. */
++static int tc_multi_read(struct tc_multi *multi, FILE *input)
++{
++    char line[TC_MULTI_LINE_MAX], *words[16], *save, *word;
++    size_t line_number = 0, coverage_count = 0;
++    bool opened = false;
++    while (fgets(line, sizeof(line), input)) {
++        size_t length = strlen(line), count = 0, i;
++        uint64_t number;
++        if (!length || line[length-1] != '\n') goto invalid;
++        line[length-1] = 0;
++        if (!line_number++) { if (strcmp(line, "TCMIGRATE1")) goto invalid; continue; }
++        for (word = strtok_r(line, " ", &save); word; word = strtok_r(NULL, " ", &save)) {
++            if (count == ARRAY_SIZE(words)) goto invalid;
++            words[count++] = word;
++        }
++        if (!count) goto invalid;
++        if (!strcmp(words[0], "S")) {
++            struct tc_multi_source *s;
++            char *end;
++            if (opened || count != 12 || multi->count == TC_MULTI_MAX_SOURCES ||
++                tc_number(words[1], &number, 10) || number != multi->count || !tc_uuid_valid(words[2])) goto invalid;
++            s = &multi->sources[multi->count]; s->index = number;
++            memcpy(s->uuid, words[2], sizeof(s->uuid));
++            s->relative = tc_hex_path(multi->ctx, words[3]); s->path = tc_hex_path(multi->ctx, words[4]);
++            if (!s->relative || s->relative[0] == '/' || !s->path || s->path[0] != '/' ||
++                (strcmp(words[5], "stream") && strcmp(words[5], "netatalk"))) goto invalid;
++            s->mode = talloc_strdup(multi->ctx, words[5]);
++            if (tc_number(words[6], &s->stat.dev, 10) || tc_number(words[7], &s->stat.inode, 10) ||
++                tc_number(words[8], &s->stat.size, 10)) goto invalid;
++            errno = 0; s->stat.mtime = strtoll(words[9], &end, 10);
++            if (errno || !words[9][0] || *end || tc_number(words[10], &number, 10) || number >= 1000000000) goto invalid;
++            s->stat.nsec = number;
++            if (tc_number(words[11], &s->stat.hash, 16)) goto invalid;
++            for (i = 0; i < multi->count; i++) {
++                struct tc_multi_source *other = &multi->sources[i], *current = s;
++                /* Deduplicate aliases in Python first, retaining every name for
++                 * retirement. Ambiguous priorities must not depend on dk order. */
++                if ((other->stat.dev == s->stat.dev && other->stat.inode == s->stat.inode) ||
++                    !tc_rank_compare(&other, &current)) goto invalid;
++            }
++            multi->count++;
++        } else if (!strcmp(words[0], "A")) {
++            struct tc_multi_source *s;
++            char *path;
++            if (opened || count != 3 || tc_number(words[1], &number, 10) || number >= multi->count) goto invalid;
++            s = &multi->sources[number]; path = tc_hex_path(multi->ctx, words[2]);
++            if (!path || path[0] != '/' || s->alias_count >= TC_MULTI_MAX_SOURCES) goto invalid;
++            s->aliases = talloc_realloc(multi->ctx, s->aliases, char *, s->alias_count + 1);
++            if (!s->aliases) return -1;
++            s->aliases[s->alias_count++] = path;
++        } else if (!strcmp(words[0], "R")) {
++            if (multi->retire || count != 5 || multi->root || !tc_uuid_valid(words[1])) goto invalid;
++            memcpy(multi->root_uuid, words[1], sizeof(multi->root_uuid));
++            multi->root = tc_hex_path(multi->ctx, words[2]);
++            if (!multi->root || multi->root[0] != '/' || tc_number(words[3], &multi->root_dev, 10) ||
++                tc_number(words[4], &multi->root_inode, 10)) goto invalid;
++        } else if (!strcmp(words[0], "K") || !strcmp(words[0], "E")) {
++            if (!opened) {
++                if (!multi->count || tc_multi_validate_sources(multi)) goto invalid;
++                for (i = 0; i < multi->count; i++) if (tc_multi_open(multi, &multi->sources[i])) return -1;
++                opened = true;
++            }
++            if (!strcmp(words[0], "E")) {
++                if (count != 1 || (!multi->retire && !multi->root) || fgetc(input) != EOF || ferror(input)) goto invalid;
++                return 0;
++            } else {
++                struct tc_multi_source *s;
++                struct tc_tdb_key *key;
++                uint8_t bytes[16];
++                if (!multi->retire || count != 4 || tc_number(words[1], &number, 10) || number >= multi->count ||
++                    (strcmp(words[2], "M") && strcmp(words[2], "O")) || tc_hex_decode(words[3], bytes, 16) ||
++                    ++coverage_count > TC_MULTI_MAX_KEYS) goto invalid;
++                s = &multi->sources[number]; key = tc_source_key(s, bytes);
++                if (!key || s->coverage[key-s->scan.tdb_keys]) goto invalid;
++                s->coverage[key-s->scan.tdb_keys] = !strcmp(words[2], "M") ? 1 : 2;
++            }
++        } else goto invalid;
++    }
++invalid:
++    fprintf(stderr, "invalid multi migration input line=%zu\n", line_number);
++    errno = EINVAL; return -1;
++}
++static int tc_multi_root_valid(struct tc_multi *multi, struct stat *out)
++{
++    if (lstat(multi->root, out) || !S_ISDIR(out->st_mode) ||
++        (uint64_t)out->st_dev != multi->root_dev || (uint64_t)out->st_ino != multi->root_inode ||
++        !tc_airport_path_is_hfs(multi->root)) { errno = ESTALE; return -1; }
++    return 0;
++}
++static int tc_multi_scan(struct tc_multi *multi, struct tc_counts *counts)
++{
++    struct tc_migration scan = {.mem_ctx = multi->ctx, .multi = multi, .phase = multi->phase};
++    struct stat st;
++    size_t i, k;
++    int fd, result;
++    if (tc_multi_root_valid(multi, &st)) return -1;
++    fd = open(multi->root, O_RDONLY | O_NOFOLLOW);
++    if (fd < 0) return -1;
++    fprintf(stderr, "volume phase=%s uuid=%s root=%s sources=%zu start\n",
++        multi->phase == TC_PHASE_COPY ? "copy" : "cleanup", multi->root_uuid, multi->root, multi->count);
++    result = tc_scan_root(&scan, multi->root);
++    /* Apple's HFS may disappear while a walk is in flight. Both the original
++     * root descriptor and its current pathname must still identify this mount. */
++    if (fstat(fd, &st) || (uint64_t)st.st_dev != multi->root_dev ||
++        (uint64_t)st.st_ino != multi->root_inode || tc_multi_root_valid(multi, &st) ||
++        tc_fsync_directory_or_sync(fd) || tc_multi_validate_sources(multi)) result = -1;
++    close(fd);
++    if (result) return -1;
++    if (multi->phase == TC_PHASE_CLEANUP) {
++        for (i = 0; i < multi->count; i++) {
++            struct tc_multi_source *s = &multi->sources[i];
++            for (k = 0; k < s->scan.num_tdb_keys; k++) {
++                const uint8_t *key = s->scan.tdb_keys[k].data;
++                uint64_t dev = (uint64_t)IVAL(key, 0) | ((uint64_t)IVAL(key, 4) << 32);
++                if (!s->coverage[k] && dev == multi->root_dev) s->coverage[k] = 2;
++            }
++        }
++    }
++    *counts = scan.counts;
++    fprintf(stderr, "volume uuid=%s complete entries=%"PRIu64" sidecars_deleted=%"PRIu64"\n",
++            multi->root_uuid, counts->entries, counts->sidecars_deleted);
++    return 0;
++}
++static int tc_multi_retire_path(struct tc_multi_source *source, const char *path, bool orphan)
++{
++    struct tc_source_stat current;
++    struct stat alias;
++    struct tc_migration temporary = {.tdb_path = path, .multi = source->scan.multi};
++    char *directory = talloc_strdup(source->scan.mem_ctx, path), *slash;
++    int fd, result;
++    if (!directory || !(slash = strrchr(directory, '/'))) return -1;
++    *slash = 0;
++    if (tc_source_stat_read(path, &current) || !tc_source_stat_same(&current, &source->stat)) return -1;
++    if (lstat(path, &alias)) return -1;
++    if (orphan && !S_ISLNK(alias.st_mode)) return tc_quarantine_tdb(&temporary);
++    fd = open(directory[0] ? directory : "/", O_RDONLY);
++    if (fd < 0) return -1;
++    result = unlink(path);
++    if (!result) result = tc_fsync_directory_or_sync(fd);
++    close(fd);
++    return result;
++}
++static int tc_multi_retire(struct tc_multi *multi)
++{
++    struct tc_multi_source *ordered[TC_MULTI_MAX_SOURCES];
++    size_t i, k;
++    if (tc_multi_validate_sources(multi)) return -1;
++    for (i = 0; i < multi->count; i++) ordered[i] = &multi->sources[i];
++    qsort(ordered, multi->count, sizeof(ordered[0]), tc_rank_compare);
++    for (i = 0; i < multi->count; i++) {
++        struct tc_multi_source *s = ordered[i];
++        bool orphan = false, unresolved = false;
++        for (k = 0; k < s->scan.num_tdb_keys; k++) {
++            if (!s->coverage[k]) unresolved = true;
++            if (s->coverage[k] == 2) orphan = true;
++        }
++        if (unresolved) {
++            fprintf(stderr, "retirement deferred db=%u path=%s; unresolved records retain newer sources\n", s->index, s->path);
++            break;
++        }
++        TALLOC_FREE(s->scan.db);
++        /* Aliases go first; the ranked primary remains authoritative if this
++         * is interrupted. No source row or original mtime is ever rewritten. */
++        for (k = 0; k < s->alias_count; k++)
++            if (tc_multi_retire_path(s, s->aliases[k], orphan)) return -1;
++        if (tc_multi_retire_path(s, s->path, orphan)) return -1;
++        s->retired = orphan ? 2 : 1;
++        fprintf(stderr, "retired db=%u path=%s outcome=%s\n", s->index, s->path, orphan ? "quarantined" : "deleted");
++    }
++    return 0;
++}
++static void tc_multi_report(struct tc_multi *multi, const struct tc_counts *counts)
++{
++    size_t i, k;
++    printf("{\"version\":%d,\"entries\":%"PRIu64",\"sources\":[", TC_MULTI_VERSION, counts->entries);
++    for (i = 0; i < multi->count; i++) {
++        struct tc_multi_source *s = &multi->sources[i];
++        bool comma = false;
++        printf("%s{\"index\":%u,\"total\":%zu,\"retired\":%u,\"coverage\":[", i ? "," : "", s->index, s->scan.num_tdb_keys, s->retired);
++        for (k = 0; k < s->scan.num_tdb_keys; k++) {
++            if (!s->coverage[k]) continue;
++            printf("%s[\"%c\",\"", comma ? "," : "", s->coverage[k] == 1 ? 'M' : 'O');
++            tc_hex_print(stdout, s->scan.tdb_keys[k].data, 16); printf("\"]"); comma = true;
++        }
++        printf("]}");
++    }
++    printf("]}\n");
++}
++static int tc_multi_main(const char *phase)
++{
++    TALLOC_CTX *frame = talloc_stackframe();
++    struct tc_multi multi = {.ctx = frame};
++    struct tc_counts counts = {0};
++    int result;
++    if (strcmp(phase, "copy") && strcmp(phase, "cleanup") && strcmp(phase, "retire")) {
++        TALLOC_FREE(frame); return 2;
++    }
++    multi.phase = !strcmp(phase, "copy") ? TC_PHASE_COPY : TC_PHASE_CLEANUP;
++    multi.retire = !strcmp(phase, "retire");
++    result = tc_multi_read(&multi, stdin);
++    if (!result) result = multi.retire ? tc_multi_retire(&multi) : tc_multi_scan(&multi, &counts);
++    if (!result) tc_multi_report(&multi, &counts);
++    else fprintf(stderr, "multi migration failed phase=%s error=%s\n", phase, strerror(errno));
++    TALLOC_FREE(frame);
++    return result ? 4 : 0;
++}
++static int tc_multi_inspect(const char *path, bool root)
++{
++    struct tc_source_stat s = {0};
++    struct stat st;
++    char canonical[PATH_MAX];
++    if (!realpath(path, canonical)) return 3;
++    if (root) {
++        if (stat(canonical, &st) || !S_ISDIR(st.st_mode) || !tc_airport_path_is_hfs(canonical)) return 3;
++        s.dev = st.st_dev; s.inode = st.st_ino;
++    } else if (tc_source_stat_read(canonical, &s)) return 3;
++    printf("{\"path_hex\":\""); tc_hex_print(stdout, (const uint8_t *)canonical, strlen(canonical));
++    printf("\",\"dev\":%"PRIu64",\"inode\":%"PRIu64",\"size\":%"PRIu64
++           ",\"mtime\":%"PRId64",\"nsec\":%ld,\"hash\":\"%016"PRIx64"\"}\n",
++           s.dev, s.inode, s.size, s.mtime, s.nsec, s.hash);
++    return 0;
++}

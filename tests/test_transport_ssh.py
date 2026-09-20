@@ -1150,5 +1150,22 @@ class SSHTransportTests(unittest.TestCase):
         self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", str(exc.exception))
 
 
+class MigrationInputTransportTests(unittest.TestCase):
+    def test_request_bytes_and_separate_output_use_existing_transport(self):
+        connection = ssh_transport.SshConnection("device", "", "")
+        process = subprocess.CompletedProcess(["ssh"], 0, b'{"version":1}\n', b'diagnostic\n')
+        with mock.patch.object(ssh_transport, "_run_piped_ssh", return_value=process) as run:
+            result = ssh_transport.run_ssh_input(connection, "helper multi copy", input_bytes=b"TCMIGRATE1\nE\n", timeout=21600)
+        self.assertIs(result, process)
+        self.assertEqual(run.call_args.kwargs["input_bytes"], b"TCMIGRATE1\nE\n")
+        self.assertEqual(run.call_args.kwargs["timeout"], 21600)
+
+    def test_failed_remote_helper_cannot_look_like_a_json_success(self):
+        process = subprocess.CompletedProcess(["ssh"], 4, b'{"version":1}', b'corrupt TDB')
+        with mock.patch.object(ssh_transport, "_run_piped_ssh", return_value=process):
+            with self.assertRaisesRegex(ssh_transport.SshError, "corrupt TDB"):
+                ssh_transport.run_ssh_input(ssh_transport.SshConnection("device", "", ""), "helper")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ from timecapsulesmb.core.config import DEFAULTS, MANAGED_PAYLOAD_DIR_NAME, AppCo
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
+from timecapsulesmb.deploy.migration import inventory_metadata, inspect_sources, RAM_HELPER
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.boot_assets import boot_asset_path
@@ -27,7 +28,7 @@ from timecapsulesmb.deploy.executor import (
     run_remote_actions,
     upload_deployment_payload,
 )
-from timecapsulesmb.deploy.commands import InstallPermissionsAction, RemoteAction, RemotePermission, StopProcessAction
+from timecapsulesmb.deploy.commands import EnsureVolumeMountedAction, InstallPermissionsAction, RemoteAction, RemotePermission, RemovePathAction, StopProcessAction
 from timecapsulesmb.deploy.planner import (
     BINARY_SERVICE_SOURCE,
     BINARY_RSYNC_SOURCE,
@@ -240,6 +241,8 @@ class DeployServiceDependencies:
     verify_payload_home: Callable[..., PayloadVerificationResult]
     flush_remote_writes: Callable[..., object]
     migrate_xattrs: Callable[..., str]
+    inventory_metadata: Callable[..., object]
+    inspect_migration_sources: Callable[..., object]
     request_reboot: Callable[..., object]
     request_reboot_and_wait: Callable[..., object]
     decide_post_reboot_activation: Callable[..., object]
@@ -295,6 +298,8 @@ def default_deploy_service_dependencies() -> DeployServiceDependencies:
         verify_payload_home=verify_payload_home_conn,
         flush_remote_writes=flush_remote_filesystem_writes,
         migrate_xattrs=migrate_xattr_tdb_to_hfs,
+        inventory_metadata=inventory_metadata,
+        inspect_migration_sources=inspect_sources,
         request_reboot=request_reboot,
         request_reboot_and_wait=request_reboot_and_wait,
         decide_post_reboot_activation=decide_netbsd4_post_reboot_activation,
@@ -791,14 +796,12 @@ def upload_and_verify_deployment_payload(
         probe_flash_capacity_func = _probe_flash_capacity
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
-    legacy_netatalk = runtime_config.fruit_metadata_netatalk
-    if legacy_netatalk is None:
-        legacy_netatalk = parse_bool(config.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"]))
-    legacy_metadata = "netatalk" if legacy_netatalk else "stream"
-    copied_migration_roots = None
+    callbacks.stage("inventory_legacy_metadata")
+    inventory = dependencies.inventory_metadata(connection, plan)
+    callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
+                    legacy_unavailable_roots=inventory.unavailable)
 
     def run_xattr_migration_phase(phase: str) -> None:
-        nonlocal copied_migration_roots
         callbacks.stage(f"migrate_xattrs_{phase}")
         callbacks.message(
             "Copying legacy Samba metadata into native HFS storage..."
@@ -812,8 +815,7 @@ def upload_and_verify_deployment_payload(
                 connection,
                 plan,
                 phase=phase,
-                legacy_metadata=legacy_metadata,
-                roots=copied_migration_roots if phase == "cleanup" else None,
+                inventory=inventory,
             )
         except Exception as exc:
             elapsed = round(time.monotonic() - migration_started, 3)
@@ -821,7 +823,7 @@ def upload_and_verify_deployment_payload(
             diagnostic = (
                 f"phase={phase} elapsed_seconds={elapsed} "
                 f"timeout_seconds={XATTR_HFS_MIGRATION_TIMEOUT_SECONDS} "
-                f"timed_out={str(timed_out).lower()} legacy_metadata={legacy_metadata}\n"
+                f"timed_out={str(timed_out).lower()} sources={len(inventory.sources)}\n"
                 f"Migration log: {migration_log}"
             )
             callbacks.measurement(
@@ -855,8 +857,6 @@ def upload_and_verify_deployment_payload(
         )
         if isinstance(migration_result, XattrMigrationResult):
             migration_output = migration_result.output
-            if phase == "copy":
-                copied_migration_roots = migration_result.roots
             callbacks.debug(
                 **{
                     f"xattr_migration_{phase}": migration_output.strip(),
@@ -916,29 +916,15 @@ def upload_and_verify_deployment_payload(
             if _manager_stop_timed_out(exc):
                 raise DeployDeviceError(MANAGER_STOP_TIMEOUT_MESSAGE, code="manager_stop_timeout") from exc
             raise
-        callbacks.stage("check_flash_capacity")
-        try:
-            available_flash_bytes, required_flash_bytes = probe_flash_capacity_func(
-                connection, [*plan.uploads, plan.boot_upload], upload_sources
-            )
-        except DeployDeviceError:
-            raise
-        except Exception as exc:
-            raise DeployDeviceError(
-                "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
-                code="flash_capacity_probe_failed",
-            ) from exc
-        callbacks.debug(
-            flash_available_bytes=available_flash_bytes,
-            flash_required_bytes=required_flash_bytes,
-        )
-        if available_flash_bytes < required_flash_bytes:
-            raise DeployDeviceError(
-                "Not enough free space on /mnt/Flash after cleanup "
-                f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
-                "Installation is incomplete; free space and rerun deploy.",
-                code="insufficient_flash_space",
-            )
+        # Disabling rc.local is a Flash write; make it durable before any
+        # metadata conversion or removal of the historical runtime.
+        flush_remote_writes(connection)
+        # A legacy writer could create its first TDB between the initial
+        # inventory and shutdown. Probe again now that writers are stopped;
+        # old configuration and payload software are still available.
+        inventory = dependencies.inventory_metadata(connection, plan)
+        callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
+                        legacy_unavailable_roots=inventory.unavailable)
 
         update_scp_upload_telemetry()
         if on_before_upload is not None:
@@ -972,39 +958,90 @@ def upload_and_verify_deployment_payload(
             if on_uploaded is not None:
                 on_uploaded(transfer)
 
-        migration_transfer = plan.migration_upload
-        if on_uploading is None:
-            callbacks.stage("upload_xattr_migrator")
-        record_uploading(migration_transfer)
+        if inventory.candidates:
+            migration_transfer = plan.migration_upload
+            if on_uploading is None:
+                callbacks.stage("upload_xattr_migrator")
+            record_uploading(migration_transfer)
+            try:
+                migration_plan = replace(plan, uploads=[migration_transfer])
+                migration_upload_kwargs: dict[str, object] = {
+                    "connection": connection,
+                    "source_resolver": upload_sources,
+                }
+                upload_payload_func(
+                    migration_plan,
+                    **_upload_payload_kwargs_for_func(
+                        upload_payload_func, migration_upload_kwargs
+                    ),
+                )
+            except Exception as exc:
+                started = upload_starts.get(migration_transfer.source_id)
+                callbacks.measurement(
+                    "upload",
+                    source_id=migration_transfer.source_id,
+                    mode=migration_transfer.mode,
+                    destination_kind=_upload_destination_kind(migration_transfer, plan),
+                    timeout_sec=migration_transfer.timeout_seconds,
+                    duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
+                    result="failure",
+                    error_type=type(exc).__name__,
+                )
+                if _payload_upload_timed_out(exc, migration_transfer, plan):
+                    raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc
+                raise
+            record_uploaded(migration_transfer)
+            def remove_migration_helper() -> None:
+                try:
+                    run_remote_actions_func(connection, [RemovePathAction(RAM_HELPER)])
+                except Exception as exc:
+                    callbacks.debug(migration_helper_cleanup_error=str(exc))
+            boot_assets.callback(remove_migration_helper)
+            run_remote_actions_func(connection, [InstallPermissionsAction((RemotePermission(RAM_HELPER, "755"),))])
+            dependencies.inspect_migration_sources(connection, inventory)
+            run_xattr_migration_phase("copy")
+        else:
+            callbacks.debug(xattr_migration="skipped reason=no_legacy_tdb")
+
+        callbacks.stage("replace_software")
+        run_remote_actions_func(connection, plan.replace_software_actions)
+        # Apply the same explicit software ownership list to other detected
+        # payloads. Their metadata, receipts, logs and quarantines stay intact.
+        for directory in inventory.payload_dirs:
+            if directory == plan.payload_dir:
+                continue
+            volume = next(v for v in inventory.volumes if directory.startswith(v.volume_root + "/"))
+            actions = []
+            for action in plan.replace_software_actions:
+                if isinstance(action, RemovePathAction) and action.path.startswith(plan.payload_dir + "/"):
+                    actions.extend([
+                        EnsureVolumeMountedAction(volume.volume_root, volume.device_path, plan.apple_mount_wait_seconds),
+                        RemovePathAction(directory + action.path[len(plan.payload_dir):]),
+                    ])
+            run_remote_actions_func(connection, actions)
+        callbacks.stage("check_flash_capacity")
         try:
-            migration_plan = replace(plan, uploads=[migration_transfer])
-            migration_upload_kwargs: dict[str, object] = {
-                "connection": connection,
-                "source_resolver": upload_sources,
-            }
-            upload_payload_func(
-                migration_plan,
-                **_upload_payload_kwargs_for_func(
-                    upload_payload_func, migration_upload_kwargs
-                ),
+            available_flash_bytes, required_flash_bytes = probe_flash_capacity_func(
+                connection, [*plan.uploads, plan.config_upload, plan.boot_upload], upload_sources
             )
-        except Exception as exc:
-            started = upload_starts.get(migration_transfer.source_id)
-            callbacks.measurement(
-                "upload",
-                source_id=migration_transfer.source_id,
-                mode=migration_transfer.mode,
-                destination_kind=_upload_destination_kind(migration_transfer, plan),
-                timeout_sec=migration_transfer.timeout_seconds,
-                duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
-                result="failure",
-                error_type=type(exc).__name__,
-            )
-            if _payload_upload_timed_out(exc, migration_transfer, plan):
-                raise DeployDeviceError(PAYLOAD_UPLOAD_TIMEOUT_MESSAGE, code="payload_upload_timeout") from exc
+        except DeployDeviceError:
             raise
-        record_uploaded(migration_transfer)
-        run_xattr_migration_phase("copy")
+        except Exception as exc:
+            raise DeployDeviceError(
+                "Could not read free flash space after cleanup. Installation is incomplete; rerun deploy.",
+                code="flash_capacity_probe_failed",
+            ) from exc
+        callbacks.debug(
+            flash_available_bytes=available_flash_bytes,
+            flash_required_bytes=required_flash_bytes,
+        )
+        if available_flash_bytes < required_flash_bytes:
+            raise DeployDeviceError(
+                "Not enough free space on /mnt/Flash after cleanup "
+                f"(available {available_flash_bytes} bytes, need {required_flash_bytes} bytes). "
+                "Installation is incomplete; free space and rerun deploy.",
+                code="insufficient_flash_space",
+            )
 
         if initial_upload_stage is not None:
             callbacks.stage(initial_upload_stage)
@@ -1079,8 +1116,17 @@ def upload_and_verify_deployment_payload(
             on_verified=on_verified,
             dependencies=dependencies,
         )
-        run_xattr_migration_phase("cleanup")
+        if inventory.candidates:
+            run_xattr_migration_phase("cleanup")
 
+        callbacks.stage("install_runtime_config")
+        upload_payload_func(
+            replace(plan, uploads=[plan.config_upload]),
+            **_upload_payload_kwargs_for_func(upload_payload_func, upload_kwargs),
+        )
+        run_remote_actions_func(connection, [
+            InstallPermissionsAction((RemotePermission(plan.config_upload.destination, "600"),)),
+        ])
         callbacks.stage("enable_boot")
         upload_payload_func(
             replace(plan, uploads=[plan.boot_upload]),

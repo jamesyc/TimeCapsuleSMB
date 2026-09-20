@@ -1,264 +1,307 @@
+"""Deploy orchestration tests. Native value/extent conversion also runs on NetBSD.
+
+Apple owns the HFS mounts; failed or missing mounts are partial migration, never
+proof that their TDB records are orphans. Completed volumes must not be walked.
+"""
+import copy
+import hashlib
+import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
-from timecapsulesmb.deploy import executor
-from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
-from timecapsulesmb.deploy.planner import build_deployment_plan
-from timecapsulesmb.device.storage import PayloadHome
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.deploy import migration as m
+from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.transport.errors import SshCommandTimeout
+from timecapsulesmb.transport.ssh import SshConnection
+
+UUID_A = "11111111-1111-1111-1111-111111111111"
+UUID_B = "22222222-2222-2222-2222-222222222222"
+KEY_A = "01000000000000000100000000000000"
+KEY_B = "02000000000000000100000000000000"
 
 
-# Stands in for the real migrator. `fingerprint` answers with a checksum of
-# the file so the manager's checkpoint logic sees a generation that moves
-# with the database contents; copy/cleanup are recorded and can be told to
-# fail, retire the TDB, or quarantine it, like the real helper does.
-FAKE_MIGRATOR = """#!/bin/sh
-if [ "$1" = fingerprint ]; then
-    [ -f "$2" ] || exit 3
-    set -- $(cksum "$2")
-    printf 'fingerprint=%s-%s\\n' "$2" "$1"
-    exit 0
-fi
-printf "%s\\n" "$@" >> {calls}
-if [ "$1" = cleanup ] && [ -n "${{MIGRATION_OUTCOME:-}}" ]; then
-    case "$MIGRATION_OUTCOME" in
-        retire) rm -f "$2" ;;
-        quarantine) mv "$2" "$2.orphaned.1" ;;
-        retire_rows) printf 'retired' >"$2" ;;
-    esac
-fi
-exit "${{FAIL_MIGRATION:-0}}"
-"""
+def fake_inventory():
+    """Installer tests inject discovery, while exercising the real action order."""
+    return m.MigrationInventory((), [{"path": "/Volumes/dk2/.samba4/private/xattr.tdb"}], [], [], "")
+
+
+def volume(root, name, uuid):
+    return MaStVolume("sd0", name, str(root), name, uuid, True, "hfs")
 
 
 @pytest.fixture
-def migration(tmp_path, monkeypatch):
-    volume = tmp_path / "disk with spaces"
-    payload = volume / ".samba4"
-    (payload / "private").mkdir(parents=True)
-    tdb = payload / "private/xattr.tdb"
-    tdb.write_text("pending")
-    calls = tmp_path / "calls"
-    helper = payload / "xattr-hfs-migrate"
-    helper.write_text(FAKE_MIGRATOR.format(calls=shlex.quote(str(calls))))
-    helper.chmod(0o755)
-    binary = Path("unused")
-    plan = build_deployment_plan(
-        "test", PayloadHome(str(volume), "/dev/dk2", ".samba4"), binary,
-        xattr_migrator_path=helper, rsync_path=binary, service_path=binary,
-    )
-    volumes = [SimpleNamespace(volume_root=str(volume), device_path="/dev/dk2"),
-               SimpleNamespace(volume_root=str(tmp_path / "external"), device_path="/dev/dk3")]
-    mount = Mock(return_value=True)
-    discover = Mock(return_value=volumes)
-    monkeypatch.setattr(executor, "ensure_volume_root_mounted_conn", mount)
-    monkeypatch.setattr(executor, "read_mast_volumes_conn", discover)
+def device(tmp_path, monkeypatch):
+    volumes = [volume(tmp_path / "disk A", "dk2", UUID_A), volume(tmp_path / "disk B", "dk3", UUID_B)]
+    source = Path(volumes[0].volume_root) / ".samba4/private/xattr.tdb"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"legacy metadata")
+    Path(volumes[1].volume_root).mkdir()
+    config = tmp_path / "old-config"
+    config.write_text("FRUIT_METADATA_NETATALK=1\n")
+    state = SimpleNamespace(volumes=volumes, source=source, calls=[], mounted={UUID_A, UUID_B}, fail=None,
+                            reads=[], native={UUID_A: "old", UUID_B: "old"}, retired=False)
+    monkeypatch.setattr(m, "read_mast_volumes_conn", lambda _conn: state.volumes)
+    monkeypatch.setattr(m, "ensure_volume_root_mounted_conn", lambda _c, root, *_a, **_k: any(v.volume_root == root and v.adisk_uuid in state.mounted for v in state.volumes))
 
-    def local_ssh(_connection, command, *, check=True, **_kwargs):
-        # Run the production script against a temporary fake device, including
-        # its traps and failure branches. Never issue an actual SSH connection.
-        command = command.replace("/mnt/Memory", str(tmp_path)).replace("/bin/sync", "true")
-        return subprocess.run(shlex.split(command), text=True, capture_output=True, check=check)
+    def read(_conn, path, **_kwargs):
+        state.reads.append(path)
+        path = config if path == "/mnt/Flash/tcapsulesmb.conf" else Path(path)
+        return path.read_bytes() if path.is_file() else b""
 
-    monkeypatch.setattr(executor, "run_ssh", local_ssh)
-    return SimpleNamespace(plan=plan, connection=SshConnection("test", "unused", ""),
-                           tdb=tdb, helper=helper, calls=calls, mount=mount, discover=discover,
-                           volumes=volumes, root=tmp_path)
+    def ssh(_conn, command, *, input_bytes=b"", check=True, **_kwargs):
+        if state.fail == "save" and command.startswith("umask"):
+            raise RuntimeError("flush failed")
+        return subprocess.run(command.replace("/bin/sync", "true"), shell=True, executable="/bin/sh",
+                              input=input_bytes, capture_output=True, check=check)
 
+    def native(_conn, args, *, request=b"", **kwargs):
+        state.calls.append((args, request, kwargs))
+        if args[0] in {"inspect", "inspect-root"}:
+            path = Path(args[1]); st = path.stat()
+            return {"path_hex": os.fsencode(path.resolve()).hex(), "dev": st.st_dev, "inode": st.st_ino,
+                    "size": st.st_size, "mtime": st.st_mtime_ns // 10**9, "nsec": st.st_mtime_ns % 10**9,
+                    "hash": hashlib.sha256(path.read_bytes()).hexdigest()[:16] if path.is_file() else "0" * 16}
+        lines = request.decode().splitlines()
+        roots = [line.split() for line in lines if line.startswith("R ")]
+        sources = [line.split() for line in lines if line.startswith("S ")]
+        phase = args[1]
+        if state.fail == phase or (roots and state.fail == roots[0][1]):
+            raise RuntimeError("injected migration failure")
+        if phase == "retire":
+            state.retired = True
+            return {"version": 1, "entries": 0, "sources": [{"index": i, "coverage": [], "retired": 0} for i in range(len(sources))]}
+        key = roots[0][1]
+        if phase == "copy":
+            state.native[key] = "migrated"
+        return {"version": 1, "entries": 3, "sources": [{"index": i, "total": 2, "retired": 0,
+            "coverage": [["M", KEY_A if key == UUID_A else KEY_B]] if phase == "cleanup" else []} for i in range(len(sources))]}
 
-@pytest.mark.parametrize("phase", ["copy", "cleanup"])
-@pytest.mark.parametrize("helper_mode", [0o600, 0o755])
-def test_deploy_migration_stages_temporary_binary_and_keeps_persistent_helper(migration, phase, helper_mode):
-    m = migration
-    # Apple can unmount the HDD; execute the RAM copy. An SSH-pipe upload
-    # need not be executable before the later guarded permissions phase.
-    m.helper.chmod(helper_mode)
-    result = executor.migrate_xattr_tdb_to_hfs(
-        m.connection, m.plan, phase=phase, legacy_metadata="netatalk"
-    )
-    assert m.calls.read_text().splitlines() == [phase, str(m.tdb), "netatalk", *[v.volume_root for v in m.volumes]]
-    assert result.roots == tuple(m.volumes)
-    assert result.unavailable_roots == ()
-    assert m.helper.exists() and m.tdb.read_text() == "pending"
-    assert m.helper.stat().st_mode & 0o777 == helper_mode
-    assert not (m.root / "tc-xattr-hfs-migrate").exists()
-    assert m.mount.call_count == 3  # payload first, then every discovered volume
-    assert f"migration_phase={phase} legacy_metadata=netatalk timeout_seconds=21600" in result.output
-    assert "started_at=" in result.output and "finished_at=" in result.output
-    assert "migration_exit_code=0" in result.output
-    for volume in m.volumes:
-        assert f"root={volume.volume_root}" in result.output
-
-
-def test_no_tdb_skips_discovery_and_scan_but_keeps_helper(migration):
-    m = migration
-    m.tdb.unlink()
-    result = executor.migrate_xattr_tdb_to_hfs(
-        m.connection, m.plan, phase="cleanup", legacy_metadata="stream"
-    )
-    assert "no_legacy_tdb" in result.output
-    m.discover.assert_not_called()
-    assert not m.calls.exists() and m.helper.exists()
+    monkeypatch.setattr(m, "_read", read)
+    monkeypatch.setattr(m, "run_ssh", ssh)
+    monkeypatch.setattr(m, "run_ssh_input", ssh)
+    monkeypatch.setattr(m, "_native", native)
+    state.connection = SshConnection("test", "", "")
+    state.plan = SimpleNamespace(payload_dir=str(source.parent.parent), apple_mount_wait_seconds=1)
+    state.inventory = lambda: m.inventory_metadata(state.connection, state.plan)
+    state.inspect = lambda inv: m.inspect_sources(state.connection, inv)
+    state.phase = lambda inv, phase: m.migrate_phase(state.connection, state.plan, inv, phase)
+    state.scan_calls = lambda: [call for call in state.calls if call[0] in [["multi", "copy"], ["multi", "cleanup"]]]
+    return state
 
 
-@pytest.mark.parametrize("stage", ["payload", "empty_inventory", "helper"])
-def test_deploy_migration_failure_preserves_pending_metadata(migration, monkeypatch, stage):
-    m = migration
-    if stage == "payload":
-        m.mount.return_value = False
-    elif stage == "empty_inventory":
-        m.discover.return_value = []
+def test_detects_incomplete_payload_and_old_decoder_without_an_executable(device):
+    inv = device.inventory()
+    assert inv.candidates == [{"uuid": UUID_A, "relative": ".samba4/private/xattr.tdb", "path": str(device.source), "mode": "netatalk"}]
+    device.inspect(inv)
+    assert inv.sources[0]["mode"] == "netatalk"
+
+
+def test_no_tdb_never_invokes_native_scanner(device):
+    device.source.unlink()
+    inv = device.inventory()
+    assert not inv.candidates
+    assert "no_legacy_tdb" in device.phase(inv, "copy")
+    assert not device.calls
+
+
+def test_completed_disk_survives_absent_disk_and_native_edits(device):
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv)
+    device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    assert m.decode_receipt(receipt.read_bytes())["completed"].keys() == {UUID_A}
+    device.native[UUID_A] = "new native edit"
+    device.mounted.add(UUID_B)
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv)
+    device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert device.native[UUID_A] == "new native edit"
+    assert len(device.scan_calls()) == 2
+    assert all(UUID_B.encode() in request for _, request, _ in device.scan_calls())
+    assert inv.completed.keys() == {UUID_A, UUID_B}
+
+
+@pytest.mark.parametrize("failure", ["copy", "cleanup", "save"])
+def test_failure_never_saves_unverified_volume(device, failure):
+    inv = device.inventory(); device.inspect(inv)
+    if failure != "copy":
+        device.phase(inv, "copy")
+    device.fail = failure
+    with pytest.raises(RuntimeError):
+        device.phase(inv, "copy" if failure == "copy" else "cleanup")
+    saved = m.decode_receipt(Path(str(device.source) + m.RECEIPT_SUFFIX).read_bytes())
+    assert saved is not None and not saved["completed"]
+    assert device.source.read_bytes() == b"legacy metadata"
+
+
+def test_first_completed_volume_is_saved_before_next_volume_fails(device):
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    device.fail = UUID_B
+    with pytest.raises(RuntimeError):
+        device.phase(inv, "cleanup")
+    saved = m.decode_receipt(Path(str(device.source) + m.RECEIPT_SUFFIX).read_bytes())
+    assert saved["completed"].keys() == {UUID_A}
+
+
+@pytest.mark.parametrize("change", ["corrupt", "missing", "same_size", "new_source", "new_uuid", "format"])
+def test_invalid_completion_rescans(device, change):
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    receipt = Path(str(device.source) + m.RECEIPT_SUFFIX)
+    if change == "corrupt": receipt.write_text('{"version":1,')
+    elif change == "missing": receipt.unlink()
+    elif change == "same_size": device.source.write_bytes(b"changed content")
+    elif change == "new_source":
+        other = Path(device.volumes[1].volume_root) / ".samba4/private/xattr.tdb"
+        other.parent.mkdir(parents=True); other.write_bytes(b"new source")
+    elif change == "new_uuid":
+        device.volumes[0] = volume(Path(device.volumes[0].volume_root), "dk2", "33333333-3333-3333-3333-333333333333")
+        device.mounted.add(device.volumes[0].adisk_uuid)
     else:
-        monkeypatch.setenv("FAIL_MIGRATION", "4")
-    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
-        executor.migrate_xattr_tdb_to_hfs(m.connection, m.plan, phase="copy", legacy_metadata="stream")
-    assert m.tdb.read_text() == "pending" and m.helper.exists()
-    assert not (m.root / "tc-xattr-hfs-migrate").exists()
-    if stage != "helper":
-        assert not m.calls.exists()
+        doc = json.loads(receipt.read_bytes()); doc["version"] += 1; receipt.write_text(json.dumps(doc))
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    assert device.scan_calls()
 
 
-def test_deploy_migration_skips_unavailable_volumes(migration):
-    m = migration
-    m.mount.side_effect = [True, True, False]
-
-    result = executor.migrate_xattr_tdb_to_hfs(
-        m.connection, m.plan, phase="copy", legacy_metadata="stream"
-    )
-
-    assert result.roots == (m.volumes[0],)
-    assert result.unavailable_roots == (m.volumes[1].volume_root,)
-    assert m.calls.read_text().splitlines() == [
-        "copy", str(m.tdb), "stream", m.volumes[0].volume_root
-    ]
-
-
-def test_deploy_cleanup_reuses_only_copy_roots_that_remain_mounted(migration):
-    m = migration
-    copy = executor.migrate_xattr_tdb_to_hfs(
-        m.connection, m.plan, phase="copy", legacy_metadata="stream"
-    )
-    m.calls.unlink()
-    m.mount.reset_mock()
-    m.mount.side_effect = [True, False, True]
-
-    cleanup = executor.migrate_xattr_tdb_to_hfs(
-        m.connection,
-        m.plan,
-        phase="cleanup",
-        legacy_metadata="stream",
-        roots=copy.roots,
-    )
-
-    assert cleanup.roots == (m.volumes[1],)
-    assert cleanup.unavailable_roots == (m.volumes[0].volume_root,)
-    assert m.calls.read_text().splitlines() == [
-        "cleanup", str(m.tdb), "stream", m.volumes[1].volume_root
-    ]
+def test_disk_number_reordering_keeps_completion_and_decoder(device):
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    # Apple's dk number and mount pathname are not the volume identity.
+    old = Path(device.volumes[0].volume_root); renamed = old.parent / "renumbered dk9"
+    old.rename(renamed)
+    device.volumes[0] = volume(renamed, "dk9", UUID_A)
+    device.source = renamed / ".samba4/private/xattr.tdb"
+    device.plan.payload_dir = str(device.source.parent.parent)
+    device.calls.clear()
+    inv = device.inventory()
+    inv.candidates[0]["mode"] = "stream"  # new runtime preference must not reinterpret the old TDB
+    device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert inv.sources[0]["mode"] == "netatalk"
+    assert not device.scan_calls()
 
 
-@pytest.mark.parametrize("phase", ["copy", "cleanup"])
-def test_stopping_deploy_migration_stops_helper_and_removes_ram_copy(migration, monkeypatch, phase):
-    import os
+@pytest.mark.parametrize("uuid", ["", UUID_A])
+def test_missing_or_duplicate_uuid_never_skips(device, uuid):
+    device.volumes[1] = volume(Path(device.volumes[1].volume_root), "dk3", uuid)
+    device.mounted.add(uuid)
+    with pytest.raises(RuntimeError, match="UUID"):
+        device.inventory()
+
+
+def test_all_sources_are_sent_in_one_walk_per_volume_per_phase(device):
+    second = Path(device.volumes[1].volume_root) / ".samba4/private/xattr.tdb"
+    second.parent.mkdir(parents=True); second.write_bytes(b"other database")
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert len(device.scan_calls()) == 4
+    assert all(request.count(b"\nS ") == 2 for _, request, _ in device.scan_calls())
+    for source in inv.sources:
+        saved = m.decode_receipt(Path(source["path"] + m.RECEIPT_SUFFIX).read_bytes())
+        assert all(len(entry["coverage"]) == 2 for entry in saved["completed"].values())
+
+
+def test_known_absent_source_preserves_existing_completion_but_cannot_prove_new_volumes(device):
+    second = Path(device.volumes[1].volume_root) / ".samba4/private/xattr.tdb"
+    second.parent.mkdir(parents=True); second.write_bytes(b"other database")
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy")
+    # Save A only, then its peer source disk disappears on the next deployment.
+    device.fail = UUID_B
+    with pytest.raises(RuntimeError): device.phase(inv, "cleanup")
+    device.fail = None; device.volumes = device.volumes[:1]; device.calls.clear()
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert UUID_A in inv.completed and not device.scan_calls()
+    assert "source_volume_absent" in inv.output[-1]
+
+
+@pytest.mark.parametrize("text, expected", [("FRUIT_METADATA_NETATALK=1", "netatalk"), ("fruit:metadata = stream", "stream"),
+    ("FRUIT_METADATA_NETATALK=$(touch /tmp/do-not-run)", "netatalk"), ("FRUIT_METADATA_NETATALK='false' # old config", "stream")])
+def test_legacy_config_is_only_parsed_as_data(text, expected):
+    assert m.legacy_mode(text) == expected
+
+
+def test_remaining_deadline_is_shared_across_volumes(device, monkeypatch):
+    inv = device.inventory(); device.inspect(inv)
+    ticks = iter([100, 105, 110, 120, 130])
+    monkeypatch.setattr(m.time, "monotonic", lambda: next(ticks))
+    device.phase(inv, "copy")
+    assert [kwargs["timeout"] for _, _, kwargs in device.scan_calls()] == [21590, 21570]
+
+
+def test_native_command_keeps_protocol_stdout_separate_and_reports_timeout(monkeypatch):
+    native = m._native
+    captured = []
+    def fail(_conn, command, **kwargs):
+        captured.append((command, kwargs)); raise SshCommandTimeout("six hour deadline")
+    monkeypatch.setattr(m, "run_ssh_input", fail)
+    monkeypatch.setattr(m, "run_ssh", lambda *a, **k: SimpleNamespace(stdout="last progress entries=10000"))
+    with pytest.raises(SshCommandTimeout, match="last progress entries=10000"):
+        native(SshConnection("test", "", ""), ["multi", "copy"], request=b"request", timeout=100, log="/disk/log")
+    assert captured[0][1] == {"input_bytes": b"request", "timeout": 100}
+
+
+def test_rejects_unknown_duplicate_and_excess_key_coverage(device):
+    inv = device.inventory(); device.inspect(inv); device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    doc = json.loads(Path(str(device.source) + m.RECEIPT_SUFFIX).read_bytes())
+    bad = copy.deepcopy(doc)
+    coverage = bad["completed"][UUID_A]["coverage"]
+    records = next(iter(coverage.values())); records.append(records[0])
+    assert m.decode_receipt(json.dumps(bad).encode()) is None
+    bad = copy.deepcopy(doc); bad["completed"][UUID_A]["coverage"]["unknown"] = []
+    assert m.decode_receipt(json.dumps(bad).encode()) is None
+
+
+def test_aliases_are_deduplicated_and_each_receipt_keeps_the_original_decoder(device):
+    other = Path(device.volumes[0].volume_root) / "tc-netbsd7/private/xattr.tdb"
+    other.parent.mkdir(parents=True)
+    other.symlink_to(device.source)
+    inv = device.inventory(); device.inspect(inv)
+    assert len(inv.sources) == 1
+    assert inv.sources[0]["path"] == str(device.source)
+    assert inv.sources[0]["aliases"] == [str(other)]
+    assert inv.sources[0]["relative"] == "tc-netbsd7/private/xattr.tdb"
+    for path in [other, device.source]:
+        doc = m.decode_receipt(Path(str(path) + m.RECEIPT_SUFFIX).read_bytes())
+        assert doc is not None and doc["sources"][0]["mode"] == "netatalk" and not doc["completed"]
+
+
+def test_native_shell_wrapper_passes_stdin_without_mixing_diagnostics(tmp_path, monkeypatch):
+    helper = tmp_path / "helper"
+    helper.write_text('#!/bin/sh\nread first\nprintf "diagnostic from %s\\n" "$first" >&2\nprintf \'{"version":1,"echo":"%s"}\\n\' "$first"\n')
+    helper.chmod(0o755)
+    log = tmp_path / "migration.log"
+    monkeypatch.setattr(m, "RAM_HELPER", str(helper))
+    def local(_conn, command, *, input_bytes, **_kwargs):
+        return subprocess.run(command, shell=True, executable="/bin/sh", input=input_bytes, capture_output=True, check=True)
+    monkeypatch.setattr(m, "run_ssh_input", local)
+    assert m._native(SshConnection("test", "", ""), ["multi", "copy"], request=b"TCMIGRATE1\n", log=str(log)) == {"version": 1, "echo": "TCMIGRATE1"}
+    assert "diagnostic from TCMIGRATE1" in log.read_text()
+    assert "migration_exit_code=0" in log.read_text()
+
+
+def test_native_shell_interruption_stops_owned_helper(tmp_path, monkeypatch):
     import time
     from concurrent.futures import ThreadPoolExecutor
-
-    m = migration
-    pid_file = m.root / "deploy-helper.pid"
-    m.helper.write_text(f'#!/bin/sh\necho $$ > {shlex.quote(str(pid_file))}\nexec /bin/sleep 30\n')
-    running = SimpleNamespace(process=None)
-
-    def interruptible_ssh(_connection, command, *, check=True, **_kwargs):
-        command = command.replace("/mnt/Memory", str(m.root)).replace("/bin/sync", "true")
-        args = shlex.split(command)
-        process = subprocess.Popen(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        running.process = process
-        stdout, stderr = process.communicate()
-        completed = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
-        if check and process.returncode:
-            raise subprocess.CalledProcessError(process.returncode, args, stdout, stderr)
-        return completed
-
-    monkeypatch.setattr(executor, "run_ssh", interruptible_ssh)
-    child_pid = None
+    helper = tmp_path / "helper"
+    pid = tmp_path / "test-child.pid"
+    helper.write_text(f'#!/bin/sh\necho $$ > {shlex.quote(str(pid))}\nexec sleep 30\n')
+    helper.chmod(0o755)
+    monkeypatch.setattr(m, "RAM_HELPER", str(helper))
+    running = []
+    def local(_conn, command, *, input_bytes, **_kwargs):
+        child = subprocess.Popen(command, shell=True, executable="/bin/sh", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        running.append(child)
+        stdout, stderr = child.communicate(input_bytes)
+        if child.returncode: raise RuntimeError("interrupted")
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+    monkeypatch.setattr(m, "run_ssh_input", local)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(
-            executor.migrate_xattr_tdb_to_hfs,
-            m.connection,
-            m.plan,
-            phase=phase,
-            legacy_metadata="stream",
-        )
-        try:
-            deadline = time.monotonic() + 5
-            while not pid_file.exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            assert pid_file.exists(), "deploy migration did not start"
-            child_pid = int(pid_file.read_text())
-            running.process.terminate()
-            with pytest.raises(subprocess.CalledProcessError):
-                future.result(timeout=5)
-            with pytest.raises(ProcessLookupError):
-                os.kill(child_pid, 0)
-            assert not (m.root / "tc-xattr-hfs-migrate").exists()
-            assert m.tdb.exists() and m.helper.exists()
-        finally:
-            if child_pid is not None:
-                try:
-                    os.kill(child_pid, 9)
-                except ProcessLookupError:
-                    pass
-            if running.process is not None and running.process.poll() is None:
-                running.process.kill()
-
-
-
-def test_deploy_migration_retains_failure_details_and_uses_long_timeout(migration, monkeypatch):
-    m = migration
-    m.helper.write_text('#!/bin/sh\necho "opendir failed path=/Volumes/dk2/problem error=Input/output error" >&2\nexit 4\n')
-    original = executor.run_ssh
-    timeouts = []
-
-    def observe(connection, command, **kwargs):
-        if 'migration_log=' in command:
-            timeouts.append(kwargs['timeout'])
-        return original(connection, command, **kwargs)
-
-    monkeypatch.setattr(executor, 'run_ssh', observe)
-    with pytest.raises(subprocess.CalledProcessError) as caught:
-        executor.migrate_xattr_tdb_to_hfs(m.connection, m.plan, phase='copy', legacy_metadata='netatalk')
-    assert 'opendir failed path=/Volumes/dk2/problem' in caught.value.stdout
-    assert 'migration_exit_code=4' in caught.value.stdout
-    assert 'Input/output error' in (m.helper.parent / 'logs/xattr-migration-copy.log').read_text()
-    assert timeouts == [6 * 60 * 60]
-    assert m.tdb.read_text() == 'pending'
-
-
-@pytest.mark.parametrize('log_available', [True, False])
-def test_migration_timeout_recovers_saved_log_without_masking_timeout(migration, monkeypatch, log_available):
-    m = migration
-    original = executor.run_ssh
-    reads = []
-
-    def timeout_ssh(connection, command, **kwargs):
-        if 'migration_child=' in command:
-            raise SshCommandTimeout('migration SSH deadline exceeded')
-        if command.startswith('/usr/bin/tail '):
-            reads.append(kwargs)
-            if not log_available:
-                raise RuntimeError('device offline')
-            return subprocess.CompletedProcess([], 0, 'opendir failed path=/Volumes/dk2/problem\nerrors=1\n', '')
-        return original(connection, command, **kwargs)
-
-    monkeypatch.setattr(executor, 'run_ssh', timeout_ssh)
-    with pytest.raises(SshCommandTimeout, match='migration SSH deadline exceeded') as caught:
-        executor.migrate_xattr_tdb_to_hfs(m.connection, m.plan, phase='copy', legacy_metadata='stream')
-    assert ('opendir failed' if log_available else 'unavailable') in str(caught.value)
-    assert 'xattr-migration-copy.log' in str(caught.value)
-    assert reads == [{'check': False, 'timeout': 10}]
+        result = pool.submit(m._native, SshConnection("test", "", ""), ["multi", "copy"], log=str(tmp_path / "log"))
+        until = time.monotonic() + 5
+        while not pid.exists() and time.monotonic() < until: time.sleep(0.01)
+        assert pid.exists()
+        running[0].terminate()
+        with pytest.raises(RuntimeError, match="interrupted"): result.result(timeout=5)
+    with pytest.raises(ProcessLookupError): os.kill(int(pid.read_text()), 0)

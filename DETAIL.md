@@ -209,15 +209,23 @@ containers, unsupported top-level entries, oversized native xattrs, or failed
 read-back verification leave the sidecar untouched and fail that migration
 phase.
 
-The legacy `xattr.tdb` is the migration-needed signal: fresh installs and
-already-migrated systems skip the disk scan without adding a persistent marker.
-When it exists, migration is split around payload installation:
+Every detected payload `xattr.tdb` is a migration input, including incomplete
+v2.2.9 and older installations. With no TDB, deploy skips both helper upload and
+recursive scans. Migration is split around software replacement:
 
-1. Stop the old Samba runtime and upload only the migrator.
-2. `copy`: populate and verify native HFS storage without deleting TDB or AppleDouble data.
-3. Upload and verify the new Samba payload.
-4. `cleanup`: reverify and flush each file's native storage, remove verified sidecars, and transactionally delete that file's TDB record. Delete `xattr.tdb` when no records remain; set it aside as `xattr.tdb.orphaned.N` when every remaining record is a proven orphan (below).
-5. Sync, then activate or reboot into the new runtime.
+1. Read old configuration and payload locations, stop writers, disable `rc.local`, and flush Flash.
+2. Upload the helper to RAM. Fingerprint sources and preserve their old metadata decoding mode in adjacent progress files.
+3. `copy`: walk each unfinished available HFS volume once, merging logical attributes from all read-only input databases.
+4. Replace known project software, verify and flush it, keeping old runtime configuration through cleanup.
+5. `cleanup`: verify merged native values, flush files, remove verified sidecars, and save completed-volume key coverage.
+6. Retire whole databases in increasing source priority; unresolved older databases retain newer authorities. Fully verified files are deleted, files containing proven orphan metadata are quarantined intact.
+7. Write new configuration and `rc.local` last, flush, and reboot.
+
+Conflicting logical values use the source file's `(mtime seconds, nanoseconds,
+normalized volume UUID, payload-relative path bytes)`; the greatest tuple wins.
+Absent attributes do not delete older unique values. Stream fragments stay with
+their winning source. Sources remain read-only throughout both walks, preserving
+precedence if deployment is interrupted.
 
 A temporary per-file resource migration marker makes an interrupted large fork
 copy distinguishable from a pre-existing native/legacy conflict. The helper
@@ -239,9 +247,13 @@ attempts to retrieve a bounded saved-log snapshot. The macOS diagnostics export
 retains the last deploy's stage, timestamps, operation ID and error code even
 after later operations displace its recent events.
 An unavailable external disk keeps its legacy TDB rows; attach it and run deploy
-again to migrate them. An interrupted deployment can be rerun. Successful
-per-file cleanup retires completed rows so later native edits are not replayed
-from those old records.
+again to migrate them. An interrupted deployment can be rerun. Validated `xattr.tdb.migration-progress.json` files remember completed volume
+UUIDs and verified key coverage for the entire source cohort. Later deploys skip
+those volumes in both phases, preserving subsequent native edits. Missing or
+invalid progress may cause replay, which is an accepted recovery behavior.
+Changed source contents, new sources, or a changed conversion policy invalidate
+completion. Disk-number reassignment alone does not. Known absent source disks
+do not invalidate existing completion, but cannot prove new volumes finished.
 
 #### Orphans and unresolved rows (v3.1.0)
 
@@ -253,21 +265,20 @@ file claimed is one of two things and the migrator tells them apart:
 - an **unresolved** row: its device was not walked, so the metadata may belong to
   a disk that is not attached right now.
 
-Unresolved rows keep the database live for a later run. When every remaining row
-is a proven orphan, `cleanup` closes the database and renames it to
+Unresolved rows keep the database live for a later run. When every row is verified or proven orphaned and at least one is an orphan,
+retirement closes the original database and renames it to
 `xattr.tdb.orphaned.N` beside the payload (`N` is the first unused slot, never
-overwriting an earlier quarantine); nothing is deleted. The summary line the
-migrator writes to the deployment log reports `tdb_orphaned`, `tdb_unresolved` and
-`tdb_quarantined` separately. Note the limit of device-number identity: rows
+overwriting an earlier quarantine); nothing is deleted. Structured coverage distinguishes matched, orphaned, and unresolved keys; the
+deployment log reports each source and retirement outcome. Note the limit of device-number identity: rows
 written by a disk that used to sit at the same `/dev/dkN` as the current one look
 like proven orphans of the current disk, which is why quarantine keeps the file.
 (This attachment-evidence definition is a deliberate decision: the rows carry
 nothing else, and refusing to prove any row would keep every leftover database
 live forever.)
 
-The manager no longer maintains migration checkpoints. Old
-`xattr-migration-completed.txt` files are ignored; deploy does not read or write
-them. Quarantined databases remain preserved.
+Only deploy reads the adjacent JSON completion files. Runtime daemons never
+read or write migration state. Old `xattr-migration-completed.txt` files remain
+ignored, and quarantined databases remain preserved.
 
 The stream layer allows 3,803 logical bytes for canonical Apple xattrs on HFS:
 3,802 native bytes plus its synthetic marker. Windows ADS retain 3,802-byte
@@ -1352,24 +1363,15 @@ Current deploy flow:
 - confirms installation and reboot before stopping or replacing managed software (unless `--yes` is used)
 - stops current and historical supervisors before their workers and verifies they have stopped
 - disables `rc.local` and removes an explicit inventory of replaceable software; preserves data, metadata, quarantines, logs, SSH keys and Apple settings
-- prepares the payload directory under `/Volumes/dkX/.samba4`
+- inventories active metadata in current and older payload layouts before software deletion
+- stops writers, disables and flushes `rc.local`, then rechecks the inventory
+- uploads the migrator to RAM only when a TDB exists, and copies merged metadata before replacing software
+- removes known obsolete programs from all detected payload homes while preserving metadata and logs
 - checks actual free Flash space after cleanup, including a small margin
-- uploads the migrator and copies legacy TDB metadata into native HFS storage when a legacy database exists
-- uploads the checked-in binaries:
-  - `smbd`
-  - `discoveryd`
-  - `service`
-  - `telemetry`
-  - `rsync`
-- generates and uploads the persistent rsync daemon configuration:
-  - `/Volumes/dkX/.samba4/rsyncd.conf`
-- renders and uploads the packaged boot/runtime files:
-  - `common.sh`
-  - `boot.sh`
-  - `manager.sh`
-  - `dfree.sh`
-- generates and uploads flash runtime config:
-  - `/mnt/Flash/tcapsulesmb.conf`
+- uploads checked-in `smbd` and `rsync` to the payload, and the unified `service` to Flash
+- uploads `rsyncd.conf`, `boot.sh`, and `dfree.sh`
+- retains old `tcapsulesmb.conf` until metadata cleanup succeeds or reports accepted partial migration
+- installs new `/mnt/Flash/tcapsulesmb.conf` and enables `rc.local` last
 - does not upload password-derived Samba auth files; runtime staging generates RAM auth from live AirPort `syPW`
 - enables NBNS by default:
   - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used

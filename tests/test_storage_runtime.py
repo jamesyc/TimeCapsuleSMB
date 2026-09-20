@@ -781,17 +781,19 @@ MaSt = (
          service_path=Path("bin/service"))
         source_ids = {upload.source_id for upload in plan.uploads}
 
-        self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, source_ids)
+        self.assertNotIn(GENERATED_FLASH_CONFIG_SOURCE, source_ids)
+        self.assertEqual(plan.config_upload.source_id, GENERATED_FLASH_CONFIG_SOURCE)
         self.assertNotIn("rendered:smb.conf.template", source_ids)
         self.assertNotIn("generated:adisk.uuid", source_ids)
         self.assertNotIn("generated:nbns.enabled", source_ids)
         self.assertNotIn("generated:install.id", source_ids)
         self.assertEqual(plan.private_dir, "/Volumes/dk2/.samba4/private")
         self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
-        self.assertIn("/Volumes/dk2/.samba4/smb.conf.template", {action.path for action in plan.pre_upload_actions if hasattr(action, "path")})
-        self.assertIn("/Volumes/dk2/.samba4/private/adisk.uuid", {action.path for action in plan.pre_upload_actions if hasattr(action, "path")})
-        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", {action.path for action in plan.pre_upload_actions if hasattr(action, "path")})
-        self.assertIn(
+        self.assertIn("/Volumes/dk2/.samba4/smb.conf.template", {action.path for action in plan.replace_software_actions if hasattr(action, "path")})
+        self.assertIn("/Volumes/dk2/.samba4/private/adisk.uuid", {action.path for action in plan.replace_software_actions if hasattr(action, "path")})
+        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", {action.path for action in plan.replace_software_actions if hasattr(action, "path")})
+        # The installer applies config permissions after verified migration.
+        self.assertNotIn(
             ("/mnt/Flash/tcapsulesmb.conf", "600"),
             {(permission.path, permission.mode) for permission in plan.permissions},
         )

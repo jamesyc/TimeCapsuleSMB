@@ -81,6 +81,8 @@ class DeploymentPlan:
     migration_upload: FileTransfer
     uploads: list[FileTransfer]
     pre_upload_actions: list[RemoteAction]
+    replace_software_actions: list[RemoteAction]
+    config_upload: FileTransfer
     post_upload_actions: list[RemoteAction]
     boot_upload: FileTransfer
     startup_mode: DeploymentStartupMode
@@ -248,19 +250,17 @@ def build_deployment_plan(
     ]
     permissions = [
         RemotePermission(payload_targets["smbd"], "755"),
-        RemotePermission(payload_targets["xattr_migrator"], "755"),
         RemotePermission(payload_targets["rsync"], "755"),
         RemotePermission(payload_targets["rsyncd.conf"], "600"),
         RemotePermission(flash_targets["boot.sh"], "755"),
         RemotePermission(flash_targets["service"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
-        RemotePermission(flash_targets["tcapsulesmb.conf"], "600"),
         RemotePermission(cache_dir, "755"),
         RemotePermission(private_dir, "700"),
     ]
     # Only replace software we own. Persistent metadata, quarantines and logs
     # deliberately stay in place, including after an interrupted deployment.
-    flash_software = [*flash_targets.values(), *(
+    flash_software = [*(path for name, path in flash_targets.items() if name != "tcapsulesmb.conf"), *(
         f"/mnt/Flash/{name}" for name in (
             "discoveryd", "common.sh", "manager.sh", "telemetry", "migrate.sh", "xattr-migrate-wrapper.sh", "start-samba.sh", "watchdog.sh",
             "mdns", "nbns", "mdns-advertiser", "nbns-advertiser", "mdns-smbd-advertiser",
@@ -273,6 +273,9 @@ def build_deployment_plan(
         f"{payload_dir}/{name}" for name in (
             "service", "telemetry", "discoveryd", "smb.conf.template", "mdns", "nbns", "mdns-advertiser", "nbns-advertiser",
             "mdns-smbd-advertiser", "sbin/smbd", "sbin/mdns-smbd-advertiser",
+            "sbin/service", "sbin/telemetry", "sbin/discoveryd", "sbin/mdns", "sbin/nbns",
+            "sbin/mdns-advertiser", "sbin/nbns-advertiser", "manager.sh", "common.sh",
+            "boot.sh", "start-samba.sh", "watchdog.sh", "migrate.sh", "xattr-migrate-wrapper.sh",
             "private/adisk.uuid", "private/nbns.enabled",
         )
     )]
@@ -295,7 +298,7 @@ def build_deployment_plan(
         permissions=permissions,
         migration_upload=FileTransfer(
             BINARY_XATTR_MIGRATOR_SOURCE,
-            payload_targets["xattr_migrator"],
+            "/mnt/Memory/tc-xattr-hfs-migrate",
             "scp",
             XATTR_MIGRATOR_UPLOAD_TIMEOUT_SECONDS,
             "one-shot HFS xattr migrator",
@@ -307,7 +310,6 @@ def build_deployment_plan(
             FileTransfer(BINARY_SERVICE_SOURCE, flash_targets["service"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "native manager, discovery and telemetry service"),
             FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
-            FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
         ],
         pre_upload_actions=[
             # Existing installs run mdns directly from /mnt/Flash.
@@ -330,6 +332,12 @@ def build_deployment_plan(
             StopProcessAction("rsync"),
             StopTelemetryAction(),
             WaitForIdleJobsAction(),
+            RemovePathAction(flash_targets["rc.local"]),
+            RemovePathAction("/mnt/Memory/samba4"),
+            ensure_payload_volume,
+            PrepareDirsAction(tuple(remote_directories), tuple(legacy_symlinks)),
+        ],
+        replace_software_actions=[
             # rc.local is first to be removed and last to be installed. A
             # partial software tree must never start on an intervening reboot.
             *(RemovePathAction(path) for path in flash_software),
@@ -345,6 +353,10 @@ def build_deployment_plan(
             ensure_payload_volume,
             InstallPermissionsAction(tuple(permissions)),
         ],
+        config_upload=FileTransfer(
+            GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "scp",
+            FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config",
+        ),
         boot_upload=FileTransfer(
             PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"], "scp",
             FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "enable boot after verified installation",

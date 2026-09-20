@@ -107,16 +107,21 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         if migration_upload.timeout_seconds is not None
         else ""
     )
-    lines.append("Check free flash space after cleanup, then migrate native HFS metadata:")
+    lines.append("Inventory legacy metadata before replacing software:")
     lines.append(
         f"  upload {migration_upload.description} "
         f"({migration_upload.source_id}, {migration_upload.mode}{migration_timeout}) "
         f"-> {migration_upload.destination}"
     )
-    lines.append("  skip the disk scan when no legacy xattr.tdb exists")
+    lines.append("  skip helper upload and disk scans when no legacy xattr.tdb exists")
     lines.append("  copy and verify native metadata before replacing the Samba payload")
-    lines.append("  reverify and retire exported TDB records after payload verification")
+    lines.append("  reverify merged metadata, save completed volumes, then retire whole TDBs oldest-first")
     lines.append("  retain unmatched records; migrate unavailable disks on a later explicit deploy")
+    lines.append("")
+    lines.append("Remote actions (after metadata copy):")
+    for command in render_remote_actions(plan.replace_software_actions):
+        lines.append(f"  {command}")
+    lines.append("  check free flash space after cleanup")
     lines.append("")
     lines.append("Uploads:")
     for upload in plan.uploads:
@@ -128,6 +133,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         lines.append(f"  {command}")
     lines.append("")
     lines.append("After payload verification, flush and migration cleanup:")
+    lines.append(f"  upload {plan.config_upload.description} -> {plan.config_upload.destination}")
     lines.append(f"  upload {plan.boot_upload.description} -> {plan.boot_upload.destination}")
     lines.append("  make rc.local executable, sync, wait ten seconds, sync, then reboot")
     lines.append("")
@@ -171,6 +177,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["service_path"] = str(plan.service_path)
     data["rsync_path"] = str(plan.rsync_path)
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
+    data["replace_software_actions"] = remote_actions_to_jsonable(plan.replace_software_actions)
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
     data["runtime_startup"] = _runtime_startup_json(plan)

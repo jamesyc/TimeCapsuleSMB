@@ -453,6 +453,25 @@ def _run_piped_ssh(
     return proc
 
 
+def run_ssh_input(
+    connection: SshConnection,
+    remote_cmd: str,
+    *,
+    input_bytes: bytes = b"",
+    timeout: int = 120,
+) -> subprocess.CompletedProcess[bytes]:
+    """Send a bounded request without PTY echo, keeping stdout and logs separate."""
+    proc = _run_piped_ssh(
+        connection, remote_cmd, input_bytes=input_bytes, timeout=timeout,
+        missing_tool_message="Piped SSH requires local sshpass; run `./tcapsule bootstrap`.",
+        timeout_message=f"Timed out waiting for ssh command to finish: {_summarize_remote_command(remote_cmd)}",
+    )
+    if proc.returncode:
+        raise SshError(_decode_ssh_error_output(proc.stderr, proc.stdout).strip()
+                       or f"ssh command failed with rc={proc.returncode}")
+    return proc
+
+
 def run_ssh_capture_bytes(
     connection: SshConnection,
     remote_cmd: str,
