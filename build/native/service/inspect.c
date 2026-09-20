@@ -19,6 +19,10 @@ static int argument(const char *command, const char *text) {
     }
     return 0;
 }
+static int starts_with_arguments(const char *command, const char *prefix) {
+    size_t length = strlen(prefix);
+    return !strncmp(command, prefix, length) && (!command[length] || isspace((unsigned char)command[length]));
+}
 static enum tc_process_role classify(const char *name, const char *command) {
     if (!strcmp(name, "smbd"))
         return TC_PROC_SMBD;
@@ -30,16 +34,19 @@ static enum tc_process_role classify(const char *name, const char *command) {
         return TC_PROC_WCIFSND;
     if (!strcmp(name, "diskd"))
         return argument(command, "-i lo0") ? TC_PROC_DISKD_LOOPBACK : TC_PROC_DISKD;
-    if (!strcmp(name, "discoveryd"))
+    if (!strcmp(name, "discoveryd") && !argument(command, "--print-link-plan") &&
+        !argument(command, "--print-mast") && !argument(command, "--version"))
         return TC_PROC_DISCOVERY;
-    if (!strcmp(name, "telemetry"))
+    if (!strcmp(name, "telemetry") && argument(command, "--daemon"))
         return TC_PROC_TELEMETRY;
     if (!strcmp(name, "service")) {
-        if (argument(command, "role=discovery") ||
-            !strncmp(command, TC_SERVICE_BIN " discovery ", strlen(TC_SERVICE_BIN " discovery ")))
+        if (starts_with_arguments(command, "service: role=discovery") ||
+            (starts_with_arguments(command, TC_SERVICE_BIN " discovery") &&
+             !argument(command, "--print-link-plan") &&
+             (argument(command, "--diskless") || argument(command, "--netbios-name"))))
             return TC_PROC_DISCOVERY;
-        if (argument(command, "role=telemetry") ||
-            !strncmp(command, TC_SERVICE_BIN " telemetry ", strlen(TC_SERVICE_BIN " telemetry ")))
+        if (starts_with_arguments(command, "service: role=telemetry") ||
+            starts_with_arguments(command, TC_SERVICE_BIN " telemetry --daemon"))
             return TC_PROC_TELEMETRY;
     }
     /* Apple's mDNSResponder and afpserver are deliberately never managed here.

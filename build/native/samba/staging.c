@@ -58,21 +58,34 @@ static const char *prepared[] = {TC_SMBD_CONF, TC_RAM_ROOT "/private/smbpasswd",
 
 int tc_samba_settings_read(struct tc_samba_settings *settings) {
     memset(settings, 0, sizeof(*settings));
-    return tc_runtime_config_load(&settings->config) || tc_samba_identity_read(&settings->identity) ||
-                   device_nt_hash(settings->nt_hash)
-               ? -1
-               : 0;
+    if (tc_runtime_config_load(&settings->config)) {
+        fputs("settings: invalid or unavailable runtime configuration\n", stderr);
+        return -1;
+    }
+    if (tc_samba_identity_read(&settings->identity)) {
+        fputs("settings: device identity unavailable\n", stderr);
+        return -1;
+    }
+    if (device_nt_hash(settings->nt_hash)) {
+        fputs("settings: device authentication unavailable\n", stderr);
+        return -1;
+    }
+    return 0;
 }
 
 static FILE *prepare_file(const char *path) {
     char next[512];
     int fd;
     snprintf(next, sizeof(next), "%s.next", path);
-    if (unlink(next) && errno != ENOENT)
+    if (unlink(next) && errno != ENOENT) {
+        fprintf(stderr, "prepare configuration failed: %s: %s\n", next, strerror(errno));
         return NULL;
+    }
     fd = open(next, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0)
+    if (fd < 0) {
+        fprintf(stderr, "create configuration failed: %s: %s\n", next, strerror(errno));
         return NULL;
+    }
     FILE *file = fdopen(fd, "w");
     if (!file)
         close(fd);
@@ -138,8 +151,10 @@ int tc_samba_publish(int rsync) {
     char path[512];
     for (i = 0; i < (rsync ? 4u : 3u); i++) {
         snprintf(path, sizeof(path), "%s.next", prepared[i]);
-        if (rename(path, prepared[i]))
+        if (rename(path, prepared[i])) {
+            fprintf(stderr, "publish configuration failed: %s: %s\n", prepared[i], strerror(errno));
             return -1;
+        }
     }
     return 0;
 }

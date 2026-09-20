@@ -6,6 +6,10 @@
 #define EXIT_PLAN_FAILED 13
 #define NT_HASH_MAX_PASSWORD_BYTES 4096
 #define SERVICE_VERSION_CODE 30100
+#ifndef TC_HOSTS_PATH
+#define TC_HOSTS_PATH "/etc/hosts"
+#endif
+int tc_hosts_ensure(const char *path, const char *hostname);
 int print_smb_bind_interfaces(FILE *stream, const struct device_plan *plan);
 int print_link_plan(FILE *stream, const struct device_plan *plan);
 int service_collect_plan(struct device_plan *plan, const char *facts_file, struct device_plan *history);

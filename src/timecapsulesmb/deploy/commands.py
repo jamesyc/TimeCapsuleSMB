@@ -147,7 +147,7 @@ def render_remote_action(action: RemoteAction) -> str:
         return render_pkill_wait_pkill9_manager(attempts=5)
     if isinstance(action, StopTelemetryAction):
         entrypoint = "tc_cleanup_telemetry_for_uninstall" if action.cleanup else "tc_prepare_telemetry_reset"
-        script = load_boot_asset_text("common.d/55-telemetry.sh") + "\n" + entrypoint
+        script = load_boot_asset_text("telemetry-cleanup.sh") + "\n" + entrypoint
         return f"/bin/sh -c {shlex.quote(script)}"
     if isinstance(action, PrepareDirsAction):
         return _render_prepare_dirs_action(action)

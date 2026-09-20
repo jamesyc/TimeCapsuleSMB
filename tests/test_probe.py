@@ -224,7 +224,7 @@ class ProbeTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "manager.log" in remote_cmd:
+            if "runtime.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
             if "rsync.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")
@@ -270,7 +270,7 @@ class ProbeTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "manager.log" in remote_cmd:
+            if "runtime.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
             if "rsync.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")

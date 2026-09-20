@@ -281,25 +281,24 @@ The Time Capsule hardware is extremely old and constrained. It has three relevan
 - `/mnt/Memory`, which is a 16MB ramdisk
 - the internal HDD mounted under `/Volumes/dk2` or `/Volumes/dk3`, which is large but managed by Apple and unmounts when idle. You cannot run a binary off this location for that reason.
 
-Unfortunately, it was not an option to "copy one binary somewhere and call it a day" to get `smbd` running. Thus, the current process is:
+The installed runtime uses three storage areas:
 
-1. Keep the full `smbd` payload on the big internal hard disk.
-2. Keep only a very small `rc.local` boot script on flash.
-3. At boot, wait for the internal disk to appear and mount.
-4. Copy the runtime binaries, including `service` and `telemetry`, into `/mnt/Memory`.
-5. Start Samba from the `/mnt/Memory`, not from the big disk Apple may later decide to unmount.
-6. Run a small `discoveryd` from flash. It registers Bonjour services through Apple's mDNSResponder and owns Apple's `wcifsnd` process for native NBNS.
+1. Keep Samba and optional rsync payloads on the HDD.
+2. Keep `rc.local`, a small `boot.sh`, configuration, and one static `service` executable on Flash.
+3. Have `rc.local` background `boot.sh`; after nondestructive platform preparation, it executes `service manager`.
+4. Stage `smbd` and optional rsync into RAM. The manager directly owns `smbd -F --no-process-group` in its own process group.
+5. Run separate `service discovery` and `service telemetry` processes from the same Flash image. Discovery registers Bonjour through Apple's mDNSResponder and owns Apple's native `wcifsnd` child.
 
-That is the reason the repository contains both:
+The manager uses native disk and network events, absolute deadlines, and bounded
+polling fallbacks. MaSt supplies disk names and UUIDs; the kernel mount table
+establishes which filesystems are usable. Apple `diskd` remains the storage owner.
 
-- [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/discovery/discoveryd](bin/discovery/discoveryd)
+Relevant code:
 
-and boot files such as:
-
-- [src/timecapsulesmb/assets/boot/samba4/rc.local](src/timecapsulesmb/assets/boot/samba4/rc.local)
-- [src/timecapsulesmb/assets/boot/samba4/boot.sh](src/timecapsulesmb/assets/boot/samba4/boot.sh)
-- [src/timecapsulesmb/assets/boot/samba4/manager.sh](src/timecapsulesmb/assets/boot/samba4/manager.sh)
+- [Samba binary](bin/samba4/smbd) and [combined service](bin/service/service)
+- [boot preparation](src/timecapsulesmb/assets/boot/samba4/boot.sh)
+- [native manager](build/native/service/manager.c)
+- [runtime regression tests](tests/native/README.md)
 
 There are other constraints the Time Capsule places on us:  
 - The NetBSD 6 source code does not support earmv4 builds, so we need to build from NetBSD 7.
@@ -378,19 +377,13 @@ The commands have logging and telemetry enabled by default. Errors and exception
 
 The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](build) and depends on a NetBSD VM.
 
-The native helpers are `discoveryd`, `service` (hashing and network probes), and `telemetry` (heartbeat reporting and signed debug execution). `discoveryd` uses Apple's existing mDNSResponder and wcifsnd services. Each helper links into one static executable; see [build/native/README.md](build/native/README.md).
+One static `service` image provides manager, discovery, telemetry, and diagnostic entrypoints. The roles run as separate processes and collect their own network plans through shared code. See [build/native/README.md](build/native/README.md).
 
 The main build outputs are:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
 - [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
-- [bin/discovery/discoveryd](bin/discovery/discoveryd)
-- [bin/discovery-netbsd4le/discoveryd](bin/discovery-netbsd4le/discoveryd)
-- [bin/discovery-netbsd4be/discoveryd](bin/discovery-netbsd4be/discoveryd)
 - [bin/service/service](bin/service/service)
 - [bin/service-netbsd4le/service](bin/service-netbsd4le/service)
 - [bin/service-netbsd4be/service](bin/service-netbsd4be/service)
-- [bin/telemetry/telemetry](bin/telemetry/telemetry)
-- [bin/telemetry-netbsd4le/telemetry](bin/telemetry-netbsd4le/telemetry)
-- [bin/telemetry-netbsd4be/telemetry](bin/telemetry-netbsd4be/telemetry)

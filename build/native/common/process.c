@@ -56,6 +56,10 @@ int tc_child_fork(struct tc_child *child, tc_child_fn function, void *data, cons
         tc_close_other_fds(-1);
         _exit(function(data));
     }
+    /* Close the parent-side signal race too. EACCES after exec is harmless:
+     * the child above refuses to enter any program without its own group. */
+    if (pid > 0)
+        (void)setpgid(pid, pid);
     close(life[0]);
     if (output[1] >= 0)
         close(output[1]);
@@ -111,6 +115,11 @@ void tc_child_stop(struct tc_child *child, long long now, int allow_kill) {
      * descendants, and that escalation is forbidden for telemetry. */
     if (child->pid)
         kill(child->pid, SIGTERM);
+    else if (allow_kill)
+        /* A crashed owner cannot forward TERM to its remaining workers.
+         * Give those workers the same grace before escalation. Telemetry's
+         * surviving signed jobs are exempt and continue draining. */
+        kill(-child->group, SIGTERM);
     if (child->lifetime >= 0) {
         close(child->lifetime);
         child->lifetime = -1;

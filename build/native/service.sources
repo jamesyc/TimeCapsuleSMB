@@ -43,3 +43,4 @@ native/storage/settle.c
 native/samba/staging.c
 native/service/inspect.c
 native/service/manager.c
+native/service/hosts.c

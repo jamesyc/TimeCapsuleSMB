@@ -29,9 +29,7 @@ from timecapsulesmb.deploy.executor import (
 )
 from timecapsulesmb.deploy.commands import InstallPermissionsAction, RemoteAction, RemotePermission, StopProcessAction
 from timecapsulesmb.deploy.planner import (
-    BINARY_DISCOVERY_SOURCE,
     BINARY_SERVICE_SOURCE,
-    BINARY_TELEMETRY_SOURCE,
     BINARY_RSYNC_SOURCE,
     BINARY_SMBD_SOURCE,
     BINARY_XATTR_MIGRATOR_SOURCE,
@@ -39,9 +37,7 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
-    PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
     FileTransfer,
 )
@@ -113,11 +109,8 @@ DEPLOY_REBOOT_NO_DOWN_MESSAGE = (
 )
 DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     BINARY_SERVICE_SOURCE,
-    BINARY_TELEMETRY_SOURCE,
-    PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_BOOT_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
 })
 MANAGER_STOP_TIMEOUT_MESSAGE = (
     "A service on the device is stuck, often due to a failing disk. "
@@ -146,10 +139,8 @@ class DeployPayloadContext:
 class DeployArtifactPaths:
     smbd: Path
     xattr_migrator: Path
-    discovery: Path
     rsync: Path
     service: Path
-    telemetry: Path
 
 
 @dataclass(frozen=True)
@@ -396,8 +387,6 @@ def deploy_upload_stage(transfer: FileTransfer) -> str:
         return "upload_smbd"
     if transfer.source_id == BINARY_XATTR_MIGRATOR_SOURCE:
         return "upload_xattr_migrator"
-    if transfer.source_id == BINARY_DISCOVERY_SOURCE:
-        return "upload_discovery"
     if transfer.source_id in {BINARY_RSYNC_SOURCE, GENERATED_RSYNC_CONFIG_SOURCE}:
         return "upload_rsync"
     if transfer.source_id in DEPLOY_UPLOAD_BOOT_SOURCES:
@@ -434,8 +423,8 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
 def uploaded_file_message(transfer: FileTransfer) -> str | None:
     if transfer.source_id == BINARY_SMBD_SOURCE:
         return "Uploaded smbd."
-    if transfer.source_id == BINARY_DISCOVERY_SOURCE and transfer.destination.startswith("/mnt/Flash/"):
-        return "Uploaded discovery service."
+    if transfer.source_id == BINARY_SERVICE_SOURCE:
+        return "Uploaded native service."
     if transfer.source_id == GENERATED_RSYNC_CONFIG_SOURCE:
         return "Uploaded rsync runtime files."
     if transfer.source_id == PACKAGED_DFREE_SH_SOURCE:
@@ -493,10 +482,8 @@ def resolve_deploy_artifact_paths(
     return DeployArtifactPaths(
         smbd=resolved_artifacts["smbd"].absolute_path,
         xattr_migrator=resolved_artifacts["xattr_migrator"].absolute_path,
-        discovery=resolved_artifacts["discovery"].absolute_path,
         rsync=resolved_artifacts["rsync"].absolute_path,
         service=resolved_artifacts["service"].absolute_path,
-        telemetry=resolved_artifacts["telemetry"].absolute_path,
     )
 
 
@@ -533,11 +520,9 @@ def prepare_deploy_preflight(
         connection.host,
         build_dry_run_payload_home(options.payload_dir_name),
         artifacts.smbd,
-        artifacts.discovery,
         xattr_migrator_path=artifacts.xattr_migrator,
         rsync_path=artifacts.rsync,
         service_path=artifacts.service,
-        telemetry_path=artifacts.telemetry,
         rsync_enabled=options.rsync_enabled,
         startup_mode=payload_context.startup_mode,
         apple_mount_wait_seconds=options.mount_wait_seconds,
@@ -684,11 +669,9 @@ def prepare_deployment_plan(
         connection.host,
         payload_home,
         artifacts.smbd,
-        artifacts.discovery,
         xattr_migrator_path=artifacts.xattr_migrator,
         rsync_path=artifacts.rsync,
         service_path=artifacts.service,
-        telemetry_path=artifacts.telemetry,
         rsync_enabled=rsync_enabled,
         startup_mode=payload_context.startup_mode,
         apple_mount_wait_seconds=mount_wait_seconds,
@@ -728,17 +711,13 @@ def _deployment_upload_sources(
     return {
         BINARY_SMBD_SOURCE: plan.smbd_path,
         BINARY_XATTR_MIGRATOR_SOURCE: plan.xattr_migrator_path,
-        BINARY_DISCOVERY_SOURCE: plan.discovery_path,
         BINARY_SERVICE_SOURCE: plan.service_path,
-        BINARY_TELEMETRY_SOURCE: plan.telemetry_path,
         BINARY_RSYNC_SOURCE: plan.rsync_path,
         GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
         GENERATED_RSYNC_CONFIG_SOURCE: generated_rsync_config,
         PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path_func("rc.local")),
-        PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("common.sh")),
         PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("dfree.sh")),
         PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path_func("boot.sh")),
-        PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path_func("manager.sh")),
     }
 
 

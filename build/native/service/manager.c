@@ -14,6 +14,9 @@
 #define INVENTORY_MS 10000
 #define AUDIT_MS 30000
 #define JOB_RETRY_MS 5000
+#ifndef TC_DISKD_PATH
+#define TC_DISKD_PATH "/sbin/diskd"
+#endif
 enum { BLOCK_SMB = 1, BLOCK_RSYNC = 2, BLOCK_DISCOVERY = 4, BLOCK_TELEMETRY = 8 };
 struct stale_process {
     pid_t pid;
@@ -38,8 +41,8 @@ struct manager {
     struct tc_storage_settle topology;
     struct tc_storage_snapshot storage, applied_storage, storage_result;
     struct tc_samba_settings settings, applied_settings, settings_result;
-    struct managed smb, discovery, telemetry, rsync;
-    struct tc_child storage_job, settings_job, stage_job, audit_job, diskd;
+    struct managed smb, discovery, telemetry, rsync, diskd;
+    struct tc_child storage_job, settings_job, stage_job, audit_job;
     struct audit_result audit_result;
     struct acp_collector mast;
     struct acp_request mast_request;
@@ -48,7 +51,7 @@ struct manager {
     struct tc_share_set discovery_shares;
     char discovery_name[16];
     int discovery_diskless, discovery_afp, discovery_debug;
-    int have_settings, have_bindings, have_applied, stopping, started;
+    int have_settings, have_bindings, have_applied, stopping, tune_ata;
     int mast_running, storage_dirty, config_dirty, ownership_ready;
     unsigned blocked;
     struct stale_process stale[TC_PROCESS_MAX];
@@ -107,6 +110,12 @@ static int settings_job(void *opaque) {
     struct manager *m = opaque;
     struct tc_samba_settings result;
     tc_worker_begin("settings");
+    char hostname[256];
+    if (!gethostname(hostname, sizeof(hostname))) {
+        hostname[sizeof(hostname) - 1] = 0;
+        if (tc_hosts_ensure(TC_HOSTS_PATH, hostname))
+            fprintf(stderr, "settings: local hostname resolution could not update %s\n", TC_HOSTS_PATH);
+    }
     if (tc_samba_settings_read(&result))
         return 1;
     /* Hostname/model fallbacks are useful at cold boot. A later ACP failure
@@ -123,7 +132,7 @@ static int storage_job(void *opaque) {
     struct manager *m = opaque;
     struct tc_storage_snapshot result;
     tc_worker_begin("storage");
-    if (tc_storage_prepare(&result, &m->topology.stable, &m->storage, &m->settings.config, !m->started))
+    if (tc_storage_prepare(&result, &m->topology.stable, &m->storage, &m->settings.config, m->tune_ata))
         return 1;
     return tc_worker_result(&result, sizeof(result)) ? 1 : 0;
 }
@@ -235,6 +244,11 @@ static void pump_settings(struct manager *m, long long now) {
                     m->settings.config.internal_root != m->settings_result.config.internal_root ||
                     m->settings.config.rsync != m->settings_result.config.rsync ||
                     m->settings.config.advertise_afp != m->settings_result.config.advertise_afp;
+                if (!m->have_settings || m->settings.config.ata_idle != m->settings_result.config.ata_idle ||
+                    strcmp(m->settings.config.ata_standby, m->settings_result.config.ata_standby)) {
+                    m->tune_ata = 1;
+                    storage_changed = 1;
+                }
                 if (!m->have_settings || !samba_settings_equal(&m->settings, &m->settings_result))
                     changed(m, now);
                 m->settings = m->settings_result;
@@ -260,7 +274,7 @@ static void pump_storage(struct manager *m, long long now) {
             m->storage_revision == m->storage_generation) {
             m->storage = m->storage_result;
             m->storage_dirty = 0;
-            m->started = 1;
+            m->tune_ata = 0;
             changed(m, now);
             if (m->storage.payload_index < 0) {
                 /* Explicit product policy: a missing payload stops Samba,
@@ -360,12 +374,12 @@ static void apply_audit(struct manager *m, long long now) {
         m->audit_at = now + 1000;
     }
     m->ownership_ready = 1;
-    if (!diskd && !m->diskd.group) {
-        char *argv[] = {"/sbin/diskd", "-i", "lo0", "-d", "local.", NULL};
-        if (tc_child_exec(&m->diskd, argv, MANAGER_LOG))
-            m->audit_at = now + JOB_RETRY_MS;
-        else
+    if (!diskd && !m->diskd.child.group) {
+        char *argv[] = {TC_DISKD_PATH, "-i", "lo0", "-d", "local.", NULL};
+        if (!start_role(&m->diskd, argv, MANAGER_LOG, now, 1))
             m->mast_at = now;
+        else if (m->diskd.retry > now)
+            lower(&m->audit_at, m->diskd.retry);
     }
     if (m->smb.child.pid && m->smb.child.pid == m->audit_result.smb_pid && !m->smb.child.stopping &&
         m->audit_result.smb_probe) {
@@ -391,10 +405,10 @@ static void apply_audit(struct manager *m, long long now) {
         m->audit_at = now + 1000;
 }
 static void pump_audit(struct manager *m, long long now) {
-    if (m->diskd.group && tc_child_poll(&m->diskd, now)) {
-        tc_child_close(&m->diskd);
-        m->audit_at = now;
-    }
+    int had_diskd = m->diskd.child.group != 0;
+    poll_role(&m->diskd, "diskd", now, 1);
+    if (had_diskd && !m->diskd.child.group)
+        m->audit_at = m->diskd.retry;
     if (m->audit_job.group && tc_child_poll(&m->audit_job, now)) {
         if (tc_child_ok(&m->audit_job) && m->audit_job.used == sizeof(m->audit_result))
             apply_audit(m, now);
@@ -476,7 +490,6 @@ static void reconcile_discovery(struct manager *m, long long now) {
     if (!m->discovery.child.group && m->ownership_ready && !(m->blocked & BLOCK_DISCOVERY)) {
         char *argv[8 + TC_MAX_VOLUMES * 5];
         char log[352];
-        char keys[TC_MAX_VOLUMES][16];
         size_t n = 0, i;
         argv[n++] = TC_SERVICE_BIN;
         argv[n++] = "discovery";
@@ -489,10 +502,9 @@ static void reconcile_discovery(struct manager *m, long long now) {
         if (debug)
             argv[n++] = "--debug-logging";
         for (i = 0; i < shares->count; i++) {
-            snprintf(keys[i], sizeof(keys[i]), "dk%u", (unsigned)i);
             argv[n++] = "--adisk-share";
             argv[n++] = (char *)shares->values[i].name;
-            argv[n++] = keys[i];
+            argv[n++] = (char *)shares->values[i].device;
             argv[n++] = (char *)shares->values[i].uuid;
             argv[n++] = afp ? "0x83" : "0x82";
         }
@@ -526,6 +538,11 @@ static void reconcile_roles(struct manager *m, long long now) {
     }
     if (!m->have_settings || !m->settings.config.rsync)
         stop_role(&m->rsync, now, 1);
+    if ((!m->have_settings || !m->settings.config.rsync || m->storage.payload_index < 0) &&
+        !m->rsync.child.group && !(m->blocked & BLOCK_RSYNC) && m->rsync_valid) {
+        if ((!unlink(TC_RSYNC_BIN) || errno == ENOENT) && (!unlink(TC_RSYNC_CONF) || errno == ENOENT))
+            m->rsync_valid = 0;
+    }
     if (m->have_settings && m->settings.config.telemetry && m->ownership_ready &&
         !(m->blocked & BLOCK_TELEMETRY)) {
         char *argv[] = {TC_SERVICE_BIN, "telemetry", "--daemon", NULL};
@@ -679,7 +696,7 @@ int tc_manager_main(int argc, char **argv) {
     plan_loop_close(&m->network);
     tc_events_close(&m->events);
     tc_samba_discard();
-    tc_child_close(&m->diskd);
+    tc_child_close(&m->diskd.child);
     free(m);
     close(lock);
     return result;

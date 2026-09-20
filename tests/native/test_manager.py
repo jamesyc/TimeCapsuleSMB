@@ -16,13 +16,13 @@ from pathlib import Path
 
 import pytest
 from tests.native.build import compile_native
-from tests.native.test_plan import NAT_OK
+from tests.native.test_plan import NAT_OK, NAT_ACP_DEAD
 
 
 CHILD = '''
 import json,os,signal,sys,time,select
 from pathlib import Path
-role=sys.argv[1] if Path(sys.argv[0]).name=='roles' else 'smbd'
+role=sys.argv[1] if Path(sys.argv[0]).name=='roles' else Path(sys.argv[0]).name
 log=Path(os.environ['TC_TEST_ROOT'])/'events'
 def event(kind):
     with log.open('a') as f:f.write(json.dumps(dict(kind=kind,role=role,pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),args=sys.argv[1:]))+'\\n')
@@ -32,7 +32,9 @@ def stopped(sig,frame):
 signal.signal(signal.SIGTERM,stopped)
 signal.signal(signal.SIGHUP,lambda sig,frame:event('reload'))
 event('start')
+if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
 while True:
+    if role=='diskd':time.sleep(.1);continue
     if select.select([0],[],[],0.1)[0] and not os.read(0,128):
         event('eof');break
 '''
@@ -47,20 +49,46 @@ def manager_tools(tmp_path_factory):
         path.chmod(0o755)
         return path
     executable('roles',CHILD)
+    executable('diskd',CHILD)
+    executable('atactl','''
+import os,sys,json
+from pathlib import Path
+with (Path(os.environ['TC_TEST_ROOT'])/'events').open('a') as out:
+    out.write(json.dumps(dict(kind='command',role='ata',args=sys.argv[1:]))+'\\n')
+''')
     executable('acp','''
 import os,sys,time
 from pathlib import Path
 root=Path(os.environ['TC_TEST_ROOT'])
 key=sys.argv[-1]
 if key=='syNm' and (root/'bad-name').exists():sys.exit(1)
+if key=='syPW' and (root/'bad-auth').exists():sys.exit(1)
 if key=='MaSt':
     if (root/'slow-mast').exists():time.sleep(60)
     if (root/'bad-mast').exists():sys.exit(1)
     print((root/'inventory').read_text());sys.exit(0)
 if sys.argv[1:3]==['rpc','diskd.useVolume']:sys.exit(0)
-print({'syNm':'Capsule','syAP':'116','syAM':'TimeCapsule6,116','syPW':'password'}[key])
+print({'syNm':(root/'name').read_text() if (root/'name').exists() else 'Capsule','syAP':'116','syAM':'TimeCapsule6,116','syPW':'password'}[key])
 ''')
-    executable('ps',"import os\nfrom pathlib import Path\nprint('2 1 2 S diskd /sbin/diskd -i lo0 -d local.')\np=Path(os.environ['TC_TEST_ROOT'])/'external-processes'\nif p.exists():print(p.read_text())\n")
+    executable('ps','''
+import os,json
+from pathlib import Path
+root=Path(os.environ['TC_TEST_ROOT'])
+if not (root/'diskd-absent').exists():print('2 1 2 S diskd /sbin/diskd -i lo0 -d local.')
+else:
+    for line in (root/'events').read_text().splitlines():
+        row=json.loads(line)
+        if row['role']=='diskd' and row['kind']=='start':
+            try:os.kill(row['pid'],0)
+            except ProcessLookupError:continue
+            print(f"{row['pid']} {row['ppid']} {row['group']} S diskd /sbin/diskd -i lo0 -d local.")
+p=root/'external-processes'
+if p.exists():
+    for row in p.read_text().splitlines():
+        try:os.kill(int(row.split()[0]),0)
+        except ProcessLookupError:continue
+        print(row)
+''')
     executable('fstat','''
 import os,sys
 from pathlib import Path
@@ -68,11 +96,12 @@ if not (Path(os.environ['TC_TEST_ROOT'])/'no-listener').exists():
     os.kill(int(sys.argv[-1]),0)
     print('root smbd 1 3* internet stream tcp 192.0.2.1:445')
     print('root smbd 1 4* internet6 stream tcp [fe80::1%bridge0]:445')
+    print('root rsync 1 4* internet stream tcp 192.0.2.1:873')
 ''')
     binary=compile_native('service',root/'manager',flags=[
-        f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',
+        f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
         f'-DTC_FLASH_CONFIG_PATH="{root}/config"',f'-DTC_VOLUMES_ROOT="{root}"',
-        f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_PS_PATH="{root}/ps"',f'-DTC_FSTAT_PATH="{root}/fstat"',
+        f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_PS_PATH="{root}/ps"',f'-DTC_FSTAT_PATH="{root}/fstat"',
     ])
     return root,binary
 
@@ -82,7 +111,7 @@ def manager(manager_tools):
     root,binary=manager_tools
     for path in ('ram','dk2','dk3'):
         shutil.rmtree(root/path,ignore_errors=True)
-    for name in ('bad-mast','bad-name','slow-mast','no-listener','external-processes'):
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail'):
         (root/name).unlink(missing_ok=True)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
@@ -268,3 +297,181 @@ def test_failed_name_read_keeps_last_identity_without_renaming_samba(manager):
     wait(started('telemetry'))
     assert (root/'ram/etc/smb.conf').read_bytes()==before
     assert not any(e['role']=='smbd' and e['kind'] in ('reload','stop') for e in events())
+
+
+def test_diskless_discovery_does_not_wait_for_authentication(manager):
+    root,start,events,wait,inventory,_=manager
+    inventory([]);(root/'bad-auth').touch()
+    start()
+    wait(lambda rows:any(e['role']=='discovery' and '--diskless' in e['args'] for e in rows))
+    assert not any(e['role']=='smbd' for e in events())
+
+
+def test_server_string_change_keeps_existing_discovery_generation(manager):
+    root,start,events,wait,_,_=manager
+    (root/'name').write_text('CapsuleLongName First')
+    process=start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    before=[e['pid'] for e in values if e['role']=='discovery' and e['kind']=='start']
+    (root/'name').write_text('CapsuleLongName Second');process.send_signal(signal.SIGHUP)
+    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
+    assert [e['pid'] for e in events() if e['role']=='discovery' and e['kind']=='start']==before
+    assert 'CapsuleLongName Second' in (root/'ram/etc/smb.conf').read_text()
+
+
+def test_rsync_is_owned_then_drained_before_its_ram_files_are_removed(manager):
+    root,start,_,wait,_,_=manager
+    shutil.copy2(root/'dk2/.samba4/smbd',root/'dk2/.samba4/rsync')
+    (root/'dk2/.samba4/rsyncd.conf').write_text('[Data]\npath = /old/ShareRoot\n')
+    (root/'config').write_text('TELEMETRY=0\nRSYNC_ENABLED=1\n')
+    process=start();values=wait(started('rsync'))
+    rsync=next(e for e in values if e['role']=='rsync' and e['kind']=='start')
+    assert rsync['ppid']==process.pid and rsync['group']==rsync['pid']
+    assert rsync['args'][:2]==['--daemon','--no-detach']
+    (root/'config').write_text('TELEMETRY=0\nRSYNC_ENABLED=0\n');process.send_signal(signal.SIGHUP)
+    wait(lambda rows:any(e['role']=='rsync' and e['kind']=='stop' for e in rows) and not (root/'ram/sbin/rsync').exists())
+    assert not (root/'ram/etc/rsyncd.conf').exists()
+    with pytest.raises(ProcessLookupError):os.kill(rsync['pid'],0)
+
+
+def test_missing_diskd_is_started_on_loopback_and_survives_manager_stop(manager):
+    root,start,_,wait,_,_=manager
+    (root/'diskd-absent').touch()
+    process=start();values=wait(started('diskd'))
+    diskd=next(e for e in values if e['role']=='diskd' and e['kind']=='start')
+    assert diskd['args']==['-i','lo0','-d','local.']
+    process.terminate();assert process.wait(timeout=10)==0
+    # diskd is Apple's storage owner. Stopping our manager must not take it
+    # down with Samba/discovery; it is adopted by init until the next boot.
+    os.kill(diskd['pid'],0)
+
+
+def test_failed_diskd_restart_is_backed_off_while_discovery_still_runs(manager):
+    root,start,events,wait,_,_=manager
+    (root/'diskd-absent').touch();(root/'diskd-fail').touch()
+    start();wait(started('discovery'))
+    time.sleep(1)
+    assert len([e for e in events() if e['role']=='diskd' and e['kind']=='start']) == 1
+
+
+def test_discovery_receives_exact_applied_names_devices_and_uuids_as_argv(manager):
+    import configparser
+    root,start,_,wait,inventory,volumes=manager
+    name="James's café $(touch PWNED); Backup"
+    for disk in volumes:disk['partitions'][0]['name']=name
+    inventory(volumes);start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    launched=next(e for e in values if e['role']=='discovery' and '--adisk-share' in e['args'])
+    args=launched['args'];rows=[]
+    for i,arg in enumerate(args):
+        if arg=='--adisk-share':rows.append(args[i+1:i+5])
+    conf=configparser.ConfigParser(interpolation=None,delimiters=('=',))
+    conf.read(root/'ram/etc/smb.conf')
+    assert [row[0] for row in rows]==conf.sections()[1:]
+    assert [row[1] for row in rows]==['dk2','dk3']
+    assert [row[2] for row in rows]==[disk['partitions'][0]['uuid'] for disk in volumes]
+    assert all(row[3]=='0x82' for row in rows)
+    assert not (root/'PWNED').exists()
+
+
+def test_network_history_survives_failed_facts_and_applies_new_binding_once(manager):
+    root,start,events,wait,_,_=manager
+    process=start();wait(started('smbd'))
+    original=(root/'ram/etc/smb.conf').read_bytes()
+    (root/'facts').write_text(NAT_ACP_DEAD)
+    (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
+    wait(started('telemetry'))
+    assert (root/'ram/etc/smb.conf').read_bytes()==original
+    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
+    (root/'facts').write_text(NAT_OK.replace('10.0.1.1','10.0.1.2'));process.send_signal(signal.SIGHUP)
+    wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2)
+    assert '10.0.1.2/24' in (root/'ram/etc/smb.conf').read_text()
+    (root/'config').write_text('TELEMETRY=0\n');process.send_signal(signal.SIGHUP)
+    wait(lambda rows:any(e['role']=='telemetry' and e['kind']=='stop' for e in rows))
+    assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==2
+
+
+def test_native_cifs_reappearance_resets_discovery_but_keeps_samba(manager):
+    root,start,events,wait,_,_=manager
+    process=start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
+    native=subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(30)'],
+                            stdout=subprocess.PIPE,text=True,start_new_session=True)
+    assert native.stdout.readline().strip()=='ready'
+    try:
+        (root/'external-processes').write_text(f'{native.pid} 1 {native.pid} S wcifsfs /sbin/wcifsfs\n')
+        process.send_signal(signal.SIGHUP)
+        wait(lambda rows:native.poll() is not None and len([e for e in rows if e['role']=='discovery' and e['kind']=='start'])>before)
+        assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
+    finally:
+        if native.poll() is None:native.kill()
+        native.wait()
+
+
+def test_healthy_rechecks_do_not_restat_or_restage_disk_software(manager):
+    root,start,events,wait,_,_=manager
+    process=start();wait(started('smbd'))
+    # Deploy owns software replacement. Reconciliation of unchanged MaSt and
+    # network facts must not read the sleeping HDD to fingerprint executables.
+    (root/'dk2/.samba4/smbd').unlink()
+    (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
+    wait(started('telemetry'))
+    assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
+    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
+
+
+def test_controller_death_cleans_orphaned_native_nbns_before_replacement(manager):
+    root,start,events,wait,_,_=manager
+    process=start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    controller=next(e for e in reversed(values) if e['role']=='discovery' and e['kind']=='start')
+    before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
+    orphan=subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(30)'],
+                            stdout=subprocess.PIPE,text=True,start_new_session=True)
+    assert orphan.stdout.readline().strip()=='ready'
+    try:
+        os.kill(controller['pid'],signal.SIGKILL)
+        (root/'external-processes').write_text(f'{orphan.pid} 1 {orphan.pid} S wcifsnd /sbin/wcifsnd\n')
+        process.send_signal(signal.SIGHUP)
+        wait(lambda rows:orphan.poll() is not None and len([e for e in rows if e['role']=='discovery' and e['kind']=='start'])>before)
+        assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
+    finally:
+        if orphan.poll() is None:orphan.kill()
+        orphan.wait()
+
+
+@pytest.mark.parametrize('change',['recheck','hotplug'])
+def test_boot_and_rechecks_never_migrate_or_consume_legacy_metadata(manager,change):
+    root,start,_,wait,inventory,volumes=manager
+    if change=='hotplug':inventory(volumes[:1])
+    private=root/'dk2/.samba4/private'
+    files={'xattr.tdb':b'pending metadata','xattr.tdb.orphaned.1':b'quarantine',
+           'xattr-migration-completed.txt':b'old untrusted checkpoint'}
+    for name,data in files.items():(private/name).write_bytes(data)
+    helper=root/'dk2/.samba4/xattr-hfs-migrate'
+    helper.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(root/"MIGRATED")!r}).touch()\n')
+    helper.chmod(0o755)
+    process=start();wait(started('smbd'))
+    (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
+    wait(started('telemetry'))
+    if change=='hotplug':
+        inventory(volumes);process.send_signal(signal.SIGHUP)
+        wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows))
+    assert not (root/'MIGRATED').exists()
+    assert {name:(private/name).read_bytes() for name in files}==files
+
+
+def test_ata_tuning_runs_at_start_and_preference_change_not_healthy_rechecks(manager):
+    root,start,events,wait,inventory,volumes=manager
+    volumes[0]['deviceName']='wd0';inventory(volumes)
+    process=start();wait(started('smbd'))
+    assert [e['args'] for e in events() if e['role']=='ata']==[['/dev/wd0','setidle','300']]
+    (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
+    wait(started('telemetry'))
+    assert len([e for e in events() if e['role']=='ata'])==1
+    (root/'config').write_text('TELEMETRY=1\nATA_IDLE_SECONDS=900\nATA_STANDBY=1800\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:len([e for e in rows if e['role']=='ata'])==3)
+    assert [e['args'] for e in events() if e['role']=='ata'][-2:]==[
+        ['/dev/wd0','setidle','900'],['/dev/wd0','setstandby','1800']]

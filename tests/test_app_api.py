@@ -3460,7 +3460,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(upload.call_count, 3)
         upload_sources = upload.call_args.kwargs["source_resolver"]
         self.assertIn("packaged:boot.sh", upload_sources)
-        self.assertIn("packaged:manager.sh", upload_sources)
+        self.assertIn("binary:service", upload_sources)
+        self.assertNotIn("packaged:manager.sh", upload_sources)
         self.assertNotIn("packaged:start-samba.sh", upload_sources)
         self.assertNotIn("packaged:watchdog.sh", upload_sources)
         self.assertEqual(remote_actions.call_count, 3)
@@ -3542,7 +3543,6 @@ class AppApiTests(unittest.TestCase):
             [
                 "upload_xattr_migrator",
                 "upload_smbd",
-                "upload_discovery",
                 "upload_rsync",
                 "upload_boot_files",
                 "upload_runtime_config",

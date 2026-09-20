@@ -71,16 +71,29 @@ tc_prepare_telemetry_reset() {
 
 tc_cleanup_telemetry_for_uninstall() {
     tc_prepare_telemetry_reset || return $?
-    cleanup_bin="${TC_TELEMETRY_BIN:-/mnt/Memory/samba4/sbin/telemetry}"
+    cleanup_bin=/mnt/Flash/service
     cleanup_version=
     if [ -x "$cleanup_bin" ]; then
-        cleanup_version=$("$cleanup_bin" --version 2>/dev/null) || cleanup_version=
+        cleanup_version=$("$cleanup_bin" telemetry --version 2>/dev/null) || cleanup_version=
     fi
     case "$cleanup_version" in ""|*[!0-9]*) cleanup_version=0 ;; esac
     if [ "$cleanup_version" -ge 3 ]; then
+        set -- "$cleanup_bin" telemetry --cleanup
+    else
+        # Legacy installers shipped a separate RAM helper. Keep its cleanup
+        # contract until every old signed debug owner has finished.
+        cleanup_bin="${TC_TELEMETRY_BIN:-/mnt/Memory/samba4/sbin/telemetry}"
+        cleanup_version=
+        if [ -x "$cleanup_bin" ]; then
+            cleanup_version=$("$cleanup_bin" --version 2>/dev/null) || cleanup_version=
+        fi
+        case "$cleanup_version" in ""|*[!0-9]*) cleanup_version=0 ;; esac
+        set -- "$cleanup_bin" --cleanup
+    fi
+    if [ "$cleanup_version" -ge 3 ]; then
         cleanup_attempt=0
         while :; do
-            if "$cleanup_bin" --cleanup; then return 0; else cleanup_status=$?; fi
+            if "$@"; then return 0; else cleanup_status=$?; fi
             [ "$cleanup_status" -eq 75 ] || return "$cleanup_status"
             if [ "$cleanup_attempt" -ge 5 ]; then
                 echo "telemetry: active work prevents uninstall; retry after debug finishes" >&2

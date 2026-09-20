@@ -50,8 +50,8 @@ def migration(tmp_path, monkeypatch):
     helper.chmod(0o755)
     binary = Path("unused")
     plan = build_deployment_plan(
-        "test", PayloadHome(str(volume), "/dev/dk2", ".samba4"), binary, binary,
-        xattr_migrator_path=helper, rsync_path=binary, service_path=binary, telemetry_path=binary,
+        "test", PayloadHome(str(volume), "/dev/dk2", ".samba4"), binary,
+        xattr_migrator_path=helper, rsync_path=binary, service_path=binary,
     )
     volumes = [SimpleNamespace(volume_root=str(volume), device_path="/dev/dk2"),
                SimpleNamespace(volume_root=str(tmp_path / "external"), device_path="/dev/dk3")]
@@ -262,36 +262,3 @@ def test_migration_timeout_recovers_saved_log_without_masking_timeout(migration,
     assert ('opendir failed' if log_available else 'unavailable') in str(caught.value)
     assert 'xattr-migration-copy.log' in str(caught.value)
     assert reads == [{'check': False, 'timeout': 10}]
-
-
-@pytest.mark.parametrize('reason', ['initial', 'topology_changed', 'active_users_dropped'])
-def test_runtime_activates_shares_without_migrating_legacy_metadata(migration, reason):
-    m = migration
-    text = load_boot_asset_text('manager.sh')
-    text = text[text.index('tc_manager_debug_log() {'):text.index('\ntc_prepare_ram_root\n')]
-    library = m.root / 'manager-functions.sh'
-    library.write_text(text)
-    script = f'''
-set -eu
-. {shlex.quote(str(library))}
-TC_RESOLVED_PAYLOAD_DIR={shlex.quote(str(m.helper.parent))}
-TC_PAYLOAD_DIR=$TC_RESOLVED_PAYLOAD_DIR
-TC_PAYLOAD_LOG_DIR=$TC_PAYLOAD_DIR/logs
-TC_TAB=$(printf '\\t')
-tc_log() {{ :; }}
-tc_now_seconds() {{ echo 1000; }}
-tc_elapsed_seconds_since() {{ echo 0; }}
-tc_manager_log_topology_rows() {{ :; }}
-tc_manager_activate_topology() {{ :; }}
-tc_manager_resolve_payload_from_topology() {{ return 0; }}
-tc_manager_build_share_state_from_topology() {{ manager_share_rows=Data; }}
-tc_manager_configure_ata_from_topology() {{ :; }}
-tc_manager_set_payload_state() {{ echo ready; }}
-tc_payload_log_dir_ready() {{ return 0; }}
-tc_manager_apply_runtime_from_topology {reason} attached-volume
-echo "changed=$TC_MANAGER_DISK_STATE_CHANGED shares=$manager_share_rows"
-'''
-    result = subprocess.run(['/bin/sh', '-c', script], text=True, capture_output=True, check=True)
-    assert result.stdout.splitlines() == ['ready', 'changed=1 shares=Data']
-    assert not m.calls.exists()
-    assert m.tdb.read_text() == 'pending'

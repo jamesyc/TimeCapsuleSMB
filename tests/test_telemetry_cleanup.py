@@ -34,7 +34,7 @@ def cleanup_rig(tmp_path):
     helper.chmod(0o755)
 
     def run(*, cleanup=False, **env):
-        script = load_boot_asset_text('common.d/55-telemetry.sh').replace('/mnt/Memory', str(memory))
+        script = load_boot_asset_text('telemetry-cleanup.sh').replace('/mnt/Memory', str(memory))
         for source, name in [('/usr/bin/pkill', 'pkill'), ('/bin/ps', 'ps'), ('/sbin/mount', 'mount')]:
             # These are shell fixtures, not device executables. Direct exec
             # of newly created scripts stalls under concurrent macOS runs;

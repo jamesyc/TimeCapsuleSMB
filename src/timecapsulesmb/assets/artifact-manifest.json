@@ -1,17 +1,5 @@
 {
   "artifacts": {
-    "discovery": {
-      "path": "bin/discovery/discoveryd",
-      "sha256": "c070b3d6c82504f85cc512de3fd5e9882bed76b75a7fac60aa80008df93e9198"
-    },
-    "discovery-netbsd4le": {
-      "path": "bin/discovery-netbsd4le/discoveryd",
-      "sha256": "fcb50daf459ca144663defb2ed8ca71e9fc6385f915420ed7d05e57f9d0af0f3"
-    },
-    "discovery-netbsd4be": {
-      "path": "bin/discovery-netbsd4be/discoveryd",
-      "sha256": "8838386c8b2c6fc6dafd62c6b45dba6c64f9aa9ce51075502ec42f476e909598"
-    },
     "rsync": {
       "path": "bin/rsync/rsync",
       "sha256": "5f0908da9e958b34b88915a29d5e66a14f7ef383ba77c9ade22d91ad956fe28f"
@@ -50,27 +38,15 @@
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "96af2f84a439d520479d839e433cff538b7cb522948dd088eefed7be6c9f85a1"
-    },
-    "telemetry": {
-      "path": "bin/telemetry/telemetry",
-      "sha256": "7a6787ab45e8360707e761a5aa552270320a8ec069ac2500c7a8711d45674e64"
+      "sha256": "02f595f8de8f20caea74832c4ed7e9f018e3287e238a58577df4b0641350472c"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "6bd86269ffaf0c481f9be1cbd86eb0583181ff313cf19065c3f1426ff5a96b40"
-    },
-    "telemetry-netbsd4le": {
-      "path": "bin/telemetry-netbsd4le/telemetry",
-      "sha256": "2c3b96295e70ab4e9329b7a8ed21650a335a1486c9249a6805c1f1c50f47bc86"
+      "sha256": "4829b36576140de9cfabd0671313461b9b919d6c9cf7b4d9a291792586270b38"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "04694e682100a35f08b44a06c5508231cde0196daab0bb8da0cc49b9c47f3636"
-    },
-    "telemetry-netbsd4be": {
-      "path": "bin/telemetry-netbsd4be/telemetry",
-      "sha256": "7785d2f88ecef6f1a8832512f2ac287f1b347543be5d3d279de1cb4e21a77bba"
+      "sha256": "5883109c7d24a6cb3476554f45ce164fb14c96b47e621e8c6cd8c50ab3c43ada"
     }
   }
 }

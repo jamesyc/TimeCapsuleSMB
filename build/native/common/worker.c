@@ -65,9 +65,11 @@ static int command(char *const argv[], char *output, size_t capacity, unsigned t
     result = tc_child_ok(&child) && !child.stopping ? 0 : -1;
     if (output)
         output[child.used] = 0;
-    tc_child_close(&child);
     if (result)
-        fprintf(stderr, "command %s failed or timed out\n", argv[0]);
+        fprintf(stderr, "command %s failed or timed out (exit=%d signal=%d)\n", argv[0],
+                WIFEXITED(child.status) ? WEXITSTATUS(child.status) : -1,
+                WIFSIGNALED(child.status) ? WTERMSIG(child.status) : 0);
+    tc_child_close(&child);
     return result;
 }
 int tc_command_run(char *const argv[], unsigned timeout_seconds) {
@@ -102,9 +104,13 @@ int tc_make_dir(const char *path, mode_t mode) {
         return -1;
     if (!mkdir(path, mode))
         return 0;
-    if (errno != EEXIST || lstat(path, &st) || !S_ISDIR(st.st_mode))
-        return -1;
-    return 0;
+    if (errno == EEXIST && !lstat(path, &st)) {
+        if (S_ISDIR(st.st_mode))
+            return 0;
+        errno = ENOTDIR;
+    }
+    fprintf(stderr, "directory unavailable: %s: %s\n", path, strerror(errno));
+    return -1;
 }
 
 int tc_copy_file(const char *source, const char *destination, mode_t mode) {
@@ -113,13 +119,20 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
     int input = -1, output = -1, result = -1;
     off_t total = 0;
     ssize_t count;
+    const char *operation = "open source";
+    int saved_errno;
     if (tc_worker_cancelled())
         return -1;
     input = open(source, O_RDONLY);
-    if (input < 0 || fstat(input, &before) || !S_ISREG(before.st_mode))
+    if (input < 0 || fstat(input, &before))
         goto out;
+    if (!S_ISREG(before.st_mode)) {
+        errno = EINVAL;
+        goto out;
+    }
     /* Callers pass a prepared RAM filename, never a live executable or user
      * path. Publication happens only after its owner has validated this job. */
+    operation = "prepare destination";
     if (unlink(destination) && errno != ENOENT)
         goto out;
     output = open(destination, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -127,8 +140,11 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
         goto out;
     for (;;) {
         size_t offset = 0;
-        if (tc_worker_cancelled())
+        if (tc_worker_cancelled()) {
+            errno = ECANCELED;
             goto out;
+        }
+        operation = "read";
         count = read(input, buffer, sizeof(buffer));
         if (count < 0 && errno == EINTR)
             continue;
@@ -137,6 +153,7 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
         if (!count)
             break;
         while (offset < (size_t)count) {
+            operation = "write";
             ssize_t n = write(output, buffer + offset, count - offset);
             if (n < 0 && errno == EINTR)
                 continue;
@@ -146,11 +163,21 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
         }
         total += count;
     }
-    if (fstat(input, &after) || fstat(output, &output_stat) || total != before.st_size ||
-        total != after.st_size || total != output_stat.st_size || before.st_dev != after.st_dev ||
-        before.st_ino != after.st_ino || before.st_mtime != after.st_mtime || fchmod(output, mode) ||
-        fsync(output))
+    operation = "verify copied bytes";
+    if (fstat(input, &after) || fstat(output, &output_stat))
         goto out;
+    if (total != before.st_size || total != after.st_size || total != output_stat.st_size ||
+        before.st_dev != after.st_dev || before.st_ino != after.st_ino || before.st_mtime != after.st_mtime) {
+        errno = ESTALE;
+        goto out;
+    }
+    operation = "chmod";
+    if (fchmod(output, mode))
+        goto out;
+    operation = "flush";
+    if (fsync(output))
+        goto out;
+    operation = "close";
     if (close(output)) {
         output = -1;
         goto out;
@@ -158,11 +185,16 @@ int tc_copy_file(const char *source, const char *destination, mode_t mode) {
     output = -1;
     result = 0;
 out:
+    saved_errno = errno;
     if (input >= 0)
         close(input);
     if (output >= 0)
         close(output);
-    if (result)
+    if (result) {
+        fprintf(stderr, "copy %s failed: %s -> %s: %s\n", operation, source, destination,
+                strerror(saved_errno));
         unlink(destination);
+    }
+    errno = saved_errno;
     return result;
 }

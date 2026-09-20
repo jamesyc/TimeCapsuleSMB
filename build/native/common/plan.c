@@ -248,6 +248,7 @@ void device_plan_print(FILE *stream, const struct device_plan *plan) {
         fprintf(stream, " reason=%s", plan->status.reason);
     }
     fprintf(stream, " mode=%s stale_seconds=%lu diskless=%d\n", router_mode_name(plan->mode), plan->status.stale_seconds, plan->options.diskless);
+    fprintf(stream, "config: nbns_enabled=%d advertise_afp=%d\n", plan->config.nbns_enabled, plan->config.advertise_afp);
     fputs("acp:", stream);
     print_bool(stream, "raNA", plan->raNA);
     print_bool(stream, "raDS", plan->raDS);

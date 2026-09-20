@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal
 from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS, PS_CAPTURE_COMMAND
+from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS, PS_CAPTURE_COMMAND, service_role_lines
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import (
     SshAlgorithmNegotiationError,
@@ -56,7 +56,7 @@ NETBSD4_LOGIN_RC_LOCAL_MARKER = b"/mnt/Flash/rc.local"
 NETBSD4_LOGIN_PATH = "/etc/rc.d/LOGIN"
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
-    "remote_manager_log_tail": "/mnt/Memory/samba4/var/manager.log",
+    "remote_manager_log_tail": "/mnt/Memory/samba4/var/runtime.log",
     "remote_rsync_log_tail": "/mnt/Memory/samba4/var/rsync.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
@@ -70,7 +70,7 @@ SMBD_STATUS_HELPERS = rf'''
     RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
     RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
     RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
-    RUNTIME_DISCOVERY_BIN=${{RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}}
+    RUNTIME_SERVICE_BIN=${{RUNTIME_SERVICE_BIN:-/mnt/Flash/service}}
     RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
 RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
 
@@ -1258,16 +1258,16 @@ def probe_managed_mdns_conn(
     not_ready = "managed mDNS registrant not active"
 
     binary_script = r'''
-RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}
-if [ ! -e "$RUNTIME_DISCOVERY_BIN" ]; then
+RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
+if [ ! -e "$RUNTIME_SERVICE_BIN" ]; then
     echo "missing"
     exit 2
 fi
-if [ ! -x "$RUNTIME_DISCOVERY_BIN" ]; then
+if [ ! -x "$RUNTIME_SERVICE_BIN" ]; then
     echo "not_executable"
     exit 3
 fi
-echo "$RUNTIME_DISCOVERY_BIN"
+echo "$RUNTIME_SERVICE_BIN"
 '''
     binary_step, binary_proc = _run_timed_probe_step(
         connection,
@@ -1292,9 +1292,9 @@ echo "$RUNTIME_DISCOVERY_BIN"
     if binary_proc is None or binary_proc.returncode != 0:
         stdout = ("" if binary_proc is None else binary_proc.stdout).strip()
         if stdout == "missing":
-            detail = "discovery binary missing at /mnt/Flash/discoveryd"
+            detail = "discovery binary missing at /mnt/Flash/service"
         elif stdout == "not_executable":
-            detail = "discovery binary is not executable at /mnt/Flash/discoveryd"
+            detail = "discovery binary is not executable at /mnt/Flash/service"
         else:
             rc = "unknown" if binary_proc is None else str(binary_proc.returncode)
             detail = f"discovery binary probe failed with exit code {rc}"
@@ -1313,7 +1313,8 @@ echo "$RUNTIME_DISCOVERY_BIN"
         steps.append(ps_step)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
     ps_out = "" if ps_proc is None else ps_proc.stdout
-    mdns_pids = _parse_live_pids_for_ucomm(ps_out, "discoveryd")
+    discovery_lines = service_role_lines(ps_out, "discovery")
+    mdns_pids = [line.split()[0] for line in discovery_lines]
     apple_pids = _parse_live_pids_for_ucomm(ps_out, "mDNSResponder")
     diskd_lines = [line for line in ps_out.splitlines() if len(line.split()) >= 5 and line.split()[4] == "diskd" and not line.split()[2].startswith("Z")]
     # Same classification as the runtime's tc_apple_diskd_probe: a diskd is
@@ -1321,7 +1322,7 @@ echo "$RUNTIME_DISCOVERY_BIN"
     # is ACPd's and advertises on the LAN regardless of ours (review 2, R8).
     loopback_diskd = [line for line in diskd_lines if _argv_has_pair(line.split()[5:], "-i", "lo0")]
     stray_diskd = [line for line in diskd_lines if line not in loopback_diskd]
-    diskless = any("--diskless" in line for line in ps_out.splitlines() if "discoveryd" in line)
+    diskless = any("--diskless" in line.split() for line in discovery_lines)
 
     fstat_proc: subprocess.CompletedProcess[str] | None = None
     if apple_pids:
@@ -1340,10 +1341,6 @@ echo "$RUNTIME_DISCOVERY_BIN"
         )
     else:
         _append_step(steps, "diskd_loopback", "fail", "Apple diskd is not running")
-    discovery_lines = [
-        line for line in ps_out.splitlines()
-        if len(line.split()) >= 5 and line.split()[4] == "discoveryd" and not line.split()[2].startswith("Z")
-    ]
     if len(mdns_pids) == 1:
         _append_step(steps, "mdns_process", "pass", "discovery process is running")
     elif len(mdns_pids) > 1:
@@ -1379,12 +1376,8 @@ echo "$RUNTIME_DISCOVERY_BIN"
             _append_step(steps, "mdns_5353_exclusive", "pass", "no other process holds UDP 5353")
 
     plan_script = r'''
-RUNTIME_DISCOVERY_BIN=${RUNTIME_DISCOVERY_BIN:-/mnt/Flash/discoveryd}
-RUNTIME_CONFIG_FILE=${RUNTIME_CONFIG_FILE:-/mnt/Flash/tcapsulesmb.conf}
-NBNS_ENABLED=0
-[ ! -r "$RUNTIME_CONFIG_FILE" ] || . "$RUNTIME_CONFIG_FILE"
-echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
-"$RUNTIME_DISCOVERY_BIN" --print-link-plan
+RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
+"$RUNTIME_SERVICE_BIN" discovery --print-link-plan
 '''
     plan_step, plan_proc = _run_timed_probe_step(
         connection,
@@ -1400,7 +1393,8 @@ echo "TC_NBNS_ENABLED=${NBNS_ENABLED:-0}"
         rc = "unknown" if plan_proc is None else str(plan_proc.returncode)
         _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan probe failed with exit code {rc}")
     else:
-        nbns_enabled = any(line.strip() == "TC_NBNS_ENABLED=1" for line in plan_proc.stdout.splitlines())
+        nbns_enabled = any(line.startswith("config:") and "nbns_enabled=1" in line.split()
+                           for line in plan_proc.stdout.splitlines())
         plan = _parse_link_plan(plan_proc.stdout)
         status = str(plan["status"])
         links = plan["links"]

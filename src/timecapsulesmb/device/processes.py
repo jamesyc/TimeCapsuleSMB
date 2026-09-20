@@ -12,6 +12,26 @@ PS_CAPTURE_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= 
 WATCHDOG_PID_PS_COMMAND = "/bin/ps axww -o pid= -o stat= -o ucomm= -o command="
 
 
+def service_role_lines(ps_output: str, role: str) -> list[str]:
+    """Match the live role title, or argv before the native title is installed."""
+    rows = []
+    legacy = {"discovery": "discoveryd", "telemetry": "telemetry"}.get(role)
+    for line in ps_output.splitlines():
+        fields = line.split()
+        if len(fields) < 6 or fields[2].startswith("Z"):
+            continue
+        arguments = fields[5:]
+        diagnostic = any(word in arguments for word in ("--print-link-plan", "--print-mast", "--version", "--print-payload", "--once", "--cleanup"))
+        if legacy and fields[4] == legacy and not diagnostic:
+            rows.append(line)
+        elif fields[4] == "service" and (
+            (fields[5] == "service:" and fields[6:7] == [f"role={role}"])
+            or (fields[5] == "/mnt/Flash/service" and fields[6:7] == [role] and not diagnostic)
+        ):
+            rows.append(line)
+    return rows
+
+
 def render_stop_service_runtime(*, attempts: int = 5) -> str:
     # Stop every launcher before its workers, including launchers forked during
     # shutdown. Apple's daemons and unrelated `service` processes are not ours.
@@ -37,11 +57,14 @@ managed_processes() {
             label=service
             case "$command" in
                 '/mnt/Flash/service run'|'/mnt/Flash/service run '*|\
+                '/mnt/Flash/service manager'|'/mnt/Flash/service manager '*|\
+                'service: role=manager'|'service: role=manager '*|\
                 '/mnt/Memory/samba4/sbin/service run'|'/mnt/Memory/samba4/sbin/service run '*)
                     kind=supervisor ;;
                 '/mnt/Flash/service'|'/mnt/Flash/service '*|\
                 '/mnt/Memory/samba4/sbin/service'|'/mnt/Memory/samba4/sbin/service '*|\
-                'service: role=mdns '*|'service: role=netbios '*|'service: role=telemetry '*)
+                'service: role=mdns '*|'service: role=netbios '*|'service: role=telemetry '*|\
+                'service: role=discovery '*|'service: role=job '*)
                     kind=worker ;;
                 *) continue ;;
             esac
@@ -105,6 +128,12 @@ while :; do
         case "$comm" in
             telemetry|debug|heartbeat|tc-xattr-hfs-mi*|xattr-hfs-migra*) busy=1 ;;
         esac
+        if [ "$comm" = service ]; then
+            case "$rest" in
+                'service: role=telemetry '*|'service: role=job '*|\
+                '/mnt/Flash/service telemetry '*|'/mnt/Flash/service --once '*) busy=1 ;;
+            esac
+        fi
         if [ "$comm" = sh ]; then
             set -- $rest
             case "${1:-}" in /bin/sh|sh) shift ;; esac
@@ -426,7 +455,23 @@ EOF
 }
 
 mdns_process_present() {
-    process_by_ucomm_present "$1" discoveryd
+    native_service_role_present "$1" discovery || process_by_ucomm_present "$1" discoveryd
+}
+
+native_service_role_present() {
+    role_ps=$1
+    wanted_role=$2
+    while IFS= read -r role_line; do
+        set -- $role_line
+        [ "$#" -ge 7 ] || continue
+        case "$3" in Z*) continue ;; esac
+        [ "$5" = service ] || continue
+        if [ "$6" = 'service:' ] && [ "$7" = "role=$wanted_role" ]; then return 0; fi
+        if [ "$6" = /mnt/Flash/service ] && [ "$7" = "$wanted_role" ]; then return 0; fi
+    done <<EOF_ROLE
+$role_ps
+EOF_ROLE
+    return 1
 }
 
 apple_mdns_present() {
@@ -457,7 +502,7 @@ EOF
 }
 
 manager_process_present_for_volume() {
-    runtime_script_process_present "$1" "$MANAGER_PATH"
+    native_service_role_present "$1" manager || runtime_script_process_present "$1" "$MANAGER_PATH"
 }
 
 capture_fstat_for_ucomm() {

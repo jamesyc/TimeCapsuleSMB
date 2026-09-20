@@ -19,6 +19,8 @@ def test_service_supervisor_stops_before_workers_and_leaves_apple_alone(tmp_path
         '14 S service /mnt/Flash/service telemetry --daemon --control-fd 6',
         '15 S service /mnt/Memory/samba4/sbin/service --collect-policy',
         '20 S service /mnt/Flash/service run',
+        '30 S service service: role=manager',
+        '31 S service /mnt/Flash/service manager',
         '27 S sh /bin/sh /mnt/Flash/boot.sh',
         '28 S sh sh /mnt/Flash/start-samba.sh',
         '29 S sh /bin/sh /mnt/Flash/rc.local',
@@ -28,6 +30,8 @@ def test_service_supervisor_stops_before_workers_and_leaves_apple_alone(tmp_path
         '24 S mDNSResponder /sbin/mDNSResponder -d',
         '25 S diskd diskd -i lo0 -d local.',
         '26 S afpserver /sbin/afpserver',
+        '32 S service service: role=discovery nbns=ready mode=payload',
+        '33 S service service: role=job storage',
     ]
     # A successful scan must return success even when its final row belongs
     # to the other phase (a worker while we are selecting supervisors).
@@ -56,11 +60,11 @@ else:
     if stubborn:
         assert result.returncode == 1
         assert 'did not stop' in result.stderr
-        assert log.read_text().splitlines() == ['20', '27', '28', '29']
+        assert log.read_text().splitlines() == ['20', '30', '31', '27', '28', '29']
     else:
         assert result.returncode == 0, result.stderr
-        assert log.read_text().splitlines() == ['20', '27', '28', '29', '13', '14', '15', '12']
-        assert json.loads(state.read_text()) == [r for r in rows if r.split()[0] not in {'12','13','14','15','20','27','28','29'}]
+        assert log.read_text().splitlines() == ['20', '30', '31', '27', '28', '29', '13', '14', '15', '32', '33', '12']
+        assert json.loads(state.read_text()) == [r for r in rows if r.split()[0] not in {'12','13','14','15','20','27','28','29','30','31','32','33'}]
 
 
 @pytest.mark.parametrize('comm,state,expected', [
@@ -70,6 +74,9 @@ else:
     ('sh /bin/sh /mnt/Flash/migrate.sh', 'S', 1),
     ('sh /mnt/Flash/xattr-migrate-wrapper.sh', 'S', 1),
     ('sh sh -c /mnt/Flash/migrate.sh', 'S', 0),
+    ('service service: role=telemetry --daemon', 'S', 1),
+    ('service service: role=job storage', 'S', 1),
+    ('service service: role=discovery nbns=ready', 'S', 0),
 ])
 def test_active_metadata_and_diagnostic_jobs_block_cleanup(comm, state, expected):
     script = render_wait_for_idle_jobs(attempts=0).replace(
@@ -178,3 +185,19 @@ state.write_text(json.dumps(d))
             assert ids.index('32') < ids.index('12') and ids.index('32') < ids.index('33')
         if scenario == 'shell_needs_kill':
             assert [sig for sig, pid in signals if pid == '30'][:2] == ['-TERM', '-9']
+
+
+def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
+    from timecapsulesmb.device.processes import service_role_lines
+    rows = '\n'.join([
+        '10 1 S 0:00 service service: role=manager',
+        '11 10 S 0:00 service service: role=discovery nbns=ready',
+        '12 10 S 0:00 service /mnt/Flash/service discovery --netbios-name NAS',
+        '13 10 S 0:00 service /mnt/Flash/service discovery --print-link-plan',
+        '14 10 Z 0:00 service service: role=discovery nbns=ready',
+        '15 10 S 0:00 service /mnt/Flash/service telemetry --once role=discovery',
+        '16 10 S 0:00 service service: role=telemetry --daemon',
+    ])
+    assert [line.split()[0] for line in service_role_lines(rows,'manager')]==['10']
+    assert [line.split()[0] for line in service_role_lines(rows,'discovery')]==['11','12']
+    assert [line.split()[0] for line in service_role_lines(rows,'telemetry')]==['16']

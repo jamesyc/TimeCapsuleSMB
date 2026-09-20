@@ -34,6 +34,7 @@ from timecapsulesmb.deploy.commands import (
     RemovePathAction,
     RunScriptAction,
     StopManagerAction,
+    StopServiceRuntimeAction,
     StopProcessAction,
     StopWatchdogAction,
     remote_action_to_jsonable,
@@ -54,9 +55,7 @@ from timecapsulesmb.deploy.executor import (
     upload_deployment_payload,
 )
 from timecapsulesmb.deploy.planner import (
-    BINARY_DISCOVERY_SOURCE,
     BINARY_SERVICE_SOURCE,
-    BINARY_TELEMETRY_SOURCE,
     BINARY_RSYNC_SOURCE,
     BINARY_SMBD_SOURCE,
     BINARY_XATTR_MIGRATOR_SOURCE,
@@ -67,17 +66,13 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
-    PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
     PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
     build_uninstall_plan,
 )
 from timecapsulesmb.deploy.boot_assets import (
-    COMMON_SH_FRAGMENTS,
-    assemble_common_sh_text,
     boot_asset_path,
     load_boot_asset_text,
 )
@@ -198,12 +193,12 @@ class DeployModuleTests(unittest.TestCase):
             "root@10.0.0.2",
             payload_home,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
+
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=startup_mode,
             wait_after_reboot=wait_after_reboot,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+         service_path=Path("bin/service"))
         return PreparedDeployPlan(
             payload_context=DeployPayloadContext(
                 compatibility=mock.Mock(),
@@ -214,9 +209,9 @@ class DeployModuleTests(unittest.TestCase):
             artifacts=DeployArtifactPaths(
                 smbd=Path("bin/smbd"),
                 xattr_migrator=Path("bin/xattr-hfs-migrate"),
-                discovery=Path("bin/discovery/discoveryd"),
+
                 rsync=Path("bin/rsync"),
-             service=Path("bin/service"), telemetry=Path("bin/telemetry")),
+             service=Path("bin/service")),
             payload_home=payload_home,
             plan=plan,
         )
@@ -375,300 +370,8 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(completed, [(actions[0], 1, 2), (actions[1], 2, 2)])
 
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
-        content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/boot.sh", content)
-        common = load_boot_asset_text("common.sh")
-        self.assertEqual(common, assemble_common_sh_text())
-        self.assertNotIn("tr '[:lower:]' '[:upper:]'", common)
-        self.assertNotIn("/usr/bin/wc", common)
-        self.assertNotIn("/usr/bin/tr", common)
-
-    def test_common_sh_is_assembled_from_ordered_source_fragments(self) -> None:
-        asset_root = REPO_ROOT / "src/timecapsulesmb/assets/boot/samba4"
-        assembled = "".join((asset_root / fragment).read_text().rstrip("\n") + "\n" for fragment in COMMON_SH_FRAGMENTS)
-        self.assertEqual(load_boot_asset_text("common.sh"), assembled)
-        self.assertGreaterEqual(len(COMMON_SH_FRAGMENTS), 5)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            assembled_path = Path(tmp) / "common.sh"
-            progressive = ""
-            for fragment in COMMON_SH_FRAGMENTS:
-                fragment_path = asset_root / fragment
-                self.assertTrue(fragment_path.is_file(), fragment)
-                progressive += fragment_path.read_text().rstrip("\n") + "\n"
-                assembled_path.write_text(progressive)
-                subprocess.run(["/bin/sh", "-n", str(assembled_path)], check=True, text=True, capture_output=True)
-
-            with boot_asset_path("common.sh") as common_path:
-                self.assertEqual(common_path.read_text(), assembled)
-                self.assertNotEqual(common_path, asset_root / "common.sh")
-
-    def test_common_sh_initializes_runtime_paths_and_process_owners(self) -> None:
-        # Exercise the generated asset instead of asserting source spellings.
-        script = load_boot_asset_text("common.sh") + "\nprintf '%s\\n' \"$RAM_ROOT\" \"$RAM_SBIN\" \"$RAM_ETC\" \"$RAM_VAR\" \"$RAM_PRIVATE\" \"$LOCKS_ROOT\" \"$DISCOVERY_PROC_NAME\" \"$TC_DISCOVERY_BIN\"\n"
-        result = subprocess.run(["/bin/sh", "-c", script], text=True, capture_output=True, check=True)
-        self.assertEqual(result.stdout.splitlines(), [
-            "/mnt/Memory/samba4", "/mnt/Memory/samba4/sbin", "/mnt/Memory/samba4/etc",
-            "/mnt/Memory/samba4/var", "/mnt/Memory/samba4/private", "/mnt/Locks",
-            "discoveryd", "/mnt/Flash/discoveryd",
-        ])
-
-    def test_common_process_helpers_ignore_zombies(self) -> None:
-        common = load_boot_asset_text("common.sh").replace(
-            "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
-            'cat "$PS_FIXTURE"',
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            fixture = Path(tmp) / "ps.txt"
-            script = Path(tmp) / "check.sh"
-            fixture.write_text(
-                "\n".join(
-                    [
-                        "101 Z    wcifsnd         (wcifsnd)",
-                        "102 Z    wcifsfs         (wcifsfs)",
-                        "103 S    discoveryd      /mnt/Flash/discoveryd --netbios-name TimeCapsule",
-                        "106 S    sh              /bin/sh /mnt/Flash/manager.sh",
-                    ]
-                )
-                + "\n"
-            )
-            script.write_text(
-                common
-                + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
-                + """
-runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
-runtime_process_present_by_ucomm discoveryd; echo "live-name=$?"
-runtime_manager_present; echo "manager-full=$?"
-echo "manager-pids=$(runtime_manager_pids)"
-runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
-wait_for_process discoveryd 1; echo "live-wait=$?"
-wait_for_process wcifsnd 1; echo "zombie-wait=$?"
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("zombie-name=1", result.stdout)
-        self.assertIn("live-name=0", result.stdout)
-        self.assertIn("manager-full=0", result.stdout)
-        self.assertIn("manager-pids=106", result.stdout)
-        self.assertIn("zombie-full=1", result.stdout)
-        self.assertIn("live-wait=0", result.stdout)
-        self.assertIn("zombie-wait=1", result.stdout)
-
-    def test_common_size_helpers_do_not_require_netbsd_missing_tools(self) -> None:
-        common = load_boot_asset_text("common.sh")
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            sample = tmp_path / "sample.txt"
-            sample.write_text("AirPort Disk")
-            script = tmp_path / "check.sh"
-            script.write_text(
-                common
-                + f"\nSAMPLE={shlex.quote(str(sample))}\n"
-                + """
-echo "byte-len=$(tc_byte_len 'AirPort Disk')"
-echo "utf8-byte-len=$(tc_byte_len 'éé')"
-echo "file-size=$(tc_log_file_size "$SAMPLE")"
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("byte-len=12", result.stdout)
-        self.assertIn("utf8-byte-len=4", result.stdout)
-        self.assertIn("file-size=12", result.stdout)
-
-    def test_common_binary_selection_logs_only_when_debug_logging_enabled(self) -> None:
-        common = load_boot_asset_text("common.sh")
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            payload = tmp_path / "payload"
-            payload.mkdir()
-            for name in ("smbd",):
-                binary = payload / name
-                binary.write_text("#!/bin/sh\n")
-                binary.chmod(0o755)
-            log = tmp_path / "runtime.log"
-            script = tmp_path / "check.sh"
-            script.write_text(
-                common
-                + f"\nPAYLOAD={shlex.quote(str(payload))}\n"
-                + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
-                + """
-TC_LOG_PREFIX=manager
-TC_LOG_MAX_BYTES=65536
-SMBD_DEBUG_LOGGING=0
-echo "smbd-normal=$(tc_find_payload_smbd "$PAYLOAD")"
-normal_log=$(cat "$TC_LOG_FILE" 2>/dev/null || true)
-SMBD_DEBUG_LOGGING=1
-echo "smbd-debug=$(tc_find_payload_smbd "$PAYLOAD")"
-printf '%s\n' "$normal_log" >"$PAYLOAD/normal.log"
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-            normal_log = (payload / "normal.log").read_text()
-            debug_log = log.read_text()
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"smbd-normal={payload}/smbd", result.stdout)
-        self.assertIn(f"smbd-debug={payload}/smbd", result.stdout)
-        self.assertNotIn("selected smbd binary", normal_log)
-        self.assertIn(f"selected smbd binary {payload}/smbd", debug_log)
-
-    def test_common_log_trim_preserves_existing_log_when_readers_fail(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            fail_tail = tmp_path / "tail"
-            fail_cat = tmp_path / "cat"
-            fail_tail.write_text("#!/bin/sh\nexit 1\n")
-            fail_cat.write_text("#!/bin/sh\nexit 1\n")
-            fail_tail.chmod(0o755)
-            fail_cat.chmod(0o755)
-            common = (
-                load_boot_asset_text("common.sh")
-                .replace("/usr/bin/tail", shlex.quote(str(fail_tail)))
-                .replace("/bin/cat", shlex.quote(str(fail_cat)))
-            )
-            bounded_log = tmp_path / "bounded.log"
-            legacy_log = tmp_path / "legacy.log"
-            script = tmp_path / "check.sh"
-            script.write_text(
-                common
-                + f"\nBOUNDED_LOG={shlex.quote(str(bounded_log))}\n"
-                + f"LEGACY_LOG={shlex.quote(str(legacy_log))}\n"
-                + """
-printf '%s\n' 'abcdefghijklmnopqrstuvwxyz' >"$BOUNDED_LOG"
-printf '%s\n' '0123456789abcdef' >"$LEGACY_LOG"
-tc_trim_log_file_if_needed "$BOUNDED_LOG" 5
-tc_prepare_log_file "$LEGACY_LOG" 5
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-            trim_temps = list(tmp_path.glob("*.tmp.*"))
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(bounded_log.read_text(), "abcdefghijklmnopqrstuvwxyz\n")
-            self.assertEqual(legacy_log.read_text(), "0123456789abcdef\n")
-            self.assertEqual(trim_temps, [])
-
-    def test_common_hostname_resolution_update_is_idempotent(self) -> None:
-        common = (
-            load_boot_asset_text("common.sh")
-            .replace("/etc/hosts", '"$HOSTS_FIXTURE"')
-            .replace("$(/bin/hostname 2>/dev/null || true)", "airport-base")
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            hosts = tmp_path / "hosts"
-            log = tmp_path / "runtime.log"
-            script = tmp_path / "check.sh"
-            hosts.write_text("127.0.0.1\tlocalhost airport-base-old\n")
-            script.write_text(
-                common
-                + f"\nHOSTS_FIXTURE={shlex.quote(str(hosts))}\n"
-                + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
-                + """
-tc_prepare_local_hostname_resolution
-SMBD_DEBUG_LOGGING=1
-tc_prepare_local_hostname_resolution
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-
-            hosts_text = hosts.read_text()
-            log_text = log.read_text()
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(hosts_text.count("127.0.0.1\tairport-base airport-base.local\n"), 1)
-        self.assertIn("127.0.0.1\tlocalhost airport-base-old\n", hosts_text)
-        self.assertIn("local hostname resolution prepared for airport-base", log_text)
-        self.assertIn("local hostname resolution already present for airport-base", log_text)
-
-    def test_common_script_process_helpers_do_not_self_match_literal(self) -> None:
-        common = load_boot_asset_text("common.sh").replace(
-            "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
-            'cat "$PS_FIXTURE"',
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            fixture = Path(tmp) / "ps.txt"
-            script = Path(tmp) / "check.sh"
-            fixture.write_text(
-                "\n".join(
-                    [
-                        "103 S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
-                        "104 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
-                    ]
-                )
-                + "\n"
-            )
-            script.write_text(
-                common
-                + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
-                + """
-runtime_manager_present; echo "manager=$?"
-echo "manager-pids=$(runtime_manager_pids)"
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("manager=1", result.stdout)
-        self.assertIn("manager-pids=", result.stdout)
-
-    def test_common_manager_kill_helper_targets_only_detected_pids(self) -> None:
-        common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
-        with tempfile.TemporaryDirectory() as tmp:
-            script = Path(tmp) / "check.sh"
-            kill_log = Path(tmp) / "kill.log"
-            script.write_text(
-                common
-                + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
-                + """
-record_kill() { echo "kill:$*" >> "$KILL_LOG"; }
-runtime_manager_pids() { printf '%s\\n' 333; }
-kill_manager_pids TERM
-kill_manager_pids KILL
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-            kill_lines = kill_log.read_text().splitlines()
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            kill_lines,
-            ["kill:333", "kill:-9 333"],
-        )
-
-    def test_common_script_kill_helper_allows_no_detected_pids_under_nounset(self) -> None:
-        common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
-        with tempfile.TemporaryDirectory() as tmp:
-            script = Path(tmp) / "check.sh"
-            kill_log = Path(tmp) / "kill.log"
-            script.write_text(
-                common
-                + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
-                + """
-set -eu
-record_kill() { echo "unexpected kill:$*" >> "$KILL_LOG"; }
-runtime_manager_pids() { :; }
-kill_manager_pids TERM
-echo ok
-"""
-            )
-
-            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "ok\n")
-        self.assertFalse(kill_log.exists())
+        with boot_asset_path("boot.sh") as path:
+            self.assertEqual(load_boot_asset_text("boot.sh"), path.read_text())
 
     def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
         result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
@@ -780,31 +483,15 @@ echo ok
             with self.assertRaisesRegex(RuntimeError, "could not read runtime naming identity: rc=1"):
                 probe_remote_runtime_naming_identity_conn(connection)
 
-    def test_runtime_scripts_source_common_sh(self) -> None:
-        boot = load_boot_asset_text("boot.sh")
-        manager = load_boot_asset_text("manager.sh")
-        self.assertIn(". /mnt/Flash/common.sh", boot)
-        self.assertIn(". /mnt/Flash/common.sh", manager)
-        self.assertNotIn("RAM_SAMBA_LIBEXEC", boot)
-        self.assertNotIn("RAM_SAMBA_LIBEXEC", manager)
+    def test_deployment_uses_one_native_runtime_and_small_boot_scripts(self) -> None:
+        plan = self._prepared_deploy_plan().plan
+        transfers = [*plan.uploads, plan.boot_upload]
+        services = [transfer for transfer in transfers if transfer.source_id == BINARY_SERVICE_SOURCE]
+        self.assertEqual([transfer.destination for transfer in services], ["/mnt/Flash/service"])
+        flash_names = {Path(transfer.destination).name for transfer in transfers
+                       if transfer.destination.startswith("/mnt/Flash/")}
+        self.assertEqual(flash_names, {"service", "boot.sh", "rc.local", "dfree.sh", "tcapsulesmb.conf"})
 
-    def test_rc_local_leaves_service_launch_to_boot_script(self) -> None:
-        content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/boot.sh </dev/null >/dev/null 2>&1 &", content)
-        self.assertNotIn("/mnt/Flash/start-samba.sh", content)
-        self.assertNotIn("/mnt/Flash/manager.sh", content)
-        self.assertNotIn("/mnt/Flash/watchdog.sh", content)
-        self.assertNotIn("pkill -0 -f /mnt/Flash/watchdog.sh", content)
-
-    def test_rc_local_detaches_background_jobs_from_stdin(self) -> None:
-        content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/boot.sh </dev/null >/dev/null 2>&1 &", content)
-
-    def test_common_script_has_no_smbd_daemon_ready_helpers(self) -> None:
-        common = load_boot_asset_text("common.sh")
-        self.assertNotIn("get_smbd_log_path_from_config()", common)
-        self.assertNotIn("wait_for_smbd_ready()", common)
-        self.assertNotIn("daemon_ready", common)
 
     def test_mdns_advertiser_accepts_lowercase_wama_and_normalizes_output(self) -> None:
         if shutil.which("cc") is None:
@@ -946,16 +633,6 @@ echo ok
         self.assertTrue(run.stderr.endswith("\n"))
 
 
-
-
-
-
-
-
-
-
-
-
     def test_discovery_rejects_removed_nbns_cli_modes(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
@@ -1007,7 +684,6 @@ echo ok
         self.assertNotIn("--ipv4", run.stderr)
         self.assertNotIn("--ttl", run.stderr)
         self.assertNotIn("--check-auto-ip", run.stderr)
-
 
 
     def test_discovery_rejects_overlong_name_before_truncation(self) -> None:
@@ -1085,11 +761,11 @@ echo ok
             "host",
             self._payload_home(),
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
+
             xattr_migrator_path=Path("bin/xattr-migrate/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             service_path=Path("bin/service"),
-            telemetry_path=Path("bin/telemetry"),
+
         )
         connection = SshConnection("host", "pw", "-o foo")
 
@@ -1164,7 +840,7 @@ echo ok
         batch_measurements = [fields for kind, fields in measurements if kind == "upload_batch"]
         self.assertEqual(
             [fields["source_id"] for fields in upload_measurements],
-            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_DISCOVERY_SOURCE, PACKAGED_RC_LOCAL_SOURCE],
+            [BINARY_XATTR_MIGRATOR_SOURCE, BINARY_SMBD_SOURCE, BINARY_RSYNC_SOURCE, PACKAGED_RC_LOCAL_SOURCE],
         )
         self.assertTrue(all(fields["destination_kind"] == "payload" for fields in upload_measurements[:-1]))
         self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
@@ -1317,7 +993,7 @@ echo ok
 
     def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
@@ -1332,7 +1008,7 @@ echo ok
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
             upload_deployment_payload(plan, connection=connection, source_resolver={})
@@ -1802,7 +1478,7 @@ describe_managed_smbd_status "" ""
     PS_V31 = (
         "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n"
         "559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
-        "916 408 S 0:00 discoveryd /mnt/Flash/discoveryd nbns=ready mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n"
+        "916 408 S 0:00 service service: role=discovery nbns=ready mode=payload --netbios-name TimeCapsule --adisk-share Data dk2 12345678-1234-1234-1234-123456789012 0x82\n"
         "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n"
     )
     FSTAT_V31 = (
@@ -1812,7 +1488,7 @@ describe_managed_smbd_status "" ""
         "root     wcifsnd  917    6* internet dgram udp *:138\n"
     )
     PLAN_V31 = (
-        "TC_NBNS_ENABLED=1\n"
+        "config: nbns_enabled=1 advertise_afp=0\n"
         "plan: status=validated mode=bridge stale_seconds=0 diskless=0\n"
         "acp: raNA=0 raDS=0 waNM=1 usbF=0x450 laIP=192.168.1.10 waIP=192.168.1.10 waLL=unavailable gnRo=unavailable\n"
         'identity: instance="AirPort Time Capsule" netbios=airport-time-ca wama=E8:8D:28:58:F1:5C\n'
@@ -2342,7 +2018,7 @@ describe_managed_smbd_status "" ""
         payload_dir_name = "samba4"
         payload_dir = f"/Volumes/dk2/{payload_dir_name}"
         paths = self._payload_home("/Volumes/dk2", payload_dir_name)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertEqual(plan.device_path, "/dev/dk2")
@@ -2374,11 +2050,11 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
+
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+         service_path=Path("bin/service"))
         self.assertTrue(plan.reboot_required)
         self.assertEqual(plan.startup_mode, DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE)
         self.assertEqual(
@@ -2405,12 +2081,12 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
+
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             rsync_enabled=True,
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+         service_path=Path("bin/service"))
 
         self.assertTrue(plan.rsync_enabled)
         self.assertIn("managed_rsync_ready", [check.id for check in plan.post_deploy_checks])
@@ -2422,12 +2098,12 @@ describe_managed_smbd_status "" ""
             "root@10.0.0.2",
             paths,
             Path("bin/smbd"),
-            Path("bin/discovery/discoveryd"),
+
             xattr_migrator_path=Path("bin/xattr-hfs-migrate"),
             rsync_path=Path("bin/rsync"),
             startup_mode=DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
             wait_after_reboot=False,
-         service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+         service_path=Path("bin/service"))
 
         self.assertTrue(plan.reboot_required)
         self.assertFalse(plan.wait_after_reboot)
@@ -2447,13 +2123,12 @@ describe_managed_smbd_status "" ""
 
     def test_build_uninstall_plan_stops_supervisors_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
-        rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(rendered[0].startswith("tc_manager_pids() { "))
-        self.assertIn("tc_kill_manager_pids TERM", rendered[0])
-        self.assertTrue(rendered[1].startswith("tc_watchdog_pids() { "))
-        self.assertIn("tc_kill_watchdog_pids TERM", rendered[1])
-        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", rendered[0])
-        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[1])
+        self.assertEqual(plan.remote_actions[:2], [StopServiceRuntimeAction(), StopWatchdogAction()])
+        first_remove = next(i for i, action in enumerate(plan.remote_actions) if isinstance(action, RemovePathAction))
+        self.assertLess(plan.remote_actions.index(StopProcessAction("smbd")), first_remove)
+        self.assertLess(plan.remote_actions.index(StopProcessAction("rsync")), first_remove)
+        for native in ("afpserver", "mDNSResponder"):
+            self.assertNotIn(StopProcessAction(native), plan.remote_actions)
 
     def test_build_uninstall_plan_removes_flash_configuration(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
@@ -2560,13 +2235,13 @@ describe_managed_smbd_status "" ""
 
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         self.assertEqual(plan.post_upload_actions[0], EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
         self.assertIn(InstallPermissionsAction(tuple(plan.permissions)), plan.post_upload_actions)
 
     def test_deployment_plan_guards_each_payload_write_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
         for index, action in enumerate(plan.pre_upload_actions):
@@ -2580,7 +2255,7 @@ describe_managed_smbd_status "" ""
             self.assertIn(RemovePathAction(f"{plan.payload_dir}/{protocol}"), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol), plan.pre_upload_actions)
             self.assertIn(StopProcessAction(protocol + "-advertiser"), plan.pre_upload_actions)
-        self.assertIn(RemovePathAction(plan.payload_targets["discovery"]), plan.pre_upload_actions)
+        self.assertIn(RemovePathAction(f"{plan.payload_dir}/discoveryd"), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("discoveryd"), plan.pre_upload_actions)
         self.assertIn(StopProcessAction("wcifsnd"), plan.pre_upload_actions)
         self.assertIn(RemovePathAction("/mnt/Flash/mdns"), plan.pre_upload_actions)
@@ -2588,12 +2263,12 @@ describe_managed_smbd_status "" ""
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/discovery/discoveryd"), xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"), telemetry_path=Path("bin/telemetry"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"),  xattr_migrator_path=Path("bin/xattr-hfs-migrate"), rsync_path=Path("bin/rsync"), service_path=Path("bin/service"))
         executable_permissions = {permission.path for permission in plan.permissions if permission.mode == "755"}
 
         self.assertIn("/Volumes/dk2/samba4/smbd", executable_permissions)
-        self.assertIn("/Volumes/dk2/samba4/discoveryd", executable_permissions)
-        self.assertIn("/mnt/Flash/discoveryd", executable_permissions)
+        self.assertIn("/mnt/Flash/service", executable_permissions)
+        self.assertNotIn("/Volumes/dk2/samba4/service", executable_permissions)
 
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])

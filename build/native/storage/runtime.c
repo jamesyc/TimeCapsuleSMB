@@ -3,6 +3,9 @@
 #include "../common/worker.h"
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#ifndef TC_ATACTL_PATH
+#define TC_ATACTL_PATH "/sbin/atactl"
+#endif
 #if defined(__NetBSD__)
 #include <sys/mount.h>
 #endif
@@ -192,7 +195,7 @@ out:
 
 static void tune_disk(const struct tc_volume *volume, const struct tc_runtime_config *config) {
     char device[40], idle[24];
-    char *argv[] = {"/sbin/atactl", device, "setidle", idle, NULL};
+    char *argv[] = {TC_ATACTL_PATH, device, "setidle", idle, NULL};
     if (!volume->builtin || strncmp(volume->disk, "wd", 2) || !isdigit((unsigned char)volume->disk[2]))
         return;
     snprintf(device, sizeof(device), "/dev/%s", volume->disk);

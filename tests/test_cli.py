@@ -92,7 +92,8 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
-    StopManagerAction,
+    StopServiceRuntimeAction,
+    render_remote_action,
     StopProcessAction,
     StopWatchdogAction,
 )
@@ -103,7 +104,7 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
     PACKAGED_BOOT_SOURCE,
-    PACKAGED_MANAGER_SOURCE,
+    BINARY_SERVICE_SOURCE,
 )
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.flash_payloads import find_apple_firmware_match
@@ -5069,7 +5070,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["device_path"], "resolved from MaSt at deploy time")
         self.assertEqual(payload["payload_dir"], "resolved from MaSt at deploy time/.samba4")
         self.assertEqual(payload["apple_mount_wait_seconds"], DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-        self.assertEqual(payload["payload_targets"]["discovery"], "resolved from MaSt at deploy time/.samba4/discoveryd")
+        self.assertEqual(payload["flash_targets"]["service"], "/mnt/Flash/service")
         self.assertIn(
             {
                 "source_id": GENERATED_FLASH_CONFIG_SOURCE,
@@ -5186,7 +5187,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("generated:username.map", captured["source_ids"])
         self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, captured["source_ids"])
         self.assertIn(PACKAGED_BOOT_SOURCE, captured["source_ids"])
-        self.assertIn(PACKAGED_MANAGER_SOURCE, captured["source_ids"])
+        self.assertIn(BINARY_SERVICE_SOURCE, captured["source_ids"])
         self.assertNotIn("rendered:smb.conf.template", captured["source_ids"])
         self.assertNotIn("generated:adisk.uuid", captured["source_ids"])
         self.assertNotIn("generated:nbns.enabled", captured["source_ids"])
@@ -5761,13 +5762,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("RuntimeError: scp failed", finished["error"])
 
     def test_deploy_ssh_timeout_shows_red_slow_device_guidance_and_keeps_telemetry_detail(self) -> None:
-        timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/.manager.sh.tmp'"
+        timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/service'"
 
         def timeout_upload(plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
             if plan.uploads == [plan.migration_upload]:
                 return
             if on_uploading is not None:
-                on_uploading(next(transfer for transfer in plan.uploads if transfer.destination == "/mnt/Flash/manager.sh"))
+                on_uploading(next(transfer for transfer in plan.uploads if transfer.destination == "/mnt/Flash/service"))
             raise SshCommandTimeout(timeout)
 
         result = self.run_deploy_cli(
@@ -6015,7 +6016,7 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_not_called()
         text = output.getvalue()
         self.assertIn("Dry run: NetBSD4 activation plan", text)
-        self.assertIn("tc_kill_manager_pids TERM", text)
+        self.assertIn(render_remote_action(StopServiceRuntimeAction()), text)
         self.assertIn("tc_kill_watchdog_pids TERM", text)
         self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
@@ -6188,7 +6189,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args.args[1],
             [
-                StopManagerAction(),
+                StopServiceRuntimeAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),

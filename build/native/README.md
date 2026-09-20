@@ -1,14 +1,22 @@
 # Native device helpers
 
-The source manifests (`*.sources`) are shared by the device build and host
-tests. Each manifest links one static executable. Object files, headers and
-libraries are never deployed. No helper uses pthreads.
+`service.sources` links one fully static device executable, with independent
+`manager`, `discovery`, and `telemetry` processes and diagnostic entrypoints.
+Common code is linked once. The separate discovery/telemetry source lists remain
+for focused host regressions, not deployed artifacts. No role uses pthreads.
 
-| Executable | Owner |
+| Entrypoint | Responsibility |
 | --- | --- |
-| `discoveryd` | Registers `_smb`/`_adisk` (and `_afpovertcp` on request) with Apple's on-device `mDNSResponder`, and owns Apple's `wcifsnd` child for native NBNS. |
-| `service` | Native Samba identity/model projection, device-password NT hashing, `--print-smb-bind-interfaces` (Samba bind tokens + retention status) and `--print-link-plan` |
-| `telemetry` | Heartbeat collection/POST, scheduling and signed debug execution |
+| `service manager` | Event-driven supervision, Apple volume activation, guarded RAM staging, Samba configuration and child lifetimes. |
+| `service discovery` | Bonjour registrations through Apple's mDNSResponder and one owned native wcifsnd child. |
+| `service telemetry --daemon` | Heartbeat collection/POST, scheduling and signed debug execution. |
+| `service --print-*` | Existing identity, hashing, MaSt and network diagnostics. |
+
+Build the device image with `build/service.sh`, `build/serviceoldle.sh`, or
+`build/serviceoldbe.sh` using the existing NetBSD SDK lanes. Boot executes the
+Flash copy. Samba and optional rsync execute from RAM because Apple may unmount
+the HDD. The manager, discovery and telemetry each collect their own network
+plan; successfully applied disk shares are passed to discovery as argv.
 
 Bonjour registrations use `name=NULL` and flags `0`: Apple owns the default
 instance name and conflict renaming across SMB/ADisk. This follows the live
@@ -27,7 +35,7 @@ tokens, identity) with the retained-policy rules of the redesign plan.
 Host test builds (`TC_NATIVE_TEST`) accept `--facts-file` snapshots. Device
 builds omit the fixture parser and accept only live facts; `--print-link-plan`
 remains available for live diagnostics.
-There is no daemon, cache or runtime state file; each process owns its own
+There is no shared plan daemon or cache/status file; each process owns its own
 last validated plan. Fixtures from both device lanes live under
 `tests/native/fixtures/iflist/`.
 
@@ -41,18 +49,16 @@ limited to 8 KiB; the existing hash-input limit remains 4096 bytes.
 NetBIOS name, server string and observed fruit model. Legacy name/model overrides
 are ignored; deploy no longer forwards them.
 
-`discoveryd --print-mast [--timeout-seconds N]` performs the fixed `acp -A MaSt`
-read without starting discovery. It lives on Flash so boot/diskd readiness can
-use it before the disk-backed service helper is copied into RAM. It captures up
-to 64 KiB of text; failed, empty or oversized reads never become an empty disk
-inventory. This replaces the shell timeout supervisor and its capture/PID files.
+`service --print-mast [--timeout-seconds N]` performs a bounded `acp -A MaSt`
+read without starting a daemon. The manager uses the same collector asynchronously,
+with a native parser, five-second topology confirmation and ten-second recovery
+poll. Apple EVFILT_DEVICE notifications trigger earlier observations and retained
+Samba-binding validation even if a brief detach/replug leaves inventory unchanged.
 
 Cold start grants no sharing services until critical facts validate. Failed
-rereads retain permissions only on unchanged interfaces; the old bridge/PF
-heuristic is gone. The manager passes a compact policy summary through stdin
-with `service --print-smb-bind-interfaces --retain-policy`; output starts with
-tokens/status followed by the updated policy. This summary stays in shell
-memory and never becomes a device state file.
+rereads retain permissions only on unchanged interfaces. The manager stores this
+history directly in C; the diagnostic `--retain-policy` interface remains available
+for existing callers, but no daemon transfers plans through it.
 
 Module headers declare cross-module functions. `TC_LOCAL` keeps internal
 helpers static in device builds; only host regression tests define
@@ -60,12 +66,20 @@ helpers static in device builds; only host regression tests define
 where the linker deliberately does not use section garbage collection because
 it can discard required ELF notes. Do not include implementation `.c` files.
 
-The device manager runs `discoveryd` from Flash. Apple's `wcifsnd` stays in the firmware;
-service, telemetry and Samba are copied to RAM from the disk before use. Service is staged before auth and
-bind probes. Deployment removes the old Flash software before copying its replacement. Telemetry
-creates only `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`. It locks the
-existing `/mnt/Memory` directory to exclude concurrent cycles, including manual
-runs, without creating a lock file or job directory. That directory must be
+The manager owns foreground Samba in a separate process group and waits for the
+whole group before replacing executables or clearing locks. Anonymous stdin
+pipes carry parent lifetime to managed roles. Setup work runs in bounded child
+jobs so slow disks do not block supervision. Singleton ownership uses a lock on
+the existing service executable, without a new PID or status file.
+
+Apple's mDNSResponder and afpserver remain alive; the AFP preference controls
+advertising only. Loopback diskd retains filesystem ownership. Discovery alone
+owns wcifsnd; controller failure or a returning wcifsfs conflict replaces that
+generation. See [runtime tests](../../tests/native/README.md).
+
+Telemetry creates only `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`. It locks
+the existing `/mnt/Memory` directory to exclude concurrent cycles, including
+manual runs, without a lock file or job directory. That directory must be
 root-owned, with sticky permissions if writable by other users.
 
 ## Telemetry protocol
@@ -76,7 +90,7 @@ short critical-facts failure reason and is omitted on success. There is no
 `ps` probe, constant daemon label, or live registration-state upload.
 This probe has no retained history and does not assert that services stopped.
 
-`telemetry --daemon` sends a boot heartbeat and then one every 12 hours.
+`service telemetry --daemon` sends a boot heartbeat and then one every 12 hours.
 `--once [reason]` performs one cycle; `--print-payload [reason]` only prints.
 `--cleanup` removes stale debug files without collecting or posting telemetry.
 An existing cycle or inherited debug lock causes `--once` and `--cleanup` to

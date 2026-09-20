@@ -34,8 +34,8 @@ class Device:
         binary = root / 'binary'
         binary.write_bytes(b'new executable\n')
         self.plan = build_deployment_plan(
-            'host', self.home, binary, binary, xattr_migrator_path=binary,
-            rsync_path=binary, service_path=binary, telemetry_path=binary,
+            'host', self.home, binary,  xattr_migrator_path=binary,
+            rsync_path=binary, service_path=binary,
         )
         self.connection = SshConnection('host', 'unused', '', remote_has_scp=True)
         self.prepared = SimpleNamespace(
@@ -92,10 +92,10 @@ class Device:
         if self.failure == 'transfer' and destination.endswith('/smbd'):
             self.write(destination, b'partial')
             raise RuntimeError('injected transfer')
-        if self.failure == 'flash_transfer' and destination == '/mnt/Flash/discoveryd':
+        if self.failure == 'flash_transfer' and destination == '/mnt/Flash/service':
             self.write(destination, b'partial flash file')
             raise RuntimeError('injected flash transfer')
-        if self.failure == 'truncate_flash' and destination == '/mnt/Flash/discoveryd':
+        if self.failure == 'truncate_flash' and destination == '/mnt/Flash/service':
             self.write(destination, b'truncated')
         if self.failure == 'truncate' and destination.endswith('/smbd'):
             self.write(destination, b'truncated')
@@ -170,7 +170,7 @@ class Device:
         assert not self.path('/Volumes/dk2/.samba4/mdns-smbd-advertiser').exists()
         assert not self.path('/Volumes/dk2/.samba4/sbin/smbd').exists()
         assert not self.path('/mnt/Flash/xattr-migrate-wrapper.sh').exists()
-        assert not self.path('/mnt/Flash/service').exists()
+        assert self.path('/mnt/Flash/service').is_file()
         assert not self.path('/mnt/Flash/mdns-advertiser').exists()
         assert not self.path('/mnt/Flash/.discoveryd.tmp').exists()
         self.assert_protected()
@@ -253,10 +253,10 @@ def test_reboot_request_failure_can_be_retried_without_a_marker(tmp_path, monkey
     device.assert_installed()
 
 
-@pytest.mark.parametrize('basename', ['smbd', 'telemetry'])
+@pytest.mark.parametrize('basename', ['smbd', 'rsyncd.conf'])
 def test_diskd_unmount_after_verified_transfer_is_remounted_before_permissions(tmp_path, monkeypatch, basename):
     device = Device(tmp_path, monkeypatch)
-    # Apple's diskd may release an idle HDD after SCP closes it. telemetry is
+    # Apple's diskd may release an idle HDD after SCP closes it. rsyncd.conf is
     # the last HDD transfer, so that case exercises the post-upload mount guard;
     # smbd also exercises remounting before the next transfer.
     device.unmount_after = device.home.payload_dir + '/' + basename

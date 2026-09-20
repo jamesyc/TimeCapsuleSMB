@@ -24,20 +24,20 @@ class ArtifactResolverTests(unittest.TestCase):
         self.assertEqual(artifact.repo_relative_path, "bin/samba4-netbsd4le/smbd")
         self.assertEqual(artifact.absolute_path, REPO_ROOT / "bin" / "samba4-netbsd4le" / "smbd")
 
-    def test_resolve_discovery_artifact_returns_expected_repo_path(self) -> None:
-        artifact = resolve_artifact(REPO_ROOT, "discovery")
-        self.assertEqual(artifact.repo_relative_path, "bin/discovery/discoveryd")
-        self.assertEqual(artifact.absolute_path, REPO_ROOT / "bin" / "discovery" / "discoveryd")
+    def test_resolve_service_artifact_returns_expected_repo_path(self) -> None:
+        artifact = resolve_artifact(REPO_ROOT, "service")
+        self.assertEqual(artifact.repo_relative_path, "bin/service/service")
+        self.assertEqual(artifact.absolute_path, REPO_ROOT / "bin" / "service" / "service")
 
     def test_resolve_netbsd4le_helper_artifacts_return_expected_repo_paths(self) -> None:
-        discovery = resolve_artifact(REPO_ROOT, "discovery-netbsd4le")
-        self.assertEqual(discovery.repo_relative_path, "bin/discovery-netbsd4le/discoveryd")
+        service = resolve_artifact(REPO_ROOT, "service-netbsd4le")
+        self.assertEqual(service.repo_relative_path, "bin/service-netbsd4le/service")
 
     def test_resolve_explicit_netbsd4_be_artifacts_return_expected_repo_paths(self) -> None:
         smbd = resolve_artifact(REPO_ROOT, "smbd-netbsd4be")
-        discovery = resolve_artifact(REPO_ROOT, "discovery-netbsd4be")
+        service = resolve_artifact(REPO_ROOT, "service-netbsd4be")
         self.assertEqual(smbd.repo_relative_path, "bin/samba4-netbsd4be/smbd")
-        self.assertEqual(discovery.repo_relative_path, "bin/discovery-netbsd4be/discoveryd")
+        self.assertEqual(service.repo_relative_path, "bin/service-netbsd4be/service")
 
     def test_resolve_netbsd4_payload_returns_logical_deploy_names(self) -> None:
         artifacts = resolve_payload_artifacts(REPO_ROOT, "netbsd4le_samba4")
@@ -46,7 +46,7 @@ class ArtifactResolverTests(unittest.TestCase):
             artifacts["xattr_migrator"].repo_relative_path,
             "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
         )
-        self.assertEqual(artifacts["discovery"].repo_relative_path, "bin/discovery-netbsd4le/discoveryd")
+        self.assertEqual(artifacts["service"].repo_relative_path, "bin/service-netbsd4le/service")
         self.assertNotIn("samba-dcerpcd", artifacts)
         self.assertNotIn("rpcd_classic", artifacts)
 
@@ -57,7 +57,7 @@ class ArtifactResolverTests(unittest.TestCase):
             artifacts["xattr_migrator"].repo_relative_path,
             "bin/xattr-migrate/xattr-hfs-migrate",
         )
-        self.assertEqual(artifacts["discovery"].repo_relative_path, "bin/discovery/discoveryd")
+        self.assertEqual(artifacts["service"].repo_relative_path, "bin/service/service")
         self.assertNotIn("samba-dcerpcd", artifacts)
         self.assertNotIn("rpcd_classic", artifacts)
 

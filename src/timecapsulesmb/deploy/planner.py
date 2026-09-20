@@ -28,15 +28,11 @@ DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate"]
 
 BINARY_SMBD_SOURCE = "binary:smbd"
 BINARY_XATTR_MIGRATOR_SOURCE = "binary:xattr-migrator"
-BINARY_DISCOVERY_SOURCE = "binary:discovery"
 BINARY_SERVICE_SOURCE = "binary:service"
-BINARY_TELEMETRY_SOURCE = "binary:telemetry"
 BINARY_RSYNC_SOURCE = "binary:rsync"
 PACKAGED_RC_LOCAL_SOURCE = "packaged:rc.local"
-PACKAGED_COMMON_SH_SOURCE = "packaged:common.sh"
 PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
 PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
-PACKAGED_MANAGER_SOURCE = "packaged:manager.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
 GENERATED_RSYNC_CONFIG_SOURCE = "generated:rsyncd.conf"
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
@@ -73,10 +69,8 @@ class DeploymentPlan:
     disk_key: str
     smbd_path: Path
     xattr_migrator_path: Path
-    discovery_path: Path
     rsync_path: Path
     service_path: Path
-    telemetry_path: Path
     rsync_enabled: bool
     flash_targets: dict[str, str]
     payload_targets: dict[str, str]
@@ -157,9 +151,9 @@ def build_runtime_start_actions() -> list[RemoteAction]:
 def build_runtime_activation_actions() -> list[RemoteAction]:
     return [
         # No-reboot activation runs while the old OS runtime is still alive.
-        # rc.local/boot.sh owns managed daemon cleanup; stop supervisors and
+        # The native manager owns daemon cleanup; stop existing supervisors and
         # Apple's CIFS service that can race startup.
-        StopManagerAction(),
+        StopServiceRuntimeAction(),
         StopWatchdogAction(),
         StopProcessAction("wcifsfs"),
         *build_runtime_start_actions(),
@@ -208,12 +202,10 @@ def build_deployment_plan(
     host: str,
     payload_home: PayloadHome,
     smbd_path: Path,
-    discovery_path: Path,
     *,
     xattr_migrator_path: Path,
     rsync_path: Path,
     service_path: Path,
-    telemetry_path: Path,
     rsync_enabled: bool = False,
     startup_mode: DeploymentStartupMode = DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
@@ -227,19 +219,14 @@ def build_deployment_plan(
     )
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
-        "common.sh": "/mnt/Flash/common.sh",
         "boot.sh": "/mnt/Flash/boot.sh",
-        "manager.sh": "/mnt/Flash/manager.sh",
+        "service": "/mnt/Flash/service",
         "dfree.sh": "/mnt/Flash/dfree.sh",
-        "discovery": "/mnt/Flash/discoveryd",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
     }
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
         "xattr_migrator": f"{payload_dir}/xattr-hfs-migrate",
-        "discovery": f"{payload_dir}/discoveryd",
-        "service": f"{payload_dir}/service",
-        "telemetry": f"{payload_dir}/telemetry",
         "rsync": f"{payload_dir}/rsync",
         "rsyncd.conf": f"{payload_dir}/rsyncd.conf",
     }
@@ -262,16 +249,11 @@ def build_deployment_plan(
     permissions = [
         RemotePermission(payload_targets["smbd"], "755"),
         RemotePermission(payload_targets["xattr_migrator"], "755"),
-        RemotePermission(payload_targets["discovery"], "755"),
         RemotePermission(payload_targets["rsync"], "755"),
         RemotePermission(payload_targets["rsyncd.conf"], "600"),
-        RemotePermission(flash_targets["common.sh"], "755"),
         RemotePermission(flash_targets["boot.sh"], "755"),
-        RemotePermission(flash_targets["manager.sh"], "755"),
+        RemotePermission(flash_targets["service"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
-        RemotePermission(flash_targets["discovery"], "755"),
-        RemotePermission(payload_targets["service"], "755"),
-        RemotePermission(payload_targets["telemetry"], "755"),
         RemotePermission(flash_targets["tcapsulesmb.conf"], "600"),
         RemotePermission(cache_dir, "755"),
         RemotePermission(private_dir, "700"),
@@ -280,7 +262,7 @@ def build_deployment_plan(
     # deliberately stay in place, including after an interrupted deployment.
     flash_software = [*flash_targets.values(), *(
         f"/mnt/Flash/{name}" for name in (
-            "service", "migrate.sh", "xattr-migrate-wrapper.sh", "start-samba.sh", "watchdog.sh",
+            "discoveryd", "common.sh", "manager.sh", "telemetry", "migrate.sh", "xattr-migrate-wrapper.sh", "start-samba.sh", "watchdog.sh",
             "mdns", "nbns", "mdns-advertiser", "nbns-advertiser", "mdns-smbd-advertiser",
         )
     )]
@@ -289,7 +271,7 @@ def build_deployment_plan(
     ]
     payload_software = [*payload_targets.values(), *(
         f"{payload_dir}/{name}" for name in (
-            "smb.conf.template", "mdns", "nbns", "mdns-advertiser", "nbns-advertiser",
+            "service", "telemetry", "discoveryd", "smb.conf.template", "mdns", "nbns", "mdns-advertiser", "nbns-advertiser",
             "mdns-smbd-advertiser", "sbin/smbd", "sbin/mdns-smbd-advertiser",
             "private/adisk.uuid", "private/nbns.enabled",
         )
@@ -302,10 +284,8 @@ def build_deployment_plan(
         disk_key=payload_home.disk_key,
         smbd_path=smbd_path,
         xattr_migrator_path=xattr_migrator_path,
-        discovery_path=discovery_path,
         rsync_path=rsync_path,
         service_path=service_path,
-        telemetry_path=telemetry_path,
         rsync_enabled=rsync_enabled,
         flash_targets=flash_targets,
         payload_targets=payload_targets,
@@ -322,15 +302,10 @@ def build_deployment_plan(
         ),
         uploads=[
             FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
-            FileTransfer(BINARY_DISCOVERY_SOURCE, payload_targets["discovery"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in discoveryd"),
-            FileTransfer(BINARY_DISCOVERY_SOURCE, flash_targets["discovery"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "flash discoveryd"),
             FileTransfer(BINARY_RSYNC_SOURCE, payload_targets["rsync"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in rsync"),
             FileTransfer(GENERATED_RSYNC_CONFIG_SOURCE, payload_targets["rsyncd.conf"], "generated", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated rsync daemon config"),
-            FileTransfer(BINARY_SERVICE_SOURCE, payload_targets["service"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "service helper for RAM staging"),
-            FileTransfer(BINARY_TELEMETRY_SOURCE, payload_targets["telemetry"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "telemetry helper for RAM staging"),
-            FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
+            FileTransfer(BINARY_SERVICE_SOURCE, flash_targets["service"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "native manager, discovery and telemetry service"),
             FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
-            FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
             FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
         ],
@@ -419,6 +394,7 @@ def build_uninstall_plan(
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
         "discovery": "/mnt/Flash/discoveryd",
+        "service": "/mnt/Flash/service",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
     }
     verify_absent_targets = [
@@ -440,7 +416,7 @@ def build_uninstall_plan(
         flash_targets=flash_targets,
         verify_absent_targets=verify_absent_targets,
         remote_actions=[
-            StopManagerAction(),
+            StopServiceRuntimeAction(),
             StopWatchdogAction(),
             StopProcessAction("smbd"),
             StopProcessAction("discoveryd"),
@@ -463,6 +439,7 @@ def build_uninstall_plan(
             RemovePathAction(flash_targets["watchdog.sh"]),
             RemovePathAction(flash_targets["dfree.sh"]),
             RemovePathAction(flash_targets["discovery"]),
+            RemovePathAction(flash_targets["service"]),
             RemovePathAction("/mnt/Flash/mdns-advertiser"),
             RemovePathAction("/mnt/Flash/mdns"),
             RemovePathAction(flash_targets["tcapsulesmb.conf"]),

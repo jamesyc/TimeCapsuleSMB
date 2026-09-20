@@ -123,9 +123,6 @@ The actual working split is:
 
 - persistent payload on HDD:
   - `/Volumes/dkX/.samba4/smbd`
-  - `/Volumes/dkX/.samba4/discoveryd`
-  - `/Volumes/dkX/.samba4/service`
-  - `/Volumes/dkX/.samba4/telemetry`
   - `/Volumes/dkX/.samba4/rsync`
   - `/Volumes/dkX/.samba4/rsyncd.conf`
   - `/Volumes/dkX/.samba4/private/`
@@ -134,11 +131,9 @@ The actual working split is:
   - `/Volumes/dkX/.samba4/logs/`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
-  - `/mnt/Flash/common.sh`
   - `/mnt/Flash/boot.sh`
-  - `/mnt/Flash/manager.sh`
   - `/mnt/Flash/dfree.sh`
-  - `/mnt/Flash/discoveryd`
+  - `/mnt/Flash/service`
   - `/mnt/Flash/tcapsulesmb.conf`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
@@ -486,121 +481,80 @@ Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.disc
 ## Registered mDNS Records
 
 Current behavior:
-- `boot.sh` relaunches Apple's `diskd` on loopback, prepares the RAM runtime and launches `manager.sh`
-- the manager launches `discoveryd` from `/mnt/Flash` with the canonical Samba name (`--netbios-name`), payload state (`--diskless` when applicable), and ADisk rows (`--adisk-share NAME KEY UUID FLAGS`, repeated per share); identity and link facts otherwise come from ACP, the interface table, and flash config
+- `boot.sh` prepares platform directories and the locks filesystem, then executes `service manager`; the manager reconciles Apple's loopback `diskd`
+- the manager launches `/mnt/Flash/service discovery` with the canonical Samba name (`--netbios-name`), payload state (`--diskless` when applicable), and ADisk rows (`--adisk-share NAME KEY UUID FLAGS`, repeated per share); identity and link facts otherwise come from ACP, the interface table, and flash config
 - the registrant holds one `DNSServiceRef` per (link index, service), re-registers on plan changes (a `PF_ROUTE` socket plus a 30 s ACP poll), and deregisters everything on `SIGTERM` so the daemon sends goodbyes
 - in diskless mode the desired set is empty; `_airport` and `_device-info` are Apple's and stay up regardless
 - a name conflict or any registration error backs off (1, 2, 4 … 30 s) and retries with the unchanged desired state; an unreachable daemon marks the registrations degraded and is never started by us
 
 ## Boot Flow In Detail
 
-The boot logic lives in:
-- [src/timecapsulesmb/assets/boot/samba4/rc.local](src/timecapsulesmb/assets/boot/samba4/rc.local)
-- [src/timecapsulesmb/assets/boot/samba4/boot.sh](src/timecapsulesmb/assets/boot/samba4/boot.sh)
-- [src/timecapsulesmb/assets/boot/samba4/manager.sh](src/timecapsulesmb/assets/boot/samba4/manager.sh)
-- [src/timecapsulesmb/assets/boot/samba4/common.d/](src/timecapsulesmb/assets/boot/samba4/common.d)
+`rc.local` backgrounds `boot.sh` with stdin/stdout/stderr detached so Apple's
+startup can continue. `boot.sh` performs only platform preparation: RAM
+directories, existing-compatible `/root` prefixes, bufcache tuning, and the
+4 MiB locks filesystem. It preserves existing files and mounts, then executes
+`/mnt/Flash/service manager`.
 
-### `rc.local`
+NetBSD 6 uses `mount_tmpfs -s 4m`, retaining its plain-directory fallback if
+mounting fails. NetBSD 4 uses `mount_mfs -s 8192` and refuses rootfs fallback.
+Boot never clears active locks. The native manager first locks its existing
+executable inode, reconciles old processes, and waits for all Samba workers to
+exit before clearing obsolete locks during executable replacement.
 
-`rc.local` is intentionally tiny. It just backgrounds `boot.sh`.
+### Native manager
 
-This matters because:
-- boot ordering is messy
-- the HDD device nodes may not exist yet when `rc.local` first runs
-- a longer wait loop belongs in the second-stage script, not directly inline in the boot hook
+The [manager](build/native/service/manager.c) owns repeated work:
 
-### `boot.sh`
+- Listen for Apple's `EVFILT_DEVICE` notifications and `PF_ROUTE` changes; use
+  monotonic deadlines and a five-second topology confirmation interval.
+- Retain MaSt as semantic disk inventory, with a ten-second fallback. Read the
+  live mount table before activating or writing a volume. An unavailable MaSt
+  read is distinct from a successful empty inventory.
+- Use the established `diskd.useVolume` path. Keep Apple's `mDNSResponder` and
+  `afpserver` alive; move/recover `diskd` on loopback without replacing Apple's
+  filesystem management.
+- Prefer a valid internal payload, then an external one. Cache the selected
+  generation instead of repeatedly reading HDD software metadata.
+- Prepare ShareRoot/markers, RAM executables, authentication and Samba config
+  in bounded child jobs. Supervision and shutdown stay responsive during slow
+  ACP or disk operations. Failed or superseded jobs remain retryable.
+- Own `smbd -F --no-process-group` directly in a separate process group. Keep
+  explicit bind-policy history through shared native code; restart for changed
+  binds or executable generation, reload for ordinary configuration changes.
+- Forward parent reloads to workers. Reset Samba's cwd cache and inspect real
+  retained descriptors plus volume/root identity, disconnecting only affected
+  trees through Samba's existing asynchronous AIO-draining path.
+- Start independent `service discovery` and `service telemetry --daemon`
+  processes from the single Flash image. Each collects its own network plan;
+  discovery receives only successfully applied share rows in argv.
+- Recover exited children with bounded backoff. Discovery owns its native
+  `wcifsnd`; healthy checks never kill that child independently. If Apple's
+  conflicting `wcifsfs` returns, stop it and replace the discovery generation.
+- Stop Samba and rsync if no valid payload remains, even if their old RAM
+  executable is present. Discovery can remain diskless without waiting for
+  Samba authentication, and telemetry retains its existing signed-job drain.
 
-`boot.sh` performs the one-shot startup preparation:
+Internal shares use ShareRoot unless the disk-root option is enabled; external
+shares use the volume root. Existing naming, ADisk device keys/UUIDs, protocol,
+AIO, metadata, logging and performance preferences are preserved. Only deployment
+runs metadata migration; boot and hotplug never scan legacy TDBs or consume old
+migration-completed markers.
 
-1. sources `/mnt/Flash/common.sh` and `/mnt/Flash/tcapsulesmb.conf`
-2. stops the manager, `smbd`, `discoveryd`, and any orphaned `wcifsnd`; Apple's `mDNSResponder` and `afpserver` stay running
-3. moves Apple's `diskd` to loopback (`/sbin/diskd -i lo0 -d local.`), or launches it there when ACPd has not started it yet, and waits up to 30 s for the Flash helper's bounded `acp -A MaSt` read; failure is logged and boot continues — the manager retries (below)
-4. prepares the dedicated Samba lock ramdisk at `/mnt/Locks`
-5. recreates the RAM runtime tree under `/mnt/Memory/samba4`
-6. prepares compatibility symlinks under `/root`
-7. starts `manager.sh` if it is not already running
+The manager keeps state in memory. Anonymous pipes carry parent lifetime and
+short-lived job results; there is no new PID/status file or network-plan IPC.
+Process titles identify manager, discovery, telemetry and setup-job roles.
 
-The manager owns disk discovery, Samba staging, `discoveryd` startup and orphan cleanup, and later recovery. `discoveryd` exclusively owns its direct `wcifsnd` child. Telemetry schedules its own heartbeat cycles.
+Logs:
 
-The boot log is written to:
-- `/mnt/Memory/samba4/var/rc.local.log`
+- RAM: `var/rc.local.log`, `var/runtime.log`, `var/telemetry.log`, `var/rsync.log`
+  under `/mnt/Memory/samba4`; runtime logs retain a bounded tail in place.
+- Discovery: `<payload>/logs/discovery.log`, with a RAM fallback while diskless.
+- Samba: `<payload>/logs/log.smbd` and `smbd-console.log`.
 
-Long-running process logs are split between RAM and the selected payload:
-- `/mnt/Memory/samba4/var/manager.log`
-- `/mnt/Memory/samba4/var/rsync.log`
-- `<payload>/logs/mdns.log`, with a RAM fallback in diskless state
-- `<payload>/logs/nbns.log`, with a RAM fallback in diskless state
-- `<payload>/logs/log.smbd`
-
-Important bug lessons from getting this stable:
-- the script cannot assume `/dev/dk2` exists immediately
-- AirPort Extreme devices may have no internal disk at all
-- the script must use `-b` for block devices, not `-c`
-- it cannot call non-existent utilities like `dirname`
-- it must tolerate a long delay before the disk appears
-- the Samba lock TDBs need their own ramdisk because `/mnt/Memory` is too small for the runtime plus growing lock databases
-- on NetBSD 4, cache state is kept on the HDD instead of `/mnt/Memory` to preserve RAM-disk headroom
-- the persistent `xattr.tdb` must stay in the selected payload home so all shares use a single private database
-
-### `/mnt/Locks`
-
-Samba lock state now lives on a dedicated second ramdisk:
-- `lock directory = /mnt/Locks`
-
-Current mount behavior:
-- NetBSD 6 mounts a `4 MiB` `tmpfs` at `/mnt/Locks` with `mount_tmpfs -s 4m`
-- NetBSD 4 mounts a `4 MiB` `mfs` ramdisk at `/mnt/Locks` with `mount_mfs -s 8192`
-- if the NetBSD 6 tmpfs mount fails, startup falls back to a plain `/mnt/Locks` directory on the root filesystem
-- if the NetBSD 4 mfs mount fails, startup aborts instead of falling back to the tiny root filesystem
-
-Operational behavior:
-- `boot.sh` clears `/mnt/Locks/*` during startup preparation
-- `manager.sh` clears `/mnt/Locks/*` before restarting `smbd`
-
-### `manager.sh`
-
-`manager.sh` is the long-running supervisor launched at boot from flash.
-
-Current behavior:
-- runs a disk/topology pass every `10` seconds
-- runs a Samba bind pass every `10` seconds by default
-- runs a full managed service pass every `30` seconds
-- retries failed recovery work on the next due pass
-- reads `MaSt` directly through the shared runtime helpers
-- debounces disk topology changes before applying runtime updates
-- requests `diskd.useVolume` for valid `MaSt` volumes and builds current share/ADISK state from mounted volumes
-- applies share path rules:
-  - external volumes always share `/Volumes/dkN`
-  - internal volumes share `/Volumes/dkN/ShareRoot` unless `INTERNAL_SHARE_USE_DISK_ROOT=1`
-  - internal `ShareRoot` is created when needed
-- resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `.samba4`
-- passes final share metadata directly to the advertiser as quoted arguments, using the same share list as `smb.conf`
-- copies `smbd`, `service`, `telemetry`, and enabled rsync files into RAM when inputs change; `discoveryd` runs from Flash and `wcifsnd` is supplied by the firmware
-- generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
-- starts or reloads `smbd` as needed and keeps it bound to the current interfaces: `service --print-smb-bind-interfaces` prints the plan's bind tokens plus `status=validated|incomplete reason=<word>`, and the manager reconfigures Samba only from a validated run, keeping its last validated projection (process-local shell variables, no file) across incomplete ones and logging the age
-- starts `discoveryd` from `/mnt/Flash/discoveryd` and restarts it only when it is absent or its launch inputs change (canonical name, ADisk rows, payload state, ADisk flags, or debug mode); live ACP identity and link changes are the controller's own job
-- uses one native ACP collector for bounded reads: trimmed first-line identity/policy values, and untrimmed multiline MaSt/password output. Flash-resident `discoveryd` supplies MaSt before payload staging; RAM service supplies Samba names/model and reads/hashes syPW directly. The shell no longer supervises ACP through PID/status/output files. Failed reads retain their unavailable-versus-aborted distinction.
-- re-checks Apple's `diskd` at the start of every disk pass (before reading `MaSt`, which a dead `diskd` would return empty and tear Samba down): while any `diskd` not started with `-i lo0` exists (ACPd's original survived the boot relaunch, or came back) its `_smb`/`_adisk`/`_afpovertcp` may be on the LAN, so the manager signals exactly those PIDs — never the loopback one — and relaunches ours if none is left, holding 5 minutes after a failed attempt. The "AFP is never advertised" promise is therefore best effort at the process level; doctor's "Apple diskd runs on loopback" check is the gate that reports the degraded state
-- passes the canonical Samba NetBIOS name to `discoveryd`; when `NBNS_ENABLED=1` and a validated SMB-eligible IPv4 address exists, `discoveryd` starts `/sbin/wcifsnd` and registers the machine and `WORKGROUP` names through Apple's private loopback control protocol
-- starts `telemetry --daemon` from RAM
-- starts rsync from RAM when `RSYNC_ENABLED=1`
-- if the payload volume is unavailable, stops managed Samba/rsync, runs `discoveryd` diskless without `wcifsnd` (Apple's `_airport` stays visible), keeps staged telemetry, and retries later
-
-The manager prefers the least disruptive reconciliation that is safe:
-- config-only Samba changes normally use a parent-only SIGHUP so active sessions can survive
-- `smbd` is restarted when its binary or bind interfaces change, required TCP `445` listeners disappear, or a SIGHUP reload fails
-- changes to share arguments, diskless state or launch flags replace `discoveryd`; native ACP name/link reconciliation does not require a manager restart, and failed launches remain pending for retry
-- topology changes are reconciled in the running manager rather than literally repeating the one-shot boot path
-
-The manager log is always written to `/mnt/Memory/samba4/var/manager.log` and is therefore ephemeral.
-
-Important implementation detail:
-- `discoveryd` fits the target `ucomm` limit and is matched by its full exact process name
-- liveness and restart helpers ignore zombie processes and use anchored process-name matching
-
-NetBSD 4-specific shell note:
-- backgrounded jobs redirect stdin from `/dev/null` so they do not hold the SSH session open during manual activation
+The executable [native regressions](tests/native/README.md) replace the old
+shell cadence and function-stubbing tests. Patched Samba tests separately cover
+reload delivery, volume replacement, descriptor revocation and asynchronous
+teardown with another tree still active.
 
 ## Optional rsync Daemon
 
@@ -627,14 +581,12 @@ When rsync is enabled, the manager:
 
 The daemon exposes a writable, unauthenticated module named `shareroot`. Only enable it on a trusted network. Its log lives at `/mnt/Memory/samba4/var/rsync.log` and uses the same shared runtime log bounding helper as the other managed services, with the normal `32768`-byte limit.
 
-Disabling rsync on a later deploy leaves the persistent HDD files installed, but the manager stops the daemon and removes the RAM binary and configuration. No rsync PID file is used: the manager relies on live process and socket probes and stops the exact `rsync` process name. This deliberately avoids stale runtime state files.
+Disabling rsync on a later deploy leaves the persistent HDD files installed, but the manager stops the daemon and removes the RAM binary and configuration. No rsync PID file is used: the manager owns its foreground child and checks its listeners. This deliberately avoids stale runtime state files.
 
 ## SMB Runtime Layout
 
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `sbin/smbd`
-- `sbin/service`
-- `sbin/telemetry`
 - optionally `sbin/rsync`
 - `etc/smb.conf`
 - optionally `etc/rsyncd.conf`
@@ -718,7 +670,6 @@ Operational note:
 ## Discovery Controller Details
 
 The discovery controller is:
-- [bin/discovery/discoveryd](bin/discovery/discoveryd)
 
 It is built from:
 - [build/native/discovery/](build/native/discovery/) (controller entry point and `wcifsnd` lifecycle/IPC)
@@ -1569,15 +1520,9 @@ Current important outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
 - [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
-- [bin/discovery/discoveryd](bin/discovery/discoveryd)
-- [bin/discovery-netbsd4le/discoveryd](bin/discovery-netbsd4le/discoveryd)
-- [bin/discovery-netbsd4be/discoveryd](bin/discovery-netbsd4be/discoveryd)
 - [bin/service/service](bin/service/service)
 - [bin/service-netbsd4le/service](bin/service-netbsd4le/service)
 - [bin/service-netbsd4be/service](bin/service-netbsd4be/service)
-- [bin/telemetry/telemetry](bin/telemetry/telemetry)
-- [bin/telemetry-netbsd4le/telemetry](bin/telemetry-netbsd4le/telemetry)
-- [bin/telemetry-netbsd4be/telemetry](bin/telemetry-netbsd4be/telemetry)
 - [bin/rsync/rsync](bin/rsync/rsync)
 - [bin/rsync-netbsd4le/rsync](bin/rsync-netbsd4le/rsync)
 - [bin/rsync-netbsd4be/rsync](bin/rsync-netbsd4be/rsync)
@@ -1703,7 +1648,7 @@ rests on these measured facts. Numbers match the v3.1 implementation guide.
 | F9 | Registering a name another client already holds auto-renames to "Name (2)" unless `kDNSServiceFlagsNoAutoRename` is passed (then the callback reports `kDNSServiceErr_NameConflict`). |
 | F10 | Apple's host records on the LAN: fe80 plus every IPv4 including 169.254, no GUA. Hostname `AirPort-Time-Capsule.local.` (mixed case); SRV targets of our registrations are that hostname automatically. |
 | F11 | Killing the daemon is unrecoverable without a reboot: ACPd never respawns it and a hand-started daemon lacks `_airport`. The runtime must never kill it. |
-| F12 | The `.env.backup4` device is **little-endian** (its Apple ELF is LSB; it runs the `bin/discovery-netbsd4le` build). The UK device is presumably the BE one — verify with `file` on first contact. |
+| F12 | The `.env.backup4` device is **little-endian** (its Apple ELF is LSB; it runs the `bin/service-netbsd4le` build). The UK device is presumably the BE one — verify with `file` on first contact. |
 | F13 | `/etc/mdnsd.conf` (RAM root, regenerated each boot) carries `Hardware TimeCapsule6,116` / `TimeCapsule8,119`, `Software 7.8.1` / `7.9.1`, `PrimaryIPv4Interface bridge0`. |
 | F14 | Samba's IPv6 `interfaces=` tokens must use the embedded-scope form `fe80:<index hex>::…/64`; Apple's pf opens 445/139/137/138/548 on the WAN iff `usbF & 0x8` in NAT mode; router mode is `(raNA,raDS)`: `(0,0)` bridge, `(0,1)` DHCP-only, `(1,1)` NAT; the guest bridge owns `gnRo`. |
 | F15 | Device shell quirks: NetBSD 4 `sed` has no `\|` alternation; `reboot`, `ifconfig` need full paths in non-login shells; `/etc` edits do not persist; `/mnt/Memory` is the 15 MB RAM staging area; `/mnt/Flash` is ≈1 MB. |
