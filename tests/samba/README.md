@@ -125,3 +125,46 @@ For a macOS mount of a device under test, also run:
 This creates unique test objects at the share root and two nested depths and
 checks first-attempt unlink/rmdir/rm -rf, metadata and a 90 KB stream roundtrip
 and shrink. Cleanup retries cannot turn an observed failure into a pass.
+
+### Installed native-manager integration
+
+`device_supervision.py` is an opt-in test against a deployed device. It requires
+`smbprotocol` on the host (not a runtime dependency), device SSH credentials, and
+an available HFS share. It interrupts SMB service, so run it when backups can
+be interrupted:
+
+```sh
+python -m tests.samba.device_supervision --config .env.backup6
+```
+
+The test verifies direct-child process groups, durable network reconnect,
+SIGHUP forwarding, and disconnection of one replaced scratch share root while
+a second tree in the same session stays usable. It keeps a file open during
+Samba, discovery, telemetry, and manager failures, checks fresh-client recovery,
+and verifies that duplicate boot does not replace a healthy generation. Apple's
+mDNSResponder, diskd, and afpserver must retain their PIDs. Native NBNS child
+death must recover to one correctly owned, ready wcifsnd process.
+
+It creates uniquely named scratch data and temporarily appends two shares to
+the RAM configuration, restoring that configuration afterward. No Flash or
+AirPort settings are changed. Root replacement checks the real Samba reload
+path; physical USB revoke/reconnect still needs a spare disk and is a separate
+hardware test.
+
+Validation on 2026-09-20 used the installed unified service on the LAN NetBSD 6
+and NetBSD 4 LE appliances. Deployment, Doctor, durable reconnect, targeted share
+reload, duplicate boot, active-client process recovery, and native NBNS recovery
+passed on both. The native reload and durable regression binaries also passed
+on NetBSD 4 LE. On NetBSD 6, changing AFP advertising, telemetry opt-out, and
+rsync enablement preserved Samba and Apple daemon PIDs; original settings were
+restored afterward. The focused manager/process/storage/staging suite passed
+53 tests under AddressSanitizer and UndefinedBehaviorSanitizer on the host.
+
+The big-endian Samba artifact was rebuilt with the
+existing NetBSD 4 SDK and checked as static ARM MSB; the UK device was unreachable,
+so that build does not constitute big-endian hardware validation.
+
+Physical USB detach/reconnect after this refactor remains pending because the
+spare disk was unavailable. The scratch-root test verifies targeted reload and
+unchanged-share continuity, while the native tests inject Apple's observed
+revoked-descriptor behavior. Neither substitutes for the missing cable test.
