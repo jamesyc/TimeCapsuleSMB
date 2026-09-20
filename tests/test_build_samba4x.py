@@ -120,6 +120,14 @@ class Samba4XBuildScriptTests(unittest.TestCase):
 
     def prepare_fake_samba_source(self, src_dir: Path) -> None:
         self.make_file(src_dir / "source3/modules/wscript_build", "# fixture\n")
+        # The regression stager now copies the source tree's static reload
+        # callbacks into its test translation unit; model those source inputs.
+        for filename, names in {
+            "server.c": ("smbd_parent_conf_updated", "smbd_parent_sig_hup_handler"),
+            "smb2_process.c": ("smbd_sig_hup_handler", "smbd_conf_updated"),
+        }.items():
+            self.make_file(src_dir / "source3/smbd" / filename,
+                           "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names))
         self.make_executable(
             src_dir / "configure",
             textwrap.dedent(
@@ -187,7 +195,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     capture = os.environ.get("TEST_WAF_TARGETS")
                     for target in ("tc_aio_fork_test", "tc_durable_reconnect_test",
                                    "tc_streams_xattr_test", "tc_native_metadata_test",
-                                   "tc_xattr_migrate_test"):
+                                   "tc_xattr_migrate_test", "tc_storage_reload_test"):
                         if target in targets:
                             if os.environ.get("TEST_MISSING_REGRESSION_BINARY") != target:
                                 binary = pathlib.Path("bin/default/source3/modules") / target
@@ -664,7 +672,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
 
         for failure in (None, "failed", "missing", "stream-failed", "stream-missing",
                         "native-failed", "native-missing", "migrate-failed",
-                        "migrate-missing", "compile-only"):
+                        "migrate-missing", "storage-failed", "storage-missing", "compile-only"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 capture = root / "configure-args.txt"
@@ -679,6 +687,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         tc_streams_xattr_test.stripped:root_delete:stream-failed) exit 9 ;;
                         tc_native_metadata_test.stripped:all:native-failed) exit 9 ;;
                         tc_xattr_migrate_test.stripped:all:migrate-failed) exit 9 ;;
+                        tc_storage_reload_test.stripped:all:storage-failed) exit 9 ;;
                     esac
                     exit 0
                     """))
@@ -691,12 +700,13 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                     "TEST_REGRESSION_CALLS": str(calls),
                     "TEST_REGRESSION_FAILURE": failure or "",
                 })
-                if failure in ("missing", "stream-missing", "native-missing", "migrate-missing"):
+                if failure in ("missing", "stream-missing", "native-missing", "migrate-missing", "storage-missing"):
                     env["TEST_MISSING_REGRESSION_BINARY"] = {
                         "missing": "tc_aio_fork_test",
                         "stream-missing": "tc_streams_xattr_test",
                         "native-missing": "tc_native_metadata_test",
                         "migrate-missing": "tc_xattr_migrate_test",
+                        "storage-missing": "tc_storage_reload_test",
                     }[failure]
                 if failure == "compile-only":
                     env["SAMBA4X_RUN_REGRESSION_TESTS"] = "0"
@@ -706,7 +716,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 staged = Path(env["SAMBA4X_NETBSD7_STAGE"]) / "sbin/smbd.stripped"
                 if failure in ("failed", "missing", "stream-failed", "stream-missing",
                                "native-failed", "native-missing", "migrate-failed",
-                               "migrate-missing"):
+                               "migrate-missing", "storage-failed", "storage-missing"):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("smbd/smbd", built)
                     self.assertFalse(staged.exists())
@@ -720,6 +730,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         self.assertIn("tc_streams_xattr_test", built)
                         self.assertIn("tc_native_metadata_test", built)
                         self.assertIn("tc_xattr_migrate_test", built)
+                        self.assertIn("tc_storage_reload_test", built)
                         self.assertFalse(calls.exists())
                         continue
                     self.assertEqual(calls.read_text().splitlines(), [

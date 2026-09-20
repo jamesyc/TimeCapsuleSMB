@@ -46,6 +46,15 @@ cleanup. Durable tests cover live-to-disconnected transition, bounded retry
 exhaustion, unlocked waiting and identity/ownership rejection. They do not assert
 the literal retry limit of 34.
 
+Storage reload cases compile the production connection code and the unchanged
+parent/worker callback bodies from the source being built. They check revoked
+versus closed descriptors, sentinels, fake/closing/non-disk handles, volume UUID
+and root replacement, failed reloads, and asynchronous tree closure with AIO
+pending while another tree stays usable. Apple can reuse the same disk path,
+device number and inode after a cable bump; retained descriptor validity is the
+additional signal. Error injection covers this decision, while physical USB
+detach/reconnect and client durable reconnect remain device integration checks.
+
 The sanitizer cases exposed two bugs fixed by patches 0033 and 0034: a
 zero-length descriptor array on the worker shutdown message, and a cancelled
 request's socket watcher surviving until after a replacement reused its fd.

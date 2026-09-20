@@ -26,7 +26,7 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "2f12424643461c42257a3f442177d44abdc7a6cc412d12792b64b193a135d1d0"
+      "sha256": "1e8e6e88ee69504a7fe89835b136b849e462e160046bbc9e588fdaf04b62030a"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
@@ -50,7 +50,7 @@
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "07d130dc510d8ceca529ef18d7d568babbb11f3c0fec1961a1744e60554b858d"
+      "sha256": "96af2f84a439d520479d839e433cff538b7cb522948dd088eefed7be6c9f85a1"
     },
     "telemetry": {
       "path": "bin/telemetry/telemetry",
@@ -58,7 +58,7 @@
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "b600a058ce158607882391e67f9283b27410aad6c2b0fb3b4ac3ee1ec8bcc2d6"
+      "sha256": "6bd86269ffaf0c481f9be1cbd86eb0583181ff313cf19065c3f1426ff5a96b40"
     },
     "telemetry-netbsd4le": {
       "path": "bin/telemetry-netbsd4le/telemetry",
@@ -66,7 +66,7 @@
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "d4511898dbc7263077d95221272adea67f15073f86be6a81d9343181808ec0a2"
+      "sha256": "04694e682100a35f08b44a06c5508231cde0196daab0bb8da0cc49b9c47f3636"
     },
     "telemetry-netbsd4be": {
       "path": "bin/telemetry-netbsd4be/telemetry",

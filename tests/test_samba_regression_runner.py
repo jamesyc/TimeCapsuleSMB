@@ -74,6 +74,12 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     modules.mkdir(parents=True)
     script = modules / "wscript_build"
     script.write_text("bld.SAMBA3_BINARY('existing', source='existing.c')\n")
+    smbd = tmp_path / "source3/smbd"
+    smbd.mkdir()
+    names = ("smbd_parent_conf_updated", "smbd_parent_sig_hup_handler", "smbd_sig_hup_handler", "smbd_conf_updated")
+    bodies = [f"static void {name}(void)\n{{\n    observed += {1 << i};\n}}\n" for i, name in enumerate(names)]
+    (smbd / "server.c").write_text("\n".join(bodies[:2]))
+    (smbd / "smb2_process.c").write_text("\n".join(bodies[2:]))
     run.stage(tmp_path)
     run.stage(tmp_path)
     calls = []
@@ -96,6 +102,12 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
         assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False
         assert (modules / arguments["source"]).read_bytes() == (run.HERE / (name + ".c")).read_bytes()
+    driver = modules / "callbacks.c"
+    driver.write_text('static int observed;\n#include "tc_storage_reload_callbacks.inc"\nint main(void) {\n' +
+                      "".join(f"{name}();\n" for name in names) + "return observed == 15 ? 0 : 1;\n}\n")
+    binary = tmp_path / "callbacks"
+    subprocess.run(["cc", str(driver), "-o", str(binary)], check=True, capture_output=True)
+    subprocess.run([str(binary)], check=True, timeout=5)
 
 
 def test_host_refuses_existing_directory_before_external_commands(tmp_path, monkeypatch):

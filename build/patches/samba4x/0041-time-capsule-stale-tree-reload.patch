@@ -1,0 +1,202 @@
+--- a/source3/include/vfs.h
++++ b/source3/include/vfs.h
+@@ -799,6 +799,12 @@
+ 	/* Device number of the directory of the share mount.
+ 	   Used to ensure unique FileIndex returns. */
+ 	SMB_DEV_T base_share_dev;
++
++	/* Time Capsule disk identity at tree connect. No retained directory FD:
++	 * Apple's diskd must remain able to idle-unmount unused volumes. */
++	char *tc_volume_uuid;
++	char *tc_volume_key;
++	SMB_INO_T tc_root_ino;
+ 
+ 	struct name_compare_entry *hide_list; /* Per-share list of files to return as hidden. */
+ 	struct name_compare_entry *veto_list; /* Per-share list of files to veto (never show). */
+--- a/source3/smbd/smb2_service.c
++++ b/source3/smbd/smb2_service.c
+@@ -819,6 +819,11 @@
+ 
+ 	conn->base_share_dev = conn->cwd_fsp->fsp_name->st.st_ex_dev;
+ 
++	if (!conn_record_bindings(conn)) {
++		status = NT_STATUS_NO_MEMORY;
++		goto err_root_exit;
++	}
++
+ 	/* Figure out the characteristics of the underlying filesystem. This
+ 	 * assumes that all the filesystem mounted within a share path have
+ 	 * the same characteristics, which is likely but not guaranteed.
+--- a/source3/smbd/conn_idle.c
++++ b/source3/smbd/conn_idle.c
+@@ -22,6 +22,7 @@
+ #include "includes.h"
+ #include "smbd/smbd.h"
+ #include "smbd/globals.h"
++#include "smbd/fd_handle.h"
+ #include "rpc_server/rpc_pipes.h"
+ #include "lib/util/tevent_ntstatus.h"
+ 
+@@ -73,6 +74,101 @@
+  All shares where "check_fn" returns true are closed.
+  The special sharename '*' forces unmount of all shares.
+ ****************************************************************************/
++
++bool conn_record_bindings(connection_struct *conn)
++{
++	const char *uuid;
++	const char *device;
++	if (IS_IPC(conn) || IS_PRINT(conn)) {
++		return true;
++	}
++	uuid = lp_parm_const_string(SNUM(conn), "tc", "volume uuid", NULL);
++	device = lp_parm_const_string(SNUM(conn), "tc", "volume device", NULL);
++	if (uuid == NULL || uuid[0] == '\0' || device == NULL || device[0] == '\0') {
++		return true;
++	}
++	conn->tc_volume_uuid = talloc_strdup(conn, uuid);
++	conn->tc_volume_key = talloc_asprintf(conn, "volume %s", device);
++	if (conn->tc_volume_uuid == NULL || conn->tc_volume_key == NULL) {
++		return false;
++	}
++	conn->tc_root_ino = conn->cwd_fsp->fsp_name->st.st_ex_ino;
++	return true;
++}
++
++/* Apple can revoke a bumped USB vnode and remount the same dkN with the
++ * same UUID/device/inode/fsid. On NetBSD 4, a retained real descriptor then
++ * fails fstat with EBADF even though a fresh path succeeds. F_GETFD separates
++ * that revoked vnode from an already closed descriptor. Ordinary I/O or
++ * permission errors are not sufficient evidence to disconnect a whole tree. */
++static bool tc_revoked_descriptor(int fd)
++{
++	struct stat st;
++	int ret;
++	if (fd < 0 || fcntl(fd, F_GETFD) == -1) {
++		return false;
++	}
++	do {
++		ret = fstat(fd, &st);
++	} while (ret == -1 && errno == EINTR);
++	return ret == -1 && (errno == EBADF || errno == ESTALE ||
++			    errno == ENXIO || errno == ENODEV);
++}
++
++static bool tc_stale_disk_tree(connection_struct *conn, void *private_data)
++{
++	bool config_valid = *(bool *)private_data;
++	files_struct *fsp;
++	struct stat st;
++	int ret;
++	if (IS_IPC(conn) || IS_PRINT(conn) || conn->tc_volume_uuid == NULL ||
++	    conn->tc_volume_key == NULL) {
++		return false;
++	}
++	if (config_valid) {
++		const char *current = lp_parm_const_string(-1, "tc", conn->tc_volume_key, "");
++		/* loadparm retains deleted in-use share definitions. Its global
++		 * options are refreshed, so this mapping also identifies removed
++		 * shares and same-dkN replacement disks with no real open fsps. */
++		if (strcmp(current, conn->tc_volume_uuid) != 0) {
++			return true;
++		}
++	}
++	do {
++		ret = stat(conn->connectpath, &st);
++	} while (ret == -1 && errno == EINTR);
++	if (ret == 0 && (!S_ISDIR(st.st_mode) ||
++			st.st_dev != conn->base_share_dev || st.st_ino != conn->tc_root_ino)) {
++		return true;
++	}
++	if (ret == -1 && (errno == ENOENT || errno == ENOTDIR || errno == ESTALE ||
++			 errno == ENXIO || errno == ENODEV)) {
++		return true;
++	}
++	for (fsp = conn->sconn->files; fsp != NULL; fsp = fsp->next) {
++		if (fsp->conn != conn || fsp->fsp_flags.closing || fsp->fake_file_handle != NULL ||
++		    fsp == conn->cwd_fsp || fsp->fsp_name == NULL ||
++		    (!S_ISREG(fsp->fsp_name->st.st_ex_mode) && !S_ISDIR(fsp->fsp_name->st.st_ex_mode))) {
++			continue;
++		}
++		/* cwd_fsp carries AT_FDCWD, not a retained root descriptor. Negative
++		 * stat-only/path sentinels and fake handles must never close a tree. */
++		if (tc_revoked_descriptor(fsp_get_pathref_fd(fsp))) {
++			return true;
++		}
++	}
++	return false;
++}
++
++void conn_refresh_bindings(struct smbd_server_connection *sconn, bool config_valid)
++{
++	/* A coalesced detach/replug may leave topology unchanged. Clear the
++	 * current-directory shortcut before any new path operation. Existing
++	 * async tdis drains AIO only on invalid trees, preserving other shares
++	 * even when the same SMB session uses both disks. */
++	reset_chdir_lastconn_cache();
++	conn_force_tdis(sconn, tc_stale_disk_tree, &config_valid);
++}
+ 
+ static struct tevent_req *conn_force_tdis_send(connection_struct *conn);
+ static void conn_force_tdis_done(struct tevent_req *req);
+--- a/source3/smbd/proto.h
++++ b/source3/smbd/proto.h
+@@ -158,6 +158,8 @@
+ bool conn_idle_all(struct smbd_server_connection *sconn, time_t t);
+ void conn_clear_vuid_caches(struct smbd_server_connection *sconn, uint64_t vuid);
+ void conn_setup_case_options(connection_struct *conn);
++bool conn_record_bindings(connection_struct *conn);
++void conn_refresh_bindings(struct smbd_server_connection *sconn, bool config_valid);
+ void conn_force_tdis(
+ 	struct smbd_server_connection *sconn,
+ 	bool (*check_fn)(struct connection_struct *conn,
+--- a/source3/smbd/server.c
++++ b/source3/smbd/server.c
+@@ -1889,9 +1889,14 @@
+ 					void *siginfo,
+ 					void *private_data)
+ {
+-	change_to_root_user();
++	struct smbd_parent_context *parent = talloc_get_type_abort(
++		private_data, struct smbd_parent_context);
+ 	DBG_NOTICE("parent: Reloading services after SIGHUP\n");
+-	reload_services(NULL, NULL, false);
++	/* The appliance manager signals its direct parent child. Reuse the
++	 * existing config-update message to reach all workers, including those
++	 * retaining revoked Apple USB bindings after a short cable bump. */
++	smbd_parent_conf_updated(parent->msg_ctx, parent, MSG_SMB_CONF_UPDATED,
++		messaging_server_id(parent->msg_ctx), NULL);
+ }
+ 
+ struct smbd_claim_version_state {
+--- a/source3/smbd/smb2_process.c
++++ b/source3/smbd/smb2_process.c
+@@ -1685,7 +1685,7 @@
+ 
+ 	change_to_root_user();
+ 	DBG_NOTICE("Reloading services after SIGHUP\n");
+-	reload_services(sconn, conn_snum_used, false);
++	conn_refresh_bindings(sconn, reload_services(sconn, conn_snum_used, false));
+ }
+ 
+ static void smbd_setup_sig_hup_handler(struct smbd_server_connection *sconn)
+@@ -1715,7 +1715,7 @@
+ 	DEBUG(10,("smbd_conf_updated: Got message saying smb.conf was "
+ 		  "updated. Reloading.\n"));
+ 	change_to_root_user();
+-	reload_services(sconn, conn_snum_used, false);
++	conn_refresh_bindings(sconn, reload_services(sconn, conn_snum_used, false));
+ }
+ 
+ static void smbd_id_cache_kill(struct messaging_context *msg_ctx,
+--- a/buildtools/wafsamba/wafsamba.py
++++ b/buildtools/wafsamba/wafsamba.py
+@@ -459,7 +459,7 @@
+     elif target in ('pthreadpool_tevent_sync_test', 'tc_aio_fork_test',
+                     'tc_durable_reconnect_test', 'tc_streams_xattr_test',
+                     'tc_native_metadata_test', 'tc_xattr_migrate_test',
+-                    'tc_xattr_hfs_migrate'):
++                    'tc_xattr_hfs_migrate', 'tc_storage_reload_test'):
+         static_linkflags = TO_LIST(getattr(
+             bld.env, 'TC_PTHREADPOOL_TEST_STATIC_LINKFLAGS', []))
+         static_ldflags = TO_LIST(getattr(

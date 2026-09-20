@@ -16,7 +16,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
-           "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test")
+           "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
 BUILD_TARGETS = (*TARGETS, MIGRATOR_TARGET)
 AIO_CASES = (
@@ -44,6 +44,7 @@ XATTR_MIGRATE_CASES = (
     "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
     "orphans",
 )
+STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks")
 
 
 def stage(source: Path) -> None:
@@ -53,6 +54,20 @@ def stage(source: Path) -> None:
     original = script.read_text().split(marker)[0]
     for name in TARGETS[1:]:
         shutil.copy2(HERE / (name + ".c"), modules / (name + ".c"))
+    # Compile the exact static callbacks in this patched tree. Their enclosing
+    # server.c main is irrelevant to the routing test and cannot be linked into
+    # a second executable; do not maintain copied callback implementations.
+    callbacks = []
+    for filename, names in {
+        "server.c": ("smbd_parent_conf_updated", "smbd_parent_sig_hup_handler"),
+        "smb2_process.c": ("smbd_sig_hup_handler", "smbd_conf_updated"),
+    }.items():
+        text = (source / "source3/smbd" / filename).read_text()
+        for name in names:
+            start = text.index("static void " + name + "(")
+            end = text.index("\n}", text.index("\n{", start)) + 2
+            callbacks.append(text[start:end])
+    (modules / "tc_storage_reload_callbacks.inc").write_text("\n\n".join(callbacks) + "\n")
     script.write_text(original + marker + (HERE / "targets.py").read_text())
 
 
@@ -77,11 +92,13 @@ def cases():
         yield TARGETS[4], (case,)
     for case in XATTR_MIGRATE_CASES:
         yield TARGETS[5], (case,)
+    for case in STORAGE_RELOAD_CASES:
+        yield TARGETS[6], (case,)
 
 
 def execution_cases(cross_exec: bool):
     """Upload each large native fixture once on storage-constrained devices."""
-    combined_targets = (TARGETS[4], TARGETS[5])
+    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6])
     seen: set[str] = set()
     for target, arguments in cases():
         if target in combined_targets:

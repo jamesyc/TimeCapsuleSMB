@@ -119,6 +119,11 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
             "    fruit:veto_appledouble = yes\n    fruit:wipe_intentionally_left_blank_rfork = yes\n"
             "    fruit:delete_empty_adfiles = yes\n",
             identity->model);
+    /* Active share definitions can survive a Samba worker's reload. Global
+     * mappings are refreshed, so an old tree can detect a removed/replaced
+     * Apple volume even when no real file descriptor is still open. */
+    for (i = 0; i < shares->count; i++)
+        fprintf(file, "    tc:volume %s = %s\n", shares->values[i].device, shares->values[i].uuid);
     for (i = 0; i < shares->count; i++) {
         const struct tc_share *share = &shares->values[i];
         fprintf(file,
@@ -134,9 +139,10 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
                 "    fruit:metadata = %s\n    fruit:encoding = native\n    fruit:time machine = yes\n"
                 "    fruit:posix_rename = yes\n    xattr_tdb:file = %s/private/xattr.tdb\n"
                 "    tc:volume uuid = %s\n"
+                "    tc:volume device = %s\n"
                 "    force user = root\n    force group = wheel\n    create mask = 0666\n"
                 "    directory mask = 0777\n    force create mode = 0666\n    force directory mode = 0777\n",
-                config->netatalk ? "netatalk" : "stream", payload, share->uuid);
+                config->netatalk ? "netatalk" : "stream", payload, share->uuid, share->device);
     }
     return ferror(file) ? -1 : 0;
 }

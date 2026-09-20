@@ -59,6 +59,7 @@ def test_default_config_preserves_the_working_shell_settings(renderer):
         assert share["xattr_tdb:file"] == "/Volumes/dk2/.samba4/private/xattr.tdb"
         assert share["vfs objects"] == "catia fruit streams_xattr acl_xattr xattr_tdb"
         assert share["smbd max xattr size"] == "3802" and share["streams_xattr:max xattrs per stream"] == "35"
+        assert global_["tc:volume " + share["tc:volume device"]] == share["tc:volume uuid"]
 
 
 def test_netbsd4_cache_remains_disk_backed(renderer):
@@ -98,6 +99,8 @@ def test_unavailable_volume_not_projected_and_usb_payload_remains_a_share(render
     assert conf.sections() == ["global", "Data"]
     assert conf["Data"]["path"] == "/Volumes/dk3"
     assert conf["Data"]["veto files"] == "/.samba4/"
+    assert "tc:volume dk2" not in conf["global"]
+    assert conf["global"]["tc:volume dk3"] == conf["Data"]["tc:volume uuid"]
 
 
 def test_names_sanitized_bounded_and_ascii_case_collisions_disambiguated(renderer):
