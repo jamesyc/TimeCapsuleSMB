@@ -5,6 +5,7 @@ import socket
 import tempfile
 import unittest
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -3882,11 +3883,11 @@ class CheckTests(unittest.TestCase):
         run = self._apple_responder_doctor_run(instances, self._apple_responder_records())
         messages = [result.message for result in run.results]
         self.assertIn("Bonjour IPv4: no _afpovertcp._tcp advertised for 'Home'", messages)
-        self.assertIn("Bonjour IPv4: no auto-renamed \"(2)\" _smb/_adisk instance for 'Home'", messages)
+        self.assertIn("Bonjour IPv4: no duplicate SMB/ADisk registrations for device home.local", messages)
         self.assertIn("Bonjour IPv4: _device-info._tcp model is Apple's: TimeCapsule6,116", messages)
         self.assertFalse(any(result.status == "FAIL" and "Apple" in result.message for result in run.results), messages)
 
-    def test_run_doctor_checks_fails_on_uninvited_afp_and_renamed_instances_and_foreign_model(self) -> None:
+    def test_run_doctor_checks_fails_on_uninvited_afp_duplicate_device_services_and_foreign_model(self) -> None:
         instances = [
             BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local."),
             BonjourServiceInstance("_smb._tcp.local.", "Home (2)", "Home (2)._smb._tcp.local."),
@@ -3894,12 +3895,74 @@ class CheckTests(unittest.TestCase):
             BonjourServiceInstance("_afpovertcp._tcp.local.", "Home", "Home._afpovertcp._tcp.local."),
             BonjourServiceInstance("_device-info._tcp.local.", "Home", "Home._device-info._tcp.local."),
         ]
-        run = self._apple_responder_doctor_run(instances, self._apple_responder_records(model="Macmini9,1"))
+        records = self._apple_responder_records(model="Macmini9,1")
+        records += [replace(record, name="Home (2)") for record in records[:2]]
+        run = self._apple_responder_doctor_run(instances, records)
         self.assertTrue(run.fatal)
         failures = [result.message for result in run.results if result.status == "FAIL"]
         self.assertTrue(any("_afpovertcp._tcp is advertised for 'Home' although Advertise AFP over Bonjour is off" in m and "macOS 26.x/27" in m for m in failures), failures)
-        self.assertTrue(any("auto-renamed Bonjour instance(s) found: Home (2) (_adisk), Home (2) (_smb)" in m for m in failures), failures)
+        self.assertTrue(any("duplicate Bonjour registrations for device home.local" in m
+                            and "_smb: Home, Home (2)" in m and "_adisk: Home, Home (2)" in m for m in failures), failures)
         self.assertTrue(any("_device-info._tcp model for 'Home' is Macmini9,1" in m for m in failures), failures)
+
+    def test_doctor_accepts_apples_shared_conflict_name_and_ignores_original_name_on_peer(self) -> None:
+        # Stock diskd on 2026-09-19 moved SMB and ADisk to '(2)' after only
+        # SMB collided. syNm/hostname stayed unchanged. Identify the NAS by
+        # its resolved endpoint, not the display name owned by the competitor.
+        records = [replace(record, name="Home (2)") for record in self._apple_responder_records()]
+        records.insert(0, BonjourResolvedService("Home", "peer.local", "_smb._tcp.local.", port=59431, ipv4=["10.0.0.9"]))
+        instances = [BonjourServiceInstance(record.service_type, record.name, f"{record.name}.{record.service_type}")
+                     for record in records]
+        run = self._apple_responder_doctor_run(instances, records)
+        self.assertFalse(run.fatal, [r.message for r in run.results if r.status == "FAIL"])
+        self.assertTrue(any("resolved _smb._tcp instance 'Home (2)' to home.local:445" in r.message for r in run.results))
+        self.assertTrue(any("_adisk._tcp TXT advertises active Time Machine shares: Data" in r.message for r in run.results))
+
+    def test_doctor_rejects_wrong_endpoint_even_when_name_has_an_apple_suffix(self) -> None:
+        for address, port in (("10.0.0.99", 445), ("10.0.0.2", 1234), ("10.0.0.2", 0)):
+            with self.subTest(address=address, port=port):
+                records = [replace(record, name="Home (2)") for record in self._apple_responder_records()]
+                records[0] = replace(records[0], ipv4=[address], port=port)
+                instances = [BonjourServiceInstance(r.service_type, r.name, f"{r.name}.{r.service_type}") for r in records]
+                run = self._apple_responder_doctor_run(instances, records)
+                self.assertTrue(run.fatal)
+                self.assertTrue(any(r.status == "FAIL" and ("expected 10.0.0.2" in r.message or "expected 445" in r.message)
+                                    for r in run.results), [r.message for r in run.results])
+
+    def test_resolve_observed_apple_suffix_verifies_device_before_selecting_it(self) -> None:
+        ours = BonjourServiceInstance("_smb._tcp.local.", "Home (2)", "Home (2)._smb._tcp.local.")
+        peer = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        record = BonjourResolvedService("Home (2)", "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.2"])
+        resolver = mock.Mock(return_value=(record, None))
+        resolution = resolve_expected_smb_record(
+            [peer, ours], [BonjourResolvedService("Home", "peer.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.9"])],
+            expected_instance_name="Home", expected_host_label="home", target_ip="10.0.0.2", resolver=resolver,
+        )
+        self.assertEqual(resolution.instance, ours)
+        self.assertEqual(resolution.record, record)
+        self.assertEqual(resolver.call_args.args[0], ours)
+
+    def test_original_name_on_peer_is_not_a_concrete_failure_for_expected_device(self) -> None:
+        peer = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        record = BonjourResolvedService("Home", "peer.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.9"])
+        resolution = resolve_expected_smb_record([peer], [record], expected_instance_name="Home",
+                                                  expected_host_label="home", target_ip="10.0.0.2")
+        self.assertIsNone(resolution.record)
+        self.assertIn("belongs to another device", resolution.error.message)
+
+    def test_renamed_link_local_service_still_requires_the_correct_scope(self) -> None:
+        # A native conflict suffix does not make equal fe80 address bytes on
+        # two different links the same device.
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Home (2)", "Home (2)._smb._tcp.local.")
+        record = BonjourResolvedService("Home (2)", "home.local", "_smb._tcp.local.",
+                                         port=445, ipv6=["fe80::1234%2"])
+        resolver = mock.Mock(return_value=(None, CheckResult("FAIL", "not resolved")))
+        wrong = resolve_expected_smb_record([instance], [record], expected_instance_name="Home",
+                                            target_ip="fe80::1234%1", resolver=resolver)
+        self.assertIsNone(wrong.record)
+        right = resolve_expected_smb_record([instance], [record], expected_instance_name="Home",
+                                            target_ip="fe80::1234%2", resolver=resolver)
+        self.assertIs(right.record, record)
 
     def test_run_doctor_checks_accepts_afp_when_advertising_is_enabled(self) -> None:
         instances = [

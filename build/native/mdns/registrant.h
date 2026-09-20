@@ -4,10 +4,10 @@
 #include "../dnssd/dns_sd.h"
 
 /* The registrant (guide B.7): `desired` = set of (link index, service,
- * instance, port, TXT) derived from the device plan; `active` = one
+ * port, TXT) derived from the device plan; `active` = one
  * DNSServiceRef per (link index, service) with its status. Everything is
- * registered through Apple's mDNSResponder IPC with
- * kDNSServiceFlagsNoAutoRename; a NameConflict or any other error backs
+ * registered through Apple's mDNSResponder IPC using its default instance
+ * name and automatic conflict renaming. A registration error backs
  * off (1,2,4,...,30 s) and retries with unchanged desired state. */
 
 enum reg_service { REG_SMB = 0, REG_ADISK = 1, REG_AFP = 2, REG_SERVICE_COUNT = 3 };
@@ -24,7 +24,6 @@ enum reg_status { REG_PENDING, REG_REGISTERED, REG_CONFLICT, REG_DEGRADED };
 struct reg_desired {
     unsigned ifindex;
     enum reg_service service;
-    char instance[64];
     uint16_t port;                 /* host order */
     unsigned char txt[REG_TXT_MAX];
     size_t txt_len;

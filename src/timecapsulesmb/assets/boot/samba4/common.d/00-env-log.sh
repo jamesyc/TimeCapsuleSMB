@@ -144,14 +144,6 @@ tc_init_runtime_env() {
     RSYNC_ENABLED=${RSYNC_ENABLED:-0}
     TC_SMBD_DISK_LOGGING_ENABLED=${SMBD_DEBUG_LOGGING:-0}
 
-    # v3.1.0 removed the LAN-only bind knob (Q7): Samba binds every link the
-    # device plan grants SVC_SMB, exactly like Apple's file servers did. An
-    # older flash config may still carry the key; say so once and move on.
-    if [ -n "${SMB_BIND_LAN_ONLY+set}" ]; then
-        tc_add_runtime_env_warning "runtime config: ignoring removed setting SMB_BIND_LAN_ONLY"
-        unset SMB_BIND_LAN_ONLY
-    fi
-
     case "$MDNS_ADVERTISE_AFP" in
         1|true|TRUE|yes|YES)
             MDNS_ADVERTISE_AFP=1

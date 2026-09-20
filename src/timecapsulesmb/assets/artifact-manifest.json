@@ -2,15 +2,15 @@
   "artifacts": {
     "discovery": {
       "path": "bin/discovery/discoveryd",
-      "sha256": "643e6484830d9f3b94d3381d7564dd80d1de049e5ecc2574126132aacda2dab2"
+      "sha256": "c070b3d6c82504f85cc512de3fd5e9882bed76b75a7fac60aa80008df93e9198"
     },
     "discovery-netbsd4le": {
       "path": "bin/discovery-netbsd4le/discoveryd",
-      "sha256": "f9bc1e6057fc01404dff2da04106684fa33b80d578b040d87d9b53eace3f1189"
+      "sha256": "fcb50daf459ca144663defb2ed8ca71e9fc6385f915420ed7d05e57f9d0af0f3"
     },
     "discovery-netbsd4be": {
       "path": "bin/discovery-netbsd4be/discoveryd",
-      "sha256": "dd59a4abda7b88ad8aa7014aa623012d5d3d52796c6d23489b9f2581643cf011"
+      "sha256": "8838386c8b2c6fc6dafd62c6b45dba6c64f9aa9ce51075502ec42f476e909598"
     },
     "rsync": {
       "path": "bin/rsync/rsync",

@@ -47,7 +47,7 @@ Current user experience:
 - the Time Capsule advertises `_adisk._tcp` for Time Machine
 - the Time Capsule generates an Apple-compatible `_airport._tcp` record from live AirPort identity fields for AirPort Utility compatibility
 - the Time Capsule can optionally answer NBNS name queries for the active runtime NetBIOS name
-- the Bonjour instance name and Samba server string are derived from Apple `syNm`
+- the Bonjour instance name is managed by Apple's mDNSResponder, including conflict renaming; the Samba server string is derived from Apple `syNm`
 - the Bonjour host label and Samba NetBIOS name are derived from `/bin/hostname`, with `syNm` fallbacks
 - shares are derived from Apple `MaSt` volume metadata and are available as:
   - `smb://<advertised-host>.local/<sanitized and de-duplicated volume share name>`
@@ -402,9 +402,13 @@ our Samba. `diskd` is also load-bearing: it populates `acp -q MaSt` (our
 volume/UUID source of truth) and serves `acp rpc diskd.useVolume` (how the
 manager mounts volumes). `boot.sh` therefore relaunches it as
 `/sbin/diskd -i lo0 -d local.`: it keeps doing its real job while its own
-registrations never leave loopback. Our registrations use
-`kDNSServiceFlagsNoAutoRename`, so a stale Apple record can only produce a
-conflict-and-retry, never a silently renamed "Name (2)".
+registrations never leave loopback. Our registrations use `name=NULL` and flags
+`0`, so Apple's mDNSResponder owns the shared default service name and resolves
+conflicts. A stock-device test on 2026-09-19 showed `diskd` renaming both SMB and
+ADisk to "Name (2)" after an SMB-only conflict, while `syNm` and the hostname
+remained unchanged. Registration callbacks accept that name. Doctor identifies
+the device through its resolved endpoint and checks for multiple registrations
+on that device, rather than rejecting a suffix shared with an unrelated peer.
 
 | Process | Owner | Role |
 | --- | --- | --- |
@@ -414,7 +418,7 @@ conflict-and-retry, never a silently renamed "Name (2)".
 | `printd` | Apple | printer discovery and `_riousbprint`/`_pdl-datastream` registration |
 | `wcifsfs` | Apple | Apple SMB server, always stopped so Samba owns SMB |
 | `/sbin/wcifsnd` | Apple, child owned by `discoveryd` | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
-| `afpserver` | Apple | serves nothing ("No HFS+ volumes") but listens on 548 everywhere; killed at boot and on every manager pass unless `MDNS_ADVERTISE_AFP=1` |
+| `afpserver` | Apple | kept running regardless of the AFP advertising setting; advertising is controlled through diskd's loopback scope and our Bonjour registrations |
 | `discoveryd` | ours, flash + payload | registers Bonjour records through mDNSResponder and owns the foreground `wcifsnd` child used for native NBNS |
 
 What Apple publishes vs what we publish:
@@ -510,7 +514,7 @@ This matters because:
 `boot.sh` performs the one-shot startup preparation:
 
 1. sources `/mnt/Flash/common.sh` and `/mnt/Flash/tcapsulesmb.conf`
-2. stops the manager, `smbd`, `discoveryd`, and any orphaned `wcifsnd`, plus Apple's `afpserver` unless `MDNS_ADVERTISE_AFP=1`; Apple's `mDNSResponder` is never touched
+2. stops the manager, `smbd`, `discoveryd`, and any orphaned `wcifsnd`; Apple's `mDNSResponder` and `afpserver` stay running
 3. moves Apple's `diskd` to loopback (`/sbin/diskd -i lo0 -d local.`), or launches it there when ACPd has not started it yet, and waits up to 30 s for the Flash helper's bounded `acp -A MaSt` read; failure is logged and boot continues — the manager retries (below)
 4. prepares the dedicated Samba lock ramdisk at `/mnt/Locks`
 5. recreates the RAM runtime tree under `/mnt/Memory/samba4`
@@ -576,7 +580,6 @@ Current behavior:
 - generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
 - starts or reloads `smbd` as needed and keeps it bound to the current interfaces: `service --print-smb-bind-interfaces` prints the plan's bind tokens plus `status=validated|incomplete reason=<word>`, and the manager reconfigures Samba only from a validated run, keeping its last validated projection (process-local shell variables, no file) across incomplete ones and logging the age
 - starts `discoveryd` from `/mnt/Flash/discoveryd` and restarts it only when it is absent or its launch inputs change (canonical name, ADisk rows, payload state, ADisk flags, or debug mode); live ACP identity and link changes are the controller's own job
-- re-kills Apple's `afpserver` on every service pass (ACPd starts it after `boot.sh` has run) unless `MDNS_ADVERTISE_AFP=1`
 - uses one native ACP collector for bounded reads: trimmed first-line identity/policy values, and untrimmed multiline MaSt/password output. Flash-resident `discoveryd` supplies MaSt before payload staging; RAM service supplies Samba names/model and reads/hashes syPW directly. The shell no longer supervises ACP through PID/status/output files. Failed reads retain their unavailable-versus-aborted distinction.
 - re-checks Apple's `diskd` at the start of every disk pass (before reading `MaSt`, which a dead `diskd` would return empty and tear Samba down): while any `diskd` not started with `-i lo0` exists (ACPd's original survived the boot relaunch, or came back) its `_smb`/`_adisk`/`_afpovertcp` may be on the LAN, so the manager signals exactly those PIDs — never the loopback one — and relaunches ours if none is left, holding 5 minutes after a failed attempt. The "AFP is never advertised" promise is therefore best effort at the process level; doctor's "Apple diskd runs on loopback" check is the gate that reports the degraded state
 - passes the canonical Samba NetBIOS name to `discoveryd`; when `NBNS_ENABLED=1` and a validated SMB-eligible IPv4 address exists, `discoveryd` starts `/sbin/wcifsnd` and registers the machine and `WORKGROUP` names through Apple's private loopback control protocol
@@ -743,7 +746,7 @@ At runtime it:
 - registers `_smb._tcp` (port 445, empty TXT) on every link the plan grants `SVC_SMB`
 - registers `_adisk._tcp,_airport` (port 9) with the same TXT items as before v3.1.0 (`sys=waMA=…,adVF=0x1010` and one `dkN=adVF=…,adVN=…,adVU=…` per configured share) where the plan grants `SVC_ADISK` and `waMA` is known
 - registers `_afpovertcp._tcp` (port 548) only when `MDNS_ADVERTISE_AFP=1`
-- always passes `kDNSServiceFlagsNoAutoRename`: a conflict is logged and retried with exponential backoff, never accepted as "Name (2)"
+- uses Apple's shared default instance name with automatic renaming; callback names such as "Name (2)" are accepted without replacing registrations, and ACP name changes do not force a restart
 - treats a daemon that stops answering as degraded, retries on the backoff timer, and never spawns `/sbin/mDNSResponder`
 - starts `/sbin/wcifsnd` only when the payload is ready, `NBNS_ENABLED=1`, the canonical name is available, and the validated plan has an SMB-eligible IPv4 address
 - sequentially registers machine `<00>`, `WORKGROUP<00>` and machine `<20>` exactly once for each fresh child generation; Apple's daemon supplies native conflict processing and WINS-configured behavior
@@ -810,7 +813,6 @@ Current important `.env` values include:
 - `TC_PASSWORD`
 - `TC_SSH_OPTS`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`
-- `TC_SMB_BIND_LAN_ONLY`
 - `TC_SMB_BROWSE_COMPATIBILITY`
 - `TC_MDNS_ADVERTISE_AFP`
 - `TC_ANY_PROTOCOL`
@@ -853,16 +855,16 @@ Default: off, and leave it off. macOS 26.x/27 treats a Time Capsule that
 advertises AFP as an SMB1-only server and hides it from Finder and Time
 Machine. When on, the registrant adds `_afpovertcp._tcp` on port `548` on the
 same links as `_smb`, the generated ADISK flags change from SMB-only
-`adVF=0x82` to AFP+SMB `adVF=0x83`, and Apple's `afpserver` is left running
-(it serves nothing on these devices). It does not configure or authenticate
-an AFP server.
+`adVF=0x82` to AFP+SMB `adVF=0x83`. Apple's `afpserver` stays running with
+either setting; this option controls advertising only. It does not configure
+or authenticate an AFP server.
 
 Bonjour records are link-scoped by the device plan (see "The device plan"
 above): LAN links get the full service set; WAN and guest links get it only in
 NAT mode with disks-over-WAN enabled, exactly as Apple's own file servers did;
 every other link is isolated. Apple's `_airport._tcp` and host records follow
 Apple's rules on every interface. Samba binds the same address set the
-records advertise. The old "Bind SMB to LAN Only" toggle is gone: the AirPort
+records advertise. The AirPort
 Utility switches are the policy.
 
 ### Use Netatalk for metadata
@@ -981,7 +983,6 @@ Arguments:
 
 Hidden advanced arguments:
 - `--internal-share-use-disk-root` / `--no-internal-share-use-disk-root`: write `TC_INTERNAL_SHARE_USE_DISK_ROOT=true|false`
-- `--smb-bind-lan-only` / `--no-smb-bind-lan-only`: write `TC_SMB_BIND_LAN_ONLY=true|false`
 - `--smb-browse-compatibility` / `--no-smb-browse-compatibility`: write `TC_SMB_BROWSE_COMPATIBILITY=true|false`
 - `--mdns-advertise-afp` / `--no-mdns-advertise-afp`: write `TC_MDNS_ADVERTISE_AFP=true|false`
 - `--any-protocol` / `--no-any-protocol`: write `TC_ANY_PROTOCOL=true|false`
@@ -1035,7 +1036,7 @@ Arguments:
 - `--mount-wait SECONDS`: per-attempt wait for deployment-time `diskd.useVolume` mount guards; default is `30`
 
 Hidden advanced arguments:
-- persisted profile settings accept positive/negative overrides for internal-share root, SMB LAN binding/browsing, AFP advertising, protocol/security choices, Netatalk metadata, debug logging, and `vfs_aio_fork`; omitting a pair preserves the saved `.env` value
+- persisted profile settings accept positive/negative overrides for internal-share root, SMB browsing, AFP advertising, protocol/security choices, Netatalk metadata, debug logging, and `vfs_aio_fork`; omitting a pair preserves the saved `.env` value
 - `--debug-logging` / `--no-debug-logging`: override saved debug logging for this deploy; enabling increases runtime logging and disables the normal managed log size cap
 - `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: override the saved bounded `vfs_aio_fork` setting for this deployment
 
@@ -1190,7 +1191,6 @@ Optional deploy flag:
 
 Current defaults and fixed values:
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
-- `TC_SMB_BIND_LAN_ONLY=false`
 - `TC_SMB_BROWSE_COMPATIBILITY=false`
 - `TC_MDNS_ADVERTISE_AFP=false`
 - `TC_ANY_PROTOCOL=false`

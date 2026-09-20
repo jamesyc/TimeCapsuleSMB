@@ -17,7 +17,7 @@ void registrant_init(struct registrant *reg, const struct config *cfg) {
 }
 
 static int add_desired(struct reg_desired *out, size_t max, size_t *count, unsigned ifindex, enum reg_service service,
-                       const char *instance, uint16_t port, const unsigned char *txt, size_t txt_len) {
+                       uint16_t port, const unsigned char *txt, size_t txt_len) {
     struct reg_desired *d;
     if (*count >= max || txt_len > REG_TXT_MAX) {
         return -1;
@@ -26,7 +26,6 @@ static int add_desired(struct reg_desired *out, size_t max, size_t *count, unsig
     memset(d, 0, sizeof(*d));
     d->ifindex = ifindex;
     d->service = service;
-    strncpy(d->instance, instance, sizeof(d->instance) - 1);
     d->port = port;
     if (txt_len > 0) {
         memcpy(d->txt, txt, txt_len);
@@ -37,8 +36,8 @@ static int add_desired(struct reg_desired *out, size_t max, size_t *count, unsig
 
 /* B.3: _smb on every link whose mask has SVC_SMB, _adisk (with the golden
  * TXT) where SVC_ADISK and adisk rows exist and waMA is known, _afpovertcp
- * only where SVC_AFP (config MDNS_ADVERTISE_AFP=1). Empty instance means
- * nothing is registered. */
+ * only where SVC_AFP (config MDNS_ADVERTISE_AFP=1). Apple owns the default
+ * instance name, including conflict renames; ACP names are not registration inputs. */
 size_t registrant_compute_desired(struct reg_desired *out, size_t max, const struct device_plan *plan,
                                   const struct config *cfg) {
     size_t count = 0;
@@ -47,9 +46,6 @@ size_t registrant_compute_desired(struct reg_desired *out, size_t max, const str
     int adisk_txt_len = -1;
     static int logged_adisk_skip = 0;
 
-    if (plan->id.instance[0] == '\0') {
-        return 0;
-    }
     if (adisk_enabled(cfg)) {
         if (plan->id.wama[0] != '\0') {
             adisk_txt_len = build_adisk_txt_record(adisk_txt, sizeof(adisk_txt), plan->id.wama, &cfg->adisk_disks);
@@ -65,14 +61,14 @@ size_t registrant_compute_desired(struct reg_desired *out, size_t max, const str
             continue;
         }
         if (link->mask & SVC_SMB) {
-            (void)add_desired(out, max, &count, link->link.index, REG_SMB, plan->id.instance, SMB_PORT, NULL, 0);
+            (void)add_desired(out, max, &count, link->link.index, REG_SMB, SMB_PORT, NULL, 0);
         }
         if ((link->mask & SVC_ADISK) && adisk_txt_len >= 0) {
-            (void)add_desired(out, max, &count, link->link.index, REG_ADISK, plan->id.instance, ADISK_PORT,
+            (void)add_desired(out, max, &count, link->link.index, REG_ADISK, ADISK_PORT,
                               adisk_txt, (size_t)adisk_txt_len);
         }
         if (link->mask & SVC_AFP) {
-            (void)add_desired(out, max, &count, link->link.index, REG_AFP, plan->id.instance, AFP_PORT, NULL, 0);
+            (void)add_desired(out, max, &count, link->link.index, REG_AFP, AFP_PORT, NULL, 0);
         }
     }
     return count;
@@ -80,7 +76,7 @@ size_t registrant_compute_desired(struct reg_desired *out, size_t max, const str
 
 static int desired_equal(const struct reg_desired *a, const struct reg_desired *b) {
     return a->ifindex == b->ifindex && a->service == b->service && a->port == b->port &&
-           strcmp(a->instance, b->instance) == 0 && a->txt_len == b->txt_len &&
+           a->txt_len == b->txt_len &&
            memcmp(a->txt, b->txt, a->txt_len) == 0;
 }
 
@@ -151,7 +147,7 @@ static void schedule_retry(struct registrant *reg, long long now_ms) {
 static void log_entry(const struct registrant *reg, const char *what, const struct reg_entry *entry, const char *detail) {
     (void)reg;
     fprintf(stderr, "registrant: %s if=%u %s \"%s\" port=%u txt=%lu%s%s\n", what, entry->desired.ifindex,
-            reg_service_regtype(entry->desired.service), entry->desired.instance, (unsigned)entry->desired.port,
+            reg_service_regtype(entry->desired.service), "Apple default name", (unsigned)entry->desired.port,
             (unsigned long)entry->desired.txt_len, detail[0] ? " " : "", detail);
 }
 
@@ -162,11 +158,6 @@ static void reg_callback(DNSServiceRef sd, DNSServiceFlags flags, DNSServiceErro
     if (err == kDNSServiceErr_NoError && (flags & kDNSServiceFlagsAdd)) {
         entry->status = REG_REGISTERED;
         fprintf(stderr, "registrant: registered if=%u %s \"%s\"\n", entry->desired.ifindex, regtype, name);
-        if (strcmp(name, entry->desired.instance) != 0) {
-            /* NoAutoRename means the daemon must never hand us "Name (2)". */
-            fprintf(stderr, "registrant: daemon renamed \"%s\" to \"%s\"; treating as conflict\n", entry->desired.instance, name);
-            entry->status = REG_CONFLICT;
-        }
     } else if (err == kDNSServiceErr_NameConflict) {
         entry->status = REG_CONFLICT;
         fprintf(stderr, "registrant: name conflict if=%u %s \"%s\"; retrying with backoff\n", entry->desired.ifindex, regtype, name);
@@ -210,7 +201,10 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
         return;
     }
     ipc_begin();
-    err = DNSServiceRegister(&ref, kDNSServiceFlagsNoAutoRename, entry->desired.ifindex, entry->desired.instance,
+    /* Stock diskd (NetBSD 4 LE, 2026-09-19) renamed SMB and ADisk together
+     * after an SMB-only conflict. NULL selects the daemon's shared default
+     * name; explicit names or NoAutoRename opt out of that native behavior. */
+    err = DNSServiceRegister(&ref, 0, entry->desired.ifindex, NULL,
                              reg_service_regtype(entry->desired.service), NULL, NULL, htons(entry->desired.port),
                              (uint16_t)entry->desired.txt_len, entry->desired.txt_len ? entry->desired.txt : NULL,
                              reg_callback, entry);

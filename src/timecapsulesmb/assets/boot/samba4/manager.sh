@@ -1399,10 +1399,6 @@ tc_manager_run_discovery_step() {
     manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=discovery start"
     tc_manager_debug_log "manager discovery: reconciling controller"
-    # ACPd starts afpserver after boot.sh has already run (observed on the
-    # NetBSD 4 device: pid order rc.local < mDNSResponder < smbd < afpserver),
-    # so the boot-time stop is not enough; re-check on every service pass.
-    tc_stop_apple_afpserver || tc_log "manager discovery: Apple afpserver could not be stopped; AFP port 548 stays open"
     if tc_manager_reconcile_discovery; then
         manager_discovery_status=ok
         tc_manager_log_step_end "$manager_iteration_id" discovery "$manager_step_start_seconds" ok

@@ -1941,8 +1941,8 @@ printf '%s|%s|%s\\n' "$SMB_NETBIOS_NAME" "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL"
         self.assertEqual(kill_log, "TERM 640\n")
         self.assertFalse(diskd_launched)
 
-    def test_boot_kills_afpserver_unless_afp_advertising_is_enabled(self) -> None:
-        for advertise_afp, expect_kill in ((0, True), (1, False)):
+    def test_boot_preserves_afpserver_regardless_of_afp_advertising(self) -> None:
+        for advertise_afp in (0, 1):
             with self.subTest(advertise_afp=advertise_afp):
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_path = Path(tmp)
@@ -1956,43 +1956,12 @@ printf '%s|%s|%s\\n' "$SMB_NETBIOS_NAME" "$SMB_SERVER_STRING" "$SMB_FRUIT_MODEL"
                     afp_state = (fakes["state"] / "afpserver").read_text().strip()
 
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual("^afpserver$" in pkill_log, expect_kill, pkill_log)
-                self.assertEqual(afp_state, "absent" if expect_kill else "running")
+                self.assertNotIn("^afpserver$", pkill_log)
+                self.assertEqual(afp_state, "running")
                 # tc_cleanup_old_runtime wipes /mnt/Memory/samba4 (and this log) before
                 # "cleanup complete"; the pkill transcript and state are the evidence.
                 self.assertIn("old managed runtime cleanup complete", log_text)
                 self.assertNotIn("mDNSResponder", pkill_log)
-
-    def test_runtime_env_ignores_removed_smb_bind_lan_only_setting_once(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            with (flash / "tcapsulesmb.conf").open("a") as conf:
-                conf.write("SMB_BIND_LAN_ONLY=1\n")
-            script = tmp_path / "env.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    mkdir -p "$RAM_VAR"
-                    tc_set_log "$RAM_VAR/test.log" test
-                    tc_log_runtime_env_warnings
-                    tc_log_runtime_env_warnings
-                    printf 'lan_only=%s\\n' "${{SMB_BIND_LAN_ONLY-unset}}"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("lan_only=unset\n", proc.stdout)
-        self.assertEqual(proc.stdout.count("ignoring removed setting SMB_BIND_LAN_ONLY"), 1, proc.stdout)
 
     # ---- v3.1.0 manager: retained bind projection, registrant restarts ----
 

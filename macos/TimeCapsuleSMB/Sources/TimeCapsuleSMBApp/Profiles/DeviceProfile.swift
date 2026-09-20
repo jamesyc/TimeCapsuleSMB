@@ -105,8 +105,6 @@ struct DeviceProfileSettings: Codable, Equatable {
         case nbnsEnabled
         case rsyncEnabled
         case internalShareUseDiskRoot
-        // v3.1.0 removed smbBindLanOnly; older profile JSON may still carry the
-        // key and decodes fine because unknown keys are ignored.
         case smbBrowseCompatibility
         case mdnsAdvertiseAFP
         case anyProtocol

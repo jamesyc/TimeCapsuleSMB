@@ -85,14 +85,11 @@ ENV_FILE_KEYS = [
     "TC_ATA_STANDBY",
     "TC_CONFIGURE_ID",
 ]
-# Settings removed by v3.1.0: the LAN-only bind knob (Samba now binds every
-# link the device plan grants SMB, exactly like Apple's file servers) and
-# the host label (the advertised hostname is Apple's own). `configure`
-# strips them from an existing .env with a notice.
+# Identity settings now come from the device. `configure` strips these
+# obsolete overrides from an existing .env with a notice.
 REMOVED_ENV_FILE_KEYS = {
     "TC_MDNS_INSTANCE_NAME": "the service instance name follows the AirPort name",
     "TC_NETBIOS_NAME": "the NetBIOS name is derived from the device hostname",
-    "TC_SMB_BIND_LAN_ONLY": "v3.1.0 removed the LAN-only bind setting; Samba binds every LAN link like Apple's file servers",
     "TC_MDNS_HOST_LABEL": "v3.1.0 removed the mDNS host label; the advertised hostname is the AirPort name",
     "TC_MDNS_DEVICE_MODEL": "the mDNS device model is observed from the device instead of configured",
 }
@@ -102,7 +99,7 @@ ENV_FILE_OMIT_KEYS = frozenset({
     "TC_AIRPORT_SYAP",
     "TC_MDNS_DEVICE_MODEL",
     "TC_MDNS_HOST_LABEL",
-    "TC_SMB_BIND_LAN_ONLY",
+    "TC_SMB_BIND_LAN_ONLY",  # Discard old saved values; sharing follows Apple's settings.
     "TC_MDNS_INSTANCE_NAME",
     "TC_NETBIOS_NAME",
     "TC_SHARE_NAME",

@@ -654,12 +654,15 @@ def _add_apple_responder_results(
     snapshot: BonjourDiscoverySnapshot,
     *,
     instance_name: str | None,
+    smb_hostname: str | None,
     advertise_afp: bool,
     add_result: Callable[[CheckResult], None],
 ) -> bool:
-    """v3.1.0 checks on Apple's mDNSResponder as the only responder (guide C.9):
-    no uninvited `_afpovertcp`, no auto-renamed "(2)" instances (diskd left on
-    the LAN), and Apple's own `_device-info` model for the device."""
+    """Check the selected device's registrations, including real duplicates.
+
+    Stock diskd accepts a shared '(2)' name after an SMB-only conflict. A suffix
+    is normal; multiple names for one service on the same device are not.
+    """
     if instance_name is None:
         return False
     failed = False
@@ -672,7 +675,7 @@ def _add_apple_responder_results(
             CheckResult(
                 "FAIL",
                 f"_afpovertcp._tcp is advertised for {instance_name!r} although Advertise AFP over Bonjour is off; "
-                "macOS 26.x/27 hides Time Capsules that advertise AFP (Apple's afpserver/diskd may be back on the LAN; "
+                "macOS 26.x/27 hides Time Capsules that advertise AFP (Apple's diskd may be advertising on the LAN; "
                 "run Install / Update Samba or reboot the device)",
             )
         )
@@ -682,23 +685,20 @@ def _add_apple_responder_results(
     else:
         add_result(CheckResult("PASS", f"no _afpovertcp._tcp advertised for {instance_name!r}"))
 
-    renamed = sorted({
-        f"{instance.name} ({_bonjour_service_label(instance.service_type)})"
-        for instance in snapshot.instances
-        if _bonjour_service_label(instance.service_type) in {"_smb", "_adisk"}
-        and re.fullmatch(re.escape(instance_name) + r" \(\d+\)", instance.name)
-    })
-    if renamed:
-        add_result(
-            CheckResult(
-                "FAIL",
-                f"auto-renamed Bonjour instance(s) found: {', '.join(renamed)}; another registrant already holds "
-                f"{instance_name!r} (Apple's diskd is not on loopback, or two devices share the name)",
-            )
-        )
-        failed = True
-    else:
-        add_result(CheckResult("PASS", f"no auto-renamed \"(2)\" _smb/_adisk instance for {instance_name!r}"))
+    if smb_hostname:
+        duplicates = []
+        for service in ("_smb", "_adisk"):
+            names = sorted({record.name for record in snapshot.resolved
+                            if _bonjour_service_label(record.service_type) == service
+                            and _canonical_bonjour_host(record.hostname) == _canonical_bonjour_host(smb_hostname)})
+            if len(names) > 1:
+                duplicates.append(f"{service}: {', '.join(names)}")
+        if duplicates:
+            add_result(CheckResult("FAIL", f"duplicate Bonjour registrations for device {smb_hostname}: "
+                                   + "; ".join(duplicates)))
+            failed = True
+        else:
+            add_result(CheckResult("PASS", f"no duplicate SMB/ADisk registrations for device {smb_hostname}"))
 
     device_info = _bonjour_records_for_instance(snapshot.resolved, instance_name, "_device-info")
     if device_info:
@@ -883,6 +883,7 @@ def _evaluate_bonjour_snapshot(
             smb_instances,
             smb_records,
             expected_instance_name=bonjour_expected.instance_name,
+            expected_host_label=bonjour_expected.host_label,
             target_ip=target_ip,
             family=family,
             interfaces=interfaces,
@@ -912,7 +913,7 @@ def _evaluate_bonjour_snapshot(
                 outcome.debug_needed = True
             target = resolve_smb_service_target(
                 resolution.record,
-                expected_instance_name=bonjour_expected.instance_name,
+                expected_instance_name=resolution.instance.name,
             )
             target_result = check_smb_service_target(target)
             if target.port != 445:
@@ -952,6 +953,7 @@ def _evaluate_bonjour_snapshot(
             if _add_apple_responder_results(
                 smb_snapshot,
                 instance_name=resolution.instance.name,
+                smb_hostname=target.hostname,
                 advertise_afp=bonjour_expected.advertise_afp,
                 add_result=add,
             ):
@@ -1017,6 +1019,7 @@ def _evaluate_bonjour_snapshot(
             if _add_apple_responder_results(
                 smb_snapshot,
                 instance_name=resolved_record.name,
+                smb_hostname=target.hostname,
                 advertise_afp=bonjour_expected.advertise_afp,
                 add_result=add,
             ):

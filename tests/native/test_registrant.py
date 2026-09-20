@@ -129,14 +129,17 @@ def test_share_argument_count_is_bounded(rig):
     assert result.returncode == 8 and "too many adisk disks" in result.stderr
 
 
-def test_startup_registers_the_desired_set_with_no_auto_rename(rig, daemon):
+def test_startup_registers_with_apples_shared_default_name(rig, daemon):
     root, _, binary = rig
     adv = Advertiser(binary, root, NAT_OK, *adisk_args())
     try:
         transcript = daemon.wait_for(lambda t: len(registered(t)) >= 4)
         assert transcript is not None, adv.stop()
         regs = registered(transcript)
-        assert all(r["no_auto_rename"] and r["version"] == 1 and r["domain"] == "" and r["host"] == "" for r in regs)
+        # Stock diskd renamed SMB and ADisk together in the 2026-09-19 device
+        # capture. An empty IPC name means DNSServiceRegister(name=NULL).
+        assert all(not r["no_auto_rename"] and r["name"] == "" and r["version"] == 1
+                   and r["domain"] == "" and r["host"] == "" for r in regs)
         assert daemon.registrations() == [(2, "_adisk._tcp,_airport", "AirPort Time Capsule"), (2, "_smb._tcp", "AirPort Time Capsule"),
                                           (9, "_adisk._tcp,_airport", "AirPort Time Capsule"), (9, "_smb._tcp", "AirPort Time Capsule")]
         smb = next(r for r in regs if r["regtype"] == "_smb._tcp")
@@ -156,6 +159,45 @@ def test_startup_registers_the_desired_set_with_no_auto_rename(rig, daemon):
     assert transcript is not None, log
     assert daemon.registrations() == []
     assert adv.proc.returncode == 0
+
+
+def test_apple_conflict_rename_keeps_all_registration_connections(rig, daemon):
+    # Live stock diskd renamed SMB and ADisk together after an SMB-only
+    # conflict, without changing syNm or the hostname (2026-09-19). Both the
+    # initial callback and later default-name changes must stay registered.
+    root, _, binary = rig
+    daemon.rename_default("AirPort Time Capsule (2)")
+    adv = Advertiser(binary, root, NAT_DENIED, *adisk_args())
+    try:
+        assert daemon.wait_for(lambda t: len(registered(t)) == 2) is not None
+        time.sleep(0.7)
+        daemon.rename_default("AirPort Time Capsule (3)")
+        # ACP is not the owner of the Bonjour instance name. A changed or
+        # unavailable syNm must not replace the daemon's live registrations.
+        adv.replace_facts(NAT_DENIED.replace("value=AirPort Time Capsule", "value=Stale ACP Name"))
+        time.sleep(1.0)
+        assert adv.proc.poll() is None
+        assert len(registered(daemon.transcript)) == 2
+        assert not any(entry["op"] == "close" for entry in daemon.transcript)
+        assert daemon.registrations() == [(9, "_adisk._tcp,_airport", "AirPort Time Capsule (3)"),
+                                          (9, "_smb._tcp", "AirPort Time Capsule (3)")]
+    finally:
+        adv.stop()
+
+
+def test_native_default_name_does_not_require_an_acp_name(rig, daemon):
+    # Apple's daemon already owns its computer name. An unavailable ACP name
+    # must not suppress otherwise valid default-name registrations.
+    root, _, binary = rig
+    facts = NAT_DENIED.replace("key=syNm status=ok value=AirPort Time Capsule", "key=syNm status=abort value=")
+    facts = facts.replace("hostname: airport-time-capsule", "hostname: ")
+    adv = Advertiser(binary, root, facts, *adisk_args())
+    try:
+        assert daemon.wait_for(lambda t: len(registered(t)) == 2) is not None
+        assert daemon.registrations() == [(9, "_adisk._tcp,_airport", "AirPort Time Capsule"),
+                                          (9, "_smb._tcp", "AirPort Time Capsule")]
+    finally:
+        adv.stop()
 
 
 @pytest.mark.parametrize("missing", ["mode", "usbF"])
@@ -229,7 +271,7 @@ def test_name_conflict_backs_off_and_retries_until_the_name_is_free(rig, daemon)
         # Conflict -> dealloc (close) -> retry after backoff, still conflicting.
         assert daemon.wait_for(lambda t: len(registered(t)) >= 2 and sum(e["op"] == "close" for e in t) >= 1, timeout=6) is not None
         regs = registered(daemon.transcript)
-        assert all(r["name"] == "AirPort Time Capsule" for r in regs)   # never accepts a "(2)" name
+        assert all(r["name"] == "" for r in regs)  # retry using Apple's default, not an invented suffix
         daemon.script("AirPort Time Capsule", "accept")
         before = len(regs)
         assert daemon.wait_for(lambda t: len(registered(t)) > before, timeout=6) is not None

@@ -297,20 +297,6 @@ tc_relaunch_diskd_loopback() {
     return 0
 }
 
-# afpserver serves nothing ("No HFS+ volumes") but listens on 548 on every
-# interface. macOS 26.x/27 treats an AFP-advertising Time Capsule as
-# SMB1-only and hides it, so unless the user opted in it dies at boot.
-tc_stop_apple_afpserver() {
-    if [ "${MDNS_ADVERTISE_AFP:-0}" = "1" ]; then
-        tc_log "leaving Apple afpserver running because MDNS_ADVERTISE_AFP=1"
-        return 0
-    fi
-    if runtime_process_present_by_ucomm afpserver; then
-        stop_runtime_process_by_ucomm "Apple afpserver" afpserver || return 1
-    fi
-    return 0
-}
-
 stop_manager_process() {
     tc_log "stopping old manager"
     kill_manager_pids TERM

@@ -63,6 +63,7 @@ class FakeDnssdDaemon:
         self.path = path
         self.transcript = []
         self.scripts = {}          # instance name -> accept|conflict|delay|drop
+        self.default_name = "AirPort Time Capsule"
         self.lock = threading.Lock()
         self.held = {}             # conn id -> (sock, reply bytes)
         self._selector = selectors.DefaultSelector()
@@ -84,6 +85,18 @@ class FakeDnssdDaemon:
     def script(self, name, behaviour):
         with self.lock:
             self.scripts[name] = behaviour
+
+    def rename_default(self, name):
+        """Apple updates all default-name registrations after a name conflict."""
+        with self.lock:
+            self.default_name = name
+            for entry in self.transcript:
+                if entry["op"] != "register" or entry["name"] or entry["conn"] not in self._conns:
+                    continue
+                body = struct.pack(">III", FLAG_ADD, entry["ifindex"], 0)
+                body += name.encode() + b"\0" + entry["regtype"].encode() + b"\0local.\0"
+                reply = HEADER.pack(1, len(body), 0, REG_SERVICE_REPLY_OP, *entry["context"], 0) + body
+                self._conns[entry["conn"]].sendall(reply)
 
     def release(self, name=None):
         """Send the held reply for delayed registrations."""
@@ -132,7 +145,7 @@ class FakeDnssdDaemon:
         """(ifindex, regtype, name) of registrations whose connection is still open."""
         with self.lock:
             open_conns = set(self._conns)
-            return sorted({(e["ifindex"], e["regtype"], e["name"]) for e in self.transcript
+            return sorted({(e["ifindex"], e["regtype"], e["name"] or self.default_name) for e in self.transcript
                            if e["op"] == "register" and (not live_only or e["conn"] in open_conns)})
 
     def close(self):
@@ -212,8 +225,10 @@ class FakeDnssdDaemon:
             txt_len = struct.unpack_from(">H", payload, pos + 2)[0]
             txt = payload[pos + 4:pos + 4 + txt_len]
             with self.lock:
-                behaviour = self.scripts.get(name, "accept")
+                reply_name = name or self.default_name
+                behaviour = self.scripts.get(reply_name, "accept")
                 self.transcript.append({"op": "register", "conn": conn_id, "version": version, "flags": flags,
+                                        "context": (ctx0, ctx1),
                                         "no_auto_rename": bool(flags & FLAG_NO_AUTO_RENAME), "ifindex": ifindex,
                                         "name": name, "regtype": regtype, "domain": domain, "host": host,
                                         "port": port, "txt": parse_txt(txt), "behaviour": behaviour})
@@ -227,10 +242,10 @@ class FakeDnssdDaemon:
                 sock.sendall(struct.pack(">I", 0))   # request accepted
                 err = ERR_NAME_CONFLICT if behaviour == "conflict" else 0
                 body = struct.pack(">III", FLAG_ADD if not err else 0, ifindex, err)
-                body += name.encode() + b"\0" + regtype.encode() + b"\0" + (domain or "local.").encode() + b"\0"
+                body += reply_name.encode() + b"\0" + regtype.encode() + b"\0" + (domain or "local.").encode() + b"\0"
                 reply = HEADER.pack(1, len(body), 0, REG_SERVICE_REPLY_OP, ctx0, ctx1, 0) + body
                 if behaviour == "delay":
-                    self.held[conn_id] = (sock, reply, name)
+                    self.held[conn_id] = (sock, reply, reply_name)
                 else:
                     sock.sendall(reply)
         elif op == CANCEL_REQUEST:

@@ -1,4 +1,5 @@
-# Samba names/model come from the same native normalization used by discovery.
+# Samba names/model come from the native identity helper. Bonjour's instance
+# name and conflict renaming belong to Apple's mDNSResponder.
 # service must be staged in RAM first; never execute the disk copy here.
 tc_init_runtime_identity() {
     [ -x "$TC_SERVICE_BIN" ] || return 1

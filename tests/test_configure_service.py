@@ -497,8 +497,7 @@ class ConfigureServiceTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", written)
         self.assertEqual(written["TC_CUSTOM"], "kept")
         notices = [line for line in logs if line.startswith("Removing ")]
-        self.assertEqual(len(notices), 3, logs)
-        self.assertTrue(any("TC_SMB_BIND_LAN_ONLY" in line and "LAN-only" in line for line in notices))
+        self.assertEqual(len(notices), 2, logs)
         self.assertTrue(any("TC_MDNS_HOST_LABEL" in line and "AirPort name" in line for line in notices))
         self.assertTrue(any("TC_MDNS_DEVICE_MODEL" in line and "observed from the device" in line for line in notices))
 

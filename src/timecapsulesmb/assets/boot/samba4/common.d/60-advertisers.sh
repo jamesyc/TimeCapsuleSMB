@@ -8,8 +8,8 @@ tc_cleanup_old_runtime() {
     stop_discovery_conflicts || cleanup_status=1
     stop_runtime_process_by_ucomm "$RSYNC_PROC_NAME" "$RSYNC_PROC_NAME" || cleanup_status=1
     tc_prepare_telemetry_reset || cleanup_status=1
-    # Apple's mDNSResponder is deliberately not on this list (F11).
-    tc_stop_apple_afpserver || tc_log "Apple afpserver could not be stopped; AFP port 548 stays open"
+    # Keep Apple's mDNSResponder and afpserver alive. AFP advertising is
+    # controlled through diskd's loopback scope and discovery registrations.
 
     if [ "$cleanup_status" -ne 0 ]; then
         tc_log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"

@@ -10,6 +10,12 @@ libraries are never deployed. No helper uses pthreads.
 | `service` | Native Samba identity/model projection, device-password NT hashing, `--print-smb-bind-interfaces` (Samba bind tokens + retention status) and `--print-link-plan` |
 | `telemetry` | Heartbeat collection/POST, scheduling and signed debug execution |
 
+Bonjour registrations use `name=NULL` and flags `0`: Apple owns the default
+instance name and conflict renaming across SMB/ADisk. This follows the live
+stock `diskd` test on 2026-09-19, where an SMB-only collision renamed both
+services together without changing `syNm` or the hostname. Successful callback
+names are accepted as returned; they are not treated as conflicts against ACP.
+
 `common/` is the shared device-facts collector (v3.1.0): `iflist.c` walks
 `sysctl(NET_RT_IFLIST)` itself (Apple's kernel `if_msghdr` differs from the
 SDK's, so `getifaddrs()` returns garbage names), `acp.c` runs `acp -q`
