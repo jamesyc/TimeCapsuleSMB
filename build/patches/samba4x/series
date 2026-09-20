@@ -154,3 +154,7 @@
 # walk no longer crosses into nested mounts; and a `fingerprint` mode gives
 # the manager's durable checkpoint a source generation to validate against.
 0039-xattr-migrate-orphan-classification.patch|xattr migrator orphan/unresolved split, quarantine and fingerprint
+# Legacy TDB entries have no per-attribute modification times. During the
+# deploy-only migration use Samba's stored values, and require exact native
+# readback before cleanup retires them. Report directory/retirement failures.
+0040-deploy-migration-tdb-authority.patch|TDB-authoritative deploy migration and actionable scan errors

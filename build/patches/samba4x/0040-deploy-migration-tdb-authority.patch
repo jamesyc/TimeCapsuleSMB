@@ -1,0 +1,167 @@
+--- a/source3/utils/tc_xattr_hfs_migrate.c
++++ b/source3/utils/tc_xattr_hfs_migrate.c
+@@ -397,61 +397,9 @@
+ 	return talloc_strndup(mem_ctx, raw, raw_len - suffix_len);
+ }
+ 
+-/* An existing complete native ADS wins, including edits made before a
+- * disconnected disk's next boot migration. New ADS anchors are written last,
+- * so an interrupted export can only leave unreferenced, retryable extents. */
+-static int tc_keep_native_stream(struct tc_migration *migration, int fd,
+-				 const char *anchor_name, const DATA_BLOB *logical)
+-{
+-	TALLOC_CTX *frame = talloc_stackframe();
+-	DATA_BLOB fragment = data_blob_null;
+-	const char *raw = anchor_name + strlen(TC_STREAM_PREFIX);
+-	size_t offset = 0, i, extents;
+-	bool different = false;
+-	int ret = tc_native_get(frame, fd, anchor_name, &fragment);
+-
+-	if (ret != 0) {
+-		int error = errno;
+-		TALLOC_FREE(frame);
+-		errno = error;
+-		return tc_missing_error(error) ? 0 : -1;
+-	}
+-	if (fragment.length == 0 || fragment.length > TC_HFS_XATTR_SIZE) {
+-		goto invalid;
+-	}
+-	extents = fragment.data[--fragment.length];
+-	if (extents >= TC_HFS_STREAM_XATTRS) {
+-		goto invalid;
+-	}
+-	for (i = 0; i <= extents; i++) {
+-		if (offset + fragment.length > logical->length ||
+-		    memcmp(fragment.data, logical->data + MIN(offset, logical->length),
+-			   MIN(fragment.length, logical->length - MIN(offset, logical->length))) != 0)
+-		{
+-			different = true;
+-		}
+-		offset += fragment.length;
+-		if (i < extents) {
+-			char *name = talloc_asprintf(frame, "%s%zu.%s", TC_EXT_PREFIX, i + 1, raw);
+-			if (name == NULL || tc_native_get(frame, fd, name, &fragment) != 0) {
+-				TALLOC_FREE(frame);
+-				return -1;
+-			}
+-			if (fragment.length == 0 || fragment.length > TC_HFS_XATTR_SIZE) {
+-				goto invalid;
+-			}
+-		}
+-	}
+-	migration->counts.native_kept++;
+-	migration->counts.conflicts += different || offset != logical->length;
+-	TALLOC_FREE(frame);
+-	return 1;
+-invalid:
+-	TALLOC_FREE(frame);
+-	errno = EIO;
+-	return -1;
+-}
+-
++/* TDB values are authoritative during the deploy migration. Stream extents
++ * are verified before publishing their anchor, so an interrupted copy is
++ * retryable and cleanup never retires a mismatched legacy record. */
+ static int tc_write_internal_stream(struct tc_migration *migration,
+ 				    int fd,
+ 				    const char *path,
+@@ -467,12 +415,6 @@
+ 	uint8_t *anchor;
+ 	size_t offset;
+ 	size_t i;
+-	int existing = tc_keep_native_stream(migration, fd, anchor_name, logical);
+-
+-	if (existing != 0) {
+-		TALLOC_FREE(frame);
+-		return existing < 0 ? -1 : 0;
+-	}
+ 
+ 	if (extents >= TC_HFS_STREAM_XATTRS) {
+ 		fprintf(stderr, "stream too large path=%s name=%s size=%zu\n",
+@@ -550,7 +492,7 @@
+ 		}
+ 		ret = tc_native_write_verified(
+ 			migration, fd, path, native_name,
+-			logical.data, logical.length, true);
++			logical.data, logical.length, false);
+ 	} else {
+ 		ret = tc_write_internal_stream(
+ 			migration, fd, path, anchor_name, &logical);
+@@ -663,28 +605,9 @@
+ 				 const struct file_id *id)
+ {
+ 	TALLOC_CTX *frame = talloc_stackframe();
+-	DATA_BLOB existing = data_blob_null;
+ 	uint8_t finderinfo[AFP_FinderSize];
+ 	int ret;
+ 
+-	ret = tc_native_get(frame, fd, TC_FINDERINFO_XATTR, &existing);
+-	if (ret == 0) {
+-		if (existing.length != AFP_FinderSize) {
+-			fprintf(stderr,
+-				"invalid native FinderInfo path=%s size=%zu\n",
+-				path, existing.length);
+-			TALLOC_FREE(frame);
+-			errno = EIO;
+-			return -1;
+-		}
+-		migration->counts.native_kept++;
+-		TALLOC_FREE(frame);
+-		return 0;
+-	}
+-	if (!tc_missing_error(errno)) {
+-		TALLOC_FREE(frame);
+-		return -1;
+-	}
+ 	if (strcmp(migration->legacy_metadata, "netatalk") == 0) {
+ 		ret = tc_finderinfo_from_netatalk(
+ 			migration, frame, id, finderinfo);
+@@ -710,13 +633,9 @@
+ 		TALLOC_FREE(frame);
+ 		return -1;
+ 	}
+-	if (all_zero(finderinfo, AFP_FinderSize)) {
+-		TALLOC_FREE(frame);
+-		return 0;
+-	}
+ 	ret = tc_native_write_verified(
+ 		migration, fd, path, TC_FINDERINFO_XATTR,
+-		finderinfo, AFP_FinderSize, true);
++		finderinfo, AFP_FinderSize, false);
+ 	if (ret == 0) {
+ 		migration->counts.finderinfo_written++;
+ 	}
+@@ -813,7 +732,7 @@
+ 		}
+ 		if (tc_native_write_verified(
+ 				migration, fd, path, name,
+-				blob.data, blob.length, true) != 0)
++				blob.data, blob.length, false) != 0)
+ 		{
+ 			TALLOC_FREE(frame);
+ 			return -1;
+@@ -1515,6 +1434,8 @@
+ 			result = -1;
+ 		}
+ 		if (result == 0 && tc_retire_tdb_record(migration, fd, &st) != 0) {
++			fprintf(stderr, "metadata retirement failed path=%s error=%s\n",
++				path, strerror(errno));
+ 			result = -1;
+ 		}
+ 		if (fd != -1) {
+@@ -1526,6 +1447,7 @@
+ 	}
+ 	dir = opendir(path);
+ 	if (dir == NULL) {
++		fprintf(stderr, "opendir failed path=%s error=%s\n", path, strerror(errno));
+ 		return -1;
+ 	}
+ 	/* Snapshot one directory before cleanup removes sidecars from it. A
+@@ -1537,6 +1459,7 @@
+ 		entry = readdir(dir);
+ 		if (entry == NULL) {
+ 			if (errno != 0) {
++				fprintf(stderr, "readdir failed path=%s error=%s\n", path, strerror(errno));
+ 				result = -1;
+ 			}
+ 			break;

@@ -73,7 +73,6 @@ from timecapsulesmb.deploy.planner import (
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE,
     PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
     build_uninstall_plan,
@@ -1100,7 +1099,6 @@ echo ok
             PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
             PACKAGED_MANAGER_SOURCE: Path("/tmp/manager.sh"),
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
-            PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE: Path("/tmp/migrate.sh"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
@@ -1114,7 +1112,7 @@ echo ok
                         on_uploading=uploading.append,
                         on_uploaded=uploaded.append,
                     )
-        self.assertEqual(scp_mock.call_count, 14)
+        self.assertEqual(scp_mock.call_count, 13)
         self.assertEqual(mount_mock.call_count, 6)
         self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
         self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
@@ -1133,7 +1131,6 @@ echo ok
                 Path("/tmp/common.sh"),
                 Path("/tmp/boot.sh"),
                 Path("/tmp/manager.sh"),
-                Path("/tmp/migrate.sh"),
                 Path("/tmp/dfree.sh"),
                 Path("/tmp/tcapsulesmb.conf"),
             ],
@@ -1153,7 +1150,6 @@ echo ok
                 "/mnt/Flash/.common.sh.tmp",
                 "/mnt/Flash/.boot.sh.tmp",
                 "/mnt/Flash/.manager.sh.tmp",
-                "/mnt/Flash/.migrate.sh.tmp",
                 "/mnt/Flash/.dfree.sh.tmp",
                 "/mnt/Flash/.tcapsulesmb.conf.tmp",
             ],
@@ -1161,7 +1157,7 @@ echo ok
         for call, transfer in zip(scp_mock.call_args_list, plan.uploads):
             expected_timeout = PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS if transfer.source_id.startswith("binary:") else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
             self.assertEqual(call.kwargs.get("timeout"), expected_timeout)
-        self.assertEqual(ssh_mock.call_count, 17)
+        self.assertEqual(ssh_mock.call_count, 15)
         cleanup_command = ssh_mock.call_args_list[0].args[1]
         self.assertIn("rm -f", cleanup_command)
         self.assertIn("/mnt/Flash/.discoveryd.tmp", cleanup_command)
@@ -1169,7 +1165,6 @@ echo ok
         self.assertIn("/mnt/Flash/.common.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.boot.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.manager.sh.tmp", cleanup_command)
-        self.assertIn("/mnt/Flash/.migrate.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.dfree.sh.tmp", cleanup_command)
         self.assertIn("/mnt/Flash/.tcapsulesmb.conf.tmp", cleanup_command)
         self.assertEqual(uploading, plan.uploads)
@@ -1293,6 +1288,52 @@ echo ok
         self.assertTrue(all(fields["result"] == "success" for fields in upload_measurements))
         self.assertEqual(batch_measurements[0]["file_count"], len(prepared_plan.plan.uploads))
         self.assertEqual(batch_measurements[0]["result"], "success")
+
+    def test_migration_uses_saved_metadata_choice_unless_explicitly_overridden(self) -> None:
+        for saved, override, expected in (("true", None, "netatalk"), ("false", None, "stream"),
+                                          ("true", False, "stream"), ("false", True, "netatalk")):
+            with self.subTest(saved=saved, override=override):
+                migrate = mock.Mock(return_value="migration=complete")
+                upload_and_verify_deployment_payload(
+                    AppConfig.from_values({"TC_FRUIT_METADATA_NETATALK": saved}),
+                    SshConnection("host", "pw", ""),
+                    self._prepared_deploy_plan(),
+                    DeployRuntimeConfig(nbns_enabled=True, fruit_metadata_netatalk=override),
+                    run_remote_actions_func=mock.Mock(),
+                    upload_payload_func=mock.Mock(),
+                    migrate_xattrs_func=migrate,
+                    probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    flush_remote_writes=mock.Mock(),
+                    verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+                )
+                self.assertEqual([(c.kwargs["phase"], c.kwargs["legacy_metadata"])
+                                  for c in migrate.call_args_list], [("copy", expected), ("cleanup", expected)])
+
+    def test_migration_failure_diagnostics_distinguish_timeout_from_scan_error(self) -> None:
+        from timecapsulesmb.transport.errors import SshCommandTimeout
+
+        for error, timed_out in ((RuntimeError("opendir failed path=/Volumes/dk2/problem; errors=1"), False),
+                                 (SshCommandTimeout("migration deadline exceeded"), True)):
+            with self.subTest(timed_out=timed_out):
+                measurements = []
+                with self.assertRaises(DeployDeviceError) as caught:
+                    upload_and_verify_deployment_payload(
+                        AppConfig.from_values({}), SshConnection("host", "pw", ""),
+                        self._prepared_deploy_plan(), DeployRuntimeConfig(nbns_enabled=True),
+                        callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
+                        run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
+                        migrate_xattrs_func=mock.Mock(side_effect=error),
+                        probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                    )
+                message = str(caught.exception)
+                self.assertIn("phase=copy elapsed_seconds=", message)
+                self.assertIn("timeout_seconds=21600", message)
+                self.assertIn(f"timed_out={str(timed_out).lower()}", message)
+                self.assertIn("xattr-migration-copy.log", message)
+                self.assertIn(str(error), message)
+                migration = next(fields for kind, fields in measurements if kind == "xattr_migration")
+                self.assertEqual(migration["timed_out"], timed_out)
+                self.assertEqual(migration["result"], "failure")
 
     def test_xattr_copy_precedes_payload_and_cleanup_follows_verification(self) -> None:
         prepared_plan = self._prepared_deploy_plan()

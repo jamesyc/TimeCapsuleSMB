@@ -104,6 +104,15 @@ struct DiagnosticsExportBuilder {
                 append("Last Checkup", value: profile.lastCheckup?.summary ?? "none", to: &lines)
                 append("Runtime State", value: profile.runtimeState?.localizedSummary ?? "unknown", to: &lines)
                 append("Last Deploy", value: profile.lastDeployState?.localizedSummary ?? "none", to: &lines)
+                if let deploy = profile.lastDeployState {
+                    append("Last Deploy Operation ID", value: deploy.operationID ?? "unknown", to: &lines)
+                    append("Last Deploy Stage", value: deploy.stage ?? "unknown", to: &lines)
+                    append("Last Deploy Started", value: format(date: deploy.startedAt), to: &lines)
+                    if let finished = deploy.finishedAt {
+                        append("Last Deploy Finished", value: format(date: finished), to: &lines)
+                    }
+                    append("Last Deploy Error Code", value: deploy.errorCode ?? "none", to: &lines)
+                }
                 appendDeviceSettings(profile.settings, prefix: "Profile", to: &lines)
             } else {
                 append("Selected", value: "none", to: &lines)

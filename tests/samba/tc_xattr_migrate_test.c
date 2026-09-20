@@ -542,12 +542,6 @@ static void test_cleanup(void)
 	CHECK(keys.counts.tdb_matched == 1);
 	CHECK(tc_mark_tdb_key(&keys, &missing) == 0);
 
-	reset_xattrs();
-	CHECK(test_migrate_syscall_377(
-		      42, TC_FINDERINFO_XATTR, value, sizeof(value), 0) == 0);
-	errno = 0;
-	CHECK(tc_migrate_finderinfo(&copy, 42, "object", &first) == -1);
-	CHECK(errno == EIO);
 }
 
 static void test_tdb_migration(void)
@@ -629,6 +623,13 @@ static void test_tdb_migration(void)
 	CHECK(tc_collect_tdb_keys(&copy) == 0);
 	CHECK(copy.counts.tdb_total == 1);
 	reset_xattrs();
+	/* Even malformed native FinderInfo is replaced by the valid TDB value. */
+	CHECK(tc_airport_fsetxattr(fd, TC_FINDERINFO_XATTR, "old", 3, 0) == 0);
+	CHECK(tc_airport_fsetxattr(fd, "com.apple.metadata:_kMDItemUserTags",
+				 "old", 3, 0) == 0);
+	CHECK(tc_airport_fsetxattr(fd, "security.NTACL", "old", 3, 0) == 0);
+	CHECK(tc_airport_fsetxattr(fd, "user.DosStream.windows:$DATA",
+				 "old", 4, 0) == 0);
 	CHECK(tc_migrate_tdb_record(&copy, fd, object, &st) == 0);
 	CHECK(copy.counts.tdb_matched == 1 && copy.counts.tdb_records == 1);
 	stored = find_xattr(TC_FINDERINFO_XATTR);
@@ -644,10 +645,9 @@ static void test_tdb_migration(void)
 	CHECK(stored != NULL && stored->size == 4);
 	CHECK(memcmp(stored->value, "abc\0", 4) == 0);
 
-	/* Exercise the other public metadata setting against the same record.
-	 * The cleanup below then proves that a valid native value wins if the
-	 * selected legacy representation disagrees. */
-	CHECK(tc_airport_fremovexattr(fd, TC_FINDERINFO_XATTR) == 0);
+	/* TDB has no attribute timestamps: its selected representation replaces
+	 * a conflicting native value during copy. Cleanup must reject disagreement
+	 * rather than quietly retiring the source. */
 	copy.legacy_metadata = "stream";
 	copy.tdb_keys[0].matched = false;
 	copy.counts.tdb_matched = 0;
@@ -659,6 +659,15 @@ static void test_tdb_migration(void)
 	/* The real program's cleanup pass must re-read the TDB, verify all native
 	 * values, and remove it only after the sole key matches this object. */
 	TALLOC_FREE(copy.db);
+	argv[3] = discard_const_p(char, "stream");
+	stored->value[0] = 'X';
+	rc = tc_xattr_hfs_migrate_program_main(5, argv);
+	CHECK(rc != 0 && access(tdb_path, F_OK) == 0);
+	argv[1] = discard_const_p(char, "copy");
+	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
+	stored = find_xattr(TC_FINDERINFO_XATTR);
+	CHECK(stored != NULL && stored->value[0] == 'S');
+	argv[1] = discard_const_p(char, "cleanup");
 	rc = tc_xattr_hfs_migrate_program_main(5, argv);
 	CHECK(rc == 0);
 	CHECK(access(tdb_path, F_OK) == -1 && errno == ENOENT);
@@ -797,7 +806,7 @@ static void test_resume(void)
 	CHECK(tc_airport_fremovexattr(fd, "user.DosStream.windows:$DATA") == 0);
 	CHECK(tc_xattr_hfs_migrate_program_main(5, argv) == 0);
 	CHECK(find_xattr("user.DosStream.windows:$DATA") == NULL);
-	/* The missing volume becomes visible in a later boot's root scan. Its
+	/* The missing volume becomes visible in a later deploy's root scan. Its
 	 * rows are keyed by the device it is attached at, so the returning
 	 * disk's row is the real file id under the scanned root; the foreign
 	 * row that stood in for it is retired the same way a re-attached disk

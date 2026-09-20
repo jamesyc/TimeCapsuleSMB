@@ -271,14 +271,12 @@ The `deploy` script installs files in:
 
 All other files/folders are stored on ramdisks and will be deleted after a reboot.
 
-Inside `.samba4/private` you may also find leftovers of the one-time metadata
-migration from older TimeCapsuleSMB releases: `xattr.tdb` (legacy metadata
-still waiting for a disk that is not attached), `xattr-migration-completed.txt`
-(the manager's note of which disks it has already checked, so it does not walk
-the whole disk again on every reboot) and `xattr.tdb.orphaned.N` (a legacy
-database whose every record pointed at files that no longer exist; it is set
-aside rather than deleted so nothing is lost). None of them are needed for
-serving files; see DETAIL.md for what they mean.
+Inside `.samba4/private` you may find legacy `xattr.tdb` rows awaiting a later
+deploy with their disk attached, or `xattr.tdb.orphaned.N` quarantines preserved
+for recovery. Migration runs during deploy only. Boot and hotplug do not run it;
+attach missing disks and rerun deploy to migrate their metadata. Older
+`xattr-migration-completed.txt` files are ignored. See DETAIL.md for the storage
+and conflict rules.
 
 The `uninstall` script removes these managed files and optionally reboots the device, which gets rid of all the other files. 
 

@@ -67,6 +67,36 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("stage-54"))
     }
 
+    func testExportKeepsLastDeployDetailsAfterDoctorEventsReplaceDeployEvents() {
+        var context = makeContext()
+        context.selectedProfile?.lastDeployState = DeviceDeployStateSnapshot(
+            operationID: "migration-attempt-1",
+            startedAt: context.generatedAt,
+            updatedAt: context.generatedAt.addingTimeInterval(601),
+            finishedAt: context.generatedAt.addingTimeInterval(601),
+            status: .failed,
+            stage: "migrate_xattrs_copy",
+            payloadFamily: nil,
+            rebootRequested: false,
+            verified: false,
+            summary: "Migration failed",
+            errorCode: "xattr_migration_failed",
+            errorMessage: "phase=copy elapsed_seconds=601 timed_out=false\nopendir failed path=/Volumes/dk2/problem",
+            recovery: nil
+        )
+        context.events = (0..<55).map { BackendEvent(type: "stage", operation: "doctor", stage: "check-\($0)") }
+
+        let text = DiagnosticsExportBuilder(maxEvents: 2).build(context: context)
+
+        XCTAssertTrue(text.contains("Last Deploy Operation ID: migration-attempt-1"))
+        XCTAssertTrue(text.contains("Last Deploy Stage: migrate_xattrs_copy"))
+        XCTAssertTrue(text.contains("Last Deploy Error Code: xattr_migration_failed"))
+        XCTAssertTrue(text.contains("Last Deploy Started: 2026-05-26T12:00:00Z"))
+        XCTAssertTrue(text.contains("Last Deploy Finished: 2026-05-26T12:10:01Z"))
+        XCTAssertTrue(text.contains("elapsed_seconds=601 timed_out=false"))
+        XCTAssertTrue(text.contains("opendir failed path=/Volumes/dk2/problem"))
+    }
+
     private func makeContext() -> DiagnosticsExportContext {
         DiagnosticsExportContext(
             generatedAt: Date(timeIntervalSince1970: 1_779_796_800),

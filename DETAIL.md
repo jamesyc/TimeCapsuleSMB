@@ -207,7 +207,7 @@ an arbitrarily large resource entry. Deleting it after copying only the resource
 entry could therefore discard FinderInfo or tags.
 
 The standalone `xattr-hfs-migrate` helper validates all offsets and lengths,
-migrates FinderInfo and embedded xattrs using native-HFS conflict rules, streams
+migrates FinderInfo and embedded xattrs, streams
 the resource entry into `file/..namedfork/rsrc`, and verifies the result. It
 recognizes Samba's intentionally blank resource-fork placeholder. Malformed
 containers, unsupported top-level entries, oversized native xattrs, or failed
@@ -226,20 +226,29 @@ When it exists, migration is split around payload installation:
 
 A temporary per-file resource migration marker makes an interrupted large fork
 copy distinguishable from a pre-existing native/legacy conflict. The helper
-removes the marker after a complete byte-for-byte verification. Existing native
-values win conflicts, including complete native Windows ADS. Stream extents are
+removes the marker after a complete byte-for-byte verification. TDB values win
+conflicts during migration: the database stores attribute names and values, not
+per-attribute modification times. Cleanup requires exact native readback before
+retiring those values. Native-only values and existing native resource forks
+keep their existing behavior. Stream extents are
 written before their anchor so interrupted exports can be retried. Read failures
 are errors, never evidence of a conflict.
 
-Deploy and boot migration operate only on volumes that remain mounted after the
-normal `diskd.useVolume` attempts, so an unavailable external disk does not
-withhold healthy shares. The manager remembers completed volumes for its own
-lifetime and migrates a pending volume before publishing it when that volume
-later becomes available. A failed attachment migration leaves the existing Samba
-runtime unchanged and is retried with a backoff (one minute, doubling to thirty)
-rather than walking the tree again every manager pass.
+Migration runs only during deploy, never during boot or disk hotplug. Each
+copy/cleanup phase allows up to six hours and keeps its diagnostics in
+`.samba4/logs/xattr-migration-copy.log` or `xattr-migration-cleanup.log`.
+These logs include UTC start/finish times, the selected metadata representation,
+TDB file details, scanned roots, native error/counter output, and process exit
+status. Deploy errors include elapsed time and the timeout limit; a timeout also
+attempts to retrieve a bounded saved-log snapshot. The macOS diagnostics export
+retains the last deploy's stage, timestamps, operation ID and error code even
+after later operations displace its recent events.
+An unavailable external disk keeps its legacy TDB rows; attach it and run deploy
+again to migrate them. An interrupted deployment can be rerun. Successful
+per-file cleanup retires completed rows so later native edits are not replayed
+from those old records.
 
-#### Orphans, unresolved rows and the migration checkpoint (v3.1.0)
+#### Orphans and unresolved rows (v3.1.0)
 
 Legacy TDB keys are `(st_dev, st_ino)`, never a volume UUID, so a row that no
 file claimed is one of two things and the migrator tells them apart:
@@ -253,7 +262,7 @@ Unresolved rows keep the database live for a later run. When every remaining row
 is a proven orphan, `cleanup` closes the database and renames it to
 `xattr.tdb.orphaned.N` beside the payload (`N` is the first unused slot, never
 overwriting an earlier quarantine); nothing is deleted. The summary line the
-migrator writes to the manager log reports `tdb_orphaned`, `tdb_unresolved` and
+migrator writes to the deployment log reports `tdb_orphaned`, `tdb_unresolved` and
 `tdb_quarantined` separately. Note the limit of device-number identity: rows
 written by a disk that used to sit at the same `/dev/dkN` as the current one look
 like proven orphans of the current disk, which is why quarantine keeps the file.
@@ -261,41 +270,9 @@ like proven orphans of the current disk, which is why quarantine keeps the file.
 nothing else, and refusing to prove any row would keep every leftover database
 live forever.)
 
-A migration that leaves unresolved rows behind used to be repeated by every
-manager start (a full tree walk of every mounted disk, twice). The manager now
-publishes a checkpoint, `xattr-migration-completed.txt`, next to `xattr.tdb`:
-
-```text
-xattr-migration-completed: format=1 migration=1 written=<epoch>
-source: <size>-<FNV-1a 64 of xattr.tdb>
-volume: uuid=<MaSt volume UUID>
-```
-
-The manager is its only writer and writes it by same-directory atomic
-replacement after the cleanup data is durable (sync, rename, sync). On start it
-asks the migrator for the database fingerprint (`xattr-hfs-migrate fingerprint`;
-the device has no `cksum`) and trusts the listed volumes only when the format,
-migration version and source all match. Anything else — a restored or foreign
-`xattr.tdb`, a truncated or malformed file, an older or newer format — discards
-the file and rescans, so a mistake costs a repeated walk, never a skipped one.
-Our own cleanup changes the database too; the checkpoint records the
-fingerprint taken after that cleanup, so completed volumes carry forward across
-our own row retirement but not across anybody else's writes. The file lives with
-the disk-backed TDB, is removed when the TDB is deleted or quarantined, and is
-never consulted while the disk is unmounted. While the manager runs, every disk
-pass compares a cheap change signature of the TDB (inode, size and mtime from
-`ls -li`) with the one recorded at the last migration decision and fingerprints
-only when it differs; a changed source drops the completed set so the volumes are
-pending again, an identical copy is just re-recorded, and a database that appears
-after a no-TDB completion (a restore) is treated the same way. Volumes are keyed
-by the MaSt UUID;
-a volume without one is remembered only for the manager's lifetime, since a
-reused `/dev/dkN` name is not identity. Before a scan the manager checks that the
-root is mounted from the device MaSt names, and after the scan it re-reads
-`/sbin/mount` and MaSt: a disk swapped underneath the walk is not recorded.
-Deploy-time migration (`tcapsule deploy`) does not write the checkpoint, so the
-first manager start after a deploy that left unresolved rows walks once and then
-checkpoints.
+The manager no longer maintains migration checkpoints. Old
+`xattr-migration-completed.txt` files are ignored; deploy does not read or write
+them. Quarantined databases remain preserved.
 
 The stream layer allows 3,803 logical bytes for canonical Apple xattrs on HFS:
 3,802 native bytes plus its synthetic marker. Windows ADS retain 3,802-byte

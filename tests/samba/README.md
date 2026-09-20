@@ -94,7 +94,9 @@ and check that cleanup retains the sidecar.
 Host runs keep those cases isolated and repeat them once through `all` to check
 cross-case cleanup under sanitizers. Device runs use that same reset-isolated
 `all` invocation as their sole run so the 6.8 MiB static fixture is uploaded once.
-On HFS, native storage wins conflicts. `fruit:metadata=stream|netatalk` selects
+During deploy migration, TDB values replace conflicting native values; cleanup
+requires exact readback before retiring the TDB record. Native-only values and
+resource-fork conflicts retain their existing behavior. `fruit:metadata=stream|netatalk` selects
 the preferred legacy value only during migration, and `fruit:resource=file`
 supplies AppleDouble sidecars to the migrator. Non-HFS shares retain the original
 TDB and AppleDouble behavior.

@@ -8,6 +8,7 @@ from typing import Callable, Iterable, Mapping
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn, read_mast_volumes_conn
+from timecapsulesmb.transport.errors import SshCommandTimeout
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
@@ -25,7 +26,10 @@ FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
 # Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
 # payload after a slow upload. Keep this bounded, but long enough for real disks.
 FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300
-XATTR_HFS_MIGRATION_TIMEOUT_SECONDS = 600
+# Old disks may contain millions of files. Migration runs only during deploy;
+# allow a long bounded scan without imposing its timeout on ordinary SSH calls.
+XATTR_HFS_MIGRATION_TIMEOUT_SECONDS = 6 * 60 * 60
+XATTR_MIGRATION_LOG_TAIL_BYTES = 8192
 
 
 @dataclass(frozen=True)
@@ -85,28 +89,55 @@ def migrate_xattr_tdb_to_hfs(
             )
         raise RuntimeError("migration found no mounted HFS volumes")
     root_args = shlex.join([volume.volume_root for volume in mounted])
+    migration_log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
     script = f"""
 tdb={shlex.quote(tdb_path)}
 migration_ram=/mnt/Memory/tc-xattr-hfs-migrate
+migration_log={shlex.quote(migration_log)}
 migration_child=
 trap 'if [ -n "$migration_child" ]; then kill -TERM "$migration_child" 2>/dev/null || true; wait "$migration_child" 2>/dev/null || true; fi; rm -f "$migration_ram"' 0
 trap 'exit 1' 1 2 15
 cp {shlex.quote(migrator_path)} "$migration_ram" || exit $?
 chmod 755 "$migration_ram" || exit $?
-"$migration_ram" {shlex.quote(phase)} "$tdb" {shlex.quote(legacy_metadata)} {root_args} &
+mkdir -p {shlex.quote(f'{plan.payload_dir}/logs')} || exit $?
+{{
+    printf 'migration_phase=%s legacy_metadata=%s timeout_seconds=%s\\n' {shlex.quote(phase)} {shlex.quote(legacy_metadata)} {XATTR_HFS_MIGRATION_TIMEOUT_SECONDS}
+    /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ'
+    printf 'tdb=%s\\n' "$tdb"
+    /bin/ls -ln "$tdb"
+    printf 'root=%s\\n' {root_args}
+}} >"$migration_log" || exit $?
+"$migration_ram" {shlex.quote(phase)} "$tdb" {shlex.quote(legacy_metadata)} {root_args} >>"$migration_log" 2>&1 &
 migration_child=$!
 migration_status=0
 wait "$migration_child" || migration_status=$?
 migration_child=
+printf 'migration_exit_code=%s\\n' "$migration_status" >>"$migration_log"
+/bin/date -u '+finished_at=%Y-%m-%dT%H:%M:%SZ' >>"$migration_log"
+cat "$migration_log"
 [ "$migration_status" = 0 ] || exit "$migration_status"
 /bin/sync || exit $?
 echo migration_phase={shlex.quote(phase)} complete unavailable_roots={len(unavailable)}
 """.strip()
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        timeout=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
-    )
+    try:
+        proc = run_ssh(
+            connection,
+            f"/bin/sh -c {shlex.quote(script)}",
+            timeout=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
+        )
+    except SshCommandTimeout as exc:
+        # A timed-out command never reaches cat. Fetch a bounded, best-effort
+        # snapshot without letting a failed diagnostic read hide the timeout.
+        try:
+            saved = run_ssh(connection,
+                            f"/usr/bin/tail -c {XATTR_MIGRATION_LOG_TAIL_BYTES} {shlex.quote(migration_log)}",
+                            check=False, timeout=10)
+            detail = saved.stdout[-XATTR_MIGRATION_LOG_TAIL_BYTES:].strip() if saved.returncode == 0 else "unavailable"
+        except Exception:
+            detail = "unavailable"
+        raise SshCommandTimeout(
+            f"{exc}\nSaved migration log snapshot ({migration_log}; may be incomplete):\n{detail}"
+        ) from exc
     return XattrMigrationResult(proc.stdout, tuple(mounted), tuple(unavailable))
 
 

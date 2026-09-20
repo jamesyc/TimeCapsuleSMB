@@ -4,6 +4,7 @@ from unittest import mock
 
 import pytest
 
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.deploy.planner import FileTransfer
 from timecapsulesmb.deploy.commands import RemovePathAction
 from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
@@ -56,7 +57,7 @@ def test_insufficient_flash_fails_before_stop_or_upload(tmp_path: Path) -> None:
     ):
         with pytest.raises(DeployDeviceError, match="Not enough free space") as raised:
             upload_and_verify_deployment_payload(
-                SimpleNamespace(),
+                AppConfig.from_values({}),
                 SimpleNamespace(),
                 prepared,
                 DeployRuntimeConfig(nbns_enabled=True),
@@ -100,7 +101,7 @@ def test_verification_failure_retains_legacy_flash_binary(tmp_path: Path) -> Non
         pytest.raises(Exception, match="managed payload verification failed"),
     ):
         upload_and_verify_deployment_payload(
-            SimpleNamespace(),
+            AppConfig.from_values({}),
             SimpleNamespace(remote_has_scp=True),
             prepared,
             DeployRuntimeConfig(nbns_enabled=True),

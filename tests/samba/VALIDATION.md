@@ -285,3 +285,41 @@ backup cycle. Live migration results are recorded separately below.
   rediscovered address, and the complete doctor check passed after reboot.
 - `make test-parallel` passed all 1,859 local tests with ten workers. The focused
   build/runtime suite separately passed 168 tests and 76 subtests.
+
+## Deploy-only migration and TDB precedence (2026-09-19)
+
+Patch 0040 makes the selected legacy TDB representation authoritative during
+copy and requires matching native readback during cleanup. The TDB schema stores
+attribute names and values, without a per-attribute modification timestamp.
+Native-only values and AppleDouble/native resource-fork conflict behavior are
+unchanged. Missing directory and record-retirement diagnostics now include the
+path and error.
+
+- Rebuilt the migrator as root in the existing NetBSD VM for all three lanes.
+  The VM source trees contained additional migration work from a different
+  checkout. Isolated temporary targets used the source reconstructed from this
+  branch's patches and the existing configured static link settings; the VM's
+  original sources and build definitions were preserved. No toolchain rebuild.
+- The migration fixture's combined `all` case passed on the NetBSD 6 device.
+  It covers conflicting TDB/native values, malformed native FinderInfo repair,
+  cleanup refusal after native divergence, copy retry, row retirement, detached
+  records, resource forks, directory-read failures, and orphan quarantine.
+  The fixture mocks the private HFS syscalls; this does not claim a migration
+  of the user's production data. Temporary device executables were removed.
+- An obsolete fixture call passed a null TDB to the formerly native-first
+  FinderInfo helper and crashed during the initial combined run. It was replaced
+  with a real-TDB case demonstrating repair of malformed native FinderInfo.
+  The combined device run then passed; isolated cases also passed.
+- NetBSD 4 LE and BE artifacts were cross-built and checked for static linkage,
+  byte order and NetBSD notes. Their migration fixtures were not device-run.
+- Full local pytest passed 2,113 tests and 217 subtests. After correcting saved
+  metadata-option selection, 632 deploy/CLI/API tests and 64 subtests passed.
+- Migration runs only during deploy. Boot/hotplug migration and checkpoint
+  writers were removed. Each deploy phase allows six hours and retains its
+  diagnostic output under the payload's logs directory.
+
+| Lane | Stripped migrator bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 2,128,772 |
+| NetBSD 4 LE | 2,135,460 |
+| NetBSD 4 BE | 2,135,012 |

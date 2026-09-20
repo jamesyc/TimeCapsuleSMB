@@ -21,6 +21,7 @@ from timecapsulesmb.deploy.dry_run import (
     format_deployment_plan as _format_deployment_plan,
 )
 from timecapsulesmb.deploy.executor import (
+    XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
     XattrMigrationResult,
     flush_remote_filesystem_writes,
     migrate_xattr_tdb_to_hfs,
@@ -43,7 +44,6 @@ from timecapsulesmb.deploy.planner import (
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE,
     FileTransfer,
 )
 from timecapsulesmb.deploy.planner import (
@@ -121,7 +121,6 @@ DEPLOY_UPLOAD_BOOT_SOURCES = frozenset({
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_BOOT_SOURCE,
     PACKAGED_MANAGER_SOURCE,
-    PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE,
 })
 MANAGER_STOP_TIMEOUT_MESSAGE = (
     "A service on the device is stuck, often due to a failing disk. "
@@ -786,7 +785,6 @@ def _deployment_upload_sources(
         PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("dfree.sh")),
         PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path_func("boot.sh")),
         PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path_func("manager.sh")),
-        PACKAGED_XATTR_MIGRATE_WRAPPER_SOURCE: boot_assets.enter_context(boot_asset_path_func("migrate.sh")),
     }
 
 
@@ -860,7 +858,10 @@ def upload_and_verify_deployment_payload(
         probe_flash_capacity_func = _probe_flash_capacity
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
-    legacy_metadata = "netatalk" if runtime_config.fruit_metadata_netatalk else "stream"
+    legacy_netatalk = runtime_config.fruit_metadata_netatalk
+    if legacy_netatalk is None:
+        legacy_netatalk = parse_bool(config.get("TC_FRUIT_METADATA_NETATALK", DEFAULTS["TC_FRUIT_METADATA_NETATALK"]))
+    legacy_metadata = "netatalk" if legacy_netatalk else "stream"
     copied_migration_roots = None
 
     def run_xattr_migration_phase(phase: str) -> None:
@@ -872,6 +873,7 @@ def upload_and_verify_deployment_payload(
             else "Verifying native HFS metadata and removing migrated legacy storage..."
         )
         migration_started = time.monotonic()
+        migration_log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
         try:
             migration_result = migrate_xattrs_func(
                 connection,
@@ -881,26 +883,41 @@ def upload_and_verify_deployment_payload(
                 roots=copied_migration_roots if phase == "cleanup" else None,
             )
         except Exception as exc:
+            elapsed = round(time.monotonic() - migration_started, 3)
+            timed_out = is_ssh_timeout_error(exc)
+            diagnostic = (
+                f"phase={phase} elapsed_seconds={elapsed} "
+                f"timeout_seconds={XATTR_HFS_MIGRATION_TIMEOUT_SECONDS} "
+                f"timed_out={str(timed_out).lower()} legacy_metadata={legacy_metadata}\n"
+                f"Migration log: {migration_log}"
+            )
             callbacks.measurement(
                 "xattr_migration",
                 phase=phase,
-                duration_sec=round(time.monotonic() - migration_started, 3),
+                duration_sec=elapsed,
+                timeout_sec=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
+                timed_out=timed_out,
+                log_path=migration_log,
                 result="failure",
                 error_type=type(exc).__name__,
             )
-            if is_ssh_timeout_error(exc):
+            callbacks.debug(**{f"xattr_migration_{phase}_failure": diagnostic,
+                               f"xattr_migration_{phase}_error": str(exc)})
+            if timed_out:
                 raise DeployDeviceError(
-                    XATTR_MIGRATION_TIMEOUT_MESSAGE,
+                    f"{XATTR_MIGRATION_TIMEOUT_MESSAGE}\n{diagnostic}\n{exc}",
                     code="xattr_migration_timeout",
                 ) from exc
             raise DeployDeviceError(
-                f"Native HFS metadata migration ({phase}) failed: {exc}",
+                f"Native HFS metadata migration ({phase}) failed.\n{diagnostic}\n{exc}",
                 code="xattr_migration_failed",
             ) from exc
         callbacks.measurement(
             "xattr_migration",
             phase=phase,
             duration_sec=round(time.monotonic() - migration_started, 3),
+            timeout_sec=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
+            log_path=migration_log,
             result="success",
         )
         if isinstance(migration_result, XattrMigrationResult):
