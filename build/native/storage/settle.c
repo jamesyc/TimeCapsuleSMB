@@ -18,7 +18,8 @@ int tc_storage_observe(struct tc_storage_settle *state, const struct tc_inventor
         state->pending = 1;
         return 0;
     }
-    if (now < state->confirm_at) return 0;
+    if (now < state->confirm_at)
+        return 0;
     state->stable = *inventory;
     state->pending = 0;
     state->confirm_at = 0;

@@ -1,5 +1,9 @@
 #include "telemetry.h"
 #include "../common/acp.h"
+#include "../common/parent.h"
+#ifdef TC_SERVICE_MULTICALL
+#define main tc_telemetry_main
+#endif
 volatile sig_atomic_t telemetry_stop = 0;
 static void stop(int sig) { (void)sig; telemetry_stop = 1; acp_stop_requested = 1; }
 
@@ -8,6 +12,7 @@ int main(int argc, char **argv) {
     const char *reason = "manual";
     struct telemetry_schedule schedule;
     time_t next_cleanup = 0, retry_after = 0;
+    int parent_fd = -1;
     memset(&schedule, 0, sizeof(schedule));
     signal(SIGTERM, stop); signal(SIGINT, stop); signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && !strcmp(argv[1], "--version")) { puts(HEARTBEAT_AGENT_VERSION); return 0; }
@@ -28,12 +33,18 @@ int main(int argc, char **argv) {
         if (rc == TC_EXIT_BUSY) fputs("telemetry: cleanup deferred; workspace is in use\n", stderr);
         return rc;
     }
+    if (daemon) {
+        parent_fd = tc_parent_pipe();
+#if defined(__NetBSD__)
+        setproctitle("role=telemetry --daemon");
+#endif
+    }
     do {
         time_t now = time(NULL);
         int due = !daemon || telemetry_schedule_due(&schedule, now);
         /* Recheck while idle so a running daemon observes a manual opt-out.
          * An active cycle still finishes its normal child/cleanup handling. */
-        if (!telemetry_enabled()) return 0;
+        if (!telemetry_enabled() || !tc_parent_alive(parent_fd)) return 0;
         if (now >= retry_after && (due || now >= next_cleanup)) {
             int lock = telemetry_lock();
             if (lock < 0) {

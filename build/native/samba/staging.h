@@ -14,4 +14,6 @@ int tc_samba_stage(const struct tc_storage_snapshot *, const struct tc_samba_set
                    int copy_smbd, int copy_rsync);
 int tc_samba_publish(int rsync);
 void tc_samba_discard(void);
+/* Call only after ownership audit and the entire old smbd group has exited. */
+int tc_samba_clear_locks(void);
 #endif

@@ -1,0 +1,128 @@
+#include "inspect.h"
+#include "../common/worker.h"
+#include "../samba/runtime.h"
+#ifndef TC_PS_PATH
+#define TC_PS_PATH "/bin/ps"
+#endif
+#ifndef TC_FSTAT_PATH
+#define TC_FSTAT_PATH "/usr/bin/fstat"
+#endif
+
+static int argument(const char *command, const char *text) {
+    size_t length = strlen(text);
+    const char *found = command;
+    while ((found = strstr(found, text)) != NULL) {
+        if ((found == command || isspace((unsigned char)found[-1])) &&
+            (!found[length] || isspace((unsigned char)found[length])))
+            return 1;
+        found++;
+    }
+    return 0;
+}
+static enum tc_process_role classify(const char *name, const char *command) {
+    if (!strcmp(name, "smbd"))
+        return TC_PROC_SMBD;
+    if (!strcmp(name, "rsync"))
+        return TC_PROC_RSYNC;
+    if (!strcmp(name, "wcifsfs"))
+        return TC_PROC_WCIFSFS;
+    if (!strcmp(name, "wcifsnd"))
+        return TC_PROC_WCIFSND;
+    if (!strcmp(name, "diskd"))
+        return argument(command, "-i lo0") ? TC_PROC_DISKD_LOOPBACK : TC_PROC_DISKD;
+    if (!strcmp(name, "discoveryd"))
+        return TC_PROC_DISCOVERY;
+    if (!strcmp(name, "telemetry"))
+        return TC_PROC_TELEMETRY;
+    if (!strcmp(name, "service")) {
+        if (argument(command, "role=discovery") ||
+            !strncmp(command, TC_SERVICE_BIN " discovery ", strlen(TC_SERVICE_BIN " discovery ")))
+            return TC_PROC_DISCOVERY;
+        if (argument(command, "role=telemetry") ||
+            !strncmp(command, TC_SERVICE_BIN " telemetry ", strlen(TC_SERVICE_BIN " telemetry ")))
+            return TC_PROC_TELEMETRY;
+    }
+    /* Apple's mDNSResponder and afpserver are deliberately never managed here.
+     * AFP preference controls only discovery; killing either breaks OEM work. */
+    return TC_PROC_OTHER;
+}
+int tc_process_table_parse(struct tc_process_table *table, const char *text) {
+    memset(table, 0, sizeof(*table));
+    while (*text) {
+        char line[2048], state[32], name[64];
+        const char *end = strchr(text, '\n');
+        int pid, parent, group, offset = 0;
+        size_t length = end ? (size_t)(end - text) : strlen(text);
+        if (length >= sizeof(line))
+            return -1;
+        memcpy(line, text, length);
+        line[length] = 0;
+        text += length + (end != NULL);
+        if (!length)
+            continue;
+        if (sscanf(line, "%d %d %d %31s %63s %n", &pid, &parent, &group, state, name, &offset) != 5 ||
+            !offset || pid < 0 || parent < 0 || group < 0)
+            return -1;
+        if (pid <= 1 || strchr(state, 'Z'))
+            continue;
+        enum tc_process_role role = classify(name, line + offset);
+        if (role == TC_PROC_OTHER)
+            continue;
+        if (table->count == TC_PROCESS_MAX)
+            return -1;
+        struct tc_process_info *p = &table->processes[table->count++];
+        p->pid = pid;
+        p->parent = parent;
+        p->group = group;
+        p->role = role;
+    }
+    return 0;
+}
+int tc_process_table_read(struct tc_process_table *table) {
+    char *buffer = malloc(65536);
+    char *argv[] = {TC_PS_PATH, "axww",  "-o", "pid=",   "-o", "ppid=",    "-o", "pgid=",
+                    "-o",       "stat=", "-o", "ucomm=", "-o", "command=", NULL};
+    int rc;
+    if (!buffer)
+        return -1;
+    rc = tc_command_capture(argv, buffer, 65536, 5);
+    if (!rc)
+        rc = tc_process_table_parse(table, buffer);
+    free(buffer);
+    return rc;
+}
+unsigned tc_listener_families(const char *text, unsigned port) {
+    unsigned result = 0;
+    while (*text) {
+        const char *end = strchr(text, '\n');
+        size_t length = end ? (size_t)(end - text) : strlen(text);
+        char line[2048], needle[32];
+        if (length < sizeof(line)) {
+            memcpy(line, text, length);
+            line[length] = 0;
+            snprintf(needle, sizeof(needle), ":%u", port);
+            const char *address = strrchr(line, ':');
+            /* fstat also lists connected client sockets. A remote endpoint
+             * does not prove that the parent still owns a listener. */
+            if (address && !strncmp(address, needle, strlen(needle)) &&
+                (!address[strlen(needle)] || isspace((unsigned char)address[strlen(needle)])) &&
+                !strstr(line, "<->") && !strstr(line, "-->")) {
+                if (strstr(line, " internet stream tcp "))
+                    result |= 1;
+                if (strstr(line, " internet6 stream tcp "))
+                    result |= 2;
+            }
+        }
+        text += length + (end != NULL);
+    }
+    return result;
+}
+int tc_process_listeners(pid_t pid, unsigned port, unsigned *families) {
+    char buffer[32768], number[32];
+    char *argv[] = {TC_FSTAT_PATH, "-p", number, NULL};
+    snprintf(number, sizeof(number), "%ld", (long)pid);
+    if (tc_command_capture(argv, buffer, sizeof(buffer), 5))
+        return -1;
+    *families = tc_listener_families(buffer, port);
+    return 0;
+}

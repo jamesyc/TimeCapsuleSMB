@@ -1,6 +1,10 @@
 #include "../mdns/mdns.h"
 #include "wcifsnd.h"
 #include "../common/loop.h"
+#include "../common/parent.h"
+#ifdef TC_SERVICE_MULTICALL
+#define main tc_discovery_main
+#endif
 
 volatile sig_atomic_t g_stop = 0;
 
@@ -17,7 +21,7 @@ static void publish_readiness(const struct wcifsnd *nbns, const struct config *c
     const char *state = nbns->phase == WC_ACTIVE ? "ready" :
         nbns->phase != WC_OFF ? "starting" :
         cfg->diskless || nbns->enabled == 0 ? "disabled" : "waiting";
-    setproctitle("nbns=%s mode=%s %s--netbios-name %s", state,
+    setproctitle("role=discovery nbns=%s mode=%s %s--netbios-name %s", state,
                  cfg->diskless ? "diskless" : "payload",
                  cfg->diskless ? "--diskless " : "", netbios);
 #else
@@ -73,6 +77,7 @@ int main(int argc, char **argv) {
     int result = EXIT_OK;
     const char *facts_file = NULL;
     int print_plan = 0;
+    int parent_fd = -1;
     long long mast_timeout_ms = (long long)TC_ACP_TIMEOUT_SECONDS * 1000;
     int i;
 
@@ -155,6 +160,7 @@ int main(int argc, char **argv) {
     registrant_install_ipc_fence();
 
     registrant_init(&reg, &cfg);
+    parent_fd = tc_parent_pipe();
     plan_loop_init(&loop, &options, facts_file);
     plan_loop_request(&loop, plan_loop_now_ms());
     fprintf(stderr, "discoveryd %d starting%s%s\n", ADVERTISER_VERSION_CODE, cfg.diskless ? " (diskless)" : "",
@@ -170,12 +176,13 @@ int main(int argc, char **argv) {
         plan_loop_prepare(&loop, now, &reads, &maxfd, &deadline);
         registrant_prepare(&reg, &reads, &maxfd, &deadline);
         wcifsnd_prepare(&nbns, &reads, &maxfd, &deadline);
+        tc_parent_prepare(parent_fd, &reads, &maxfd);
         if (plan_loop_wait(&reads, maxfd, now, deadline) < 0) {
             perror("select");
             result = EXIT_PLAN_FAILED;
             break;
         }
-        if (g_stop) {
+        if (g_stop || (parent_fd >= 0 && FD_ISSET(parent_fd, &reads) && !tc_parent_alive(parent_fd))) {
             break;
         }
         now = plan_loop_now_ms();

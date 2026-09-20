@@ -47,6 +47,7 @@ int tc_samba_identity_read(struct tc_samba_identity *out) {
     }
     memset(out, 0, sizeof(*out));
     strcpy(out->netbios, id.netbios); strcpy(out->server, server); strcpy(out->model, model);
+    out->name_observed = requests[0].status == ACP_OK;
     return 0;
 }
 

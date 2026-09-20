@@ -1,4 +1,28 @@
 #include "log.h"
+#include <sys/stat.h>
+
+int tc_log_trim(const char *path) {
+    unsigned char tail[16384];
+    struct stat st;
+    int fd = open(path, O_RDWR | O_NOFOLLOW), result = 0;
+    ssize_t length;
+    if (fd < 0)
+        return errno == ENOENT ? 0 : -1;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return -1;
+    }
+    if (st.st_size > 32768) {
+        /* Keep the same inode: live writers retain their open descriptors.
+         * Logs are diagnostics, so concurrent lines may be lost during this
+         * bounded trim; no temporary file or daemon restart is required. */
+        length = pread(fd, tail, sizeof(tail), st.st_size - sizeof(tail));
+        if (length < 0 || pwrite(fd, tail, length, 0) != length || ftruncate(fd, length))
+            result = -1;
+    }
+    close(fd);
+    return result;
+}
 TC_LOCAL void log_timestamp_prefix(FILE *stream);
 TC_LOCAL int timestamped_write_message(FILE *stream, const char *message);
 TC_LOCAL int timestamped_vfprintf(FILE *stream, const char *format, va_list ap);
@@ -77,5 +101,4 @@ void timestamped_perror(const char *message) {
     } else {
         timestamped_fprintf(stderr, "%s\n", strerror(saved_errno));
     }
-
 }

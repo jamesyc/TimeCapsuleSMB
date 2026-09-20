@@ -12,4 +12,5 @@ int timestamped_vfprintf(FILE *stream, const char *format, va_list ap);
 #endif
 int timestamped_fprintf(FILE *stream, const char *format, ...);
 void timestamped_perror(const char *message);
+int tc_log_trim(const char *path);
 #endif

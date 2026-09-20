@@ -52,7 +52,8 @@ def compile_native(target, output, *, flags=(), extra_sources=(), exclude=()):
 def _compile(target, flags, extra_sources, exclude):
     output = Path(tempfile.mkdtemp(dir=build_root('products'))) / binary_name(target)
     selected = [p for p in sources(target) if p.name not in exclude]
-    common = ['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-Wall', '-Wextra', '-Werror',
+    role_flags = ['-DTC_SERVICE_MULTICALL', '-D_DNS_SD_LIBDISPATCH=0'] if target == 'service' else []
+    common = ['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', *role_flags, '-Wall', '-Wextra', '-Werror',
               '-Wno-sign-compare', '-Wno-unterminated-string-initialization',
               *instrumentation_flags(), *flags]
     objects = []

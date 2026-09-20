@@ -5,10 +5,13 @@ int main(void) {
     struct tc_storage_settle state = {0};
     struct tc_inventory a = {0}, b, c;
     a.count = 1;
-    strcpy(a.volumes[0].device, "dk2"); strcpy(a.volumes[0].uuid, "first");
+    strcpy(a.volumes[0].device, "dk2");
+    strcpy(a.volumes[0].uuid, "first");
     a.volumes[0].users = 1;
-    b = a; strcpy(b.volumes[0].uuid, "second");
-    c = b; strcpy(c.volumes[0].uuid, "third");
+    b = a;
+    strcpy(b.volumes[0].uuid, "second");
+    c = b;
+    strcpy(c.volumes[0].uuid, "third");
     assert(tc_storage_observe(&state, &a, 100));
     /* Apple's volatile users count is an activation hint, not topology. */
     a.volumes[0].users = 0;

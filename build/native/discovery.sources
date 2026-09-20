@@ -10,6 +10,7 @@ native/common/identity.c
 native/common/iflist.c
 native/common/log.c
 native/common/loop.c
+native/common/parent.c
 native/common/plan.c
 native/common/policy.c
 native/common/topology.c

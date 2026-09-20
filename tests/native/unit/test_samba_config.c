@@ -5,7 +5,7 @@ int main(int argc, char **argv) {
     struct tc_inventory inventory;
     struct tc_share_set shares;
     struct tc_runtime_config config;
-    struct tc_samba_identity identity = {"TESTCAPSULE", "Test Capsule", "TimeCapsule6,116"};
+    struct tc_samba_identity identity = {"TESTCAPSULE", "Test Capsule", "TimeCapsule6,116", 1};
     char text[TC_MAST_MAX + 1];
     size_t length = fread(text, 1, sizeof(text), stdin), i;
     uint32_t available = 0xffff;

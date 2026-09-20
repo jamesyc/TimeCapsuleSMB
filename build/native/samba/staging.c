@@ -1,6 +1,57 @@
 #include "staging.h"
 #include "../common/worker.h"
 #include <sys/stat.h>
+#include <dirent.h>
+
+static int clear_directory(const char *path, unsigned depth) {
+    DIR *dir;
+    struct dirent *entry;
+    struct stat st;
+    int result = 0;
+    if (lstat(path, &st))
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISDIR(st.st_mode) || depth > 8)
+        return -1;
+    dir = opendir(path);
+    if (!dir)
+        return -1;
+    for (;;) {
+        char child[1024];
+        errno = 0;
+        entry = readdir(dir);
+        if (!entry) {
+            if (errno)
+                result = -1;
+            break;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+        if (tc_worker_cancelled() ||
+            snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) >= (int)sizeof(child) ||
+            lstat(child, &st)) {
+            result = -1;
+            break;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (clear_directory(child, depth + 1) || rmdir(child)) {
+                result = -1;
+                break;
+            }
+        } else if (unlink(child)) {
+            result = -1;
+            break;
+        }
+    }
+    closedir(dir);
+    return result;
+}
+int tc_samba_clear_locks(void) {
+    if (clear_directory(TC_LOCKS_ROOT, 0))
+        return -1;
+    if (unlink(TC_RAM_ROOT "/var/smbd.pid") && errno != ENOENT)
+        return -1;
+    return 0;
+}
 
 static const char *prepared[] = {TC_SMBD_CONF, TC_RAM_ROOT "/private/smbpasswd",
                                  TC_RAM_ROOT "/private/username.map", TC_RSYNC_CONF};

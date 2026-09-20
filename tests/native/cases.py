@@ -33,7 +33,12 @@ def compile_case(source):
     case = Path(source)
     config = case.with_suffix('.build').read_text().splitlines()
     target = config[0]
-    modules = [p for p in sources(target) if p.name != 'main.c']
+    modules = [p for p in sources(target) if p.name not in {'main.c', 'entry.c'}]
+    if target == 'service':
+        # These cases exercise shared policy/identity helpers, not a daemon's
+        # lifecycle. The service image now also links discovery and telemetry.
+        modules = [p for p in modules if p.parent.name == 'common' or
+                   p.name in {'network_commands.c', 'nt_hash.c'}]
     flags = [f'-D{line}' for line in config[1:] if '=' in line]
     directory = _DIRECTORY / case.stem
     directory.mkdir()

@@ -17,7 +17,7 @@ def stage_tools(tmp_path_factory):
                "common/parent.c", "common/acp.c"]
     subprocess.run(["cc", "-D_GNU_SOURCE", "-DTC_NATIVE_TEST", "-Wall", "-Wextra", "-Werror",
                     *instrumentation_flags(), f'-DTC_FLASH_CONFIG_PATH="{root}/runtime.conf"',
-                    f'-DTC_RAM_ROOT="{root}/ram"', f'-DTC_VOLUMES_ROOT="{root}"',
+                    f'-DTC_RAM_ROOT="{root}/ram"', f'-DTC_LOCKS_ROOT="{root}/locks"', f'-DTC_VOLUMES_ROOT="{root}"',
                     "-I", str(ROOT / "build/native"),
                     *(str(ROOT / "build/native" / module) for module in modules),
                     str(ROOT / "tests/native/unit/test_staging.c"), "-o", str(binary)],
@@ -28,7 +28,7 @@ def stage_tools(tmp_path_factory):
 @pytest.fixture
 def stage(stage_tools):
     root, binary = stage_tools
-    for name in ("dk2", "ram"):
+    for name in ("dk2", "ram", "locks"):
         shutil.rmtree(root / name, ignore_errors=True)
     payload = root / "dk2/.samba4"
     payload.mkdir(parents=True)
@@ -103,3 +103,18 @@ def test_failed_stage_keeps_applied_configuration_and_retries(stage, fault):
     if fault == "symlink": (payload / "logs/cores/smbd").unlink()
     assert run().returncode == 0
     assert (root / "ram/sbin/smbd").read_bytes() == b"retry-image"
+
+
+def test_lock_cleanup_preserves_mount_root_and_never_follows_symlinks(stage):
+    root, _, run = stage
+    locks = root / 'locks'
+    (locks / 'nested').mkdir(parents=True)
+    (locks / 'nested/locking.tdb').write_bytes(b'old')
+    protected = root / 'protected'
+    protected.mkdir(exist_ok=True)
+    (protected / 'preserve').write_text('user data')
+    (locks / 'outside').symlink_to(protected)
+    inode = locks.stat().st_ino
+    assert run('clear-locks').returncode == 0
+    assert locks.stat().st_ino == inode and list(locks.iterdir()) == []
+    assert (protected / 'preserve').read_text() == 'user data'

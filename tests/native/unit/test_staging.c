@@ -20,6 +20,7 @@ int main(int argc, char **argv) {
     char text[TC_MAST_MAX + 1];
     size_t length = fread(text, 1, sizeof(text), stdin);
     assert(argc == 2);
+    if (!strcmp(argv[1], "clear-locks")) return tc_samba_clear_locks() ? 5 : 0;
     if (tc_samba_settings_read(&settings) || tc_mast_parse(&inventory, text, length))
         return 2;
     memset(&storage, 0, sizeof(storage));
