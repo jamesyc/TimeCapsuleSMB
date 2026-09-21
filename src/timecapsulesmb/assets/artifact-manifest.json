@@ -26,27 +26,27 @@
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "095effe8d94324289f5fae33e77e7dba2ee0f3d50fe01b7dcf4d3e3e3c2952c5"
+      "sha256": "9d2bce124fc1b4d67ae48e2d0abf727e39b2f6a5d886853923c34f8107bacb74"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
-      "sha256": "b062ba64dbeb1f6b83627bd637e6475f4b2c42d683c47210b703c122c07c9ce4"
+      "sha256": "40dc23e8266d4e84607c625a292b42e3365acc2954e75ff6c9c463efc8e77eb1"
     },
     "xattr-migrator-netbsd4be": {
       "path": "bin/xattr-migrate-netbsd4be/xattr-hfs-migrate",
-      "sha256": "c2c0c23e2ee1cae53f870890a640967bf4fbe04453a71679bc350ff3dc9cd28b"
+      "sha256": "cfc69227979d3c459726b20808ae13bf4b2b482404c5f4aa65e66c75eb032759"
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "f501a9a9a970ca5353faaa44a89f4650e3b6d1f49e7b54267aad7f3b319b26a3"
+      "sha256": "a85adaeabbf02186744ff0265abdaecc6cdb8c9dd3211db5911ca4d0efc15bd2"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "db2449f43bec10f48e12716211843011ff86cef2daeee59eaf500f508cde9434"
+      "sha256": "3bd785d00e0dc94add8b6aae1105c5106e4586c87b0c2121f0a7f90e320640a8"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "48c65a6d3040028324a8fc5ec5d8bcd5914573fae46241ca8a82d632e28aaaac"
+      "sha256": "eafc49032e22346811a27287b541d8233a0ca31a7fded5bda3ff73fdbbcc97f9"
     }
   }
 }

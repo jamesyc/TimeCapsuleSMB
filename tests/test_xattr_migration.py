@@ -124,6 +124,26 @@ def test_completed_disk_survives_absent_disk_and_native_edits(device):
     assert inv.completed.keys() == {UUID_A, UUID_B}
 
 
+def test_unresolved_multi_source_cohort_preserves_completed_native_edits(device):
+    second = Path(device.volumes[0].volume_root) / "tc-netbsd7/private/xattr.tdb"
+    second.parent.mkdir(parents=True)
+    second.write_bytes(b"newer legacy metadata")
+    device.mounted.remove(UUID_B)
+    inv = device.inventory(); device.inspect(inv)
+    device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert len(inv.sources) == 2
+    assert all(Path(source["path"] + m.RECEIPT_SUFFIX).is_file() for source in inv.sources)
+
+    device.native[UUID_A] = "new native edit"
+    device.mounted.add(UUID_B)
+    device.calls.clear()
+    inv = device.inventory(); device.inspect(inv)
+    device.phase(inv, "copy"); device.phase(inv, "cleanup")
+    assert device.native[UUID_A] == "new native edit"
+    assert all(f"R {UUID_A} ".encode() not in request for _, request, _ in device.scan_calls())
+    assert inv.completed.keys() == {UUID_A, UUID_B}
+
+
 @pytest.mark.parametrize("failure", ["copy", "cleanup", "save"])
 def test_failure_never_saves_unverified_volume(device, failure):
     inv = device.inventory(); device.inspect(inv)
@@ -236,7 +256,7 @@ def test_native_command_uses_direct_guarded_single_attempt(monkeypatch):
         "exec /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log /disk/log multi copy",
         {
             "input_bytes": b"request",
-            "timeout": 900,
+            "timeout": None,
             "raw_remote_status": True,
             "extra_ssh_args": m.NATIVE_SSH_ARGS,
         },

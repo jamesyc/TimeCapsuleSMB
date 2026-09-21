@@ -25,7 +25,10 @@ MAX_SOURCES = 32
 MAX_KEYS = 262144
 MAX_RECEIPT_BYTES = 32 * 1024 * 1024
 STALL_SECONDS = 300
-NATIVE_TIMEOUT_SECONDS = 900
+# A progressing migration may legitimately run for hours. Direct exec preserves
+# its real status; if SSH disappears it may finish without the client, while the
+# process-local inactivity guard still bounds a stalled disk operation.
+NATIVE_TIMEOUT_SECONDS: int | None = None
 DIAGNOSTIC_TIMEOUT_SECONDS = 30
 NATIVE_SSH_ARGS = (
     "-o", "ConnectTimeout=20",

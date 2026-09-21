@@ -158,7 +158,7 @@ new file mode 100644
 index 0000000..f6cbb19
 --- /dev/null
 +++ b/source3/utils/tc_xattr_multi.inc
-@@ -0,0 +1,525 @@
+@@ -0,0 +1,534 @@
 +/* Deploy-only multi-TDB migration. Included by tc_xattr_hfs_migrate.c after
 + * the existing value/AppleDouble converters. Each invocation walks one volume;
 + * Python owns durable per-volume JSON receipts and never needs a roots file.
@@ -606,17 +606,26 @@ index 0000000..f6cbb19
 +    if (tc_multi_validate_sources(multi)) return -1;
 +    for (i = 0; i < multi->count; i++) ordered[i] = &multi->sources[i];
 +    qsort(ordered, multi->count, sizeof(ordered[0]), tc_rank_compare);
++    /* A surviving receipt describes the whole cohort. Retiring an earlier DB
++     * while a later DB is unresolved would make that receipt incompatible on
++     * the next deploy and permit stale metadata replay. Preflight the entire
++     * cohort before unlinking any source. */
 +    for (i = 0; i < multi->count; i++) {
 +        struct tc_multi_source *s = ordered[i];
-+        bool orphan = false, unresolved = false;
 +        for (k = 0; k < s->scan.num_tdb_keys; k++) {
-+            if (!s->coverage[k]) unresolved = true;
-+            if (s->coverage[k] == 2) orphan = true;
++            if (!s->coverage[k]) {
++                fprintf(stderr, "retirement deferred db=%u path=%s; whole cohort retained for unresolved records\n", s->index, s->path);
++                return 0;
++            }
 +            tc_progress();
 +        }
-+        if (unresolved) {
-+            fprintf(stderr, "retirement deferred db=%u path=%s; unresolved records retain newer sources\n", s->index, s->path);
-+            break;
++    }
++    for (i = 0; i < multi->count; i++) {
++        struct tc_multi_source *s = ordered[i];
++        bool orphan = false;
++        for (k = 0; k < s->scan.num_tdb_keys; k++) {
++            if (s->coverage[k] == 2) orphan = true;
++            tc_progress();
 +        }
 +        TALLOC_FREE(s->scan.db);
 +        /* Aliases go first; the ranked primary remains authoritative if this

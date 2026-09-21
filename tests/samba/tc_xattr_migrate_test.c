@@ -1359,12 +1359,16 @@ static void test_multi(void)
     CHECK(multi.sources[0].coverage[0] == 1 && multi.sources[1].coverage[0] == 1);
     CHECK(tc_source_stat_read(old, &after) == 0 && tc_source_stat_same(&before[0], &after));
     CHECK(tc_source_stat_read(newer, &after) == 0 && tc_source_stat_same(&before[1], &after));
-    /* A missing disk represented by unresolved lower-ranked coverage keeps
-     * the newer DB active, so interruption cannot reverse precedence. */
+    /* Any unresolved source keeps the entire cohort active, regardless of its
+     * rank, so surviving receipts cannot lose completed-volume coverage. */
     multi.sources[0].coverage[0] = 0;
     CHECK(tc_multi_retire(&multi) == 0);
     CHECK(access(old, F_OK) == 0 && access(newer, F_OK) == 0);
     multi.sources[0].coverage[0] = 1;
+    multi.sources[1].coverage[0] = 0;
+    CHECK(tc_multi_retire(&multi) == 0);
+    CHECK(access(old, F_OK) == 0 && access(newer, F_OK) == 0);
+    multi.sources[1].coverage[0] = 1;
     CHECK(tc_multi_retire(&multi) == 0);
     CHECK(access(old, F_OK) != 0 && access(newer, F_OK) != 0);
     TALLOC_FREE(frame);

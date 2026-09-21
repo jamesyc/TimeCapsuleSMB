@@ -131,6 +131,7 @@ static void release_ref(struct reg_entry *entry) {
         ipc_end();
         entry->ref = NULL;
     }
+    entry->pending_until_ms = 0;
 }
 
 static void schedule_retry(struct registrant *reg, long long now_ms) {
@@ -157,15 +158,18 @@ static void reg_callback(DNSServiceRef sd, DNSServiceFlags flags, DNSServiceErro
     (void)sd; (void)domain;
     if (err == kDNSServiceErr_NoError && (flags & kDNSServiceFlagsAdd)) {
         entry->status = REG_REGISTERED;
+        entry->pending_until_ms = 0;
         fprintf(stderr, "registrant: registered if=%u %s \"%s\"\n", entry->desired.ifindex, regtype, name);
     } else if (err == kDNSServiceErr_NameConflict) {
         entry->status = REG_CONFLICT;
+        entry->pending_until_ms = 0;
         fprintf(stderr, "registrant: name conflict if=%u %s \"%s\"; retrying with backoff\n", entry->desired.ifindex, regtype, name);
     } else if (err == kDNSServiceErr_NoError) {
         /* A remove (flags without Add) or a no-op: keep the entry as is. */
         return;
     } else {
         entry->status = REG_DEGRADED;
+        entry->pending_until_ms = 0;
         fprintf(stderr, "registrant: registration error %d if=%u %s \"%s\"; retrying with backoff\n", (int)err,
                 entry->desired.ifindex, regtype, name);
     }
@@ -192,6 +196,7 @@ static void note_unreachable(struct registrant *reg) {
 static void try_register(struct registrant *reg, struct reg_entry *entry, long long now_ms) {
     DNSServiceErrorType err;
     DNSServiceRef ref = NULL;
+    long long completed_ms;
 
     if (reg->unreachable_this_round || !daemon_socket_present()) {
         entry->ref = NULL;
@@ -209,9 +214,11 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
                              (uint16_t)entry->desired.txt_len, entry->desired.txt_len ? entry->desired.txt : NULL,
                              reg_callback, entry);
     ipc_end();
+    completed_ms = acp_monotonic_ms();
     if (err == kDNSServiceErr_NoError) {
         entry->ref = ref;
         entry->status = REG_PENDING;
+        entry->pending_until_ms = completed_ms + REG_PENDING_TIMEOUT_MS;
         if (reg->daemon_unreachable) {
             fprintf(stderr, "registrant: mDNSResponder reachable again\n");
             reg->daemon_unreachable = 0;
@@ -221,6 +228,7 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
     }
     entry->ref = NULL;
     entry->status = REG_DEGRADED;
+    entry->pending_until_ms = 0;
     if (err == kDNSServiceErr_ServiceNotRunning) {
         note_unreachable(reg);
     } else {
@@ -228,7 +236,7 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
         (void)snprintf(detail, sizeof(detail), "error=%d", (int)err);
         log_entry(reg, "register failed", entry, detail);
     }
-    schedule_retry(reg, now_ms);
+    schedule_retry(reg, completed_ms);
 }
 
 void registrant_apply_plan(struct registrant *reg, const struct device_plan *plan, long long now_ms) {
@@ -307,6 +315,10 @@ void registrant_prepare(struct registrant *reg, fd_set *reads, int *maxfd, long 
             FD_SET(fd, reads);
             if (fd > *maxfd) *maxfd = fd;
         }
+        if (entry->status == REG_PENDING && entry->pending_until_ms > 0 &&
+            (*deadline_ms < 0 || entry->pending_until_ms < *deadline_ms)) {
+            *deadline_ms = entry->pending_until_ms;
+        }
     }
     if (reg->retry_at_ms > 0 && (*deadline_ms < 0 || reg->retry_at_ms < *deadline_ms)) {
         *deadline_ms = reg->retry_at_ms;
@@ -327,12 +339,20 @@ void registrant_dispatch(struct registrant *reg, const fd_set *reads, long long 
         }
         live++;
         fd = DNSServiceRefSockFD(entry->ref);
-        if (fd < 0 || reads == NULL || !FD_ISSET(fd, reads)) {
+        if (fd >= 0 && reads != NULL && FD_ISSET(fd, reads)) {
+            ipc_begin();
+            err = DNSServiceProcessResult(entry->ref);
+            ipc_end();
+        } else if (entry->status == REG_PENDING && entry->pending_until_ms > 0 &&
+                   now_ms >= entry->pending_until_ms) {
+            log_entry(reg, "initial callback timed out", entry, "retrying with backoff");
+            release_ref(entry);
+            entry->status = REG_DEGRADED;
+            schedule_retry(reg, now_ms);
+            continue;
+        } else {
             continue;
         }
-        ipc_begin();
-        err = DNSServiceProcessResult(entry->ref);
-        ipc_end();
         if (err != kDNSServiceErr_NoError) {
             /* The connection is dead (daemon gone or protocol error). */
             char detail[64];

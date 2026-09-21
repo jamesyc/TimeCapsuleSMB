@@ -20,7 +20,8 @@ name\\0, regtype\\0, domain\\0.
 The fake records every request and connection close in a transcript and
 supports scripted responses per instance name: ``accept`` (default),
 ``conflict`` (error -65548 in the reply), ``delay`` (accept, but hold the
-reply until ``release``), ``drop`` (close the connection without a reply),
+reply until ``release``), ``slow-delay`` (delay the acknowledgement, then hold
+the reply), ``drop`` (close the connection without a reply),
 ``stall`` (read the request but never send the 4-byte acknowledgement --
 the synchronous stub blocks inside DNSServiceRegister), ``slow`` (send the
 acknowledgement after one second, then the reply).
@@ -108,6 +109,10 @@ class FakeDnssdDaemon:
                     except OSError:
                         pass
                     del self.held[conn_id]
+
+    def held_reply_count(self):
+        with self.lock:
+            return len(self.held)
 
     def go_away(self):
         """Refuse connections and drop every live one (daemon death)."""
@@ -239,12 +244,14 @@ class FakeDnssdDaemon:
                     return                            # accepted, never acknowledged
                 if behaviour == "slow":
                     time.sleep(1.0)
+                elif behaviour == "slow-delay":
+                    time.sleep(0.6)
                 sock.sendall(struct.pack(">I", 0))   # request accepted
                 err = ERR_NAME_CONFLICT if behaviour == "conflict" else 0
                 body = struct.pack(">III", FLAG_ADD if not err else 0, ifindex, err)
                 body += reply_name.encode() + b"\0" + regtype.encode() + b"\0" + (domain or "local.").encode() + b"\0"
                 reply = HEADER.pack(1, len(body), 0, REG_SERVICE_REPLY_OP, ctx0, ctx1, 0) + body
-                if behaviour == "delay":
+                if behaviour in {"delay", "slow-delay"}:
                     self.held[conn_id] = (sock, reply, reply_name)
                 else:
                     sock.sendall(reply)

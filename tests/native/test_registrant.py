@@ -34,7 +34,8 @@ def rig():
     sock = root / "mDNSResponder"
     binary = compile_native("discovery", root / "mdns-advertiser", flags=[
         f'-DMDNS_UDS_SERVERPATH="{sock}"', "-DTC_PLAN_POLL_MS=300", "-DREG_BACKOFF_MIN_MS=200",
-        "-DREG_BACKOFF_MAX_MS=1000", "-DREG_IPC_ALARM_SECONDS=2", "-D_DNS_SD_LIBDISPATCH=0"])
+        "-DREG_BACKOFF_MAX_MS=1000", "-DREG_PENDING_TIMEOUT_MS=1000",
+        "-DREG_IPC_ALARM_SECONDS=2", "-D_DNS_SD_LIBDISPATCH=0"])
     yield root, sock, binary
 
 
@@ -352,6 +353,39 @@ def test_slow_but_answering_daemon_is_not_fenced(rig, daemon):
     finally:
         log = adv.stop()
     assert adv.proc.returncode == 0, log
+
+
+def test_acknowledged_registration_without_callback_times_out_and_retries(rig, daemon):
+    root, _, binary = rig
+    daemon.script("AirPort Time Capsule", "delay")
+    adv = Advertiser(binary, root, NAT_DENIED)
+    try:
+        transcript = daemon.wait_for(
+            lambda events: len(registered(events)) >= 2 and
+            any(event["op"] == "close" for event in events),
+            timeout=6,
+        )
+        assert transcript is not None, adv.stop()
+        assert adv.proc.poll() is None
+    finally:
+        log = adv.stop()
+    assert "initial callback timed out" in log
+
+
+def test_slow_ack_gets_full_pending_callback_deadline(rig, daemon):
+    root, _, binary = rig
+    daemon.script("AirPort Time Capsule", "slow-delay")
+    adv = Advertiser(binary, root, NAT_DENIED)
+    try:
+        assert daemon.wait_for(lambda events: len(registered(events)) == 1) is not None
+        assert daemon.wait_for(lambda _events: daemon.held_reply_count() == 1, timeout=3) is not None
+        time.sleep(0.6)
+        daemon.release("AirPort Time Capsule")
+        time.sleep(1.2)
+        assert len(registered(daemon.transcript)) == 1
+        assert not any(event["op"] == "close" for event in daemon.transcript)
+    finally:
+        adv.stop()
 
 
 def test_dropped_connection_is_retried(rig, daemon):

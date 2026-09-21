@@ -20,6 +20,9 @@ enum reg_status { REG_PENDING, REG_REGISTERED, REG_CONFLICT, REG_DEGRADED };
 #ifndef REG_BACKOFF_MAX_MS
 #define REG_BACKOFF_MAX_MS 30000
 #endif
+#ifndef REG_PENDING_TIMEOUT_MS
+#define REG_PENDING_TIMEOUT_MS 10000
+#endif
 
 struct reg_desired {
     unsigned ifindex;
@@ -34,6 +37,7 @@ struct reg_entry {
     struct reg_desired desired;
     DNSServiceRef ref;             /* NULL while waiting for a retry */
     enum reg_status status;
+    long long pending_until_ms;    /* initial callback deadline, 0 otherwise */
 };
 
 struct registrant {

@@ -895,7 +895,7 @@ class DeployModuleTests(unittest.TestCase):
                 message = str(caught.exception)
                 self.assertIn("phase=copy elapsed_seconds=", message)
                 self.assertIn("stall_seconds=300", message)
-                self.assertIn("emergency_timeout_seconds=900", message)
+                self.assertIn("emergency_timeout_seconds=None", message)
                 self.assertIn(f"stalled={str(stalled).lower()}", message)
                 self.assertIn(f"timed_out={str(timed_out).lower()}", message)
                 self.assertIn("xattr-migration-copy.log", message)
