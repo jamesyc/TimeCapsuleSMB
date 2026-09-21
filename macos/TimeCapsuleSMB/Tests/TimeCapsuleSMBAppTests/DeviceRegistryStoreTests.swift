@@ -18,6 +18,32 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.devicesDirectoryURL.path))
     }
 
+    func testFailedDeployDiagnosticTextSurvivesRegistryReload() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        await store.updateDeployState(testDeployState(
+            status: .failed,
+            errorCode: "remote_error",
+            errorMessage: "Deployment failed.",
+            diagnosticText: "remote_manager_log_tail: service failed"
+        ), for: profile.id)
+
+        let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await reloaded.load()
+
+        XCTAssertEqual(
+            reloaded.profile(id: profile.id)?.lastDeployState?.diagnosticText,
+            "remote_manager_log_tail: service failed"
+        )
+    }
+
     func testCorruptRegistryEntersFailedStateWithoutDeletingFile() async throws {
         let temp = try TemporaryDirectory()
         let registryURL = temp.url.appendingPathComponent("devices.json")

@@ -276,6 +276,7 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
     var errorCode: String?
     var errorMessage: String?
     var recovery: DeviceRecoverySnapshot?
+    var diagnosticText: String? = nil
 
     var localizedSummary: String {
         switch status {
@@ -311,7 +312,8 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
         summary: String,
         errorCode: String?,
         errorMessage: String?,
-        recovery: DeviceRecoverySnapshot?
+        recovery: DeviceRecoverySnapshot?,
+        diagnosticText: String? = nil
     ) {
         self.operationID = operationID
         self.startedAt = startedAt
@@ -326,6 +328,7 @@ struct DeviceDeployStateSnapshot: Codable, Equatable {
         self.errorCode = errorCode
         self.errorMessage = errorMessage
         self.recovery = recovery
+        self.diagnosticText = diagnosticText
     }
 }
 

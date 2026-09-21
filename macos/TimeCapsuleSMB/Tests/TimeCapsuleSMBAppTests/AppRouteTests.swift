@@ -146,6 +146,52 @@ final class AppRouteTests: XCTestCase {
         XCTAssertNil(fixture.appStore.diagnosticsExportContext().selectedProfile)
     }
 
+    func testDiagnosticsGlobalUsesMostRecentSavedDeploymentFailure() async throws {
+        let fixture = try await makeFixture()
+        let recentFailure = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "recent-failure"
+        )
+        let recentlyUpdatedProfile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "older-failure"
+        )
+        await fixture.registry.updateDeployState(
+            testDeployState(status: .failed, updatedAt: Date(timeIntervalSince1970: 200)),
+            for: recentFailure.id
+        )
+        await fixture.registry.updateDeployState(
+            testDeployState(status: .failed, updatedAt: Date(timeIntervalSince1970: 100)),
+            for: recentlyUpdatedProfile.id
+        )
+        await fixture.registry.updateRuntimeState(testRuntimeState(), for: recentlyUpdatedProfile.id)
+        XCTAssertNotNil(fixture.appStore.operationCoordinator.run(operation: "doctor", profile: recentFailure).operation)
+        try await waitUntilStoreState {
+            !fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(recentFailure.id, .doctor)).backend.events.isEmpty
+        }
+        XCTAssertNotNil(fixture.appStore.operationCoordinator.run(operation: "doctor", profile: recentlyUpdatedProfile).operation)
+        try await waitUntilStoreState {
+            !fixture.appStore.operationCoordinator.lane(for: .deviceWorkflow(recentlyUpdatedProfile.id, .doctor)).backend.events.isEmpty
+        }
+        fixture.appStore.showAllDevices()
+
+        let context = fixture.appStore.diagnosticsExportContext()
+
+        XCTAssertEqual(context.selectedProfile?.id, recentFailure.id)
+        XCTAssertTrue(context.selectedProfileIsFallback)
+        XCTAssertTrue(context.eventLanes.contains { $0.key == .deviceWorkflow(recentFailure.id, .doctor) })
+        XCTAssertFalse(context.eventLanes.contains { $0.key == .deviceWorkflow(recentlyUpdatedProfile.id, .doctor) })
+
+        fixture.appStore.select(recentlyUpdatedProfile)
+        let selectedContext = fixture.appStore.diagnosticsExportContext()
+        XCTAssertEqual(selectedContext.selectedProfile?.id, recentlyUpdatedProfile.id)
+        XCTAssertFalse(selectedContext.selectedProfileIsFallback)
+    }
+
     func testAppStorePublishesOnlyAppLevelRouteChanges() async throws {
         let fixture = try await makeFixture()
         var cancellables: Set<AnyCancellable> = []

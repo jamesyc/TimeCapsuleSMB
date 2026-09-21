@@ -218,7 +218,7 @@ struct AppDiagnosticsView: View {
     }
 
     private func exportText() -> String {
-        DiagnosticsExportBuilder().build(context: exportContext(showBackendEvents))
+        DiagnosticsExportBuilder().build(context: exportContext(true))
     }
 }
 

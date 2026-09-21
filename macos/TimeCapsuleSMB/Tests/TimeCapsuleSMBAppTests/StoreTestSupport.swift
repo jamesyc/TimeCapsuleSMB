@@ -881,7 +881,8 @@ func testDeployState(
     summary: String = "installed",
     errorCode: String? = nil,
     errorMessage: String? = nil,
-    recovery: DeviceRecoverySnapshot? = nil
+    recovery: DeviceRecoverySnapshot? = nil,
+    diagnosticText: String? = nil
 ) -> DeviceDeployStateSnapshot {
     DeviceDeployStateSnapshot(
         operationID: nil,
@@ -896,7 +897,8 @@ func testDeployState(
         summary: summary,
         errorCode: errorCode,
         errorMessage: errorMessage,
-        recovery: recovery
+        recovery: recovery,
+        diagnosticText: diagnosticText
     )
 }
 

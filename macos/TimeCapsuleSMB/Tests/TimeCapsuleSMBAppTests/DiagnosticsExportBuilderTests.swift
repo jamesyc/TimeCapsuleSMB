@@ -19,6 +19,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("- Helper Version: 2.1.4 (20125)"))
         XCTAssertTrue(text.contains("- Validation Counts: checks=1, fail=0, pass=1"))
         XCTAssertTrue(text.contains("- Name: Office Capsule"))
+        XCTAssertTrue(text.contains("- Selection: selected device"))
         XCTAssertTrue(text.contains("- Profile Internal Share Uses Disk Root: false"))
         XCTAssertTrue(text.contains("- Profile Allow Any SMB Protocol: false"))
         XCTAssertTrue(text.contains("- Profile vfs_aio_fork: false"))
@@ -28,8 +29,8 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
 
     func testExportRedactsSecretsInSettingsEventsAndErrors() {
         var context = makeContext()
-        context.events = [
-            BackendEvent(
+        context.eventLanes = [
+            (.deviceWorkflow("profile-one", .deploy), [BackendEvent(
                 type: "error",
                 operation: "deploy",
                 code: "failed",
@@ -43,7 +44,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
                     "authorization": .string("Bearer abc123"),
                     "path": .string("/tmp/log")
                 ])
-            )
+            )])
         ]
 
         let text = DiagnosticsExportBuilder().build(context: context)
@@ -56,9 +57,9 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
 
     func testExportBoundsBackendEvents() {
         var context = makeContext()
-        context.events = (0..<55).map {
+        context.eventLanes = [(.deviceWorkflow("profile-one", .doctor), (0..<55).map {
             BackendEvent(type: "stage", operation: "doctor", stage: "stage-\($0)")
-        }
+        })]
 
         let text = DiagnosticsExportBuilder(maxEvents: 2).build(context: context)
 
@@ -69,6 +70,7 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
 
     func testExportKeepsLastDeployDetailsAfterDoctorEventsReplaceDeployEvents() {
         var context = makeContext()
+        context.selectedProfileIsFallback = true
         context.selectedProfile?.lastDeployState = DeviceDeployStateSnapshot(
             operationID: "migration-attempt-1",
             startedAt: context.generatedAt,
@@ -81,20 +83,50 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             verified: false,
             summary: "Migration failed",
             errorCode: "xattr_migration_failed",
-            errorMessage: "phase=copy elapsed_seconds=601 timed_out=false\nopendir failed path=/Volumes/dk2/problem",
-            recovery: nil
+            errorMessage: "Deployment failed.",
+            recovery: nil,
+            diagnosticText: "phase=copy elapsed_seconds=601 timed_out=false\nopendir failed path=/Volumes/dk2/problem"
         )
-        context.events = (0..<55).map { BackendEvent(type: "stage", operation: "doctor", stage: "check-\($0)") }
+        context.eventLanes = [(.deviceWorkflow("profile-one", .doctor), (0..<55).map {
+            BackendEvent(type: "stage", operation: "doctor", stage: "check-\($0)")
+        })]
 
         let text = DiagnosticsExportBuilder(maxEvents: 2).build(context: context)
 
         XCTAssertTrue(text.contains("Last Deploy Operation ID: migration-attempt-1"))
+        XCTAssertTrue(text.contains("Selection: most recent saved deployment failure"))
         XCTAssertTrue(text.contains("Last Deploy Stage: migrate_xattrs_copy"))
         XCTAssertTrue(text.contains("Last Deploy Error Code: xattr_migration_failed"))
         XCTAssertTrue(text.contains("Last Deploy Started: 2026-05-26T12:00:00Z"))
         XCTAssertTrue(text.contains("Last Deploy Finished: 2026-05-26T12:10:01Z"))
         XCTAssertTrue(text.contains("elapsed_seconds=601 timed_out=false"))
         XCTAssertTrue(text.contains("opendir failed path=/Volumes/dk2/problem"))
+    }
+
+    func testExportKeepsLatestRealFailureFromEachLaneOutsideEventLimit() {
+        var context = makeContext()
+        context.eventLanes = [
+            (.deviceWorkflow("profile-one", .deploy), [
+                BackendEvent(requestId: "deploy-request", type: "error", operation: "deploy", code: "remote_error", message: "deploy evidence")
+            ]),
+            (.deviceWorkflow("profile-one", .doctor), [
+                BackendEvent(requestId: "prompt-request", type: "error", operation: "doctor", code: "confirmation_required", message: "confirm"),
+                BackendEvent(requestId: "doctor-request", type: "result", operation: "doctor", ok: false, payload: .object(["summary": .string("checkup evidence")]))
+            ]),
+            (.deviceWorkflow("profile-one", .fsck), [
+                BackendEvent(requestId: "cancel-request", type: "error", operation: "fsck", code: "cancelled", message: "cancelled")
+            ])
+        ]
+
+        let text = DiagnosticsExportBuilder(maxEvents: 1).build(context: context)
+
+        XCTAssertTrue(text.contains("request_id=deploy-request"))
+        XCTAssertTrue(text.contains("request_id=doctor-request"))
+        XCTAssertTrue(text.contains("checkup evidence"))
+        XCTAssertFalse(text.contains("request_id=prompt-request"))
+        XCTAssertFalse(text.contains("request_id=cancel-request"))
+        XCTAssertTrue(text.contains("- Lane: device:profile-one:deploy"))
+        XCTAssertFalse(text.contains("- Lane: device:profile-one:doctor"))
     }
 
     private func makeContext() -> DiagnosticsExportContext {
@@ -130,9 +162,12 @@ final class DiagnosticsExportBuilderTests: XCTestCase {
             updatePayload: versionPayload(),
             updateError: nil,
             selectedProfile: profile(),
+            selectedProfileIsFallback: false,
             activeOperations: [.device("profile-one"): ActiveOperation(operation: "deploy", profileID: "profile-one", context: nil)],
             pendingConfirmation: nil,
-            events: [BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["summary": .string("Doctor checks passed.")]))]
+            eventLanes: [(.deviceWorkflow("profile-one", .doctor), [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["summary": .string("Doctor checks passed.")]))
+            ])]
         )
     }
 

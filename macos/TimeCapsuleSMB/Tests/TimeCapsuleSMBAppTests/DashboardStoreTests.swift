@@ -662,7 +662,14 @@ final class DashboardStoreTests: XCTestCase {
             ]),
             .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
-                BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: failure, recovery: recovery)
+                BackendEvent(
+                    type: "error",
+                    operation: "deploy",
+                    code: "remote_error",
+                    message: failure,
+                    debug: .object(["remote_manager_log_tail": .string("manager failed\nno disk")]),
+                    recovery: recovery
+                )
             ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -690,6 +697,8 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(failed.lastDeployState?.status, .failed)
         XCTAssertEqual(failed.lastDeployState?.stage, "read_mast")
         XCTAssertEqual(failed.lastDeployState?.errorMessage, failure)
+        XCTAssertTrue(failed.lastDeployState?.diagnosticText?.contains("remote_manager_log_tail:") == true)
+        XCTAssertTrue(failed.lastDeployState?.diagnosticText?.contains("manager failed\n    no disk") == true)
         XCTAssertEqual(failed.lastDeployState?.recovery?.title, "No HFS volumes found")
         XCTAssertEqual(failed.runtimeState?.state, .installFailed)
         XCTAssertEqual(failed.runtimeState?.stage, "read_mast")

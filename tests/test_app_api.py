@@ -1144,6 +1144,57 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("Traceback", error["debug"]["traceback"])
         self.assertIn("RuntimeError: boom", error["debug"]["traceback"])
 
+    def test_dispatcher_failure_event_includes_collected_redacted_debug_without_telemetry(self) -> None:
+        collector = CollectingSink()
+
+        def fail(_params, context):
+            context.stage("verify_runtime")
+            context.config = AppConfig.from_values({"TC_PASSWORD": "known-secret"})
+            context.connection = SshConnection("root@10.0.0.2", "known-secret", "")
+            context.add_debug_fields(remote_manager_log_tail="login failed with known-secret")
+            context.record_execution_measurement("probe", detail="retried known-secret")
+            raise AppOperationError(
+                "Runtime verification failed.",
+                code="remote_error",
+                debug={"cause": "command rejected known-secret"},
+            )
+
+        with mock.patch.dict(service.OPERATIONS, {"deploy": fail}):
+            with mock.patch("timecapsulesmb.app.service._should_emit_api_telemetry", return_value=False):
+                rc = service.run_api_request({"operation": "deploy", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        self._telemetry_factory.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["message"], "Runtime verification failed.")
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["debug"]["stage"], "verify_runtime")
+        self.assertIn("<redacted>", error["debug"]["cause"])
+        self.assertIn("<redacted>", error["debug"]["remote_manager_log_tail"])
+        self.assertIn("execution", error["debug"])
+        self.assertNotIn("known-secret", json.dumps(error["debug"]))
+
+    def test_dispatcher_unsuccessful_result_includes_collected_redacted_debug(self) -> None:
+        collector = CollectingSink()
+
+        def fail(_params, context):
+            context.stage("run_fsck")
+            context.config = AppConfig.from_values({"TC_PASSWORD": "known-secret"})
+            context.add_debug_fields(fsck_log="device rejected known-secret")
+            return service.OperationResult(False, {"error": "Disk repair exited with fsck status 8"})
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": fail}):
+            with mock.patch("timecapsulesmb.app.service._should_emit_api_telemetry", return_value=False):
+                rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["debug"]["stage"], "run_fsck")
+        self.assertIn("<redacted>", result["debug"]["fsck_log"])
+        self.assertIn("execution", result["debug"])
+        self.assertNotIn("known-secret", json.dumps(result["debug"]))
+
     def test_dispatcher_emits_api_operation_telemetry(self) -> None:
         collector = CollectingSink()
 
@@ -2613,7 +2664,7 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "auth_failed")
         self.assertEqual(error["message"], "The AirPort admin password did not work.")
-        self.assertEqual(error["debug"], ssh_error)
+        self.assertEqual(error["debug"]["exception"], ssh_error)
         self.assertEqual(error["recovery"]["title"], "AirPort password rejected")
         self.assertEqual(error["recovery"]["localization_key"], "configure.auth_failed")
         self.assertEqual(error["recovery"]["suggested_operation"], "configure")

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import traceback
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.core.config import airport_exact_display_name_from_identity
+from timecapsulesmb.core.redaction import SENSITIVE_KEY_PARTS, redact_sensitive_fields
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.context import OperationContext
+from timecapsulesmb.services.context import OperationContext, exception_cause_detail
 from timecapsulesmb.telemetry import build_device_os_version
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.probe import ProbedDeviceState
     from timecapsulesmb.services.runtime import ManagedTargetState
@@ -81,8 +82,8 @@ class AppOperationContext:
     def check(self, *, status: str, message: str, details: dict[str, object] | None = None) -> None:
         self.sink.check(self.operation, status=status, message=message, details=details)
 
-    def emit_result(self, *, ok: bool, payload: object | None = None) -> None:
-        self.sink.result(self.operation, ok=ok, payload=payload)
+    def emit_result(self, *, ok: bool, payload: object | None = None, debug: object | None = None) -> None:
+        self.sink.result(self.operation, ok=ok, payload=payload, debug=debug)
 
     def to_operation_callbacks(self) -> OperationCallbacks:
         return OperationCallbacks(
@@ -104,6 +105,35 @@ class AppOperationContext:
 
     def execution_telemetry(self, *, result: str) -> dict[str, object]:
         return self.diagnostics.execution_telemetry(result=result)
+
+    def failure_debug(self, exc: BaseException | None = None, *, include_traceback: bool = False) -> dict[str, object]:
+        fields = dict(self.diagnostics.debug_fields)
+        exception_debug = getattr(exc, "debug", None)
+        if isinstance(exception_debug, Mapping):
+            fields.update(exception_debug)
+        elif exception_debug is not None:
+            fields["exception"] = exception_debug
+        if exc is not None:
+            cause = exception_cause_detail(exc)
+            if cause and "cause" not in fields:
+                fields["cause"] = cause
+            if include_traceback:
+                fields["traceback"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        if self.current_stage:
+            fields["stage"] = self.current_stage
+        fields["execution"] = self.execution_telemetry(result="failure")
+        return redact_sensitive_fields(fields, sensitive_values=self._known_sensitive_values())
+
+    def _known_sensitive_values(self) -> set[str]:
+        sensitive_values: set[str] = set()
+        values = self.config.values if self.config is not None else self.values
+        if values is not None:
+            for key, value in values.items():
+                if value and any(part in key.lower() for part in SENSITIVE_KEY_PARTS):
+                    sensitive_values.add(value)
+        if self.connection is not None and self.connection.password:
+            sensitive_values.add(self.connection.password)
+        return sensitive_values
 
     def known_airport_display_name(self) -> str | None:
         model = self.finish_fields.get("device_model")

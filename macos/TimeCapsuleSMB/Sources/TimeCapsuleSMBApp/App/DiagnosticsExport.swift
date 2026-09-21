@@ -16,9 +16,14 @@ struct DiagnosticsExportContext {
     var updatePayload: VersionCheckPayload?
     var updateError: BackendErrorViewModel?
     var selectedProfile: DeviceProfile?
+    var selectedProfileIsFallback: Bool
     var activeOperations: [OperationLaneKey: ActiveOperation]
     var pendingConfirmation: PendingConfirmation?
-    var events: [BackendEvent]
+    var eventLanes: [(key: OperationLaneKey, events: [BackendEvent])]
+
+    var events: [BackendEvent] {
+        eventLanes.flatMap { $0.events }
+    }
 }
 
 struct DiagnosticsExportBuilder {
@@ -92,6 +97,11 @@ struct DiagnosticsExportBuilder {
 
         appendSection("Selected Device", to: &lines) { lines in
             if let profile = context.selectedProfile {
+                append(
+                    "Selection",
+                    value: context.selectedProfileIsFallback ? "most recent saved deployment failure" : "selected device",
+                    to: &lines
+                )
                 append("ID", value: profile.id, to: &lines)
                 append("Name", value: profile.title, to: &lines)
                 append("Host", value: profile.displayTarget, to: &lines)
@@ -112,6 +122,9 @@ struct DiagnosticsExportBuilder {
                         append("Last Deploy Finished", value: format(date: finished), to: &lines)
                     }
                     append("Last Deploy Error Code", value: deploy.errorCode ?? "none", to: &lines)
+                    if let diagnosticText = deploy.diagnosticText {
+                        appendMultiline("Last Deploy Diagnostics", value: diagnosticText, to: &lines)
+                    }
                 }
                 appendDeviceSettings(profile.settings, prefix: "Profile", to: &lines)
             } else {
@@ -135,13 +148,33 @@ struct DiagnosticsExportBuilder {
             }
         }
 
+        appendSection("Errors", to: &lines) { lines in
+            let failures = context.eventLanes.compactMap { lane in
+                lane.events.last(where: { isRealFailure($0) }).map { (lane.key, $0) }
+            }
+            if failures.isEmpty {
+                append("Failures", value: "none", to: &lines)
+            } else {
+                for (laneKey, event) in failures {
+                    append(
+                        "Failure",
+                        value: "lane=\(laneKey.description) | operation=\(event.operation) | request_id=\(event.requestId ?? "unknown") | \(eventSummary(event))",
+                        to: &lines
+                    )
+                }
+            }
+        }
+
         appendSection("Backend Events", to: &lines) { lines in
-            let boundedEvents = context.events.suffix(maxEvents)
-            if boundedEvents.isEmpty {
+            let boundedLanes = boundedEventLanes(context.eventLanes)
+            if boundedLanes.isEmpty {
                 append("Events", value: "none", to: &lines)
             } else {
-                for event in boundedEvents {
-                    append("Event", value: eventSummary(event), to: &lines)
+                for lane in boundedLanes {
+                    append("Lane", value: lane.key.description, to: &lines)
+                    for event in lane.events {
+                        append("Event", value: eventSummary(event), to: &lines)
+                    }
                 }
             }
         }
@@ -164,7 +197,14 @@ struct DiagnosticsExportBuilder {
     }
 
     private func append(_ label: String, value: String, to lines: inout [String]) {
-        lines.append("- \(label): \(redacted(value, key: label))")
+        lines.append("- \(label): \(BackendDiagnosticText.redacted(value, key: label))")
+    }
+
+    private func appendMultiline(_ label: String, value: String, to lines: inout [String]) {
+        lines.append("- \(label):")
+        lines.append(contentsOf: BackendDiagnosticText.redacted(value, key: label)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "  \($0)" })
     }
 
     private func appendDeviceSettings(
@@ -202,50 +242,47 @@ struct DiagnosticsExportBuilder {
             event.message
         ].compactMap { $0?.nilIfEmpty }
         if let payload = event.payload {
-            parts.append("payload=\(redacted(payload, key: "payload").compactDisplayText)")
+            parts.append("payload=\(BackendDiagnosticText.redacted(payload, key: "payload").compactDisplayText)")
         }
         if let details = event.details {
-            parts.append("details=\(redacted(details, key: "details").compactDisplayText)")
+            parts.append("details=\(BackendDiagnosticText.redacted(details, key: "details").compactDisplayText)")
         }
         if let debug = event.debug {
-            parts.append("debug=\(redacted(debug, key: "debug").compactDisplayText)")
+            parts.append("debug=\(BackendDiagnosticText.redacted(debug, key: "debug").compactDisplayText)")
         }
         return parts.joined(separator: " | ")
     }
 
-    private func redacted(_ value: JSONValue, key: String?) -> JSONValue {
-        if shouldRedact(key: key) {
-            return .string("<redacted>")
+    private func isRealFailure(_ event: BackendEvent) -> Bool {
+        if event.type == "result" {
+            return event.ok == false
         }
-        switch value {
-        case .object(let object):
-            return .object(object.mapValuesWithKeys { childKey, childValue in
-                redacted(childValue, key: childKey)
-            })
-        case .array(let values):
-            return .array(values.map { redacted($0, key: key) })
-        default:
-            return value
-        }
-    }
-
-    private func redacted(_ value: String, key: String?) -> String {
-        shouldRedact(key: key) ? "<redacted>" : value
-    }
-
-    private func shouldRedact(key: String?) -> Bool {
-        guard let key = key?.lowercased() else {
+        guard event.type == "error" else {
             return false
         }
-        return key.contains("password")
-            || key.contains("token")
-            || key.contains("secret")
-            || key.contains("authorization")
-            || key.contains("api_key")
-            || key.contains("apikey")
-            || key.contains("private_key")
-            || key.contains("privatekey")
-            || key.contains("credentials")
+        guard let code = event.code else {
+            return true
+        }
+        return !["cancelled", "confirmation_cancelled", "confirmation_required"].contains(code)
+    }
+
+    private func boundedEventLanes(
+        _ eventLanes: [(key: OperationLaneKey, events: [BackendEvent])]
+    ) -> [(key: OperationLaneKey, events: [BackendEvent])] {
+        guard maxEvents > 0 else {
+            return []
+        }
+        let lanes = Array(eventLanes.filter { !$0.events.isEmpty }.prefix(maxEvents))
+        guard !lanes.isEmpty else {
+            return []
+        }
+        var remaining = maxEvents
+        return lanes.enumerated().map { index, lane in
+            let allowance = max(1, remaining / (lanes.count - index))
+            let events = Array(lane.events.suffix(allowance))
+            remaining -= events.count
+            return (lane.key, events)
+        }
     }
 
     private func sortedDescription(_ values: [String: Int]) -> String {
@@ -275,14 +312,6 @@ private extension JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return encoder
-    }
-}
-
-private extension Dictionary {
-    func mapValuesWithKeys<T>(_ transform: (Key, Value) -> T) -> [Key: T] {
-        Dictionary<Key, T>(uniqueKeysWithValues: map { element in
-            (element.key, transform(element.key, element.value))
-        })
     }
 }
 

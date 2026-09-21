@@ -89,11 +89,7 @@ final class MaintenanceWorkflowOperation {
     }
 
     func falseResultError(from event: BackendEvent) -> BackendErrorViewModel {
-        BackendErrorViewModel(
-            operation: name,
-            code: "operation_failed",
-            message: event.localizedPayloadSummaryText ?? event.localizedSummary
-        )
+        BackendErrorViewModel(event: event)
     }
 
     func contractDecodeError(_ decodeError: Error) -> BackendErrorViewModel {

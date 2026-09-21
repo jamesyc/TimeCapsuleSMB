@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import traceback
 from collections.abc import Callable
 
 from timecapsulesmb.app.context import AppOperationContext
-from timecapsulesmb.app.events import EventSink, redact
+from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops import OPERATIONS, TELEMETRY_OPERATIONS
 from timecapsulesmb.app.confirmations import AppConfirmationRequired
 from timecapsulesmb.app.requests import parse_api_request
@@ -81,7 +80,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             operation,
             str(exc),
             code=exc.code,
-            debug=redact(exc.debug) if exc.debug is not None else None,
+            debug=context.failure_debug(exc),
             recovery=recovery,
         )
         _finish_api_telemetry(
@@ -96,6 +95,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             operation,
             str(exc),
             code="config_error",
+            debug=context.failure_debug(exc),
             recovery=recovery_for(operation, "config_error", stage=context.current_stage),
         )
         _finish_api_telemetry(
@@ -116,6 +116,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             operation,
             str(exc),
             code="remote_error",
+            debug=context.failure_debug(exc),
             recovery=recovery,
         )
         _finish_api_telemetry(
@@ -157,6 +158,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             operation,
             error,
             code="operation_failed",
+            debug=context.failure_debug(exc),
             recovery=recovery_for(operation, "operation_failed", stage=context.current_stage),
         )
         _finish_api_telemetry(
@@ -172,7 +174,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             operation,
             message,
             code="operation_failed",
-            debug={"traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))},
+            debug=context.failure_debug(exc, include_traceback=True),
             recovery=recovery_for(operation, "operation_failed", stage=context.current_stage),
         )
         _finish_api_telemetry(
@@ -182,8 +184,12 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             error=context.diagnostic_error(message) or message,
         )
         return 1
-    context.emit_result(ok=result.ok, payload=result.payload)
     payload_error = _payload_error(result.payload) if not result.ok else None
+    context.emit_result(
+        ok=result.ok,
+        payload=result.payload,
+        debug=context.failure_debug() if not result.ok else None,
+    )
     _finish_api_telemetry(
         telemetry_session,
         context,

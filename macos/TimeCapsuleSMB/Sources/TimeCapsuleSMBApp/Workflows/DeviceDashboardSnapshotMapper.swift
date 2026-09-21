@@ -189,7 +189,8 @@ enum DeviceDashboardSnapshotMapper {
                 summary: "",
                 errorCode: errorCode,
                 errorMessage: errorMessage,
-                recovery: recovery
+                recovery: recovery,
+                diagnosticText: error?.diagnosticText
             ),
             runtimeState: DeviceRuntimeStateSnapshot(
                 state: .installFailed,

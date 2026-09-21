@@ -208,7 +208,28 @@ final class AppStore: ObservableObject {
     }
 
     func diagnosticsExportContext(includeBackendEvents: Bool = true) -> DiagnosticsExportContext {
-        DiagnosticsExportContext(
+        let fallbackProfile = selectedProfile == nil
+            ? deviceRegistry.profiles
+                .filter { $0.lastDeployState?.status == .failed }
+                .max { ($0.lastDeployState?.updatedAt ?? .distantPast) < ($1.lastDeployState?.updatedAt ?? .distantPast) }
+            : nil
+        let exportProfile = selectedProfile ?? fallbackProfile
+        let eventLanes: [(key: OperationLaneKey, events: [BackendEvent])]
+        if includeBackendEvents {
+            eventLanes = operationCoordinator.allLanes.compactMap { lane in
+                switch lane.key {
+                case .app, .appWorkflow:
+                    return (key: lane.key, events: lane.backend.events)
+                case .device(let profileID), .deviceWorkflow(let profileID, _):
+                    return profileID == exportProfile?.id ? (key: lane.key, events: lane.backend.events) : nil
+                case .candidateHost, .localPath:
+                    return nil
+                }
+            }
+        } else {
+            eventLanes = []
+        }
+        return DiagnosticsExportContext(
             generatedAt: Date(),
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
             appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "development",
@@ -223,10 +244,11 @@ final class AppStore: ObservableObject {
             updateState: appUpdateStore.state,
             updatePayload: appUpdateStore.payload,
             updateError: appUpdateStore.error,
-            selectedProfile: selectedProfile,
+            selectedProfile: exportProfile,
+            selectedProfileIsFallback: fallbackProfile != nil,
             activeOperations: operationCoordinator.activeOperations,
             pendingConfirmation: operationCoordinator.pendingConfirmation,
-            events: includeBackendEvents ? operationCoordinator.allLanes.flatMap { $0.backend.events } : []
+            eventLanes: eventLanes
         )
     }
 

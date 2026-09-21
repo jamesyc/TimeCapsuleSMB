@@ -120,6 +120,7 @@ struct BackendErrorViewModel: Equatable {
     private let rawMessage: String?
     let localError: WorkflowLocalError?
     let recovery: BackendRecoveryPayload?
+    let diagnosticText: String?
 
     var message: String {
         localError?.message ?? BackendErrorLocalization.message(operation: operation, code: code) ?? rawMessage ?? ""
@@ -128,9 +129,15 @@ struct BackendErrorViewModel: Equatable {
     init(event: BackendEvent) {
         self.operation = event.operation
         self.code = event.code ?? "operation_failed"
-        self.rawMessage = event.message ?? event.localizedSummary
+        self.rawMessage = event.type == "result"
+            ? event.localizedPayloadSummaryText ?? event.localizedSummary
+            : event.message ?? event.localizedSummary
         self.localError = nil
         self.recovery = try? event.recovery?.decode(BackendRecoveryPayload.self)
+        self.diagnosticText = BackendDiagnosticText.make(
+            message: event.message ?? event.payloadSummaryText,
+            debug: event.debug
+        )
     }
 
     init(operation: String, code: String, message: String, recovery: BackendRecoveryPayload? = nil) {
@@ -139,6 +146,7 @@ struct BackendErrorViewModel: Equatable {
         self.rawMessage = message
         self.localError = nil
         self.recovery = recovery
+        self.diagnosticText = nil
     }
 
     init(operation: String, localError: WorkflowLocalError, recovery: BackendRecoveryPayload? = nil) {
@@ -147,6 +155,7 @@ struct BackendErrorViewModel: Equatable {
         self.rawMessage = nil
         self.localError = localError
         self.recovery = recovery
+        self.diagnosticText = nil
     }
 
     init(operation: String, deployState: DeviceDeployStateSnapshot) {
@@ -155,6 +164,120 @@ struct BackendErrorViewModel: Equatable {
         self.rawMessage = deployState.localizedSummary
         self.localError = nil
         self.recovery = deployState.recovery.map(BackendRecoveryPayload.init)
+        self.diagnosticText = deployState.diagnosticText
+    }
+}
+
+enum BackendDiagnosticText {
+    static let maxUTF8Bytes = 32 * 1024
+    static let truncationMarker = "\n[diagnostic text truncated at 32 KiB]"
+
+    static func make(message: String?, debug: JSONValue?) -> String? {
+        var lines: [String] = []
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("Message:")
+            lines.append(contentsOf: indentedLines(message, indent: 2))
+        }
+        if let debug {
+            lines.append("Debug:")
+            lines.append(contentsOf: render(redacted(debug), indent: 2))
+        }
+        guard !lines.isEmpty else {
+            return nil
+        }
+        return limit(lines.joined(separator: "\n"))
+    }
+
+    static func redacted(_ value: JSONValue, key: String? = nil) -> JSONValue {
+        if shouldRedact(key) {
+            return .string("<redacted>")
+        }
+        switch value {
+        case .object(let object):
+            return .object(Dictionary(uniqueKeysWithValues: object.map { childKey, childValue in
+                (childKey, redacted(childValue, key: childKey))
+            }))
+        case .array(let values):
+            return .array(values.map { redacted($0, key: key) })
+        default:
+            return value
+        }
+    }
+
+    static func redacted(_ value: String, key: String? = nil) -> String {
+        shouldRedact(key) ? "<redacted>" : value
+    }
+
+    private static func shouldRedact(_ key: String?) -> Bool {
+        guard let key = key?.lowercased() else {
+            return false
+        }
+        return key.contains("password")
+            || key.contains("token")
+            || key.contains("secret")
+            || key.contains("authorization")
+            || key.contains("api_key")
+            || key.contains("apikey")
+            || key.contains("private_key")
+            || key.contains("privatekey")
+            || key.contains("credentials")
+    }
+
+    private static func render(_ value: JSONValue, indent: Int) -> [String] {
+        let prefix = String(repeating: " ", count: indent)
+        switch value {
+        case .object(let object):
+            return object.keys.sorted().flatMap { key -> [String] in
+                guard let child = object[key] else { return [] }
+                if let scalar = scalarText(child) {
+                    return ["\(prefix)\(key): \(scalar)"]
+                }
+                return ["\(prefix)\(key):"] + render(child, indent: indent + 2)
+            }
+        case .array(let values):
+            return values.flatMap { child -> [String] in
+                if let scalar = scalarText(child) {
+                    return ["\(prefix)- \(scalar)"]
+                }
+                return ["\(prefix)-"] + render(child, indent: indent + 2)
+            }
+        case .string(let string):
+            return indentedLines(string, indent: indent)
+        case .number, .bool, .null:
+            return ["\(prefix)\(value.displayText)"]
+        }
+    }
+
+    private static func scalarText(_ value: JSONValue) -> String? {
+        switch value {
+        case .string(let string) where !string.contains("\n"):
+            return string
+        case .number, .bool, .null:
+            return value.displayText
+        case .string, .object, .array:
+            return nil
+        }
+    }
+
+    private static func indentedLines(_ value: String, indent: Int) -> [String] {
+        let prefix = String(repeating: " ", count: indent)
+        return value.split(separator: "\n", omittingEmptySubsequences: false).map { "\(prefix)\($0)" }
+    }
+
+    private static func limit(_ value: String) -> String {
+        let data = Data(value.utf8)
+        guard data.count > maxUTF8Bytes else {
+            return value
+        }
+        let markerData = Data(truncationMarker.utf8)
+        var prefixLength = maxUTF8Bytes - markerData.count
+        while prefixLength > 0 {
+            if let prefix = String(data: data.prefix(prefixLength), encoding: .utf8) {
+                return prefix + truncationMarker
+            }
+            prefixLength -= 1
+        }
+        return truncationMarker
     }
 }
 

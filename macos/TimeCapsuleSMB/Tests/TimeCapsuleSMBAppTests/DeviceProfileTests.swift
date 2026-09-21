@@ -89,6 +89,34 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(profile.runtimeContext.configURL.path, "/tmp/devices/abc/.env")
     }
 
+    func testDeployDiagnosticTextRoundTripsAndOlderSnapshotsDecodeWithoutIt() throws {
+        let snapshot = DeviceDeployStateSnapshot(
+            operationID: "deploy-one",
+            startedAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20),
+            finishedAt: Date(timeIntervalSince1970: 20),
+            status: .failed,
+            stage: "verify_runtime",
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: true,
+            verified: false,
+            summary: "",
+            errorCode: "remote_error",
+            errorMessage: "Deployment failed.",
+            recovery: nil,
+            diagnosticText: "remote_manager_log_tail: service failed"
+        )
+        let encoded = try JSONEncoder().encode(snapshot)
+        let decoded = try JSONDecoder().decode(DeviceDeployStateSnapshot.self, from: encoded)
+        XCTAssertEqual(decoded.diagnosticText, "remote_manager_log_tail: service failed")
+
+        var olderObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        olderObject.removeValue(forKey: "diagnosticText")
+        let olderData = try JSONSerialization.data(withJSONObject: olderObject)
+        let older = try JSONDecoder().decode(DeviceDeployStateSnapshot.self, from: olderData)
+        XCTAssertNil(older.diagnosticText)
+    }
+
     func testProfileSettingsDecodeMissingNewKeysWithDefaults() throws {
         let data = Data("""
         {

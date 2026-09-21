@@ -94,8 +94,18 @@ class EventSink:
             "details": details or {},
         }))
 
-    def result(self, operation: str, *, ok: bool, payload: object | None = None) -> None:
-        self.emit(AppEvent("result", operation, {"ok": ok, "payload": payload if payload is not None else {}}))
+    def result(
+        self,
+        operation: str,
+        *,
+        ok: bool,
+        payload: object | None = None,
+        debug: object | None = None,
+    ) -> None:
+        fields: dict[str, object] = {"ok": ok, "payload": payload if payload is not None else {}}
+        if debug is not None:
+            fields["debug"] = debug
+        self.emit(AppEvent("result", operation, fields))
 
     def error(
         self,

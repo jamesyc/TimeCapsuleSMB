@@ -283,6 +283,61 @@ final class BackendPayloadTests: XCTestCase {
         }
     }
 
+    func testBackendErrorPreservesOriginalMessageAndReadableRedactedDebug() {
+        let event = BackendEvent(
+            type: "error",
+            operation: "deploy",
+            code: "payload_upload_timeout",
+            message: "scp failed at /Volumes/Data",
+            debug: .object([
+                "password": .string("super-secret"),
+                "remote_manager_log_tail": .string("first line\nsecond line")
+            ])
+        )
+
+        let error = BackendErrorViewModel(event: event)
+        let diagnosticText = error.diagnosticText ?? ""
+
+        XCTAssertEqual(error.message, "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.")
+        XCTAssertTrue(diagnosticText.contains("scp failed at /Volumes/Data"))
+        XCTAssertTrue(diagnosticText.contains("password: <redacted>"))
+        XCTAssertTrue(diagnosticText.contains("remote_manager_log_tail:"))
+        XCTAssertTrue(diagnosticText.contains("    first line\n    second line"))
+        XCTAssertFalse(diagnosticText.contains("super-secret"))
+    }
+
+    func testBackendErrorPreservesFailedResultDiagnostics() {
+        let event = BackendEvent(
+            requestId: "request-one",
+            type: "result",
+            operation: "fsck",
+            ok: false,
+            payload: .object(["summary": .string("fsck exited with status 8")]),
+            debug: .object(["fsck_log": .string("bad block")])
+        )
+
+        let error = BackendErrorViewModel(event: event)
+
+        XCTAssertEqual(error.message, "fsck exited with status 8")
+        XCTAssertTrue(error.diagnosticText?.contains("fsck exited with status 8") == true)
+        XCTAssertTrue(error.diagnosticText?.contains("fsck_log: bad block") == true)
+    }
+
+    func testBackendDiagnosticTextUsesUTF8ByteLimitAndMarker() {
+        let event = BackendEvent(
+            type: "error",
+            operation: "deploy",
+            code: "remote_error",
+            message: "failed",
+            debug: .object(["log": .string(String(repeating: "é", count: 20_000))])
+        )
+
+        let diagnosticText = BackendErrorViewModel(event: event).diagnosticText ?? ""
+
+        XCTAssertLessThanOrEqual(Data(diagnosticText.utf8).count, BackendDiagnosticText.maxUTF8Bytes)
+        XCTAssertTrue(diagnosticText.hasSuffix(BackendDiagnosticText.truncationMarker))
+    }
+
     private func jsonValue(_ text: String) throws -> JSONValue {
         let data = Data(text.utf8)
         return try JSONDecoder().decode(JSONValue.self, from: data)
