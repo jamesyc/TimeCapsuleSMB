@@ -5,6 +5,8 @@
 #define main tc_telemetry_main
 #endif
 volatile sig_atomic_t telemetry_stop = 0;
+static int parent_fd = -1;
+static int collect_cancelled(void) { return telemetry_stop || !tc_parent_alive(parent_fd); }
 static void stop(int sig) { (void)sig; telemetry_stop = 1; acp_stop_requested = 1; }
 
 int main(int argc, char **argv) {
@@ -12,7 +14,6 @@ int main(int argc, char **argv) {
     const char *reason = "manual";
     struct telemetry_schedule schedule;
     time_t next_cleanup = 0, retry_after = 0;
-    int parent_fd = -1;
     memset(&schedule, 0, sizeof(schedule));
     signal(SIGTERM, stop); signal(SIGINT, stop); signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && !strcmp(argv[1], "--version")) { puts(HEARTBEAT_AGENT_VERSION); return 0; }
@@ -35,6 +36,8 @@ int main(int argc, char **argv) {
     }
     if (daemon) {
         parent_fd = tc_parent_pipe();
+        if (parent_fd >= 0 && getpgrp() == getpid())
+            acp_set_scope(1, collect_cancelled);
 #if defined(__NetBSD__)
         setproctitle("role=telemetry --daemon");
 #endif

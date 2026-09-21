@@ -7,6 +7,8 @@
 #endif
 
 volatile sig_atomic_t g_stop = 0;
+static int parent_fd = -1;
+static int collect_cancelled(void) { return g_stop || !tc_parent_alive(parent_fd); }
 
 static void on_signal(int signo) {
     (void)signo;
@@ -77,7 +79,6 @@ int main(int argc, char **argv) {
     int result = EXIT_OK;
     const char *facts_file = NULL;
     int print_plan = 0;
-    int parent_fd = -1;
     long long mast_timeout_ms = (long long)TC_ACP_TIMEOUT_SECONDS * 1000;
     int i;
 
@@ -161,12 +162,14 @@ int main(int argc, char **argv) {
 
     registrant_init(&reg, &cfg);
     parent_fd = tc_parent_pipe();
+    if (parent_fd >= 0 && getpgrp() == getpid())
+        acp_set_scope(1, collect_cancelled);
     plan_loop_init(&loop, &options, facts_file);
     plan_loop_request(&loop, plan_loop_now_ms());
     fprintf(stderr, "discoveryd %d starting%s%s\n", ADVERTISER_VERSION_CODE, cfg.diskless ? " (diskless)" : "",
             cfg.adisk_disks.count ? " with adisk rows" : "");
 
-    while (!g_stop) {
+    while (!g_stop && !acp_stop_requested) {
         fd_set reads;
         int maxfd = -1;
         long long deadline = -1;

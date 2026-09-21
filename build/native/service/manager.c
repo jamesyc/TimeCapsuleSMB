@@ -35,6 +35,11 @@ struct audit_result {
     unsigned smb, rsync;
     pid_t smb_pid, rsync_pid;
 };
+struct mast_result {
+    int status;
+    size_t length;
+    char text[TC_MAST_MAX + 1];
+};
 struct manager {
     struct tc_events events;
     struct plan_loop network;
@@ -44,15 +49,14 @@ struct manager {
     struct managed smb, discovery, telemetry, rsync, diskd;
     struct tc_child storage_job, settings_job, stage_job, audit_job;
     struct audit_result audit_result;
-    struct acp_collector mast;
-    struct acp_request mast_request;
-    char mast_text[TC_MAST_MAX + 1];
+    struct tc_child mast_job;
+    struct mast_result mast_result;
     char bindings[TC_BIND_TOKENS_MAX], applied_bindings[TC_BIND_TOKENS_MAX];
     struct tc_share_set discovery_shares;
     char discovery_name[16];
     int discovery_diskless, discovery_afp, discovery_debug;
     int have_settings, have_bindings, have_applied, stopping, tune_ata;
-    int mast_running, storage_dirty, config_dirty, ownership_ready;
+    int storage_dirty, config_dirty, ownership_ready;
     unsigned blocked;
     struct stale_process stale[TC_PROCESS_MAX];
     size_t stale_count;
@@ -117,7 +121,7 @@ static int settings_job(void *opaque) {
             fprintf(stderr, "settings: local hostname resolution could not update %s\n", TC_HOSTS_PATH);
     }
     if (tc_samba_settings_read(&result))
-        return 1;
+        return tc_worker_finish(1);
     /* Hostname/model fallbacks are useful at cold boot. A later ACP failure
      * must not rename a working server or replace its known hardware model. */
     if (m->have_settings) {
@@ -126,22 +130,22 @@ static int settings_job(void *opaque) {
         else if (!strcmp(result.identity.model, "MacSamba"))
             strcpy(result.identity.model, m->settings.identity.model);
     }
-    return tc_worker_result(&result, sizeof(result)) ? 1 : 0;
+    return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
 static int storage_job(void *opaque) {
     struct manager *m = opaque;
     struct tc_storage_snapshot result;
     tc_worker_begin("storage");
     if (tc_storage_prepare(&result, &m->topology.stable, &m->storage, &m->settings.config, m->tune_ata))
-        return 1;
-    return tc_worker_result(&result, sizeof(result)) ? 1 : 0;
+        return tc_worker_finish(1);
+    return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
 static int stage_job(void *opaque) {
     struct manager *m = opaque;
     tc_worker_begin("stage");
     if (m->copy_smbd && tc_samba_clear_locks())
-        return 1;
-    return tc_samba_stage(&m->storage, &m->settings, m->bindings, m->copy_smbd, m->copy_rsync) ? 1 : 0;
+        return tc_worker_finish(1);
+    return tc_worker_finish(tc_samba_stage(&m->storage, &m->settings, m->bindings, m->copy_smbd, m->copy_rsync) ? 1 : 0);
 }
 static int audit_job(void *opaque) {
     struct manager *m = opaque;
@@ -153,14 +157,14 @@ static int audit_job(void *opaque) {
     (void)tc_log_trim(TC_RAM_ROOT "/var/telemetry.log");
     (void)tc_log_trim(TC_RAM_ROOT "/var/rsync.log");
     if (tc_process_table_read(&result.table))
-        return 1;
+        return tc_worker_finish(1);
     result.smb_pid = m->smb.child.pid;
     result.rsync_pid = m->rsync.child.pid;
     if (m->smb.child.pid && !m->smb.child.stopping)
         result.smb_probe = tc_process_listeners(m->smb.child.pid, 445, &result.smb) == 0;
     if (m->rsync.child.pid && !m->rsync.child.stopping)
         result.rsync_probe = tc_process_listeners(m->rsync.child.pid, 873, &result.rsync) == 0;
-    return tc_worker_result(&result, sizeof(result)) ? 1 : 0;
+    return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
 static int payload_same(const struct tc_storage_snapshot *a, const struct tc_storage_snapshot *b) {
     return a->payload_index >= 0 && b->payload_index >= 0 && !strcmp(a->payload, b->payload) &&
@@ -206,12 +210,27 @@ static void physical_event(struct manager *m, long long now) {
         m->storage_at = m->bindings_at;
     }
 }
+static int mast_job(void *unused) {
+    struct mast_result result = {0};
+    struct acp_request request = {0};
+    (void)unused;
+    tc_worker_begin("inventory");
+    request.key = "MaSt";
+    request.form = ACP_ARRAY;
+    request.multiline = 1;
+    request.output = result.text;
+    request.capacity = sizeof(result.text);
+    (void)acp_collect_run(&request, 1, 20000, 20000);
+    result.status = request.status;
+    result.length = request.length;
+    return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
+}
 static void pump_inventory(struct manager *m, long long now) {
-    if (m->mast_running && acp_collect_pump(&m->mast) != 0) {
+    if (m->mast_job.group && tc_child_poll(&m->mast_job, now)) {
         struct tc_inventory inventory;
-        m->mast_running = 0;
-        if (m->mast_request.status == ACP_OK &&
-            !tc_mast_parse(&inventory, m->mast_text, m->mast_request.length)) {
+        if (tc_child_ok(&m->mast_job) && !m->mast_job.stopping &&
+            m->mast_job.used == sizeof(m->mast_result) && m->mast_result.status == ACP_OK &&
+            !tc_mast_parse(&inventory, m->mast_result.text, m->mast_result.length)) {
             if (tc_storage_observe(&m->topology, &inventory, now))
                 invalidate_storage(m, now);
             else if (!m->topology.pending && activation_needed(m))
@@ -222,17 +241,13 @@ static void pump_inventory(struct manager *m, long long now) {
             timestamped_fprintf(stderr, "manager: MaSt unavailable; retaining last valid inventory\n");
             m->mast_at = now + JOB_RETRY_MS;
         }
+        tc_child_close(&m->mast_job);
     }
-    if (!m->mast_running && now >= m->mast_at) {
-        memset(&m->mast_request, 0, sizeof(m->mast_request));
-        m->mast_request.key = "MaSt";
-        m->mast_request.form = ACP_ARRAY;
-        m->mast_request.multiline = 1;
-        m->mast_request.output = m->mast_text;
-        m->mast_request.capacity = sizeof(m->mast_text);
-        m->mast_running = 1;
+    if (!m->mast_job.group && now >= m->mast_at) {
         m->mast_at = now + INVENTORY_MS;
-        (void)acp_collect_begin(&m->mast, &m->mast_request, 1, 20000, 20000);
+        if (tc_child_fork(&m->mast_job, mast_job, NULL, MANAGER_LOG, &m->mast_result,
+                          sizeof(m->mast_result), now + 25000))
+            m->mast_at = now + JOB_RETRY_MS;
     }
 }
 static void pump_settings(struct manager *m, long long now) {
@@ -561,9 +576,12 @@ static void stopping(struct manager *m, long long now) {
     tc_child_stop(&m->settings_job, now, 1);
     tc_child_stop(&m->stage_job, now, 1);
     tc_child_stop(&m->audit_job, now, 1);
+    tc_child_stop(&m->mast_job, now, 1);
+    tc_child_stop(&m->network.collection_job, now, 1);
 }
 static int drained(struct manager *m, long long now) {
-    struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->stage_job, &m->audit_job};
+    struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->stage_job, &m->audit_job,
+                               &m->mast_job, &m->network.collection_job};
     size_t i;
     for (i = 0; i < sizeof(jobs) / sizeof(jobs[0]); i++) {
         if (jobs[i]->group && tc_child_poll(jobs[i], now))
@@ -612,6 +630,7 @@ int tc_manager_main(int argc, char **argv) {
     setproctitle("role=manager");
 #endif
     plan_loop_init(&m->network, &options, facts_file);
+    m->network.owned_collections = 1;
     m->storage_dirty = 1;
     timestamped_fprintf(stderr, "manager: starting native supervision\n");
     for (;;) {
@@ -654,21 +673,13 @@ int tc_manager_main(int argc, char **argv) {
         tc_events_prepare(&m->events, &reads, &maxfd);
         struct tc_child *children[] = {&m->smb.child,       &m->rsync.child,  &m->discovery.child,
                                        &m->telemetry.child, &m->settings_job, &m->storage_job,
-                                       &m->stage_job,       &m->audit_job};
+                                       &m->stage_job,       &m->audit_job, &m->mast_job, &m->network.collection_job};
         size_t i;
         for (i = 0; i < sizeof(children) / sizeof(children[0]); i++)
             tc_child_prepare(children[i], &reads, &maxfd, &deadline);
         if (!m->stopping) {
             plan_loop_prepare(&m->network, now, &reads, &maxfd, &deadline);
-            if (m->mast_running) {
-                int fd = acp_collect_fd(&m->mast);
-                if (fd >= 0) {
-                    FD_SET(fd, &reads);
-                    if (fd > maxfd)
-                        maxfd = fd;
-                }
-                lower(&deadline, acp_collect_deadline_ms(&m->mast));
-            } else
+            if (!m->mast_job.group)
                 lower(&deadline, m->mast_at);
             if (!m->settings_job.group)
                 lower(&deadline, m->settings_at);
@@ -691,8 +702,6 @@ int tc_manager_main(int argc, char **argv) {
             }
         }
     }
-    if (m->mast_running)
-        acp_collect_cancel(&m->mast);
     plan_loop_close(&m->network);
     tc_events_close(&m->events);
     tc_samba_discard();

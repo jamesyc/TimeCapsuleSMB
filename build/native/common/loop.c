@@ -1,5 +1,6 @@
 #include "loop.h"
 #include "log.h"
+#include "worker.h"
 #if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
 #include <net/route.h>
 #define TC_HAVE_PF_ROUTE 1
@@ -47,7 +48,8 @@ void plan_loop_init(struct plan_loop *loop, const struct plan_options *options, 
 
 void plan_loop_close(struct plan_loop *loop) {
     if (loop->collecting) {
-        facts_collect_cancel(&loop->collector);
+        if (!loop->owned_collections)
+            facts_collect_cancel(&loop->collector);
         loop->collecting = 0;
     }
     if (loop->route_fd >= 0) {
@@ -75,6 +77,11 @@ void plan_loop_prepare(struct plan_loop *loop, long long now_ms, fd_set *reads, 
         if (loop->route_fd > *maxfd) *maxfd = loop->route_fd;
     }
     if (loop->collecting) {
+        if (loop->owned_collections && loop->collection_job.group) {
+            tc_child_prepare(&loop->collection_job, reads, maxfd, deadline_ms);
+            lower(deadline_ms, now_ms + 100);
+            return;
+        }
         int fd = facts_collect_fd(&loop->collector);
         if (fd >= 0) {
             FD_SET(fd, reads);
@@ -117,6 +124,15 @@ static void drain_route_socket(struct plan_loop *loop, long long now_ms) {
     }
 }
 
+static int collect_job(void *unused) {
+    struct device_facts facts;
+    int rc;
+    (void)unused;
+    tc_worker_begin("network");
+    rc = collect_device_facts(&facts);
+    if (!rc) rc = tc_worker_result(&facts, sizeof(facts));
+    return tc_worker_finish(rc ? 1 : 0);
+}
 static void begin_collection(struct plan_loop *loop, long long now_ms) {
     loop->recollect_at_ms = 0;
     loop->next_poll_ms = now_ms + TC_PLAN_POLL_MS;
@@ -137,6 +153,14 @@ static void begin_collection(struct plan_loop *loop, long long now_ms) {
         return;
     }
 #endif
+    if (loop->owned_collections) {
+        /* The manager shares Apple's boot group. Its collection gets a real
+         * owned job boundary; only raw facts cross the existing capture pipe. */
+        if (!tc_child_fork(&loop->collection_job, collect_job, NULL, NULL, &loop->facts,
+                          sizeof(loop->facts), now_ms + TC_ACP_COLLECTION_BUDGET_SECONDS * 1000LL + 5000))
+            loop->collecting = 1;
+        return;
+    }
     loop->collecting = 1;
     (void)facts_collect_begin(&loop->collector, &loop->facts);
 }
@@ -172,6 +196,14 @@ int plan_loop_dispatch(struct plan_loop *loop, long long now_ms, const fd_set *r
         drain_route_socket(loop, now_ms);
     }
     if (loop->collecting) {
+        if (loop->owned_collections && loop->collection_job.group) {
+            if (!tc_child_poll(&loop->collection_job, now_ms)) return 0;
+            int valid = tc_child_ok(&loop->collection_job) && !loop->collection_job.stopping &&
+                        loop->collection_job.used == sizeof(loop->facts);
+            tc_child_close(&loop->collection_job);
+            if (!valid) { loop->collecting = 0; return 0; }
+            return finish_collection(loop, now_ms);
+        }
         if (loop->collector.done || facts_collect_pump(&loop->collector) == 1) {
             return finish_collection(loop, now_ms);
         }
@@ -180,7 +212,8 @@ int plan_loop_dispatch(struct plan_loop *loop, long long now_ms, const fd_set *r
     if ((loop->recollect_at_ms > 0 && now_ms >= loop->recollect_at_ms) ||
         (loop->next_poll_ms > 0 && now_ms >= loop->next_poll_ms) || loop->next_poll_ms == 0) {
         begin_collection(loop, now_ms);
-        if (loop->collecting && (loop->collector.done || facts_collect_pump(&loop->collector) == 1)) {
+        if (loop->collecting && !loop->collection_job.group &&
+            (loop->collector.done || facts_collect_pump(&loop->collector) == 1)) {
             return finish_collection(loop, now_ms);
         }
     }

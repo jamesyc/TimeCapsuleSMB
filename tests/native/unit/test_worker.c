@@ -47,6 +47,7 @@ int main(int argc, char **argv) {
         assert(!tc_command_capture(ok, output, sizeof(output), 2));
         assert(!strcmp(output, "result"));
         assert(tc_command_capture(ok, output, 3, 2) < 0);
+        tc_worker_begin("next-test"); /* Overflow cancelled the preceding job. */
         assert(tc_command_capture(fail, output, sizeof(output), 2) < 0);
         assert(!strcmp(output, "error"));
         assert(tc_command_run(timeout, 0) < 0);

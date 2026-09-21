@@ -21,6 +21,9 @@ enum { ACP_OK = 0, ACP_UNAVAILABLE = -1, ACP_ABORT = -2 };
 #define ACP_VALUE_MAX 256
 
 extern volatile sig_atomic_t acp_stop_requested;
+/* Managed jobs/roles inherit their owner's group. Standalone diagnostics keep
+ * an isolated collector group so cancellation never signals their caller. */
+void acp_set_scope(int inherited_group, int (*cancelled)(void));
 
 struct acp_value {
     int status;                /* ACP_OK / ACP_UNAVAILABLE / ACP_ABORT */
@@ -74,6 +77,7 @@ struct acp_collector {
     int active;
     int finished;
     int aborted;
+    int inherited_group;
 };
 
 /* begin/pump return 0 while pending, 1 when complete, -1 if any request

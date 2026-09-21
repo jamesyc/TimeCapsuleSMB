@@ -25,8 +25,8 @@ void tc_close_other_fds(int keep) {
             close(fd);
 }
 
-int tc_child_fork(struct tc_child *child, tc_child_fn function, void *data, const char *log, void *capture,
-                  size_t capacity, long long deadline) {
+static int spawn(struct tc_child *child, tc_child_fn function, void *data, const char *log, void *capture,
+                  size_t capacity, long long deadline, int nested) {
     int life[2], output[2] = {-1, -1};
     pid_t pid;
     if (pipe_setup(life, 0))
@@ -41,7 +41,7 @@ int tc_child_fork(struct tc_child *child, tc_child_fn function, void *data, cons
         int fd;
         /* smbd's atexit handler sends kill(0,SIGTERM). Establish isolation
          * before calling any child code, including the foreground exec. */
-        if (setpgid(0, 0))
+        if (!nested && setpgid(0, 0))
             _exit(126);
         signal(SIGTERM, SIG_DFL);
         signal(SIGINT, SIG_DFL);
@@ -58,7 +58,7 @@ int tc_child_fork(struct tc_child *child, tc_child_fn function, void *data, cons
     }
     /* Close the parent-side signal race too. EACCES after exec is harmless:
      * the child above refuses to enter any program without its own group. */
-    if (pid > 0)
+    if (pid > 0 && !nested)
         (void)setpgid(pid, pid);
     close(life[0]);
     if (output[1] >= 0)
@@ -70,7 +70,9 @@ int tc_child_fork(struct tc_child *child, tc_child_fn function, void *data, cons
         return -1;
     }
     memset(child, 0, sizeof(*child));
-    child->pid = child->group = pid;
+    child->pid = pid;
+    child->group = nested ? getpgrp() : pid;
+    child->nested = nested;
     child->lifetime = life[1];
     child->output = output[0];
     child->allow_kill = 1;
@@ -78,6 +80,11 @@ int tc_child_fork(struct tc_child *child, tc_child_fn function, void *data, cons
     child->capacity = capacity;
     child->deadline = deadline;
     return 0;
+}
+
+int tc_child_fork(struct tc_child *child, tc_child_fn function, void *data, const char *log, void *capture,
+                  size_t capacity, long long deadline) {
+    return spawn(child, function, data, log, capture, capacity, deadline, 0);
 }
 
 static int execute(void *data) {
@@ -92,6 +99,9 @@ int tc_child_exec(struct tc_child *child, char *const argv[], const char *log) {
 int tc_child_exec_capture(struct tc_child *child, char *const argv[], void *out, size_t capacity,
                           long long deadline) {
     return tc_child_fork(child, execute, (void *)argv, NULL, out, capacity, deadline);
+}
+int tc_command_exec(struct tc_child *child, char *const argv[], void *out, size_t capacity) {
+    return spawn(child, execute, (void *)argv, NULL, out, capacity, 0, 1);
 }
 
 void tc_child_prepare(const struct tc_child *child, fd_set *reads, int *maxfd, long long *deadline) {
@@ -109,13 +119,13 @@ void tc_child_stop(struct tc_child *child, long long now, int allow_kill) {
         return;
     child->stopping = 1;
     child->allow_kill = allow_kill;
-    child->deadline = now + 10000;
+    child->deadline = now + TC_CHILD_GRACE_MS;
     /* Signal the owner first so discovery withdraws registrations and
      * telemetry drains its signed job. Only a bounded forced stop targets
      * descendants, and that escalation is forbidden for telemetry. */
     if (child->pid)
         kill(child->pid, SIGTERM);
-    else if (allow_kill)
+    else if (allow_kill && !child->nested)
         /* A crashed owner cannot forward TERM to its remaining workers.
          * Give those workers the same grace before escalation. Telemetry's
          * surviving signed jobs are exempt and continue draining. */
@@ -170,7 +180,8 @@ int tc_child_poll(struct tc_child *child, long long now) {
         else {
             if (child->allow_kill) {
                 /* The group's descendants may still own a capture pipe. */
-                kill(-child->group, SIGKILL);
+                if (!child->nested)
+                    kill(-child->group, SIGKILL);
                 if (child->pid)
                     kill(child->pid, SIGKILL);
                 child->overflow = 1;
@@ -194,6 +205,8 @@ int tc_child_poll(struct tc_child *child, long long now) {
     /* An exited smbd parent may still have workers draining. Never release
      * its generation (or clear Samba locks) while its group remains alive. */
     if (child->exited && child->output < 0) {
+        if (child->nested)
+            return 1;
         if (kill(-child->group, 0) < 0 && errno == ESRCH)
             return 1;
         if (!child->stopping)

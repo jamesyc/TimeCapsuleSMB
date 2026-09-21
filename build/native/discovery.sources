@@ -16,3 +16,5 @@ native/common/policy.c
 native/common/topology.c
 native/dnssd/dnssd_clientstub.c
 native/dnssd/dnssd_ipc.c
+native/common/process.c
+native/common/worker.c

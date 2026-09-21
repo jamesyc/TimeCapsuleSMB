@@ -61,6 +61,11 @@ import os,sys,time
 from pathlib import Path
 root=Path(os.environ['TC_TEST_ROOT'])
 key=sys.argv[-1]
+if (root/'record-acp').exists():
+    import json
+    with (root/'events').open('a') as out:
+        out.write(json.dumps(dict(kind='command',role='acp',pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),key=key))+'\\n')
+if key=='usbF' and (root/'slow-facts').exists():time.sleep(60)
 if key=='syNm' and (root/'bad-name').exists():sys.exit(1)
 if key=='syPW' and (root/'bad-auth').exists():sys.exit(1)
 if key=='MaSt':
@@ -111,7 +116,7 @@ def manager(manager_tools):
     root,binary=manager_tools
     for path in ('ram','dk2','dk3'):
         shutil.rmtree(root/path,ignore_errors=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail'):
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','slow-facts'):
         (root/name).unlink(missing_ok=True)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
@@ -129,10 +134,10 @@ def manager(manager_tools):
     def inventory(disks): (root/'inventory').write_bytes(plistlib.dumps(disks))
     inventory(volumes)
     process=None
-    def start():
+    def start(real_facts=False):
         nonlocal process
         log=(root/'stderr').open('w')
-        process=subprocess.Popen([str(binary),'manager','--facts-file',str(root/'facts')],
+        process=subprocess.Popen([str(binary),'manager'] + ([] if real_facts else ['--facts-file',str(root/'facts')]),
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
             env={**os.environ,'TC_TEST_ROOT':str(root),'TC_TEST_MOUNTS':str(root/'mounts')})
         log.close()
@@ -475,3 +480,39 @@ def test_ata_tuning_runs_at_start_and_preference_change_not_healthy_rechecks(man
     wait(lambda rows:len([e for e in rows if e['role']=='ata'])==3)
     assert [e['args'] for e in events() if e['role']=='ata'][-2:]==[
         ['/dev/wd0','setidle','900'],['/dev/wd0','setstandby','1800']]
+
+
+@pytest.mark.parametrize("key", ["MaSt", "usbF"])
+def test_manager_death_cancels_inventory_job_and_its_acp(manager,key):
+    root,start,events,wait,_,_=manager
+    (root/'record-acp').touch();(root/('slow-mast' if key=='MaSt' else 'slow-facts')).touch()
+    process=start(real_facts=key=='usbF')
+    rows=wait(lambda rows:any(e['role']=='acp' and e.get('key')==key for e in rows))
+    acp=next(e for e in rows if e['role']=='acp' and e.get('key')==key)
+    assert acp['group']==acp['ppid'] and acp['group']!=process.pid
+    process.kill();process.wait(timeout=5)
+    deadline=time.monotonic()+8
+    while time.monotonic()<deadline:
+        try:os.kill(acp['pid'],0)
+        except ProcessLookupError:break
+        time.sleep(.05)
+    else:pytest.fail('ACP escaped the dead manager inventory job')
+    deadline=time.monotonic()+8
+    while time.monotonic()<deadline:
+        # Darwin can return EPERM for an orphaned, zombie-only group after its
+        # session leader dies. Assert live members, not that kernel artifact.
+        rows=subprocess.check_output(['ps','-axo','pgid=,stat='],text=True).splitlines()
+        if not any(len(parts:=row.split())==2 and parts[0]==str(acp['group']) and not parts[1].startswith('Z') for row in rows):break
+        time.sleep(.05)
+    else:pytest.fail('inventory group still has live members after parent EOF')
+
+
+def test_manager_owned_facts_collection_can_finish_and_run_again(manager):
+    root,start,events,wait,_,_=manager
+    (root/'record-acp').touch()
+    process=start(real_facts=True)
+    wait(lambda rows:any(e['role']=='acp' and e.get('key')=='waMA' for e in rows))
+    time.sleep(.3)
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows:len([e for e in rows if e['role']=='acp' and e.get('key')=='waMA'])>=2)
+    assert process.poll() is None

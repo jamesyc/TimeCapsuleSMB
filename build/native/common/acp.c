@@ -3,6 +3,17 @@
 #include <limits.h>
 
 volatile sig_atomic_t acp_stop_requested = 0;
+static int inherited_scope;
+static int (*owner_cancelled)(void);
+
+void acp_set_scope(int inherited_group, int (*cancelled)(void)) {
+    inherited_scope = inherited_group;
+    owner_cancelled = cancelled;
+}
+static int cancelled(void) {
+    if (owner_cancelled && owner_cancelled()) acp_stop_requested = 1;
+    return acp_stop_requested;
+}
 
 void trim_line(char *value) {
     char *start;
@@ -27,17 +38,17 @@ static void acp_log_failure(const char *key, const char *failure) {
     syslog(LOG_DAEMON | LOG_ERR, "acp: %s %s", key, failure);
 }
 
-static void stop_acp_child(pid_t child) {
+static void stop_acp_child(pid_t child, int inherited_group) {
     int status, i;
     pid_t result;
     /* Keep the direct child unreaped until group signalling is complete, so
      * its PID cannot be reused while descendants still hold the pipe open.
      * Signal it directly too: cancellation may precede its setpgid call. */
     kill(child, SIGTERM);
-    kill(-child, SIGTERM);
+    if (!inherited_group) kill(-child, SIGTERM);
     for (i = 0; i < 10; i++) usleep(100000);
     kill(child, SIGKILL);
-    kill(-child, SIGKILL);
+    if (!inherited_group) kill(-child, SIGKILL);
     for (i = 0; i < 20; i++) {
         result = waitpid(child, &status, WNOHANG);
         if (result == child || (result < 0 && errno == ECHILD)) return;
@@ -69,7 +80,7 @@ static int start_acp_child(struct acp_collector *c, const struct acp_request *re
         /* Only the child creates its group. Concurrent parent/child setpgid
          * calls can fail with EPERM on Darwin even for the same target group.
          * Cleanup signals both this PID and its group to cover early cancel. */
-        if (setpgid(0, 0)) _exit(126);
+        if (!c->inherited_group && setpgid(0, 0)) _exit(126);
         signal(SIGTERM, SIG_DFL); signal(SIGINT, SIG_DFL); signal(SIGPIPE, SIG_DFL);
         if (dup2(output[1], STDOUT_FILENO) < 0 || fcntl(STDOUT_FILENO, F_SETFD, 0)) _exit(126);
         if (output[0] != STDOUT_FILENO) close(output[0]);
@@ -77,6 +88,14 @@ static int start_acp_child(struct acp_collector *c, const struct acp_request *re
         null_fd = open("/dev/null", O_RDWR);
         if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 || dup2(null_fd, STDERR_FILENO) < 0) _exit(126);
         if (null_fd > STDERR_FILENO) close(null_fd);
+        /* Raw ACP fork paths must not keep another role's lifetime writer or
+         * the manager's singleton/result descriptors alive across exec. */
+        {
+            long limit = sysconf(_SC_OPEN_MAX);
+            int fd;
+            if (limit < 0) limit = 1024;
+            for (fd = 3; fd < limit; fd++) close(fd);
+        }
         execl(TC_ACP_PATH, "acp", request->form == ACP_ARRAY ? "-A" : "-q", request->key, (char *)NULL);
         _exit(127);
     }
@@ -110,8 +129,25 @@ static void finish_key(struct acp_collector *c, int status) {
 }
 
 static void abort_current_child(struct acp_collector *c, const char *failure) {
+    stop_acp_child(c->child, c->inherited_group);
+    if (c->inherited_group) {
+        char discard[4096];
+        int eof = 0, attempts;
+        /* An inherited collector cannot kill its group: it contains its owner
+         * and potentially protected telemetry work. If a descendant retains
+         * stdout after the direct child is reaped, stop this owner/operation
+         * and leave whole-group draining to the outer supervisor. */
+        for (attempts = 0; attempts < 16; attempts++) {
+            ssize_t n = read(c->fd, discard, sizeof(discard));
+            if (!n) { eof = 1; break; }
+            if (n < 0 && errno != EINTR) break;
+        }
+        if (!eof) {
+            acp_stop_requested = 1;
+            acp_log_failure(c->requests[c->next].key, "descendant output did not close; stopping collector owner");
+        }
+    }
     close(c->fd);
-    stop_acp_child(c->child);
     acp_log_failure(c->requests[c->next].key, failure);
     finish_key(c, ACP_ABORT);
 }
@@ -125,7 +161,7 @@ static int advance(struct acp_collector *c) {
         long long now;
         struct acp_request *value = &c->requests[c->next];
         value->output[0] = '\0';
-        if (acp_stop_requested) {
+        if (cancelled()) {
             finish_key(c, ACP_ABORT);
             continue;
         }
@@ -166,6 +202,7 @@ int acp_collect_begin(struct acp_collector *c, struct acp_request *requests, siz
     int invalid = timeout_ms <= 0 || budget_ms < 0;
 
     memset(c, 0, sizeof(*c));
+    c->inherited_group = inherited_scope;
     c->fd = -1;
     c->requests = requests;
     c->key_count = count;
@@ -214,7 +251,7 @@ int acp_collect_pump(struct acp_collector *c) {
     }
     if (c->active) {
         long long now = acp_monotonic_ms();
-        if (acp_stop_requested) {
+        if (cancelled()) {
             abort_current_child(c, "cancelled");
         } else if (now < 0) {
             abort_current_child(c, "cannot read monotonic clock");

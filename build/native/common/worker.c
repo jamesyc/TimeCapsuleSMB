@@ -16,6 +16,7 @@ void tc_worker_begin(const char *operation) {
     stopped = 0;
     acp_stop_requested = 0;
     parent_fd = tc_parent_pipe();
+    acp_set_scope(1, tc_worker_cancelled);
     signal(SIGTERM, stop);
     signal(SIGINT, stop);
     signal(SIGPIPE, SIG_IGN);
@@ -24,6 +25,13 @@ void tc_worker_begin(const char *operation) {
 #else
     (void)operation;
 #endif
+}
+int tc_worker_finish(int result) {
+    /* A dead manager cannot reap/kill our remaining commands. This group was
+     * created for this short-lived job, never Apple's boot or telemetry group. */
+    if (parent_fd >= 0 && !tc_parent_alive(parent_fd) && getpgrp() == getpid())
+        kill(-getpgrp(), SIGKILL);
+    return result;
 }
 int tc_worker_cancelled(void) {
     if (stopped || !tc_parent_alive(parent_fd)) {
@@ -40,8 +48,7 @@ static int command(char *const argv[], char *output, size_t capacity, unsigned t
     if (output && capacity)
         output[0] = 0;
     if (now < 0 || tc_worker_cancelled() ||
-        (output ? tc_child_exec_capture(&child, argv, output, capacity - 1, 0)
-                : tc_child_exec(&child, argv, NULL)))
+        tc_command_exec(&child, argv, output, output ? capacity - 1 : 0))
         return -1;
     child.deadline = now + (long long)timeout_seconds * 1000;
     for (;;) {
@@ -51,7 +58,7 @@ static int command(char *const argv[], char *output, size_t capacity, unsigned t
         if (tc_child_poll(&child, now))
             break;
         if (child.stopping && !forced_at)
-            forced_at = now + 13000;
+            forced_at = now + TC_CHILD_GRACE_MS + 3000;
         if (forced_at && now >= forced_at) {
             /* An unkillable kernel waiter requires device recovery. Bound
              * this worker too; never start another command from this job. */
@@ -69,6 +76,8 @@ static int command(char *const argv[], char *output, size_t capacity, unsigned t
         fprintf(stderr, "command %s failed or timed out (exit=%d signal=%d)\n", argv[0],
                 WIFEXITED(child.status) ? WEXITSTATUS(child.status) : -1,
                 WIFSIGNALED(child.status) ? WTERMSIG(child.status) : 0);
+    if (child.stopping)
+        stop(0); /* Do not issue another command after losing this operation. */
     tc_child_close(&child);
     return result;
 }

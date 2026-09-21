@@ -5,6 +5,7 @@
 /* Slow setup runs in a short-lived manager child. The daemon event loop stays
  * responsive to topology changes and stop requests while these operations run. */
 void tc_worker_begin(const char *operation);
+int tc_worker_finish(int result);
 int tc_worker_cancelled(void);
 int tc_command_run(char *const argv[], unsigned timeout_seconds);
 int tc_command_capture(char *const argv[], char *out, size_t capacity, unsigned timeout_seconds);
