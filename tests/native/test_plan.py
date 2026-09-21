@@ -9,17 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.native.build import ROOT, compile_native
-from tests.native.cases import compile_case, native_case_source
+from tests.native.build import ROOT, compile_service
+from tests.native.cases import run_case
 
 FIXTURES = ROOT / "tests/native/fixtures/iflist"
-
-
-def run_case(name, *args, timeout=10):
-    binary = compile_case(native_case_source(name))
-    result = subprocess.run([str(binary), *map(str, args)], capture_output=True, text=True, timeout=timeout)
-    assert result.returncode == 0, result.stderr
-    return result.stdout
 
 
 def parse_kv_lines(text):
@@ -357,7 +350,7 @@ def test_topology_sixty_three_widest_addresses_serialize_completely(tmp_path):
     assert bind(plan) == expected
     path = tmp_path / "facts-wide.txt"
     path.write_text(facts)
-    binary = compile_native("service", tmp_path / "service")
+    binary = compile_service(tmp_path / "service")
     result = subprocess.run([str(binary), "--print-smb-bind-interfaces", "--facts-file", str(path)], capture_output=True, text=True, timeout=10)
     tokens, status_line = result.stdout.splitlines()
     assert set(tokens.split()) == expected and status_line == "status=validated"
@@ -573,6 +566,32 @@ def test_retention_restart_without_history_is_cold_start(tmp_path):
     assert status(only)["status"] == "cold-start" and roles(only)["mgi1"] == ("isolated", "none")
 
 
+def test_kernel_failure_retains_native_addresses_until_complete_observation(tmp_path):
+    unavailable = facts_text(acp={}, iflist_ok=0)
+    first, failed, recovered = build_plans(tmp_path, NAT_OK, unavailable, NAT_DENIED)
+    assert bind(first) == bind(failed)
+    assert status(failed)["reason"] == "iflist"
+    assert roles(recovered)["mgi1"] == ("wan", "none")
+
+
+def test_native_loop_history_does_not_resurrect_a_disappeared_link(tmp_path):
+    absent = facts_text(acp={}, links=[("mgi1", 2)], addrs=[(2, "192.168.1.10", 24)])
+    returned = facts_text(acp={}, links=NAT_LINKS, addrs=NAT_ADDRS)
+    _, _, last = build_plans(tmp_path, NAT_OK, absent, returned)
+    assert roles(last)["bridge0"] == ("isolated", "none")
+    assert roles(last)["mgi1"] == ("wan", "smb,adisk")
+
+
+def test_kernel_failure_keeps_latest_observed_address_without_refreshing_policy_age(tmp_path):
+    changed_address = NAT_ACP_DEAD.replace("addr=10.0.1.1 ", "addr=10.0.1.2 ")
+    first, changed, failed = build_plans(tmp_path, NAT_OK, changed_address, facts_text(acp={}, iflist_ok=0))
+    assert "10.0.1.1/24" in bind(first)
+    assert "10.0.1.2/24" in bind(changed) and "10.0.1.1/24" not in bind(changed)
+    assert bind(failed) == bind(changed)
+    assert status(changed)["stale_seconds"] == "10"
+    assert status(failed)["stale_seconds"] == "20"
+
+
 def test_retention_diskless_clears_retained_masks_but_keeps_roles(tmp_path):
     _, failed = build_plans(tmp_path, NAT_OK, NAT_ACP_DEAD, diskless=True)
     assert roles(failed)["mgi1"] == ("wan", "none") and roles(failed)["bridge0"] == ("lan", "none")
@@ -648,6 +667,29 @@ def test_config_reader_last_assignment_wins(tmp_path):
     assert run_case("config_reader_decodes_shlex_quoting", path, "NBNS_ENABLED") == "ok:1\n"
 
 
+def test_device_config_reads_one_coherent_snapshot(tmp_path):
+    path = tmp_path / "tcapsulesmb.conf"
+    path.write_text("MDNS_ADVERTISE_AFP=1\nNBNS_ENABLED=0\nSMBD_DEBUG_LOGGING=0\nMDNS_DEBUG_LOGGING=1\n")
+    assert run_case("config_facts_snapshot", path) == "rc=0 afp=1 nbns=0 debug=1\n"
+
+
+def test_device_config_preserves_missing_false_and_invalid_states(tmp_path):
+    path = tmp_path / "tcapsulesmb.conf"
+    path.write_text("NBNS_ENABLED=invalid\nSMBD_DEBUG_LOGGING=1\n")
+    assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 nbns=-1 debug=1\n"
+    path.write_text("NBNS_ENABLED=0\n")
+    assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 nbns=0 debug=0\n"
+    assert run_case("config_facts_snapshot", tmp_path / "missing") == "rc=-1 afp=-1 nbns=-1 debug=-1\n"
+
+
+def test_device_config_rejects_overlong_physical_line_continuations(tmp_path):
+    path = tmp_path / "tcapsulesmb.conf"
+    prefix = "IGNORED="
+    path.write_text(prefix + "x" * (1023 - len(prefix)) + "NBNS_ENABLED=1\n")
+    assert run_case("config_facts_snapshot", path) == "rc=-1 afp=-1 nbns=-1 debug=-1\n"
+    assert run_case("config_reader_decodes_shlex_quoting", path, "NBNS_ENABLED") == "unavailable\n"
+
+
 # ---------------------------------------------------------------- identity ----
 
 @pytest.mark.parametrize("value", ["AirPort Time Capsule", "  James's  Time.Capsule  ", "Über Kapsel ünïcödé " + "x" * 80,
@@ -721,7 +763,7 @@ def test_identity_ignores_deprecated_overrides_and_uses_synm_then_hostname(tmp_p
 # ----------------------------------------------------------- service CLI ----
 
 def test_service_bind_interfaces_prints_tokens_then_status(tmp_path):
-    binary = compile_native("service", tmp_path / "service")
+    binary = compile_service(tmp_path / "service")
     facts = tmp_path / "facts.txt"
     facts.write_text(NAT_OK)
     result = subprocess.run([str(binary), "--print-smb-bind-interfaces", "--facts-file", str(facts)], capture_output=True, text=True, timeout=10)

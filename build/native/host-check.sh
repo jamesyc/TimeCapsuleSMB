@@ -10,20 +10,14 @@ case "$(uname -s)" in
     Linux) stub_flags=-DNOT_HAVE_SA_LEN ;;
 esac
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-for target in discovery service telemetry; do
-    role_flags=
-    if [ "$target" = service ]; then role_flags=-DTC_SERVICE_MULTICALL; fi
-    case "$target" in
-        discovery) binary=discoveryd ;;
-        *) binary=$target ;;
-    esac
-    set --
-    while IFS= read -r source; do set -- "$@" "$build_dir/$source"; done <"$build_dir/native/$target.sources"
-    # Compile all three products with the production source lists. Target ELF/ABI
-    # verification belongs to the VM build, not the macOS host compiler. The
-    # vendored Apple dns_sd stub is compiled unchanged (build/native/dnssd/README.md),
-    # hence -Wno-unused-but-set-variable.
-    # shellcheck disable=SC2086
-    cc -D_GNU_SOURCE -D_DNS_SD_LIBDISPATCH=0 $role_flags $stub_flags -Wall -Wextra -Werror -Wno-sign-compare -Wno-unterminated-string-initialization -Wno-unused-but-set-variable "$@" -o "$work/$binary"
-    "$work/$binary" --version
- done
+set --
+while IFS= read -r source; do set -- "$@" "$build_dir/$source"; done <"$build_dir/native/service.sources"
+# Compile the one production image. Target ELF/ABI verification belongs to the
+# VM build, not the host compiler. The vendored Apple dns_sd stub is unchanged.
+# shellcheck disable=SC2086
+cc -D_GNU_SOURCE -DTC_SERVICE_MULTICALL -D_DNS_SD_LIBDISPATCH=0 $stub_flags \
+    -Wall -Wextra -Werror -Wno-sign-compare -Wno-unterminated-string-initialization \
+    -Wno-unused-but-set-variable "$@" -o "$work/service"
+"$work/service" --version
+"$work/service" discovery --version
+"$work/service" telemetry --version

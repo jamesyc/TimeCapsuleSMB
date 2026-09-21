@@ -144,7 +144,7 @@ if sys.argv[1] == 'ps':
     # Without stopping manager first, it can start a normal slow ACP query
     # between the worker snapshot and its absence check (the review repro).
     if scenario == 'manager_starts_helper' and d['scans'] >= 4 and '30' in d['rows']:
-        d['rows']['33'] = '33 S service /mnt/Memory/samba4/sbin/service --print-smb-bind-interfaces --retain-policy'
+        d['rows']['33'] = '33 S service /mnt/Flash/service --print-samba-identity'
     print('\\n'.join(d['rows'].values()))
 else:
     sig, pid = sys.argv[-2:]

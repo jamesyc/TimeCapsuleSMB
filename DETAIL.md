@@ -11,11 +11,9 @@ The current system works end to end on the target Apple AirPort Time Capsule.
 What is working now:
 - static Samba 4.25.0rc2 built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
 - static Samba 4.25.0rc2 built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
-- static `discoveryd` controller for Bonjour registration and Apple's native NBNS service
-- static `service` helper for NT hashing and network probes
-- static `telemetry` helper for heartbeat reporting and signed debug execution
+- one static `service` image containing manager, discovery, telemetry, and diagnostic roles
 - boot-time runtime staging via `/mnt/Flash/rc.local`
-- boot-time manager for `smbd`, `discoveryd`, telemetry, and optional rsync
+- native manager for `smbd`, discovery, telemetry, and optional rsync
 - direct SMB service on port `445`
 - native HFS FinderInfo, extended-attribute, and resource-fork storage shared with Apple's AFP server
 - a two-phase deploy migrator for legacy `xattr.tdb` records and `._` AppleDouble resource files
@@ -385,12 +383,12 @@ Current maintainer build lanes:
   - [build/samba4oldbe.sh](build/samba4oldbe.sh)
 - NetBSD 7 utility lanes:
   - [build/hello.sh](build/hello.sh)
-  - [build/discovery.sh](build/discovery.sh)
+  - [build/service.sh](build/service.sh)
 - NetBSD 4 utility lanes:
   - [build/hellooldle.sh](build/hellooldle.sh)
   - [build/hellooldbe.sh](build/hellooldbe.sh)
-  - [build/discoveryoldle.sh](build/discoveryoldle.sh)
-  - [build/discoveryoldbe.sh](build/discoveryoldbe.sh)
+  - [build/serviceoldle.sh](build/serviceoldle.sh)
+  - [build/serviceoldbe.sh](build/serviceoldbe.sh)
 
 The direct scripts target the NetBSD 7 lane by default. The `*oldle.sh` and `*oldbe.sh` wrappers select the NetBSD 4 little-endian and big-endian lanes.
 
@@ -400,7 +398,7 @@ Since v3.1.0 the device's own `mDNSResponder` (Apple's crunched static binary,
 version 397.32 on both the NetBSD 4 and NetBSD 6 lanes) is the only mDNS
 responder on the device. We never kill it: ACPd does not respawn it and a
 hand-started daemon lacks `_airport._tcp`, so a dead daemon is recoverable only
-by a reboot. Our `discoveryd` is a small *registrant*: it registers our
+by a reboot. Our `service discovery` role is a small *registrant*: it registers our
 records through the standard `dns_sd` Unix-socket IPC at
 `/var/run/mDNSResponder`, using Apple's own client stub (vendored, unchanged,
 in [build/native/dnssd/](build/native/dnssd/)).
@@ -427,9 +425,9 @@ on that device, rather than rejecting a suffix shared with an unrelated peer.
 | `/sbin/diskd -i lo0 -d local.` | Apple binary, relaunched by `boot.sh` | disk topology (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
 | `printd` | Apple | printer discovery and `_riousbprint`/`_pdl-datastream` registration |
 | `wcifsfs` | Apple | Apple SMB server, always stopped so Samba owns SMB |
-| `/sbin/wcifsnd` | Apple, child owned by `discoveryd` | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
+| `/sbin/wcifsnd` | Apple, child owned by `service discovery` | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
 | `afpserver` | Apple | kept running regardless of the AFP advertising setting; advertising is controlled through diskd's loopback scope and our Bonjour registrations |
-| `discoveryd` | ours, flash + payload | registers Bonjour records through mDNSResponder and owns the foreground `wcifsnd` child used for native NBNS |
+| `service discovery` | ours, `/mnt/Flash/service` | registers Bonjour records through mDNSResponder and owns the foreground `wcifsnd` child used for native NBNS |
 
 What Apple publishes vs what we publish:
 
@@ -449,7 +447,7 @@ compares host labels case-insensitively.
 
 ### The device plan
 
-All four native helpers share one collector in
+The unified service's manager, discovery, telemetry, and diagnostic paths share one collector in
 [build/native/common/](build/native/common/): `acp -q` for
 `raNA raDS waNM usbF laIP waIP waLL gnRo syNm laMA waMA bjSd`, the kernel
 interface table via our own `sysctl(NET_RT_IFLIST)` parser (libc
@@ -691,18 +689,17 @@ It is built from:
 - [build/native/mdns/](build/native/mdns/) (Bonjour registrant and ADisk TXT generation)
 - [build/native/common/](build/native/common/) (the shared device plan)
 - [build/native/dnssd/](build/native/dnssd/) (Apple's `dns_sd` client stub, tag `mDNSResponder-379.38.1`, BSD-licensed, compiled unchanged with `-D_DNS_SD_LIBDISPATCH=0`)
-- [build/discovery.sh](build/discovery.sh)
+- [build/native/service.sources](build/native/service.sources) and [build/service.sh](build/service.sh) (the unified runtime image)
 
 Important properties:
 - static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
 - static NetBSD 4 little-endian `earmv4` binary for the NetBSD 4 little-endian payload
 - static NetBSD 4 big-endian `armeb` binary for the NetBSD 4 big-endian payload
 - see the artifact section below for current checked-in binary sizes
-- installed on both the HDD payload and `/mnt/Flash`
-- run from `/mnt/Flash` to save RAM-disk space
+- linked into the unified service installed and run from `/mnt/Flash`
 - talks to `/var/run/mDNSResponder` for Bonjour and to the owned `/sbin/wcifsnd` child over Apple's loopback UDP control protocol
 
-CLI: `discoveryd [--diskless] [--netbios-name NAME] [--adisk-share NAME KEY UUID FLAGS]... [--debug-logging]`,
+CLI: `service discovery [--diskless] [--netbios-name NAME] [--adisk-share NAME KEY UUID FLAGS]... [--debug-logging]`,
 plus `--print-link-plan` and `--version` (prints `30100`).
 Host builds with `TC_NATIVE_TEST` additionally accept `--facts-file F` to
 replace live collection with a text snapshot. Device binaries omit this
@@ -727,21 +724,21 @@ NBNS is provided by Apple's firmware `wcifsnd`; this project no longer ships a s
 - plain `tcapsule deploy` writes that flash config value
 - `--no-nbns` writes `NBNS_ENABLED=0`
 - `--no-nbns` is supported on both NetBSD 6 and NetBSD 4
-- `uninstall` stops `discoveryd` and any orphaned `wcifsnd`, then removes the flash runtime config
+- `uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config
 
 Once enabled, Apple's daemon enumerates interfaces according to firmware policy. The validated plan provides the coarse cold-start eligibility gate, but native NBNS does not promise the per-interface `SVC_SMB` filtering that Samba and Bonjour enforce. It provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
 
 ## Service and Telemetry Helpers
 
-The RAM-staged `service` helper provides NT hashing, `--print-smb-bind-interfaces` (the plan's Samba bind tokens plus a status line) and `--print-link-plan`. The `telemetry` helper posts a heartbeat at startup and every 12 hours, and downloads and runs a signed debug executable only after verifying signed server authorization. See [build/native/README.md](build/native/README.md) for sources, commands, protocol, and cleanup behavior.
+The Flash-resident `service` image provides NT hashing, `--print-smb-bind-interfaces` (the plan's Samba bind tokens plus a status line), `--print-link-plan`, and the telemetry role. Telemetry posts a heartbeat at startup and every 12 hours, and downloads and runs a signed debug executable only after verifying signed server authorization. See [build/native/README.md](build/native/README.md) for sources, commands, protocol, and cleanup behavior.
 
 Sharing waits at cold start until mode, address ownership, and the relevant
 sharing permissions validate. Bridge names and PF heuristics no longer grant
 access. After validation, failed rereads retain the latest grants and denials
 on unchanged interfaces; new or recreated interfaces wait for validation.
-The manager keeps a compact policy summary in memory and passes it to
-`service --print-smb-bind-interfaces --retain-policy` over stdin. Environment
-bind strings are not treated as validated history. No policy file is written.
+Each native plan loop keeps its latest validated policy in memory. Environment
+bind strings are not treated as validated history, and no policy file or text
+transport is used.
 
 Router heartbeats include `nbns_enabled`, `debug_logging` (Samba or mDNS),
 and `advertise_afp`. A short `plan_error` is sent only when the fresh sharing
@@ -801,7 +798,7 @@ The Advanced panel stores these choices in the local device profile. Run **Insta
 
 ### Enable NBNS
 
-Default: on. Preserves the public `NBNS_ENABLED=1` setting. When the payload and an SMB-eligible IPv4 address are ready, `discoveryd` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
+Default: on. Preserves the public `NBNS_ENABLED=1` setting. When the payload and an SMB-eligible IPv4 address are ready, `service discovery` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
 
 ### Enable rsync
 
@@ -1239,7 +1236,7 @@ It checks:
 - that the managed RAM runtime directory exists
 - SSH reachability
 - detected device compatibility and payload family
-- managed `smbd`, `discoveryd` (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
+- managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
 - a shared USB printer: when `acp -A prni` lists a plugged-in printer, Apple's `printd` must advertise it (`_pdl-datastream`/`_riousbprint`/`_printer`/`_ipp`) — we never touch printd, so this guards the one thing v3.1.0 changed for printers (v3.0 re-advertised them itself because it killed the responder); skipped when no printer is attached
 - active Samba version, RAM-staged binary/config/auth paths, manager state, mounted share volumes, and required service sockets
 - remote IPv4/IPv6 capabilities, current bind interfaces, local routes to advertised addresses, and family-specific direct SMB reachability
@@ -1388,7 +1385,7 @@ Current deploy flow:
 - supports rerunning an interrupted installation through the same sequence, without rollback state
 - verifies managed runtime readiness after reboot:
   - managed `smbd` on TCP `445`
-  - Apple `mDNSResponder` running and alone on UDP `5353`, `diskd` on loopback, and `discoveryd` with a valid plan and matching native-NBNS readiness state
+  - Apple `mDNSResponder` running and alone on UDP `5353`, `diskd` on loopback, and `service discovery` with a valid plan and matching native-NBNS readiness state
   - enabled rsync from RAM on TCP `873`, or disabled rsync with no live daemon
 - on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and runs `/mnt/Flash/rc.local` only when firmware autostart is missing; otherwise it waits for the firmware-started runtime
 
@@ -1400,13 +1397,13 @@ Current compatibility behavior:
 - `configure` reuses the same classification logic for compatibility and displayed device identity
 
 NetBSD 4 activation behavior:
-- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, watches for an already-running `/mnt/Flash/rc.local`, `/mnt/Flash/boot.sh`, or `/mnt/Flash/manager.sh`, runs `/mnt/Flash/rc.local` only if startup is not already in progress, and verifies managed `smbd` plus the mDNS registrant
+- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, watches for the current `service manager` role or an active Flash launcher (`rc.local`/`boot.sh`), and still recognizes legacy `manager.sh` during upgrades; it runs `/mnt/Flash/rc.local` only when startup is not already in progress, then verifies managed `smbd` plus the discovery role
 - Deployment always reboots. It stops current and historical managed processes, removes owned software, copies directly to final paths, verifies and flushes the payload, completes metadata migration, then writes `rc.local` last and flushes again before rebooting. Rerunning an interrupted installation finishes it; user data, pending metadata, quarantines and logs are preserved. `--no-wait` returns after requesting reboot without claiming runtime verification. Legacy API `no_reboot=true` requests are rejected before mutation.
 - `tcapsule activate` starts an already installed runtime without re-uploading files
-- Apple `mDNSResponder` is never stopped; `boot.sh` moves Apple's `diskd` to loopback and `discoveryd` registers through the daemon
+- Apple `mDNSResponder` is never stopped; `boot.sh` moves Apple's `diskd` to loopback and `service discovery` registers through the daemon
 - tested 1st-generation NetBSD 4 hardware without a firmware boot-hook patch does not persist an `/etc` hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
-- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `discoveryd` is running, or if `/mnt/Flash/rc.local`, `/mnt/Flash/boot.sh`, or `/mnt/Flash/manager.sh` is already running, it skips running `/mnt/Flash/rc.local`
+- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and the discovery role is running, or if the Flash boot/service runtime is already active, it skips running `/mnt/Flash/rc.local`
 
 The current password flow is:
 - `TC_PASSWORD` is retained for app/CLI SSH and ACP access
@@ -1535,25 +1532,19 @@ Current important outputs:
 
 Current active deploy artifact sizes (stripped bytes, v3.1.0):
 - NetBSD 6 `smbd`: about `9.7M`
-- NetBSD 6 `discoveryd`: `236,804`
-- NetBSD 6 `service`: `218,548`
-- NetBSD 6 `telemetry`: `228,768`
+- NetBSD 6 `service`: `363,220`
 - NetBSD 6 `rsync`: about `1.0M`
 - NetBSD 4 little-endian `smbd`: about `9.7M`
 - NetBSD 4 big-endian `smbd`: about `9.7M`
-- NetBSD 4 little-endian `discoveryd`: `196,988`
-- NetBSD 4 big-endian `discoveryd`: `196,320`
-- NetBSD 4 little-endian `service`: `167,896`
-- NetBSD 4 big-endian `service`: `167,400`
-- NetBSD 4 little-endian `telemetry`: `187,620`
-- NetBSD 4 big-endian `telemetry`: `187,116`
+- NetBSD 4 little-endian `service`: `321,652`
+- NetBSD 4 big-endian `service`: `321,052`
 - NetBSD 4 little-endian `rsync`: about `878K`
 - NetBSD 4 big-endian `rsync`: about `872K`
 
-Only `discoveryd` lives on `/mnt/Flash` (≈1 MB); the rest are RAM-staged
-from the payload. Deploy performs a read-only Flash-capacity preflight before
-stopping services, verifies the replacement, then removes the legacy discovery
-binary and flushes that cleanup.
+The unified service lives on `/mnt/Flash`; `smbd` and optional rsync are
+RAM-staged from the payload. Deploy performs a read-only Flash-capacity
+preflight before stopping services, verifies the replacement, removes legacy
+standalone binaries, and flushes that cleanup.
 
 It assumes:
 - a NetBSD VM
@@ -1572,9 +1563,7 @@ Current validated maintainer flows:
   - [build/samba4x.sh](build/samba4x.sh)
   - [build/downloadrsync.sh](build/downloadrsync.sh)
   - [build/rsync.sh](build/rsync.sh)
-  - [build/discovery.sh](build/discovery.sh)
   - [build/service.sh](build/service.sh)
-  - [build/telemetry.sh](build/telemetry.sh)
 - NetBSD 4 path:
   - [build/downloadoldle.sh](build/downloadoldle.sh)
   - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
@@ -1589,12 +1578,8 @@ Current validated maintainer flows:
   - [build/downloadrsync.sh](build/downloadrsync.sh)
   - [build/rsyncoldle.sh](build/rsyncoldle.sh)
   - [build/rsyncoldbe.sh](build/rsyncoldbe.sh)
-  - [build/discoveryoldle.sh](build/discoveryoldle.sh)
-  - [build/discoveryoldbe.sh](build/discoveryoldbe.sh)
   - [build/serviceoldle.sh](build/serviceoldle.sh)
   - [build/serviceoldbe.sh](build/serviceoldbe.sh)
-  - [build/telemetryoldle.sh](build/telemetryoldle.sh)
-  - [build/telemetryoldbe.sh](build/telemetryoldbe.sh)
 
 Current path split:
 - NetBSD 7 SDK output defaults under `/root/tc-earmv4-netbsd7`
@@ -1616,9 +1601,11 @@ This was a major breakthrough. The Time Capsule can locally mount `/dev/dk2` wit
 
 The HDD may be unmounted or slept by Apple later. That is why `smbd` is staged into RAM.
 
-### Running discoveryd from the HDD would be less catastrophic, but we keep it off the HDD
+### Running the unified service from the HDD would be unsafe
 
-If it died, our `_smb`/`_adisk` registrations would disappear (Apple's daemon sends goodbyes when the client socket closes) but file serving would remain up. The runtime starts it from `/mnt/Flash` instead of the HDD or RAM disk, which saves RAM headroom and avoids depending on the HDD staying mounted.
+The manager and discovery sockets must survive HDD unmounts. The runtime starts
+the unified image from `/mnt/Flash` instead of the HDD or RAM disk, which saves
+RAM headroom and avoids depending on the HDD staying mounted.
 
 ### Apple’s SMB advertisement path is not a harmless metadata layer
 

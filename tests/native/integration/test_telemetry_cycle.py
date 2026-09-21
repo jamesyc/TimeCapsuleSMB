@@ -12,7 +12,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
-from tests.native.build import ROOT, compile_native
+from tests.native.build import ROOT, compile_service
+
+
+def telemetry_command(binary, *args):
+    return [str(binary), 'telemetry', *args]
 
 @pytest.fixture(scope='module')
 def rig(tmp_path_factory):
@@ -100,8 +104,8 @@ def rig(tmp_path_factory):
         '#define TC_HEARTBEAT_PUBLIC_KEY_BYTES ' + ','.join(str(v) for v in public),
     ]))
     (root / 'config').write_text("TC_DEPLOY_RELEASE_TAG='test-release'\n")
-    binary = compile_native('telemetry', root / 'telemetry', flags=['-include', str(config), '-I', str(ROOT / 'build/native')],
-                            exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
+    binary = compile_service(root / 'service', flags=['-include', str(config), '-I', str(ROOT / 'build/native')],
+                             exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
     yield root, binary, state
     server.shutdown(); server.server_close(); thread.join(timeout=5)
 
@@ -117,7 +121,7 @@ def cycle(rig, tmp_path):
         if name.lower().endswith('_proxy'): env.pop(name)
     def run(mode, **changes):
         state['mode'] = mode
-        result = subprocess.run([str(binary), '--once', 'manual'], env={**env, **changes}, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(telemetry_command(binary, '--once', 'manual'), env={**env, **changes}, capture_output=True, text=True, timeout=10)
         assert not (root / 'work/debug').exists()
         assert not (root / 'work/debug.sig').exists()
         assert (root / 'work/keep.txt').read_text() == 'unrelated runtime file'
@@ -159,13 +163,13 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
     _, state, marker, binary, env = cycle
     state['mode'] = 'true'
     finish = tmp_path / 'finish'
-    process = subprocess.Popen([str(binary), '--once', 'manual'], env={**env, 'TC_TEST_FINISH': str(finish)},
+    process = subprocess.Popen(telemetry_command(binary, '--once', 'manual'), env={**env, 'TC_TEST_FINISH': str(finish)},
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         wait_until(marker.exists)
         process.terminate()
         assert process.poll() is None
-        blocked = subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=5)
+        blocked = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=5)
         assert blocked.returncode == 75
         finish.touch()
         assert process.wait(timeout=5) == 0
@@ -177,7 +181,7 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
 
 def test_print_payload_has_no_network(cycle):
     _, state, _, binary, env = cycle
-    result = subprocess.run([str(binary), '--print-payload', 'manual'], env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(telemetry_command(binary, '--print-payload', 'manual'), env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0
     assert json.loads(result.stdout)['reason'] == 'manual'
     assert state['calls'] == []
@@ -190,7 +194,7 @@ def test_device_opt_out_exits_without_network_or_debug_files(cycle, rig, args, s
     root, _, _ = rig
     (root / 'config').write_text(setting)
     state['mode'] = 'true'
-    result = subprocess.run([str(binary), *args], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, timeout=5)
     assert result.returncode == 0, result.stderr
     assert state['calls'] == [] and not marker.exists()
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
@@ -209,7 +213,7 @@ def test_reporting_remains_enabled_without_explicit_opt_out(cycle, rig, setting)
 def test_idle_daemon_exits_when_device_config_disables_telemetry(cycle, rig):
     _, state, _, binary, env = cycle
     root, _, _ = rig
-    process = subprocess.Popen([str(binary), '--daemon'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         wait_until(lambda: len(state['calls']) == 1)
         (root / 'config').write_text('TELEMETRY=false\n')
@@ -226,7 +230,7 @@ def test_opt_out_keeps_local_cleanup_available(cycle, rig):
     (root / 'config').write_text('TELEMETRY=false\n')
     (root / 'work/debug').write_text('stale')
     (root / 'work/debug.sig').write_text('stale')
-    result = subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
     assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     assert state['calls'] == []
@@ -247,7 +251,7 @@ def test_cleanup_removes_stale_files_without_network(cycle, rig):
     for name in ('debug', 'debug.sig'):
         (root / 'work' / name).write_bytes(b'interrupted download')
     for _ in range(2):
-        result = subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
         assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     assert state['calls'] == []
@@ -260,7 +264,7 @@ def test_cleanup_unlinks_symlinks_without_touching_targets(cycle, rig, tmp_path)
     directory = tmp_path / 'directory'; directory.mkdir(); (directory / 'file').write_text('preserved')
     (root / 'work/debug').symlink_to(target)
     (root / 'work/debug.sig').symlink_to(directory)
-    result = subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
     assert result.returncode == 0, result.stderr
     assert target.read_text() == (directory / 'file').read_text() == 'preserved'
     assert not (root / 'work/debug').is_symlink()
@@ -274,7 +278,7 @@ def test_directory_at_reserved_name_is_reported_and_blocks_download(cycle, rig):
     (directory / 'file').write_text('preserve')
     try:
         for args in (['--cleanup'], ['--once']):
-            result = subprocess.run([str(binary), *args], env=env, capture_output=True, text=True, timeout=5)
+            result = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, text=True, timeout=5)
             assert result.returncode == 1
             assert 'cannot remove' in result.stderr
         assert (directory / 'file').read_text() == 'preserve'
@@ -288,7 +292,7 @@ def test_successful_child_cannot_hide_cleanup_error(cycle, rig):
     root, _, _ = rig
     state['mode'] = 'true'
     try:
-        result = subprocess.run([str(binary), '--once'], env={**env, 'TC_TEST_LEAVE_SIG_DIR': '1'},
+        result = subprocess.run(telemetry_command(binary, '--once'), env={**env, 'TC_TEST_LEAVE_SIG_DIR': '1'},
                                 capture_output=True, text=True, timeout=10)
         assert result.returncode == 1
         assert 'cannot remove' in result.stderr and 'debug.sig' in result.stderr
@@ -302,7 +306,7 @@ def test_interrupted_signature_download_cleans_or_recovers_nonexecutable_binary(
     _, state, marker, binary, env = cycle
     root, _, _ = rig
     state['mode'] = 'hold_signature'
-    process = subprocess.Popen([str(binary), '--once'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(telemetry_command(binary, '--once'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert state['signature_started'].wait(timeout=15)
         assert (root / 'work/debug').exists()
@@ -312,7 +316,7 @@ def test_interrupted_signature_download_cleans_or_recovers_nonexecutable_binary(
         assert process.wait(timeout=5) != 0
         if kill:
             assert (root / 'work/debug').exists()
-            cleanup = subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5)
+            cleanup = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
             assert cleanup.returncode == 0, cleanup.stderr
         assert not marker.exists()
         assert not (root / 'work/debug').exists()
@@ -331,7 +335,7 @@ def test_inherited_owner_survives_parent_death_and_cleanup_waits(cycle, rig, tmp
     finish = tmp_path / 'finish'
     child_env = {**env, 'TC_TEST_FINISH': str(finish)}
     if detach: child_env['TC_TEST_DETACH'] = '1'
-    process = subprocess.Popen([str(binary), '--once'], env=child_env, stdout=subprocess.PIPE,
+    process = subprocess.Popen(telemetry_command(binary, '--once'), env=child_env, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
     try:
         wait_until(lambda: marker.exists() and marker.read_text().startswith('executed\n'))
@@ -342,12 +346,12 @@ def test_inherited_owner_survives_parent_death_and_cleanup_waits(cycle, rig, tmp
         assert (root / 'work/debug').exists()
         assert not (root / 'work/debug.sig').exists()
         for args in (['--cleanup'], ['--once']):
-            blocked = subprocess.run([str(binary), *args], env=env, capture_output=True, timeout=5)
+            blocked = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, timeout=5)
             assert blocked.returncode == 75
         assert len(state['calls']) == 3
         finish.touch()
         def recovered():
-            return subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5).returncode == 0
+            return subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5).returncode == 0
         wait_until(recovered)
         assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     finally:
@@ -367,7 +371,7 @@ def test_daemon_housekeeping_cleans_between_heartbeats(cycle, rig):
     _, state, _, binary, env = cycle
     root, _, _ = rig
     state['mode'] = 'false'
-    process = subprocess.Popen([str(binary), '--daemon'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         wait_until(lambda: len(state['calls']) == 1)
         # Simulate a crashed manual invocation while the scheduler is idle.
@@ -391,10 +395,10 @@ def test_shared_ram_root_requires_sticky_permissions(cycle, rig):
     (work / 'debug').write_text('stale')
     try:
         work.chmod(0o777)
-        result = subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
         assert result.returncode == 1 and (work / 'debug').exists()
         work.chmod(0o1777)
-        result = subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
         assert result.returncode == 0 and not (work / 'debug').exists()
         assert state['calls'] == []
     finally:
@@ -412,10 +416,10 @@ def short_collector(rig):
     # Only deadline tests need a shortened clock. Ordinary HTTP/JSON tests
     # use the production allowance so fixture startup isn't the assertion.
     root, _, _ = rig
-    return compile_native('telemetry', root / 'telemetry-short-timeout',
-                          flags=['-include', str(root / 'test_config.h'),
-                                 '-DTC_ACP_TIMEOUT_SECONDS=1', '-I', str(ROOT / 'build/native')],
-                          exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
+    return compile_service(root / 'service-short-timeout',
+                           flags=['-include', str(root / 'test_config.h'),
+                                  '-DTC_ACP_TIMEOUT_SECONDS=1', '-I', str(ROOT / 'build/native')],
+                           exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
 
 
 @pytest.fixture
@@ -453,7 +457,7 @@ def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_
     calls = acp_calls
     state['mode'] = 'true'
     started = time.monotonic()
-    result = subprocess.run([str(short_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': mode,
+    result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': mode,
                             'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=6)
     assert result.returncode == 1
     assert time.monotonic() - started < 5
@@ -461,10 +465,10 @@ def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_
     if mode in ('drip', 'drip_after_line'): assert 'timed out' in result.stderr
     assert state['calls'] == [] and not marker.exists()
     assert_collectors_stopped(calls)
-    assert subprocess.run([str(binary), '--cleanup'], env=env, capture_output=True, timeout=5).returncode == 0
+    assert subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5).returncode == 0
     # A fresh invocation can collect/post after the failed owner exits.
     state['mode'] = 'false'
-    assert subprocess.run([str(binary), '--once'], env=env, capture_output=True, timeout=15).returncode == 0
+    assert subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=15).returncode == 0
     assert len(state['calls']) == 1
 
 
@@ -505,7 +509,7 @@ def test_acp_exec_failure_aborts_without_posting(cycle, rig):
     permissions = acp.stat().st_mode & 0o777
     try:
         acp.chmod(0o600)
-        result = subprocess.run([str(binary), '--once'], env=env, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, text=True, timeout=5)
         assert result.returncode == 1 and 'exec' in result.stderr
         assert state['calls'] == []
     finally:
@@ -516,7 +520,7 @@ def test_acp_exec_failure_aborts_without_posting(cycle, rig):
 def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_collector, acp_calls, key):
     _, state, _, _, env = cycle
     calls = acp_calls
-    result = subprocess.run([str(short_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'hang',
+    result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'hang',
                             'TC_TEST_ACP_KEY': key, 'TC_TEST_ACP_CALLS': str(calls)},
                             capture_output=True, text=True, timeout=6)
     assert result.returncode == 1 and f'acp: {key} timed out' in result.stderr
@@ -531,7 +535,7 @@ def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_co
 def test_stop_during_acp_collection_is_prompt_even_with_long_timeout(cycle, production_collector, acp_calls, args, mode, stop_signal):
     _, state, _, _, env = cycle
     calls = acp_calls
-    process = subprocess.Popen([str(production_collector), *args], env={**env,
+    process = subprocess.Popen(telemetry_command(production_collector, *args), env={**env,
         'TC_TEST_ACP_MODE': mode, 'TC_TEST_ACP_CALLS': str(calls)},
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
@@ -560,13 +564,13 @@ def test_acp_unavailable_fields_and_extra_output_preserve_normal_reporting(cycle
 
 def test_default_acp_deadline_allows_slow_success_and_stops_at_twenty_seconds(cycle, production_collector, acp_calls):
     _, state, _, _, env = cycle
-    result = subprocess.run([str(production_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'slow'},
+    result = subprocess.run(telemetry_command(production_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'slow'},
                             capture_output=True, timeout=12)
     assert result.returncode == 0 and len(state['calls']) == 1
     state['calls'].clear()
     calls = acp_calls
     started = time.monotonic()
-    result = subprocess.run([str(production_collector), '--once'], env={**env, 'TC_TEST_ACP_MODE': 'hang',
+    result = subprocess.run(telemetry_command(production_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'hang',
                             'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=25)
     elapsed = time.monotonic() - started
     assert result.returncode == 1 and 'timed out' in result.stderr
@@ -579,7 +583,7 @@ def test_each_acp_command_gets_its_own_deadline(cycle, short_collector, acp_call
     _, state, _, _, env = cycle
     # Six 300ms probes exceed this fixture's 1s timeout in aggregate, but each
     # individual probe fits. No whole-payload deadline should cut them short.
-    result = subprocess.run([str(short_collector), '--once', 'manual'],
+    result = subprocess.run(telemetry_command(short_collector, '--once', 'manual'),
                             env={**env, 'TC_TEST_ACP_MODE': 'slow_each', 'TC_TEST_ACP_KEY': '*',
                                  'TC_TEST_ACP_CALLS': str(acp_calls)},
                             capture_output=True, text=True, timeout=20)
@@ -596,7 +600,7 @@ def test_each_acp_command_gets_its_own_deadline(cycle, short_collector, acp_call
 def test_print_payload_uses_current_schema_without_posting(cycle):
     """The diagnostic command emits the shipped schema without sending HTTP."""
     _run, state, _marker, binary, env = cycle
-    result = subprocess.run([str(binary), '--print-payload', 'manual'], env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(telemetry_command(binary, '--print-payload', 'manual'), env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload['schema_version'] == 2

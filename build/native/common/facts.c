@@ -20,19 +20,25 @@ static int acp_key_index(const char *name) {
 #endif
 
 /* -1 is unknown, 0/1 are actual settings; missing keys use shell defaults. */
-static int read_config_bool(const char *path, const char *key) {
-    char value[TC_CONFIG_VALUE_MAX];
-    int rc = config_read_value(path, key, value, sizeof(value));
-    return rc == 1 ? 0 : rc < 0 ? -1 : config_bool_value(value, -1);
+static int config_item_bool(const struct config_item *item) {
+    return item->present ? config_bool_value(item->value, -1) : 0;
 }
 
 int device_facts_read_config(struct device_config *out, const char *path) {
+    struct config_item items[] = {{"MDNS_ADVERTISE_AFP", "", 0},
+                                  {"NBNS_ENABLED", "", 0},
+                                  {"SMBD_DEBUG_LOGGING", "", 0},
+                                  {"MDNS_DEBUG_LOGGING", "", 0}};
     int smb_debug, mdns_debug;
     memset(out, 0, sizeof(*out));
-    out->advertise_afp = read_config_bool(path, "MDNS_ADVERTISE_AFP");
-    out->nbns_enabled = read_config_bool(path, "NBNS_ENABLED");
-    smb_debug = read_config_bool(path, "SMBD_DEBUG_LOGGING");
-    mdns_debug = read_config_bool(path, "MDNS_DEBUG_LOGGING");
+    if (config_read_snapshot(path, items, sizeof(items) / sizeof(items[0])) != 0) {
+        out->advertise_afp = out->nbns_enabled = out->debug_logging = -1;
+        return -1;
+    }
+    out->advertise_afp = config_item_bool(&items[0]);
+    out->nbns_enabled = config_item_bool(&items[1]);
+    smb_debug = config_item_bool(&items[2]);
+    mdns_debug = config_item_bool(&items[3]);
     out->debug_logging = smb_debug == 1 || mdns_debug == 1 ? 1 :
         smb_debug < 0 || mdns_debug < 0 ? -1 : 0;
     return 0;

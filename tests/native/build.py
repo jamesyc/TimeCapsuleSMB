@@ -1,4 +1,4 @@
-"""Compile the same explicit source lists as the device build, once per target."""
+"""Compile the unified native service from the production source manifest."""
 from pathlib import Path
 import subprocess
 import sys
@@ -11,10 +11,6 @@ ROOT = Path(__file__).resolve().parents[2]
 _BUILD = tempfile.TemporaryDirectory(prefix='tc-native-build-')
 
 
-def binary_name(target):
-    return 'discoveryd' if target == 'discovery' else target
-
-
 def build_root(kind):
     coverage = os.environ.get('TC_NATIVE_COVERAGE_DIR')
     if coverage:
@@ -23,9 +19,9 @@ def build_root(kind):
         return path
     return Path(_BUILD.name)
 
-def sources(target: str) -> list[Path]:
+def sources() -> list[Path]:
     return [ROOT / 'build' / line for line in
-            (ROOT / 'build/native' / f'{target}.sources').read_text().splitlines() if line]
+            (ROOT / 'build/native/service.sources').read_text().splitlines() if line]
 
 
 def stub_platform_flags():
@@ -42,18 +38,33 @@ def instrumentation_flags():
         return ['-fprofile-instr-generate', '-fcoverage-mapping']
     return []
 
-def compile_native(target, output, *, flags=(), extra_sources=(), exclude=()):
-    binary = _compile(target, tuple(flags), tuple(extra_sources), tuple(exclude))
+def compile_service(output, *, flags=(), extra_sources=(), exclude=()):
+    binary = _compile(tuple(flags), tuple(extra_sources), tuple(exclude))
+    shutil.copy2(binary, output)
+    return output
+
+
+def compile_modules(output, modules, *, flags=(), extra_sources=()):
+    production = set(sources())
+    selected = tuple(ROOT / 'build' / module for module in modules)
+    if not set(selected) <= production:
+        raise AssertionError("unit test module is not part of service.sources")
+    binary = _compile_selected(selected, tuple(flags), tuple(extra_sources))
     shutil.copy2(binary, output)
     return output
 
 
 @lru_cache(maxsize=None)
-def _compile(target, flags, extra_sources, exclude):
-    output = Path(tempfile.mkdtemp(dir=build_root('products'))) / binary_name(target)
-    selected = [p for p in sources(target) if p.name not in exclude]
-    role_flags = ['-DTC_SERVICE_MULTICALL', '-D_DNS_SD_LIBDISPATCH=0'] if target == 'service' else []
-    common = ['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', *role_flags, '-Wall', '-Wextra', '-Werror',
+def _compile(flags, extra_sources, exclude):
+    selected = tuple(p for p in sources() if p.name not in exclude)
+    return _compile_selected(selected, flags, extra_sources)
+
+
+@lru_cache(maxsize=None)
+def _compile_selected(selected, flags, extra_sources):
+    output = Path(tempfile.mkdtemp(dir=build_root('products'))) / 'service'
+    common = ['cc', '-D_GNU_SOURCE', '-DTC_NATIVE_TEST', '-DTC_SERVICE_MULTICALL', '-D_DNS_SD_LIBDISPATCH=0',
+              '-Wall', '-Wextra', '-Werror',
               '-Wno-sign-compare', '-Wno-unterminated-string-initialization',
               *instrumentation_flags(), *flags]
     objects = []

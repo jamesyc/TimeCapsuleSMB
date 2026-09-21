@@ -17,9 +17,9 @@ void registrant_init(struct registrant *reg, const struct config *cfg) {
 }
 
 static int add_desired(struct reg_desired *out, size_t max, size_t *count, unsigned ifindex, enum reg_service service,
-                       uint16_t port, const unsigned char *txt, size_t txt_len) {
+                       uint16_t port) {
     struct reg_desired *d;
-    if (*count >= max || txt_len > REG_TXT_MAX) {
+    if (*count >= max) {
         return -1;
     }
     d = &out[(*count)++];
@@ -27,10 +27,6 @@ static int add_desired(struct reg_desired *out, size_t max, size_t *count, unsig
     d->ifindex = ifindex;
     d->service = service;
     d->port = port;
-    if (txt_len > 0) {
-        memcpy(d->txt, txt, txt_len);
-    }
-    d->txt_len = txt_len;
     return 0;
 }
 
@@ -39,18 +35,20 @@ static int add_desired(struct reg_desired *out, size_t max, size_t *count, unsig
  * only where SVC_AFP (config MDNS_ADVERTISE_AFP=1). Apple owns the default
  * instance name, including conflict renames; ACP names are not registration inputs. */
 size_t registrant_compute_desired(struct reg_desired *out, size_t max, const struct device_plan *plan,
-                                  const struct config *cfg) {
+                                  const struct config *cfg, unsigned char adisk_txt[REG_TXT_MAX],
+                                  size_t *adisk_txt_len) {
     size_t count = 0;
     size_t i;
-    unsigned char adisk_txt[REG_TXT_MAX];
-    int adisk_txt_len = -1;
+    int built_adisk_txt_len = -1;
     static int logged_adisk_skip = 0;
 
+    *adisk_txt_len = 0;
     if (adisk_enabled(cfg)) {
         if (plan->id.wama[0] != '\0') {
-            adisk_txt_len = build_adisk_txt_record(adisk_txt, sizeof(adisk_txt), plan->id.wama, &cfg->adisk_disks);
+            built_adisk_txt_len = build_adisk_txt_record(adisk_txt, REG_TXT_MAX, plan->id.wama, &cfg->adisk_disks);
+            if (built_adisk_txt_len >= 0) *adisk_txt_len = (size_t)built_adisk_txt_len;
         }
-        if (adisk_txt_len < 0 && !logged_adisk_skip) {
+        if (built_adisk_txt_len < 0 && !logged_adisk_skip) {
             fprintf(stderr, "registrant: _adisk skipped; waMA unavailable or TXT invalid\n");
             logged_adisk_skip = 1;
         }
@@ -61,23 +59,20 @@ size_t registrant_compute_desired(struct reg_desired *out, size_t max, const str
             continue;
         }
         if (link->mask & SVC_SMB) {
-            (void)add_desired(out, max, &count, link->link.index, REG_SMB, SMB_PORT, NULL, 0);
+            (void)add_desired(out, max, &count, link->link.index, REG_SMB, SMB_PORT);
         }
-        if ((link->mask & SVC_ADISK) && adisk_txt_len >= 0) {
-            (void)add_desired(out, max, &count, link->link.index, REG_ADISK, ADISK_PORT,
-                              adisk_txt, (size_t)adisk_txt_len);
+        if ((link->mask & SVC_ADISK) && built_adisk_txt_len >= 0) {
+            (void)add_desired(out, max, &count, link->link.index, REG_ADISK, ADISK_PORT);
         }
         if (link->mask & SVC_AFP) {
-            (void)add_desired(out, max, &count, link->link.index, REG_AFP, AFP_PORT, NULL, 0);
+            (void)add_desired(out, max, &count, link->link.index, REG_AFP, AFP_PORT);
         }
     }
     return count;
 }
 
 static int desired_equal(const struct reg_desired *a, const struct reg_desired *b) {
-    return a->ifindex == b->ifindex && a->service == b->service && a->port == b->port &&
-           a->txt_len == b->txt_len &&
-           memcmp(a->txt, b->txt, a->txt_len) == 0;
+    return a->ifindex == b->ifindex && a->service == b->service && a->port == b->port;
 }
 
 static struct reg_entry *find_entry(struct registrant *reg, unsigned ifindex, enum reg_service service) {
@@ -135,10 +130,8 @@ static void release_ref(struct reg_entry *entry) {
 }
 
 static void schedule_retry(struct registrant *reg, long long now_ms) {
-    long long at = now_ms + reg->backoff_ms;
-    if (reg->retry_at_ms == 0 || at < reg->retry_at_ms) {
-        reg->retry_at_ms = at;
-    }
+    if (reg->retry_at_ms != 0) return;
+    reg->retry_at_ms = now_ms + reg->backoff_ms;
     reg->backoff_ms *= 2;
     if (reg->backoff_ms > REG_BACKOFF_MAX_MS) {
         reg->backoff_ms = REG_BACKOFF_MAX_MS;
@@ -146,10 +139,10 @@ static void schedule_retry(struct registrant *reg, long long now_ms) {
 }
 
 static void log_entry(const struct registrant *reg, const char *what, const struct reg_entry *entry, const char *detail) {
-    (void)reg;
     fprintf(stderr, "registrant: %s if=%u %s \"%s\" port=%u txt=%lu%s%s\n", what, entry->desired.ifindex,
             reg_service_regtype(entry->desired.service), "Apple default name", (unsigned)entry->desired.port,
-            (unsigned long)entry->desired.txt_len, detail[0] ? " " : "", detail);
+            (unsigned long)(entry->desired.service == REG_ADISK ? reg->adisk_txt_len : 0),
+            detail[0] ? " " : "", detail);
 }
 
 static void reg_callback(DNSServiceRef sd, DNSServiceFlags flags, DNSServiceErrorType err,
@@ -197,6 +190,7 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
     DNSServiceErrorType err;
     DNSServiceRef ref = NULL;
     long long completed_ms;
+    size_t txt_len = entry->desired.service == REG_ADISK ? reg->adisk_txt_len : 0;
 
     if (reg->unreachable_this_round || !daemon_socket_present()) {
         entry->ref = NULL;
@@ -211,7 +205,7 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
      * name; explicit names or NoAutoRename opt out of that native behavior. */
     err = DNSServiceRegister(&ref, 0, entry->desired.ifindex, NULL,
                              reg_service_regtype(entry->desired.service), NULL, NULL, htons(entry->desired.port),
-                             (uint16_t)entry->desired.txt_len, entry->desired.txt_len ? entry->desired.txt : NULL,
+                             (uint16_t)txt_len, txt_len ? reg->adisk_txt : NULL,
                              reg_callback, entry);
     ipc_end();
     completed_ms = acp_monotonic_ms();
@@ -242,7 +236,12 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
 void registrant_apply_plan(struct registrant *reg, const struct device_plan *plan, long long now_ms) {
     size_t i;
     struct reg_desired *desired = reg->desired;
-    size_t count = registrant_compute_desired(desired, REG_MAX_ENTRIES, plan, reg->cfg);
+    unsigned char candidate_adisk_txt[REG_TXT_MAX];
+    size_t candidate_adisk_txt_len;
+    size_t count = registrant_compute_desired(desired, REG_MAX_ENTRIES, plan, reg->cfg,
+                                              candidate_adisk_txt, &candidate_adisk_txt_len);
+    int adisk_txt_changed = candidate_adisk_txt_len != reg->adisk_txt_len ||
+        memcmp(candidate_adisk_txt, reg->adisk_txt, candidate_adisk_txt_len) != 0;
 
     /* One line per plan change with the desired set (guide C.3); the 30 s
      * poll re-derives the same plan most of the time and stays silent. */
@@ -271,7 +270,8 @@ void registrant_apply_plan(struct registrant *reg, const struct device_plan *pla
             continue;
         }
         for (j = 0; j < count; j++) {
-            if (desired_equal(&entry->desired, &desired[j])) {
+            if (desired_equal(&entry->desired, &desired[j]) &&
+                !(adisk_txt_changed && entry->desired.service == REG_ADISK)) {
                 keep = 1;
                 break;
             }
@@ -282,6 +282,10 @@ void registrant_apply_plan(struct registrant *reg, const struct device_plan *pla
             entry->in_use = 0;
         }
     }
+    if (candidate_adisk_txt_len > 0) {
+        memcpy(reg->adisk_txt, candidate_adisk_txt, candidate_adisk_txt_len);
+    }
+    reg->adisk_txt_len = candidate_adisk_txt_len;
     /* Register new entries. */
     for (i = 0; i < count; i++) {
         struct reg_entry *entry = find_entry(reg, desired[i].ifindex, desired[i].service);

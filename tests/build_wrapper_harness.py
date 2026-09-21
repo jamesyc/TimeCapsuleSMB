@@ -36,7 +36,7 @@ class BuildWrapperHarness:
                     shift || break
                 done
                 mkdir -p "$(dirname "$out")"
-                printf 'fake discovery\\n' > "$out"
+                printf 'fake service\\n' > "$out"
                 """
             ),
         )
@@ -49,7 +49,7 @@ class BuildWrapperHarness:
     def env_for(self, root: Path, *, triple: str) -> tuple[dict[str, str], Path, Path, Path]:
         out = root / "out"
         stage = root / "stage"
-        log = root / "discovery.log"
+        log = root / "service.log"
         gcc_args = root / "gcc.args"
         strip_args = root / "strip.args"
         self.prepare_fake_toolchain(out, triple)
@@ -58,8 +58,8 @@ class BuildWrapperHarness:
             "TC_ENV_FILE": "/dev/null",
             "BUILD_OUT": str(out),
             "BUILD_SRC": str(root / "src"),
-            "DISCOVERY_STAGE": str(stage),
-            "DISCOVERY_LOG": str(log),
+            "SERVICE_STAGE": str(stage),
+            "SERVICE_LOG": str(log),
             "TEST_GCC_ARGS": str(gcc_args),
             "TEST_STRIP_ARGS": str(strip_args),
         })

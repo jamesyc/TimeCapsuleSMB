@@ -28,18 +28,19 @@ def native_case_source(name):
     return str(_CASES / f'{name}.c')
 
 
+def run_case(name, *args, timeout=10):
+    binary = compile_case(native_case_source(name))
+    result = subprocess.run([str(binary), *map(str, args)], capture_output=True, text=True, timeout=timeout)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
 @lru_cache(maxsize=None)
 def compile_case(source):
     case = Path(source)
-    config = case.with_suffix('.build').read_text().splitlines()
-    target = config[0]
-    modules = [p for p in sources(target) if p.name not in {'main.c', 'entry.c'}]
-    if target == 'service':
-        # These cases exercise shared policy/identity helpers, not a daemon's
-        # lifecycle. The service image now also links discovery and telemetry.
-        modules = [p for p in modules if p.parent.name == 'common' or
-                   p.name in {'network_commands.c', 'nt_hash.c'}]
-    flags = [f'-D{line}' for line in config[1:] if '=' in line]
+    modules = [p for p in sources() if p.parent.name == 'common' or
+               p.name in {'network_commands.c', 'nt_hash.c', 'adisk_txt.c'}]
+    flags = []
     directory = _DIRECTORY / case.stem
     directory.mkdir()
     objects = [compile_object(path, tuple(flags)) for path in modules]

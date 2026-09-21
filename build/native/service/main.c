@@ -58,14 +58,12 @@ static int print_samba_identity(void) {
 }
 
 static void usage(void) {
-    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-smb-bind-interfaces [--retain-policy] | --print-link-plan | --version\n", stderr);
+    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-smb-bind-interfaces | --print-link-plan | --version\n", stderr);
 }
 int main(int argc, char **argv) {
     const char *facts_file = NULL;
     const char *command = NULL;
     struct device_plan plan;
-    struct device_plan history;
-    int retain_policy = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
@@ -75,9 +73,7 @@ int main(int argc, char **argv) {
             continue;
         }
 #endif
-        if (!strcmp(argv[i], "--retain-policy")) {
-            retain_policy = 1;
-        } else if (command == NULL && argv[i][0] == '-') {
+        if (command == NULL && argv[i][0] == '-') {
             command = argv[i];
         } else {
             usage();
@@ -89,24 +85,19 @@ int main(int argc, char **argv) {
         return EXIT_USAGE;
     }
     signal(SIGTERM, stop_acp); signal(SIGINT, stop_acp); signal(SIGPIPE, SIG_IGN);
-    if (retain_policy && (strcmp(command, "--print-smb-bind-interfaces") || service_read_policy(stdin, &history) != 0)) {
-        fputs("service: invalid retained policy\n", stderr);
-        return EXIT_PLAN_FAILED;
-    }
     if (!strcmp(command, "--version")) { printf("%d\n", SERVICE_VERSION_CODE); return EXIT_OK; }
     if (!strcmp(command, "--print-samba-identity")) return print_samba_identity();
     if (!strcmp(command, "--print-device-nt-hash")) return print_device_nt_hash();
     if (!strcmp(command, "--print-nt-hash-from-stdin")) return print_nt_hash_from_stdin();
     if (!strcmp(command, "--print-smb-bind-interfaces") || !strcmp(command, "--print-link-plan")) {
-        if (service_collect_plan(&plan, facts_file, retain_policy ? &history : NULL) != 0) {
+        if (service_collect_plan(&plan, facts_file) != 0) {
             fputs("service: device plan collection failed\n", stderr);
             return EXIT_PLAN_FAILED;
         }
         if (!strcmp(command, "--print-link-plan")) {
             return print_link_plan(stdout, &plan) == 0 ? EXIT_OK : EXIT_PLAN_FAILED;
         }
-        if (print_smb_bind_interfaces(stdout, &plan) != 0 ||
-            (retain_policy && service_print_policy(stdout, &history) != 0)) return EXIT_PLAN_FAILED;
+        if (print_smb_bind_interfaces(stdout, &plan) != 0) return EXIT_PLAN_FAILED;
         return EXIT_OK;
     }
     usage();

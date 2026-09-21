@@ -12,8 +12,6 @@
 
 .PHONY: help
 .PHONY: require-build-tree preflight
-.PHONY: discovery discovery-netbsd7 discovery-netbsd4le discovery-netbsd4be discovery-all
-.PHONY: telemetry telemetry-netbsd7 telemetry-netbsd4le telemetry-netbsd4be telemetry-all
 .PHONY: service service-netbsd7 service-netbsd4le service-netbsd4be service-all
 .PHONY: samba4 samba4-netbsd7 samba4-netbsd4le samba4-netbsd4be samba4-all
 .PHONY: samba4x samba4x-netbsd7 samba4x-netbsd4le samba4x-netbsd4be samba4x-all
@@ -30,8 +28,7 @@ help:
 	@printf '%s\n' 'Optional: copy .env.example to .env only when overriding default paths or target device settings.'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Common artifact targets:'
-	@printf '%s\n' '  make discovery-all         # discoveryd for NetBSD 6/7, NetBSD 4 LE, NetBSD 4 BE'
-	@printf '%s\n' '  make telemetry-all         # router telemetry for all three lanes'
+	@printf '%s\n' '  make service-all           # unified native service for all three lanes'
 	@printf '%s\n' '  make samba4-netbsd7        # download Samba 4 source, then build NetBSD 6/7 lane'
 	@printf '%s\n' '  make samba4-netbsd4le      # download Samba 4 source, then build NetBSD 4 LE lane'
 	@printf '%s\n' '  make samba4-netbsd4be      # download Samba 4 source, then build NetBSD 4 BE lane'
@@ -55,8 +52,6 @@ require-build-tree:
 		_downloadrsync.sh \
 		_rsync.sh \
 		native/common/platform.h \
-		native/discovery.sources \
-		native/telemetry.sources \
 		native/service.sources \
 		native/vendor/tweetnacl.c \
 		native/vendor/tweetnacl.h \
@@ -79,38 +74,6 @@ require-build-tree:
 
 preflight: require-build-tree
 	@printf '%s\n' 'build/ preflight passed.'
-
-discovery: require-build-tree discovery-netbsd7
-
-discovery-netbsd7: require-build-tree
-	./discovery.sh
-
-discovery-netbsd4le: require-build-tree
-	./discoveryoldle.sh
-
-discovery-netbsd4be: require-build-tree
-	./discoveryoldbe.sh
-
-discovery-all: require-build-tree
-	./discovery.sh
-	./discoveryoldle.sh
-	./discoveryoldbe.sh
-
-telemetry: require-build-tree telemetry-netbsd7
-
-telemetry-netbsd7: require-build-tree
-	./telemetry.sh
-
-telemetry-netbsd4le: require-build-tree
-	./telemetryoldle.sh
-
-telemetry-netbsd4be: require-build-tree
-	./telemetryoldbe.sh
-
-telemetry-all: require-build-tree
-	./telemetry.sh
-	./telemetryoldle.sh
-	./telemetryoldbe.sh
 
 service: require-build-tree service-netbsd7
 

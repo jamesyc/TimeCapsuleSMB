@@ -2,13 +2,12 @@ import struct
 
 import pytest
 
-from tests.native.build import ROOT, binary_name
+from tests.native.build import ROOT
 
 
-@pytest.mark.parametrize("target", ["service"])
 @pytest.mark.parametrize("suffix,byte_order", [("", 1), ("-netbsd4le", 1), ("-netbsd4be", 2)])
-def test_device_binary_is_single_static_arm_elf(target, suffix, byte_order):
-    data = (ROOT / "bin" / (target + suffix) / binary_name(target)).read_bytes()
+def test_device_binary_is_single_static_arm_elf(suffix, byte_order):
+    data = (ROOT / "bin" / ("service" + suffix) / "service").read_bytes()
     assert data[:4] == b"\x7fELF"
     assert data[4] == 1  # ELF32
     assert data[5] == byte_order

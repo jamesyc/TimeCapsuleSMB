@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 import pytest
-from tests.native.build import compile_native
+from tests.native.build import compile_service
 from tests.native.test_plan import NAT_OK, NAT_ACP_DEAD
 
 
@@ -107,7 +107,7 @@ if not (Path(os.environ['TC_TEST_ROOT'])/'no-listener').exists():
     print('root smbd 1 4* internet6 stream tcp [fe80::1%bridge0]:445')
     print('root rsync 1 4* internet stream tcp 192.0.2.1:873')
 ''')
-    binary=compile_native('service',root/'manager',flags=[
+    binary=compile_service(root/'manager',flags=[
         f'-DTC_SERVICE_BIN="{root}/roles"',f'-DTC_RAM_ROOT="{root}/ram"',f'-DTC_HOSTS_PATH="{root}/hosts"',
         f'-DTC_FLASH_CONFIG_PATH="{root}/config"',f'-DTC_VOLUMES_ROOT="{root}"',
         f'-DTC_ACP_PATH="{root}/acp"',f'-DTC_DISKD_PATH="{root}/diskd"',f'-DTC_ATACTL_PATH="{root}/atactl"',f'-DTC_PS_PATH="{root}/ps"',f'-DTC_FSTAT_PATH="{root}/fstat"',

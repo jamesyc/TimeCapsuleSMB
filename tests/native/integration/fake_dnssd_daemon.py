@@ -233,6 +233,7 @@ class FakeDnssdDaemon:
                 reply_name = name or self.default_name
                 behaviour = self.scripts.get(reply_name, "accept")
                 self.transcript.append({"op": "register", "conn": conn_id, "version": version, "flags": flags,
+                                        "time": time.monotonic(),
                                         "context": (ctx0, ctx1),
                                         "no_auto_rename": bool(flags & FLAG_NO_AUTO_RENAME), "ifindex": ifindex,
                                         "name": name, "regtype": regtype, "domain": domain, "host": host,

@@ -28,8 +28,6 @@ struct reg_desired {
     unsigned ifindex;
     enum reg_service service;
     uint16_t port;                 /* host order */
-    unsigned char txt[REG_TXT_MAX];
-    size_t txt_len;
 };
 
 struct reg_entry {
@@ -43,6 +41,8 @@ struct reg_entry {
 struct registrant {
     struct reg_entry entries[REG_MAX_ENTRIES];
     struct reg_desired desired[REG_MAX_ENTRIES];
+    unsigned char adisk_txt[REG_TXT_MAX];
+    size_t adisk_txt_len;
     long long backoff_ms;
     long long retry_at_ms;         /* 0 = nothing pending */
     int daemon_unreachable;        /* logged once per transition */
@@ -56,7 +56,8 @@ void registrant_install_ipc_fence(void);   /* SIGALRM -> exit EXIT_DAEMON_STALLE
 void registrant_init(struct registrant *reg, const struct config *cfg);
 /* Derives the desired set from a plan (pure; testable). Returns the count. */
 size_t registrant_compute_desired(struct reg_desired *out, size_t max, const struct device_plan *plan,
-                                  const struct config *cfg);
+                                  const struct config *cfg, unsigned char adisk_txt[REG_TXT_MAX],
+                                  size_t *adisk_txt_len);
 /* Applies a new plan: deregisters entries no longer desired, registers new ones. */
 void registrant_apply_plan(struct registrant *reg, const struct device_plan *plan, long long now_ms);
 /* Adds the active refs' sockets and the backoff timer to a select() set. */

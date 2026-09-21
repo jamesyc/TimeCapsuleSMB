@@ -1292,15 +1292,15 @@ echo "$RUNTIME_SERVICE_BIN"
     if binary_proc is None or binary_proc.returncode != 0:
         stdout = ("" if binary_proc is None else binary_proc.stdout).strip()
         if stdout == "missing":
-            detail = "discovery binary missing at /mnt/Flash/service"
+            detail = "native service binary missing at /mnt/Flash/service"
         elif stdout == "not_executable":
-            detail = "discovery binary is not executable at /mnt/Flash/service"
+            detail = "native service binary is not executable at /mnt/Flash/service"
         else:
             rc = "unknown" if binary_proc is None else str(binary_proc.returncode)
-            detail = f"discovery binary probe failed with exit code {rc}"
+            detail = f"native service binary probe failed with exit code {rc}"
         _append_step(steps, "mdns_binary", "fail", detail)
         return _readiness_result_from_steps(ready=False, steps=steps, default_detail=not_ready)
-    _append_step(steps, "mdns_binary", "pass", "discovery binary is executable")
+    _append_step(steps, "mdns_binary", "pass", "native service binary is executable")
 
     ps_step, ps_proc = _run_timed_probe_step(
         connection,
@@ -1377,7 +1377,7 @@ echo "$RUNTIME_SERVICE_BIN"
 
     plan_script = r'''
 RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
-"$RUNTIME_SERVICE_BIN" discovery --print-link-plan
+"$RUNTIME_SERVICE_BIN" --print-link-plan
 '''
     plan_step, plan_proc = _run_timed_probe_step(
         connection,

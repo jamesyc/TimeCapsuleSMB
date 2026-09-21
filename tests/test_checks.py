@@ -3127,9 +3127,9 @@ class CheckTests(unittest.TestCase):
     def test_run_doctor_checks_does_not_retry_structural_mdns_failure_mixed_with_transient_failure(self) -> None:
         mdns_probe = mock.Mock(
             ready=False,
-            detail="discovery binary missing at /mnt/Flash/discoveryd; discovery process is not running",
+            detail="native service binary missing at /mnt/Flash/service; discovery process is not running",
             lines=(
-                "FAIL:discovery binary missing at /mnt/Flash/discoveryd",
+                "FAIL:native service binary missing at /mnt/Flash/service",
                 "FAIL:discovery process is not running",
             ),
         )

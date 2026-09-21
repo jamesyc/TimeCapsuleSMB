@@ -262,10 +262,8 @@ The `deploy` script installs files in:
 - `/mnt/Flash` on the Time Capsule (boot files)
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/boot.sh`
-  - `/mnt/Flash/manager.sh`
-  - `/mnt/Flash/common.sh`
+  - `/mnt/Flash/service`
   - `/mnt/Flash/dfree.sh`
-  - `/mnt/Flash/discoveryd`
   - `/mnt/Flash/tcapsulesmb.conf`
 - `.samba4` folder on the root of the hard drive (which contains Samba files)
 

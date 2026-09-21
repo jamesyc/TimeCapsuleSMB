@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tests.native.build import ROOT, compile_native, instrumentation_flags
+from tests.native.build import ROOT, compile_service, instrumentation_flags
 
 
 @pytest.fixture(scope="module")
@@ -18,7 +18,7 @@ def capture_tools(tmp_path_factory):
     subprocess.run(["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror", *instrumentation_flags(), *flags,
                     "-I", str(ROOT / "build/native/common"), str(ROOT / "tests/native/unit/test_acp_capture.c"),
                     str(ROOT / "build/native/common/acp.c"), "-o", str(driver)], check=True)
-    return driver, compile_native("service", work / "service", flags=flags), compile_native("discovery", work / "mdns", flags=flags)
+    return driver, compile_service(work / "service", flags=flags)
 
 
 def raw_env(tmp_path, data, *, key="*", exit_code=0):
@@ -26,6 +26,34 @@ def raw_env(tmp_path, data, *, key="*", exit_code=0):
     path.write_bytes(data)
     return {**os.environ, "TC_TEST_ACP_MODE": "file", "TC_TEST_ACP_FILE": str(path),
             "TC_TEST_ACP_KEY": key, "TC_TEST_ACP_EXIT": str(exit_code)}
+
+
+def run_nt_hash(service, password):
+    return subprocess.run([str(service), "--print-nt-hash-from-stdin"], input=password,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+
+@pytest.mark.parametrize("password,expected", [
+    (b"password", b"8846F7EAEE8FB117AD06BDD830B7586C\n"),
+    ("pässwörd".encode(), b"0553152250AC01ADB4213CB9938663E4\n"),
+    ("🔐password".encode(), b"CD08E0CEDBB719A7387D2F9DAE50FFA0\n"),
+])
+def test_nt_hash_known_utf8_vectors(capture_tools, password, expected):
+    result = run_nt_hash(capture_tools[1], password)
+    assert result.returncode == 0
+    assert result.stdout == expected
+
+
+@pytest.mark.parametrize("password", [b"password\n", b"password\r\n"])
+def test_nt_hash_strips_single_acp_newline(capture_tools, password):
+    assert run_nt_hash(capture_tools[1], password).stdout == b"8846F7EAEE8FB117AD06BDD830B7586C\n"
+
+
+@pytest.mark.parametrize("password", [b"", b"\xff"])
+def test_nt_hash_rejects_invalid_or_empty_input(capture_tools, password):
+    result = run_nt_hash(capture_tools[1], password)
+    assert result.returncode != 0
+    assert result.stdout == b""
 
 
 @pytest.mark.parametrize("async_driver", [0, 1])
@@ -83,7 +111,7 @@ def test_device_hash_rejects_invalid_or_oversized_input(capture_tools, tmp_path,
 @pytest.mark.parametrize("data,success", [(b"MaSt = (\n  item\n);", True), (b"x" * 65536, True),
                                          (b"x" * 65537, False), (b"\n\n", False)])
 def test_mast_command_preserves_all_text(capture_tools, tmp_path, data, success):
-    result = subprocess.run([str(capture_tools[2]), "--print-mast"], env=raw_env(tmp_path, data), capture_output=True, timeout=5)
+    result = subprocess.run([str(capture_tools[1]), "--print-mast"], env=raw_env(tmp_path, data), capture_output=True, timeout=5)
     assert (result.returncode == 0) == success
     assert result.stdout == (data if success else b"")
 

@@ -4,6 +4,7 @@ Assertions come from the fake daemon's IPC transcript, never from logs."""
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -12,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.native.build import compile_native
+from tests.native.build import compile_service
+from tests.native.cases import compile_case, native_case_source, run_case
 from tests.native.integration.fake_dnssd_daemon import FakeDnssdDaemon
 from tests.native.test_plan import MODE, NAT_ADDRS, NAT_LINKS, facts_text
 
@@ -32,7 +34,7 @@ NAT_NO_WAMA = NAT_OK.replace("key=waMA status=ok value=e8:8d:28:58:f1:5c", "key=
 def rig():
     root = Path(tempfile.mkdtemp(prefix="tcdnssd"))
     sock = root / "mDNSResponder"
-    binary = compile_native("discovery", root / "mdns-advertiser", flags=[
+    binary = compile_service(root / "service", flags=[
         f'-DMDNS_UDS_SERVERPATH="{sock}"', "-DTC_PLAN_POLL_MS=300", "-DREG_BACKOFF_MIN_MS=200",
         "-DREG_BACKOFF_MAX_MS=1000", "-DREG_PENDING_TIMEOUT_MS=1000",
         "-DREG_IPC_ALARM_SECONDS=2", "-D_DNS_SD_LIBDISPATCH=0"])
@@ -44,7 +46,9 @@ class Advertiser:
         self.facts = root / f"facts-{os.getpid()}-{time.monotonic_ns()}.txt"
         self.facts.write_text(facts)
         self.log = open(root / f"log-{time.monotonic_ns()}.txt", "w+")
-        self.proc = subprocess.Popen([str(binary), "--netbios-name", "TESTCAPSULE", "--facts-file", str(self.facts), *args], stdout=self.log, stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen([str(binary), "discovery", "--netbios-name", "TESTCAPSULE",
+                                      "--facts-file", str(self.facts), *args],
+                                     stdout=self.log, stderr=subprocess.STDOUT)
 
     def replace_facts(self, text):
         tmp = self.facts.with_suffix(".tmp")
@@ -79,6 +83,49 @@ def registered(transcript):
     return [e for e in transcript if e["op"] == "register"]
 
 
+def run_discovery(binary, *args):
+    return subprocess.run([str(binary), "discovery", *args], capture_output=True, text=True, timeout=10)
+
+
+def run_case_result(name, *args):
+    binary = compile_case(native_case_source(name))
+    return subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=10)
+
+
+def test_registrant_keeps_shared_txt_state_below_device_budget():
+    assert int(run_case("registrant_size")) < 16 * 1024
+
+
+def test_adisk_txt_normalizes_lowercase_wama():
+    assert run_case("adisk_txt_normalizes_wama").strip() == "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010"
+
+
+def test_adisk_txt_defaults_to_cloned_advf():
+    assert run_case("adisk_txt_defaults_to_cloned_advf").strip() == \
+        "dk2=adVF=0x1093,adVN=Data,adVU=12345678-1234-1234-1234-123456789012"
+
+
+def test_adisk_txt_accepts_time_machine_smb_advf():
+    assert run_case("adisk_txt_accepts_time_machine_smb_advf").strip() == \
+        "dk2=adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012"
+
+
+@pytest.mark.parametrize("mode,uuid,wama,expected_rc,expected_error", [
+    ("diskful", "-", "", 0, ""),
+    ("diskful", UUID, "", 7, ""),
+    ("diskful", UUID, "not-a-mac", 7, "adisk sys waMA must be a MAC address"),
+    ("diskful", UUID, "80:EA:96:E6:58:68", 0, ""),
+    ("diskless", UUID, "", 0, ""),
+    ("diskless", UUID, "not-a-mac", 0, ""),
+    ("diskless", "bad", "", 8, "adisk uuid must be 36 characters"),
+])
+def test_adisk_argument_validation_respects_diskless_mode(mode, uuid, wama, expected_rc, expected_error):
+    result = run_case_result("adisk_txt_argument_validation", mode, uuid, wama)
+    assert result.returncode == expected_rc
+    if expected_error:
+        assert expected_error in result.stderr
+
+
 def test_repeated_share_arguments_preserve_txt_values(rig, daemon):
     root, _, binary = rig
     names = ["James's Backup", 'USB "Archive" $(literal); café']
@@ -99,6 +146,81 @@ def test_repeated_share_arguments_preserve_txt_values(rig, daemon):
         adv.stop()
 
 
+def test_service_discovery_rejects_extra_adisk_share_fields(rig, daemon):
+    _, _, binary = rig
+    result = run_discovery(binary, *adisk_args(), "extra")
+    assert result.returncode == 3
+    assert "Usage:" in result.stderr
+    assert daemon.transcript == []
+
+
+def test_service_discovery_unknown_option_returns_timestamped_usage(rig):
+    result = run_discovery(rig[2], "--auto-ip")
+    assert result.returncode == 3
+    assert "Usage:" in result.stderr and "serving summary" not in result.stderr
+    assert all(re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", line)
+               for line in result.stderr.splitlines())
+
+
+def test_service_discovery_version(rig):
+    result = run_discovery(rig[2], "--version")
+    assert result.returncode == 0 and result.stdout == "30100\n" and result.stderr == ""
+
+
+def test_service_discovery_accepts_debug_logging_before_version(rig):
+    result = run_discovery(rig[2], "--debug-logging", "--version")
+    assert result.returncode == 0 and result.stdout == "30100\n" and result.stderr == ""
+
+
+@pytest.mark.parametrize("args", [
+    ("--name", "TimeCapsule", "--ipv4", "192.168.1.217"),
+    ("--name", "TimeCapsule", "--ttl", "30"),
+    ("--name", "TimeCapsule", "--auto-ip"),
+    ("--check-auto-ip",),
+])
+def test_service_discovery_rejects_removed_nbns_cli_modes(rig, args):
+    result = run_discovery(rig[2], *args)
+    assert result.returncode == 3 and "Usage:" in result.stderr
+
+
+def test_service_discovery_help_reports_native_interface(rig):
+    result = run_discovery(rig[2], "--help")
+    assert result.returncode == 0 and "Usage:" in result.stderr
+    for removed in ("--auto-ip", "--ipv4", "--ttl", "--check-auto-ip"):
+        assert removed not in result.stderr
+
+
+def test_service_discovery_rejects_overlong_name_before_truncation(rig):
+    result = run_discovery(rig[2], "--netbios-name", "ABCDEFGHIJKLMNOP")
+    assert result.returncode == 3 and "15 bytes or fewer" in result.stderr
+    assert all(re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", line)
+               for line in result.stderr.splitlines())
+
+
+def test_changed_adisk_txt_replaces_only_adisk_registrations(rig, daemon):
+    root, _, binary = rig
+    adv = Advertiser(binary, root, NAT_OK, *adisk_args())
+    try:
+        assert daemon.wait_for(lambda t: len(registered(t)) >= 4) is not None
+        initial = registered(daemon.transcript)
+        smb_connections = {row["conn"] for row in initial if row["regtype"] == "_smb._tcp"}
+        adisk_connections = {row["conn"] for row in initial if row["regtype"].startswith("_adisk")}
+        adv.replace_facts(NAT_OK.replace("e8:8d:28:58:f1:5c", "00:11:22:33:44:55"))
+        transcript = daemon.wait_for(
+            lambda rows: len(registered(rows)) >= 6 and
+            adisk_connections <= {row["conn"] for row in rows if row["op"] == "close"}
+        )
+        assert transcript is not None
+        replacements = registered(transcript)[4:]
+        assert len(replacements) == 2
+        assert all(row["regtype"].startswith("_adisk") for row in replacements)
+        assert all(row["txt"][0] == "sys=waMA=00:11:22:33:44:55,adVF=0x1010" for row in replacements)
+        closed = {row["conn"] for row in transcript if row["op"] == "close"}
+        assert not (smb_connections & closed)
+    finally:
+        adv.stop()
+
+
 @pytest.mark.parametrize("args,exit_code", [
     (["--adisk-share"], 3),
     (["--adisk-share", "Data", "dk2", UUID], 3),
@@ -115,7 +237,7 @@ def test_repeated_share_arguments_preserve_txt_values(rig, daemon):
 ])
 def test_invalid_share_arguments_fail_before_registration(rig, daemon, args, exit_code):
     _, _, binary = rig
-    result = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(binary), "discovery", *args], capture_output=True, text=True, timeout=10)
     assert result.returncode == exit_code, result.stderr
     assert daemon.transcript == []
 
@@ -123,9 +245,9 @@ def test_invalid_share_arguments_fail_before_registration(rig, daemon, args, exi
 def test_share_argument_count_is_bounded(rig):
     _, _, binary = rig
     args = [arg for i in range(16) for arg in adisk_args(key=f"dk{i}")]
-    result = subprocess.run([str(binary), *args, "--version"], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(binary), "discovery", *args, "--version"], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    result = subprocess.run([str(binary), *args, *adisk_args(key="dk16"), "--version"],
+    result = subprocess.run([str(binary), "discovery", *args, *adisk_args(key="dk16"), "--version"],
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 8 and "too many adisk disks" in result.stderr
 
@@ -283,6 +405,33 @@ def test_name_conflict_backs_off_and_retries_until_the_name_is_free(rig, daemon)
         assert len(registered(daemon.transcript)) == settled   # backoff stopped once registered
     finally:
         adv.stop()
+
+
+def test_retry_backoff_counts_failed_rounds_not_registrations(rig, daemon):
+    root, _, binary = rig
+    daemon.script("AirPort Time Capsule", "conflict")
+
+    def intervals(facts):
+        start = len(daemon.transcript)
+        adv = Advertiser(binary, root, facts)
+        try:
+            transcript = daemon.wait_for(
+                lambda rows: len([row for row in rows[start:] if row["op"] == "register" and
+                                  row["ifindex"] == 9 and row["regtype"] == "_smb._tcp"]) >= 3,
+                timeout=6,
+            )
+            assert transcript is not None, adv.stop()
+            times = [row["time"] for row in transcript[start:] if row["op"] == "register" and
+                     row["ifindex"] == 9 and row["regtype"] == "_smb._tcp"][:3]
+            return times[1] - times[0], times[2] - times[1]
+        finally:
+            adv.stop()
+
+    single = intervals(NAT_DENIED)
+    several = intervals(NAT_AFP)
+    assert 0.1 <= single[0] < 0.7 and 0.2 <= single[1] < 0.8
+    assert 0.1 <= several[0] < 0.7 and 0.2 <= several[1] < 0.8
+    assert abs(single[1] - several[1]) < 0.25
 
 
 def test_daemon_absent_is_degraded_and_recovers_when_it_returns(rig, daemon):
@@ -452,10 +601,10 @@ def test_print_link_plan_and_bad_share_arguments(rig):
     root, _, binary = rig
     facts = root / "plan-facts.txt"
     facts.write_text(NAT_OK)
-    result = subprocess.run([str(binary), "--print-link-plan", "--facts-file", str(facts)], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(binary), "discovery", "--print-link-plan", "--facts-file", str(facts)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0 and result.stdout.startswith("plan: status=validated mode=nat")
     assert "link: name=bridge0 index=9 role=lan mask=smb,adisk" in result.stdout
-    result = subprocess.run([str(binary), "--netbios-name", "TESTCAPSULE", "--facts-file", str(facts), *adisk_args(uuid="bad-uuid")], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(binary), "discovery", "--netbios-name", "TESTCAPSULE", "--facts-file", str(facts), *adisk_args(uuid="bad-uuid")], capture_output=True, text=True, timeout=10)
     assert result.returncode == 8
-    assert subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=10).stdout == "30100\n"
-    assert subprocess.run([str(binary), "--instance", "x"], capture_output=True, text=True, timeout=10).returncode == 3
+    assert subprocess.run([str(binary), "discovery", "--version"], capture_output=True, text=True, timeout=10).stdout == "30100\n"
+    assert subprocess.run([str(binary), "discovery", "--instance", "x"], capture_output=True, text=True, timeout=10).returncode == 3

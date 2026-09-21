@@ -13,7 +13,7 @@ The shell runtime tests moved with their behavior:
 | Share names, collisions, ADisk limits and Samba tuning | `test_samba_config.py`, exact-argv manager case |
 | Diskd claims, failed mounts, markers and payload choice | `test_storage_runtime.py` |
 | RAM copies, auth/config failures, retries and desired-state reversion | `test_worker.py`, `test_staging.py`, `test_manager.py` |
-| Bind retention and cold startup | `test_retained_policy.py`, `test_plan.py`, manager network-history case |
+| Bind retention and cold startup | `test_plan.py`, manager network-history case |
 | Manager, discovery, rsync and telemetry ownership | `test_process.py`, `test_manager.py`, `test_inspect.py` |
 | Apple diskd recovery and CIFS/NBNS conflicts | Manager recovery cases; Apple AFP/mDNS exclusion in inspection cases |
 | Local hostname resolution and bounded logs | `test_hosts.py`, `test_log_trim.py`, existing timestamp cases |

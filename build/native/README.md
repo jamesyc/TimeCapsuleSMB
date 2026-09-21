@@ -2,8 +2,8 @@
 
 `service.sources` links one fully static device executable, with independent
 `manager`, `discovery`, and `telemetry` processes and diagnostic entrypoints.
-Common code is linked once. The separate discovery/telemetry source lists remain
-for focused host regressions, not deployed artifacts. No role uses pthreads.
+Common code is linked once. No role uses pthreads, and host regressions compile
+the same unified source list.
 
 | Entrypoint | Responsibility |
 | --- | --- |
@@ -57,8 +57,7 @@ Samba-binding validation even if a brief detach/replug leaves inventory unchange
 
 Cold start grants no sharing services until critical facts validate. Failed
 rereads retain permissions only on unchanged interfaces. The manager stores this
-history directly in C; the diagnostic `--retain-policy` interface remains available
-for existing callers, but no daemon transfers plans through it.
+history directly in C; no process serializes or transfers retained policy.
 
 Module headers declare cross-module functions. `TC_LOCAL` keeps internal
 helpers static in device builds; only host regression tests define
@@ -167,13 +166,13 @@ run debug on every cycle; this boolean contract does not claim exactly-once jobs
 
 ## Builds and checks
 
-Run the artifact helper in the existing NetBSD VM as root, for example
-`./build/telemetry.sh`, `./build/telemetryoldle.sh`, or
-`./build/telemetryoldbe.sh`. `make -C build advertisers-all` builds all four
-helpers for all three lanes. It never downloads or rebuilds a toolchain.
+Run `./build/service.sh`, `./build/serviceoldle.sh`, and
+`./build/serviceoldbe.sh` in the existing NetBSD VM as root, or use
+`make -C build service-all`. These commands build only the unified service and
+never download or rebuild a toolchain.
 
 After copying stripped outputs back, wait five seconds and refresh the artifact
-manifest hashes. All 12 installed artifacts must be static ARM ELF executables
+manifest hashes. All three service artifacts must be static ARM ELF executables
 with the correct byte order and NetBSD note.
 
 From the repository root:

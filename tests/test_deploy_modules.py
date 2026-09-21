@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import shutil
 import shlex
 import os
 import subprocess
 import sys
-import selectors
 import tempfile
 import textwrap
 import time
@@ -16,9 +14,6 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-
-from tests.native.cases import native_case_source, compile_case
-from tests.native.build import compile_native
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
@@ -260,83 +255,6 @@ class DeployModuleTests(unittest.TestCase):
                     return source[start : offset + 1]
         self.fail(f"function {name} did not terminate")
 
-    def _compile_and_run_c_helper(self, source: str, bin_name: str, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
-        binary = compile_case(source)
-        return subprocess.run([str(binary), *(args or [])], capture_output=True, text=True, timeout=10)
-
-    def _compile_mdns_advertiser_binary(self, tmp: Path) -> Path:
-        return compile_native("discovery", tmp / "discoveryd")
-
-    def _run_mdns_nt_hash(self, password: bytes) -> subprocess.CompletedProcess[bytes]:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = compile_native("service", Path(tmpdir) / "service")
-            return subprocess.run(
-                [str(bin_path), "--print-nt-hash-from-stdin"],
-                input=password,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-
-    def _run_mdns_advertiser_until_ready_or_exit(self, bin_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-        proc = subprocess.Popen(
-            [str(bin_path), *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        stderr_chunks: list[str] = []
-        deadline = time.monotonic() + 2
-        selector = selectors.DefaultSelector()
-        assert proc.stderr is not None
-        selector.register(proc.stderr, selectors.EVENT_READ)
-        try:
-            while proc.poll() is None and time.monotonic() < deadline:
-                events = selector.select(max(0.0, min(0.05, deadline - time.monotonic())))
-                if not events:
-                    continue
-                assert proc.stderr is not None
-                line = proc.stderr.readline()
-                if line:
-                    stderr_chunks.append(line)
-                    if "serving summary:" in line:
-                        break
-        finally:
-            selector.close()
-        proc.terminate()
-        try:
-            stdout, stderr = proc.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, stderr = proc.communicate(timeout=2)
-        stderr = "".join(stderr_chunks) + stderr
-        return subprocess.CompletedProcess([str(bin_path), *args], proc.returncode, stdout, stderr)
-
-
-    def test_mdns_print_nt_hash_hashes_utf8_passwords(self) -> None:
-        cases = [
-            (b"password", b"8846F7EAEE8FB117AD06BDD830B7586C\n"),
-            ("pässwörd".encode(), b"0553152250AC01ADB4213CB9938663E4\n"),
-            ("🔐password".encode(), b"CD08E0CEDBB719A7387D2F9DAE50FFA0\n"),
-        ]
-        for password, expected in cases:
-            with self.subTest(password=password):
-                result = self._run_mdns_nt_hash(password)
-                self.assertEqual(result.returncode, 0, result.stderr.decode())
-                self.assertEqual(result.stdout, expected)
-
-    def test_mdns_print_nt_hash_strips_single_acp_newline(self) -> None:
-        self.assertEqual(self._run_mdns_nt_hash(b"password\n").stdout, b"8846F7EAEE8FB117AD06BDD830B7586C\n")
-        self.assertEqual(self._run_mdns_nt_hash(b"password\r\n").stdout, b"8846F7EAEE8FB117AD06BDD830B7586C\n")
-
-    def test_mdns_print_nt_hash_rejects_invalid_or_empty_input(self) -> None:
-        for password in (b"", b"\xff"):
-            with self.subTest(password=password):
-                result = self._run_mdns_nt_hash(password)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(result.stdout, b"")
-
     def test_remote_request_reboot_uses_explicit_reboot_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
@@ -504,217 +422,6 @@ class DeployModuleTests(unittest.TestCase):
                        if transfer.destination.startswith("/mnt/Flash/")}
         self.assertEqual(flash_names, {"service", "boot.sh", "rc.local", "dfree.sh", "tcapsulesmb.conf"})
 
-
-    def test_mdns_advertiser_accepts_lowercase_wama_and_normalizes_output(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        source = native_case_source("mdns_advertiser_accepts_lowercase_wama_and_normalizes_output")
-        run = self._compile_and_run_c_helper(source, "mdns_adisk_system")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
-
-    def test_mdns_advertiser_adisk_disk_txt_defaults_to_cloned_advf(self) -> None:
-        source = native_case_source("mdns_advertiser_adisk_disk_txt_defaults_to_cloned_advf")
-        run = self._compile_and_run_c_helper(source, "mdns_adisk_disk_txt_default_advf")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(
-            run.stdout.strip(),
-            "dk2=adVF=0x1093,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
-        )
-
-    def test_mdns_advertiser_adisk_disk_txt_accepts_time_machine_smb_advf(self) -> None:
-        source = native_case_source("mdns_advertiser_adisk_disk_txt_accepts_time_machine_smb_advf")
-        run = self._compile_and_run_c_helper(source, "mdns_adisk_disk_txt_time_machine_advf")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(
-            run.stdout.strip(),
-            "dk2=adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
-        )
-
-    def test_mdns_advertiser_rejects_extra_adisk_share_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            binary = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run(
-                [str(binary), "--adisk-share", "Data", "dk2",
-                 "12345678-1234-1234-1234-123456789012", "0x82", "extra"],
-                capture_output=True, text=True, timeout=10,
-            )
-        self.assertEqual(run.returncode, 3, run.stderr)
-        self.assertIn("Usage:", run.stderr)
-
-    def test_mdns_advertiser_adisk_argument_validation_respects_diskless_mode(self) -> None:
-        source = native_case_source("mdns_advertiser_adisk_argument_validation_respects_diskless_mode")
-        adisk_uuid = "12345678-1234-1234-1234-123456789012"
-
-        cases = [
-            (
-                "no_adisk_config_does_not_require_adisk_sys_wama",
-                ["diskful", "-", ""],
-                0,
-                "",
-            ),
-            (
-                "diskful_adisk_share_requires_adisk_sys_wama",
-                ["diskful", adisk_uuid, ""],
-                7,
-                "",
-            ),
-            (
-                "diskful_adisk_share_rejects_invalid_adisk_sys_wama",
-                ["diskful", adisk_uuid, "not-a-mac"],
-                7,
-                "adisk sys waMA must be a MAC address",
-            ),
-            (
-                "diskful_adisk_share_accepts_valid_adisk_sys_wama",
-                ["diskful", adisk_uuid, "80:EA:96:E6:58:68"],
-                0,
-                "",
-            ),
-            (
-                "diskless_adisk_share_suppresses_missing_adisk_sys_wama",
-                ["diskless", adisk_uuid, ""],
-                0,
-                "",
-            ),
-            (
-                "diskless_adisk_share_suppresses_invalid_adisk_sys_wama",
-                ["diskless", adisk_uuid, "not-a-mac"],
-                0,
-                "",
-            ),
-            (
-                "diskless_still_validates_configured_adisk_disk_fields",
-                ["diskless", "bad", ""],
-                8,
-                "adisk uuid must be 36 characters",
-            ),
-        ]
-
-        for label, extra_args, expected_rc, expected_stderr in cases:
-            with self.subTest(label=label):
-                run = self._compile_and_run_c_helper(
-                    source,
-                    f"mdns_adisk_args_{label}",
-                    extra_args,
-                )
-                self.assertEqual(run.returncode, expected_rc, run.stderr)
-                if expected_stderr:
-                    self.assertIn(expected_stderr, run.stderr)
-
-    def test_mdns_advertiser_unknown_option_returns_usage_without_running(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run([str(bin_path), "--auto-ip"], capture_output=True, text=True, check=False)
-        self.assertEqual(run.returncode, 3)
-        self.assertIn("Usage:", run.stderr)
-        self.assertTrue(run.stderr.splitlines())
-        for line in run.stderr.splitlines():
-            self.assertRegex(line, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
-        self.assertNotIn("serving summary", run.stderr)
-
-    def test_mdns_advertiser_version_prints_version_code(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
-        self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "30100\n")
-        self.assertEqual(run.stderr, "")
-
-    def test_mdns_advertiser_accepts_debug_logging_before_version(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run(
-                [str(bin_path), "--debug-logging", "--version"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "30100\n")
-        self.assertEqual(run.stderr, "")
-
-    def test_mdns_timestamped_logging_truncates_long_lines_without_heap(self) -> None:
-        source = native_case_source("mdns_timestamped_logging_truncates_long_lines_without_heap")
-        run = self._compile_and_run_c_helper(source, "mdns_long_timestamped_log")
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertNotIn("A" * 5000, run.stderr)
-        self.assertGreaterEqual(run.stderr.count("A"), 4000)
-        self.assertLess(run.stderr.count("A"), 5000)
-        self.assertTrue(run.stderr.endswith("\n"))
-
-
-    def test_discovery_rejects_removed_nbns_cli_modes(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            runs = [
-                subprocess.run(
-                    [str(bin_path), "--name", "TimeCapsule", "--ipv4", "192.168.1.217"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                ),
-                subprocess.run(
-                    [str(bin_path), "--name", "TimeCapsule", "--ttl", "30"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                ),
-                subprocess.run(
-                    [str(bin_path), "--name", "TimeCapsule", "--auto-ip"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                ),
-                subprocess.run(
-                    [str(bin_path), "--check-auto-ip"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                ),
-            ]
-        for run in runs:
-            self.assertEqual(run.returncode, 3)
-            self.assertIn("Usage:", run.stderr)
-
-
-    def test_discovery_usage_reports_native_interface(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run([str(bin_path), "--help"], capture_output=True, text=True, check=False)
-
-        self.assertEqual(run.returncode, 0)
-        self.assertIn("Usage:", run.stderr)
-        self.assertNotIn("--auto-ip", run.stderr)
-        self.assertNotIn("--ipv4", run.stderr)
-        self.assertNotIn("--ttl", run.stderr)
-        self.assertNotIn("--check-auto-ip", run.stderr)
-
-
-    def test_discovery_rejects_overlong_name_before_truncation(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run(
-                [str(bin_path), "--netbios-name", "ABCDEFGHIJKLMNOP"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(run.returncode, 3)
-            self.assertIn("15 bytes or fewer", run.stderr)
-            self.assertTrue(run.stderr.splitlines())
-            for line in run.stderr.splitlines():
-                self.assertRegex(line, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
 
     def test_mounted_mast_volumes_mounts_each_volume_and_returns_successes(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -1620,7 +1327,8 @@ describe_managed_smbd_status "" ""
         remote_commands = [call.args[1] for call in run_ssh_mock.call_args_list]
         self.assertIn("ps axww", remote_commands[1])
         self.assertIn("/internet/p", remote_commands[2])
-        self.assertIn("--print-link-plan", remote_commands[3])
+        self.assertIn('"$RUNTIME_SERVICE_BIN" --print-link-plan', remote_commands[3])
+        self.assertNotIn("discovery --print-link-plan", remote_commands[3])
         self.assertIn("PASS:Apple mDNSResponder is running", result.lines)
         self.assertIn("PASS:Apple diskd runs on loopback (-i lo0)", result.lines)
         self.assertIn("PASS:Apple mDNSResponder listens on UDP 5353 for IPv4 and IPv6", result.lines)

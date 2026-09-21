@@ -8,10 +8,11 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
-from tests.native.build import ROOT, compile_native
+from tests.native.build import ROOT, compile_modules, compile_service
 from tests.native.integration.fake_dnssd_daemon import FakeDnssdDaemon
 from tests.native.test_plan import MODE, NAT_ADDRS, NAT_LINKS, facts_text
 
@@ -53,6 +54,12 @@ NAT_OK = facts_text(
          "usbF": "0x458", "syNm": "Capsule", "waMA": "e8:8d:28:58:f1:5c"},
     links=NAT_LINKS, addrs=NAT_ADDRS, config={"nbns_enabled": 1})
 
+WCIFSND_UNIT_MODULES = (
+    "native/common/acp.c",
+    "native/common/addr.c",
+    "native/common/log.c",
+)
+
 
 @pytest.fixture(scope="module")
 def rig():
@@ -61,7 +68,7 @@ def rig():
     fake = ROOT / "tests/native/integration/fake_wcifsnd.py"
     fake.chmod(0o755)
     sock = root / "mDNSResponder"
-    binary = compile_native("discovery", root / "discoveryd", flags=[
+    binary = compile_service(root / "service", flags=[
         f'-DMDNS_UDS_SERVERPATH="{sock}"', f'-DWCIFSND_PATH="{fake}"',
         f"-DWCIFSND_PORT={port}", "-DWCIFSND_START_MS=3000", "-DWCIFSND_REPLY_MS=1500",
         "-DWCIFSND_STOP_MS=500", "-DTC_PLAN_POLL_MS=200", "-DREG_BACKOFF_MIN_MS=100",
@@ -82,7 +89,7 @@ class Discovery:
         env = {**os.environ, "TC_FAKE_WCIFSND_PORT": str(port),
                "TC_FAKE_WCIFSND_EVENTS": str(self.events), "TC_FAKE_WCIFSND_MODE": str(self.mode)}
         env.update(extra_env or {})
-        args = [str(binary), "--facts-file", str(self.facts)]
+        args = [str(binary), "discovery", "--facts-file", str(self.facts)]
         if diskless:
             args.append("--diskless")
         else:
@@ -123,8 +130,36 @@ def children(discovery):
 
 
 def assert_reaped(pid):
-    with pytest.raises(ProcessLookupError):
+    try:
         os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    # A busy parallel suite can recycle the PID. Accept a different live
+    # process, but reject zombies even when ps has discarded their argv.
+    process = subprocess.run(["ps", "-p", str(pid), "-o", "stat=", "-o", "command="],
+                             capture_output=True, text=True)
+    row = process.stdout.strip()
+    assert not row.startswith("Z") and "fake_wcifsnd.py" not in row, row
+
+
+@pytest.mark.parametrize("missing,output,reaped", [
+    (True, "", True),
+    (False, "", True),  # Exited between kill(0) and ps.
+    (False, "S    python unrelated.py\n", True),  # Reused PID.
+    (False, "S    python fake_wcifsnd.py\n", False),
+    (False, "Z    <defunct>\n", False),  # macOS drops the argv.
+    (False, "Z+   [python3] <defunct>\n", False),  # Linux zombie.
+])
+def test_assert_reaped_distinguishes_gone_reused_live_and_zombie_pids(missing, output, reaped):
+    with mock.patch.object(os, "kill", side_effect=ProcessLookupError if missing else None), \
+         mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+             [], 0 if output else 1, stdout=output, stderr="")) as ps:
+        if reaped:
+            assert_reaped(12345)
+        else:
+            with pytest.raises(AssertionError):
+                assert_reaped(12345)
+        assert ps.call_count == (0 if missing else 1)
 
 
 def bonjour_connections(daemon):
@@ -146,9 +181,8 @@ def assert_bonjour_unchanged(discovery, daemon, connections):
 
 
 def test_codec_golden_packets_and_adversarial_responses(tmp_path):
-    binary = compile_native("discovery", tmp_path / "wcifsnd-unit",
-                            extra_sources=[ROOT / "tests/native/unit/test_wcifsnd.c"],
-                            exclude=("main.c", "wcifsnd.c"))
+    binary = compile_modules(tmp_path / "wcifsnd-unit", WCIFSND_UNIT_MODULES,
+                             extra_sources=[ROOT / "tests/native/unit/test_wcifsnd.c"])
     lines = subprocess.check_output([binary], text=True).splitlines()
     packets = [bytes.fromhex(line) for line in lines[:3]]
     assert [decode_name(packet) for packet in packets] == [
@@ -158,9 +192,8 @@ def test_codec_golden_packets_and_adversarial_responses(tmp_path):
 
 
 def test_retry_deadlines_cleanup_and_eligibility(tmp_path):
-    binary = compile_native('discovery', tmp_path / 'recovery-unit',
-                            extra_sources=[ROOT / 'tests/native/unit/test_wcifsnd_recovery.c'],
-                            exclude=('main.c', 'wcifsnd.c'))
+    binary = compile_modules(tmp_path / 'recovery-unit', WCIFSND_UNIT_MODULES,
+                             extra_sources=[ROOT / 'tests/native/unit/test_wcifsnd_recovery.c'])
     subprocess.run([binary], check=True, capture_output=True, timeout=10)
 
 
@@ -223,7 +256,7 @@ def test_cold_invalid_plan_recovers_when_facts_become_valid(rig, dnssd):
 
 
 def test_normal_launch_requires_netbios_name(rig):
-    result = subprocess.run([str(rig[2]), "--facts-file", str(rig[0] / "missing")],
+    result = subprocess.run([str(rig[2]), "discovery", "--facts-file", str(rig[0] / "missing")],
                             capture_output=True, text=True, timeout=2)
     assert result.returncode == 3
 

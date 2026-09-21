@@ -12,9 +12,7 @@
 int tc_hosts_ensure(const char *path, const char *hostname);
 int print_smb_bind_interfaces(FILE *stream, const struct device_plan *plan);
 int print_link_plan(FILE *stream, const struct device_plan *plan);
-int service_collect_plan(struct device_plan *plan, const char *facts_file, struct device_plan *history);
-int service_read_policy(FILE *stream, struct device_plan *history);
-int service_print_policy(FILE *stream, const struct device_plan *history);
+int service_collect_plan(struct device_plan *plan, const char *facts_file);
 int print_nt_hash_from_stdin(void);
 int print_device_nt_hash(void);
 int device_nt_hash(char out[33]);

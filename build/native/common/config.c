@@ -109,41 +109,25 @@ int config_decode_assignment_value(const char *text, char *out, size_t out_len) 
 }
 
 int config_read_value(const char *path, const char *key, char *out, size_t out_len) {
-    FILE *fp;
-    char line[1024];
-    size_t key_len = strlen(key);
-    int found = 1;
+    struct config_item item = {key, "", 0};
+    size_t length;
 
     if (out_len == 0) {
         return -1;
     }
     out[0] = '\0';
-    fp = fopen(path, "r");
-    if (fp == NULL) {
+    if (config_read_snapshot(path, &item, 1) != 0) {
         return -1;
     }
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        char *cursor = line;
-        while (*cursor == ' ' || *cursor == '\t') {
-            cursor++;
-        }
-        if (strncmp(cursor, key, key_len) != 0) {
-            continue;
-        }
-        cursor += key_len;
-        while (*cursor == ' ' || *cursor == '\t') {
-            cursor++;
-        }
-        if (*cursor != '=') {
-            continue;
-        }
-        cursor++;
-        /* Last assignment wins, like the shell that also sources the file. */
-        found = config_decode_assignment_value(cursor, out, out_len);
+    if (!item.present) {
+        return 1;
     }
-    if (ferror(fp)) found = -1;
-    (void)fclose(fp);
-    return found;
+    length = strlen(item.value);
+    if (length >= out_len) {
+        return -1;
+    }
+    memcpy(out, item.value, length + 1);
+    return 0;
 }
 
 int config_bool_value(const char *text, int fallback) {
