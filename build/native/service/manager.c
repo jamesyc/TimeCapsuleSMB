@@ -386,6 +386,16 @@ static void apply_audit(struct manager *m, long long now) {
             controllers++;
         if (table->processes[i].role == TC_PROC_WCIFSFS)
             conflict = 1;
+        /* ACPd can launch wcifsnd after our controller, even after wcifsfs
+         * was stopped. Local NBNS retries cannot clear that foreign owner's
+         * ports/names. Drain controllers first, then use orphan cleanup below;
+         * never interrupt a native child owned by our live discovery process. */
+        if (table->processes[i].role == TC_PROC_WCIFSND &&
+            table->processes[i].parent != m->discovery.child.pid) {
+            conflict = 1;
+            m->blocked |= BLOCK_DISCOVERY;
+            external = 1;
+        }
         if (table->processes[i].role == TC_PROC_DISKD || table->processes[i].role == TC_PROC_DISKD_LOOPBACK)
             diskd++;
     }
@@ -428,8 +438,11 @@ static void apply_audit(struct manager *m, long long now) {
     }
     memcpy(m->stale, stale, stale_count * sizeof(stale[0]));
     m->stale_count = stale_count;
-    if (conflict)
+    if (conflict) {
+        if (m->discovery.child.group && !m->discovery.requested_stop)
+            timestamped_fprintf(stderr, "manager: native discovery ownership conflict; resetting discovery\n");
         stop_role(&m->discovery, now, 1);
+    }
     if (external) {
         m->audit_at = now + 1000;
     }

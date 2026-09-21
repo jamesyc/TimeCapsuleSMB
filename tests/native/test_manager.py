@@ -81,6 +81,8 @@ print({'syNm':(root/'name').read_text() if (root/'name').exists() else 'Capsule'
 import os,json
 from pathlib import Path
 root=Path(os.environ['TC_TEST_ROOT'])
+if (root/'record-ps').exists():
+    with (root/'events').open('a') as out:out.write(json.dumps(dict(kind='command',role='ps'))+'\\n')
 if not (root/'diskd-absent').exists():print('2 1 2 S diskd /sbin/diskd -i lo0 -d local.')
 else:
     for line in (root/'events').read_text().splitlines():
@@ -118,7 +120,7 @@ def manager(manager_tools):
     root,binary=manager_tools
     for path in ('ram','dk2','dk3'):
         shutil.rmtree(root/path,ignore_errors=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','slow-facts'):
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','slow-facts','record-ps'):
         (root/name).unlink(missing_ok=True)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
@@ -410,6 +412,41 @@ def test_native_cifs_reappearance_resets_discovery_but_keeps_samba(manager):
         (root/'external-processes').write_text(f'{native.pid} 1 {native.pid} S wcifsfs /sbin/wcifsfs\n')
         process.send_signal(signal.SIGHUP)
         wait(lambda rows:native.poll() is not None and len([e for e in rows if e['role']=='discovery' and e['kind']=='start'])>before)
+        assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
+    finally:
+        if native.poll() is None:native.kill()
+        native.wait()
+
+
+@pytest.mark.parametrize('owned', [False, True])
+def test_native_nbns_audit_distinguishes_foreign_and_owned_children(manager, owned):
+    root,start,events,wait,_,_=manager
+    process=start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    controller=[e for e in values if e['role']=='discovery' and e['kind']=='start'][-1]
+    before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
+    native=subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(60)'],
+                            stdout=subprocess.PIPE,text=True,start_new_session=True)
+    assert native.stdout.readline().strip()=='ready'
+    try:
+        # NetBSD 6 boot observation: ACPd spawned wcifsnd after discovery,
+        # without a remaining live wcifsfs. A live controller alone must not
+        # protect that foreign daemon, but its own child must remain untouched.
+        parent=controller['pid'] if owned else 1
+        (root/'external-processes').write_text(
+            f"{controller['pid']} {process.pid} {controller['group']} S service service: role=discovery nbns=ready\n"
+            f"{native.pid} {parent} {native.pid} S wcifsnd /sbin/wcifsnd\n")
+        (root/'record-ps').touch()
+        if owned:
+            # A second audit can only start once the first result was applied.
+            for count in (1, 2):
+                process.send_signal(signal.SIGHUP)
+                wait(lambda rows:sum(e['role']=='ps' for e in rows)>=count)
+            assert native.poll() is None
+            assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==before
+        else:
+            process.send_signal(signal.SIGHUP)
+            wait(lambda rows:native.poll() is not None and len([e for e in rows if e['role']=='discovery' and e['kind']=='start'])>before)
         assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
     finally:
         if native.poll() is None:native.kill()
