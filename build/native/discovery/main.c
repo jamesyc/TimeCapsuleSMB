@@ -193,6 +193,8 @@ int main(int argc, char **argv) {
             wcifsnd_apply_plan(&nbns, &loop.current, now);
             registrant_apply_plan(&reg, &loop.current, now);
         }
+        /* Native NBNS retries preserve Bonjour; only unsafe child cleanup
+         * escalates to the manager's whole-process recovery. */
         if (wcifsnd_dispatch(&nbns, &reads, now) < 0) { result = EXIT_DAEMON_STALLED; break; }
         publish_readiness(&nbns, &cfg, netbios);
         registrant_dispatch(&reg, &reads, now);

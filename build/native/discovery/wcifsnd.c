@@ -85,13 +85,16 @@ static void stop_child(struct wcifsnd *w, long long now) {
 }
 
 static void fail(struct wcifsnd *w, const char *why, long long now) {
-    timestamped_fprintf(stderr, "wcifsnd: %s; replacing discovery generation\n", why);
+    if (w->failed) return;
+    timestamped_fprintf(stderr, "wcifsnd: %s; replacing native child\n", why);
+    if (w->active_since >= 0 && now - w->active_since >= 60000) w->failures = 0;
+    w->active_since = -1;
     w->failed = 1; stop_child(w, now);
 }
 
 void wcifsnd_init(struct wcifsnd *w, const char *name) {
     size_t i;
-    memset(w, 0, sizeof(*w)); w->fd = -1; w->enabled = -1;
+    memset(w, 0, sizeof(*w)); w->fd = -1; w->enabled = -1; w->active_since = -1;
     snprintf(w->name, sizeof(w->name), "%s", name);
     for (i = 0; w->name[i]; i++) w->name[i] = toupper((unsigned char)w->name[i]);
     if (!strcmp(w->name, "WORKGROUP"))
@@ -109,9 +112,15 @@ void wcifsnd_apply_plan(struct wcifsnd *w, const struct device_plan *p, long lon
             if (a->family == AF_INET && addr_is_service_address(a)) ipv4 = 1;
         }
     }
-    w->desired = w->enabled == 1 && w->name[0] && !p->options.diskless && ipv4 &&
-        (p->status.validated || w->phase != WC_OFF);
-    if (!w->desired) stop_child(w, now);
+    w->desired = w->enabled == 1 && w->name[0] && !p->options.diskless && ipv4;
+    /* Incomplete facts may retain a live native child, but every replacement
+     * must pass the same validated-plan gate as initial startup. */
+    w->validated = p->status.validated;
+    if (!w->desired) {
+        w->failed = 0; w->failures = 0; w->active_since = -1;
+        stop_child(w, now);
+        if (w->phase == WC_OFF) w->wake = 0;
+    }
     /* OEM scope after the initial eligibility gate. HUP refreshes addresses
      * inside Apple; it must not add another reference to any name. */
     else if (w->phase == WC_ACTIVE && p->status.validated && kill(w->child, SIGHUP))
@@ -122,8 +131,8 @@ void wcifsnd_prepare(struct wcifsnd *w, fd_set *reads, int *maxfd, long long *de
     if (w->fd >= 0 && w->sent && w->phase == WC_REGISTERING) {
         FD_SET(w->fd, reads); if (w->fd > *maxfd) *maxfd = w->fd;
     }
-    if (w->phase != WC_OFF || w->desired || w->failed) {
-        long long at = w->phase == WC_OFF ? 0 : w->wake;
+    if (w->phase != WC_OFF || (w->desired && w->validated) || w->failed) {
+        long long at = w->phase == WC_OFF && w->failed ? 0 : w->wake;
         if (*deadline < 0 || at < *deadline) *deadline = at;
     }
 }
@@ -149,7 +158,7 @@ static void spawn_child(struct wcifsnd *w, long long now) {
     if (child < 0) { fail(w, "fork failed", now); return; }
     w->child = child; w->phase = WC_STARTING;
     w->deadline = now + WCIFSND_START_MS; w->wake = now + 100;
-    w->record = 0; w->sent = 0;
+    w->record = 0; w->sent = 0; w->active_since = -1;
 }
 
 static int ready_socket(struct wcifsnd *w) {
@@ -175,18 +184,33 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
         pid_t got = waitpid(w->child, &status, WNOHANG);
         if (got == w->child || (got < 0 && errno == ECHILD)) {
             int stopping = w->phase == WC_STOPPING;
-            w->child = 0; w->phase = WC_OFF;
+            w->child = 0; w->phase = WC_OFF; w->wake = 0;
             if (!stopping) fail(w, "child exited", now);
-        } else if (got < 0 && errno != EINTR) fail(w, "waitpid failed", now);
+        } else if (got < 0 && errno != EINTR) {
+            timestamped_fprintf(stderr, "wcifsnd: waitpid failed; cannot safely replace child\n");
+            return -1;
+        }
     }
     if (w->phase == WC_OFF) {
-        if (w->failed) return -1;
-        if (w->desired) spawn_child(w, now);
+        if (w->failed) {
+            /* Apple adds are reference-counted and survive client exit. A
+             * lost ACK must never cause another add to that native child.
+             * Reap it first, then retry with empty native registration state;
+             * Bonjour keeps its independent mDNSResponder connections. */
+            w->failed = 0;
+            if (w->failures < 6) w->failures++;
+            w->wake = now + (1000LL << w->failures);
+            timestamped_fprintf(stderr, "wcifsnd: retry in %lld ms\n", w->wake - now);
+        }
+        if (w->desired && w->validated && now >= w->wake) spawn_child(w, now);
         return 0;
     }
     if (w->phase == WC_STOPPING) {
         if (now >= w->deadline) {
-            if (w->killed) { w->failed = 1; return -1; }
+            if (w->killed) {
+                timestamped_fprintf(stderr, "wcifsnd: child did not exit after SIGKILL; replacing discovery generation\n");
+                return -1;
+            }
             (void)kill(w->child, SIGKILL); w->killed = 1;
             w->deadline = now + WCIFSND_STOP_MS;
         }
@@ -226,7 +250,7 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
                 w->record++;
                 if (w->record == 1 && !strcmp(w->name, "WORKGROUP")) w->record++;
                 if (w->record == 3) {
-                    w->phase = WC_ACTIVE;
+                    w->phase = WC_ACTIVE; w->active_since = now;
                     timestamped_fprintf(stderr, "wcifsnd: registered %s with Apple's native NetBIOS daemon\n", w->name);
                 } else { request_name(w); w->sent = 0; w->deadline = now + WCIFSND_REPLY_MS; }
             }
@@ -239,7 +263,7 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
 
 void wcifsnd_shutdown(struct wcifsnd *w) {
     int i;
-    w->desired = 0;
+    w->desired = 0; w->failed = 0;
     stop_child(w, acp_monotonic_ms());
     for (i = 0; w->child > 0 && i < 50; i++) {
         struct timeval pause = {0, 100000};

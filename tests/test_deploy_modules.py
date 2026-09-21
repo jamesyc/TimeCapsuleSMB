@@ -1610,6 +1610,20 @@ describe_managed_smbd_status "" ""
         self.assertFalse(result.ready)
         self.assertIn("FAIL:discovery native NBNS is not ready", result.lines)
 
+    def test_probe_managed_mdns_reports_nbns_retry_as_not_ready(self) -> None:
+        ps_out = self.PS_V31.replace("nbns=ready", "nbns=waiting").replace(
+            "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", ""
+        )
+        fstat_out = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
+        result, _ = self._run_mdns_probe([
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
+            mock.Mock(returncode=0, stdout=ps_out, stderr=""),
+            mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
+            mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
+        ])
+        self.assertFalse(result.ready)
+        self.assertIn("FAIL:discovery native NBNS is not ready", result.lines)
+
     def test_probe_managed_mdns_accepts_waiting_without_service_eligible_ipv4(self) -> None:
         ps_out = self.PS_V31.replace("nbns=ready", "nbns=waiting").replace(
             "917 916 S 0:00 wcifsnd /sbin/wcifsnd\n", ""

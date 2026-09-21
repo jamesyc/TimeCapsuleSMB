@@ -4,6 +4,7 @@ import os
 import signal
 import socket
 import struct
+import time
 
 
 PORT = int(os.environ["TC_FAKE_WCIFSND_PORT"])
@@ -15,6 +16,14 @@ running = True
 def record(text):
     with open(EVENTS, "a", encoding="ascii") as stream:
         stream.write(text + "\n")
+
+
+def mode_now():
+    try:
+        with open(MODE, encoding="ascii") as stream:
+            return stream.read().strip()
+    except FileNotFoundError:
+        return "success"
 
 
 def stop(_signo, _frame):
@@ -45,10 +54,16 @@ if sentinel is not None:
         record("FD_CLOSED")
 signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ.get("TC_FAKE_WCIFSND_IGNORE_TERM") else stop)
 signal.signal(signal.SIGHUP, hup)
+record(f"START {os.getpid()}")
+record(f"OWNER {os.getppid()}")
+while running and mode_now() == "no-listener":
+    time.sleep(0.1)
+if not running:
+    record("STOP")
+    raise SystemExit(0)
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(("127.0.0.1", PORT))
 sock.settimeout(0.1)
-record(f"START {os.getpid()}")
 adds = 0
 while running:
     try:
@@ -57,10 +72,7 @@ while running:
         continue
     record("ADD " + request.hex())
     adds += 1
-    try:
-        mode = open(MODE, encoding="ascii").read().strip()
-    except FileNotFoundError:
-        mode = "success"
+    mode = mode_now()
     if mode == "drop" or (mode == "drop-after-1" and adds > 1) or (mode == "drop-after-2" and adds > 2):
         continue
     if mode == "wack":
@@ -69,5 +81,8 @@ while running:
     if mode == "wack-success":
         sock.sendto(reply(request, 0xB800, 2, 58), peer)
     flags = 0xA805 if mode == "negative" else 0xA800
-    sock.sendto(reply(request, flags, 6, 62), peer)
+    packet = reply(request, flags, 6, 62)
+    if mode == "malformed":
+        packet[13] ^= 1
+    sock.sendto(packet, peer)
 record("STOP")

@@ -47,3 +47,11 @@ Payload discovery and console logs are trimmed only at launch/restart, using the
 actual selected destination. Tests preserve debug output and file identity,
 reject symlinks, and verify that healthy audits touch only the bounded RAM logs.
 This deliberately provides launch-time retention, not a continuous HDD log cap.
+
+Native NBNS failures stop and reap only discovery's wcifsnd child, then retry
+with bounded backoff while preserving Bonjour's original IPC connections.
+Apple's reference-counted adds are never retransmitted after an uncertain reply.
+The controller tests cover partial registration, deadline/reset arithmetic,
+validated-plan startup gating, disable/shutdown during retry, and escalation
+when the old child cannot be safely cleaned up. Device supervision verifies
+that repeated native child deaths preserve discovery, Bonjour, and an SMB handle.

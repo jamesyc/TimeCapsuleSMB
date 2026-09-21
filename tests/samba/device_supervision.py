@@ -250,7 +250,9 @@ def supervise(device, share, filename):
     print("PASS Apple daemons survive every supervision test", flush=True)
 
 
-def native_nbns_failure(device):
+def native_nbns_failure(device, share, filename):
+    from zeroconf import IPVersion, ServiceBrowser, ServiceStateChange, Zeroconf
+
     def initial_child(rows):
         controller = device.role("discovery", rows)
         children = [p for p in rows if p["name"] == "wcifsnd" and p["parent"] == controller["pid"]]
@@ -259,18 +261,70 @@ def native_nbns_failure(device):
     # A listening Samba parent can precede discovery's native registrations.
     # Wait for the fault's precondition after the preceding manager restart.
     native = device.await_state(initial_child)
-    # Deliberate fault injection only: routine manager checks must never kill
-    # this child independently of its discovery controller.
-    device.signal(native["pid"], "KILL")
+    rows = device.processes()
+    controller = device.role('discovery', rows)['pid']
+    samba = device.samba(rows)['pid']
+    apple = {p['name']: p['pid'] for p in rows if p['name'] in {'mDNSResponder', 'diskd', 'afpserver'}}
 
-    def ready(rows):
-        owner = device.role("discovery", rows)
-        children = [p for p in rows if p["name"] == "wcifsnd"]
-        return ("nbns=ready" in owner["args"] and len(children) == 1
-                and children[0]["parent"] == owner["pid"] and children[0]["pid"] != native["pid"])
+    def bonjour_sockets():
+        # NetBSD 4/6 fstat expose the existing DNS-SD IPC socket identities.
+        # Re-registering after a hidden restart would replace those sockets.
+        output = device.command(f'fstat -p {controller}')
+        return sorted(tuple(line.split()[3:]) for line in output.splitlines() if 'unix stream' in line)
 
-    device.await_state(ready)
-    print("PASS discovery restores native NBNS ownership after child death", flush=True)
+    sockets = bonjour_sockets()
+    assert len(sockets) >= 2, sockets
+    connection, session = device.session()
+    zc = Zeroconf(ip_version=IPVersion.V4Only)
+    changes = []
+
+    def changed(zeroconf, service_type, name, state_change):
+        changes.append((service_type, name, state_change))
+
+    browser = ServiceBrowser(zc, ['_smb._tcp.local.', '_adisk._tcp.local.'], handlers=[changed])
+    try:
+        handle, _ = open_file(device.share(session, share), filename)
+        expected = handle.read(0, 64)
+        assert expected
+        targets = set()
+        end = time.monotonic() + 20
+        while time.monotonic() < end and len({kind for kind, _ in targets}) < 2:
+            for kind, name, state in list(changes):
+                if state == ServiceStateChange.Removed or (kind, name) in targets:
+                    continue
+                info = zc.get_service_info(kind, name, timeout=1000)
+                if info and device.host in info.parsed_addresses():
+                    targets.add((kind, name))
+            time.sleep(.1)
+        assert len({kind for kind, _ in targets}) == 2, (targets, changes)
+        changes.clear()
+        for _ in range(3):
+            # Deliberate fault injection only. Apple name references are cleared
+            # by a fresh native child; Bonjour and the controller must survive.
+            device.signal(native['pid'], 'KILL')
+
+            def ready(rows):
+                owner = device.role('discovery', rows)
+                assert owner['pid'] == controller
+                assert device.samba(rows)['pid'] == samba
+                assert handle.read(0, len(expected)) == expected
+                children = [p for p in rows if p['name'] == 'wcifsnd']
+                return children[0] if ('nbns=ready' in owner['args'] and len(children) == 1
+                                      and children[0]['parent'] == controller
+                                      and children[0]['pid'] != native['pid']) else None
+
+            native = device.await_state(ready)
+            assert bonjour_sockets() == sockets
+            assert not any(state == ServiceStateChange.Removed and (kind, name) in targets
+                           for kind, name, state in changes), changes
+        current = {p['name']: p['pid'] for p in device.processes() if p['name'] in apple}
+        assert current == apple
+        handle.close()
+    finally:
+        browser.cancel()
+        zc.close()
+        connection.disconnect(close=False)
+    print('PASS repeated NBNS child recovery preserves discovery, Bonjour IPC/browsing, and an SMB handle', flush=True)
 
 
 def main():
@@ -290,7 +344,7 @@ def main():
         durable_reconnect(device, share, directory + "\\durable")
         targeted_reload(device, base, share, root)
         supervise(device, share, directory + "\\durable")
-        native_nbns_failure(device)
+        native_nbns_failure(device, share, directory + "\\durable")
     finally:
         # Only this invocation's randomly named scratch tree is deleted.
         device.command("rm -rf " + shlex.quote(root))
