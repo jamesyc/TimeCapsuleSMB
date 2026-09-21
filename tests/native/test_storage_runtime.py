@@ -126,3 +126,12 @@ def test_retained_guard_rejects_replaced_root_at_same_path(storage):
     mounts.write_text(f'{root}/dk2 dk2 1\n')
     result = run('guard')
     assert result.returncode == 0, result.stderr
+
+
+def test_partial_payload_retry_maps_cache_by_identity_not_inventory_order(storage):
+    root,_,_,_,_,run=storage
+    home=payload(root,'dk2');payload(root,'dk3')
+    (home/'private').rmdir()
+    result=run('retry-cache')
+    assert result.returncode==0,result.stderr
+    assert f'available=3 payload={home} shares=2'.encode() in result.stdout

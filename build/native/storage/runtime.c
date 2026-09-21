@@ -68,8 +68,11 @@ int tc_volume_mounted(const struct tc_volume *volume, int *writable) {
 int tc_storage_guard(const struct tc_volume *volume) {
     int writable, fd;
     struct stat st;
-    if (tc_volume_mounted(volume, &writable) != 1 || !writable)
+    if (tc_volume_mounted(volume, &writable) != 1) {
+        errno = ENODEV;
         return -1;
+    }
+    if (!writable) { errno = EROFS; return -1; }
     fd = open(volume->root, O_RDONLY | O_NOFOLLOW);
     if (fd < 0)
         return -1;
@@ -90,15 +93,30 @@ int tc_storage_guard_valid(const struct tc_volume *volume, int guard) {
            tc_volume_mounted(volume, &writable) == 1 && writable;
 }
 
-static int previously_active(const struct tc_storage_snapshot *previous, const struct tc_volume *volume) {
+static int previous_index(const struct tc_storage_snapshot *previous, const struct tc_volume *volume) {
     size_t i;
-    if (!previous)
-        return 0;
+    if (!previous) return -1;
     for (i = 0; i < previous->inventory.count; i++) {
         const struct tc_volume *old = &previous->inventory.volumes[i];
-        if ((previous->available & (1u << i)) && !strcmp(old->uuid, volume->uuid) &&
-            !strcmp(old->device, volume->device) && !strcmp(old->disk, volume->disk))
-            return 1;
+        if (!strcmp(old->uuid, volume->uuid) && !strcmp(old->device, volume->device) &&
+            !strcmp(old->disk, volume->disk) && !strcmp(old->root, volume->root)) return (int)i;
+    }
+    return -1;
+}
+int tc_storage_refresh_needed(const struct tc_storage_snapshot *previous, const struct tc_inventory *inventory) {
+    size_t i;
+    for (i = 0; i < inventory->count; i++) {
+        const struct tc_volume *volume = &inventory->volumes[i];
+        int old = previous_index(previous, volume), writable, mounted;
+        uint32_t bit;
+        if (old < 0) return 1;
+        bit = 1u << old;
+        mounted = tc_volume_mounted(volume, &writable); /* MNT_NOWAIT: no HDD stat. */
+        if (mounted < 0) continue; /* An unavailable probe is not disk removal. */
+        if (!!(previous->mounted & bit) != mounted ||
+            (mounted && !!(previous->readonly & bit) != !writable)) return 1;
+        if (!((previous->retry_prepare | previous->retry_payload) & bit) && !(previous->readonly & bit) &&
+            (volume->users == 0 || !mounted)) return 1;
     }
     return 0;
 }
@@ -145,8 +163,11 @@ static int prepare_share(const struct tc_volume *volume, int internal_root, int 
     if (!tc_storage_guard_valid(volume, guard) || tc_make_dir(path, 0755))
         return -1;
     snprintf(marker, sizeof(marker), "%s/.com.apple.timemachine.supported", path);
-    if (lstat(marker, &st) == 0)
-        return S_ISREG(st.st_mode) ? 0 : -1;
+    if (lstat(marker, &st) == 0) {
+        if (S_ISREG(st.st_mode)) return 0;
+        errno = EINVAL;
+        return -1;
+    }
     if (errno != ENOENT || !tc_storage_guard_valid(volume, guard))
         return -1;
     fd = open(marker, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
@@ -157,38 +178,44 @@ static int prepare_share(const struct tc_volume *volume, int internal_root, int 
     return tc_storage_guard_valid(volume, guard) ? 0 : -1;
 }
 
+/* 0 present, 1 successfully absent, -1 failed/incomplete inspection. */
 static int payload_at(struct tc_storage_snapshot *snapshot, size_t index,
                       const struct tc_runtime_config *config) {
     const struct tc_volume *volume = &snapshot->inventory.volumes[index];
     char payload[288], source[320], path[320];
     struct stat st;
-    int guard = tc_storage_guard(volume), result = -1;
-    if (guard < 0)
-        return -1;
+    int guard = tc_storage_guard(volume), result = -1, missing = 0, variant;
+    uint32_t bit = 1u << index;
+    if (guard < 0) return -1;
     snprintf(payload, sizeof(payload), "%s/.samba4", volume->root);
-    snprintf(source, sizeof(source), "%s/smbd", payload);
-    if (access(source, X_OK))
-        snprintf(source, sizeof(source), "%s/sbin/smbd", payload);
-    if (stat(source, &st) || !S_ISREG(st.st_mode) || access(source, X_OK))
-        goto out;
+    for (variant = 0; variant < 2; variant++) {
+        snprintf(source, sizeof(source), "%s/%ssmbd", payload, variant ? "sbin/" : "");
+        if (!stat(source, &st)) {
+            if (S_ISREG(st.st_mode) && !access(source, X_OK)) break;
+            errno = EACCES;
+        } else if (errno == ENOENT) missing++;
+    }
+    if (variant == 2) { result = missing == 2 ? 1 : -1; goto out; }
     snprintf(path, sizeof(path), "%s/private", payload);
-    if (lstat(path, &st) || !S_ISDIR(st.st_mode))
-        goto out;
+    if (lstat(path, &st)) goto out;
+    if (!S_ISDIR(st.st_mode)) { errno = ENOTDIR; goto out; }
     if (config->rsync) {
         snprintf(path, sizeof(path), "%s/rsync", payload);
-        if (access(path, X_OK))
-            goto out;
+        if (access(path, X_OK)) goto out;
         snprintf(path, sizeof(path), "%s/rsyncd.conf", payload);
-        if (access(path, R_OK))
-            goto out;
+        if (access(path, R_OK)) goto out;
     }
-    if (!tc_storage_guard_valid(volume, guard))
-        goto out;
-    strcpy(snapshot->payload, payload);
-    strcpy(snapshot->smbd_source, source);
-    snapshot->payload_index = (int)index;
     result = 0;
 out:
+    {
+        int saved = errno;
+        if (!tc_storage_guard_valid(volume, guard)) { result = -1; errno = ESTALE; }
+        else errno = saved; /* Lifetime-pipe polling can set EAGAIN on success. */
+    }
+    if (!result) {
+        snapshot->payload_valid |= bit;
+        if (variant) snapshot->payload_legacy |= bit;
+    }
     close(guard);
     return result;
 }
@@ -208,55 +235,88 @@ static void tune_disk(const struct tc_volume *volume, const struct tc_runtime_co
     }
 }
 
+static void storage_error(const struct tc_volume *volume, const char *stage) {
+    fprintf(stderr, "storage: retry uuid=%s root=%s stage=%s error=%s\n",
+            volume->uuid, volume->root, stage, strerror(errno ? errno : EIO));
+}
+
 int tc_storage_prepare(struct tc_storage_snapshot *snapshot, const struct tc_inventory *inventory,
                        const struct tc_storage_snapshot *previous, const struct tc_runtime_config *config,
-                       int tune_ata) {
+                       int tune_ata, uint32_t requested) {
     size_t i, j;
-    int pass;
+    int pass, full = requested == UINT32_MAX;
     memset(snapshot, 0, sizeof(*snapshot));
     snapshot->inventory = *inventory;
     snapshot->payload_index = -1;
     for (i = 0; i < inventory->count; i++) {
         const struct tc_volume *volume = &inventory->volumes[i];
-        int writable, active = previously_active(previous, volume),
-                      mounted = tc_volume_mounted(volume, &writable), guard;
-        if (tc_worker_cancelled() || mounted < 0)
-            return -1;
-        if ((mounted != 1 || volume->users == 0 || !active) && activate(volume, config))
+        uint32_t bit = 1u << i;
+        int old = previous_index(previous, volume), writable, mounted, guard;
+        int active = old >= 0 && (previous->available & (1u << old));
+        if (!full && old >= 0) {
+#define COPY_OUTCOME(field) if (previous->field & (1u << old)) snapshot->field |= bit
+            COPY_OUTCOME(available); COPY_OUTCOME(mounted); COPY_OUTCOME(readonly);
+            COPY_OUTCOME(retry_prepare); COPY_OUTCOME(retry_payload);
+            COPY_OUTCOME(payload_valid); COPY_OUTCOME(payload_legacy);
+#undef COPY_OUTCOME
+            if (!(requested & (1u << old))) continue;
+        }
+        if (tc_worker_cancelled()) return -1;
+        mounted = tc_volume_mounted(volume, &writable);
+        if (mounted < 0) return -1;
+        snapshot->mounted &= ~bit; snapshot->readonly &= ~bit;
+        snapshot->payload_valid &= ~bit; snapshot->payload_legacy &= ~bit;
+        snapshot->retry_payload &= ~bit;
+        if (mounted) snapshot->mounted |= bit;
+        if (mounted && !writable) {
+            snapshot->readonly |= bit;
+            snapshot->available &= ~bit; snapshot->retry_prepare &= ~bit;
             continue;
-        guard = tc_storage_guard(volume);
-        if (guard < 0)
-            continue;
-        if (prepare_share(volume, config->internal_root, guard) == 0 && tc_storage_guard_valid(volume, guard))
-            snapshot->available |= 1u << i;
-        close(guard);
-        if (!(snapshot->available & (1u << i)))
-            continue;
-        if (tune_ata || !active) {
-            for (j = 0; j < i; j++)
-                if ((snapshot->available & (1u << j)) && !strcmp(inventory->volumes[j].disk, volume->disk))
-                    break;
-            if (j == i)
-                tune_disk(volume, config);
+        }
+        if (full || !active || !mounted || (snapshot->retry_prepare & bit)) {
+            snapshot->available &= ~bit;
+            snapshot->retry_prepare |= bit;
+            if ((mounted != 1 || volume->users == 0 || !active) && activate(volume, config)) {
+                storage_error(volume, "activate"); continue;
+            }
+            snapshot->mounted |= bit;
+            guard = tc_storage_guard(volume);
+            if (guard < 0) { storage_error(volume, "root guard"); continue; }
+            int ready = !prepare_share(volume, config->internal_root, guard) && tc_storage_guard_valid(volume, guard);
+            close(guard);
+            if (!ready) { storage_error(volume, "share preparation"); continue; }
+            snapshot->available |= bit;
+            snapshot->retry_prepare &= ~bit;
+            if (tune_ata || !active) {
+                for (j = 0; j < i; j++)
+                    if ((snapshot->available & (1u << j)) && !strcmp(inventory->volumes[j].disk, volume->disk)) break;
+                if (j == i) tune_disk(volume, config);
+            }
+        }
+        if (payload_at(snapshot, i, config) < 0) {
+            snapshot->retry_payload |= bit;
+            storage_error(volume, "payload inspection");
         }
     }
     if (tc_shares_build(&snapshot->shares, inventory, snapshot->available, config->internal_root,
-                        config->advertise_afp))
-        return -1;
-    /* Keep a valid selection within its priority class. Internal payloads
-     * retain preference, but a reordered MaSt array alone does not move home. */
+                        config->advertise_afp)) return -1;
+    /* Retry only pending disks, but keep every known usable candidate. A failed
+     * internal candidate remains pending even while an external payload serves. */
     for (pass = 1; pass >= 0; pass--) {
-        if (previous && previous->payload_index >= 0) {
-            const struct tc_volume *old = &previous->inventory.volumes[previous->payload_index];
-            for (i = 0; i < inventory->count; i++)
-                if (inventory->volumes[i].builtin == pass && (snapshot->available & (1u << i)) &&
-                    !strcmp(old->uuid, inventory->volumes[i].uuid) && !payload_at(snapshot, i, config))
-                    return 0;
+        int selected = -1;
+        for (i = 0; i < inventory->count; i++) {
+            if (inventory->volumes[i].builtin != pass || !(snapshot->payload_valid & (1u << i))) continue;
+            if (selected < 0) selected = (int)i;
+            if (previous && previous->payload_index >= 0 &&
+                previous_index(previous, &inventory->volumes[i]) == previous->payload_index) { selected = (int)i; break; }
         }
-        for (i = 0; i < inventory->count; i++)
-            if (inventory->volumes[i].builtin == pass && (snapshot->available & (1u << i)) &&
-                !payload_at(snapshot, i, config))
-                return 0;
+        if (selected >= 0) {
+            snapshot->payload_index = selected;
+            snprintf(snapshot->payload, sizeof(snapshot->payload), "%s/.samba4", inventory->volumes[selected].root);
+            snprintf(snapshot->smbd_source, sizeof(snapshot->smbd_source), "%s/%ssmbd", snapshot->payload,
+                     snapshot->payload_legacy & (1u << selected) ? "sbin/" : "");
+            break;
+        }
     }
     return tc_worker_cancelled() ? -1 : 0;
 }

@@ -72,7 +72,9 @@ if key=='MaSt':
     if (root/'slow-mast').exists():time.sleep(60)
     if (root/'bad-mast').exists():sys.exit(1)
     print((root/'inventory').read_text());sys.exit(0)
-if sys.argv[1:3]==['rpc','diskd.useVolume']:sys.exit(0)
+if sys.argv[1:3]==['rpc','diskd.useVolume']:
+    failed=root/'fail-claim'
+    sys.exit(1 if failed.exists() and failed.read_text() in sys.argv[-1] else 0)
 print({'syNm':(root/'name').read_text() if (root/'name').exists() else 'Capsule','syAP':'116','syAM':'TimeCapsule6,116','syPW':'password'}[key])
 ''')
     executable('ps','''
@@ -116,7 +118,7 @@ def manager(manager_tools):
     root,binary=manager_tools
     for path in ('ram','dk2','dk3'):
         shutil.rmtree(root/path,ignore_errors=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','slow-facts'):
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','slow-facts'):
         (root/name).unlink(missing_ok=True)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
@@ -507,6 +509,85 @@ def test_manager_death_cancels_inventory_job_and_its_acp(manager,key):
     else:pytest.fail('inventory group still has live members after parent EOF')
 
 
+def wait_storage_failure(root, stage):
+    log=root/'ram/var/runtime.log'
+    deadline=time.monotonic()+5
+    while time.monotonic()<deadline:
+        if log.exists() and ('stage='+stage) in log.read_text():
+            time.sleep(.15) # Let the captured partial result reach the manager.
+            return
+        time.sleep(.02)
+    pytest.fail('storage failure not observed: '+(log.read_text() if log.exists() else 'no log'))
+
+
+@pytest.mark.parametrize('failure',['claim','guard','share','marker','executable','private','rsync'])
+def test_preparation_recovers_on_unchanged_inventory(manager,failure):
+    root,start,events,wait,_,_=manager
+    home=root/'dk2/.samba4'
+    stage='payload inspection'
+    if failure=='claim':
+        block=root/'fail-claim';block.write_text('dk2');repair=block.unlink;stage='activate'
+    elif failure=='guard':
+        disk=root/'dk2';saved=root/'saved-disk';disk.rename(saved);disk.symlink_to(saved,target_is_directory=True)
+        def repair():disk.unlink();saved.rename(disk)
+        stage='root guard'
+    elif failure=='share':
+        block=root/'dk2/ShareRoot';block.write_text('collision');repair=block.unlink;stage='share preparation'
+    elif failure=='marker':
+        path=root/'dk2/ShareRoot';path.mkdir();block=path/'.com.apple.timemachine.supported';block.symlink_to(home/'smbd')
+        repair=block.unlink;stage='share preparation'
+    elif failure=='executable':
+        block=home/'smbd';block.chmod(0o600);repair=lambda:block.chmod(0o755)
+    elif failure=='private':
+        block=home/'private';block.rename(home/'private.saved');repair=lambda:(home/'private.saved').rename(block)
+    else:
+        (root/'config').write_text('TELEMETRY=0\nRSYNC_ENABLED=1\n')
+        shutil.copy2(home/'smbd',home/'rsync')
+        repair=lambda:(home/'rsyncd.conf').write_text('port = 873\npath = /old/ShareRoot\n')
+    process=start()
+    wait_storage_failure(root,stage)
+    assert not started('smbd')(events())
+    repair()
+    # No HUP/topology/mount/user-count change: the explicit retry must recover.
+    wait(started('smbd'),12)
+    wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    assert '[Data]' in (root/'ram/etc/smb.conf').read_text()
+    assert process.poll() is None
+
+
+def test_partial_retry_preserves_healthy_payload_and_does_not_inspect_it(manager):
+    root,start,events,wait,_,_=manager
+    block=root/'dk3/.com.apple.timemachine.supported';block.symlink_to(root/'dk2/.samba4/smbd')
+    process=start();wait(started('smbd'))
+    wait_storage_failure(root,'share preparation')
+    # If retry touches the healthy payload, this would stop Samba or recopy it.
+    (root/'dk2/.samba4/smbd').unlink()
+    block.unlink()
+    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows),12)
+    assert '[USB]' in (root/'ram/etc/smb.conf').read_text()
+    assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
+    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
+    # A healthy data-only disk stays classified absent across ordinary HUP.
+    process.send_signal(signal.SIGHUP);time.sleep(.5)
+    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
+
+
+def test_internal_pending_payload_recovers_from_external_fallback(manager):
+    root,start,events,wait,_,_=manager
+    home=root/'dk2/.samba4';(home/'private').rename(home/'private.saved')
+    external=root/'dk3/.samba4';(external/'private').mkdir(parents=True)
+    shutil.copy2(home/'smbd',external/'smbd')
+    process=start();wait(started('smbd'))
+    assert str(external) in (root/'ram/etc/smb.conf').read_text()
+    (home/'private.saved').rename(home/'private')
+    wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2,15)
+    assert str(home) in (root/'ram/etc/smb.conf').read_text()
+
+
+
+
+
+
 def test_manager_owned_facts_collection_can_finish_and_run_again(manager):
     root,start,events,wait,_,_=manager
     (root/'record-acp').touch()
@@ -516,3 +597,16 @@ def test_manager_owned_facts_collection_can_finish_and_run_again(manager):
     process.send_signal(signal.SIGHUP)
     wait(lambda rows:len([e for e in rows if e['role']=='acp' and e.get('key')=='waMA'])>=2)
     assert process.poll() is None
+
+
+def test_pending_payload_does_not_reclaim_unchanged_users_zero_volume(manager):
+    root,start,events,wait,inventory,volumes=manager
+    volumes[0]['partitions'][0]['users']=0;inventory(volumes)
+    (root/'record-acp').touch()
+    home=root/'dk2/.samba4';(home/'private').rename(home/'private.saved')
+    process=start();wait_storage_failure(root,'payload inspection')
+    time.sleep(7) # First automatic retry must inspect only the failed payload.
+    claims=[e for e in events() if e['role']=='acp' and e.get('key')=='path:s:'+str(root/'dk2')]
+    assert len(claims)==1
+    (home/'private.saved').rename(home/'private')
+    process.send_signal(signal.SIGHUP);wait(started('smbd'))

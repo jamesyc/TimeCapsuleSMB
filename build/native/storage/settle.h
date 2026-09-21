@@ -11,4 +11,6 @@ struct tc_storage_settle {
 /* Feed only successful MaSt parses. An unavailable read is not an empty NAS.
  * Returns 1 on first inventory or a confirmed topology change. */
 int tc_storage_observe(struct tc_storage_settle *, const struct tc_inventory *, long long now);
+struct tc_storage_retry { long long at; unsigned failures; };
+void tc_storage_retry_finish(struct tc_storage_retry *, long long now, int pending);
 #endif

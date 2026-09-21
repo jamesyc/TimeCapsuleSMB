@@ -3,6 +3,7 @@
 
 int main(void) {
     struct tc_storage_settle state = {0};
+    struct tc_storage_retry retry = {0};
     struct tc_inventory a = {0}, b, c;
     a.count = 1;
     strcpy(a.volumes[0].device, "dk2");
@@ -30,5 +31,19 @@ int main(void) {
     b.count = 0;
     assert(!tc_storage_observe(&state, &b, 15000));
     assert(tc_storage_observe(&state, &b, 20000) && state.stable.count == 0);
+    tc_storage_retry_finish(&retry, 100, 1);
+    assert(retry.at == 5100 && retry.failures == 1);
+    /* Observation traffic does not call finish or move the absolute deadline. */
+    assert(5099 < retry.at && 5100 == retry.at);
+    tc_storage_retry_finish(&retry, 5200, 1);
+    assert(retry.at == 20200 && retry.failures == 2);
+    tc_storage_retry_finish(&retry, 20300, 1);
+    assert(retry.at == 80300 && retry.failures == 2);
+    tc_storage_retry_finish(&retry, 80400, 1);
+    assert(retry.at == 140400 && retry.failures == 2);
+    tc_storage_retry_finish(&retry, 90000, 0);
+    assert(!retry.at && !retry.failures);
+    tc_storage_retry_finish(&retry, 91000, 1);
+    assert(retry.at == 96000);
     return 0;
 }

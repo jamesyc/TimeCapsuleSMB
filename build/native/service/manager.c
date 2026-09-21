@@ -44,6 +44,8 @@ struct manager {
     struct tc_events events;
     struct plan_loop network;
     struct tc_storage_settle topology;
+    struct tc_storage_retry storage_retry;
+    uint32_t storage_request;
     struct tc_storage_snapshot storage, applied_storage, storage_result;
     struct tc_samba_settings settings, applied_settings, settings_result;
     struct managed smb, discovery, telemetry, rsync, diskd;
@@ -136,7 +138,7 @@ static int storage_job(void *opaque) {
     struct manager *m = opaque;
     struct tc_storage_snapshot result;
     tc_worker_begin("storage");
-    if (tc_storage_prepare(&result, &m->topology.stable, &m->storage, &m->settings.config, m->tune_ata))
+    if (tc_storage_prepare(&result, &m->topology.stable, &m->storage, &m->settings.config, m->tune_ata, m->storage_request))
         return tc_worker_finish(1);
     return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
@@ -167,23 +169,22 @@ static int audit_job(void *opaque) {
     return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
 static int payload_same(const struct tc_storage_snapshot *a, const struct tc_storage_snapshot *b) {
-    return a->payload_index >= 0 && b->payload_index >= 0 && !strcmp(a->payload, b->payload) &&
+    return a->payload_index >= 0 && b->payload_index >= 0 && !strcmp(a->payload, b->payload) && !strcmp(a->smbd_source, b->smbd_source) &&
            !strcmp(a->inventory.volumes[a->payload_index].uuid, b->inventory.volumes[b->payload_index].uuid);
 }
-static int activation_needed(struct manager *m) {
-    size_t i;
-    for (i = 0; i < m->topology.stable.count; i++) {
-        int writable;
-        const struct tc_volume *v = &m->topology.stable.volumes[i];
-        if (v->users == 0 || tc_volume_mounted(v, &writable) == 0)
-            return 1;
-    }
-    return 0;
+static uint32_t storage_pending(const struct manager *m) {
+    return m->storage.retry_prepare | m->storage.retry_payload;
+}
+static int storage_projection_same(const struct tc_storage_snapshot *a, const struct tc_storage_snapshot *b) {
+    return tc_shares_equal(&a->shares, &b->shares) &&
+           ((a->payload_index < 0 && b->payload_index < 0) || payload_same(a, b));
 }
 static void invalidate_storage(struct manager *m, long long now) {
     changed(m, now);
     m->storage_generation++;
     m->storage_dirty = 1;
+    m->storage_at = now;
+    memset(&m->storage_retry, 0, sizeof(m->storage_retry));
     if (m->storage_job.group)
         tc_child_stop(&m->storage_job, now, 1);
 }
@@ -233,8 +234,9 @@ static void pump_inventory(struct manager *m, long long now) {
             !tc_mast_parse(&inventory, m->mast_result.text, m->mast_result.length)) {
             if (tc_storage_observe(&m->topology, &inventory, now))
                 invalidate_storage(m, now);
-            else if (!m->topology.pending && activation_needed(m))
-                m->storage_dirty = 1;
+            else if (!m->topology.pending && !m->storage_dirty && !m->storage_job.group &&
+                     tc_storage_refresh_needed(&m->storage, &m->topology.stable))
+                invalidate_storage(m, now);
             if (m->topology.pending)
                 lower(&m->mast_at, m->topology.confirm_at > now ? m->topology.confirm_at : now + 1000);
         } else {
@@ -287,10 +289,13 @@ static void pump_storage(struct manager *m, long long now) {
         if (tc_child_ok(&m->storage_job) && !m->storage_job.stopping &&
             m->storage_job.used == sizeof(m->storage_result) &&
             m->storage_revision == m->storage_generation) {
+            int projected_change = !storage_projection_same(&m->storage, &m->storage_result);
             m->storage = m->storage_result;
             m->storage_dirty = 0;
+            m->storage_at = 0;
             m->tune_ata = 0;
-            changed(m, now);
+            tc_storage_retry_finish(&m->storage_retry, now, storage_pending(m) != 0);
+            if (projected_change) changed(m, now);
             if (m->storage.payload_index < 0) {
                 /* Explicit product policy: a missing payload stops Samba,
                  * even though its executable still exists on the RAM disk. */
@@ -298,13 +303,16 @@ static void pump_storage(struct manager *m, long long now) {
                 stop_role(&m->rsync, now, 1);
                 m->have_applied = 0;
             }
-        } else
-            m->storage_at = now + JOB_RETRY_MS;
+        } else {
+            tc_storage_retry_finish(&m->storage_retry, now, 1);
+            m->storage_at = m->storage_retry.at;
+        }
         tc_child_close(&m->storage_job);
     }
-    if (m->storage_dirty && m->have_settings && m->topology.initialized && !m->topology.pending &&
+    if ((m->storage_dirty || (storage_pending(m) && now >= m->storage_retry.at)) && m->have_settings && m->topology.initialized && !m->topology.pending &&
         !m->storage_job.group && !m->stage_job.group && now >= m->storage_at) {
         m->storage_revision = m->storage_generation;
+        m->storage_request = m->storage_dirty ? UINT32_MAX : storage_pending(m);
         /* At most 16 disks, each with a bounded native activation. Child
          * death and TERM remain responsive throughout this setup job. */
         long long budget = 10000 + (long long)m->topology.stable.count *
@@ -654,6 +662,10 @@ int tc_manager_main(int argc, char **argv) {
             if (tc_events_disks(&m->events))
                 physical_event(m, now);
             if (events & TC_EVENT_RELOAD) {
+                if (storage_pending(m) || m->storage_dirty) {
+                    m->storage_retry.at = now;
+                    m->storage_at = now;
+                }
                 m->mast_at = m->settings_at = m->audit_at = now;
                 plan_loop_request(&m->network, now);
             }
@@ -685,6 +697,12 @@ int tc_manager_main(int argc, char **argv) {
                 lower(&deadline, m->settings_at);
             if (!m->audit_job.group)
                 lower(&deadline, m->audit_at);
+            if (!m->storage_job.group && !m->stage_job.group && m->have_settings &&
+                m->topology.initialized && !m->topology.pending) {
+                if (m->storage_dirty) lower(&deadline, m->storage_at);
+                else if (storage_pending(m))
+                    lower(&deadline, m->storage_retry.at > m->storage_at ? m->storage_retry.at : m->storage_at);
+            }
             if (m->bindings_at)
                 lower(&deadline, m->bindings_at);
         }

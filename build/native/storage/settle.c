@@ -1,5 +1,12 @@
 #include "settle.h"
 
+void tc_storage_retry_finish(struct tc_storage_retry *retry, long long now, int pending) {
+    static const unsigned delays[] = {5000, 15000, 60000};
+    if (!pending) { retry->at = 0; retry->failures = 0; return; }
+    retry->at = now + delays[retry->failures];
+    if (retry->failures < 2) retry->failures++;
+}
+
 int tc_storage_observe(struct tc_storage_settle *state, const struct tc_inventory *inventory, long long now) {
     if (!state->initialized) {
         state->stable = *inventory;
