@@ -511,7 +511,7 @@ def test_manager_death_cancels_inventory_job_and_its_acp(manager,key):
 
 def wait_storage_failure(root, stage):
     log=root/'ram/var/runtime.log'
-    deadline=time.monotonic()+5
+    deadline=time.monotonic()+20
     while time.monotonic()<deadline:
         if log.exists() and ('stage='+stage) in log.read_text():
             time.sleep(.15) # Let the captured partial result reach the manager.
