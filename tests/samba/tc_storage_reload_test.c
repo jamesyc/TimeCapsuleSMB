@@ -77,15 +77,21 @@ static NTSTATUS messaging_send_to_children(struct messaging_context *msg, uint32
 #define reinit_guest_session_info observed_guest
 #include "tc_storage_reload_callbacks.inc"
 
-static void load_config(const char *first_uuid, bool include_first)
+static void load_config_root(const char *first_uuid, bool include_first, bool narrow, bool rename_share)
 {
 	FILE *f = fopen(config_path, "w");
+	char path[160];
+	snprintf(path, sizeof(path), "%s%s", directory, narrow ? "/ShareRoot" : "");
 	CHECK(f);
-	fprintf(f, "[global]\nworkgroup = WORKGROUP\ntc:volume dk3 = second\n");
-	if (include_first) fprintf(f, "tc:volume dk2 = %s\n", first_uuid);
-	fprintf(f, "[Data]\npath = %s\ntc:volume uuid = first\ntc:volume device = dk2\n", directory);
+	fprintf(f, "[global]\nworkgroup = WORKGROUP\ntc:volume dk3 = second|%s\n", directory);
+	if (include_first) fprintf(f, "tc:volume dk2 = %s|%s\n", first_uuid, path);
+	fprintf(f, "[%s]\npath = %s\ntc:volume uuid = first\ntc:volume device = dk2\n", rename_share ? "Renamed" : "Data", path);
 	fprintf(f, "[USB]\npath = %s\ntc:volume uuid = second\ntc:volume device = dk3\n", directory);
 	CHECK(!fclose(f) && lp_load_with_shares(config_path));
+}
+static void load_config(const char *uuid, bool present)
+{
+    load_config_root(uuid, present, false, false);
 }
 static files_struct *file_for(connection_struct *conn, int fd, mode_t mode)
 {
@@ -102,11 +108,12 @@ static connection_struct *tree_for(struct smbd_server_connection *sconn, const c
 {
 	struct stat st;
 	connection_struct *conn = talloc_zero(sconn, connection_struct);
-	CHECK(conn && !stat(directory, &st));
+	CHECK(conn);
 	conn->sconn = sconn;
 	conn->params = talloc_zero(conn, struct share_params); CHECK(conn->params);
 	conn->params->service = lp_servicenumber(name); CHECK(conn->params->service >= 0);
-	conn->connectpath = talloc_strdup(conn, directory); CHECK(conn->connectpath);
+	conn->connectpath = lp_path(conn, loadparm_s3_global_substitution(), SNUM(conn));
+	CHECK(conn->connectpath && !stat(conn->connectpath, &st));
 	conn->base_share_dev = st.st_dev;
 	conn->cwd_fsp = file_for(conn, AT_FDCWD, S_IFDIR | 0700);
 	conn->cwd_fsp->fsp_name->st.st_ex_ino = st.st_ino;
@@ -136,7 +143,7 @@ static void run_case(const char *name)
 	CHECK(ctx && sconn);
 	ZERO_ARRAY(trees); resets = disconnects = reloads = forwarded = guest_reinits = 0;
 	revoked_fd = -1; fd_error = path_error = 0; reload_valid = true;
-	load_config("first", true);
+	load_config_root("first", true, !strcmp(name, "root_widen"), false);
 	sconn->ev_ctx = tevent_context_init(sconn); CHECK(sconn->ev_ctx);
 	first = tree_for(sconn, "Data", 0); second = tree_for(sconn, "USB", 1);
 	fd = open(directory, O_RDONLY); CHECK(fd >= 0);
@@ -171,13 +178,40 @@ static void run_case(const char *name)
 		 * removal. Failed config reloads must not use a partial global map. */
 		fsp_set_fd(file, -1);
 		load_config("replacement", true);
-		CHECK(!strcmp(first->tc_volume_uuid, "first") && tc_stale_disk_tree(first, &valid));
+		CHECK(!strcmp(first->tc_volume_binding, talloc_asprintf(ctx, "first|%s", directory)) && tc_stale_disk_tree(first, &valid));
 		valid = false; CHECK(!tc_stale_disk_tree(first, &valid)); valid = true;
 		load_config("first", false); CHECK(tc_stale_disk_tree(first, &valid));
 		load_config("first", true); first->tc_root_ino++;
 		CHECK(tc_stale_disk_tree(first, &valid)); first->tc_root_ino--;
 		path_error = ENOENT; CHECK(tc_stale_disk_tree(first, &valid));
 		path_error = EACCES; CHECK(!tc_stale_disk_tree(first, &valid)); path_error = 0;
+	} else if (strncmp(name, "root", 4) == 0) {
+        bool aio = !strcmp(name, "root_aio");
+        bool unchanged = !strcmp(name, "root_unchanged");
+        bool failed = !strcmp(name, "root_failed");
+        /* Both old directories still exist with the same device/inode. A
+         * retained old share definition must not hide the current root map. */
+        load_config_root("first", true, strcmp(name, "root_widen") && !unchanged,
+                         !strcmp(name, "root_rename"));
+        if (!strcmp(name, "root_no_fds")) fsp_set_fd(file, -1);
+        if (aio) {
+            file->aio_requests = talloc_zero_array(file, struct tevent_req *, 1);
+            CHECK(file->aio_requests); file->num_aio_requests = 1;
+        }
+        conn_refresh_bindings(sconn, !failed);
+        CHECK(NT_STATUS_IS_OK(second->tcon->status));
+        if (unchanged || failed) {
+            CHECK(NT_STATUS_IS_OK(first->tcon->status) && disconnects == 0);
+        } else {
+            CHECK(NT_STATUS_EQUAL(first->tcon->status, NT_STATUS_NETWORK_NAME_DELETED));
+            conn_refresh_bindings(sconn, true);
+            if (aio) {
+                CHECK(disconnects == 0 && file->fsp_flags.closing);
+                TALLOC_FREE(file->aio_requests); file->num_aio_requests = 0;
+            }
+            drain(sconn->ev_ctx);
+            CHECK(first->tcon == NULL && NT_STATUS_IS_OK(second->tcon->status));
+        }
 	} else if (strcmp(name, "aio") == 0) {
 		files_struct *healthy = file_for(second, fd, S_IFDIR | 0700);
 		/* A shared descriptor can back aliases on the same tree. Only the
@@ -222,16 +256,20 @@ static void run_case(const char *name)
 int main(int argc, char **argv)
 {
     TALLOC_CTX *frame = talloc_stackframe();
-	const char *cases[] = {"descriptors", "sentinels", "identity", "aio", "callbacks"};
+    setup_logging(argv[0], DEBUG_STDERR);
+	const char *cases[] = {"descriptors", "sentinels", "identity", "aio", "callbacks", "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged"};
 	unsigned i;
+    char narrow[160];
 	CHECK(argc == 2); alarm(30);
 	snprintf(directory, sizeof(directory), "tc-storage-reload-%ld", (long)getpid());
 	CHECK(!mkdir(directory, 0700));
+    snprintf(narrow, sizeof(narrow), "%s/ShareRoot", directory);
+    CHECK(!mkdir(narrow, 0700));
 	snprintf(config_path, sizeof(config_path), "%s/smb.conf", directory);
 	for (i = 0; i < ARRAY_SIZE(cases); i++) {
 		if (!strcmp(argv[1], "all") || !strcmp(argv[1], cases[i])) run_case(cases[i]);
 	}
-	CHECK(!unlink(config_path) && !rmdir(directory));
+	CHECK(!unlink(config_path) && !rmdir(narrow) && !rmdir(directory));
     TALLOC_FREE(frame);
 	return 0;
 }

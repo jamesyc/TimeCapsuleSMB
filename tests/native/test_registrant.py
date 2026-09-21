@@ -177,6 +177,9 @@ def test_service_discovery_accepts_debug_logging_before_version(rig):
     ("--name", "TimeCapsule", "--ttl", "30"),
     ("--name", "TimeCapsule", "--auto-ip"),
     ("--check-auto-ip",),
+    ("--print-link-plan",),
+    ("--print-mast",),
+    ("--print-mast", "--timeout-seconds", "1"),
 ])
 def test_service_discovery_rejects_removed_nbns_cli_modes(rig, args):
     result = run_discovery(rig[2], *args)
@@ -601,7 +604,7 @@ def test_print_link_plan_and_bad_share_arguments(rig):
     root, _, binary = rig
     facts = root / "plan-facts.txt"
     facts.write_text(NAT_OK)
-    result = subprocess.run([str(binary), "discovery", "--print-link-plan", "--facts-file", str(facts)], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(binary), "--print-link-plan", "--facts-file", str(facts)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0 and result.stdout.startswith("plan: status=validated mode=nat")
     assert "link: name=bridge0 index=9 role=lan mask=smb,adisk" in result.stdout
     result = subprocess.run([str(binary), "discovery", "--netbios-name", "TESTCAPSULE", "--facts-file", str(facts), *adisk_args(uuid="bad-uuid")], capture_output=True, text=True, timeout=10)

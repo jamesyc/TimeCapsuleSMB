@@ -34,13 +34,14 @@ copied unchanged.
 - Compile with the helper's normal flags plus `-D_DNS_SD_LIBDISPATCH=0`. On a
   Linux host (CI) add `-DNOT_HAVE_SA_LEN` as Apple's own Linux build does; the
   stub reads `sin_len`/`sin6_len` otherwise. NetBSD and macOS have `sa_len`.
-- Only `mdns.sources` links these files; the other helpers never talk to the
-  daemon. The upstream `dnssd_clientlib.c` is not vendored: the registrant
-  assembles its TXT bytes itself and does not use those convenience helpers.
+- The unified `service.sources` manifest links these files; its discovery role
+  uses them to communicate with Apple's mDNSResponder. The upstream
+  `dnssd_clientlib.c` is not vendored: the registrant assembles its TXT bytes
+  itself and does not use those convenience helpers.
 - Do not edit these files. `dnssd_clientstub.c` trips
   `-Wunused-but-set-variable` under clang `-Wall -Wextra -Werror` on the host;
-  `tests/native/build.py` and `tests/native/cases.py` add a per-file
-  `-Wno-unused-but-set-variable` instead of patching the source. The NetBSD 4
+  `tests/native/build.py` adds a per-file `-Wno-unused-but-set-variable`
+  instead of patching the source. The NetBSD 4
   gcc 4.1.2 lane compiles them unchanged.
 - The test suite points the stub at a fake daemon with
   `-DMDNS_UDS_SERVERPATH="<tmpdir>/mDNSResponder"` (see

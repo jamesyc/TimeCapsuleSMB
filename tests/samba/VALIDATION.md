@@ -359,3 +359,58 @@ intact. Its companion stripped migrator matched the bundled artifact exactly:
 2,135,460 bytes, SHA-256
 `523673e8e2dadfe573f60b989817142c33f2215c90c0a700db4f4cc5d20bec10`.
 No production native code or toolchain changed for the installer work.
+
+## Binding revocation, export-root reload and uninstall exclusion (2026-09-21)
+
+Validated the combined working tree, including the preserved diagnostic and
+native-test compiler changes from the concurrent task.
+
+- Host manager regressions cover removal, addition, mixed changes, reordered
+  bindings, failed observations, never-applied additions, blocked/failed storage,
+  full process-group draining and a plan reverting during shutdown. Root-option
+  changes publish the new identity without restarting Samba.
+- Focused manager/configuration/uninstall/runner suite: 92 passed. Full
+  `make test-parallel`: 2,271 passed and one telemetry replay case exceeded its
+  10-second timeout; that case passed alone. Final artifact, regression-runner
+  and uninstall checks: 35 passed. Ruff and `git diff --check` passed.
+- Uninstall tests execute the real migration-idle shell guard through the
+  executor/application flow and verify that busy/failed process inspection
+  prevents payload removal and both reboot modes. Four guard cases also passed
+  in each appliance's native `/bin/sh`, using controlled process observations.
+- All 12 production-code storage-reload cases passed on NetBSD 6 and NetBSD 4 LE.
+  They include same-UUID root narrowing/widening, a retained renamed share,
+  no real open descriptor, failed reload, unchanged root and pending AIO.
+- NetBSD 4 required the test executable in RAM, with scratch data on HFS.
+  The same executable aborted in talloc before its first configuration load
+  when run from HFS, and passed every case from RAM. Temporary trace statements
+  were removed and the clean driver rebuilt for all lanes; the clean drivers
+  passed on both devices. Production Samba already runs from RAM. Test cores
+  and scratch files were removed; core dumps were disabled for the RAM run.
+- Both LAN appliances passed deployment, real SMB client tests and full Doctor.
+  The client tests preserve an unchanged tree while narrowing, widening or
+  renaming/re-rooting another export, reject operations through the retired
+  tree, and verify new writes reach the new root without restarting the parent.
+  Durable reconnect, duplicate boot, owned-process recovery and repeated native
+  NBNS recovery also passed; Apple's daemons survived the supervision tests.
+- Binding removal while storage is held was exercised by the host's actual
+  manager with controlled Apple observations and real process groups. No
+  AirPort network settings were changed for hardware validation.
+- A concurrent deployment interrupted the first NetBSD 6 installation.
+  After coordinating exclusive ownership, standard redeployment restored the
+  combined runtime; Apple settings and SSH keys remained intact. Final device
+  checks were performed after recovery.
+
+All builds used the existing SDKs and audited configured Samba trees, as root.
+The BE cache lacked `tc_storage_reload_test` in `NONSHARED_BINARIES`; aligning
+that entry with the normal wrapper resolved its attempted shared-library link.
+No toolchain was rebuilt. The stripped release binaries were copied back and
+manifest hashes updated after the required delay.
+
+| Lane | service bytes | smbd bytes | Hardware validation |
+| --- | ---: | ---: | --- |
+| NetBSD 6 (NetBSD 7 SDK) | 363,324 | 10,208,744 | Passed |
+| NetBSD 4 LE | 321,920 | 10,220,968 | Passed |
+| NetBSD 4 BE | 321,320 | 10,219,812 | Build/ELF validation only |
+
+Every release image is static ARM ELF with the expected endianness; all
+artifact hashes match `artifact-manifest.json`. BE hardware was not tested.

@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tests.native.build import ROOT, compile_service, instrumentation_flags
+from tests.native.build import ROOT, compile_modules, compile_service
 
 
 @pytest.fixture(scope="module")
@@ -15,9 +15,9 @@ def capture_tools(tmp_path_factory):
     subprocess.run(["cc", str(ROOT / "tests/native/integration/acp_fixture.c"), "-o", str(acp)], check=True)
     flags = [f'-DTC_ACP_PATH="{acp}"', "-DTC_ACP_TIMEOUT_SECONDS=5"]
     driver = work / "capture"
-    subprocess.run(["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror", *instrumentation_flags(), *flags,
-                    "-I", str(ROOT / "build/native/common"), str(ROOT / "tests/native/unit/test_acp_capture.c"),
-                    str(ROOT / "build/native/common/acp.c"), "-o", str(driver)], check=True)
+    compile_modules(driver, ("native/common/acp.c",),
+                    flags=(*flags, "-I", str(ROOT / "build/native/common")),
+                    extra_sources=(ROOT / "tests/native/unit/test_acp_capture.c",))
     return driver, compile_service(work / "service", flags=flags)
 
 
@@ -114,6 +114,25 @@ def test_mast_command_preserves_all_text(capture_tools, tmp_path, data, success)
     result = subprocess.run([str(capture_tools[1]), "--print-mast"], env=raw_env(tmp_path, data), capture_output=True, timeout=5)
     assert (result.returncode == 0) == success
     assert result.stdout == (data if success else b"")
+
+
+def test_mast_command_accepts_bounded_timeout(capture_tools, tmp_path):
+    result = subprocess.run([str(capture_tools[1]), "--print-mast", "--timeout-seconds", "1"],
+                            env=raw_env(tmp_path, b"MaSt\n"), capture_output=True, timeout=5)
+    assert result.returncode == 0 and result.stdout == b"MaSt\n"
+
+
+@pytest.mark.parametrize("args", [
+    ("--print-mast", "--timeout-seconds"),
+    ("--print-mast", "--timeout-seconds", "0"),
+    ("--print-mast", "--timeout-seconds", "-1"),
+    ("--print-mast", "--timeout-seconds", "nope"),
+    ("--print-mast", "--timeout-seconds", "3601"),
+    ("--print-mast", "extra"),
+])
+def test_mast_command_rejects_invalid_timeout_arguments(capture_tools, args):
+    result = subprocess.run([str(capture_tools[1]), *args], capture_output=True, timeout=5)
+    assert result.returncode == 3 and result.stdout == b""
 
 
 @pytest.mark.parametrize("value,model", [(b"0x77\n", "TimeCapsule8,119"), (b"106\n", "TimeCapsule6,106"),

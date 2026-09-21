@@ -2,7 +2,7 @@
 import subprocess
 
 import pytest
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 
 
 @pytest.fixture(scope="module")
@@ -12,11 +12,9 @@ def tools(tmp_path_factory):
         "worker": ["worker", "process", "parent", "acp"],
         "events": ["events"],
     }.items():
-        subprocess.run(["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror",
-                        *instrumentation_flags(), "-I", str(ROOT / "build/native"),
-                        *(str(ROOT / f"build/native/common/{module}.c") for module in modules),
-                        str(ROOT / f"tests/native/unit/test_{name}.c"), "-o", str(directory / name)],
-                       capture_output=True, check=True)
+        compile_modules(directory / name, tuple(f"native/common/{module}.c" for module in modules),
+                        flags=("-I", str(ROOT / "build/native")),
+                        extra_sources=(ROOT / f"tests/native/unit/test_{name}.c",))
     return directory
 
 

@@ -784,6 +784,20 @@ def test_service_bind_interfaces_prints_tokens_then_status(tmp_path):
     assert subprocess.run([str(binary), "--print-smb-bind-interfaces-lan"], capture_output=True, text=True, timeout=10).returncode == 3
 
 
+def test_service_link_plan_reports_closed_output(tmp_path):
+    binary = compile_service(tmp_path / "service")
+    facts = tmp_path / "facts.txt"
+    facts.write_text(NAT_OK)
+    process = subprocess.Popen([str(binary), "--print-link-plan", "--facts-file", str(facts)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert process.stdout is not None
+    process.stdout.close()
+    assert process.stderr is not None
+    stderr = process.stderr.read()
+    process.wait(timeout=10)
+    assert process.returncode == 13, stderr.decode()
+
+
 
 # Native NBNS eligibility/lifecycle is covered by test_wcifsnd.py. Apple now
 # owns answer selection; the removed responder's subnet policy is not emulated.

@@ -5,9 +5,9 @@
  	   Used to ensure unique FileIndex returns. */
  	SMB_DEV_T base_share_dev;
 +
-+	/* Time Capsule disk identity at tree connect. No retained directory FD:
++	/* Time Capsule volume/export identity at tree connect. No directory FD:
 +	 * Apple's diskd must remain able to idle-unmount unused volumes. */
-+	char *tc_volume_uuid;
++	char *tc_volume_binding;
 +	char *tc_volume_key;
 +	SMB_INO_T tc_root_ino;
  
@@ -29,15 +29,16 @@
  	 * the same characteristics, which is likely but not guaranteed.
 --- a/source3/smbd/conn_idle.c
 +++ b/source3/smbd/conn_idle.c
-@@ -22,6 +22,7 @@
+@@ -22,6 +22,8 @@
  #include "includes.h"
  #include "smbd/smbd.h"
  #include "smbd/globals.h"
 +#include "smbd/fd_handle.h"
++#include "lib/param/loadparm.h"
  #include "rpc_server/rpc_pipes.h"
  #include "lib/util/tevent_ntstatus.h"
  
-@@ -73,6 +74,101 @@
+@@ -73,6 +75,107 @@
   All shares where "check_fn" returns true are closed.
   The special sharename '*' forces unmount of all shares.
  ****************************************************************************/
@@ -46,6 +47,7 @@
 +{
 +	const char *uuid;
 +	const char *device;
++	char *path;
 +	if (IS_IPC(conn) || IS_PRINT(conn)) {
 +		return true;
 +	}
@@ -54,9 +56,14 @@
 +	if (uuid == NULL || uuid[0] == '\0' || device == NULL || device[0] == '\0') {
 +		return true;
 +	}
-+	conn->tc_volume_uuid = talloc_strdup(conn, uuid);
++	/* Snapshot the configured root now: reload can retain in-use share
++	 * definitions, and connectpath may have been canonicalized by the VFS. */
++	path = lp_path(talloc_tos(), loadparm_s3_global_substitution(), SNUM(conn));
++	conn->tc_volume_binding = path == NULL ? NULL :
++		talloc_asprintf(conn, "%s|%s", uuid, path);
++	TALLOC_FREE(path);
 +	conn->tc_volume_key = talloc_asprintf(conn, "volume %s", device);
-+	if (conn->tc_volume_uuid == NULL || conn->tc_volume_key == NULL) {
++	if (conn->tc_volume_binding == NULL || conn->tc_volume_key == NULL) {
 +		return false;
 +	}
 +	conn->tc_root_ino = conn->cwd_fsp->fsp_name->st.st_ex_ino;
@@ -88,7 +95,7 @@
 +	files_struct *fsp;
 +	struct stat st;
 +	int ret;
-+	if (IS_IPC(conn) || IS_PRINT(conn) || conn->tc_volume_uuid == NULL ||
++	if (IS_IPC(conn) || IS_PRINT(conn) || conn->tc_volume_binding == NULL ||
 +	    conn->tc_volume_key == NULL) {
 +		return false;
 +	}
@@ -96,8 +103,8 @@
 +		const char *current = lp_parm_const_string(-1, "tc", conn->tc_volume_key, "");
 +		/* loadparm retains deleted in-use share definitions. Its global
 +		 * options are refreshed, so this mapping also identifies removed
-+		 * shares and same-dkN replacement disks with no real open fsps. */
-+		if (strcmp(current, conn->tc_volume_uuid) != 0) {
++		 * shares, replaced disks and changed export roots without open fsps. */
++		if (strcmp(current, conn->tc_volume_binding) != 0) {
 +			return true;
 +		}
 +	}

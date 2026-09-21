@@ -31,6 +31,13 @@ def stopped(sig,frame):
     sys.exit(0)
 signal.signal(signal.SIGTERM,stopped)
 signal.signal(signal.SIGHUP,lambda sig,frame:event('reload'))
+if role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'hold-smb-worker').exists():
+    if os.fork()==0:
+        role='smb-worker'
+        signal.signal(signal.SIGTERM,signal.SIG_IGN)
+        event('start')
+        while (Path(os.environ['TC_TEST_ROOT'])/'hold-smb-worker').exists():time.sleep(.05)
+        sys.exit(0)
 event('start')
 if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
 while True:
@@ -73,6 +80,14 @@ if key=='MaSt':
     if (root/'bad-mast').exists():sys.exit(1)
     print((root/'inventory').read_text());sys.exit(0)
 if sys.argv[1:3]==['rpc','diskd.useVolume']:
+    if (root/'hold-activation').exists():
+        import json
+        def event(kind):
+            with (root/'events').open('a') as out:
+                out.write(json.dumps(dict(kind=kind,role='activation',pid=os.getpid()))+'\\n')
+        event('blocked')
+        while (root/'hold-activation').exists():time.sleep(.05)
+        event('released')
     failed=root/'fail-claim'
     sys.exit(1 if failed.exists() and failed.read_text() in sys.argv[-1] else 0)
 print({'syNm':(root/'name').read_text() if (root/'name').exists() else 'Capsule','syAP':'116','syAM':'TimeCapsule6,116','syPW':'password'}[key])
@@ -120,7 +135,7 @@ def manager(manager_tools):
     root,binary=manager_tools
     for path in ('ram','dk2','dk3'):
         shutil.rmtree(root/path,ignore_errors=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','slow-facts','record-ps'):
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','slow-facts','record-ps','hold-activation','hold-smb-worker'):
         (root/name).unlink(missing_ok=True)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
@@ -704,3 +719,108 @@ def test_unreadable_but_appendable_console_log_does_not_block_samba(manager):
         assert 'unable to trim' in (root/'ram/var/runtime.log').read_text()
     finally:console.chmod(0o600)
     assert console.read_bytes()==content
+
+
+@pytest.mark.parametrize('change', ['remove', 'add', 'mixed', 'revert_add', 'reorder', 'failed'])
+def test_binding_changes_during_blocked_storage(manager, change):
+    root, start, events, wait, inventory, volumes = manager
+    initial = NAT_OK.replace('0x458', '0x450') if change in ('add', 'revert_add') else NAT_OK
+    (root/'facts').write_text(initial)
+    inventory(volumes[:1])
+    process = start()
+    rows = wait(started('smbd'))
+    pid = next(e['pid'] for e in rows if e['role'] == 'smbd' and e['kind'] == 'start')
+    (root/'hold-activation').touch()
+    inventory(volumes)
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows: any(e['role'] == 'activation' and e['kind'] == 'blocked' for e in rows), 20)
+    desired = NAT_OK.replace('0x458', '0x450') if change == 'remove' else NAT_OK
+    if change == 'mixed': desired = desired.replace('10.0.1.1', '10.0.1.2')
+    if change == 'reorder':
+        lines = desired.splitlines()
+        addresses = [line for line in lines if line.startswith('addr:')]
+        assert addresses
+        desired = '\n'.join([line for line in lines if not line.startswith('addr:')] + addresses[::-1]) + '\n'
+    if change == 'failed': desired = NAT_ACP_DEAD
+    (root/'facts').write_text(desired)
+    (root/'config').write_text('TELEMETRY=1\n')
+    process.send_signal(signal.SIGHUP)
+    wait(started('telemetry'))
+    if change in ('remove', 'mixed'):
+        wait(lambda rows: any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in rows))
+        # A failed storage job must not revive the old listener on retry.
+        (root/'mounts').write_text('unparseable mount snapshot\n')
+    else:
+        time.sleep(1)
+        os.kill(pid, 0)
+        assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
+        if change == 'revert_add':
+            (root/'facts').write_text(initial)
+            (root/'config').write_text('TELEMETRY=0\n')
+            process.send_signal(signal.SIGHUP)
+            wait(lambda rows: any(e['role'] == 'telemetry' and e['kind'] == 'stop' for e in rows))
+            time.sleep(1)
+            assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
+    (root/'hold-activation').unlink()
+    if change in ('remove', 'mixed'):
+        wait(lambda rows: any(e['role'] == 'activation' and e['kind'] == 'released' for e in rows))
+        time.sleep(1)
+        assert sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in events()) == 1
+        (root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
+        process.send_signal(signal.SIGHUP)
+    if change in ('remove', 'mixed', 'add'):
+        rows = wait(lambda rows: sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in rows) == 2, 20)
+        stopped = next(i for i,e in enumerate(rows) if e['role'] == 'smbd' and e['kind'] == 'stop')
+        released = next(i for i,e in enumerate(rows) if e['role'] == 'activation' and e['kind'] == 'released')
+        assert (stopped < released) == (change != 'add')
+        conf = (root/'ram/etc/smb.conf').read_text()
+        assert ('192.168.1.10/24' in conf) == (change != 'remove')
+        if change == 'mixed': assert '10.0.1.2/24' in conf and '10.0.1.1/24' not in conf
+    else:
+        wait(lambda rows: any(e['role'] == 'smbd' and e['kind'] == 'reload' for e in rows))
+        assert [e['pid'] for e in events() if e['role'] == 'smbd' and e['kind'] == 'start'] == [pid]
+
+
+@pytest.mark.parametrize('initial', [0, 1])
+def test_internal_export_root_change_reloads_without_restarting(manager, initial):
+    root, start, events, wait, _, _ = manager
+    (root/'config').write_text(f'TELEMETRY=0\nINTERNAL_SHARE_USE_DISK_ROOT={initial}\n')
+    process = start()
+    rows = wait(started('smbd'))
+    pid = next(e['pid'] for e in rows if e['role'] == 'smbd' and e['kind'] == 'start')
+    before = (root/'ram/etc/smb.conf').read_text()
+    usb = next(line for line in before.splitlines() if 'tc:volume dk3 =' in line)
+    (root/'config').write_text(f'TELEMETRY=0\nINTERNAL_SHARE_USE_DISK_ROOT={1-initial}\n')
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows: any(e['role'] == 'smbd' and e['kind'] == 'reload' for e in rows))
+    after = (root/'ram/etc/smb.conf').read_text()
+    expected = str(root/'dk2') + ('/ShareRoot' if initial else '')
+    assert f'path = {expected}\n' in after
+    assert f'tc:volume dk2 = 11111111-1111-1111-1111-111111111111|{expected}\n' in after
+    assert usb in after
+    assert [e['pid'] for e in events() if e['role'] == 'smbd' and e['kind'] == 'start'] == [pid]
+    assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
+
+
+@pytest.mark.parametrize('restore', [False, True])
+def test_binding_revocation_drains_entire_group_even_if_plan_reverts(manager, restore):
+    root, start, events, wait, _, _ = manager
+    (root/'hold-smb-worker').touch()
+    process = start()
+    rows = wait(started('smb-worker'))
+    worker = next(e for e in rows if e['role'] == 'smb-worker')
+    wait(started('smbd'))
+    (root/'facts').write_text(NAT_OK.replace('0x458', '0x450'))
+    process.send_signal(signal.SIGHUP)
+    wait(lambda rows: any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in rows))
+    if restore:
+        (root/'facts').write_text(NAT_OK)
+        (root/'config').write_text('TELEMETRY=1\n')
+        process.send_signal(signal.SIGHUP)
+        wait(started('telemetry'))
+    time.sleep(1)
+    os.kill(worker['pid'], 0)
+    assert sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in events()) == 1
+    (root/'hold-smb-worker').unlink()
+    wait(lambda rows: sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in rows) == 2)
+    assert ('192.168.1.10/24' in (root/'ram/etc/smb.conf').read_text()) == restore

@@ -444,6 +444,9 @@ def build_uninstall_plan(
             StopProcessAction("nbns"),
             StopProcessAction("rsync"),
             StopTelemetryAction(cleanup=True),
+            # A disconnected deployment can leave its standalone migrator
+            # writing metadata inside a payload we are about to remove.
+            WaitForIdleJobsAction(),
             *(RemovePathAction(payload_dir) for payload_dir in payload_dirs),
             RemovePathAction(flash_targets["rc.local"]),
             RemovePathAction(flash_targets["common.sh"]),

@@ -77,6 +77,30 @@ static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
+static int bindings_contain(const char *bindings, const char *required) {
+    /* Compare complete generated tokens, not substrings or list order. A
+     * prefix/scope change conservatively replaces the old binding. */
+    while (*(required += strspn(required, " "))) {
+        size_t length = strcspn(required, " ");
+        const char *token = bindings;
+        int found = 0;
+        while (*(token += strspn(token, " "))) {
+            size_t size = strcspn(token, " ");
+            if (size == length && !memcmp(token, required, length)) {
+                found = 1;
+                break;
+            }
+            token += size;
+        }
+        if (!found)
+            return 0;
+        required += length;
+    }
+    return 1;
+}
+static int bindings_equal(const char *a, const char *b) {
+    return bindings_contain(a, b) && bindings_contain(b, a);
+}
 static void changed(struct manager *m, long long now) {
     m->revision++;
     m->config_dirty = 1;
@@ -527,7 +551,9 @@ static void pump_stage(struct manager *m, long long now) {
     m->copy_smbd = !m->binary_valid || !m->have_applied || !payload_same(&m->storage, &m->applied_storage);
     m->copy_rsync =
         m->settings.config.rsync && (!m->rsync_valid || m->copy_smbd || !m->applied_settings.config.rsync);
-    int bind_changed = m->have_applied && strcmp(m->bindings, m->applied_bindings);
+    int bind_changed = m->have_applied && !bindings_equal(m->bindings, m->applied_bindings);
+    /* Additions wait for storage readiness before interrupting service. The
+     * plan acceptance path already begins draining any revoked bindings. */
     if (m->copy_smbd || bind_changed)
         stop_role(&m->smb, now, 1);
     if (m->copy_smbd || m->copy_rsync)
@@ -768,10 +794,15 @@ int tc_manager_main(int argc, char **argv) {
         if (!m->stopping && plan_loop_dispatch(&m->network, plan_loop_now_ms(), &reads)) {
             char bindings[TC_BIND_TOKENS_MAX];
             if (!device_plan_bind_tokens(&m->network.current, bindings, sizeof(bindings)) &&
-                (!m->have_bindings || strcmp(bindings, m->bindings))) {
+                (!m->have_bindings || !bindings_equal(bindings, m->bindings))) {
                 strcpy(m->bindings, bindings);
                 m->have_bindings = 1;
                 changed(m, plan_loop_now_ms());
+                /* A newly forbidden listener must not wait for HDD work or
+                 * staging retries. Compare with the running generation, not
+                 * a desired addition that might never have been applied. */
+                if (m->have_applied && !bindings_contain(bindings, m->applied_bindings))
+                    stop_role(&m->smb, plan_loop_now_ms(), 1);
             }
         }
     }

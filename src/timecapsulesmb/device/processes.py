@@ -21,14 +21,18 @@ def service_role_lines(ps_output: str, role: str) -> list[str]:
         if len(fields) < 6 or fields[2].startswith("Z"):
             continue
         arguments = fields[5:]
-        diagnostic = any(word in arguments for word in ("--print-link-plan", "--print-mast", "--version", "--print-payload", "--once", "--cleanup"))
-        if legacy and fields[4] == legacy and not diagnostic:
+        legacy_diagnostic = any(word in arguments for word in
+                                ("--print-link-plan", "--print-mast", "--version", "--print-payload", "--once", "--cleanup"))
+        if legacy and fields[4] == legacy and not legacy_diagnostic:
             rows.append(line)
-        elif fields[4] == "service" and (
-            (fields[5] == "service:" and fields[6:7] == [f"role={role}"])
-            or (fields[5] == "/mnt/Flash/service" and fields[6:7] == [role] and not diagnostic)
-        ):
+        elif fields[4] == "service" and fields[5] == "service:" and fields[6:7] == [f"role={role}"]:
             rows.append(line)
+        elif fields[4] == "service" and fields[5] == "/mnt/Flash/service" and fields[6:7] == [role]:
+            role_arguments = fields[7:]
+            if role == "discovery" and any(word in role_arguments for word in ("--diskless", "--netbios-name")):
+                rows.append(line)
+            elif role == "telemetry" and "--daemon" in role_arguments:
+                rows.append(line)
     return rows
 
 

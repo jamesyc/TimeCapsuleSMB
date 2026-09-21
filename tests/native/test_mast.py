@@ -4,18 +4,16 @@ import subprocess
 
 import pytest
 
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 from tests.storage_fixtures import MAST_FIXTURES
 
 
 @pytest.fixture(scope="module")
 def parser(tmp_path_factory):
     binary = tmp_path_factory.mktemp("mast-native") / "mast"
-    subprocess.run(["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror",
-                    *instrumentation_flags(), "-I", str(ROOT / "build/native"),
-                    str(ROOT / "build/native/storage/mast.c"),
-                    str(ROOT / "tests/native/unit/test_mast.c"), "-o", str(binary)],
-                   check=True, capture_output=True)
+    compile_modules(binary, ("native/storage/mast.c",),
+                    flags=("-I", str(ROOT / "build/native")),
+                    extra_sources=(ROOT / "tests/native/unit/test_mast.c",))
     return binary
 
 

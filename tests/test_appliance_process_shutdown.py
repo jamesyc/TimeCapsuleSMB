@@ -193,7 +193,7 @@ def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
         '10 1 S 0:00 service service: role=manager',
         '11 10 S 0:00 service service: role=discovery nbns=ready',
         '12 10 S 0:00 service /mnt/Flash/service discovery --netbios-name NAS',
-        '13 10 S 0:00 service /mnt/Flash/service discovery --print-link-plan',
+        '13 10 S 0:00 service /mnt/Flash/service --print-link-plan',
         '14 10 Z 0:00 service service: role=discovery nbns=ready',
         '15 10 S 0:00 service /mnt/Flash/service telemetry --once role=discovery',
         '16 10 S 0:00 service service: role=telemetry --daemon',

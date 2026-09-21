@@ -1,15 +1,15 @@
 """Keep Apple's resolver entries and make missing self-resolution repeatable."""
 import subprocess
 import pytest
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 
 
 @pytest.fixture(scope='module')
 def hosts_tool(tmp_path_factory):
     binary = tmp_path_factory.mktemp('hosts-native') / 'hosts'
-    subprocess.run(['cc', '-Wall', '-Wextra', '-Werror', *instrumentation_flags(),
-                    '-I', str(ROOT/'build/native'), str(ROOT/'build/native/service/hosts.c'),
-                    str(ROOT/'tests/native/unit/test_hosts.c'), '-o', str(binary)], check=True, capture_output=True)
+    compile_modules(binary, ('native/service/hosts.c',),
+                    flags=('-I', str(ROOT / 'build/native')),
+                    extra_sources=(ROOT / 'tests/native/unit/test_hosts.c',))
     return binary
 
 

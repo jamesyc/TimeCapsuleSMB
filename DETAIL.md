@@ -700,7 +700,8 @@ Important properties:
 - talks to `/var/run/mDNSResponder` for Bonjour and to the owned `/sbin/wcifsnd` child over Apple's loopback UDP control protocol
 
 CLI: `service discovery [--diskless] [--netbios-name NAME] [--adisk-share NAME KEY UUID FLAGS]... [--debug-logging]`,
-plus `--print-link-plan` and `--version` (prints `30100`).
+plus `--version` (prints `30100`). `service --print-link-plan` and
+`service --print-mast` are top-level diagnostics, not discovery-role aliases.
 Host builds with `TC_NATIVE_TEST` additionally accept `--facts-file F` to
 replace live collection with a text snapshot. Device binaries omit this
 option and its parser; live diagnostics remain available.
@@ -1532,12 +1533,12 @@ Current important outputs:
 
 Current active deploy artifact sizes (stripped bytes, v3.1.0):
 - NetBSD 6 `smbd`: about `9.7M`
-- NetBSD 6 `service`: `363,220`
+- NetBSD 6 `service`: `363,324`
 - NetBSD 6 `rsync`: about `1.0M`
 - NetBSD 4 little-endian `smbd`: about `9.7M`
 - NetBSD 4 big-endian `smbd`: about `9.7M`
-- NetBSD 4 little-endian `service`: `321,652`
-- NetBSD 4 big-endian `service`: `321,052`
+- NetBSD 4 little-endian `service`: `321,920`
+- NetBSD 4 big-endian `service`: `321,320`
 - NetBSD 4 little-endian `rsync`: about `878K`
 - NetBSD 4 big-endian `rsync`: about `872K`
 

@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 from tests.storage_fixtures import MAST_FIXTURES
 
 
@@ -14,12 +14,11 @@ from tests.storage_fixtures import MAST_FIXTURES
 def renderer(tmp_path_factory):
     root = tmp_path_factory.mktemp("samba-config")
     binary, config = root / "render", root / "runtime.conf"
-    sources = ["storage/mast.c", "storage/shares.c", "samba/config.c", "common/config.c"]
-    subprocess.run(["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror", *instrumentation_flags(),
-                    f'-DTC_FLASH_CONFIG_PATH="{config}"', "-I", str(ROOT / "build/native"),
-                    *(str(ROOT / "build/native" / source) for source in sources),
-                    str(ROOT / "tests/native/unit/test_samba_config.c"), "-o", str(binary)],
-                   check=True, capture_output=True)
+    modules = ["native/storage/mast.c", "native/storage/shares.c",
+               "native/samba/config.c", "native/common/config.c"]
+    compile_modules(binary, modules,
+                    flags=(f'-DTC_FLASH_CONFIG_PATH="{config}"', "-I", str(ROOT / "build/native")),
+                    extra_sources=(ROOT / "tests/native/unit/test_samba_config.c",))
     return binary, config
 
 
@@ -59,7 +58,7 @@ def test_default_config_preserves_the_working_shell_settings(renderer):
         assert share["xattr_tdb:file"] == "/Volumes/dk2/.samba4/private/xattr.tdb"
         assert share["vfs objects"] == "catia fruit streams_xattr acl_xattr xattr_tdb"
         assert share["smbd max xattr size"] == "3802" and share["streams_xattr:max xattrs per stream"] == "35"
-        assert global_["tc:volume " + share["tc:volume device"]] == share["tc:volume uuid"]
+        assert global_["tc:volume " + share["tc:volume device"]] == share["tc:volume uuid"] + "|" + share["path"]
 
 
 def test_netbsd4_cache_remains_disk_backed(renderer):
@@ -100,7 +99,7 @@ def test_unavailable_volume_not_projected_and_usb_payload_remains_a_share(render
     assert conf["Data"]["path"] == "/Volumes/dk3"
     assert conf["Data"]["veto files"] == "/.samba4/"
     assert "tc:volume dk2" not in conf["global"]
-    assert conf["global"]["tc:volume dk3"] == conf["Data"]["tc:volume uuid"]
+    assert conf["global"]["tc:volume dk3"] == conf["Data"]["tc:volume uuid"] + "|" + conf["Data"]["path"]
 
 
 def test_names_sanitized_bounded_and_ascii_case_collisions_disambiguated(renderer):

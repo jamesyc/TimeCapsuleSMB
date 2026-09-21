@@ -121,9 +121,11 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
             identity->model);
     /* Active share definitions can survive a Samba worker's reload. Global
      * mappings are refreshed, so an old tree can detect a removed/replaced
-     * Apple volume even when no real file descriptor is still open. */
+     * Apple volume or changed export root even without real open descriptors.
+     * This opaque identity uses the configured path, not a resolved vnode. */
     for (i = 0; i < shares->count; i++)
-        fprintf(file, "    tc:volume %s = %s\n", shares->values[i].device, shares->values[i].uuid);
+        fprintf(file, "    tc:volume %s = %s|%s\n", shares->values[i].device,
+                shares->values[i].uuid, shares->values[i].path);
     for (i = 0; i < shares->count; i++) {
         const struct tc_share *share = &shares->values[i];
         fprintf(file,

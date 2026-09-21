@@ -3,18 +3,17 @@ import subprocess
 import os
 import signal
 import pytest
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 
 @pytest.fixture(scope='module')
 def owner_driver(tmp_path_factory):
     root = tmp_path_factory.mktemp('nested-owner')
     binary = root / 'owner'
-    modules = ['process', 'worker', 'parent', 'acp']
-    subprocess.run(['cc', '-D_GNU_SOURCE', '-Wall', '-Wextra', '-Werror', *instrumentation_flags(),
-                    '-DTC_CHILD_GRACE_MS=150', '-DTC_ACP_TIMEOUT_SECONDS=1', f'-DTC_ACP_PATH="{binary}"', '-I', str(ROOT / 'build/native'),
-                    *(str(ROOT / f'build/native/common/{name}.c') for name in modules),
-                    str(ROOT / 'tests/native/unit/test_nested_owner.c'), '-o', str(binary)],
-                   check=True, capture_output=True)
+    modules = [f'native/common/{name}.c' for name in ('process', 'worker', 'parent', 'acp')]
+    compile_modules(binary, modules,
+                    flags=('-DTC_CHILD_GRACE_MS=150', '-DTC_ACP_TIMEOUT_SECONDS=1',
+                           f'-DTC_ACP_PATH="{binary}"', '-I', str(ROOT / 'build/native')),
+                    extra_sources=(ROOT / 'tests/native/unit/test_nested_owner.c',))
     return binary
 
 @pytest.mark.parametrize('case', ['crash', 'term', 'parent-eof', 'timeout', 'grandchild', 'acp', 'acp-descendant', 'acp-timeout'])

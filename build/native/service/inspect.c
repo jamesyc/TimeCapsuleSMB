@@ -42,7 +42,6 @@ static enum tc_process_role classify(const char *name, const char *command) {
     if (!strcmp(name, "service")) {
         if (starts_with_arguments(command, "service: role=discovery") ||
             (starts_with_arguments(command, TC_SERVICE_BIN " discovery") &&
-             !argument(command, "--print-link-plan") &&
              (argument(command, "--diskless") || argument(command, "--netbios-name"))))
             return TC_PROC_DISCOVERY;
         if (starts_with_arguments(command, "service: role=telemetry") ||

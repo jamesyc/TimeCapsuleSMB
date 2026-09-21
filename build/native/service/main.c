@@ -4,6 +4,43 @@
 #endif
 static void stop_acp(int signo) { (void)signo; acp_stop_requested = 1; }
 
+static int print_acp_mast(FILE *stream, long long timeout_ms) {
+    struct acp_request request;
+    char *output = malloc(65537);
+    size_t nonempty;
+    int rc = 1;
+    if (!output) return 1;
+    memset(&request, 0, sizeof(request));
+    request.key = "MaSt";
+    request.form = ACP_ARRAY;
+    request.multiline = 1;
+    request.output = output;
+    request.capacity = 65537;
+    (void)acp_collect_run(&request, 1, timeout_ms, timeout_ms);
+    nonempty = request.length;
+    while (nonempty && output[nonempty - 1] == '\n') nonempty--;
+    if (request.status == ACP_OK && nonempty) {
+        rc = fwrite(output, 1, request.length, stream) == request.length && fflush(stream) == 0 ? 0 : 1;
+    } else if (request.status == ACP_UNAVAILABLE && request.exit_status > 0) {
+        rc = request.exit_status;
+    }
+    free(output);
+    return rc;
+}
+
+static int print_mast_command(int argc, char **argv) {
+    long long timeout_ms = (long long)TC_ACP_TIMEOUT_SECONDS * 1000;
+    if (argc == 4 && !strcmp(argv[2], "--timeout-seconds")) {
+        char *end;
+        unsigned long seconds;
+        errno = 0;
+        seconds = strtoul(argv[3], &end, 10);
+        if (errno || !*argv[3] || *end || argv[3][0] == '-' || !seconds || seconds > 3600) return EXIT_USAGE;
+        timeout_ms = (long long)seconds * 1000;
+    } else if (argc != 2) return EXIT_USAGE;
+    return print_acp_mast(stdout, timeout_ms);
+}
+
 /* Model discovery belongs with Samba's native naming projection, not a second
  * set of shell normalization/ACP routines. No network policy is queried here. */
 int tc_samba_identity_read(struct tc_samba_identity *out) {
@@ -58,7 +95,7 @@ static int print_samba_identity(void) {
 }
 
 static void usage(void) {
-    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-smb-bind-interfaces | --print-link-plan | --version\n", stderr);
+    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-smb-bind-interfaces | --print-link-plan | --print-mast [--timeout-seconds N] | --version\n", stderr);
 }
 int main(int argc, char **argv) {
     const char *facts_file = NULL;
@@ -66,6 +103,8 @@ int main(int argc, char **argv) {
     struct device_plan plan;
     int i;
 
+    signal(SIGTERM, stop_acp); signal(SIGINT, stop_acp); signal(SIGPIPE, SIG_IGN);
+    if (argc >= 2 && !strcmp(argv[1], "--print-mast")) return print_mast_command(argc, argv);
     for (i = 1; i < argc; i++) {
 #ifdef TC_NATIVE_TEST
         if (!strcmp(argv[i], "--facts-file") && i + 1 < argc) {
@@ -84,7 +123,6 @@ int main(int argc, char **argv) {
         usage();
         return EXIT_USAGE;
     }
-    signal(SIGTERM, stop_acp); signal(SIGINT, stop_acp); signal(SIGPIPE, SIG_IGN);
     if (!strcmp(command, "--version")) { printf("%d\n", SERVICE_VERSION_CODE); return EXIT_OK; }
     if (!strcmp(command, "--print-samba-identity")) return print_samba_identity();
     if (!strcmp(command, "--print-device-nt-hash")) return print_device_nt_hash();

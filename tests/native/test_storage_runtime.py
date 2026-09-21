@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 
 
 @pytest.fixture(scope="module")
@@ -28,13 +28,12 @@ mounts.write_text('\\n'.join(rows)+'\\n')
 ''')
     acp.chmod(0o755)
     binary=root/"storage"
-    modules=["storage/mast.c","storage/shares.c","storage/runtime.c","samba/config.c",
-             "common/config.c","common/worker.c","common/process.c","common/parent.c","common/acp.c"]
-    subprocess.run(["cc","-D_GNU_SOURCE","-DTC_NATIVE_TEST","-Wall","-Wextra","-Werror",
-                    *instrumentation_flags(),f'-DTC_FLASH_CONFIG_PATH="{config}"',f'-DTC_ACP_PATH="{acp}"',
-                    f'-DTC_VOLUMES_ROOT="{root}"',"-I",str(ROOT/"build/native"),
-                    *(str(ROOT/"build/native"/module) for module in modules),
-                    str(ROOT/"tests/native/unit/test_storage_runtime.c"),"-o",str(binary)],check=True,capture_output=True)
+    modules=["native/storage/mast.c","native/storage/shares.c","native/storage/runtime.c","native/samba/config.c",
+             "native/common/config.c","native/common/worker.c","native/common/process.c","native/common/parent.c","native/common/acp.c"]
+    compile_modules(binary, modules,
+                    flags=(f'-DTC_FLASH_CONFIG_PATH="{config}"', f'-DTC_ACP_PATH="{acp}"',
+                           f'-DTC_VOLUMES_ROOT="{root}"', "-I", str(ROOT / "build/native")),
+                    extra_sources=(ROOT / "tests/native/unit/test_storage_runtime.c",))
     return root,config,binary
 
 

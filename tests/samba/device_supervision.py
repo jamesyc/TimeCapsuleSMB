@@ -140,21 +140,31 @@ def durable_reconnect(device, share, filename):
     print("PASS durable network reconnect under foreground Samba", flush=True)
 
 
-def targeted_reload(device, base_config, share, root):
+def targeted_reload(device, base_config, share, root, change="inode"):
+    root += "/reload-" + change
     # Apple can replace a disk at the same path. Replacing a scratch share root
     # exercises that identity boundary without unmounting a user's data disk.
     names = ["TC-supervision-A", "TC-supervision-B"]
     paths = [root + "/a", root + "/b"]
-    device.command("mkdir -p " + shlex.join(paths))
+    device.command("mkdir -p " + shlex.join([*paths, paths[0] + "/ShareRoot"]))
+    if change == "widen": paths[0] += "/ShareRoot"
     production = re.search(r"(?ms)^\[" + re.escape(share) + r"\]\n(.*?)(?=^\[|\Z)", base_config).group(1)
-    additions = ""
-    for name, path in zip(names, paths):
-        body = re.sub(r"(?m)^\s*path\s*=.*$", "    path = " + path, production)
-        additions += "\n[" + name + "]\n" + body
+    def configuration():
+        additions, mappings = "", ""
+        for i, (name, path) in enumerate(zip(names, paths)):
+            key = "tc-test-" + str(i)
+            body = re.sub(r"(?m)^\s*path\s*=.*$", "    path = " + path, production)
+            body = re.sub(r"(?m)^\s*tc:volume device\s*=.*$", "    tc:volume device = " + key, body)
+            volume_uuid = re.search(r"(?m)^\s*tc:volume uuid\s*=\s*(.+)$", body).group(1)
+            mappings += f"    tc:volume {key} = {volume_uuid}|{path}\n"
+            additions += "\n[" + name + "]\n" + body
+        # Each synthetic export needs its own mapping; production exports one
+        # share per volume, whereas this fixture uses two roots on one disk.
+        return base_config.replace("\n[", "\n" + mappings + "\n[", 1) + additions
     connection = None
     handles = []
     try:
-        device.publish(base_config + additions)
+        device.publish(configuration())
         connection, session = device.session()
         for name in names:
             tree = device.share(session, name)
@@ -167,7 +177,12 @@ def targeted_reload(device, base_config, share, root):
         time.sleep(2)
         for handle, name in zip(handles, names):
             assert handle.read(0, len(name)) == name.encode()
-        device.command(f"mv {shlex.quote(paths[0])} {shlex.quote(paths[0] + '.removed')} && mkdir {shlex.quote(paths[0])}")
+        if change == "inode":
+            device.command(f"mv {shlex.quote(paths[0])} {shlex.quote(paths[0] + '.removed')} && mkdir {shlex.quote(paths[0])}")
+        else:
+            paths[0] = paths[0].removesuffix("/ShareRoot") if change == "widen" else paths[0] + "/ShareRoot"
+            if change == "rename": names[0] += "-renamed"
+            device.publish(configuration())
         device.signal(parent, "HUP")
         time.sleep(2)
         assert handles[1].read(0, len(names[1])) == names[1].encode()
@@ -178,7 +193,11 @@ def targeted_reload(device, base_config, share, root):
         else:
             raise AssertionError("stale share was still usable")
         assert device.samba()["pid"] == parent
-        print("PASS parent HUP preserves valid trees and disconnects only replaced share", flush=True)
+        fresh_tree = device.share(session, names[0])
+        fresh, _ = open_file(fresh_tree, "new-probe", create=True)
+        fresh.write(b"new root", 0); fresh.flush(); fresh.close()
+        assert device.command("cat " + shlex.quote(paths[0] + "/new-probe")).strip() == "new root"
+        print("PASS targeted reload", change, "preserves other tree and reconnects to new root", flush=True)
     finally:
         try:
             # The intentionally revoked tree rejects CLOSE as well. Close the
@@ -342,7 +361,8 @@ def main():
     try:
         print("PASS direct manager child and isolated Samba process group", device.samba(), flush=True)
         durable_reconnect(device, share, directory + "\\durable")
-        targeted_reload(device, base, share, root)
+        for change in ("inode", "narrow", "widen", "rename"):
+            targeted_reload(device, base, share, root, change)
         supervise(device, share, directory + "\\durable")
         native_nbns_failure(device, share, directory + "\\durable")
     finally:

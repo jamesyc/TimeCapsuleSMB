@@ -5,23 +5,22 @@ import shutil
 import subprocess
 
 import pytest
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 
 
 @pytest.fixture(scope="module")
 def stage_tools(tmp_path_factory):
     root = tmp_path_factory.mktemp("stage-native")
     binary = root / "stage"
-    modules = ["samba/staging.c", "samba/config.c", "storage/runtime.c", "storage/mast.c",
-               "storage/shares.c", "common/config.c", "common/worker.c", "common/process.c",
-               "common/parent.c", "common/acp.c"]
-    subprocess.run(["cc", "-D_GNU_SOURCE", "-DTC_NATIVE_TEST", "-Wall", "-Wextra", "-Werror",
-                    *instrumentation_flags(), f'-DTC_FLASH_CONFIG_PATH="{root}/runtime.conf"',
-                    f'-DTC_RAM_ROOT="{root}/ram"', f'-DTC_LOCKS_ROOT="{root}/locks"', f'-DTC_VOLUMES_ROOT="{root}"',
-                    "-I", str(ROOT / "build/native"),
-                    *(str(ROOT / "build/native" / module) for module in modules),
-                    str(ROOT / "tests/native/unit/test_staging.c"), "-o", str(binary)],
-                   check=True, capture_output=True)
+    modules = ["native/samba/staging.c", "native/samba/config.c", "native/storage/runtime.c",
+               "native/storage/mast.c", "native/storage/shares.c", "native/common/config.c",
+               "native/common/worker.c", "native/common/process.c", "native/common/parent.c",
+               "native/common/acp.c"]
+    compile_modules(binary, modules,
+                    flags=(f'-DTC_FLASH_CONFIG_PATH="{root}/runtime.conf"',
+                           f'-DTC_RAM_ROOT="{root}/ram"', f'-DTC_LOCKS_ROOT="{root}/locks"',
+                           f'-DTC_VOLUMES_ROOT="{root}"', "-I", str(ROOT / "build/native")),
+                    extra_sources=(ROOT / "tests/native/unit/test_staging.c",))
     return root, binary
 
 

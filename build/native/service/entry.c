@@ -14,7 +14,5 @@ int main(int argc, char **argv) {
         return tc_discovery_main(argc - 1, argv + 1);
     if (argc > 1 && !strcmp(argv[1], "telemetry"))
         return tc_telemetry_main(argc - 1, argv + 1);
-    if (argc > 1 && !strcmp(argv[1], "--print-mast"))
-        return tc_discovery_main(argc, argv);
     return tc_service_helper_main(argc, argv);
 }

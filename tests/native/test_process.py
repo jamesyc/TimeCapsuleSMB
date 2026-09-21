@@ -3,18 +3,15 @@ import subprocess
 
 import pytest
 
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 
 
 @pytest.fixture(scope="module")
 def driver(tmp_path_factory):
     binary = tmp_path_factory.mktemp("process-native") / "process"
-    subprocess.run(["cc", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror",
-                    *instrumentation_flags(), "-I", str(ROOT / "build/native"),
-                    str(ROOT / "build/native/common/process.c"),
-                    str(ROOT / "build/native/common/parent.c"),
-                    str(ROOT / "tests/native/unit/test_process.c"), "-o", str(binary)],
-                   capture_output=True, check=True)
+    compile_modules(binary, ("native/common/process.c", "native/common/parent.c"),
+                    flags=("-I", str(ROOT / "build/native")),
+                    extra_sources=(ROOT / "tests/native/unit/test_process.c",))
     return binary
 
 

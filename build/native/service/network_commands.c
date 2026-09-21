@@ -37,5 +37,5 @@ int print_smb_bind_interfaces(FILE *stream, const struct device_plan *plan) {
 
 int print_link_plan(FILE *stream, const struct device_plan *plan) {
     device_plan_print(stream, plan);
-    return ferror(stream) ? -1 : 0;
+    return ferror(stream) || fflush(stream) != 0 ? -1 : 0;
 }

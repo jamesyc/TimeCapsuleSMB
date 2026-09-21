@@ -21,8 +21,9 @@ def test_production_service_rejects_fixtures_and_keeps_role_entrypoints(tmp_path
 
     rejected = run("--print-link-plan", "--facts-file", str(tmp_path / "missing"))
     assert rejected.returncode == 3 and "Usage:" in rejected.stderr
-    rejected = run("discovery", "--print-link-plan", "--facts-file", str(tmp_path / "missing"))
-    assert rejected.returncode == 3 and "Usage:" in rejected.stderr
+    for removed in (("discovery", "--print-link-plan"), ("discovery", "--print-mast")):
+        rejected = run(*removed)
+        assert rejected.returncode == 3 and "Usage:" in rejected.stderr
 
     live = run("--print-link-plan")
     assert live.returncode == 0, live.stderr

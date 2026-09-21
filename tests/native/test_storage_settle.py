@@ -1,13 +1,11 @@
 """Fake-clock topology transitions use absolute, nonblocking confirmation deadlines."""
 import subprocess
-from tests.native.build import ROOT, instrumentation_flags
+from tests.native.build import ROOT, compile_modules
 
 
 def test_storage_confirmation(tmp_path):
     binary = tmp_path / "settle"
-    subprocess.run(["cc", "-Wall", "-Wextra", "-Werror", *instrumentation_flags(),
-                    "-I", str(ROOT / "build/native"), str(ROOT / "build/native/storage/mast.c"),
-                    str(ROOT / "build/native/storage/settle.c"),
-                    str(ROOT / "tests/native/unit/test_storage_settle.c"), "-o", str(binary)],
-                   check=True, capture_output=True)
+    compile_modules(binary, ("native/storage/mast.c", "native/storage/settle.c"),
+                    flags=("-I", str(ROOT / "build/native")),
+                    extra_sources=(ROOT / "tests/native/unit/test_storage_settle.c",))
     subprocess.run([str(binary)], check=True, timeout=5)

@@ -33,8 +33,8 @@ those facts into a `struct device_plan` (link roles, service masks, bind
 tokens, identity) with the retained-policy rules of the redesign plan.
 `loop.c` is the daemons' select loop (PF_ROUTE debounce + 30 s poll).
 Host test builds (`TC_NATIVE_TEST`) accept `--facts-file` snapshots. Device
-builds omit the fixture parser and accept only live facts; `--print-link-plan`
-remains available for live diagnostics.
+builds omit the fixture parser and accept only live facts; top-level
+`service --print-link-plan` remains available for live diagnostics.
 There is no shared plan daemon or cache/status file; each process owns its own
 last validated plan. Fixtures from both device lanes live under
 `tests/native/fixtures/iflist/`.

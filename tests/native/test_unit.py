@@ -1,17 +1,14 @@
-import os
 from pathlib import Path
 import subprocess
 import pytest
-from tests.native.build import ROOT
+from tests.native.build import ROOT, compile_modules
 
 @pytest.mark.parametrize('module', ['response', 'scheduler'])
 def test_unit_module(tmp_path, module):
     native = ROOT / 'build/native/telemetry'
     output = tmp_path / module
-    flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if os.environ.get('TC_NATIVE_SANITIZERS') else []
-    subprocess.run(['cc', '-Wall', '-Wextra', '-Werror', *flags, '-I', str(native),
-                    str(native / f'{module}.c'), str(Path(__file__).parent / 'unit' / f'test_{module}.c'),
-                    '-o', str(output)], check=True, capture_output=True, timeout=60)
+    compile_modules(output, (f'native/telemetry/{module}.c',), flags=('-I', str(native)),
+                    extra_sources=(Path(__file__).parent / 'unit' / f'test_{module}.c',))
     subprocess.run([str(output)], check=True, capture_output=True, timeout=5)
 
 
@@ -22,12 +19,10 @@ def test_payload_device_boundary(tmp_path):
     output = tmp_path / 'payload'
     # Mock plan collection, not the payload schema: isolate router-ID derivation
     # while exercising the same serialization shipped on devices.
-    result = subprocess.run(['cc', '-Wall', '-Wextra', '-Werror', '-Wno-sign-compare',
-        '-Wno-unterminated-string-initialization', '-I', str(native / 'telemetry'), '-I', str(native / 'common'),
-        str(native / 'telemetry/payload.c'), str(native / 'vendor/tweetnacl.c'),
-        str(native / 'vendor/random.c'), str(Path(__file__).parent / 'unit/test_payload.c'), '-o', str(output)],
-        capture_output=True, text=True, timeout=60)
-    assert result.returncode == 0, result.stderr
+    compile_modules(output, ('native/telemetry/payload.c', 'native/vendor/tweetnacl.c',
+                             'native/vendor/random.c'),
+                    flags=('-I', str(native / 'telemetry'), '-I', str(native / 'common')),
+                    extra_sources=(Path(__file__).parent / 'unit/test_payload.c',))
     run = subprocess.run([str(output)], capture_output=True, text=True, timeout=5)
     assert run.returncode == 0, run.stderr
     payload = json.loads(run.stdout)

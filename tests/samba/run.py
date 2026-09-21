@@ -44,7 +44,8 @@ XATTR_MIGRATE_CASES = (
     "guard", "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
     "orphans", "multi",
 )
-STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks")
+STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
+                        "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
 
 
 def stage(source: Path) -> None:

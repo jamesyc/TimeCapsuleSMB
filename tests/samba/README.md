@@ -39,6 +39,15 @@ space. The runner refuses other locations, and the cross-exec helper verifies
 that `/Volumes/...` is a distinct mounted filesystem before every upload and
 removes each temporary executable afterward.
 
+On the NetBSD 4 appliance, run the storage-reload driver from `/mnt/Memory`
+with its working directory on the HFS scratch volume. A disk-backed driver
+was observed aborting in talloc before loading its first configuration; the
+identical image passed every case from RAM, matching production Samba's
+placement. If RAM is full, stop and drain the managed runtime before removing
+its disposable RAM smbd image, run the driver, then remove the driver and
+start the installed `rc.local` again. Disable core dumps for these runs so
+Apple's default `/tmp/%n.core` does not exhaust the small root RAM disk.
+
 The cases cover talloc isolation through the real AIO fork path, preservation of
 worker errors, successful and failed synchronous fallback, worker limits and
 share isolation, FIFO saturation, cancellation, worker failure recovery and idle
@@ -49,7 +58,8 @@ the literal retry limit of 34.
 Storage reload cases compile the production connection code and the unchanged
 parent/worker callback bodies from the source being built. They check revoked
 versus closed descriptors, sentinels, fake/closing/non-disk handles, volume UUID
-and root replacement, failed reloads, and asynchronous tree closure with AIO
+and root replacement, configured export narrowing/widening (including retained
+renamed shares), failed reloads, and asynchronous tree closure with AIO
 pending while another tree stays usable. Apple can reuse the same disk path,
 device number and inode after a cable bump; retained descriptor validity is the
 additional signal. Error injection covers this decision, while physical USB
@@ -140,8 +150,9 @@ python -m tests.samba.device_supervision --config .env.backup6
 ```
 
 The test verifies direct-child process groups, durable network reconnect,
-SIGHUP forwarding, and disconnection of one replaced scratch share root while
-a second tree in the same session stays usable. It keeps a file open during
+SIGHUP forwarding, and disconnection of one replaced or reconfigured scratch
+share root while a second tree in the same session stays usable. Root changes
+cover narrowing, widening and a simultaneous rename without restarting smbd. It keeps a file open during
 Samba, discovery, telemetry, and manager failures, checks fresh-client recovery,
 and verifies that duplicate boot does not replace a healthy generation. Apple's
 mDNSResponder, diskd, and afpserver must retain their PIDs. Native NBNS child
