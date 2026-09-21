@@ -1,6 +1,8 @@
+diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_migrate.c
+index c3afb6f..46ca38f 100644
 --- a/source3/utils/tc_xattr_hfs_migrate.c
 +++ b/source3/utils/tc_xattr_hfs_migrate.c
-@@ -397,61 +397,9 @@
+@@ -571,61 +571,9 @@ static char *tc_apple_native_name(TALLOC_CTX *mem_ctx,
  	return talloc_strndup(mem_ctx, raw, raw_len - suffix_len);
  }
  
@@ -65,7 +67,7 @@
  static int tc_write_internal_stream(struct tc_migration *migration,
  				    int fd,
  				    const char *path,
-@@ -467,12 +415,6 @@
+@@ -641,12 +589,6 @@ static int tc_write_internal_stream(struct tc_migration *migration,
  	uint8_t *anchor;
  	size_t offset;
  	size_t i;
@@ -78,7 +80,7 @@
  
  	if (extents >= TC_HFS_STREAM_XATTRS) {
  		fprintf(stderr, "stream too large path=%s name=%s size=%zu\n",
-@@ -550,7 +492,7 @@
+@@ -724,7 +666,7 @@ static int tc_migrate_stream(struct tc_migration *migration,
  		}
  		ret = tc_native_write_verified(
  			migration, fd, path, native_name,
@@ -87,7 +89,7 @@
  	} else {
  		ret = tc_write_internal_stream(
  			migration, fd, path, anchor_name, &logical);
-@@ -663,28 +605,9 @@
+@@ -837,28 +779,9 @@ static int tc_migrate_finderinfo(struct tc_migration *migration,
  				 const struct file_id *id)
  {
  	TALLOC_CTX *frame = talloc_stackframe();
@@ -116,7 +118,7 @@
  	if (strcmp(migration->legacy_metadata, "netatalk") == 0) {
  		ret = tc_finderinfo_from_netatalk(
  			migration, frame, id, finderinfo);
-@@ -710,13 +633,9 @@
+@@ -884,13 +807,9 @@ static int tc_migrate_finderinfo(struct tc_migration *migration,
  		TALLOC_FREE(frame);
  		return -1;
  	}
@@ -131,7 +133,7 @@
  	if (ret == 0) {
  		migration->counts.finderinfo_written++;
  	}
-@@ -813,7 +732,7 @@
+@@ -987,7 +906,7 @@ static int tc_migrate_tdb_record(struct tc_migration *migration,
  		}
  		if (tc_native_write_verified(
  				migration, fd, path, name,
@@ -140,7 +142,7 @@
  		{
  			TALLOC_FREE(frame);
  			return -1;
-@@ -1515,6 +1434,8 @@
+@@ -1692,6 +1611,8 @@ static int tc_scan_path(struct tc_migration *migration,
  			result = -1;
  		}
  		if (result == 0 && tc_retire_tdb_record(migration, fd, &st) != 0) {
@@ -149,7 +151,7 @@
  			result = -1;
  		}
  		if (fd != -1) {
-@@ -1526,6 +1447,7 @@
+@@ -1703,6 +1624,7 @@ static int tc_scan_path(struct tc_migration *migration,
  	}
  	dir = opendir(path);
  	if (dir == NULL) {
@@ -157,7 +159,7 @@
  		return -1;
  	}
  	/* Snapshot one directory before cleanup removes sidecars from it. A
-@@ -1537,6 +1459,7 @@
+@@ -1714,6 +1636,7 @@ static int tc_scan_path(struct tc_migration *migration,
  		entry = readdir(dir);
  		if (entry == NULL) {
  			if (errno != 0) {

@@ -103,6 +103,8 @@ and check that cleanup retains the sidecar.
 Host runs keep those cases isolated and repeat them once through `all` to check
 cross-case cleanup under sanitizers. Device runs use that same reset-isolated
 `all` invocation as their sole run so the 6.8 MiB static fixture is uploaded once.
+The `guard` case covers inactivity expiry, progress resets in the real hashing,
+directory, metadata, and resource loops, checked output flushing, and teardown.
 The `multi` case opens real read-only TDBs through the deploy input parser. It
 covers mtime and nanosecond precedence, UUID/path ties, unique older values,
 fragment ownership, raw FinderInfo, source changes, failed flushes, unresolved

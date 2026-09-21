@@ -1,18 +1,19 @@
 diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_migrate.c
+index fb20134..f307197 100644
 --- a/source3/utils/tc_xattr_hfs_migrate.c
 +++ b/source3/utils/tc_xattr_hfs_migrate.c
-@@ -32,6 +32,10 @@
- #define TC_COPY_SIZE (64 * 1024)
+@@ -34,6 +34,10 @@
  #define TC_RESOURCE_MARKER_XATTR "user.TimeCapsuleSMB.ResourceMigration"
  #define TC_RESOURCE_MARKER_MAGIC "TCV4RSRC"
+ #define TC_STALL_EXIT 75
 +#define TC_QUARANTINE_SUFFIX ".orphaned."
 +#define TC_QUARANTINE_MAX_SLOTS 99
 +#define TC_FNV64_OFFSET 0xcbf29ce484222325ULL
 +#define TC_FNV64_PRIME 0x100000001b3ULL
  
- enum tc_phase {
- 	TC_PHASE_COPY,
-@@ -74,6 +78,9 @@
+ /* The appliance has no pthread support. A process-local real-time guard keeps
+  * every blocking filesystem call covered; successful work rearms its one-shot
+@@ -251,6 +255,9 @@ struct tc_counts {
  	uint64_t tdb_deleted;
  	uint64_t tdb_retired;
  	uint64_t orphaned;
@@ -22,7 +23,7 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
  	uint64_t errors;
  };
  
-@@ -86,6 +93,14 @@
+@@ -263,6 +270,14 @@ struct tc_migration {
  	struct tc_tdb_key *tdb_keys;
  	size_t num_tdb_keys;
  	int tdb_collect_error;
@@ -37,7 +38,7 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
  	struct tc_counts counts;
  };
  
-@@ -1476,6 +1491,12 @@
+@@ -1660,6 +1675,12 @@ static int tc_scan_path(struct tc_migration *migration,
  		fprintf(stderr, "lstat failed path=%s error=%s\n", path, strerror(errno));
  		return -1;
  	}
@@ -50,7 +51,7 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
  	migration->counts.entries++;
  	if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) {
  		fd = open(path, O_RDONLY | O_NOFOLLOW);
-@@ -1574,14 +1595,207 @@
+@@ -1760,12 +1781,205 @@ static int tc_scan_path(struct tc_migration *migration,
  
  static int tc_scan_root(struct tc_migration *migration, const char *path)
  {
@@ -80,8 +81,8 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
 +	migration->complete_devs = devs;
 +	devs[migration->num_complete_devs++] = st.st_dev;
 +	return 0;
- }
- 
++}
++
 +static bool tc_dev_fully_scanned(const struct tc_migration *migration,
 +				 uint64_t devid)
 +{
@@ -254,36 +255,33 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
 +	close(fd);
 +	printf("fingerprint=%"PRIu64"-%016"PRIx64"\n", size, hash);
 +	return 0;
-+}
-+
+ }
+ 
  static int tc_scan_roots_file(struct tc_migration *migration,
- 			      const char *roots_path)
- {
-@@ -1624,8 +1838,10 @@
+@@ -1810,7 +2024,9 @@ static void tc_usage(const char *program)
  		"usage: %s copy|cleanup TDB_PATH|- stream|netatalk "
  		"HFS_ROOT [HFS_ROOT ...]\n"
  		"       %s copy|cleanup TDB_PATH|- stream|netatalk "
 -		"--roots-file PATH\n",
 +		"--roots-file PATH\n"
 +		"       %s fingerprint TDB_PATH\n",
- 		program,
 +		program,
+ 		program,
  		program);
  }
- 
-@@ -1636,6 +1852,11 @@
- 	int result = 0;
- 	int i;
- 
+@@ -1849,6 +2065,11 @@ int main(int argc, char **argv)
+ 		goto done;
+ 	}
+ 	migration.mem_ctx = frame;
 +	if (argc == 3 && strcmp(argv[1], "fingerprint") == 0) {
 +		result = tc_print_fingerprint(argv[2]);
-+		TALLOC_FREE(frame);
-+		return result == 0 ? 0 : 3;
++		result = result == 0 ? 0 : 3;
++		goto done;
 +	}
  	if (argc < 5 ||
  	    (strcmp(argv[1], "copy") != 0 && strcmp(argv[1], "cleanup") != 0) ||
  	    (strcmp(argv[3], "stream") != 0 && strcmp(argv[3], "netatalk") != 0))
-@@ -1677,8 +1898,7 @@
+@@ -1890,8 +2111,7 @@ int main(int argc, char **argv)
  			}
  		}
  	}
@@ -293,7 +291,7 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
  	if (result == 0 &&
  	    migration.phase == TC_PHASE_CLEANUP &&
  	    migration.db != NULL &&
-@@ -1693,6 +1913,22 @@
+@@ -1906,6 +2126,22 @@ int main(int argc, char **argv)
  		} else {
  			migration.counts.tdb_deleted = 1;
  		}
@@ -316,7 +314,7 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
  	}
  	printf("phase=%s entries=%"PRIu64" tdb_records=%"PRIu64
  	       " xattrs_written=%"PRIu64" streams_written=%"PRIu64
-@@ -1700,7 +1936,9 @@
+@@ -1913,7 +2149,9 @@ int main(int argc, char **argv)
  	       " native_kept=%"PRIu64" conflicts=%"PRIu64
  	       " sidecars_seen=%"PRIu64" sidecars_deleted=%"PRIu64
  	       " tdb_total=%"PRIu64" tdb_matched=%"PRIu64
@@ -327,7 +325,7 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
  	       " errors=%"PRIu64"\n",
  	       migration.phase == TC_PHASE_COPY ? "copy" : "cleanup",
  	       migration.counts.entries,
-@@ -1716,8 +1954,11 @@
+@@ -1929,8 +2167,11 @@ int main(int argc, char **argv)
  	       migration.counts.tdb_total,
  	       migration.counts.tdb_matched,
  	       migration.counts.orphaned,
@@ -337,5 +335,5 @@ diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_m
 +	       migration.counts.tdb_quarantined,
 +	       migration.counts.boundary_skipped,
  	       migration.counts.errors);
- 	TALLOC_FREE(frame);
- 	return result == 0 ? 0 : 4;
+ 	result = result == 0 ? 0 : 4;
+ done:

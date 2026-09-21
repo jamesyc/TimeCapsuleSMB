@@ -358,7 +358,11 @@ def _tokens_request_public_key_auth(tokens: list[str]) -> bool:
     )
 
 
-def _connection_ssh_args(connection: SshConnection) -> list[str]:
+def _connection_ssh_args(
+    connection: SshConnection,
+    *,
+    extra_args: tuple[str, ...] = (),
+) -> list[str]:
     """Return config-isolated SSH args with authentication derived per connection."""
     tokens = _normalize_ssh_tokens(connection.ssh_opts)
 
@@ -371,7 +375,7 @@ def _connection_ssh_args(connection: SshConnection) -> list[str]:
         # explicit key configuration and keyboard-interactive password servers.
         auth_args = ["-o", "PubkeyAuthentication=no"]
 
-    return ["-F", "/dev/null", *auth_args, *tokens]
+    return ["-F", "/dev/null", *auth_args, *extra_args, *tokens]
 
 
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -406,10 +410,12 @@ def _run_piped_ssh(
     remote_cmd: str,
     *,
     input_bytes: bytes | None = None,
-    timeout: int,
+    timeout: int | None,
     missing_tool_message: str,
     timeout_message: str,
     stdout_is_text: bool = True,
+    raw_remote_status: bool = False,
+    extra_ssh_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
     env = dict(os.environ)
     if connection.password:
@@ -419,9 +425,15 @@ def _run_piped_ssh(
         command_prefix = ["sshpass", "-e", "ssh"]
     else:
         command_prefix = ["ssh"]
-    cmd = [*command_prefix, *_connection_ssh_args(connection), connection.host, remote_cmd]
+    cmd = [
+        *command_prefix,
+        *_connection_ssh_args(connection, extra_args=extra_ssh_args),
+        connection.host,
+        remote_cmd,
+    ]
     proc: subprocess.CompletedProcess[bytes] | None = None
-    for attempt in range(3):
+    attempts = 1 if raw_remote_status else 3
+    for attempt in range(attempts):
         try:
             proc = subprocess.run(
                 cmd,
@@ -437,7 +449,7 @@ def _run_piped_ssh(
         if proc.returncode == 0:
             break
         combined_text = _decode_ssh_error_output(proc.stderr, proc.stdout, include_stdout=stdout_is_text)
-        if not _should_retry_password_auth(connection, combined_text, attempt):
+        if attempt + 1 >= attempts or not _should_retry_password_auth(connection, combined_text, attempt):
             break
         time.sleep(1)
     if proc is None:
@@ -447,9 +459,16 @@ def _run_piped_ssh(
         b"" if proc.returncode == 0 else proc.stdout,
         include_stdout=stdout_is_text,
     )
-    client_error = classify_ssh_client_error(combined_text)
+    sshpass_error = raw_remote_status and bool(connection.password) and proc.returncode in {5, 6, 7}
+    client_error = (
+        classify_ssh_client_error(combined_text)
+        if not raw_remote_status or proc.returncode == 255 or sshpass_error
+        else None
+    )
     if client_error:
         raise client_error
+    if sshpass_error:
+        raise SshError(combined_text.strip() or f"sshpass failed with rc={proc.returncode}")
     return proc
 
 
@@ -458,15 +477,19 @@ def run_ssh_input(
     remote_cmd: str,
     *,
     input_bytes: bytes = b"",
-    timeout: int = 120,
+    timeout: int | None = 120,
+    raw_remote_status: bool = False,
+    extra_ssh_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
     """Send a bounded request without PTY echo, keeping stdout and logs separate."""
     proc = _run_piped_ssh(
         connection, remote_cmd, input_bytes=input_bytes, timeout=timeout,
         missing_tool_message="Piped SSH requires local sshpass; run `./tcapsule bootstrap`.",
         timeout_message=f"Timed out waiting for ssh command to finish: {_summarize_remote_command(remote_cmd)}",
+        raw_remote_status=raw_remote_status,
+        extra_ssh_args=extra_ssh_args,
     )
-    if proc.returncode:
+    if proc.returncode and not raw_remote_status:
         raise SshError(_decode_ssh_error_output(proc.stderr, proc.stdout).strip()
                        or f"ssh command failed with rc={proc.returncode}")
     return proc

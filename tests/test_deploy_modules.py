@@ -54,6 +54,7 @@ from timecapsulesmb.deploy.executor import (
     remote_uninstall_payload,
     upload_deployment_payload,
 )
+from timecapsulesmb.deploy.migration import MigrationStalledError, RAM_HELPER
 from timecapsulesmb.deploy.planner import (
     BINARY_SERVICE_SOURCE,
     BINARY_RSYNC_SOURCE,
@@ -870,37 +871,77 @@ class DeployModuleTests(unittest.TestCase):
                 self.assertIs(migrate.call_args_list[0].kwargs["inventory"], migrate.call_args_list[1].kwargs["inventory"])
                 self.assertNotIn("legacy_metadata", migrate.call_args_list[0].kwargs)
 
-    def test_migration_failure_diagnostics_distinguish_timeout_from_scan_error(self) -> None:
+    def test_migration_failure_diagnostics_distinguish_stall_timeout_and_scan_error(self) -> None:
         from timecapsulesmb.transport.errors import SshCommandTimeout
 
-        for error, timed_out in ((RuntimeError("opendir failed path=/Volumes/dk2/problem; errors=1"), False),
-                                 (SshCommandTimeout("migration deadline exceeded"), True)):
-            with self.subTest(timed_out=timed_out):
+        cases = (
+            (RuntimeError("opendir failed path=/Volumes/dk2/problem; errors=1"), False, False, "xattr_migration_failed"),
+            (SshCommandTimeout("migration emergency deadline exceeded"), False, True, "xattr_migration_timeout"),
+            (MigrationStalledError("no progress"), True, False, "xattr_migration_stalled"),
+        )
+        for error, stalled, timed_out, code in cases:
+            with self.subTest(stalled=stalled, timed_out=timed_out):
                 measurements = []
+                remote_actions = mock.Mock()
                 with self.assertRaises(DeployDeviceError) as caught:
                     upload_and_verify_deployment_payload(
                         AppConfig.from_values({}), SshConnection("host", "pw", ""),
                         self._prepared_deploy_plan(), DeployRuntimeConfig(nbns_enabled=True),
                         callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
-                        run_remote_actions_func=mock.Mock(), upload_payload_func=mock.Mock(),
+                        run_remote_actions_func=remote_actions, upload_payload_func=mock.Mock(),
                         migrate_xattrs_func=mock.Mock(side_effect=error),
                         probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
                     )
                 message = str(caught.exception)
                 self.assertIn("phase=copy elapsed_seconds=", message)
-                self.assertIn("timeout_seconds=21600", message)
+                self.assertIn("stall_seconds=300", message)
+                self.assertIn("emergency_timeout_seconds=900", message)
+                self.assertIn(f"stalled={str(stalled).lower()}", message)
                 self.assertIn(f"timed_out={str(timed_out).lower()}", message)
                 self.assertIn("xattr-migration-copy.log", message)
                 self.assertIn(str(error), message)
                 migration = next(fields for kind, fields in measurements if kind == "xattr_migration")
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(migration["stalled"], stalled)
                 self.assertEqual(migration["timed_out"], timed_out)
                 self.assertEqual(migration["result"], "failure")
+                self.assertFalse(any(
+                    RemovePathAction(RAM_HELPER) in call.args[1]
+                    for call in remote_actions.call_args_list
+                ))
+
+    def test_source_inspection_stall_uses_migration_classification(self) -> None:
+        remote_actions = mock.Mock()
+        migrate = mock.Mock()
+        with mock.patch(
+            "timecapsulesmb.services.deploy.inspect_sources",
+            side_effect=MigrationStalledError("inspection made no progress"),
+        ):
+            with self.assertRaises(DeployDeviceError) as caught:
+                upload_and_verify_deployment_payload(
+                    AppConfig.from_values({}),
+                    SshConnection("host", "pw", ""),
+                    self._prepared_deploy_plan(),
+                    DeployRuntimeConfig(nbns_enabled=True),
+                    run_remote_actions_func=remote_actions,
+                    upload_payload_func=mock.Mock(),
+                    migrate_xattrs_func=migrate,
+                    probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+                )
+        self.assertEqual(caught.exception.code, "xattr_migration_stalled")
+        self.assertIn("phase=inspect", str(caught.exception))
+        migrate.assert_not_called()
+        self.assertFalse(any(
+            RemovePathAction(RAM_HELPER) in call.args[1]
+            for call in remote_actions.call_args_list
+        ))
 
     def test_xattr_copy_precedes_payload_and_cleanup_follows_verification(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
         connection = SshConnection("host", "pw", "-o foo")
         events: list[str] = []
         migrated_root = self._mast_volume()
+        remote_actions = mock.Mock()
 
         def migrate(_connection, _plan, *, phase, inventory):
             events.append(f"migrate:{phase}")
@@ -923,7 +964,7 @@ class DeployModuleTests(unittest.TestCase):
             prepared_plan,
             DeployRuntimeConfig(nbns_enabled=True, fruit_metadata_netatalk=False),
             callbacks=OperationCallbacks(),
-            run_remote_actions_func=mock.Mock(),
+            run_remote_actions_func=remote_actions,
             migrate_xattrs_func=migrate,
             probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
             upload_payload_func=upload,
@@ -944,6 +985,10 @@ class DeployModuleTests(unittest.TestCase):
                 "upload:boot",
             ],
         )
+        self.assertTrue(any(
+            call.args[1] == [RemovePathAction(RAM_HELPER)]
+            for call in remote_actions.call_args_list
+        ))
 
     def test_xattr_migration_keeps_afp_offline_through_cleanup(self) -> None:
         prepared_plan = self._prepared_deploy_plan()

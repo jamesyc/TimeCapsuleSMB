@@ -1155,10 +1155,69 @@ class MigrationInputTransportTests(unittest.TestCase):
         connection = ssh_transport.SshConnection("device", "", "")
         process = subprocess.CompletedProcess(["ssh"], 0, b'{"version":1}\n', b'diagnostic\n')
         with mock.patch.object(ssh_transport, "_run_piped_ssh", return_value=process) as run:
-            result = ssh_transport.run_ssh_input(connection, "helper multi copy", input_bytes=b"TCMIGRATE1\nE\n", timeout=21600)
+            result = ssh_transport.run_ssh_input(
+                connection,
+                "helper multi copy",
+                input_bytes=b"TCMIGRATE1\nE\n",
+                timeout=900,
+                raw_remote_status=True,
+                extra_ssh_args=("-o", "ConnectTimeout=20"),
+            )
         self.assertIs(result, process)
         self.assertEqual(run.call_args.kwargs["input_bytes"], b"TCMIGRATE1\nE\n")
-        self.assertEqual(run.call_args.kwargs["timeout"], 21600)
+        self.assertEqual(run.call_args.kwargs["timeout"], 900)
+        self.assertTrue(run.call_args.kwargs["raw_remote_status"])
+        self.assertEqual(run.call_args.kwargs["extra_ssh_args"], ("-o", "ConnectTimeout=20"))
+
+    def test_raw_remote_status_is_single_attempt_and_keeps_native_stderr(self):
+        connection = ssh_transport.SshConnection("device", "pw", "")
+        process = subprocess.CompletedProcess(["ssh"], 4, b'{"version":1}', b"Permission denied in TDB")
+        with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
+            with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", return_value=process) as run:
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                    result = ssh_transport.run_ssh_input(
+                        connection,
+                        "helper multi copy",
+                        raw_remote_status=True,
+                        extra_ssh_args=("-o", "ConnectTimeout=20"),
+                    )
+        self.assertIs(result, process)
+        run.assert_called_once()
+        sleep.assert_not_called()
+        command = run.call_args.args[0]
+        self.assertLess(command.index("ConnectTimeout=20"), command.index("device"))
+
+    def test_raw_remote_status_rejects_sshpass_failures_without_retry(self):
+        connection = ssh_transport.SshConnection("device", "pw", "")
+        cases = (
+            (5, b"Permission denied, please try again.\n", ssh_transport.SshAuthenticationError),
+            (6, b"Host public key is unknown.\n", ssh_transport.SshError),
+            (7, b"IP public key changed.\n", ssh_transport.SshError),
+        )
+        for status, stderr, error in cases:
+            with self.subTest(status=status):
+                process = subprocess.CompletedProcess(["sshpass"], status, b"", stderr)
+                with mock.patch.object(ssh_transport, "find_command", return_value="/usr/bin/sshpass"):
+                    with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", return_value=process) as run:
+                        with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep:
+                            with self.assertRaises(error):
+                                ssh_transport.run_ssh_input(
+                                    connection,
+                                    "helper multi copy",
+                                    raw_remote_status=True,
+                                )
+                run.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_explicit_unlimited_piped_timeout_preserves_ordinary_defaults(self):
+        connection = ssh_transport.SshConnection("device", "", "")
+        process = subprocess.CompletedProcess(["ssh"], 0, b"ok", b"")
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", return_value=process) as run:
+            ssh_transport.run_ssh_input(connection, "helper", timeout=None)
+        self.assertIsNone(run.call_args.kwargs["timeout"])
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", return_value=process) as run:
+            ssh_transport.run_ssh_input(connection, "helper")
+        self.assertEqual(run.call_args.kwargs["timeout"], 120)
 
     def test_failed_remote_helper_cannot_look_like_a_json_success(self):
         process = subprocess.CompletedProcess(["ssh"], 4, b'{"version":1}', b'corrupt TDB')

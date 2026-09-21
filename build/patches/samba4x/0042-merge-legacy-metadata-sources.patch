@@ -1,6 +1,8 @@
+diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_migrate.c
+index 46ca38f..eb69678 100644
 --- a/source3/utils/tc_xattr_hfs_migrate.c
 +++ b/source3/utils/tc_xattr_hfs_migrate.c
-@@ -84,7 +84,9 @@
+@@ -254,7 +254,9 @@ struct tc_counts {
  	uint64_t errors;
  };
  
@@ -10,7 +12,7 @@
  	TALLOC_CTX *mem_ctx;
  	struct db_context *db;
  	const char *tdb_path;
-@@ -104,6 +106,8 @@
+@@ -274,6 +276,8 @@ struct tc_migration {
  	struct tc_counts counts;
  };
  
@@ -19,24 +21,22 @@
  static bool tc_missing_error(int error)
  {
  	return error == ENOATTR || error == ENODATA || error == ENOENT;
-@@ -125,6 +129,11 @@
- 
- 	if (key.dsize != sizeof(migration->tdb_keys[0].data)) {
+@@ -297,6 +301,11 @@ static int tc_collect_tdb_key(struct db_record *record, void *private_data)
  		migration->tdb_collect_error = errno = EINVAL;
-+		return -1;
-+	}
+ 		return -1;
+ 	}
 +	/* Bound deploy coverage memory on the appliance. */
 +	if (migration->multi && migration->num_tdb_keys >= 262144) {
 +		migration->tdb_collect_error = errno = E2BIG;
- 		return -1;
- 	}
- 	keys = talloc_realloc(
-@@ -621,6 +630,16 @@
- 		if (ret != 0 && tc_missing_error(errno)) {
- 			ret = tc_finderinfo_from_netatalk(
- 				migration, frame, id, finderinfo);
-+		}
++		return -1;
 +	}
+ 	keys = talloc_realloc(
+ 		migration->mem_ctx,
+ 		migration->tdb_keys,
+@@ -797,6 +806,16 @@ static int tc_migrate_finderinfo(struct tc_migration *migration,
+ 				migration, frame, id, finderinfo);
+ 		}
+ 	}
 +	/* Some payloads already used Apple's raw FinderInfo name. Do not mark
 +	 * their TDB record verified without copying that value as well. */
 +	if (ret != 0 && tc_missing_error(errno)) {
@@ -45,10 +45,12 @@
 +		if (ret >= 0) {
 +			if (raw.length != AFP_FinderSize) { ret = -1; errno = EINVAL; }
 +			else { memcpy(finderinfo, raw.data, AFP_FinderSize); ret = 0; }
- 		}
- 	}
++		}
++	}
  	if (ret != 0) {
-@@ -1417,23 +1436,25 @@
+ 		if (tc_missing_error(errno)) {
+ 			TALLOC_FREE(frame);
+@@ -1594,23 +1613,25 @@ static int tc_scan_path(struct tc_migration *migration,
  		return 0;
  	}
  	migration->counts.entries++;
@@ -78,7 +80,7 @@
  			fprintf(stderr, "metadata retirement failed path=%s error=%s\n",
  				path, strerror(errno));
  			result = -1;
-@@ -1673,13 +1694,13 @@
+@@ -1852,13 +1873,13 @@ static int tc_quarantine_tdb(struct tc_migration *migration)
  	if (tc_fsync_directory_or_sync(dir_fd) != 0) {
  		fprintf(stderr, "quarantine sync failed directory=%s error=%s; database is at %s but not known to be durable\n",
  			directory, strerror(errno), destination);
@@ -94,31 +96,69 @@
  	migration->counts.tdb_quarantined = 1;
  	TALLOC_FREE(frame);
  	return 0;
-@@ -1754,6 +1775,8 @@
- 	fclose(roots);
+@@ -1934,16 +1955,23 @@ static int tc_scan_roots_file(struct tc_migration *migration,
  	return result;
  }
-+
-+#include "tc_xattr_multi.inc"
  
++#include "tc_xattr_multi.inc"
++
  static void tc_usage(const char *program)
  {
-@@ -1775,6 +1798,12 @@
- 	int result = 0;
- 	int i;
+ 	fprintf(stderr,
+-		"usage: %s copy|cleanup TDB_PATH|- stream|netatalk "
++		"usage: %s [--stall-seconds SECONDS --log PATH] "
++		"multi copy|cleanup|retire\n"
++		"       %s [--stall-seconds SECONDS] inspect|inspect-root PATH\n"
++		"       %s copy|cleanup TDB_PATH|- stream|netatalk "
+ 		"HFS_ROOT [HFS_ROOT ...]\n"
+ 		"       %s copy|cleanup TDB_PATH|- stream|netatalk "
+ 		"--roots-file PATH\n"
+ 		"       %s fingerprint TDB_PATH\n",
+ 		program,
+ 		program,
++		program,
++		program,
+ 		program);
+ }
  
+@@ -1962,9 +1990,13 @@ int main(int argc, char **argv)
+ 		return 2;
+ 	}
+ 	guarded = stall_seconds != 0;
+-	/* Guarded forms are added with the deploy-only multi-source entrypoints.
+-	 * Historical copy/cleanup callers retain their exact unguarded interface. */
+-	if (guarded) {
++	if (guarded &&
++	    !(argc == 3 &&
++	      ((!strcmp(argv[1], "multi") &&
++	        (!strcmp(argv[2], "copy") || !strcmp(argv[2], "cleanup") ||
++	         !strcmp(argv[2], "retire"))) ||
++	       !strcmp(argv[1], "inspect") || !strcmp(argv[1], "inspect-root"))))
++	{
+ 		tc_usage(argv[0]);
+ 		return 2;
+ 	}
+@@ -1981,6 +2013,14 @@ int main(int argc, char **argv)
+ 		goto done;
+ 	}
+ 	migration.mem_ctx = frame;
 +	if (argc == 3 && !strcmp(argv[1], "multi")) {
-+		result = tc_multi_main(argv[2]); TALLOC_FREE(frame); return result;
++		result = tc_multi_main(argv[2]);
++		goto done;
 +	}
 +	if (argc == 3 && (!strcmp(argv[1], "inspect") || !strcmp(argv[1], "inspect-root"))) {
-+		result = tc_multi_inspect(argv[2], !strcmp(argv[1], "inspect-root")); TALLOC_FREE(frame); return result;
++		result = tc_multi_inspect(argv[2], !strcmp(argv[1], "inspect-root"));
++		goto done;
 +	}
  	if (argc == 3 && strcmp(argv[1], "fingerprint") == 0) {
  		result = tc_print_fingerprint(argv[2]);
- 		TALLOC_FREE(frame);
+ 		result = result == 0 ? 0 : 3;
+diff --git a/source3/utils/tc_xattr_multi.inc b/source3/utils/tc_xattr_multi.inc
+new file mode 100644
+index 0000000..f6cbb19
 --- /dev/null
 +++ b/source3/utils/tc_xattr_multi.inc
-@@ -0,0 +1,513 @@
+@@ -0,0 +1,525 @@
 +/* Deploy-only multi-TDB migration. Included by tc_xattr_hfs_migrate.c after
 + * the existing value/AppleDouble converters. Each invocation walks one volume;
 + * Python owns durable per-volume JSON receipts and never needs a roots file.
@@ -172,6 +212,7 @@
 +        if (got < 0) { close(fd); return -1; }
 +        for (i = 0; i < got; i++) { hash ^= buffer[i]; hash *= TC_FNV64_PRIME; }
 +        bytes += got;
++        tc_progress();
 +    }
 +    if (fstat(fd, &after) || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
 +        before.st_size != after.st_size || before.st_mtime != after.st_mtime || bytes != (uint64_t)after.st_size) {
@@ -263,6 +304,7 @@
 +            fprintf(stderr, "source changed db=%zu/%zu path=%s\n", i+1, multi->count, multi->sources[i].path);
 +            errno = ESTALE; return -1;
 +        }
++        tc_progress();
 +    }
 +    return 0;
 +}
@@ -343,6 +385,7 @@
 +            char *logical;
 +            if (length == (size_t)size - offset) { errno = EINVAL; goto done; }
 +            offset += length + 1;
++            tc_progress();
 +            if (tc_stream_extent(name)) continue;
 +            logical = tc_logical_name(frame, name);
 +            if (logical == NULL) goto done;
@@ -376,6 +419,7 @@
 +        }
 +    }
 +    migration->counts = file.counts;
++    tc_progress();
 +    result = 0;
 +done:
 +    TALLOC_FREE(frame);
@@ -474,6 +518,7 @@
 +            }
 +            if (!strcmp(words[0], "E")) {
 +                if (count != 1 || (!multi->retire && !multi->root) || fgetc(input) != EOF || ferror(input)) goto invalid;
++                tc_progress();
 +                return 0;
 +            } else {
 +                struct tc_multi_source *s;
@@ -487,6 +532,7 @@
 +                s->coverage[key-s->scan.tdb_keys] = !strcmp(words[2], "M") ? 1 : 2;
 +            }
 +        } else goto invalid;
++        tc_progress();
 +    }
 +invalid:
 +    fprintf(stderr, "invalid multi migration input line=%zu\n", line_number);
@@ -525,6 +571,7 @@
 +                const uint8_t *key = s->scan.tdb_keys[k].data;
 +                uint64_t dev = (uint64_t)IVAL(key, 0) | ((uint64_t)IVAL(key, 4) << 32);
 +                if (!s->coverage[k] && dev == multi->root_dev) s->coverage[k] = 2;
++                tc_progress();
 +            }
 +        }
 +    }
@@ -565,6 +612,7 @@
 +        for (k = 0; k < s->scan.num_tdb_keys; k++) {
 +            if (!s->coverage[k]) unresolved = true;
 +            if (s->coverage[k] == 2) orphan = true;
++            tc_progress();
 +        }
 +        if (unresolved) {
 +            fprintf(stderr, "retirement deferred db=%u path=%s; unresolved records retain newer sources\n", s->index, s->path);
@@ -575,7 +623,9 @@
 +         * is interrupted. No source row or original mtime is ever rewritten. */
 +        for (k = 0; k < s->alias_count; k++)
 +            if (tc_multi_retire_path(s, s->aliases[k], orphan)) return -1;
++            else tc_progress();
 +        if (tc_multi_retire_path(s, s->path, orphan)) return -1;
++        tc_progress();
 +        s->retired = orphan ? 2 : 1;
 +        fprintf(stderr, "retired db=%u path=%s outcome=%s\n", s->index, s->path, orphan ? "quarantined" : "deleted");
 +    }
@@ -593,8 +643,10 @@
 +            if (!s->coverage[k]) continue;
 +            printf("%s[\"%c\",\"", comma ? "," : "", s->coverage[k] == 1 ? 'M' : 'O');
 +            tc_hex_print(stdout, s->scan.tdb_keys[k].data, 16); printf("\"]"); comma = true;
++            tc_progress();
 +        }
 +        printf("]}");
++        tc_progress();
 +    }
 +    printf("]}\n");
 +}

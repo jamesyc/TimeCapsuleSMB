@@ -16,7 +16,7 @@ import time
 import uuid
 
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn, read_mast_volumes_conn
-from timecapsulesmb.transport.errors import SshCommandTimeout, SshError
+from timecapsulesmb.transport.errors import SshError
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
 
 VERSION = 1
@@ -24,13 +24,24 @@ POLICY = "mtime-nsec-uuid-path/logical-value/v1"
 MAX_SOURCES = 32
 MAX_KEYS = 262144
 MAX_RECEIPT_BYTES = 32 * 1024 * 1024
-PHASE_TIMEOUT = 6 * 60 * 60
+STALL_SECONDS = 300
+NATIVE_TIMEOUT_SECONDS = 900
+DIAGNOSTIC_TIMEOUT_SECONDS = 30
+NATIVE_SSH_ARGS = (
+    "-o", "ConnectTimeout=20",
+    "-o", "ServerAliveInterval=10",
+    "-o", "ServerAliveCountMax=2",
+)
 RECEIPT_SUFFIX = ".migration-progress.json"
 RAM_HELPER = "/mnt/Memory/tc-xattr-hfs-migrate"
 _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 _KEY = re.compile(r"[0-9a-f]{32}\Z")
 _HASH = re.compile(r"[0-9a-f]{16}\Z")
 STAT_FIELDS = ("inode", "size", "mtime", "nsec", "hash")
+
+
+class MigrationStalledError(RuntimeError):
+    """The native migrator made no progress before its inactivity guard fired."""
 
 
 def normalized_uuid(value: str) -> str:
@@ -220,34 +231,60 @@ def inventory_metadata(connection: SshConnection, plan) -> MigrationInventory:
     return MigrationInventory(volumes, candidates, payload_dirs, unavailable, old_config)
 
 
-def _native(connection: SshConnection, arguments: list[str], *, request: bytes = b"", timeout: int = 120, log: str | None = None) -> dict:
-    command = shlex.join([RAM_HELPER, *arguments])
-    if log:
-        # stdin remains a pipe into the owned helper. A shell trap handles SSH
-        # interruption, just as the previous deployment migrator wrapper did.
-        command = f'''exec 3<&0
-child=
-trap 'if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi' 0
-trap 'exit 1' 1 2 15
-{command} <&3 3<&- 2>>{shlex.quote(log)} &
-child=$!
-status=0
-wait "$child" || status=$?
-child=
-printf 'migration_exit_code=%s\\n' "$status" >>{shlex.quote(log)}
-/bin/date -u '+finished_at=%Y-%m-%dT%H:%M:%SZ' >>{shlex.quote(log)}
-exit "$status"'''
+def _saved_log_snapshot(connection: SshConnection, log: str | None) -> str:
+    if log is None:
+        return "unavailable"
     try:
-        result = run_ssh_input(connection, command, input_bytes=request, timeout=timeout)
+        tail = run_ssh(
+            connection,
+            f"/usr/bin/tail -c 8192 {shlex.quote(log)}",
+            check=False,
+            timeout=DIAGNOSTIC_TIMEOUT_SECONDS,
+        ).stdout
+        return tail[-8192:] if tail else "unavailable"
+    except Exception:
+        return "unavailable"
+
+
+def _native(connection: SshConnection, arguments: list[str], *, request: bytes = b"", log: str | None = None) -> dict:
+    command = [RAM_HELPER, "--stall-seconds", str(STALL_SECONDS)]
+    if log is not None:
+        command.extend(["--log", log])
+    command.extend(arguments)
+    try:
+        result = run_ssh_input(
+            connection,
+            "exec " + shlex.join(command),
+            input_bytes=request,
+            timeout=NATIVE_TIMEOUT_SECONDS,
+            raw_remote_status=True,
+            extra_ssh_args=NATIVE_SSH_ARGS,
+        )
     except SshError as exc:
-        try:
-            tail = run_ssh(connection, f"/usr/bin/tail -c 8192 {shlex.quote(log or '/dev/null')}", check=False, timeout=10).stdout
-        except Exception:
-            tail = "unavailable"
-        raise type(exc)(f"{exc}\nSaved migration log snapshot ({log}; may be incomplete):\n{tail[-8192:]}") from exc
+        tail = _saved_log_snapshot(connection, log)
+        raise SshError(
+            f"{exc}\nSaved migration log snapshot ({log}; may be incomplete):\n{tail}"
+        ) from exc
+    if result.returncode == 75:
+        tail = _saved_log_snapshot(connection, log)
+        raise MigrationStalledError(
+            f"Native metadata migration made no progress for {STALL_SECONDS} seconds.\n"
+            f"Saved migration log snapshot ({log}; may be incomplete):\n{tail}"
+        )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        tail = _saved_log_snapshot(connection, log)
+        raise RuntimeError(
+            f"Native metadata migration failed with exit status {result.returncode}"
+            f"{f': {detail}' if detail else ''}.\n"
+            f"Saved migration log snapshot ({log}; may be incomplete):\n{tail}"
+        )
     if len(result.stdout) > MAX_RECEIPT_BYTES:
         raise RuntimeError("Migration coverage exceeds the supported size")
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Native metadata migration returned invalid JSON") from exc
 
 
 def inspect_sources(connection: SshConnection, inventory: MigrationInventory) -> None:
@@ -329,14 +366,51 @@ def save_progress(connection: SshConnection, inventory: MigrationInventory) -> N
             run_ssh_input(connection, f"umask 077; cat > {shlex.quote(path + RECEIPT_SUFFIX)} && /bin/sync", input_bytes=data)
 
 
+def validate_native_report(report: object, inventory: MigrationInventory) -> dict[str, list[list[str]]]:
+    if (
+        not isinstance(report, dict)
+        or type(report.get("version")) is not int
+        or report["version"] != VERSION
+    ):
+        raise RuntimeError("Invalid migration response")
+    entries = report.get("entries")
+    results = report.get("sources")
+    if type(entries) is not int or entries < 0 or not isinstance(results, list) or len(results) != len(inventory.sources):
+        raise RuntimeError("Invalid migration response")
+    coverage = {source_id(source): [] for source in inventory.cohort}
+    active_coverage = {}
+    for index, result in enumerate(results):
+        if not isinstance(result, dict) or result.get("index") != index:
+            raise RuntimeError("Invalid migration source response")
+        total = result.get("total")
+        retired = result.get("retired")
+        records = result.get("coverage")
+        if (
+            type(total) is not int
+            or total < 0
+            or type(retired) is not int
+            or retired not in {0, 1, 2}
+            or not isinstance(records, list)
+            or len(records) > total
+        ):
+            raise RuntimeError("Invalid migration source response")
+        active_coverage[source_id(inventory.sources[index])] = records
+    try:
+        validate_coverage(active_coverage, {source_id(source) for source in inventory.sources})
+        coverage.update(active_coverage)
+        validate_coverage(coverage, {source_id(source) for source in inventory.cohort})
+    except ValueError as exc:
+        raise RuntimeError("Invalid migration source response") from exc
+    return coverage
+
+
 def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory, phase: str) -> str:
     if phase not in {"copy", "cleanup"}:
         raise ValueError("unsupported migration phase")
     if not inventory.sources:
         return f"migration_phase={phase} skipped reason=no_legacy_tdb"
-    deadline = time.monotonic() + PHASE_TIMEOUT
     log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
-    run_ssh(connection, f"mkdir -p {shlex.quote(str(PurePosixPath(log).parent))} && printf '%s\\n' {shlex.quote(f'phase={phase} sources={len(inventory.sources)} timeout_seconds={PHASE_TIMEOUT}')} > {shlex.quote(log)} && /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ' >> {shlex.quote(log)}")
+    run_ssh(connection, f"mkdir -p {shlex.quote(str(PurePosixPath(log).parent))} && printf '%s\\n' {shlex.quote(f'phase={phase} sources={len(inventory.sources)} stall_seconds={STALL_SECONDS} emergency_timeout_seconds={NATIVE_TIMEOUT_SECONDS}')} > {shlex.quote(log)} && /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ' >> {shlex.quote(log)}")
     current = read_mast_volumes_conn(connection)
     available = {normalized_uuid(v.adisk_uuid): v for v in current}
     if len(available) != len(current):
@@ -349,22 +423,9 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
         if volume is None or not ensure_volume_root_mounted_conn(connection, volume.volume_root, volume.device_path, wait_seconds=plan.apple_mount_wait_seconds):
             inventory.output.append(f"phase={phase} uuid={key} unavailable")
             continue
-        remaining = int(deadline - time.monotonic())
-        if remaining <= 0:
-            raise SshCommandTimeout(f"Migration phase {phase} exceeded its six-hour deadline")
-        stat = _native(connection, ["inspect-root", volume.volume_root], timeout=min(120, remaining))
-        remaining = int(deadline - time.monotonic())
-        if remaining <= 0:
-            raise SshCommandTimeout(f"Migration phase {phase} exceeded its six-hour deadline")
-        report = _native(connection, ["multi", phase], request=request_bytes(inventory, (volume, stat)), timeout=remaining, log=log)
-        if report.get("version") != VERSION or len(report.get("sources", [])) != len(inventory.sources):
-            raise RuntimeError("Invalid migration coverage response")
-        coverage = {source_id(s): [] for s in inventory.cohort}
-        for index, result in enumerate(report["sources"]):
-            if result["index"] != index:
-                raise RuntimeError("Invalid migration source index")
-            coverage[source_id(inventory.sources[index])] = result["coverage"]
-        validate_coverage(coverage, {source_id(s) for s in inventory.cohort})
+        stat = _native(connection, ["inspect-root", volume.volume_root], log=log)
+        report = _native(connection, ["multi", phase], request=request_bytes(inventory, (volume, stat)), log=log)
+        coverage = validate_native_report(report, inventory)
         inventory.output.append(f"phase={phase} uuid={key} entries={report['entries']} complete")
         if phase == "copy":
             inventory.copied.add(key)
@@ -372,15 +433,13 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
             inventory.completed[key] = {"coverage": coverage, "completed_at": int(time.time()), "entries": report["entries"]}
             save_progress(connection, inventory)
     if phase == "cleanup":
-        remaining = int(deadline - time.monotonic())
-        if remaining <= 0:
-            raise SshCommandTimeout("Migration cleanup exceeded its six-hour deadline")
         # A known but currently absent DB may still outrank or contribute unique
         # values. Preserve the cohort's active sources until it returns.
         if {source_id(s) for s in inventory.sources} != {source_id(s) for s in inventory.cohort}:
             inventory.output.append("retirement deferred reason=source_volume_absent")
         else:
-            report = _native(connection, ["multi", "retire"], request=request_bytes(inventory), timeout=remaining, log=log)
+            report = _native(connection, ["multi", "retire"], request=request_bytes(inventory), log=log)
+            validate_native_report(report, inventory)
             for index, result in enumerate(report["sources"]):
                 if result["retired"]:
                     source = inventory.sources[index]

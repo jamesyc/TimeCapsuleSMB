@@ -238,12 +238,13 @@ written before their anchor so interrupted exports can be retried. Read failures
 are errors, never evidence of a conflict.
 
 Migration runs only during deploy, never during boot or disk hotplug. Each
-copy/cleanup phase allows up to six hours and keeps its diagnostics in
+native operation stops after five minutes without progress and retains a
+15-minute host-side emergency cap. Diagnostics stay in
 `.samba4/logs/xattr-migration-copy.log` or `xattr-migration-cleanup.log`.
-These logs include UTC start/finish times, the selected metadata representation,
-TDB file details, scanned roots, native error/counter output, and process exit
-status. Deploy errors include elapsed time and the timeout limit; a timeout also
-attempts to retrieve a bounded saved-log snapshot. The macOS diagnostics export
+These logs include the UTC start time, selected metadata representation, TDB
+details, scanned roots, and native progress/error output. Deploy distinguishes
+native inactivity from the emergency timeout and retrieves a bounded saved-log
+snapshot for up to 30 seconds. The macOS diagnostics export
 retains the last deploy's stage, timestamps, operation ID and error code even
 after later operations displace its recent events.
 An unavailable external disk keeps its legacy TDB rows; attach it and run deploy

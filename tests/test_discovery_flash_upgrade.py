@@ -300,14 +300,18 @@ def test_copy_precedes_software_removal_and_cleanup_precedes_new_config(tmp_path
     device.assert_installed()
 
 
-def test_failed_copy_keeps_old_software_and_removes_ram_helper(tmp_path, monkeypatch):
+def test_failed_copy_keeps_old_software_and_defers_ram_helper_removal(tmp_path, monkeypatch):
     device = Device(tmp_path, monkeypatch)
     device.failure = 'copy'
     with pytest.raises(DeployDeviceError): device.install()
     assert device.path('/mnt/Flash/service').read_bytes() == b'old or truncated software'
-    assert not device.path('/mnt/Memory/tc-xattr-hfs-migrate').exists()
+    assert device.path('/mnt/Memory/tc-xattr-hfs-migrate').exists()
     assert not device.path('/mnt/Flash/rc.local').exists()
     device.assert_protected()
+    device.failure = None
+    device.install()
+    assert not device.path('/mnt/Memory/tc-xattr-hfs-migrate').exists()
+    device.assert_installed()
 
 
 def test_known_software_removed_from_every_detected_payload_only(tmp_path, monkeypatch):

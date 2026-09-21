@@ -332,7 +332,7 @@ index 5e4a4e9..0000000
 -
 -#endif
 diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
-index 80c1510..9de211c 100644
+index 80c1510..1e46958 100644
 --- a/source3/modules/vfs_fruit.c
 +++ b/source3/modules/vfs_fruit.c
 @@ -38,7 +38,7 @@
@@ -2161,10 +2161,10 @@ index 390de73..a9a2b22 100644
  
 diff --git a/source3/utils/tc_xattr_hfs_migrate.c b/source3/utils/tc_xattr_hfs_migrate.c
 new file mode 100644
-index 0000000..bd03a21
+index 0000000..113e8b6
 --- /dev/null
 +++ b/source3/utils/tc_xattr_hfs_migrate.c
-@@ -0,0 +1,1724 @@
+@@ -0,0 +1,1939 @@
 +/* One-shot migration of xattr_tdb metadata into AirPort HFS storage.
 + * This is a standalone deployment helper, not part of the resident smbd. */
 +#include "includes.h"
@@ -2173,6 +2173,7 @@ index 0000000..bd03a21
 +#include "source3/lib/xattr_tdb.h"
 +#include "source3/include/MacExtensions.h"
 +#include "source3/modules/airport_native_xattr.h"
++#include <sys/time.h>
 +
 +#define TC_HFS_XATTR_SIZE 3802
 +#define TC_HFS_STREAM_XATTRS 35
@@ -2199,6 +2200,182 @@ index 0000000..bd03a21
 +#define TC_COPY_SIZE (64 * 1024)
 +#define TC_RESOURCE_MARKER_XATTR "user.TimeCapsuleSMB.ResourceMigration"
 +#define TC_RESOURCE_MARKER_MAGIC "TCV4RSRC"
++#define TC_STALL_EXIT 75
++
++/* The appliance has no pthread support. A process-local real-time guard keeps
++ * every blocking filesystem call covered; successful work rearms its one-shot
++ * timer, while deploy retains a separate host-side emergency limit. */
++struct tc_inactivity_guard {
++	bool enabled;
++	unsigned seconds;
++	struct sigaction previous_action;
++	int previous_stderr;
++};
++
++static struct tc_inactivity_guard tc_guard = { .previous_stderr = -1 };
++#ifndef TC_MIGRATION_PROGRESS_HOOK
++#define TC_MIGRATION_PROGRESS_HOOK() do { } while (0)
++#endif
++
++static void tc_stall_handler(int signal_number)
++{
++	(void)signal_number;
++	_exit(TC_STALL_EXIT);
++}
++
++static int tc_guard_arm(void)
++{
++	struct itimerval timer = {0};
++
++	timer.it_value.tv_sec = tc_guard.seconds;
++	return setitimer(ITIMER_REAL, &timer, NULL);
++}
++
++static void tc_progress(void)
++{
++	int error;
++
++	TC_MIGRATION_PROGRESS_HOOK();
++	if (!tc_guard.enabled) {
++		return;
++	}
++	error = errno;
++	if (tc_guard_arm() != 0) {
++		_exit(74);
++	}
++	errno = error;
++}
++
++static int tc_guard_start(unsigned seconds)
++{
++	struct sigaction action = {0};
++
++	action.sa_handler = tc_stall_handler;
++	if (sigemptyset(&action.sa_mask) != 0 ||
++	    sigaction(SIGALRM, &action, &tc_guard.previous_action) != 0)
++	{
++		return -1;
++	}
++	tc_guard.enabled = true;
++	tc_guard.seconds = seconds;
++	if (tc_guard_arm() != 0) {
++		int error = errno;
++		tc_guard.enabled = false;
++		sigaction(SIGALRM, &tc_guard.previous_action, NULL);
++		errno = error;
++		return -1;
++	}
++	return 0;
++}
++
++static int tc_guard_finish(int result)
++{
++	struct itimerval disabled = {0};
++	int finish_error = 0;
++
++	if (!tc_guard.enabled) {
++		return result;
++	}
++	if (ferror(stdout) || fflush(stdout) != 0) {
++		finish_error = errno ? errno : EIO;
++	}
++	if (fflush(stderr) != 0 && finish_error == 0) {
++		finish_error = errno ? errno : EIO;
++	}
++	if (setitimer(ITIMER_REAL, &disabled, NULL) != 0 && finish_error == 0) {
++		finish_error = errno;
++	}
++	if (sigaction(SIGALRM, &tc_guard.previous_action, NULL) != 0 && finish_error == 0) {
++		finish_error = errno;
++	}
++	tc_guard.enabled = false;
++	if (tc_guard.previous_stderr != -1) {
++		if (dup2(tc_guard.previous_stderr, STDERR_FILENO) == -1 && finish_error == 0) {
++			finish_error = errno;
++		}
++		close(tc_guard.previous_stderr);
++		tc_guard.previous_stderr = -1;
++	}
++	if (finish_error != 0 && result == 0) {
++		errno = finish_error;
++		return 4;
++	}
++	return result;
++}
++
++static int tc_guard_log(const char *path)
++{
++	int log_fd;
++
++	tc_guard.previous_stderr = dup(STDERR_FILENO);
++	if (tc_guard.previous_stderr == -1) {
++		return -1;
++	}
++	log_fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
++	if (log_fd == -1 || dup2(log_fd, STDERR_FILENO) == -1) {
++		int error = errno;
++		if (log_fd != -1) {
++			close(log_fd);
++		}
++		close(tc_guard.previous_stderr);
++		tc_guard.previous_stderr = -1;
++		errno = error;
++		return -1;
++	}
++	close(log_fd);
++	return 0;
++}
++
++static int tc_parse_guard_options(int *argc, char ***argv,
++				  unsigned *stall_seconds, const char **log_path)
++{
++	char **values = *argv;
++	int count = *argc;
++	int source = 1, target = 1;
++	bool have_stall = false, have_log = false;
++
++	*stall_seconds = 0;
++	*log_path = NULL;
++	while (source < count) {
++		if (strcmp(values[source], "--stall-seconds") == 0) {
++			char *end;
++			unsigned long parsed;
++			if (have_stall || source + 1 >= count) {
++				return -1;
++			}
++			errno = 0;
++			parsed = strtoul(values[source + 1], &end, 10);
++			if (errno != 0 || values[source + 1][0] == '\0' || *end != '\0' ||
++			    parsed == 0 || parsed > INT_MAX)
++			{
++				return -1;
++			}
++			*stall_seconds = (unsigned)parsed;
++			have_stall = true;
++			source += 2;
++			continue;
++		}
++		if (strcmp(values[source], "--log") == 0) {
++			if (have_log || source + 1 >= count || values[source + 1][0] == '\0') {
++				return -1;
++			}
++			*log_path = values[source + 1];
++			have_log = true;
++			source += 2;
++			continue;
++		}
++		break;
++	}
++	if (have_log && !have_stall) {
++		return -1;
++	}
++	while (source < count) {
++		values[target++] = values[source++];
++	}
++	values[target] = NULL;
++	*argc = target;
++	return 0;
++}
 +
 +enum tc_phase {
 +	TC_PHASE_COPY,
@@ -2293,6 +2470,7 @@ index 0000000..bd03a21
 +	keys[migration->num_tdb_keys].matched = false;
 +	keys[migration->num_tdb_keys].retired = false;
 +	migration->num_tdb_keys++;
++	tc_progress();
 +	return 0;
 +}
 +
@@ -2397,12 +2575,14 @@ index 0000000..bd03a21
 +		    (size == 0 || memcmp(existing.data, value, size) == 0))
 +		{
 +			migration->counts.native_kept++;
++			tc_progress();
 +			TALLOC_FREE(frame);
 +			return 0;
 +		}
 +		if (keep_existing) {
 +			migration->counts.native_kept++;
 +			migration->counts.conflicts++;
++			tc_progress();
 +			TALLOC_FREE(frame);
 +			return 0;
 +		}
@@ -2439,6 +2619,7 @@ index 0000000..bd03a21
 +		return -1;
 +	}
 +	migration->counts.xattrs_written++;
++	tc_progress();
 +	TALLOC_FREE(frame);
 +	return 0;
 +}
@@ -2993,6 +3174,7 @@ index 0000000..bd03a21
 +			return -1;
 +		}
 +		done += ret;
++		tc_progress();
 +	}
 +	return 0;
 +}
@@ -3300,6 +3482,7 @@ index 0000000..bd03a21
 +			different = true;
 +		}
 +		offset += MAX(source_size, native_size);
++		tc_progress();
 +	}
 +	result = different ? 1 : 0;
 +out:
@@ -3451,6 +3634,7 @@ index 0000000..bd03a21
 +				goto out;
 +			}
 +			copied += chunk;
++			tc_progress();
 +	}
 +	if (ftruncate(resource_fd, resource->length) != 0 ||
 +	    fsync(resource_fd) != 0 ||
@@ -3687,6 +3871,7 @@ index 0000000..bd03a21
 +			}
 +			break;
 +		}
++		tc_progress();
 +		if (ISDOT(entry->d_name) || ISDOTDOT(entry->d_name) ||
 +		    strcmp(entry->d_name, ".samba4") == 0)
 +		{
@@ -3732,6 +3917,7 @@ index 0000000..bd03a21
 +			if (child == NULL || tc_scan_path(migration, child, !sidecar_name) != 0) {
 +				result = -1;
 +			}
++			tc_progress();
 +			TALLOC_FREE(frame);
 +		}
 +	}
@@ -3798,18 +3984,45 @@ index 0000000..bd03a21
 +
 +int main(int argc, char **argv)
 +{
-+	TALLOC_CTX *frame = talloc_stackframe();
-+	struct tc_migration migration = { .mem_ctx = frame };
++	TALLOC_CTX *frame = NULL;
++	struct tc_migration migration = {0};
++	unsigned stall_seconds;
++	const char *log_path;
++	bool guarded;
 +	int result = 0;
 +	int i;
 +
++	if (tc_parse_guard_options(&argc, &argv, &stall_seconds, &log_path) != 0) {
++		tc_usage(argv[0]);
++		return 2;
++	}
++	guarded = stall_seconds != 0;
++	/* Guarded forms are added with the deploy-only multi-source entrypoints.
++	 * Historical copy/cleanup callers retain their exact unguarded interface. */
++	if (guarded) {
++		tc_usage(argv[0]);
++		return 2;
++	}
++	if (guarded && tc_guard_start(stall_seconds) != 0) {
++		return 3;
++	}
++	if (log_path != NULL && tc_guard_log(log_path) != 0) {
++		result = 3;
++		goto done;
++	}
++	frame = talloc_stackframe();
++	if (frame == NULL) {
++		result = 3;
++		goto done;
++	}
++	migration.mem_ctx = frame;
 +	if (argc < 5 ||
 +	    (strcmp(argv[1], "copy") != 0 && strcmp(argv[1], "cleanup") != 0) ||
 +	    (strcmp(argv[3], "stream") != 0 && strcmp(argv[3], "netatalk") != 0))
 +	{
 +		tc_usage(argv[0]);
-+		TALLOC_FREE(frame);
-+		return 2;
++		result = 2;
++		goto done;
 +	}
 +	migration.phase = strcmp(argv[1], "copy") == 0 ?
 +		TC_PHASE_COPY : TC_PHASE_CLEANUP;
@@ -3823,12 +4036,12 @@ index 0000000..bd03a21
 +		if (migration.db == NULL) {
 +			fprintf(stderr, "unable to open TDB %s: %s\n",
 +				migration.tdb_path, strerror(errno));
-+			TALLOC_FREE(frame);
-+			return 3;
++			result = 3;
++			goto done;
 +		}
 +		if (tc_collect_tdb_keys(&migration) != 0) {
-+			TALLOC_FREE(frame);
-+			return 3;
++			result = 3;
++			goto done;
 +		}
 +	}
 +	if (strcmp(argv[4], "--roots-file") == 0) {
@@ -3886,8 +4099,10 @@ index 0000000..bd03a21
 +	       migration.counts.tdb_retired,
 +	       migration.counts.tdb_deleted,
 +	       migration.counts.errors);
++	result = result == 0 ? 0 : 4;
++done:
 +	TALLOC_FREE(frame);
-+	return result == 0 ? 0 : 4;
++	return tc_guard_finish(result);
 +}
 diff --git a/source3/utils/wscript_build b/source3/utils/wscript_build
 index 0903c3f..4fc8719 100644

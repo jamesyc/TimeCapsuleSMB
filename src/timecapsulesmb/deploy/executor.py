@@ -25,11 +25,6 @@ FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
 # Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
 # payload after a slow upload. Keep this bounded, but long enough for real disks.
 FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300
-# Old disks may contain millions of files. Migration runs only during deploy;
-# allow a long bounded scan without imposing its timeout on ordinary SSH calls.
-XATTR_HFS_MIGRATION_TIMEOUT_SECONDS = 6 * 60 * 60
-
-
 @dataclass(frozen=True)
 class XattrMigrationResult:
     output: str

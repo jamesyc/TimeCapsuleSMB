@@ -12,7 +12,14 @@ from timecapsulesmb.core.config import DEFAULTS, MANAGED_PAYLOAD_DIR_NAME, AppCo
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.smb_policy import validate_smb_protocol_options
-from timecapsulesmb.deploy.migration import inventory_metadata, inspect_sources, RAM_HELPER
+from timecapsulesmb.deploy.migration import (
+    MigrationStalledError,
+    NATIVE_TIMEOUT_SECONDS,
+    RAM_HELPER,
+    STALL_SECONDS,
+    inspect_sources,
+    inventory_metadata,
+)
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.boot_assets import boot_asset_path
@@ -21,7 +28,6 @@ from timecapsulesmb.deploy.dry_run import (
     format_deployment_plan as _format_deployment_plan,
 )
 from timecapsulesmb.deploy.executor import (
-    XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
     XattrMigrationResult,
     flush_remote_filesystem_writes,
     migrate_xattr_tdb_to_hfs,
@@ -123,6 +129,10 @@ PAYLOAD_UPLOAD_TIMEOUT_MESSAGE = (
 )
 XATTR_MIGRATION_TIMEOUT_MESSAGE = (
     "Timed out migrating Samba metadata into native HFS attributes. "
+    "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
+)
+XATTR_MIGRATION_STALLED_MESSAGE = (
+    "Samba metadata migration stopped after making no progress. "
     "Verified exports may already be committed; unexported metadata is retained. Rerun deploy after checking the disk."
 )
 MANAGER_STOP_TIMEOUT_SENTINEL = "process manager did not stop"
@@ -801,6 +811,46 @@ def upload_and_verify_deployment_payload(
     callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
                     legacy_unavailable_roots=inventory.unavailable)
 
+    def raise_migration_failure(phase: str, started: float, log: str | None, exc: Exception) -> None:
+        elapsed = round(time.monotonic() - started, 3)
+        stalled = isinstance(exc, MigrationStalledError)
+        timed_out = is_ssh_timeout_error(exc)
+        diagnostic = (
+            f"phase={phase} elapsed_seconds={elapsed} "
+            f"stall_seconds={STALL_SECONDS} emergency_timeout_seconds={NATIVE_TIMEOUT_SECONDS} "
+            f"stalled={str(stalled).lower()} timed_out={str(timed_out).lower()} "
+            f"sources={len(inventory.sources)}\n"
+            f"Migration log: {log or 'unavailable'}"
+        )
+        callbacks.measurement(
+            "xattr_migration",
+            phase=phase,
+            duration_sec=elapsed,
+            stall_sec=STALL_SECONDS,
+            timeout_sec=NATIVE_TIMEOUT_SECONDS,
+            stalled=stalled,
+            timed_out=timed_out,
+            log_path=log,
+            result="failure",
+            error_type=type(exc).__name__,
+        )
+        callbacks.debug(**{f"xattr_migration_{phase}_failure": diagnostic,
+                           f"xattr_migration_{phase}_error": str(exc)})
+        if stalled:
+            raise DeployDeviceError(
+                f"{XATTR_MIGRATION_STALLED_MESSAGE}\n{diagnostic}\n{exc}",
+                code="xattr_migration_stalled",
+            ) from exc
+        if timed_out:
+            raise DeployDeviceError(
+                f"{XATTR_MIGRATION_TIMEOUT_MESSAGE}\n{diagnostic}\n{exc}",
+                code="xattr_migration_timeout",
+            ) from exc
+        raise DeployDeviceError(
+            f"Native HFS metadata migration ({phase}) failed.\n{diagnostic}\n{exc}",
+            code="xattr_migration_failed",
+        ) from exc
+
     def run_xattr_migration_phase(phase: str) -> None:
         callbacks.stage(f"migrate_xattrs_{phase}")
         callbacks.message(
@@ -818,40 +868,13 @@ def upload_and_verify_deployment_payload(
                 inventory=inventory,
             )
         except Exception as exc:
-            elapsed = round(time.monotonic() - migration_started, 3)
-            timed_out = is_ssh_timeout_error(exc)
-            diagnostic = (
-                f"phase={phase} elapsed_seconds={elapsed} "
-                f"timeout_seconds={XATTR_HFS_MIGRATION_TIMEOUT_SECONDS} "
-                f"timed_out={str(timed_out).lower()} sources={len(inventory.sources)}\n"
-                f"Migration log: {migration_log}"
-            )
-            callbacks.measurement(
-                "xattr_migration",
-                phase=phase,
-                duration_sec=elapsed,
-                timeout_sec=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
-                timed_out=timed_out,
-                log_path=migration_log,
-                result="failure",
-                error_type=type(exc).__name__,
-            )
-            callbacks.debug(**{f"xattr_migration_{phase}_failure": diagnostic,
-                               f"xattr_migration_{phase}_error": str(exc)})
-            if timed_out:
-                raise DeployDeviceError(
-                    f"{XATTR_MIGRATION_TIMEOUT_MESSAGE}\n{diagnostic}\n{exc}",
-                    code="xattr_migration_timeout",
-                ) from exc
-            raise DeployDeviceError(
-                f"Native HFS metadata migration ({phase}) failed.\n{diagnostic}\n{exc}",
-                code="xattr_migration_failed",
-            ) from exc
+            raise_migration_failure(phase, migration_started, migration_log, exc)
         callbacks.measurement(
             "xattr_migration",
             phase=phase,
             duration_sec=round(time.monotonic() - migration_started, 3),
-            timeout_sec=XATTR_HFS_MIGRATION_TIMEOUT_SECONDS,
+            stall_sec=STALL_SECONDS,
+            timeout_sec=NATIVE_TIMEOUT_SECONDS,
             log_path=migration_log,
             result="success",
         )
@@ -899,6 +922,7 @@ def upload_and_verify_deployment_payload(
         ata_standby=runtime_config.ata_standby,
     )
     rsync_config_text = render_rsync_config_func(payload_home)
+    migration_helper_cleanup_safe = False
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
         upload_sources = _deployment_upload_sources(
             plan,
@@ -992,13 +1016,20 @@ def upload_and_verify_deployment_payload(
                 raise
             record_uploaded(migration_transfer)
             def remove_migration_helper() -> None:
+                if not migration_helper_cleanup_safe:
+                    return
                 try:
                     run_remote_actions_func(connection, [RemovePathAction(RAM_HELPER)])
                 except Exception as exc:
                     callbacks.debug(migration_helper_cleanup_error=str(exc))
             boot_assets.callback(remove_migration_helper)
             run_remote_actions_func(connection, [InstallPermissionsAction((RemotePermission(RAM_HELPER, "755"),))])
-            dependencies.inspect_migration_sources(connection, inventory)
+            callbacks.stage("inspect_migration_sources")
+            inspection_started = time.monotonic()
+            try:
+                dependencies.inspect_migration_sources(connection, inventory)
+            except Exception as exc:
+                raise_migration_failure("inspect", inspection_started, None, exc)
             run_xattr_migration_phase("copy")
         else:
             callbacks.debug(xattr_migration="skipped reason=no_legacy_tdb")
@@ -1137,6 +1168,7 @@ def upload_and_verify_deployment_payload(
         ])
         callbacks.stage("flush_boot_hook")
         flush_remote_writes(connection)
+        migration_helper_cleanup_safe = True
 
 
 def _run_activation_actions_and_verify(

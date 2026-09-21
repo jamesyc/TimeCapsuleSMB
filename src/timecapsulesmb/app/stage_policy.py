@@ -97,6 +97,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "flush_boot_hook"): StagePolicy(REMOTE_WRITE, False, "Flush the completed installation before reboot."),
     ("deploy", "verify_payload_upload_after_sync"): StagePolicy(REMOTE_READ, True, "Verify uploaded payload files after sync."),
     ("deploy", "migrate_xattrs_copy"): StagePolicy(REMOTE_WRITE, False, "Copy and verify legacy Samba metadata in native HFS storage."),
+    ("deploy", "inspect_migration_sources"): StagePolicy(REMOTE_WRITE, False, "Fingerprint legacy Samba metadata before migration."),
     ("deploy", "migrate_xattrs_cleanup"): StagePolicy(DESTRUCTIVE, False, "Reverify native HFS metadata and remove migrated legacy storage."),
     ("deploy", "probe_runtime"): StagePolicy(REMOTE_READ, True, "Checking whether the device will start TimeCapsuleSMB automatically."),
     ("deploy", "post_reboot_boot_settle"): StagePolicy(REMOTE_READ, True, "Wait briefly after SSH returns before probing boot-time services."),

@@ -315,14 +315,34 @@ path and error.
 - Full local pytest passed 2,113 tests and 217 subtests. After correcting saved
   metadata-option selection, 632 deploy/CLI/API tests and 64 subtests passed.
 - Migration runs only during deploy. Boot/hotplug migration and checkpoint
-  writers were removed. Each deploy phase allows six hours and retains its
-  diagnostic output under the payload's logs directory.
+  writers were removed. At the time of this validation each deploy phase allowed
+  six hours and retained its diagnostic output under the payload's logs directory.
 
 | Lane | Stripped migrator bytes |
 | --- | ---: |
 | NetBSD 6 (NetBSD 7 SDK) | 2,128,772 |
 | NetBSD 4 LE | 2,135,460 |
 | NetBSD 4 BE | 2,135,012 |
+
+### 2026-09-21 migration inactivity guard
+
+- The complete patch series applied to a clean Samba 4.25.0rc2 tree.
+- NetBSD 6 built the production migrator and regression fixture incrementally;
+  the isolated `guard` case and the combined `all` fixture passed on-device.
+- NetBSD 4 LE built both targets and passed the `guard` case on-device. NetBSD 4
+  BE built and linked both static targets in the existing configured lane.
+- A direct NetBSD 6 invocation returned valid guarded inspection JSON, and the
+  firmware SSH path preserved remote exit status 75.
+- After the review fixes, the NetBSD 6 `multi` fixture passed on-device; the
+  NetBSD 4 LE and BE migrators were rebuilt compile-only as requested.
+- The focused build/artifact/migration suite passed 267 tests and 95 subtests;
+  `make test-parallel` passed all 2,227 local tests.
+
+| Lane | Stripped guarded migrator bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 2,158,388 |
+| NetBSD 4 LE | 2,164,532 |
+| NetBSD 4 BE | 2,164,120 |
 
 ## Appliance installer validation (2026-09-19)
 

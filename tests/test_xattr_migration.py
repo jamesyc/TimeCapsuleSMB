@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 from types import SimpleNamespace
 
@@ -16,7 +15,6 @@ import pytest
 
 from timecapsulesmb.deploy import migration as m
 from timecapsulesmb.device.storage import MaStVolume
-from timecapsulesmb.transport.errors import SshCommandTimeout
 from timecapsulesmb.transport.ssh import SshConnection
 
 UUID_A = "11111111-1111-1111-1111-111111111111"
@@ -74,7 +72,7 @@ def device(tmp_path, monkeypatch):
             raise RuntimeError("injected migration failure")
         if phase == "retire":
             state.retired = True
-            return {"version": 1, "entries": 0, "sources": [{"index": i, "coverage": [], "retired": 0} for i in range(len(sources))]}
+            return {"version": 1, "entries": 0, "sources": [{"index": i, "total": 2, "coverage": [], "retired": 0} for i in range(len(sources))]}
         key = roots[0][1]
         if phase == "copy":
             state.native[key] = "migrated"
@@ -222,24 +220,60 @@ def test_legacy_config_is_only_parsed_as_data(text, expected):
     assert m.legacy_mode(text) == expected
 
 
-def test_remaining_deadline_is_shared_across_volumes(device, monkeypatch):
-    inv = device.inventory(); device.inspect(inv)
-    ticks = iter([100, 105, 110, 120, 130])
-    monkeypatch.setattr(m.time, "monotonic", lambda: next(ticks))
-    device.phase(inv, "copy")
-    assert [kwargs["timeout"] for _, _, kwargs in device.scan_calls()] == [21590, 21570]
-
-
-def test_native_command_keeps_protocol_stdout_separate_and_reports_timeout(monkeypatch):
-    native = m._native
+def test_native_command_uses_direct_guarded_single_attempt(monkeypatch):
     captured = []
-    def fail(_conn, command, **kwargs):
-        captured.append((command, kwargs)); raise SshCommandTimeout("six hour deadline")
-    monkeypatch.setattr(m, "run_ssh_input", fail)
-    monkeypatch.setattr(m, "run_ssh", lambda *a, **k: SimpleNamespace(stdout="last progress entries=10000"))
-    with pytest.raises(SshCommandTimeout, match="last progress entries=10000"):
-        native(SshConnection("test", "", ""), ["multi", "copy"], request=b"request", timeout=100, log="/disk/log")
-    assert captured[0][1] == {"input_bytes": b"request", "timeout": 100}
+    def run(_conn, command, **kwargs):
+        captured.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b'{"version":1}', b"")
+    monkeypatch.setattr(m, "run_ssh_input", run)
+    assert m._native(
+        SshConnection("test", "", ""),
+        ["multi", "copy"],
+        request=b"request",
+        log="/disk/log",
+    ) == {"version": 1}
+    assert captured == [(
+        "exec /mnt/Memory/tc-xattr-hfs-migrate --stall-seconds 300 --log /disk/log multi copy",
+        {
+            "input_bytes": b"request",
+            "timeout": 900,
+            "raw_remote_status": True,
+            "extra_ssh_args": m.NATIVE_SSH_ARGS,
+        },
+    )]
+
+
+def test_native_stall_reports_saved_log_with_bounded_diagnostic_read(monkeypatch):
+    monkeypatch.setattr(
+        m,
+        "run_ssh_input",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 75, b"", b""),
+    )
+    reads = []
+    def read_log(*_args, **kwargs):
+        reads.append(kwargs)
+        return SimpleNamespace(stdout="last progress entries=10000")
+    monkeypatch.setattr(m, "run_ssh", read_log)
+    with pytest.raises(m.MigrationStalledError, match="last progress entries=10000"):
+        m._native(SshConnection("test", "", ""), ["multi", "copy"], log="/disk/log")
+    assert reads == [{"check": False, "timeout": 30}]
+
+
+@pytest.mark.parametrize(
+    "status, stdout, message",
+    [
+        (4, b'{"version":1}', "exit status 4"),
+        (0, b"not json", "invalid JSON"),
+    ],
+)
+def test_native_requires_zero_status_and_valid_json(monkeypatch, status, stdout, message):
+    monkeypatch.setattr(
+        m,
+        "run_ssh_input",
+        lambda *_a, **_k: subprocess.CompletedProcess([], status, stdout, b"native diagnostic"),
+    )
+    with pytest.raises(RuntimeError, match=message):
+        m._native(SshConnection("test", "", ""), ["inspect", "/disk/tdb"])
 
 
 def test_rejects_unknown_duplicate_and_excess_key_coverage(device):
@@ -251,6 +285,25 @@ def test_rejects_unknown_duplicate_and_excess_key_coverage(device):
     assert m.decode_receipt(json.dumps(bad).encode()) is None
     bad = copy.deepcopy(doc); bad["completed"][UUID_A]["coverage"]["unknown"] = []
     assert m.decode_receipt(json.dumps(bad).encode()) is None
+
+
+@pytest.mark.parametrize("change", ["version", "entries", "count", "index", "total", "retired", "coverage"])
+def test_native_report_validation_rejects_status_and_schema_mismatches(device, change):
+    inv = device.inventory(); device.inspect(inv)
+    report = {
+        "version": 1,
+        "entries": 1,
+        "sources": [{"index": 0, "total": 1, "retired": 0, "coverage": [["M", KEY_A]]}],
+    }
+    if change == "version": report["version"] = True
+    elif change == "entries": report["entries"] = True
+    elif change == "count": report["sources"] = []
+    elif change == "index": report["sources"][0]["index"] = 1
+    elif change == "total": report["sources"][0]["total"] = 0
+    elif change == "retired": report["sources"][0]["retired"] = 3
+    else: report["sources"][0]["coverage"] = [["M", "bad"]]
+    with pytest.raises(RuntimeError, match="Invalid migration"):
+        m.validate_native_report(report, inv)
 
 
 def test_aliases_are_deduplicated_and_each_receipt_keeps_the_original_decoder(device):
@@ -265,43 +318,3 @@ def test_aliases_are_deduplicated_and_each_receipt_keeps_the_original_decoder(de
     for path in [other, device.source]:
         doc = m.decode_receipt(Path(str(path) + m.RECEIPT_SUFFIX).read_bytes())
         assert doc is not None and doc["sources"][0]["mode"] == "netatalk" and not doc["completed"]
-
-
-def test_native_shell_wrapper_passes_stdin_without_mixing_diagnostics(tmp_path, monkeypatch):
-    helper = tmp_path / "helper"
-    helper.write_text('#!/bin/sh\nread first\nprintf "diagnostic from %s\\n" "$first" >&2\nprintf \'{"version":1,"echo":"%s"}\\n\' "$first"\n')
-    helper.chmod(0o755)
-    log = tmp_path / "migration.log"
-    monkeypatch.setattr(m, "RAM_HELPER", str(helper))
-    def local(_conn, command, *, input_bytes, **_kwargs):
-        return subprocess.run(command, shell=True, executable="/bin/sh", input=input_bytes, capture_output=True, check=True)
-    monkeypatch.setattr(m, "run_ssh_input", local)
-    assert m._native(SshConnection("test", "", ""), ["multi", "copy"], request=b"TCMIGRATE1\n", log=str(log)) == {"version": 1, "echo": "TCMIGRATE1"}
-    assert "diagnostic from TCMIGRATE1" in log.read_text()
-    assert "migration_exit_code=0" in log.read_text()
-
-
-def test_native_shell_interruption_stops_owned_helper(tmp_path, monkeypatch):
-    import time
-    from concurrent.futures import ThreadPoolExecutor
-    helper = tmp_path / "helper"
-    pid = tmp_path / "test-child.pid"
-    helper.write_text(f'#!/bin/sh\necho $$ > {shlex.quote(str(pid))}\nexec sleep 30\n')
-    helper.chmod(0o755)
-    monkeypatch.setattr(m, "RAM_HELPER", str(helper))
-    running = []
-    def local(_conn, command, *, input_bytes, **_kwargs):
-        child = subprocess.Popen(command, shell=True, executable="/bin/sh", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        running.append(child)
-        stdout, stderr = child.communicate(input_bytes)
-        if child.returncode: raise RuntimeError("interrupted")
-        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
-    monkeypatch.setattr(m, "run_ssh_input", local)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        result = pool.submit(m._native, SshConnection("test", "", ""), ["multi", "copy"], log=str(tmp_path / "log"))
-        until = time.monotonic() + 5
-        while not pid.exists() and time.monotonic() < until: time.sleep(0.01)
-        assert pid.exists()
-        running[0].terminate()
-        with pytest.raises(RuntimeError, match="interrupted"): result.result(timeout=5)
-    with pytest.raises(ProcessLookupError): os.kill(int(pid.read_text()), 0)

@@ -41,7 +41,7 @@ NATIVE_METADATA_CASES = (
     "finderinfo", "finderinfo_views", "resource_backend", "resource_views", "stream_boundary",
 )
 XATTR_MIGRATE_CASES = (
-    "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
+    "guard", "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
     "orphans", "multi",
 )
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks")

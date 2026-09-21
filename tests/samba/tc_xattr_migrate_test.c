@@ -168,6 +168,12 @@ static bool directory_read_error;
 static bool commit_error;
 static int fsync_error;              /* errno the fsync hook fails with (0 = real fsync) */
 static int sync_calls;
+static unsigned progress_resets;
+
+static void migration_test_progress(void)
+{
+	progress_resets++;
+}
 
 static int migration_test_fsync(int fd)
 {
@@ -224,6 +230,7 @@ static void *migration_test_talloc_realloc_array(
 #define fsync migration_test_fsync
 #define sync migration_test_sync
 #define dbwrap_transaction_commit migration_test_commit
+#define TC_MIGRATION_PROGRESS_HOOK() migration_test_progress()
 #undef talloc_realloc
 #define talloc_realloc(ctx, ptr, type, count) \
 	(type *)migration_test_talloc_realloc_array( \
@@ -237,6 +244,7 @@ static void *migration_test_talloc_realloc_array(
 #undef fsync
 #undef sync
 #undef dbwrap_transaction_commit
+#undef TC_MIGRATION_PROGRESS_HOOK
 
 static int write_all(int fd, const void *value, size_t size)
 {
@@ -252,6 +260,82 @@ static int write_all(int fd, const void *value, size_t size)
 		done += ret;
 	}
 	return 0;
+}
+
+static int child_exit_status(pid_t child)
+{
+	int status;
+
+	CHECK(waitpid(child, &status, 0) == child);
+	CHECK(WIFEXITED(status));
+	return WEXITSTATUS(status);
+}
+
+static void test_guard(void)
+{
+	char root[] = "/tmp/tc-migrate-guard.XXXXXX";
+	char log[PATH_MAX];
+	char fifo[PATH_MAX];
+	char capture[] = "/tmp/tc-migrate-guard-output.XXXXXX";
+	struct itimerval timer;
+	pid_t child;
+	int capture_fd;
+	int saved_stdout;
+	char *guarded[] = {"migrate", "--stall-seconds", "1", "--log", log,
+		"inspect-root", root, NULL};
+	char *invalid_zero[] = {"migrate", "--stall-seconds", "0", "inspect-root", root, NULL};
+	char *invalid_duplicate[] = {"migrate", "--stall-seconds", "1",
+		"--stall-seconds", "2", "inspect-root", root, NULL};
+	char *invalid_log[] = {"migrate", "--log", log, "inspect-root", root, NULL};
+
+	CHECK(mkdtemp(root) != NULL);
+	snprintf(log, sizeof(log), "%s/log", root);
+	snprintf(fifo, sizeof(fifo), "%s/fifo", root);
+	CHECK(tc_xattr_hfs_migrate_program_main(5, invalid_zero) == 2);
+	CHECK(tc_xattr_hfs_migrate_program_main(7, invalid_duplicate) == 2);
+	CHECK(tc_xattr_hfs_migrate_program_main(5, invalid_log) == 2);
+
+	CHECK(mkfifo(fifo, 0600) == 0);
+	child = fork(); CHECK(child >= 0);
+	if (child == 0) {
+		char *stalled[] = {"migrate", "--stall-seconds", "1", "--log", fifo,
+			"inspect-root", root, NULL};
+		_exit(tc_xattr_hfs_migrate_program_main(7, stalled));
+	}
+	CHECK(child_exit_status(child) == TC_STALL_EXIT);
+	unlink(fifo);
+
+	child = fork(); CHECK(child >= 0);
+	if (child == 0) {
+		int i;
+		CHECK(tc_guard_start(1) == 0);
+		for (i = 0; i < 3; i++) {
+			usleep(600000);
+			tc_progress();
+		}
+		_exit(tc_guard_finish(0));
+	}
+	CHECK(child_exit_status(child) == 0);
+
+	capture_fd = mkstemp(capture);
+	saved_stdout = dup(STDOUT_FILENO);
+	CHECK(capture_fd >= 0 && saved_stdout >= 0);
+	CHECK(dup2(capture_fd, STDOUT_FILENO) >= 0);
+	CHECK(tc_xattr_hfs_migrate_program_main(7, guarded) == 0);
+	CHECK(dup2(saved_stdout, STDOUT_FILENO) >= 0);
+	close(saved_stdout); close(capture_fd); unlink(capture);
+	CHECK(getitimer(ITIMER_REAL, &timer) == 0 && !timerisset(&timer.it_value));
+	CHECK(write(STDERR_FILENO, "", 0) == 0);
+
+	child = fork(); CHECK(child >= 0);
+	if (child == 0) {
+		char *flush_failure[] = {"migrate", "--stall-seconds", "1",
+			"inspect-root", root, NULL};
+		close(STDOUT_FILENO);
+		_exit(tc_xattr_hfs_migrate_program_main(5, flush_failure));
+	}
+	CHECK(child_exit_status(child) == 4);
+	unlink(log); rmdir(root);
 }
 
 static void make_appledouble(uint8_t *value,
@@ -460,7 +544,9 @@ static void test_resource(void)
 	base_fd = open(base, O_RDONLY);
 	CHECK(base_fd != -1);
 	reset_xattrs();
+	progress_resets = 0;
 	CHECK(tc_migrate_appledouble(&migration, base_fd, base) == 0);
+	CHECK(progress_resets > 10);
 	CHECK(stat(native, &st) == 0 && st.st_size == 1024 * 1024);
 	CHECK(find_xattr(TC_RESOURCE_MARKER_XATTR) == NULL);
 	CHECK(access(sidecar, F_OK) == 0);
@@ -919,7 +1005,9 @@ static void test_scan(void)
 	snprintf(dir, sizeof(dir), "%s/._ordinary", root); CHECK(mkdir(dir, 0700) == 0);
 	snprintf(object, sizeof(object), "%s/object", dir);
 	fd = open(object, O_CREAT | O_RDWR, 0600); CHECK(fd >= 0); close(fd);
+	progress_resets = 0;
 	CHECK(tc_scan_root(&m, root) == 0); CHECK(m.counts.entries == 153);
+	CHECK(progress_resets >= 150);
 	directory_read_error = true;
 	CHECK(tc_scan_root(&m, root) == -1);
 	directory_read_error = false;
@@ -1220,9 +1308,11 @@ static void test_multi(void)
     multi_value(newer, &id, "user.DosStream.sample:$DATA", anchor_high, sizeof(anchor_high));
     multi_value(newer, &id, "user.DosStreamExt.1.sample:$DATA", extent_high, sizeof(extent_high));
     multi_value(newer, &id, TC_FINDERINFO_XATTR, finder, sizeof(finder));
-    CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
-    CHECK(tc_source_stat_read(old, &before[0]) == 0 && tc_source_stat_read(newer, &before[1]) == 0);
-    multi_prepare(&multi, frame, root, old, newer);
+	CHECK(utimes(old, dates) == 0 && utimes(newer, dates) == 0);
+	CHECK(tc_source_stat_read(old, &before[0]) == 0 && tc_source_stat_read(newer, &before[1]) == 0);
+	progress_resets = 0;
+	multi_prepare(&multi, frame, root, old, newer);
+	CHECK(progress_resets >= 4); /* request records, hashing, and TDB keys */
     {
         struct tc_multi_source a = multi.sources[0], b = multi.sources[1];
         struct tc_multi_source *left = &a, *right = &b;
@@ -1233,6 +1323,18 @@ static void test_multi(void)
         CHECK(tc_rank_compare(&left, &right) < 0); /* Preserve subsecond mtime. */
         a.stat.mtime++;
         CHECK(tc_rank_compare(&left, &right) > 0);
+    }
+    {
+        struct tc_migration scan = {
+            .mem_ctx = frame, .multi = &multi, .phase = TC_PHASE_COPY
+        };
+        reset_xattrs();
+        progress_resets = 0;
+        fd = open(object, O_RDONLY);
+        CHECK(fd >= 0 && tc_multi_file(&scan, fd, object, &st, false) == 0);
+        close(fd);
+        /* Eight source names, four native writes, and file completion. */
+        CHECK(progress_resets >= 13);
     }
     reset_xattrs();
     CHECK(tc_multi_scan(&multi, &counts) == 0);
@@ -1316,6 +1418,7 @@ int main(int argc, char **argv)
 {
 	CHECK(argc == 2);
 	setup_logging(argv[0], DEBUG_STDERR);
+	if (!strcmp(argv[1], "guard") || !strcmp(argv[1], "all")) test_guard();
 	if (!strcmp(argv[1], "multi") || !strcmp(argv[1], "all")) test_multi();
 	if (strcmp(argv[1], "appledouble") == 0 || strcmp(argv[1], "all") == 0) {
 		test_appledouble();
@@ -1346,6 +1449,7 @@ int main(int argc, char **argv)
 		test_errors();
 	}
 	if (strcmp(argv[1], "multi") != 0 &&
+	    strcmp(argv[1], "guard") != 0 &&
 	    strcmp(argv[1], "all") != 0 &&
 	    strcmp(argv[1], "appledouble") != 0 &&
 	    strcmp(argv[1], "embedded_xattrs") != 0 &&
