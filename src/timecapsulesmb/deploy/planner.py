@@ -316,6 +316,9 @@ def build_deployment_plan(
             # Stop runtime supervisors first so they do not restart daemons while
             # deploy is overwriting the payload and auth files.
             StopServiceRuntimeAction(),
+            # Deployment is an offline migration window. ACPd does not respawn
+            # Apple's AFP server; the planned reboot restores it afterward.
+            StopProcessAction("afpserver"),
             StopProcessAction("smbd"),
             StopProcessAction("discoveryd"),
             StopProcessAction("wcifsfs"),

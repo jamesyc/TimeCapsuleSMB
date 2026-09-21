@@ -213,7 +213,7 @@ Every detected payload `xattr.tdb` is a migration input, including incomplete
 v2.2.9 and older installations. With no TDB, deploy skips both helper upload and
 recursive scans. Migration is split around software replacement:
 
-1. Read old configuration and payload locations, stop writers, disable `rc.local`, and flush Flash.
+1. Read old configuration and payload locations, stop every filesystem writer including Apple's `afpserver`, disable `rc.local`, and flush Flash.
 2. Upload the helper to RAM. Fingerprint sources and preserve their old metadata decoding mode in adjacent progress files.
 3. `copy`: walk each unfinished available HFS volume once, merging logical attributes from all read-only input databases.
 4. Replace known project software, verify and flush it, keeping old runtime configuration through cleanup.
@@ -251,6 +251,9 @@ again to migrate them. An interrupted deployment can be rerun. Validated `xattr.
 UUIDs and verified key coverage for the entire source cohort. Later deploys skip
 those volumes in both phases, preserving subsequent native edits. Missing or
 invalid progress may cause replay, which is an accepted recovery behavior.
+An unfinished volume may therefore replay authoritative TDB metadata after a
+reboot; the legacy database is deliberately presumed newer than an interim AFP
+edit until cleanup records that volume as complete.
 Changed source contents, new sources, or a changed conversion policy invalidate
 completion. Disk-number reassignment alone does not. Known absent source disks
 do not invalidate existing completion, but cannot prove new volumes finished.

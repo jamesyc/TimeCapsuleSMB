@@ -945,6 +945,60 @@ class DeployModuleTests(unittest.TestCase):
             ],
         )
 
+    def test_xattr_migration_keeps_afp_offline_through_cleanup(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        connection = SshConnection("host", "pw", "-o foo")
+        afp_running = True
+        migration_states: list[tuple[str, bool]] = []
+
+        def run_actions(_connection, actions, **_kwargs):
+            nonlocal afp_running
+            if StopProcessAction("afpserver") in actions:
+                afp_running = False
+
+        def migrate(_connection, _plan, *, phase, inventory):
+            migration_states.append((phase, afp_running))
+            return "migration=complete"
+
+        upload_and_verify_deployment_payload(
+            AppConfig.from_values({}),
+            connection,
+            prepared_plan,
+            DeployRuntimeConfig(nbns_enabled=True),
+            run_remote_actions_func=run_actions,
+            upload_payload_func=mock.Mock(),
+            migrate_xattrs_func=migrate,
+            probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            flush_remote_writes=mock.Mock(),
+            verify_payload_home=mock.Mock(return_value=PayloadVerificationResult(True, "ok")),
+        )
+
+        self.assertEqual(migration_states, [("copy", False), ("cleanup", False)])
+
+    def test_afp_stop_failure_aborts_before_migration(self) -> None:
+        prepared_plan = self._prepared_deploy_plan()
+        upload = mock.Mock()
+        migrate = mock.Mock()
+
+        def fail_afp_stop(_connection, actions, **_kwargs):
+            if StopProcessAction("afpserver") in actions:
+                raise SshError("process afpserver did not stop")
+
+        with self.assertRaisesRegex(SshError, "afpserver did not stop"):
+            upload_and_verify_deployment_payload(
+                AppConfig.from_values({}),
+                SshConnection("host", "pw", "-o foo"),
+                prepared_plan,
+                DeployRuntimeConfig(nbns_enabled=True),
+                run_remote_actions_func=fail_afp_stop,
+                upload_payload_func=upload,
+                migrate_xattrs_func=migrate,
+                probe_flash_capacity_func=mock.Mock(return_value=(1_000_000, 100_000)),
+            )
+
+        upload.assert_not_called()
+        migrate.assert_not_called()
+
     def test_upload_and_verify_deployment_payload_codes_manager_stop_timeout(self) -> None:
         prepared_plan = self._prepared_deploy_plan()
         connection = SshConnection("host", "pw", "-o foo")
