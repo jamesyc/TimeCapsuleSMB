@@ -584,8 +584,52 @@ def test_internal_pending_payload_recovers_from_external_fallback(manager):
     assert str(home) in (root/'ram/etc/smb.conf').read_text()
 
 
+@pytest.mark.parametrize('debug_key',[None,'SMBD_DEBUG_LOGGING','MDNS_DEBUG_LOGGING'])
+def test_launch_trims_actual_payload_logs_and_preserves_debug(manager,debug_key):
+    root,start,events,wait,_,_=manager
+    debug = debug_key is not None
+    (root/'config').write_text('TELEMETRY=0\n'+(debug_key+'=1\n' if debug else ''))
+    logs=root/'dk2/.samba4/logs';logs.mkdir()
+    paths=[logs/'discovery.log',logs/'smbd-console.log']
+    content=b'old data\n'*6000+b'tail data\n'*2000
+    for path in paths:path.write_bytes(content)
+    inodes=[p.stat().st_ino for p in paths]
+    process=start()
+    rows=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    expected=content if debug else content[-16384:]
+    assert [p.read_bytes() for p in paths]==[expected,expected]
+    assert [p.stat().st_ino for p in paths]==inodes
+    # Periodic/HUP audits may touch RAM logs, never these healthy HDD paths.
+    for path in paths:path.write_bytes(content)
+    (root/'ram/var/discovery.log').write_bytes(content)
+    process.send_signal(signal.SIGHUP)
+    deadline=time.monotonic()+5
+    while (root/'ram/var/discovery.log').stat().st_size>32768 and time.monotonic()<deadline:time.sleep(.05)
+    assert (root/'ram/var/discovery.log').stat().st_size==16384
+    assert [p.read_bytes() for p in paths]==[content,content]
+    old=next(e for e in reversed(rows) if e['role']=='discovery' and e['kind']=='start')
+    os.kill(old['pid'],signal.SIGKILL)
+    wait(lambda rows:any(e['role']=='discovery' and e['kind']=='start' and e['pid']!=old['pid'] and '--adisk-share' in e['args'] for e in rows))
+    assert paths[0].read_bytes()==expected
+    assert paths[1].read_bytes()==content
 
 
+def test_payload_log_symlink_is_rejected_without_touching_target(manager):
+    root,start,_,wait,_,_=manager
+    logs=root/'dk2/.samba4/logs';logs.mkdir()
+    protected=root/'protected-log';protected.write_bytes(b'preserve'*10000)
+    (logs/'smbd-console.log').symlink_to(protected)
+    process=start()
+    deadline=time.monotonic()+5
+    runtime=root/'ram/var/runtime.log'
+    while time.monotonic()<deadline:
+        if runtime.exists() and 'log destination unavailable' in runtime.read_text():break
+        time.sleep(.05)
+    else:pytest.fail('unsafe console log was not rejected')
+    assert protected.read_bytes()==b'preserve'*10000
+    (logs/'smbd-console.log').unlink()
+    process.send_signal(signal.SIGHUP)
+    wait(started('smbd'))
 
 
 def test_manager_owned_facts_collection_can_finish_and_run_again(manager):
@@ -610,3 +654,16 @@ def test_pending_payload_does_not_reclaim_unchanged_users_zero_volume(manager):
     assert len(claims)==1
     (home/'private.saved').rename(home/'private')
     process.send_signal(signal.SIGHUP);wait(started('smbd'))
+
+
+def test_unreadable_but_appendable_console_log_does_not_block_samba(manager):
+    if os.geteuid()==0:pytest.skip('root bypasses the read-permission fault')
+    root,start,_,wait,_,_=manager
+    logs=root/'dk2/.samba4/logs';logs.mkdir()
+    console=logs/'smbd-console.log';content=b'keep diagnostics\n'*4000
+    console.write_bytes(content);console.chmod(0o200)
+    try:
+        start();wait(started('smbd'))
+        assert 'unable to trim' in (root/'ram/var/runtime.log').read_text()
+    finally:console.chmod(0o600)
+    assert console.read_bytes()==content

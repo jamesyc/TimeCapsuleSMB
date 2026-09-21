@@ -29,6 +29,12 @@ struct managed {
     unsigned failures;
     int ready, requested_stop;
 };
+struct role_launch {
+    char *const *argv;
+    const char *log;
+    const struct tc_volume *volume;
+    int unbounded;
+};
 struct audit_result {
     struct tc_process_table table;
     int smb_probe, rsync_probe;
@@ -99,11 +105,42 @@ static void poll_role(struct managed *role, const char *name, long long now, int
     role->requested_stop = 0;
     role->ready = 0;
 }
+static int launch_role(void *opaque) {
+    const struct role_launch *launch = opaque;
+    struct stat st;
+    int guard = -1, fd;
+    /* Only a launch touches payload logs; healthy audits remain RAM-only.
+     * The child does slow filesystem work so the manager stays responsive. */
+    if (launch->volume) {
+        guard = tc_storage_guard(launch->volume);
+        if (guard < 0) {
+            fprintf(stderr, "launch: log volume unavailable: %s\n", launch->log);
+            return 1;
+        }
+    }
+    if (!launch->unbounded && tc_log_trim(launch->log))
+        fprintf(stderr, "launch: unable to trim %s: %s\n", launch->log, strerror(errno));
+    fd = open(launch->log, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0600);
+    if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode) ||
+        (guard >= 0 && !tc_storage_guard_valid(launch->volume, guard))) {
+        fprintf(stderr, "launch: log destination unavailable: %s\n", launch->log);
+        if (fd >= 0) close(fd);
+        if (guard >= 0) close(guard);
+        return 1;
+    }
+    if (guard >= 0) close(guard);
+    if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) { close(fd); return 1; }
+    if (fd > STDERR_FILENO) close(fd);
+    execv(launch->argv[0], launch->argv);
+    fprintf(stderr, "exec %s: %s\n", launch->argv[0], strerror(errno));
+    return 127;
+}
 static int start_role(struct managed *role, char *const argv[], const char *log, long long now,
-                      int allow_kill) {
+                      int allow_kill, const struct tc_volume *volume, int unbounded) {
+    struct role_launch launch = {argv, log, volume, unbounded};
     if (role->child.group || now < role->retry)
         return -1;
-    if (tc_child_exec(&role->child, argv, log)) {
+    if (tc_child_fork(&role->child, launch_role, &launch, MANAGER_LOG, NULL, 0, 0)) {
         role->retry = now + JOB_RETRY_MS;
         return -1;
     }
@@ -399,7 +436,7 @@ static void apply_audit(struct manager *m, long long now) {
     m->ownership_ready = 1;
     if (!diskd && !m->diskd.child.group) {
         char *argv[] = {TC_DISKD_PATH, "-i", "lo0", "-d", "local.", NULL};
-        if (!start_role(&m->diskd, argv, MANAGER_LOG, now, 1))
+        if (!start_role(&m->diskd, argv, MANAGER_LOG, now, 1, NULL, 0))
             m->mast_at = now;
         else if (m->diskd.retry > now)
             lower(&m->audit_at, m->diskd.retry);
@@ -536,7 +573,10 @@ static void reconcile_discovery(struct manager *m, long long now) {
             snprintf(log, sizeof(log), "%s", TC_RAM_ROOT "/var/discovery.log");
         else
             snprintf(log, sizeof(log), "%s/logs/discovery.log", m->applied_storage.payload);
-        if (!start_role(&m->discovery, argv, log, now, 1)) {
+        const struct tc_volume *volume = diskless ? NULL :
+            &m->applied_storage.inventory.volumes[m->applied_storage.payload_index];
+        int unbounded = !diskless && (m->settings.config.debug || m->settings.config.discovery_debug);
+        if (!start_role(&m->discovery, argv, log, now, 1, volume, unbounded)) {
             m->discovery_diskless = diskless;
             m->discovery_shares = *shares;
             strcpy(m->discovery_name, name);
@@ -551,11 +591,13 @@ static void reconcile_roles(struct manager *m, long long now) {
         char log[352];
         snprintf(log, sizeof(log), "%s/logs/smbd-console.log", m->applied_storage.payload);
         char *argv[] = {TC_SMBD_BIN, "-F", "--no-process-group", "-s", TC_SMBD_CONF, NULL};
-        if (!(m->blocked & BLOCK_SMB) && !m->smb.child.group && !start_role(&m->smb, argv, log, now, 1))
+        const struct tc_volume *volume = &m->applied_storage.inventory.volumes[m->applied_storage.payload_index];
+        int unbounded = m->applied_settings.config.debug || m->applied_settings.config.discovery_debug;
+        if (!(m->blocked & BLOCK_SMB) && !m->smb.child.group && !start_role(&m->smb, argv, log, now, 1, volume, unbounded))
             m->audit_at = now + 1000;
         if (m->settings.config.rsync && !(m->blocked & BLOCK_RSYNC)) {
             char *rsync[] = {TC_RSYNC_BIN, "--daemon", "--no-detach", "--config=" TC_RSYNC_CONF, NULL};
-            if (!m->rsync.child.group && !start_role(&m->rsync, rsync, TC_RAM_ROOT "/var/rsync.log", now, 1))
+            if (!m->rsync.child.group && !start_role(&m->rsync, rsync, TC_RAM_ROOT "/var/rsync.log", now, 1, NULL, 0))
                 m->audit_at = now + 1000;
         }
     }
@@ -570,7 +612,7 @@ static void reconcile_roles(struct manager *m, long long now) {
         !(m->blocked & BLOCK_TELEMETRY)) {
         char *argv[] = {TC_SERVICE_BIN, "telemetry", "--daemon", NULL};
         if (!m->telemetry.child.group)
-            (void)start_role(&m->telemetry, argv, TC_RAM_ROOT "/var/telemetry.log", now, 0);
+            (void)start_role(&m->telemetry, argv, TC_RAM_ROOT "/var/telemetry.log", now, 0, NULL, 0);
     } else
         stop_role(&m->telemetry, now, 0);
     reconcile_discovery(m, now);

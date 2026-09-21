@@ -251,19 +251,23 @@ def supervise(device, share, filename):
 
 
 def native_nbns_failure(device):
-    rows = device.processes()
-    controller = device.role("discovery", rows)
-    native = [p for p in rows if p["name"] == "wcifsnd" and p["parent"] == controller["pid"]]
-    assert len(native) == 1, native
+    def initial_child(rows):
+        controller = device.role("discovery", rows)
+        children = [p for p in rows if p["name"] == "wcifsnd" and p["parent"] == controller["pid"]]
+        return children[0] if "nbns=ready" in controller["args"] and len(children) == 1 else None
+
+    # A listening Samba parent can precede discovery's native registrations.
+    # Wait for the fault's precondition after the preceding manager restart.
+    native = device.await_state(initial_child)
     # Deliberate fault injection only: routine manager checks must never kill
     # this child independently of its discovery controller.
-    device.signal(native[0]["pid"], "KILL")
+    device.signal(native["pid"], "KILL")
 
     def ready(rows):
         owner = device.role("discovery", rows)
         children = [p for p in rows if p["name"] == "wcifsnd"]
         return ("nbns=ready" in owner["args"] and len(children) == 1
-                and children[0]["parent"] == owner["pid"] and children[0]["pid"] != native[0]["pid"])
+                and children[0]["parent"] == owner["pid"] and children[0]["pid"] != native["pid"])
 
     device.await_state(ready)
     print("PASS discovery restores native NBNS ownership after child death", flush=True)

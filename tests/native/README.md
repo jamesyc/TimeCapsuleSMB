@@ -30,3 +30,20 @@ files are prepared before publication, and interrupted work remains retryable.
 Python deployment/storage tests and Doctor checks remain in their existing
 suites. The actual patched Samba descriptor/reload/AIO tests live in
 `tests/samba/tc_storage_reload_test.c`.
+
+The recovery regressions also cover partial storage outcomes with bounded
+retries, unchanged MaSt after a failed preparation, and payload-candidate caches
+that follow volume identity across inventory reordering. Retrying a failed disk
+must not inspect or claim healthy disks. Retry-only state changes must not
+restart Samba or discovery.
+
+`test_nested_owner.py` kills real setup workers while their commands and
+children remain alive. The manager's inventory/network collection tests exercise
+both owned collection completion and parent death. Standalone ACP cancellation
+keeps its separate-group coverage, while managed reads share their job or role's
+cleanup boundary. Telemetry retains its protected diagnostic drain policy.
+
+Payload discovery and console logs are trimmed only at launch/restart, using the
+actual selected destination. Tests preserve debug output and file identity,
+reject symlinks, and verify that healthy audits touch only the bounded RAM logs.
+This deliberately provides launch-time retention, not a continuous HDD log cap.
