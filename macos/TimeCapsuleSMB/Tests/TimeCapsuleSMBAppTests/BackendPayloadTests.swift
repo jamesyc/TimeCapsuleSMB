@@ -288,7 +288,7 @@ final class BackendPayloadTests: XCTestCase {
             type: "error",
             operation: "deploy",
             code: "payload_upload_timeout",
-            message: "scp failed at /Volumes/Data",
+            message: "upload failed at /Volumes/Data",
             debug: .object([
                 "password": .string("super-secret"),
                 "remote_manager_log_tail": .string("first line\nsecond line")
@@ -299,7 +299,7 @@ final class BackendPayloadTests: XCTestCase {
         let diagnosticText = error.diagnosticText ?? ""
 
         XCTAssertEqual(error.message, "The disk did not respond while copying the SMB payload. It may be failing or unable to spin up. Run Disk Repair; if this keeps happening, the disk may need replacing.")
-        XCTAssertTrue(diagnosticText.contains("scp failed at /Volumes/Data"))
+        XCTAssertTrue(diagnosticText.contains("upload failed at /Volumes/Data"))
         XCTAssertTrue(diagnosticText.contains("password: <redacted>"))
         XCTAssertTrue(diagnosticText.contains("remote_manager_log_tail:"))
         XCTAssertTrue(diagnosticText.contains("    first line\n    second line"))

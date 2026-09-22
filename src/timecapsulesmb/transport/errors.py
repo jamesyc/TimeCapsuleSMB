@@ -30,10 +30,6 @@ class SshNetworkError(SshError):
     """Raised when the SSH client reports a network-level failure."""
 
 
-class ScpError(TransportError):
-    """Raised when an SCP or upload operation fails."""
-
-
 class SshCommandTimeout(SshError):
     """Raised when the local SSH client times out waiting for command completion."""
 

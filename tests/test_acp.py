@@ -14,7 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli import set_ssh
 from timecapsulesmb.integrations import acp
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
+from timecapsulesmb.transport.ssh import SshAuthenticationError, SshCommandTimeout, SshConnection
 
 
 def ssh_result(returncode: int, stdout: str) -> subprocess.CompletedProcess[str]:
@@ -244,7 +244,7 @@ class ACPTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.2", "bad", "-o foo")
         with mock.patch(
             "timecapsulesmb.services.set_ssh.run_ssh",
-            return_value=ssh_result(255, "Permission denied, please try again."),
+            side_effect=SshAuthenticationError("root@device: Permission denied (password)."),
         ):
             with self.assertRaises(RuntimeError) as exc:
                 set_ssh.disable_ssh_over_ssh(connection, reboot_device=False)

@@ -23,8 +23,7 @@ from timecapsulesmb.services.deploy import (
     DeployDeviceError, DeployRuntimeConfig,
     upload_and_verify_deployment_payload, complete_deployment_after_upload,
 )
-from timecapsulesmb.transport.ssh import SshConnection, _verify_remote_size
-from timecapsulesmb.transport.errors import ScpError
+from timecapsulesmb.transport.ssh import SshConnection, SshError, _verify_uploaded_size
 
 
 class Device:
@@ -40,7 +39,7 @@ class Device:
             'host', self.home, binary,  xattr_migrator_path=binary,
             rsync_path=binary, service_path=binary,
         )
-        self.connection = SshConnection('host', 'unused', '', remote_has_scp=True)
+        self.connection = SshConnection('host', 'unused', '')
         self.prepared = SimpleNamespace(
             plan=self.plan, payload_home=self.home,
             payload_context=SimpleNamespace(payload_family="netbsd6_samba4", is_netbsd4=False,
@@ -67,7 +66,7 @@ class Device:
                      '/Volumes/dk2/.samba4/mdns-smbd-advertiser',
                      '/Volumes/dk2/.samba4/sbin/smbd', '/Volumes/dk2/.samba4/smbd'):
             self.write(name, b'old or truncated software')
-        monkeypatch.setattr(executor, 'run_scp', self.scp)
+        monkeypatch.setattr(executor, 'upload_file', self.upload)
         monkeypatch.setattr(executor, 'run_ssh', self.ssh)
         monkeypatch.setattr(executor, 'ensure_volume_root_mounted_conn', self.mount)
         monkeypatch.setattr('timecapsulesmb.transport.ssh.run_ssh', self.ssh)
@@ -88,7 +87,7 @@ class Device:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
 
-    def scp(self, connection, source, destination, **kwargs):
+    def upload(self, connection, source, destination, **kwargs):
         self.transfers.append(destination)
         self.sources[destination] = source.read_bytes()
         self.write(destination, source.read_bytes())
@@ -104,7 +103,7 @@ class Device:
             self.write(destination, b'truncated')
         # Replace only the byte transport. Run its production size verification
         # so malformed transfers still fail when the executor stops duplicating it.
-        _verify_remote_size(connection, source, destination, timeout=30)
+        _verify_uploaded_size(connection, source, destination, timeout=30)
         if destination == self.unmount_after:
             self.path('/Volumes/dk2').rename(self.parked)
             self.events.append('unmount')
@@ -190,7 +189,7 @@ class Device:
 def test_interrupted_install_rerun_converges(tmp_path, monkeypatch, failure):
     device = Device(tmp_path, monkeypatch)
     device.failure = failure
-    with pytest.raises((RuntimeError, DeployDeviceError, ScpError)):
+    with pytest.raises((RuntimeError, DeployDeviceError, SshError)):
         device.install()
     assert not device.path('/mnt/Flash/rc.local').exists()
     device.assert_protected()
@@ -262,7 +261,7 @@ def test_reboot_request_failure_can_be_retried_without_a_marker(tmp_path, monkey
 @pytest.mark.parametrize('basename', ['smbd', 'rsyncd.conf'])
 def test_diskd_unmount_after_verified_transfer_is_remounted_before_permissions(tmp_path, monkeypatch, basename):
     device = Device(tmp_path, monkeypatch)
-    # Apple's diskd may release an idle HDD after SCP closes it. rsyncd.conf is
+    # Apple's diskd may release an idle HDD after an SSH upload closes it. rsyncd.conf is
     # the last HDD transfer, so that case exercises the post-upload mount guard;
     # smbd also exercises remounting before the next transfer.
     device.unmount_after = device.home.payload_dir + '/' + basename

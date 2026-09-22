@@ -23,7 +23,6 @@ from timecapsulesmb.deploy.commands import (
 from timecapsulesmb.device.storage import PayloadHome
 
 
-TransferMode = Literal["scp", "generated"]
 DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate"]
 
 BINARY_SMBD_SOURCE = "binary:smbd"
@@ -49,7 +48,6 @@ DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE: DeploymentStartupMode = "reboot_then_activa
 class FileTransfer:
     source_id: str
     destination: str
-    mode: TransferMode
     timeout_seconds: int | None
     description: str
 
@@ -299,17 +297,16 @@ def build_deployment_plan(
         migration_upload=FileTransfer(
             BINARY_XATTR_MIGRATOR_SOURCE,
             "/mnt/Memory/tc-xattr-hfs-migrate",
-            "scp",
             XATTR_MIGRATOR_UPLOAD_TIMEOUT_SECONDS,
             "one-shot HFS xattr migrator",
         ),
         uploads=[
-            FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
-            FileTransfer(BINARY_RSYNC_SOURCE, payload_targets["rsync"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in rsync"),
-            FileTransfer(GENERATED_RSYNC_CONFIG_SOURCE, payload_targets["rsyncd.conf"], "generated", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated rsync daemon config"),
-            FileTransfer(BINARY_SERVICE_SOURCE, flash_targets["service"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "native manager, discovery and telemetry service"),
-            FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
-            FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "scp", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
+            FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
+            FileTransfer(BINARY_RSYNC_SOURCE, payload_targets["rsync"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in rsync"),
+            FileTransfer(GENERATED_RSYNC_CONFIG_SOURCE, payload_targets["rsyncd.conf"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated rsync daemon config"),
+            FileTransfer(BINARY_SERVICE_SOURCE, flash_targets["service"], PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "native manager, discovery and telemetry service"),
+            FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
+            FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
         ],
         pre_upload_actions=[
             # Existing installs run mdns directly from /mnt/Flash.
@@ -357,11 +354,11 @@ def build_deployment_plan(
             InstallPermissionsAction(tuple(permissions)),
         ],
         config_upload=FileTransfer(
-            GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "scp",
+            GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"],
             FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config",
         ),
         boot_upload=FileTransfer(
-            PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"], "scp",
+            PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"],
             FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "enable boot after verified installation",
         ),
         startup_mode=startup_mode,

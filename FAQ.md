@@ -89,7 +89,7 @@ No. You can safely run `deploy` over an old deployment. This is the quickest way
 1. Reboot the device
 2. Do a fresh `deploy` on top of the (maybe corrupt) old deploy
 
-A reboot and clean deploy will fix 90% of issues. This is especially useful for old Gen 1-4 devices, because their firmware usually does not provide remote `scp`, so uploads use a slower SSH fallback. The deploy flow verifies uploaded file sizes, but rerunning `deploy` is still the simplest way to replace any interrupted upload.
+A reboot and clean deploy will fix 90% of issues. Uploads stream over SSH on every supported firmware generation and the deploy flow verifies each uploaded file size, but rerunning `deploy` is still the simplest way to replace any interrupted upload.
 
 #### Time Machine backups are broken on macOS?
 

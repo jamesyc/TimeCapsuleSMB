@@ -12,6 +12,7 @@ from timecapsulesmb.services import runtime as runtime_service
 from timecapsulesmb.services.acp_ssh import enable_ssh_with_port_preflight
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.transport.local import tcp_connect_error, tcp_open
+from timecapsulesmb.transport.errors import SshAuthenticationError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 
 
@@ -305,7 +306,10 @@ def disable_ssh_over_ssh(
     ]
     last_err: tuple[int, str] | None = None
     for command in cmds:
-        proc = run_ssh(connection, command, check=False, timeout=30)
+        try:
+            proc = run_ssh(connection, command, check=False, timeout=30)
+        except SshAuthenticationError as exc:
+            raise RuntimeError("SSH authentication failed while trying to disable SSH over SSH.") from exc
         rc = proc.returncode
         out = proc.stdout or ""
         if rc == 0:
@@ -314,8 +318,6 @@ def disable_ssh_over_ssh(
         if _dbug_property_already_absent(out):
             _emit(log, f"SSH debug flag 'dbug' already absent via: {command}")
             break
-        if _looks_like_ssh_auth_failure(out):
-            raise RuntimeError("SSH authentication failed while trying to disable SSH over SSH.")
         last_err = (rc, out)
     else:
         code, out = last_err or (1, "unknown error")
@@ -347,11 +349,6 @@ def _dbug_property_already_absent(output: str) -> bool:
     # Verified on NetBSD 6 and NetBSD 4 Time Capsules: removing an absent
     # dbug property returns rc=22 and this message.
     return "remove property error: -10" in output
-
-
-def _looks_like_ssh_auth_failure(output: str) -> bool:
-    lowered = output.lower()
-    return "permission denied" in lowered or "please try again" in lowered
 
 
 def _emit(log: Callable[[str], None] | None, message: str) -> None:

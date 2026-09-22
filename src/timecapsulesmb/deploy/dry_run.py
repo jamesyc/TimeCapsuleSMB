@@ -96,6 +96,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("")
     lines.append("Boot options:")
     lines.append(f"  diskd.useVolume wait: {plan.apple_mount_wait_seconds}s per attempt")
+    lines.append("  upload transport: SSH stdin pipe with remote size verification")
     lines.append("")
     lines.append("Remote actions (pre-upload):")
     for command in render_remote_actions(plan.pre_upload_actions):
@@ -110,7 +111,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("Inventory legacy metadata before replacing software:")
     lines.append(
         f"  upload {migration_upload.description} "
-        f"({migration_upload.source_id}, {migration_upload.mode}{migration_timeout}) "
+        f"({migration_upload.source_id}{migration_timeout}) "
         f"-> {migration_upload.destination}"
     )
     lines.append("  skip helper upload and disk scans when no legacy xattr.tdb exists")
@@ -126,7 +127,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("Uploads:")
     for upload in plan.uploads:
         timeout = f", timeout {upload.timeout_seconds}s" if upload.timeout_seconds is not None else ""
-        lines.append(f"  {upload.description} ({upload.source_id}, {upload.mode}{timeout}) -> {upload.destination}")
+        lines.append(f"  {upload.description} ({upload.source_id}{timeout}) -> {upload.destination}")
     lines.append("")
     lines.append("Remote actions (post-upload):")
     for command in render_remote_actions(plan.post_upload_actions):
@@ -172,6 +173,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
 
 def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data = asdict(plan)
+    data["upload_transport"] = "ssh_pipe"
     data["smbd_path"] = str(plan.smbd_path)
     data["xattr_migrator_path"] = str(plan.xattr_migrator_path)
     data["service_path"] = str(plan.service_path)

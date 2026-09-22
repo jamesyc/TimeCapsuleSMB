@@ -8,7 +8,7 @@ from typing import Callable, Iterable, Mapping
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, FileTransfer, UninstallPlan
 from timecapsulesmb.device.storage import MaStVolume, ensure_volume_root_mounted_conn
-from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh, upload_file
 
 
 DETACHED_SHUTDOWN_REBOOT_COMMAND = (
@@ -45,11 +45,11 @@ def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: File
         raise KeyError(f"No local source for planned transfer {transfer.source_id!r}") from e
 
 
-def _scp_transfer(connection: SshConnection, source: Path, transfer: FileTransfer) -> None:
+def _upload_transfer(connection: SshConnection, source: Path, transfer: FileTransfer) -> None:
     if transfer.timeout_seconds is None:
-        run_scp(connection, source, transfer.destination)
+        upload_file(connection, source, transfer.destination)
         return
-    run_scp(connection, source, transfer.destination, timeout=transfer.timeout_seconds)
+    upload_file(connection, source, transfer.destination, timeout=transfer.timeout_seconds)
 
 
 def _destination_is_under(path: str, root: str) -> bool:
@@ -84,11 +84,8 @@ def upload_deployment_payload(
         if on_uploading is not None:
             on_uploading(transfer)
         _ensure_payload_volume_before_transfer(connection, plan, transfer)
-        if transfer.mode in {"scp", "generated"}:
-            _scp_transfer(connection, source, transfer)
-        else:
-            raise ValueError(f"Unsupported deployment upload mode {transfer.mode!r} for {transfer.source_id!r}")
-        # run_scp verifies the size for both SCP and the SSH-pipe fallback.
+        _upload_transfer(connection, source, transfer)
+        # upload_file verifies the size after the SSH stream closes.
         # HDD permissions belong to the later mount-guarded action: Apple's
         # diskd may unmount the volume after the transfer closes its files.
         if on_uploaded is not None:

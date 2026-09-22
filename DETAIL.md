@@ -1201,7 +1201,7 @@ Current important package areas:
 - [src/timecapsulesmb/app/](src/timecapsulesmb/app): structured API request handling, operation contracts, progress/result events, confirmations, recovery guidance, and app-specific operation adapters
 - [src/timecapsulesmb/services/](src/timecapsulesmb/services): reusable configure, deploy, activation, maintenance, storage, reboot, Doctor, and runtime workflows shared by the CLI and app/API entrypoints
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
-- [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
+- [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH command, tunnel, and upload helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
 - [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): self-contained Python 3 ACP client for SSH enable/reboot support
 - [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): reusable local, network, Bonjour, and SMB verification checks

@@ -68,7 +68,7 @@ from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.net import endpoint_host, is_link_local_ipv6, same_scoped_ip
-from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
+from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import (
     FLASH_RUNTIME_CONFIG,
     ProbedDeviceState,
@@ -338,17 +338,14 @@ def _add_probe_line_results(
         add_result(_startup_transient_result("FAIL", fallback_fail_message))
 
 
-def _add_sshpass_result_for_payload(add_result: Callable[[CheckResult], None], payload_family: str | None) -> None:
+def _add_sshpass_result(add_result: Callable[[CheckResult], None], *, password_auth: bool) -> None:
     if command_exists("sshpass"):
         add_result(CheckResult("PASS", "found local tool sshpass"))
         return
-    if is_netbsd4_payload_family(payload_family):
-        add_result(CheckResult("FAIL", "missing local tool sshpass; NetBSD4 upload fallback requires sshpass"))
+    if password_auth:
+        add_result(CheckResult("FAIL", "missing local tool sshpass; password-based SSH uploads require sshpass"))
         return
-    if is_netbsd6_payload_family(payload_family):
-        add_result(CheckResult("INFO", "local sshpass not installed; not needed for this NetBSD6 target unless remote scp is unavailable"))
-        return
-    add_result(CheckResult("INFO", "local sshpass not installed; target upload fallback requirement unknown"))
+    add_result(CheckResult("INFO", "local sshpass not installed; key-authenticated SSH uploads do not require it"))
 
 
 def _add_config_validation_results(
@@ -2042,7 +2039,7 @@ def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarge
             sink.add(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
         elif compatibility.supported:
             sink.add(CheckResult("PASS", render_compatibility_message(compatibility)))
-            _add_sshpass_result_for_payload(sink.add, compatibility.payload_family)
+            _add_sshpass_result(sink.add, password_auth=bool(target.connection.password))
         else:
             sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))
     except Exception as e:

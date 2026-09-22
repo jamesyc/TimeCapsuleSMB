@@ -3720,7 +3720,7 @@ class AppApiTests(unittest.TestCase):
                                                             )
 
         self.assertEqual(rc, 0)
-        self.assertFalse(connection.remote_has_scp)
+        self.assertEqual(set(vars(connection)), {"host", "password", "ssh_opts"})
         reboot.assert_called_once()
         autostart_probe.assert_not_called()
         payload = collector.events_of_type("result")[0]["payload"]
@@ -4179,7 +4179,7 @@ MaSt = (
                 return
             if on_uploading is not None:
                 on_uploading(plan.uploads[0])
-            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
+            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH")
 
         rc, collector = self.run_confirmed_deploy_with_mast(
             MaStDiscoveryResult((volume,), 1, ""),
@@ -4192,11 +4192,11 @@ MaSt = (
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "payload_upload_timeout")
         self.assertIn("The disk did not respond while copying the SMB payload.", error["message"])
-        self.assertEqual(error["debug"]["cause"], "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
+        self.assertEqual(error["debug"]["cause"], "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH")
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "upload_smbd")
-        self.assertIn("Caused by: Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp", finished["error"])
+        self.assertIn("Caused by: Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH", finished["error"])
 
     def test_deploy_writes_disabled_install_telemetry_preference_to_flash_config(self) -> None:
         volume = MaStVolume(

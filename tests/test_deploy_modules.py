@@ -128,7 +128,7 @@ from timecapsulesmb.services.runtime_verification import (
     BOOT_SETTLE_MESSAGE,
     BOOT_SETTLE_SECONDS,
 )
-from timecapsulesmb.transport.ssh import ScpError, SshCommandTimeout, SshConnection, SshError
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 def readiness_result(ready: bool, detail: str, lines: tuple[str, ...]) -> ReadinessProbeResult:
@@ -490,7 +490,7 @@ class DeployModuleTests(unittest.TestCase):
 
         self.assertNotIn(BINARY_XATTR_MIGRATOR_SOURCE, [item.source_id for item in plan.uploads])
         self.assertEqual(plan.migration_upload.source_id, BINARY_XATTR_MIGRATOR_SOURCE)
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh"), mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh"), mock.patch("timecapsulesmb.deploy.executor.upload_file") as upload_mock:
             with mock.patch(
                 "timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn",
                 return_value=True,
@@ -504,7 +504,7 @@ class DeployModuleTests(unittest.TestCase):
                 )
 
         mount_mock.assert_not_called()  # The helper executes directly from RAM.
-        scp_mock.assert_called_once_with(
+        upload_mock.assert_called_once_with(
             connection,
             Path("bin/xattr-migrate/xattr-hfs-migrate"),
             "/mnt/Memory/tc-xattr-hfs-migrate",
@@ -781,7 +781,7 @@ class DeployModuleTests(unittest.TestCase):
                 return
             if on_uploading is not None:
                 on_uploading(plan.uploads[0])
-            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp")
+            raise SshCommandTimeout("Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH")
 
         with self.assertRaises(DeployDeviceError) as raised:
             upload_and_verify_deployment_payload(
@@ -808,12 +808,12 @@ class DeployModuleTests(unittest.TestCase):
             BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=False) as mount_mock:
-            with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+            with mock.patch("timecapsulesmb.deploy.executor.upload_file") as upload_mock:
                 with self.assertRaisesRegex(RuntimeError, "payload volume /Volumes/dk2 is not mounted before upload"):
                     upload_deployment_payload(plan, connection=connection, source_resolver=source_resolver)
 
         mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-        scp_mock.assert_not_called()
+        upload_mock.assert_not_called()
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
@@ -1859,8 +1859,8 @@ describe_managed_smbd_status "" ""
         self.assertNotIn("generated smbpasswd", text)
         self.assertNotIn("generated:username.map", text)
         self.assertIn("upload generated flash runtime config -> /mnt/Flash/tcapsulesmb.conf", text)
-        self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, scp, timeout 180s) -> {payload_dir}/rsync", text)
-        self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, generated, timeout 120s) -> {payload_dir}/rsyncd.conf", text)
+        self.assertIn(f"checked-in rsync ({BINARY_RSYNC_SOURCE}, timeout 180s) -> {payload_dir}/rsync", text)
+        self.assertIn(f"generated rsync daemon config ({GENERATED_RSYNC_CONFIG_SOURCE}, timeout 120s) -> {payload_dir}/rsyncd.conf", text)
         self.assertIn("/usr/bin/pkill '^rsync$' >/dev/null 2>&1 || true", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4le", text)

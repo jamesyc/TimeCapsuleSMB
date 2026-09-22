@@ -89,9 +89,6 @@ from timecapsulesmb.services.runtime_verification import (
 )
 from timecapsulesmb.transport.ssh import (
     SshConnection,
-    local_scp_path,
-    local_scp_supports_legacy_option,
-    scp_upload_transport,
     run_ssh,
 )
 from timecapsulesmb.transport.errors import is_ssh_timeout_error
@@ -577,10 +574,6 @@ def prepare_deploy_payload_context(
         raise DeviceError("No deployable payload is available for this detected device.")
     payload_family = compatibility.payload_family
     is_netbsd4 = is_netbsd4_payload_family(payload_family)
-    if is_netbsd4:
-        # Apple NetBSD 4 firmware can expose /usr/bin/scp but hang after
-        # writing the file. Use the SSH pipe upload fallback consistently.
-        connection.remote_has_scp = False
     return DeployPayloadContext(
         compatibility=compatibility,
         payload_family=payload_family,
@@ -893,16 +886,8 @@ def upload_and_verify_deployment_payload(
             # result while the production executor carries the selected roots.
             callbacks.debug(**{f"xattr_migration_{phase}": str(migration_result).strip()})
 
-    def update_scp_upload_telemetry() -> None:
-        scp_path = local_scp_path()
-        callbacks.update(
-            local_scp_path=scp_path or "not_found",
-            local_scp_legacy_option_supported=local_scp_supports_legacy_option(),
-            remote_scp_available=connection.remote_has_scp if connection.remote_has_scp is not None else "unknown",
-            upload_transport=scp_upload_transport(connection),
-        )
-
     callbacks.stage("prepare_deployment_files")
+    callbacks.update(upload_transport="ssh_pipe")
     flash_config_text = render_flash_config_func(
         config,
         payload_home,
@@ -950,7 +935,6 @@ def upload_and_verify_deployment_payload(
         callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
                         legacy_unavailable_roots=inventory.unavailable)
 
-        update_scp_upload_telemetry()
         if on_before_upload is not None:
             on_before_upload()
         active_upload: FileTransfer | None = None
@@ -970,7 +954,7 @@ def upload_and_verify_deployment_payload(
             callbacks.measurement(
                 "upload",
                 source_id=transfer.source_id,
-                mode=transfer.mode,
+                transport="ssh_pipe",
                 destination_kind=_upload_destination_kind(transfer, plan),
                 timeout_sec=transfer.timeout_seconds,
                 bytes=source.stat().st_size if source is not None and source.exists() else None,
@@ -1004,7 +988,7 @@ def upload_and_verify_deployment_payload(
                 callbacks.measurement(
                     "upload",
                     source_id=migration_transfer.source_id,
-                    mode=migration_transfer.mode,
+                    transport="ssh_pipe",
                     destination_kind=_upload_destination_kind(migration_transfer, plan),
                     timeout_sec=migration_transfer.timeout_seconds,
                     duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
@@ -1094,7 +1078,7 @@ def upload_and_verify_deployment_payload(
                 callbacks.measurement(
                     "upload",
                     source_id=active_upload.source_id,
-                    mode=active_upload.mode,
+                    transport="ssh_pipe",
                     destination_kind=_upload_destination_kind(active_upload, plan),
                     timeout_sec=active_upload.timeout_seconds,
                     duration_sec=round(time.monotonic() - started, 3) if started is not None else None,
@@ -1111,7 +1095,6 @@ def upload_and_verify_deployment_payload(
                 duration_sec=round(time.monotonic() - upload_batch_started, 3),
                 result=upload_batch_result,
             )
-            update_scp_upload_telemetry()
         if on_after_upload is not None:
             on_after_upload()
 

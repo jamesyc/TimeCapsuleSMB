@@ -83,7 +83,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         let upload = BackendErrorViewModel(
             operation: "deploy",
             code: "payload_upload_timeout",
-            message: "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd via scp"
+            message: "Timed out copying smbd to remote path /Volumes/dk2/.samba4/smbd over SSH"
         )
 
         L10n.apply(language: .english)

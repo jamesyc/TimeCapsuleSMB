@@ -52,7 +52,7 @@ Checked-in binaries under `bin/` are used directly by deploy flows. If a binary 
 ## Device-Specific Notes
 
 - Time Capsule targets do not support pthread.
-- NetBSD 4 devices have a very small userspace; avoid assuming tools like `awk`, `grep`, `tr`, `cut`, `wc`, or `scp` exist on-device.
+- NetBSD 4 devices have a very small userspace; avoid assuming tools like `awk`, `grep`, `tr`, `cut`, or `wc` exist on-device.
 - Runtime shell helpers must explicitly check critical commands with `|| return 1`; NetBSD 4 `/bin/sh` does not reliably enforce `set -e` inside functions called from conditional contexts.
 - Avoid adding runtime state files unless they are truly required across process boundaries and the reason is documented.
 

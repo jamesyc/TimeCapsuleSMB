@@ -5079,7 +5079,6 @@ class CliTests(unittest.TestCase):
             {
                 "source_id": GENERATED_FLASH_CONFIG_SOURCE,
                 "destination": "/mnt/Flash/tcapsulesmb.conf",
-                "mode": "scp",
                 "timeout_seconds": 120,
                 "description": "generated flash runtime config",
             },
@@ -5755,15 +5754,15 @@ class CliTests(unittest.TestCase):
             ["--yes"],
             patch_actions=True,
             patch_upload=True,
-            upload_side_effect=RuntimeError("scp failed"),
+            upload_side_effect=RuntimeError("upload failed"),
             raises=RuntimeError,
         )
 
-        self.assertEqual(str(result.exception), "scp failed")
+        self.assertEqual(str(result.exception), "upload failed")
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertIn("stage=upload_xattr_migrator", finished["error"])
-        self.assertIn("RuntimeError: scp failed", finished["error"])
+        self.assertIn("RuntimeError: upload failed", finished["error"])
 
     def test_deploy_ssh_timeout_shows_red_slow_device_guidance_and_keeps_telemetry_detail(self) -> None:
         timeout = "Timed out waiting for ssh command to finish: /bin/sh -c 'wc -c < /mnt/Flash/service'"
@@ -5819,28 +5818,18 @@ class CliTests(unittest.TestCase):
         self.assertIn("The disk did not respond while copying the SMB payload.", finished["error"])
         self.assertIn(f"Caused by: {timeout}", finished["error"])
 
-    def test_deploy_finished_telemetry_includes_scp_upload_transport(self) -> None:
-        def fake_scp_upload_transport(connection):
-            connection.remote_has_scp = True
-            return "scp_legacy_default"
-
-        with mock.patch("timecapsulesmb.services.deploy.scp_upload_transport", side_effect=fake_scp_upload_transport):
-            with mock.patch("timecapsulesmb.services.deploy.local_scp_path", return_value="/usr/bin/scp"):
-                with mock.patch("timecapsulesmb.services.deploy.local_scp_supports_legacy_option", return_value=False):
-                    result = self.run_deploy_cli(
-                        ["--yes"],
-                        patch_actions=True,
-                        patch_upload=True,
-                        verify_runtime=self.managed_runtime_probe(True),
-                        wait_side_effect=[True, True],
-                    )
+    def test_deploy_finished_telemetry_reports_ssh_pipe_upload_transport(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            patch_actions=True,
+            patch_upload=True,
+            verify_runtime=self.managed_runtime_probe(True),
+            wait_side_effect=[True, True],
+        )
 
         self.assertEqual(result.rc, 0)
         finished = self.telemetry_payload("deploy_finished")
-        self.assertEqual(finished["local_scp_path"], "/usr/bin/scp")
-        self.assertEqual(finished["local_scp_legacy_option_supported"], False)
-        self.assertEqual(finished["remote_scp_available"], True)
-        self.assertEqual(finished["upload_transport"], "scp_legacy_default")
+        self.assertEqual(finished["upload_transport"], "ssh_pipe")
 
     def test_deploy_netbsd4_dry_run_json_outputs_activation_plan(self) -> None:
         result = self.run_deploy_cli(
@@ -5915,7 +5904,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Activating deployed runtime after reboot.", result.text)
         self.assertIn("NetBSD4 activation complete.", result.text)
 
-    def test_deploy_netbsd4_forces_ssh_pipe_upload_fallback(self) -> None:
+    def test_deploy_netbsd4_uses_transport_neutral_connection(self) -> None:
         result = self.run_deploy_cli(
             ["--yes"],
             values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
@@ -5929,9 +5918,9 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         upload_connection = result.mocks.upload_deployment_payload.call_args.kwargs["connection"]
-        self.assertFalse(upload_connection.remote_has_scp)
+        self.assertEqual(set(vars(upload_connection)), {"host", "password", "ssh_opts"})
 
-    def test_deploy_netbsd6_leaves_scp_capability_probe_enabled(self) -> None:
+    def test_deploy_netbsd6_uses_transport_neutral_connection(self) -> None:
         result = self.run_deploy_cli(
             ["--yes"],
             patch_actions=True,
@@ -5942,7 +5931,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         upload_connection = result.mocks.upload_deployment_payload.call_args.kwargs["connection"]
-        self.assertIsNone(upload_connection.remote_has_scp)
+        self.assertEqual(set(vars(upload_connection)), {"host", "password", "ssh_opts"})
 
     def test_deploy_netbsd4_yes_waits_when_firmware_autostarts_runtime(self) -> None:
         result = self.run_deploy_cli(
