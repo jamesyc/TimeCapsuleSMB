@@ -2,7 +2,6 @@
 "action.cancel" = "Cancel";
 "action.confirm" = "Confirm";
 "action.deploy" = "Install / Update Samba";
-"action.deploy_allow_reboot" = "Install / Update Samba and Allow Reboot";
 "action.done" = "Done";
 "action.ok" = "OK";
 "action.repair_xattrs" = "Repair xattrs";
@@ -67,19 +66,19 @@
 "app_settings.appearance" = "Appearance";
 "app_settings.check_now" = "Check Now";
 "app_settings.check_updates_on_launch" = "Check for updates on launch";
-"app_settings.default_bonjour_timeout" = "Discovery timeout seconds";
-"app_settings.error.ata_idle" = "ATA idle seconds must be a non-negative integer.";
-"app_settings.error.ata_standby" = "ATA standby seconds must be blank or a non-negative integer.";
+"app_settings.default_bonjour_timeout" = "Discovery timeout (seconds)";
+"app_settings.error.ata_idle" = "ATA idle time must be a non-negative number of seconds.";
+"app_settings.error.ata_standby" = "ATA standby time must be blank or a non-negative number of seconds.";
 "app_settings.error.bonjour_timeout" = "Bonjour timeout must be a non-negative number.";
 "app_settings.error.corrupt" = "App settings could not be read: %@";
-"app_settings.error.mount_wait" = "Mount wait must be a non-negative integer.";
+"app_settings.error.mount_wait" = "Mount wait time must be a non-negative integer.";
 "app_settings.error.version_url" = "Version check URL must be blank or an HTTP/HTTPS URL.";
 "app_settings.helper_path" = "Helper path";
 "app_settings.language" = "Language";
 "app_settings.restore_defaults" = "Restore Defaults";
-"app_settings.reset_saved" = "Reset to Saved";
+"app_settings.reset_saved" = "Restore saved settings";
 "app_settings.save" = "Save Settings";
-"app_settings.section.defaults" = "New Device Defaults";
+"app_settings.section.defaults" = "Defaults for new devices";
 "app_settings.section.diagnostics" = "Helper and Diagnostics";
 "app_settings.section.general" = "General";
 "app_settings.section.privacy" = "Privacy";
@@ -204,7 +203,7 @@
 "dashboard.health.runtime.activation_needed" = "This NetBSD4 device may need Activate after reboot.";
 "dashboard.health.runtime.installing" = "Install / Update is running.";
 "dashboard.health.runtime.not_installed" = "Samba has not been installed from this app.";
-"dashboard.health.smb_auth" = "SMB Auth";
+"dashboard.health.smb_auth" = "SMB authentication";
 "dashboard.health.status.failed" = "Failed";
 "dashboard.health.status.good" = "Good";
 "dashboard.health.status.running" = "Running";
@@ -248,8 +247,6 @@
 "deploy.presentation.row.pre_upload_actions" = "Pre-upload Actions";
 "deploy.presentation.row.reboot" = "Reboot";
 "deploy.presentation.row.target" = "Target";
-"deploy.presentation.title.netbsd4" = "Install Samba and Start Runtime";
-"deploy.presentation.title.standard" = "Install Samba";
 "deploy.presentation.warning.netbsd4_activation" = "This NetBSD4 device needs an activation step before Samba is ready.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "This NetBSD4 install will reboot first, then start Samba after SSH returns.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "No Wait will return after requesting reboot. Samba activation will not run automatically after SSH returns.";
@@ -267,16 +264,13 @@
 "install.completion.title.finished" = "Install / Update Finished";
 "install.completion.title.verified" = "Install / Update Verified";
 "install.completion.warning.netbsd4" = "NetBSD4 devices may need Activate after a later reboot unless the boot hook is patched.";
-"install.plan.downtime.netbsd4" = "Usually under a minute while Samba starts without rebooting.";
 "install.plan.downtime.no_wait" = "The app will request reboot and return immediately.";
-"install.plan.downtime.none" = "No reboot expected.";
 "install.plan.downtime.reboot" = "Several minutes while the device reboots.";
 "install.plan.row.expected_downtime" = "Expected Downtime";
 "install.plan.row.remote_actions" = "Remote Actions";
 "install.plan.row.uploads" = "Uploads";
 "install.plan.section.device_actions" = "Device Actions";
 "install.plan.section.target" = "Target";
-"install.plan.title.netbsd4" = "Install / Update Samba and Start Runtime";
 "install.plan.title.reboot_no_wait" = "Install / Update Samba and Request Reboot";
 "install.plan.title.reboot_then_activate" = "Install / Update Samba, Reboot, and Start Runtime";
 "install.plan.title.standard" = "Install / Update Samba";
@@ -345,7 +339,7 @@
 "doctor.domain.general" = "General";
 "doctor.domain.metadata" = "Metadata";
 "doctor.domain.runtime" = "Runtime";
-"doctor.domain.smb_auth" = "SMB Auth";
+"doctor.domain.smb_auth" = "SMB authentication";
 "doctor.domain.time_machine" = "Time Machine";
 "event.summary.check" = "%@ %@";
 "event.summary.check.default_status" = "INFO";
@@ -415,14 +409,14 @@
 "backend.summary.update_available" = "Update available.";
 "backend.summary.update_required" = "Update required.";
 "backend.summary.version_metadata_unavailable" = "Version metadata is unavailable.";
-"field.ata_idle_seconds" = "ATA idle seconds";
-"field.ata_standby" = "ATA standby seconds";
-"field.firmware_template" = "Firmware template path, optional";
-"field.firmware_version" = "Firmware version, optional";
+"field.ata_idle_seconds" = "ATA idle time (seconds)";
+"field.ata_standby" = "ATA standby time (seconds)";
+"field.firmware_template" = "Firmware template path (optional)";
+"field.firmware_version" = "Firmware version (optional)";
 "field.helper" = "Helper";
-"field.mount_wait" = "Mount wait seconds";
+"field.mount_wait" = "Mount wait time (seconds)";
 "field.repair_xattrs_max_depth" = "Max depth";
-"field.repair_xattrs_path" = "Repair xattrs path";
+"field.repair_xattrs_path" = "Path for xattrs repair";
 "flash.eligibility.disabled" = "Firmware boot hook analysis is disabled in this build.";
 "flash.eligibility.netbsd4_required" = "Persistent boot hook tools are only for NetBSD4 devices. If your device should be supported, please add details to https://github.com/jamesyc/TimeCapsuleSMB/issues/160.";
 "flash.eligibility.read_only" = "This NetBSD4 device can be backed up and inspected before any write is available.";
@@ -513,7 +507,7 @@
 "maintenance.action.uninstall" = "Uninstall";
 "maintenance.advanced_options" = "Advanced Options";
 "maintenance.presentation.activate.primary_action" = "Activate";
-"maintenance.presentation.activate.subtitle" = "Start the installed Samba runtime on a NetBSD 4 device.";
+"maintenance.presentation.activate.subtitle" = "Start the installed Samba services on a NetBSD 4 device.";
 "maintenance.presentation.activate.title" = "NetBSD4 Activation";
 "maintenance.presentation.fsck.primary_action" = "Run Disk Repair";
 "maintenance.presentation.fsck.subtitle" = "Unmount a selected HFS volume and run fsck_hfs on the device.";
@@ -529,7 +523,7 @@
 "maintenance.presentation.ssh_access.subtitle" = "Check or enable SSH through AirPort ACP.";
 "maintenance.presentation.ssh_access.title" = "SSH Access";
 "maintenance.presentation.uninstall.primary_action" = "Uninstall";
-"maintenance.presentation.uninstall.subtitle" = "Remove payload from the selected device.";
+"maintenance.presentation.uninstall.subtitle" = "Remove the installed software from the selected device.";
 "maintenance.presentation.uninstall.title" = "Uninstall";
 "maintenance.completion.activate" = "Activation Complete";
 "maintenance.completion.fsck" = "Disk Repair Complete";
@@ -546,7 +540,7 @@
 "maintenance.plan.row.host" = "Host";
 "maintenance.plan.row.mountpoint" = "Mountpoint";
 "maintenance.plan.row.path" = "Path";
-"maintenance.plan.row.payload_dirs" = "Payload Directories";
+"maintenance.plan.row.payload_dirs" = "Installation directories";
 "maintenance.plan.row.post_checks" = "Post-checks";
 "maintenance.plan.row.reboot" = "Reboot";
 "maintenance.plan.row.remote_actions" = "Remote Actions";
@@ -597,8 +591,8 @@
 "overview.discovery.waiting" = "Discovery starts after the app runtime is ready.";
 "operation.error.already_running" = "Another operation is already running.";
 "workflow.error.activation_plan_required" = "Plan NetBSD4 activation before running it.";
-"workflow.error.ata_idle_seconds_invalid" = "ATA idle seconds must be a non-negative integer.";
-"workflow.error.ata_standby_invalid" = "ATA standby seconds must be blank or a non-negative integer.";
+"workflow.error.ata_idle_seconds_invalid" = "ATA idle time must be a non-negative number of seconds.";
+"workflow.error.ata_standby_invalid" = "ATA standby time must be blank or a non-negative number of seconds.";
 "workflow.error.deploy_options_invalid" = "Install / Update options are invalid.";
 "workflow.error.deploy_plan_not_ready" = "The Install / Update plan is not ready.";
 "workflow.error.deploy_plan_stale" = "Review and regenerate the Install / Update plan before continuing.";
@@ -611,7 +605,7 @@
 "workflow.error.fsck_plan_not_ready" = "The fsck plan is not ready.";
 "workflow.error.fsck_plan_stale" = "Review and regenerate the fsck plan before running it.";
 "workflow.error.fsck_target_required" = "Select a mounted HFS volume before planning fsck.";
-"workflow.error.mount_wait_invalid" = "Mount wait must be a non-negative integer.";
+"workflow.error.mount_wait_invalid" = "Mount wait time must be a non-negative integer.";
 "workflow.error.operation_already_running" = "Another operation is already running.";
 "workflow.error.operation_could_not_start" = "Operation could not start.";
 "workflow.error.repair_xattrs_depth_invalid" = "Max depth must be empty or a non-negative integer.";
@@ -670,13 +664,13 @@
 "password.hide" = "Hide Password";
 "password.show" = "Show Password";
 "profile_editor.advanced" = "Advanced";
-"profile_editor.advanced.deploy_notice" = "Run \"Install / Update Samba\" to apply these settings to your device.";
+"profile_editor.advanced.deploy_notice" = "Save, then run “Install / Update Samba” to apply.";
 "profile_editor.display_name" = "Display Name";
 "profile_editor.error.duplicate_host" = "Another saved device already uses this host.";
 "profile_editor.error.host_required" = "Host is required.";
-"profile_editor.error.ata_idle_seconds_invalid" = "ATA idle seconds must be a non-negative integer.";
-"profile_editor.error.ata_standby_invalid" = "ATA standby seconds must be blank or a non-negative integer.";
-"profile_editor.error.mount_wait_invalid" = "Mount wait must be a non-negative integer.";
+"profile_editor.error.ata_idle_seconds_invalid" = "ATA idle time must be a non-negative number of seconds.";
+"profile_editor.error.ata_standby_invalid" = "ATA standby time must be blank or a non-negative number of seconds.";
+"profile_editor.error.mount_wait_invalid" = "Mount wait time must be a non-negative integer.";
 "profile_editor.error.password_required" = "A saved password is required to change the host.";
 "profile_editor.reset" = "Reset";
 "profile_editor.save" = "Save Profile";
@@ -745,7 +739,7 @@
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.1" = "Reboot the device.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.2" = "Wait for SSH to come back.";
 "backend.recovery.remote_error.ssh_timeout_slow_device.action.3" = "Retry the operation.";
-"screen.readiness" = "Readiness";
+"screen.readiness" = "App readiness";
 "sidebar.add_airport_device" = "Add Device";
 "sidebar.all_airport_devices" = "All Devices";
 "sidebar.activity" = "Activity";
@@ -782,7 +776,7 @@
 "timeline.operation.doctor" = "Checkup";
 "timeline.operation.flash" = "Persistent NetBSD4 Boot Hook";
 "timeline.operation.fsck" = "Disk Repair";
-"timeline.operation.reachability" = "Reachability";
+"timeline.operation.reachability" = "Connection availability";
 "timeline.operation.readiness" = "App Readiness";
 "timeline.operation.repair_xattrs" = "File Metadata Repair";
 "timeline.operation.ssh_access" = "SSH Access";
@@ -816,8 +810,6 @@
 "timeline.deploy.detail.resolve_managed_target" = "Resolving the installation target and probing SSH.";
 "timeline.deploy.detail.select_payload_home" = "Selecting a writable payload directory.";
 "timeline.deploy.detail.upload_boot_files" = "Copying boot scripts to /mnt/Flash.";
-"timeline.deploy.detail.upload_mdns_advertiser" = "Copying mdns to the payload volume and flash.";
-"timeline.deploy.detail.upload_nbns_advertiser" = "Copying nbns to the payload volume.";
 "timeline.deploy.detail.upload_discovery" = "Copying the discovery service to the payload volume and flash.";
 "timeline.deploy.detail.upload_payload" = "Uploading managed SMB payload files.";
 "timeline.deploy.detail.upload_runtime_config" = "Writing runtime settings to /mnt/Flash.";
@@ -831,25 +823,23 @@
 "timeline.deploy.detail.wait_for_reboot_up" = "Device went down; waiting for it to come back up.";
 "timeline.deploy.title.build_deployment_plan" = "Prepare Install Plan";
 "timeline.deploy.title.check_compatibility" = "Check Device Compatibility";
-"timeline.deploy.title.flush_payload_upload" = "Flush to Disk";
+"timeline.deploy.title.flush_payload_upload" = "Flush writes to disk";
 "timeline.deploy.title.load_config" = "Read Configuration";
 "timeline.deploy.title.post_reboot_activation" = "Start SMB After Reboot";
 "timeline.deploy.title.post_reboot_boot_settle" = "Let Device Finish Booting";
-"timeline.deploy.title.post_activation_settle" = "Let Runtime Settle";
+"timeline.deploy.title.post_activation_settle" = "Wait for services to settle";
 "timeline.deploy.title.post_upload_actions" = "Apply File Permissions";
 "timeline.deploy.title.pre_upload_actions" = "Stop Existing Runtime";
 "timeline.deploy.title.prepare_deployment_files" = "Build Runtime Config";
 "timeline.deploy.title.check_flash_capacity" = "Check Flash Capacity";
 "timeline.activate.title.probe_runtime" = "Check Existing Runtime";
-"timeline.activate.title.post_activation_settle" = "Let Runtime Settle";
+"timeline.activate.title.post_activation_settle" = "Wait for services to settle";
 "timeline.deploy.title.probe_runtime" = "Check Boot Startup";
 "timeline.deploy.title.read_mast" = "Find Payload Volume";
 "timeline.deploy.title.reboot" = "Request Reboot";
 "timeline.deploy.title.resolve_managed_target" = "Connect to Device";
 "timeline.deploy.title.select_payload_home" = "Select Payload Folder";
 "timeline.deploy.title.upload_boot_files" = "Upload Boot Files";
-"timeline.deploy.title.upload_mdns_advertiser" = "Upload mdns";
-"timeline.deploy.title.upload_nbns_advertiser" = "Upload nbns";
 "timeline.deploy.title.upload_discovery" = "Upload discovery service";
 "timeline.deploy.title.upload_payload" = "Upload Payload";
 "timeline.deploy.title.upload_runtime_config" = "Upload Runtime Config";
@@ -860,7 +850,7 @@
 "timeline.deploy.title.verify_runtime_activation" = "Verify SMB Startup";
 "timeline.deploy.title.verify_runtime_reboot" = "Verify SMB Startup";
 "timeline.deploy.title.wait_for_reboot_down" = "Wait for Device Restart";
-"timeline.deploy.title.wait_for_reboot_up" = "Device Went Down";
+"timeline.deploy.title.wait_for_reboot_up" = "Device is offline";
 "timeline.stage.checking_bundled_files" = "Checking Bundled Files";
 "timeline.stage.checking_runtime" = "Checking SMB";
 "timeline.stage.checking_ssh" = "Checking SSH";
@@ -894,18 +884,17 @@
 "timeline.stage.verifying_smb" = "Verifying SMB";
 "timeline.stage.waiting_for_device" = "Waiting for Device";
 "toggle.enable_debug_logging" = "Enable Debug Logging";
-"toggle.enable_nbns" = "Enable NBNS";
-"toggle.internal_share_use_disk_root" = "Internal Share Uses Disk Root";
-"toggle.smb_browse_compatibility" = "Allow SMB Share Browsing";
+"toggle.internal_share_use_disk_root" = "Share internal disk root";
+"toggle.smb_browse_compatibility" = "Allow SMB share browsing";
 "toggle.mdns_advertise_afp" = "Advertise AFP over Bonjour";
 "toggle.mdns_advertise_afp.help" = "Advertise AFP over Bonjour. Leave off: macOS 26.x/27 hides Time Capsules that advertise AFP.";
-"toggle.any_protocol" = "Allow Any SMB Protocol";
-"toggle.require_smb_encryption" = "Require SMB Encryption";
-"toggle.force_disable_smb_signing_and_encryption" = "Force Disable SMB Signing and Encryption";
-"toggle.force_disable_smb_signing_and_encryption.note" = "May improve transfer speed when a client requires signing, but weakens SMB transport security.";
-"toggle.use_netatalk_metadata" = "Use Netatalk for metadata";
+"toggle.any_protocol" = "Allow any SMB protocol";
+"toggle.require_smb_encryption" = "Require SMB encryption";
+"toggle.force_disable_smb_signing_and_encryption" = "Disable SMB signing and encryption";
+"toggle.force_disable_smb_signing_and_encryption.note" = "Default setting. Allows faster transfers.";
+"toggle.use_netatalk_metadata" = "Use Netatalk metadata";
 "toggle.enable_vfs_aio_fork" = "Enable vfs_aio_fork";
-"toggle.force_debug_logging" = "Force Debug Logging";
+"toggle.force_debug_logging" = "Enable debug logging";
 "toggle.no_reboot" = "No Reboot";
 "toggle.no_wait" = "No Wait";
 "toggle.repair_xattrs_fix_permissions" = "Fix Permissions";
@@ -934,3 +923,51 @@
 "timeline.deploy.detail.upload_rsync" = "Copying rsync and its daemon configuration to the payload volume.";
 "timeline.deploy.title.upload_rsync" = "Upload rsync";
 "toggle.enable_rsync" = "Enable rsync";
+
+"settings.group.disk" = "Disk timing";
+
+"settings.group.sharing" = "Sharing & discovery";
+
+"settings.group.storage" = "Storage & metadata";
+
+"settings.group.security" = "SMB security";
+
+"settings.group.performance" = "Performance & diagnostics";
+
+"settings.seconds" = "seconds";
+
+"settings.unchanged" = "Unchanged";
+
+"profile_editor.details" = "Profile details";
+
+"settings.note.mount" = "Wait per mount attempt during installation.";
+
+"settings.note.idle" = "0 disables the idle timer.";
+
+"settings.note.standby" = "Blank keeps the current setting; 0 disables standby.";
+
+"settings.note.nbns" = "Apple’s built-in NetBIOS discovery runs automatically.";
+
+"settings.note.rsync" = "Enable rsync service";
+
+"settings.note.browsing" = "List shares before login; files still require authentication.";
+
+"settings.note.afp" = "Enable Bonjour advertising for AFP. Causes compatibility issues with macOS 27";
+
+"settings.note.root" = "Share the internal disk root instead of Apple’s default ShareRoot";
+
+"settings.note.metadata" = "Use Netatalk-compatible Mac metadata.";
+
+"settings.note.protocol" = "Enable insecure SMB1 instead of limiting to SMB2/3.";
+
+"settings.note.encryption" = "Require encrypted SMB3 connections. Much slower.";
+
+"settings.note.aio" = "Use extra processes for disk I/O; may use more memory.";
+
+"settings.note.debug" = "Detailed logs; can use significant disk space.";
+
+"settings.mount" = "Mount wait";
+
+"settings.idle" = "ATA idle";
+
+"settings.standby" = "ATA standby";

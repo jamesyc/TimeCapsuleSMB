@@ -1318,6 +1318,20 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["stage"], "run_fsck")
         self.assertIn("Disk repair stopped early during fsck", finished["error"])
 
+    def test_deploy_rejects_removed_nbns_option_before_device_access(self) -> None:
+        for value in (False, True):
+            with self.subTest(value=value):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.deploy.load_request_config") as load_config:
+                    rc = service.run_api_request(
+                        {"operation": "deploy", "params": {"nbns_enabled": value}}, collector.sink,
+                    )
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "invalid_params")
+                self.assertIn("always enabled", error["message"])
+                load_config.assert_not_called()
+
     def test_dispatcher_emits_app_operation_finish_fields_in_telemetry(self) -> None:
         collector = CollectingSink()
 
@@ -1328,7 +1342,7 @@ class AppApiTests(unittest.TestCase):
                 device_os_version="NetBSD 6.0 (earmv4)",
                 device_model="TimeCapsule8,119",
                 device_syap="119",
-                nbns_enabled=False,
+                nbns_enabled=True,
                 reboot_was_attempted=True,
                 device_came_back_after_reboot=True,
             )
@@ -1347,12 +1361,12 @@ class AppApiTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
                         with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({"TC_CONFIGURE_ID": "cfg-1"})):
                             rc = service.run_api_request(
-                                {"operation": "deploy", "params": {"nbns_enabled": False}},
+                                {"operation": "deploy", "params": {}},
                                 collector.sink,
                             )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], False)
+        self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], True)
         finished = self._telemetry_client.emit.call_args_list[1].kwargs
         self.assertEqual(finished["result"], "success")
         self.assertEqual(finished["stage"], "verify_runtime_reboot")
@@ -1360,7 +1374,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["device_os_version"], "NetBSD 6.0 (earmv4)")
         self.assertEqual(finished["device_model"], "TimeCapsule8,119")
         self.assertEqual(finished["device_syap"], "119")
-        self.assertEqual(finished["nbns_enabled"], False)
+        self.assertEqual(finished["nbns_enabled"], True)
         self.assertEqual(finished["reboot_was_attempted"], True)
         self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertEqual(finished["details"]["payload_family"], "netbsd6_samba4")

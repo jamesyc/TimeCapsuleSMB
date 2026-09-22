@@ -198,7 +198,6 @@ def test_retry_deadlines_cleanup_and_eligibility(tmp_path):
 
 
 @pytest.mark.parametrize("facts,diskless", [
-    (NAT_OK.replace("nbns_enabled=1", "nbns_enabled=0"), False),
     (NAT_OK.replace("key=raNA status=ok value=1", "key=raNA status=abort value="), False),
     (NAT_OK.replace("family=inet addr=10.0.1.1", "family=inet6 addr=2001:db8::10")
            .replace("family=inet addr=192.168.1.10", "family=inet6 addr=2001:db8::11")
@@ -215,7 +214,7 @@ def test_ineligible_cold_start_does_not_spawn(rig, dnssd, facts, diskless):
         discovery.stop()
 
 
-def test_startup_hup_disable_and_child_death_lifecycle(rig, dnssd):
+def test_startup_hup_ipv4_loss_and_child_death_lifecycle(rig, dnssd):
     discovery = Discovery(rig)
     try:
         assert wait_for(lambda: len(adds(discovery)) == 3)
@@ -226,7 +225,7 @@ def test_startup_hup_disable_and_child_death_lifecycle(rig, dnssd):
         assert wait_for(lambda: event_lines(discovery.events).count("HUP") >= 1)
         assert len(adds(discovery)) == 3
 
-        discovery.replace(NAT_OK.replace("nbns_enabled=1", "nbns_enabled=0"))
+        discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
         assert wait_for(lambda: "STOP" in event_lines(discovery.events))
         assert discovery.proc.poll() is None
 
@@ -319,7 +318,7 @@ def test_term_ignoring_child_is_killed_and_reaped_within_bound(rig, dnssd):
         child = int(next(line.split()[1] for line in event_lines(discovery.events)
                          if line.startswith("START ")))
         started = time.monotonic()
-        discovery.replace(NAT_OK.replace("nbns_enabled=1", "nbns_enabled=0"))
+        discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
 
         def child_is_gone():
             try:
@@ -414,22 +413,24 @@ def test_repeated_child_death_preserves_bonjour_and_processes_callbacks(rig, dns
 
 
 @pytest.mark.parametrize('phase', ['registering', 'backoff'])
-@pytest.mark.parametrize('action', ['disable', 'term', 'parent-eof'])
+@pytest.mark.parametrize('action', ['ipv4-loss', 'term', 'parent-eof'])
 def test_recovery_can_be_cancelled_without_respawning(rig, dnssd, phase, action):
     parent_read, parent_write = os.pipe()
     # Parent EOF is tested with a real lifetime pipe on stdin, exactly as the
     # manager launches this role.
     discovery = Discovery(rig, mode='drop', shares=True, stdin=parent_read if action == 'parent-eof' else None)
     try:
-        connections = bonjour_connections(dnssd)
+        bonjour_connections(dnssd)
         assert wait_for(lambda: len(adds(discovery)) == 1)
         if phase == 'backoff':
             assert wait_for(lambda: 'STOP' in event_lines(discovery.events))
-        if action == 'disable':
-            discovery.replace(NAT_OK.replace('nbns_enabled=1', 'nbns_enabled=0'))
+        if action == 'ipv4-loss':
+            discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
             assert wait_for(lambda: 'STOP' in event_lines(discovery.events))
             time.sleep(2.5)  # Beyond the first retry deadline; no new child.
-            assert_bonjour_unchanged(discovery, dnssd, connections)
+            # Losing IPv4 can also change Bonjour’s eligible interfaces.
+            # Recovery must stop without terminating the discovery controller.
+            assert discovery.proc.poll() is None
         else:
             if action == 'term':
                 discovery.proc.terminate()
@@ -462,5 +463,16 @@ def test_retry_waits_for_valid_facts_without_dropping_bonjour(rig, dnssd):
         discovery.replace(NAT_OK)
         assert wait_for(lambda: len(adds(discovery)) == 6)
         assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        discovery.stop()
+
+
+@pytest.mark.parametrize("legacy", ["0", "1", "invalid", None])
+def test_legacy_nbns_setting_cannot_disable_native_discovery(rig, dnssd, legacy):
+    facts = NAT_OK.replace("nbns_enabled=1", "" if legacy is None else f"nbns_enabled={legacy}")
+    discovery = Discovery(rig, facts=facts)
+    try:
+        assert wait_for(lambda: len(adds(discovery)) == 3)
+        assert discovery.proc.poll() is None
     finally:
         discovery.stop()

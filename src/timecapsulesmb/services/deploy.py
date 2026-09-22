@@ -161,7 +161,6 @@ class PreparedDeployPlan:
 
 @dataclass(frozen=True)
 class DeployRuntimeConfig:
-    nbns_enabled: bool
     telemetry_enabled: bool = True
     rsync_enabled: bool = False
     debug_logging: bool | None = None
@@ -891,7 +890,6 @@ def upload_and_verify_deployment_payload(
     flash_config_text = render_flash_config_func(
         config,
         payload_home,
-        nbns_enabled=runtime_config.nbns_enabled,
         telemetry_enabled=runtime_config.telemetry_enabled,
         rsync_enabled=runtime_config.rsync_enabled,
         debug_logging=runtime_config.debug_logging,
@@ -1353,7 +1351,6 @@ def render_flash_runtime_config(
     config: AppConfig,
     payload_home: PayloadHome,
     *,
-    nbns_enabled: bool,
     telemetry_enabled: bool = True,
     rsync_enabled: bool = False,
     debug_logging: bool | None = None,
@@ -1472,7 +1469,6 @@ def render_flash_runtime_config(
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
         ("ATA_STANDBY", runtime_ata_standby),
-        ("NBNS_ENABLED", 1 if nbns_enabled else 0),
         ("RSYNC_ENABLED", 1 if rsync_enabled else 0),
         ("SMBD_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
         ("MDNS_DEBUG_LOGGING", 1 if effective_debug_logging else 0),

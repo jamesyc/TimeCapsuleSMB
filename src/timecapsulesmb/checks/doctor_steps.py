@@ -82,7 +82,6 @@ from timecapsulesmb.device.probe import (
     RuntimeNamingIdentityProbeResult,
     UsbPrinterProbeResult,
     flash_runtime_config_present_conn,
-    nbns_flash_config_enabled_conn,
     probe_connection_state,
     probe_managed_mdns_conn,
     probe_managed_rsync_conn,
@@ -1292,7 +1291,6 @@ def _select_smb_file_ops_share(
 
 
 def _add_nbns_results(
-    connection: SshConnection,
     *,
     proxied_ssh: bool,
     active_smb_conf: str | None,
@@ -1301,26 +1299,23 @@ def _add_nbns_results(
     add_result: Callable[[CheckResult], None],
 ) -> None:
     try:
-        if nbns_flash_config_enabled_conn(connection):
-            if proxied_ssh:
-                add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
-            else:
-                expected_name = parse_active_netbios_name(active_smb_conf or "")
-                if expected_name is None and runtime_naming_identity is not None:
-                    expected_name = runtime_naming_identity.netbios_name
-                if expected_name is None:
-                    add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
-                    return
-                ipv4_addresses = [address for address in reachable_addresses if _smb_target_family(address) == "ipv4"]
-                expected_ip = next((address for address in ipv4_addresses if not is_link_local_ipv4(address)), None)
-                if expected_ip is None and ipv4_addresses:
-                    expected_ip = ipv4_addresses[0]
-                if expected_ip is None:
-                    add_result(CheckResult("SKIP", "NBNS check skipped; no TCP-reachable IPv4 SMB address was discovered"))
-                    return
-                add_result(check_nbns_name_resolution(expected_name, expected_ip, expected_ip))
+        if proxied_ssh:
+            add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
         else:
-            add_result(CheckResult("SKIP", "NBNS responder not enabled"))
+            expected_name = parse_active_netbios_name(active_smb_conf or "")
+            if expected_name is None and runtime_naming_identity is not None:
+                expected_name = runtime_naming_identity.netbios_name
+            if expected_name is None:
+                add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
+                return
+            ipv4_addresses = [address for address in reachable_addresses if _smb_target_family(address) == "ipv4"]
+            expected_ip = next((address for address in ipv4_addresses if not is_link_local_ipv4(address)), None)
+            if expected_ip is None and ipv4_addresses:
+                expected_ip = ipv4_addresses[0]
+            if expected_ip is None:
+                add_result(CheckResult("SKIP", "NBNS check skipped; no TCP-reachable IPv4 SMB address was discovered"))
+                return
+            add_result(check_nbns_name_resolution(expected_name, expected_ip, expected_ip))
     except Exception as e:
         add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
 
@@ -2244,7 +2239,6 @@ def _doctor_check_nbns(
 
     result_start = sink.result_count()
     _add_nbns_results(
-        target.connection,
         proxied_ssh=target.proxied_ssh,
         active_smb_conf=smb_config.text,
         runtime_naming_identity=naming.identity,

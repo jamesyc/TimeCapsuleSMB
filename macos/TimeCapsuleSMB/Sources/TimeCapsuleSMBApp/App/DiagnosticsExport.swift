@@ -212,7 +212,6 @@ struct DiagnosticsExportBuilder {
         prefix: String,
         to lines: inout [String]
     ) {
-        append("\(prefix) NBNS", value: settings.nbnsEnabled, to: &lines)
         append("\(prefix) rsync", value: settings.rsyncEnabled, to: &lines)
         append("\(prefix) Internal Share Uses Disk Root", value: settings.internalShareUseDiskRoot, to: &lines)
         append("\(prefix) SMB Browse Compatibility", value: settings.smbBrowseCompatibility, to: &lines)

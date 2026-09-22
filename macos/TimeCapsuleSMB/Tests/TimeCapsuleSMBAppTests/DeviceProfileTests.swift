@@ -117,6 +117,16 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertNil(older.diagnosticText)
     }
 
+    func testLegacyNBNSPreferenceIsIgnoredAndNotSaved() throws {
+        for enabled in [false, true] {
+            let data = try JSONSerialization.data(withJSONObject: ["nbnsEnabled": enabled])
+            let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+            XCTAssertEqual(settings, .default)
+            let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any])
+            XCTAssertNil(saved["nbnsEnabled"])
+        }
+    }
+
     func testProfileSettingsDecodeMissingNewKeysWithDefaults() throws {
         let data = Data("""
         {
@@ -128,7 +138,6 @@ final class DeviceProfileTests: XCTestCase {
 
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
-        XCTAssertEqual(settings.nbnsEnabled, false)
         XCTAssertEqual(settings.rsyncEnabled, false)
         XCTAssertEqual(settings.internalShareUseDiskRoot, false)
         XCTAssertEqual(settings.smbBrowseCompatibility, false)

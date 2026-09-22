@@ -40,7 +40,6 @@ final class DeployWorkflowStoreTests: XCTestCase {
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
         store.mountWait = "45"
         store.noWait = true
-        store.nbnsEnabled = false
         store.rsyncEnabled = true
         store.internalShareUseDiskRoot = true
         store.smbBrowseCompatibility = true
@@ -63,9 +62,9 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1)
         XCTAssertEqual(runner.calls[0].operation, "deploy")
         XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(true))
+        XCTAssertNil(runner.calls[0].params["nbns_enabled"])
         XCTAssertNil(runner.calls[0].params["no_reboot"])
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["nbns_enabled"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["rsync_enabled"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
@@ -123,7 +122,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .planFailed)
         XCTAssertEqual(store.error?.code, "ata_idle_seconds_invalid")
-        XCTAssertEqual(store.error?.message, "ATA idle seconds must be a non-negative integer.")
+        XCTAssertEqual(store.error?.message, "ATA idle time must be a non-negative number of seconds.")
         XCTAssertEqual(runner.calls, [])
 
         store.ataIdleSeconds = "300"
@@ -132,7 +131,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         XCTAssertEqual(store.state, .planFailed)
         XCTAssertEqual(store.error?.code, "ata_standby_invalid")
-        XCTAssertEqual(store.error?.message, "ATA standby seconds must be blank or a non-negative integer.")
+        XCTAssertEqual(store.error?.message, "ATA standby time must be blank or a non-negative number of seconds.")
         XCTAssertEqual(runner.calls, [])
     }
 

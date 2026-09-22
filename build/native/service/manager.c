@@ -244,7 +244,7 @@ static int samba_settings_equal(const struct tc_samba_settings *a, const struct 
     size_t i;
     for (i = 0; i < 2; i++) {
         struct tc_runtime_config *c = configs[i];
-        c->telemetry = c->nbns = c->discovery_debug = 0;
+        c->telemetry = c->discovery_debug = 0;
         c->mount_attempts = c->mount_timeout = c->mount_poll = c->ata_idle = 0;
         memset(c->ata_standby, 0, sizeof(c->ata_standby));
     }

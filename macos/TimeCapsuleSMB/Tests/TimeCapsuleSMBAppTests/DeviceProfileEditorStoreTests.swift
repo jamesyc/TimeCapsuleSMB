@@ -30,7 +30,6 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         var draft = DeviceProfileEditorDraft(
             displayName: "Office",
             host: "10.0.0.2",
-            nbnsEnabled: true,
             debugLogging: false,
             mountWaitSeconds: "0"
         )
@@ -84,12 +83,12 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .clean)
         XCTAssertFalse(store.canSave)
 
-        store.draft.nbnsEnabled.toggle()
+        store.draft.rsyncEnabled.toggle()
 
         XCTAssertEqual(store.state, .dirty)
         XCTAssertTrue(store.canSave)
 
-        store.draft.nbnsEnabled.toggle()
+        store.draft.rsyncEnabled.toggle()
 
         XCTAssertEqual(store.state, .clean)
         XCTAssertFalse(store.canSave)
@@ -125,7 +124,6 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
 
         store.draft.displayName = "Media Capsule"
-        store.draft.nbnsEnabled = false
         store.draft.internalShareUseDiskRoot = true
         store.draft.smbBrowseCompatibility = true
         store.draft.mdnsAdvertiseAFP = true
@@ -146,7 +144,6 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(saved.displayName, "Media Capsule")
         XCTAssertEqual(saved.host, "root@10.0.0.2")
         XCTAssertEqual(saved.settings, DeviceProfileSettings(
-            nbnsEnabled: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
@@ -248,7 +245,7 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         )
         let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
 
-        store.draft.nbnsEnabled.toggle()
+        store.draft.rsyncEnabled.toggle()
         store.replacementPassword = "new-password"
         XCTAssertTrue(store.canSave)
 
@@ -408,7 +405,6 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
         store.draft.displayName = "Updated Capsule"
         store.draft.host = "10.0.0.9"
-        store.draft.nbnsEnabled = false
         store.draft.internalShareUseDiskRoot = true
         store.draft.smbBrowseCompatibility = true
         store.draft.mdnsAdvertiseAFP = true
@@ -456,7 +452,6 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(saved.lastDeployState?.status, .succeeded)
         XCTAssertEqual(saved.runtimeState?.state, .installedVerified)
         XCTAssertEqual(saved.settings, DeviceProfileSettings(
-            nbnsEnabled: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,

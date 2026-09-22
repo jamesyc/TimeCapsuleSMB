@@ -26,19 +26,17 @@ static int config_item_bool(const struct config_item *item) {
 
 int device_facts_read_config(struct device_config *out, const char *path) {
     struct config_item items[] = {{"MDNS_ADVERTISE_AFP", "", 0},
-                                  {"NBNS_ENABLED", "", 0},
                                   {"SMBD_DEBUG_LOGGING", "", 0},
                                   {"MDNS_DEBUG_LOGGING", "", 0}};
     int smb_debug, mdns_debug;
     memset(out, 0, sizeof(*out));
     if (config_read_snapshot(path, items, sizeof(items) / sizeof(items[0])) != 0) {
-        out->advertise_afp = out->nbns_enabled = out->debug_logging = -1;
+        out->advertise_afp = out->debug_logging = -1;
         return -1;
     }
     out->advertise_afp = config_item_bool(&items[0]);
-    out->nbns_enabled = config_item_bool(&items[1]);
-    smb_debug = config_item_bool(&items[2]);
-    mdns_debug = config_item_bool(&items[3]);
+    smb_debug = config_item_bool(&items[1]);
+    mdns_debug = config_item_bool(&items[2]);
     out->debug_logging = smb_debug == 1 || mdns_debug == 1 ? 1 :
         smb_debug < 0 || mdns_debug < 0 ? -1 : 0;
     return 0;
@@ -178,7 +176,6 @@ int device_facts_parse_file(struct device_facts *out, FILE *fp) {
             strncpy(out->hostname, line + 10, sizeof(out->hostname) - 1);
         } else if (strncmp(line, "config: ", 8) == 0) {
             if (field(line + 8, "advertise_afp", a, sizeof(a), 0)) out->config.advertise_afp = atoi(a);
-            if (field(line + 8, "nbns_enabled", a, sizeof(a), 0)) out->config.nbns_enabled = atoi(a);
             if (field(line + 8, "debug_logging", a, sizeof(a), 0)) out->config.debug_logging = atoi(a);
         } else if (strncmp(line, "iflist: ", 8) == 0) {
             if (field(line + 8, "ok", a, sizeof(a), 0)) out->ifs_ok = atoi(a);

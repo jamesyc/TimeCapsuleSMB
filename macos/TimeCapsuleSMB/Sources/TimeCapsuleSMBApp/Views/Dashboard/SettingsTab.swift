@@ -17,11 +17,15 @@ struct SettingsTab: View {
                     DiagnosticsExportBuilder().build(context: appStore.diagnosticsExportContext(includeBackendEvents: true))
                 }
             )
-            SummaryGrid(rows: [
-                (L10n.string("advanced.profile_id"), profile.id),
-                (L10n.string("advanced.config"), profile.configPath),
-                (L10n.string("advanced.helper"), backend.helperPath.isEmpty ? L10n.string("value.auto") : backend.helperPath)
-            ])
+            DashboardDisclosureSection(title: L10n.string("profile_editor.details")) {
+                SummaryGrid(rows: [
+                    (L10n.string("advanced.profile_id"), profile.id),
+                    (L10n.string("advanced.config"), profile.configPath),
+                    (L10n.string("advanced.helper"), backend.helperPath.isEmpty ? L10n.string("value.auto") : backend.helperPath)
+                ], valueLineLimit: nil)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             EventList(events: session.events)
         }
     }
@@ -74,7 +78,9 @@ private struct DeviceProfileEditorView: View {
 
             DeviceProfileAdvancedSettingsView(store: store)
 
-            HStack {
+            Divider()
+
+            HStack(spacing: 10) {
                 Button {
                     Task { @MainActor in
                         await store.save(profile: profile)
@@ -82,6 +88,7 @@ private struct DeviceProfileEditorView: View {
                 } label: {
                     Label(L10n.string("profile_editor.save"), systemImage: "square.and.arrow.down")
                 }
+                .buttonStyle(.borderedProminent)
                 .disabled(!store.canSave)
 
                 Button {
@@ -128,110 +135,23 @@ private struct DeviceProfileAdvancedSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                    GridRow {
-                        Text(L10n.string("field.mount_wait"))
-                            .foregroundStyle(.secondary)
-                        TextField(L10n.string("field.mount_wait"), text: $store.draft.mountWaitSeconds)
-                            .frame(width: 160)
-                    }
-                    GridRow {
-                        Text(L10n.string("field.ata_idle_seconds"))
-                            .foregroundStyle(.secondary)
-                        TextField(L10n.string("field.ata_idle_seconds"), text: $store.draft.ataIdleSeconds)
-                            .frame(width: 160)
-                    }
-                    GridRow {
-                        Text(L10n.string("field.ata_standby"))
-                            .foregroundStyle(.secondary)
-                        TextField(L10n.string("field.ata_standby"), text: $store.draft.ataStandby)
-                            .frame(width: 160)
-                    }
-                    GridRow {
-                        Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.draft.nbnsEnabled)
-                        Toggle(L10n.string("toggle.enable_rsync"), isOn: $store.draft.rsyncEnabled)
-                    }
-                    GridRow {
-                        Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.draft.internalShareUseDiskRoot)
-                        Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $store.draft.smbBrowseCompatibility)
-                    }
-                    GridRow {
-                        Toggle(L10n.string("toggle.mdns_advertise_afp"), isOn: $store.draft.mdnsAdvertiseAFP)
-                            .help(L10n.string("toggle.mdns_advertise_afp.help"))
-                    }
-                    GridRow {
-                        Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $store.draft.fruitMetadataNetatalk)
-                        Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
-                    }
-                    GridRow {
-                        Toggle(L10n.string("toggle.enable_vfs_aio_fork"), isOn: $store.draft.vfsAIOForkEnabled)
-                            .gridCellColumns(2)
-                    }
-                    GridRow {
-                        Toggle(L10n.string("toggle.any_protocol"), isOn: anyProtocolBinding)
-                            .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: store.draft.requireSMBEncryption))
-                        Toggle(L10n.string("toggle.require_smb_encryption"), isOn: requireSMBEncryptionBinding)
-                            .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(
-                                anyProtocol: store.draft.anyProtocol,
-                                forceDisableSMBSigningAndEncryption: store.draft.forceDisableSMBSigningAndEncryption
-                            ))
-                    }
-                    GridRow {
-                        Toggle(
-                            L10n.string("toggle.force_disable_smb_signing_and_encryption"),
-                            isOn: forceDisableSMBSigningAndEncryptionBinding
-                        )
-                        .disabled(!SMBProtocolOptionPolicy.allowsForceDisableSMBSigningAndEncryption(
-                            requireSMBEncryption: store.draft.requireSMBEncryption
-                        ))
-                        .gridCellColumns(2)
-                    }
-                    GridRow {
-                        Text(L10n.string("toggle.force_disable_smb_signing_and_encryption.note"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .gridCellColumns(2)
-                    }
-                }
+                DeviceAdvancedSettingsFields(
+                    rsyncEnabled: $store.draft.rsyncEnabled,
+                    internalShareUseDiskRoot: $store.draft.internalShareUseDiskRoot,
+                    smbBrowseCompatibility: $store.draft.smbBrowseCompatibility,
+                    mdnsAdvertiseAFP: $store.draft.mdnsAdvertiseAFP,
+                    anyProtocol: $store.draft.anyProtocol,
+                    requireSMBEncryption: $store.draft.requireSMBEncryption,
+                    forceDisableSMBSigningAndEncryption: $store.draft.forceDisableSMBSigningAndEncryption,
+                    fruitMetadataNetatalk: $store.draft.fruitMetadataNetatalk,
+                    vfsAIOForkEnabled: $store.draft.vfsAIOForkEnabled,
+                    debugLogging: $store.draft.debugLogging,
+                    mountWaitSeconds: $store.draft.mountWaitSeconds,
+                    ataIdleSeconds: $store.draft.ataIdleSeconds,
+                    ataStandby: $store.draft.ataStandby
+                )
             }
+            .frame(maxWidth: 680, alignment: .leading)
         }
-    }
-
-    private var anyProtocolBinding: Binding<Bool> {
-        Binding(
-            get: { store.draft.anyProtocol },
-            set: { value in
-                store.draft.anyProtocol = value
-                if value {
-                    store.draft.requireSMBEncryption = false
-                }
-            }
-        )
-    }
-
-    private var requireSMBEncryptionBinding: Binding<Bool> {
-        Binding(
-            get: { store.draft.requireSMBEncryption },
-            set: { value in
-                store.draft.requireSMBEncryption = value
-                if value {
-                    store.draft.anyProtocol = false
-                    store.draft.forceDisableSMBSigningAndEncryption = false
-                }
-            }
-        )
-    }
-
-    private var forceDisableSMBSigningAndEncryptionBinding: Binding<Bool> {
-        Binding(
-            get: { store.draft.forceDisableSMBSigningAndEncryption },
-            set: { value in
-                store.draft.forceDisableSMBSigningAndEncryption = value
-                if value {
-                    store.draft.requireSMBEncryption = false
-                }
-            }
-        )
     }
 }

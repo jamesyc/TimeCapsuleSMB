@@ -125,7 +125,7 @@ static void errors_and_stale_replies(void) {
 static void eligibility_and_shutdown(void) {
     struct wcifsnd w;
     struct device_plan p = {0};
-    p.config.nbns_enabled = 1; p.status.validated = 1; p.link_count = 1;
+    p.status.validated = 1; p.link_count = 1;
     p.links[0].mask = SVC_SMB; p.links[0].addr_count = 1;
     p.links[0].addrs[0].family = AF_INET;
     assert(inet_pton(AF_INET, "192.0.2.1", &p.links[0].addrs[0].v4) == 1);
@@ -152,7 +152,7 @@ static void eligibility_and_shutdown(void) {
     p.status.validated = 0;
     wcifsnd_apply_plan(&w, &p, 3200);
     assert(w.phase == WC_ACTIVE && !signals); /* Retain an existing child. */
-    p.config.nbns_enabled = 0;
+    p.links[0].addr_count = 0; /* Losing IPv4 cancels recovery. */
     wcifsnd_apply_plan(&w, &p, 3300);
     assert(!w.desired && !w.failures && w.phase == WC_STOPPING);
     waited = 42;

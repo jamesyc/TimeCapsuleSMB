@@ -621,7 +621,7 @@ def test_schema_v2_payload_reports_plan_availability(cycle):
     assert payload['wan_setup_allowed'] is None and payload['disks_over_wan'] is None
     assert payload['guest_enabled'] is False
     assert payload['plan_error'] == 'mode'
-    assert payload['nbns_enabled'] is False
+    assert payload['nbns_enabled'] is True
     assert payload['debug_logging'] is False
     assert payload['advertise_afp'] is False
     assert 'mdns_daemon' not in payload and 'mdns_registrant_status' not in payload
@@ -643,7 +643,7 @@ def test_compact_settings_and_healthy_plan(cycle, rig, nbns, smb_debug, mdns_deb
         f'MDNS_DEBUG_LOGGING={mdns_debug}\nMDNS_ADVERTISE_AFP={afp}\n')
     assert run('false', TC_TEST_PLAN_MODE='nat').returncode == 0
     payload = state['payloads'][0]
-    assert payload['nbns_enabled'] == bool(nbns)
+    assert payload['nbns_enabled'] is True
     assert payload['debug_logging'] == bool(smb_debug or mdns_debug)
     assert payload['advertise_afp'] == bool(afp)
     assert 'plan_error' not in payload
@@ -671,9 +671,9 @@ def test_unreadable_and_invalid_config_are_not_reported_as_false(cycle, rig):
     root, *_ = rig
     (root / 'config').unlink()
     assert run('false', TC_TEST_PLAN_MODE='bridge').returncode == 0
-    assert all(state['payloads'][-1][key] is None for key in ('nbns_enabled', 'debug_logging', 'advertise_afp'))
+    assert all(state['payloads'][-1][key] is None for key in ('debug_logging', 'advertise_afp'))
     (root / 'config').write_text('NBNS_ENABLED=invalid\nMDNS_DEBUG_LOGGING=bad\nSMBD_DEBUG_LOGGING=1\n')
     assert run('false', TC_TEST_PLAN_MODE='bridge').returncode == 0
-    assert state['payloads'][-1]['nbns_enabled'] is None
+    assert state['payloads'][-1]['nbns_enabled'] is True
     assert state['payloads'][-1]['debug_logging'] is True
     assert state['payloads'][-1]['advertise_afp'] is False

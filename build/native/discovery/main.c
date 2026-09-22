@@ -22,7 +22,7 @@ static void publish_readiness(const struct wcifsnd *nbns, const struct config *c
 #if defined(__NetBSD__)
     const char *state = nbns->phase == WC_ACTIVE ? "ready" :
         nbns->phase != WC_OFF ? "starting" :
-        cfg->diskless || nbns->enabled == 0 ? "disabled" : "waiting";
+        cfg->diskless ? "disabled" : "waiting";
     setproctitle("role=discovery nbns=%s mode=%s %s--netbios-name %s", state,
                  cfg->diskless ? "diskless" : "payload",
                  cfg->diskless ? "--diskless " : "", netbios);

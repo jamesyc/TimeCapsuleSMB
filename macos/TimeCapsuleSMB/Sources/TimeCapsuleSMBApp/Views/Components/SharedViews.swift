@@ -25,6 +25,7 @@ struct WarningBanner: View {
 
 struct SummaryGrid: View {
     let rows: [(String, String)]
+    var valueLineLimit: Int? = 2
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
@@ -32,7 +33,7 @@ struct SummaryGrid: View {
                 GridRow {
                     Text(row.0).foregroundStyle(.secondary)
                     Text(row.1)
-                        .lineLimit(2)
+                        .lineLimit(valueLineLimit)
                         .truncationMode(.middle)
                 }
             }

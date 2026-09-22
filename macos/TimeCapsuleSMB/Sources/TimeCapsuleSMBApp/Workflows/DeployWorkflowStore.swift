@@ -2,7 +2,6 @@ import Combine
 import Foundation
 
 struct DeployOptions: Equatable {
-    let nbnsEnabled: Bool
     let rsyncEnabled: Bool
     let noWait: Bool
     let internalShareUseDiskRoot: Bool
@@ -19,7 +18,6 @@ struct DeployOptions: Equatable {
     let mountWait: Int
 
     init(
-        nbnsEnabled: Bool,
         rsyncEnabled: Bool = false,
         noWait: Bool,
         internalShareUseDiskRoot: Bool,
@@ -35,7 +33,6 @@ struct DeployOptions: Equatable {
         ataStandby: Int? = DeviceProfileSettings.default.ataStandby,
         mountWait: Int
     ) {
-        self.nbnsEnabled = nbnsEnabled
         self.rsyncEnabled = rsyncEnabled
         self.noWait = noWait
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
@@ -90,9 +87,6 @@ enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
 
 @MainActor
 final class DeployWorkflowStore: ObservableObject {
-    @Published var nbnsEnabled = true {
-        didSet { reconcilePlanFreshness() }
-    }
     @Published var rsyncEnabled = false {
         didSet { reconcilePlanFreshness() }
     }
@@ -253,7 +247,6 @@ final class DeployWorkflowStore: ObservableObject {
             params: OperationParams.Deploy.params(
                 dryRun: true,
                 noWait: options.noWait,
-                nbnsEnabled: options.nbnsEnabled,
                 rsyncEnabled: options.rsyncEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
@@ -309,7 +302,6 @@ final class DeployWorkflowStore: ObservableObject {
             params: OperationParams.Deploy.params(
                 dryRun: false,
                 noWait: options.noWait,
-                nbnsEnabled: options.nbnsEnabled,
                 rsyncEnabled: options.rsyncEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 smbBrowseCompatibility: options.smbBrowseCompatibility,
@@ -371,7 +363,6 @@ final class DeployWorkflowStore: ObservableObject {
             return nil
         }
         return DeployOptions(
-            nbnsEnabled: nbnsEnabled,
             rsyncEnabled: rsyncEnabled,
             noWait: noWait,
             internalShareUseDiskRoot: internalShareUseDiskRoot,

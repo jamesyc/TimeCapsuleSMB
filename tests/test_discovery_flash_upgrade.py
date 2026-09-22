@@ -156,7 +156,7 @@ class Device:
     def install(self):
         upload_and_verify_deployment_payload(
             AppConfig.from_values({}), self.connection, self.prepared,
-            DeployRuntimeConfig(nbns_enabled=True),
+            DeployRuntimeConfig(),
             callbacks=OperationCallbacks(set_stage=self.stage),
             run_remote_actions_func=self.actions, migrate_xattrs_func=self.migrate,
             verify_payload_home=lambda *a, **k: PayloadVerificationResult(True, 'present'),

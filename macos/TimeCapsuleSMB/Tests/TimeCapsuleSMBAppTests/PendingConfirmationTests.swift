@@ -3,7 +3,7 @@ import XCTest
 
 final class PendingConfirmationTests: XCTestCase {
     func testLocalizedStringsLoadFromResourceBundle() {
-        XCTAssertEqual(L10n.string("screen.readiness"), "Readiness")
+        XCTAssertEqual(L10n.string("screen.readiness"), "App readiness")
         XCTAssertEqual(L10n.string("toolbar.cancel"), "Cancel")
         XCTAssertEqual(L10n.string("toolbar.diagnostics"), "Diagnostics")
         XCTAssertEqual(L10n.string("helper.error.cancelled"), "Operation cancelled.")
@@ -25,7 +25,6 @@ final class PendingConfirmationTests: XCTestCase {
         let params = OperationParams.Deploy.params(
             dryRun: false,
             noWait: true,
-            nbnsEnabled: true,
             debugLogging: true,
             ataIdleSeconds: 0,
             ataStandby: 0,
@@ -37,7 +36,6 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertNil(params["confirm_reboot"])
         XCTAssertNil(params["confirm_netbsd4_activation"])
         XCTAssertNil(params["no_reboot"])
-        XCTAssertEqual(params["nbns_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(true))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .number(0))
@@ -58,7 +56,6 @@ final class PendingConfirmationTests: XCTestCase {
         let params = OperationParams.Deploy.params(
             dryRun: true,
             noWait: false,
-            nbnsEnabled: true,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
@@ -155,7 +152,6 @@ final class PendingConfirmationTests: XCTestCase {
 
     func testUpdateConfigSettingsParamsCarryEveryEnvironmentBackedProfileSetting() {
         let settings = DeviceProfileSettings(
-            nbnsEnabled: false,
             rsyncEnabled: true,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
@@ -184,9 +180,29 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["debug_logging"], .bool(true))
         XCTAssertEqual(params["ata_idle_seconds"], .number(0))
         XCTAssertEqual(params["ata_standby"], .string(""))
-        XCTAssertNil(params["nbns_enabled"])
         XCTAssertNil(params["rsync_enabled"])
         XCTAssertNil(params["mount_wait"])
+    }
+
+    func testChineseFirmwareRestoreKeepsBankAndHostInTheirRoles() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        L10n.apply(language: .simplifiedChinese)
+        let event = BackendEvent(
+            type: "error", operation: "flash", code: "confirmation_required",
+            details: .object([
+                "confirmation_id": .string("restore-confirmation"),
+                "presentation_id": .string("flash.restore_write"),
+                "presentation_values": .object([
+                    "target_bank": .string("bank-B"),
+                    "host": .string("capsule.example")
+                ])
+            ])
+        )
+        let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+        XCTAssertEqual(confirmation.title, "恢复苹果固件？")
+        XCTAssertEqual(confirmation.message, "将固件区 bank-B（位于 capsule.example）恢复为苹果原厂固件，并在验证后重启？")
+        XCTAssertEqual(confirmation.actionTitle, "写入固件")
     }
 
     func testPendingConfirmationBuildsFromBackendEvent() throws {

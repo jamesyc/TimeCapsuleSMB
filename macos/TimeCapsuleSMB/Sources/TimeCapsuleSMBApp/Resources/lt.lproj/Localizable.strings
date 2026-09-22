@@ -6,7 +6,6 @@
 "action.cancel" = "Atšaukti";
 "action.confirm" = "Patvirtinti";
 "action.deploy" = "Diegti";
-"action.deploy_allow_reboot" = "Diegti ir leisti paleisti iš naujo";
 "action.done" = "Atlikta";
 "action.ok" = "Gerai";
 "action.repair_xattrs" = "Taisyti xattrs";
@@ -252,8 +251,6 @@
 "deploy.presentation.row.pre_upload_actions" = "Veiksmai prieš įkėlimą";
 "deploy.presentation.row.reboot" = "Paleidimas iš naujo";
 "deploy.presentation.row.target" = "Tikslas";
-"deploy.presentation.title.netbsd4" = "Įdiegti Samba ir paleisti aplinką";
-"deploy.presentation.title.standard" = "Įdiegti Samba";
 "deploy.presentation.warning.netbsd4_activation" = "Šiam NetBSD4 įrenginiui reikalingas aktyvavimo žingsnis prieš Samba bus paruošta.";
 "deploy.presentation.warning.netbsd4_reboot_then_activate" = "Šis NetBSD4 diegimas pirmiausia paleis iš naujo, tada paleis Samba po SSH prisijungimo.";
 "deploy.presentation.warning.no_wait_post_reboot_activation" = "Parinktis „Be laukimo“ grįš po paleidimo iš naujo užklausos. Samba aktyvavimas nebus paleistas automatiškai po SSH prisijungimo.";
@@ -271,16 +268,13 @@
 "install.completion.title.finished" = "Diegimas / atnaujinimas baigtas";
 "install.completion.title.verified" = "Diegimas / atnaujinimas patvirtintas";
 "install.completion.warning.netbsd4" = "NetBSD4 įrenginiams gali reikėti aktyvavimo po vėlesnio paleidimo iš naujo, jei įkrovos įskiepis nepataisytas.";
-"install.plan.downtime.netbsd4" = "Paprastai mažiau nei minutė, kol Samba paleidžiama be paleidimo iš naujo.";
 "install.plan.downtime.no_wait" = "Programa paprašys paleisti iš naujo ir iš karto grįš.";
-"install.plan.downtime.none" = "Paleidimo iš naujo nenumatoma.";
 "install.plan.downtime.reboot" = "Kelios minutės, kol įrenginys paleidžiamas iš naujo.";
 "install.plan.row.expected_downtime" = "Numatomas prastovos laikas";
 "install.plan.row.remote_actions" = "Nuotoliniai veiksmai";
 "install.plan.row.uploads" = "Įkėlimai";
 "install.plan.section.device_actions" = "Įrenginio veiksmai";
 "install.plan.section.target" = "Tikslas";
-"install.plan.title.netbsd4" = "Įdiegti / atnaujinti Samba ir paleisti aplinką";
 "install.plan.title.reboot_no_wait" = "Įdiegti / atnaujinti Samba ir prašyti paleisti iš naujo";
 "install.plan.title.reboot_then_activate" = "Įdiegti / atnaujinti Samba, paleisti iš naujo ir paleisti aplinką";
 "install.plan.title.standard" = "Įdiegti / atnaujinti Samba";
@@ -674,7 +668,7 @@
 "password.hide" = "Slėpti slaptažodį";
 "password.show" = "Rodyti slaptažodį";
 "profile_editor.advanced" = "Išplėstiniai";
-"profile_editor.advanced.deploy_notice" = "Paleiskite „Įdiegti / atnaujinti Samba“, kad pritaikytumėte šiuos nustatymus įrenginiui.";
+"profile_editor.advanced.deploy_notice" = "Išsaugokite, tada paleiskite „Įdiegti / Atnaujinti Samba“.";
 "profile_editor.display_name" = "Rodomas pavadinimas";
 "profile_editor.error.duplicate_host" = "Kitas išsaugotas įrenginys jau naudoja šį kompiuterio pavadinimą.";
 "profile_editor.error.host_required" = "Kompiuterio pavadinimas būtinas.";
@@ -819,8 +813,6 @@
 "timeline.deploy.detail.resolve_managed_target" = "Nustatomas diegimo tikslas ir tikrinamas SSH.";
 "timeline.deploy.detail.select_payload_home" = "Pasirenkamas įrašomas apkrovos katalogas.";
 "timeline.deploy.detail.upload_boot_files" = "Kopijuojami paleisties scenarijai į /mnt/Flash.";
-"timeline.deploy.detail.upload_mdns_advertiser" = "Kopijuojamas mdns į apkrovos tomą ir flash.";
-"timeline.deploy.detail.upload_nbns_advertiser" = "Kopijuojamas nbns į apkrovos tomą.";
 "timeline.deploy.detail.upload_payload" = "Įkeliami valdomi SMB apkrovos failai.";
 "timeline.deploy.detail.upload_runtime_config" = "Aplinkos nustatymai įrašomi į /mnt/Flash.";
 "timeline.deploy.detail.upload_smbd" = "Kopijuojamas smbd į apkrovos tomą.";
@@ -849,8 +841,6 @@
 "timeline.deploy.title.resolve_managed_target" = "Prisijungti prie įrenginio";
 "timeline.deploy.title.select_payload_home" = "Pasirinkti apkrovos aplanką";
 "timeline.deploy.title.upload_boot_files" = "Įkelti paleisties failus";
-"timeline.deploy.title.upload_mdns_advertiser" = "Įkelti mdns";
-"timeline.deploy.title.upload_nbns_advertiser" = "Įkelti nbns";
 "timeline.deploy.title.upload_payload" = "Įkelti apkrovą";
 "timeline.deploy.title.upload_runtime_config" = "Įkelti aplinkos konfigūraciją";
 "timeline.deploy.title.upload_smbd" = "Įkelti smbd";
@@ -894,18 +884,17 @@
 "timeline.stage.verifying_smb" = "Tikrinamas SMB";
 "timeline.stage.waiting_for_device" = "Laukiama įrenginio";
 "toggle.enable_debug_logging" = "Įjungti derinimo žurnalus";
-"toggle.enable_nbns" = "Įjungti NBNS";
-"toggle.internal_share_use_disk_root" = "Vidinis bendrinimas naudoja disko šaknį";
+"toggle.internal_share_use_disk_root" = "Bendrinti vidinio disko šaknį";
 "toggle.smb_browse_compatibility" = "Leisti SMB bendrinimo naršymą";
 "toggle.mdns_advertise_afp" = "Skelbti AFP per Bonjour";
 "toggle.mdns_advertise_afp.help" = "Skelbti AFP per Bonjour. Palikite išjungtą: macOS 26.x/27 slepia Time Capsule, kurios skelbia AFP.";
 "toggle.any_protocol" = "Leisti bet kurį SMB protokolą";
 "toggle.require_smb_encryption" = "Reikalauti SMB šifravimo";
-"toggle.force_disable_smb_signing_and_encryption" = "Priverstinai išjungti SMB pasirašymą ir šifravimą";
-"toggle.force_disable_smb_signing_and_encryption.note" = "Gali padidinti spartą, kai klientas reikalauja pasirašymo, tačiau sumažina SMB perdavimo saugumą.";
-"toggle.use_netatalk_metadata" = "Naudoti Netatalk metaduomenims";
+"toggle.force_disable_smb_signing_and_encryption" = "Išjungti SMB pasirašymą ir šifravimą";
+"toggle.force_disable_smb_signing_and_encryption.note" = "Numatytoji nuostata. Leidžia greičiau perduoti duomenis.";
+"toggle.use_netatalk_metadata" = "Naudoti Netatalk metaduomenis";
 "toggle.enable_vfs_aio_fork" = "Įjungti vfs_aio_fork";
-"toggle.force_debug_logging" = "Priverstiniai derinimo žurnalai";
+"toggle.force_debug_logging" = "Įjungti derinimo žurnalą";
 "toggle.no_reboot" = "Be paleidimo iš naujo";
 "toggle.no_wait" = "Be laukimo";
 "toggle.repair_xattrs_fix_permissions" = "Taisyti leidimus";
@@ -934,3 +923,51 @@
 "timeline.deploy.detail.upload_rsync" = "„rsync“ ir jo tarnybos konfigūracija kopijuojami į apkrovos tomą.";
 "timeline.deploy.title.upload_rsync" = "Įkelti rsync";
 "toggle.enable_rsync" = "Įjungti rsync";
+
+"settings.group.disk" = "Disko laikmačiai";
+
+"settings.group.sharing" = "Bendrinimas ir aptikimas";
+
+"settings.group.storage" = "Saugykla ir metaduomenys";
+
+"settings.group.security" = "SMB sauga";
+
+"settings.group.performance" = "Našumas ir diagnostika";
+
+"settings.seconds" = "sekundės";
+
+"settings.unchanged" = "Nekeisti";
+
+"profile_editor.details" = "Profilio informacija";
+
+"settings.note.mount" = "Laukimo laikas kiekvienam prijungimo bandymui diegiant.";
+
+"settings.note.idle" = "0 išjungia neveiklos laikmatį.";
+
+"settings.note.standby" = "Tuščia reikšmė nekeičia nuostatos; 0 išjungia budėjimą.";
+
+"settings.note.nbns" = "Integruota „Apple“ NetBIOS aptikimo paslauga veikia automatiškai.";
+
+"settings.note.rsync" = "Įjungti rsync paslaugą";
+
+"settings.note.browsing" = "Rodyti bendrinimus prieš prisijungiant; failams vis tiek reikia autentifikavimo.";
+
+"settings.note.afp" = "Įjungti AFP skelbimą per Bonjour. Sukelia suderinamumo problemų su macOS 27";
+
+"settings.note.root" = "Bendrinti vidinio disko šakninį katalogą, o ne numatytąjį „Apple“ ShareRoot";
+
+"settings.note.metadata" = "Naudoti su Netatalk suderinamus „Mac“ metaduomenis.";
+
+"settings.note.protocol" = "Įjungti nesaugų SMB1, o ne apsiriboti SMB2/3.";
+
+"settings.note.encryption" = "Reikalauti šifruotų SMB3 ryšių. Gerokai lėčiau.";
+
+"settings.note.aio" = "Papildomi disko įvesties ir išvesties procesai gali naudoti daugiau atminties.";
+
+"settings.note.debug" = "Išsamūs žurnalai gali užimti daug vietos diske.";
+
+"settings.mount" = "Prijungimo laukimas";
+
+"settings.idle" = "ATA neveikla";
+
+"settings.standby" = "ATA budėjimas";

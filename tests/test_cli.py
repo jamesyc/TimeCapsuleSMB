@@ -5200,7 +5200,7 @@ class CliTests(unittest.TestCase):
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", flash_config)
         self.assertIn("TELEMETRY=true\n", flash_config)
         self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
-        self.assertIn("NBNS_ENABLED=1\n", flash_config)
+        self.assertNotIn("NBNS_ENABLED=", flash_config)
         self.assertIn("ANY_PROTOCOL=0\n", flash_config)
         self.assertIn("VFS_AIO_FORK_ENABLED=0\n", flash_config)
         self.assertIn("MDNS_ADVERTISE_AFP=0\n", flash_config)
@@ -5231,23 +5231,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertIn("TELEMETRY=false\n", captured["flash_config"])
 
-    def test_deploy_no_nbns_writes_disabled_flash_config(self) -> None:
-        captured: dict[str, str] = {}
-
-        def fake_upload(_plan, *, connection, source_resolver, on_uploading=None, on_uploaded=None):
-            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
-
-        result = self.run_deploy_cli(
-            ["--no-nbns", "--yes"],
-            patch_actions=True,
-            patch_upload=True,
-            upload_side_effect=fake_upload,
-        )
-
-        self.assertEqual(result.rc, 0)
-        self.assertIn("NBNS_ENABLED=0\n", captured["flash_config"])
-        finished = self.telemetry_payload("deploy_finished")
-        self.assertFalse(finished["nbns_enabled"])
+    def test_deploy_rejects_removed_no_nbns_flag(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
+            deploy.main(["--no-nbns", "--dry-run"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("unrecognized arguments: --no-nbns", stderr.getvalue())
 
     def test_deploy_enable_rsync_writes_flag_and_always_uploads_daemon_config(self) -> None:
         captured: dict[str, str] = {}

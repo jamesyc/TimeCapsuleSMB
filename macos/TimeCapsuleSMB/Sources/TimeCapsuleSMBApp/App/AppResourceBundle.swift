@@ -75,7 +75,10 @@ public enum AppLaunchResourceValidation {
             return "TimeCapsuleSMB resource bundle is missing en.lproj/Localizable.strings."
         }
 
-        guard L10n.string("screen.readiness", language: .english) == "Readiness" else {
+        // Validate resource lookup, not wording that can change during copy edits.
+        let key = "screen.readiness"
+        let localized = L10n.string(key, language: .english)
+        guard !localized.isEmpty, localized != key else {
             return "TimeCapsuleSMB localized strings did not load from the resource bundle."
         }
         return nil

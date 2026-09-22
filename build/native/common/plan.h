@@ -31,7 +31,6 @@ extern const char *const device_acp_keys[ACP_KEY_COUNT];
 
 struct device_config {
     int advertise_afp;
-    int nbns_enabled;
     int debug_logging;
 };
 
