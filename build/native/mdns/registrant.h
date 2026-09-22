@@ -13,7 +13,10 @@
 enum reg_service { REG_SMB = 0, REG_ADISK = 1, REG_AFP = 2, REG_SERVICE_COUNT = 3 };
 enum reg_status { REG_PENDING, REG_REGISTERED, REG_CONFLICT, REG_DEGRADED };
 #define REG_MAX_ENTRIES (TC_MAX_LINKS * REG_SERVICE_COUNT)
-#define REG_TXT_MAX 1400
+/* One length-prefixed system item plus every individually valid disk item. */
+#define REG_TXT_MAX                                                                                                  \
+    (1 + (sizeof(ADISK_SYS_TXT_PREFIX) - 1) + 17 + (sizeof(ADISK_SYS_TXT_SUFFIX) - 1) +                              \
+     ADISK_MAX_DISKS * (1 + MAX_TXT_STRING))
 #ifndef REG_BACKOFF_MIN_MS
 #define REG_BACKOFF_MIN_MS 1000
 #endif

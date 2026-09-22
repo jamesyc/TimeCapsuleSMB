@@ -146,6 +146,32 @@ def test_repeated_share_arguments_preserve_txt_values(rig, daemon):
         adv.stop()
 
 
+def test_sixteen_maximum_length_adisk_rows_fit(rig, daemon):
+    root, _, binary = rig
+    args = []
+    expected = ["sys=waMA=E8:8D:28:58:F1:5C,adVF=0x1010"]
+    for i in range(16):
+        key = f"dk{i}"
+        prefix = f"Disk {i} "
+        fixed = f"{key}=adVF=0x82,adVN=,adVU={UUID}"
+        name = prefix + "x" * (255 - len(fixed) - len(prefix))
+        item = f"{key}=adVF=0x82,adVN={name},adVU={UUID}"
+        assert len(item.encode()) == 255
+        args.extend(adisk_args(name=name, key=key))
+        expected.append(item)
+    assert sum(1 + len(item.encode()) for item in expected) == 4135
+
+    adv = Advertiser(binary, root, NAT_OK, *args)
+    try:
+        transcript = daemon.wait_for(lambda rows: len(registered(rows)) >= 4)
+        assert transcript is not None, adv.stop()
+        records = [row for row in registered(transcript) if row["regtype"].startswith("_adisk")]
+        assert len(records) == 2
+        assert all(row["txt"] == expected for row in records)
+    finally:
+        adv.stop()
+
+
 def test_service_discovery_rejects_extra_adisk_share_fields(rig, daemon):
     _, _, binary = rig
     result = run_discovery(binary, *adisk_args(), "extra")
