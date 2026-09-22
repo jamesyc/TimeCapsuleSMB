@@ -15,8 +15,9 @@ the same unified source list.
 Build the device image with `build/service.sh`, `build/serviceoldle.sh`, or
 `build/serviceoldbe.sh` using the existing NetBSD SDK lanes. Boot executes the
 Flash copy. Samba and optional rsync execute from RAM because Apple may unmount
-the HDD. The manager, discovery and telemetry each collect their own network
-plan; successfully applied disk shares are passed to discovery as argv.
+the HDD. Discovery and telemetry collect their own network plans; the manager
+is network-blind and passes successfully applied disk shares to discovery as
+argv.
 
 Bonjour registrations use `name=NULL` and flags `0`: Apple owns the default
 instance name and conflict renaming across SMB/ADisk. This follows the live
@@ -29,8 +30,8 @@ names are accepted as returned; they are not treated as conflicts against ACP.
 SDK's, so `getifaddrs()` returns garbage names), `acp.c` runs `acp -q`
 children with timeouts and a non-blocking mode, `config.c` decodes the flash
 config literally, and `topology.c`/`policy.c`/`identity.c`/`plan.c` turn
-those facts into a `struct device_plan` (link roles, service masks, bind
-tokens, identity) with the retained-policy rules of the redesign plan.
+those facts into a `struct device_plan` (link roles, service masks and
+identity) with the retained-policy rules of the redesign plan.
 `loop.c` is the daemons' select loop (PF_ROUTE debounce + 30 s poll).
 Host test builds (`TC_NATIVE_TEST`) accept `--facts-file` snapshots. Device
 builds omit the fixture parser and accept only live facts; top-level
@@ -52,12 +53,13 @@ are ignored; deploy no longer forwards them.
 `service --print-mast [--timeout-seconds N]` performs a bounded `acp -A MaSt`
 read without starting a daemon. The manager uses the same collector asynchronously,
 with a native parser, five-second topology confirmation and ten-second recovery
-poll. Apple EVFILT_DEVICE notifications trigger earlier observations and retained
-Samba-binding validation even if a brief detach/replug leaves inventory unchanged.
+poll. Apple EVFILT_DEVICE notifications trigger earlier storage observations
+even if a brief detach/replug leaves inventory unchanged.
 
 Cold start grants no sharing services until critical facts validate. Failed
-rereads retain permissions only on unchanged interfaces. The manager stores this
-history directly in C; no process serializes or transfers retained policy.
+rereads retain permissions only on unchanged interfaces. Each discovery or
+telemetry process owns its history directly in C; no process serializes or
+transfers retained policy.
 
 Module headers declare cross-module functions. `TC_LOCAL` keeps internal
 helpers static in device builds; only host regression tests define

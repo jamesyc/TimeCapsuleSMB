@@ -1001,7 +1001,8 @@ RUNTIME_PERSISTENT_ROOT_PREFIX={shlex.quote(str(persistent_prefix) + "/")}
 {SMBD_STATUS_HELPERS}
 capture_df_for_volume_root() {{ echo "/dev/dk2 100 10 90 10% $1"; }}
 ps_out={shlex.quote(ps_out)}
-fstat_out='root smbd 101 10 internet stream tcp 0x0 *:445'
+fstat_out='root smbd 101 10 internet stream tcp 0x0 *:445
+root smbd 101 11 internet6 stream tcp 0x0 *:445'
 describe_managed_smbd_status "$ps_out" "$fstat_out"
 printf 'status=%s\\n' "$?"
 """
@@ -1015,37 +1016,36 @@ printf 'status=%s\\n' "$?"
         self.assertIn("PASS:active smb.conf xattr_tdb:file is persistent", result.stdout)
         self.assertIn("PASS:all managed share volumes are mounted", result.stdout)
         self.assertIn("PASS:manager is running for managed runtime", result.stdout)
-        self.assertIn("PASS:smbd bound to required TCP 445 sockets", result.stdout)
+        self.assertIn("PASS:smbd owns IPv4 and IPv6 wildcard TCP 445 listeners", result.stdout)
         self.assertIn("PASS:device Samba version: 4.24.3", result.stdout)
         self.assertIn("status=0", result.stdout)
 
-    def test_smbd_status_helper_requires_configured_tcp_445_families(self) -> None:
+    def test_smbd_status_helper_requires_both_wildcard_tcp_445_families(self) -> None:
         script = (
             SMBD_STATUS_HELPERS
             + r'''
 ipv4='root smbd 101 10 internet stream tcp 0x0 *:445'
-ipv6='root smbd 101 10 internet6 stream tcp 0x0 *:445'
+ipv6='root smbd 101 10 internet6 stream tcp 0x0 [*]:445'
 both=$(cat <<'EOF'
-root smbd 101 10 internet6 stream tcp 0x0 *:445
+root smbd 101 10 internet6 stream tcp 0x0 [*]:445
 root smbd 101 11 internet stream tcp 0x0 *:445
 EOF
 )
-smbd_bound_445 "$ipv4" ""; echo "ipv4_default=$?"
-smbd_bound_445 "$ipv6" ""; echo "ipv6_default=$?"
-smbd_bound_445 "$ipv6" "127.0.0.1/8 ::1/128 fdbb:1111:2222:3333::40/64"; echo "ipv6_required=$?"
-smbd_bound_445 "$ipv4" "127.0.0.1/8 ::1/128 192.168.1.40/24 fdbb:1111:2222:3333::40/64"; echo "ipv4_missing_v6=$?"
-smbd_bound_445 "$both" "127.0.0.1/8 ::1/128 192.168.1.40/24 fdbb:1111:2222:3333::40/64"; echo "both_required=$?"
+smbd_bound_445 "$ipv4"; echo "ipv4_only=$?"
+smbd_bound_445 "$ipv6"; echo "ipv6_only=$?"
+smbd_bound_445 "$both"; echo "both_wildcard=$?"
+smbd_bound_445 'root smbd 101 10 internet stream tcp 0x0 192.168.1.40:445
+root smbd 101 11 internet6 stream tcp 0x0 [fd00::40]:445'; echo "specific_only=$?"
 '''
         )
 
         result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("ipv4_default=0", result.stdout)
-        self.assertIn("ipv6_default=1", result.stdout)
-        self.assertIn("ipv6_required=0", result.stdout)
-        self.assertIn("ipv4_missing_v6=1", result.stdout)
-        self.assertIn("both_required=0", result.stdout)
+        self.assertIn("ipv4_only=1", result.stdout)
+        self.assertIn("ipv6_only=1", result.stdout)
+        self.assertIn("both_wildcard=0", result.stdout)
+        self.assertIn("specific_only=1", result.stdout)
 
     def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1141,10 +1141,10 @@ describe_managed_smbd_status "" ""
 
         lines = result.stdout.strip().splitlines()
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("FAIL:smbd is not bound to required TCP 445 sockets", lines)
+        self.assertIn("FAIL:smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener", lines)
         self.assertEqual(lines[-1], "FAIL:device Samba version unavailable (managed runtime smbd binary missing)")
         self.assertLess(
-            lines.index("FAIL:smbd is not bound to required TCP 445 sockets"),
+            lines.index("FAIL:smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener"),
             lines.index("FAIL:device Samba version unavailable (managed runtime smbd binary missing)"),
         )
 
@@ -1304,7 +1304,6 @@ describe_managed_smbd_status "" ""
         "link: name=bridge0 index=9 role=lan mask=smb,adisk\n"
         "addr: link=9 family=inet addr=192.168.1.10 prefix=24\n"
         "link: name=bridge1 index=10 role=isolated mask=none\n"
-        "bind: 127.0.0.1/8 ::1/128 192.168.1.10/24\n"
     )
 
     def _run_mdns_probe(self, responses: list[object]) -> tuple[object, mock.Mock]:
@@ -1896,7 +1895,7 @@ describe_managed_smbd_status "" ""
         self.assertIn("if present: wait for managed runtime", text)
         self.assertIn("if missing: run /mnt/Flash/rc.local, then wait for managed runtime", text)
         self.assertIn("managed runtime smb.conf is present", text)
-        self.assertIn("smbd is bound to required TCP 445 sockets", text)
+        self.assertIn("smbd owns IPv4 and IPv6 wildcard TCP 445 listeners", text)
         self.assertIn("managed mDNS registrant becomes ready", text)
 
     def test_enabled_rsync_plan_requires_daemon_readiness(self) -> None:

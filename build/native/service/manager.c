@@ -1,5 +1,5 @@
+#include "../common/acp.h"
 #include "../common/events.h"
-#include "../common/loop.h"
 #include "../common/log.h"
 #include "../common/process.h"
 #include "../common/worker.h"
@@ -37,8 +37,8 @@ struct role_launch {
 };
 struct audit_result {
     struct tc_process_table table;
-    int smb_probe, rsync_probe;
-    unsigned smb, rsync;
+    int smb_probe, rsync_probe, rsync;
+    unsigned smb;
     pid_t smb_pid, rsync_pid;
 };
 struct mast_result {
@@ -48,7 +48,6 @@ struct mast_result {
 };
 struct manager {
     struct tc_events events;
-    struct plan_loop network;
     struct tc_storage_settle topology;
     struct tc_storage_retry storage_retry;
     uint32_t storage_request;
@@ -59,47 +58,37 @@ struct manager {
     struct audit_result audit_result;
     struct tc_child mast_job;
     struct mast_result mast_result;
-    char bindings[TC_BIND_TOKENS_MAX], applied_bindings[TC_BIND_TOKENS_MAX];
     struct tc_share_set discovery_shares;
     char discovery_name[16];
     int discovery_diskless, discovery_afp, discovery_debug;
-    int have_settings, have_bindings, have_applied, stopping, tune_ata;
+    int have_settings, have_applied, stopping, tune_ata;
     int storage_dirty, config_dirty, ownership_ready;
     unsigned blocked;
     struct stale_process stale[TC_PROCESS_MAX];
     size_t stale_count;
     int copy_smbd, copy_rsync, binary_valid, rsync_valid;
     unsigned revision, storage_revision, storage_generation, stage_revision;
-    long long mast_at, settings_at, storage_at, stage_at, audit_at, bindings_at;
+    long long mast_at, settings_at, storage_at, stage_at, audit_at;
 };
 
 static void lower(long long *deadline, long long value) {
     if (value >= 0 && (*deadline < 0 || value < *deadline))
         *deadline = value;
 }
-static int bindings_contain(const char *bindings, const char *required) {
-    /* Compare complete generated tokens, not substrings or list order. A
-     * prefix/scope change conservatively replaces the old binding. */
-    while (*(required += strspn(required, " "))) {
-        size_t length = strcspn(required, " ");
-        const char *token = bindings;
-        int found = 0;
-        while (*(token += strspn(token, " "))) {
-            size_t size = strcspn(token, " ");
-            if (size == length && !memcmp(token, required, length)) {
-                found = 1;
-                break;
-            }
-            token += size;
-        }
-        if (!found)
-            return 0;
-        required += length;
+static int wait_until(fd_set *reads, int maxfd, long long now, long long deadline) {
+    struct timeval timeout;
+    long long wait = deadline - now;
+    int result;
+    if (wait < 0)
+        wait = 0;
+    timeout.tv_sec = wait / 1000;
+    timeout.tv_usec = (wait % 1000) * 1000;
+    result = select(maxfd + 1, reads, NULL, NULL, &timeout);
+    if (result < 0 && errno == EINTR) {
+        FD_ZERO(reads);
+        return 0;
     }
-    return 1;
-}
-static int bindings_equal(const char *a, const char *b) {
-    return bindings_contain(a, b) && bindings_contain(b, a);
+    return result;
 }
 static void changed(struct manager *m, long long now) {
     m->revision++;
@@ -208,7 +197,7 @@ static int stage_job(void *opaque) {
     tc_worker_begin("stage");
     if (m->copy_smbd && tc_samba_clear_locks())
         return tc_worker_finish(1);
-    return tc_worker_finish(tc_samba_stage(&m->storage, &m->settings, m->bindings, m->copy_smbd, m->copy_rsync) ? 1 : 0);
+    return tc_worker_finish(tc_samba_stage(&m->storage, &m->settings, m->copy_smbd, m->copy_rsync) ? 1 : 0);
 }
 static int audit_job(void *opaque) {
     struct manager *m = opaque;
@@ -224,9 +213,9 @@ static int audit_job(void *opaque) {
     result.smb_pid = m->smb.child.pid;
     result.rsync_pid = m->rsync.child.pid;
     if (m->smb.child.pid && !m->smb.child.stopping)
-        result.smb_probe = tc_process_listeners(m->smb.child.pid, 445, &result.smb) == 0;
+        result.smb_probe = tc_process_wildcard_listeners(m->smb.child.pid, 445, &result.smb) == 0;
     if (m->rsync.child.pid && !m->rsync.child.stopping)
-        result.rsync_probe = tc_process_listeners(m->rsync.child.pid, 873, &result.rsync) == 0;
+        result.rsync_probe = tc_process_listener(m->rsync.child.pid, 873, &result.rsync) == 0;
     return tc_worker_finish(tc_worker_result(&result, sizeof(result)) ? 1 : 0);
 }
 static int payload_same(const struct tc_storage_snapshot *a, const struct tc_storage_snapshot *b) {
@@ -264,13 +253,7 @@ static int samba_settings_equal(const struct tc_samba_settings *a, const struct 
 static void physical_event(struct manager *m, long long now) {
     invalidate_storage(m, now);
     m->mast_at = now;
-    /* A cable bump can return the exact same UUID/dkN before MaSt is read.
-     * Keep this check independently of topology equality. Samba inspects its
-     * own retained bindings; the global event cannot identify a USB share. */
-    if (!m->bindings_at) {
-        m->bindings_at = now + TC_STORAGE_SETTLE_MS;
-        m->storage_at = m->bindings_at;
-    }
+    m->storage_at = now + TC_STORAGE_SETTLE_MS;
 }
 static int mast_job(void *unused) {
     struct mast_result result = {0};
@@ -385,19 +368,6 @@ static void pump_storage(struct manager *m, long long now) {
             m->storage_at = now + JOB_RETRY_MS;
     }
 }
-static unsigned required_families(const char *bindings) {
-    unsigned families = 0;
-    char copy[TC_BIND_TOKENS_MAX], *token, *save;
-    snprintf(copy, sizeof(copy), "%s", bindings);
-    for (token = strtok_r(copy, " ", &save); token; token = strtok_r(NULL, " ", &save)) {
-        if (strchr(token, ':')) {
-            if (strcmp(token, "::1/128"))
-                families |= 2;
-        } else if (strncmp(token, "127.", 4))
-            families |= 1;
-    }
-    return families ? families : 1;
-}
 static void apply_audit(struct manager *m, long long now) {
     size_t i;
     int conflict = 0, controllers = 0, diskd = 0, external = 0;
@@ -480,8 +450,7 @@ static void apply_audit(struct manager *m, long long now) {
     }
     if (m->smb.child.pid && m->smb.child.pid == m->audit_result.smb_pid && !m->smb.child.stopping &&
         m->audit_result.smb_probe) {
-        unsigned need = required_families(m->applied_bindings);
-        if ((m->audit_result.smb & need) == need)
+        if ((m->audit_result.smb & 3) == 3)
             m->smb.ready = 1;
         else if (now >= m->smb.ready_at) {
             timestamped_fprintf(stderr, "manager: smbd missing required listeners; restarting\n");
@@ -526,7 +495,6 @@ static void pump_stage(struct manager *m, long long now) {
             !tc_samba_publish(m->settings.config.rsync)) {
             m->applied_storage = m->storage;
             m->applied_settings = m->settings;
-            strcpy(m->applied_bindings, m->bindings);
             m->have_applied = 1;
             m->config_dirty = 0;
             m->binary_valid = 1;
@@ -543,7 +511,7 @@ static void pump_stage(struct manager *m, long long now) {
         }
         tc_child_close(&m->stage_job);
     }
-    if (!m->config_dirty || !m->have_settings || !m->have_bindings || m->storage.payload_index < 0 ||
+    if (!m->config_dirty || !m->have_settings || m->storage.payload_index < 0 ||
         m->storage_dirty || m->topology.pending || m->storage_job.group || m->stage_job.group ||
         !m->ownership_ready || (m->blocked & (BLOCK_SMB | (m->settings.config.rsync ? BLOCK_RSYNC : 0))) ||
         now < m->stage_at)
@@ -551,14 +519,11 @@ static void pump_stage(struct manager *m, long long now) {
     m->copy_smbd = !m->binary_valid || !m->have_applied || !payload_same(&m->storage, &m->applied_storage);
     m->copy_rsync =
         m->settings.config.rsync && (!m->rsync_valid || m->copy_smbd || !m->applied_settings.config.rsync);
-    int bind_changed = m->have_applied && !bindings_equal(m->bindings, m->applied_bindings);
-    /* Additions wait for storage readiness before interrupting service. The
-     * plan acceptance path already begins draining any revoked bindings. */
-    if (m->copy_smbd || bind_changed)
+    if (m->copy_smbd)
         stop_role(&m->smb, now, 1);
     if (m->copy_smbd || m->copy_rsync)
         stop_role(&m->rsync, now, 1);
-    if ((m->copy_smbd || bind_changed) && m->smb.child.group)
+    if (m->copy_smbd && m->smb.child.group)
         return;
     if ((m->copy_smbd || m->copy_rsync) && m->rsync.child.group)
         return;
@@ -666,11 +631,10 @@ static void stopping(struct manager *m, long long now) {
     tc_child_stop(&m->stage_job, now, 1);
     tc_child_stop(&m->audit_job, now, 1);
     tc_child_stop(&m->mast_job, now, 1);
-    tc_child_stop(&m->network.collection_job, now, 1);
 }
 static int drained(struct manager *m, long long now) {
     struct tc_child *jobs[] = {&m->storage_job, &m->settings_job, &m->stage_job, &m->audit_job,
-                               &m->mast_job, &m->network.collection_job};
+                               &m->mast_job};
     size_t i;
     for (i = 0; i < sizeof(jobs) / sizeof(jobs[0]); i++) {
         if (jobs[i]->group && tc_child_poll(jobs[i], now))
@@ -683,16 +647,8 @@ static int drained(struct manager *m, long long now) {
 }
 int tc_manager_main(int argc, char **argv) {
     struct manager *m;
-    struct plan_options options = {0};
     int lock, result = 0;
-    const char *facts_file = NULL;
     (void)argv;
-#ifdef TC_NATIVE_TEST
-    if (argc == 3 && !strcmp(argv[1], "--facts-file")) {
-        facts_file = argv[2];
-        argc = 1;
-    }
-#endif
     if (argc != 1)
         return 2;
     /* The installed image is a stable existing inode; no PID/lock marker file.
@@ -718,14 +674,12 @@ int tc_manager_main(int argc, char **argv) {
 #if defined(__NetBSD__)
     setproctitle("role=manager");
 #endif
-    plan_loop_init(&m->network, &options, facts_file);
-    m->network.owned_collections = 1;
     m->storage_dirty = 1;
     timestamped_fprintf(stderr, "manager: starting native supervision\n");
     for (;;) {
         fd_set reads;
         int maxfd = -1;
-        long long now = plan_loop_now_ms(), deadline = now + 1000;
+        long long now = acp_monotonic_ms(), deadline = now + 1000;
         unsigned events = tc_events_take(&m->events);
         if (events & TC_EVENT_STOP)
             m->stopping = 1;
@@ -748,17 +702,11 @@ int tc_manager_main(int argc, char **argv) {
                     m->storage_at = now;
                 }
                 m->mast_at = m->settings_at = m->audit_at = now;
-                plan_loop_request(&m->network, now);
             }
             pump_inventory(m, now);
             pump_settings(m, now);
             pump_storage(m, now);
             pump_audit(m, now);
-            if (m->bindings_at && now >= m->bindings_at) {
-                if (m->smb.child.pid && !m->smb.child.stopping)
-                    kill(m->smb.child.pid, SIGHUP);
-                m->bindings_at = 0;
-            }
             pump_stage(m, now);
             reconcile_roles(m, now);
         }
@@ -766,12 +714,11 @@ int tc_manager_main(int argc, char **argv) {
         tc_events_prepare(&m->events, &reads, &maxfd);
         struct tc_child *children[] = {&m->smb.child,       &m->rsync.child,  &m->discovery.child,
                                        &m->telemetry.child, &m->settings_job, &m->storage_job,
-                                       &m->stage_job,       &m->audit_job, &m->mast_job, &m->network.collection_job};
+                                       &m->stage_job,       &m->audit_job, &m->mast_job};
         size_t i;
         for (i = 0; i < sizeof(children) / sizeof(children[0]); i++)
             tc_child_prepare(children[i], &reads, &maxfd, &deadline);
         if (!m->stopping) {
-            plan_loop_prepare(&m->network, now, &reads, &maxfd, &deadline);
             if (!m->mast_job.group)
                 lower(&deadline, m->mast_at);
             if (!m->settings_job.group)
@@ -784,29 +731,12 @@ int tc_manager_main(int argc, char **argv) {
                 else if (storage_pending(m))
                     lower(&deadline, m->storage_retry.at > m->storage_at ? m->storage_retry.at : m->storage_at);
             }
-            if (m->bindings_at)
-                lower(&deadline, m->bindings_at);
         }
-        if (plan_loop_wait(&reads, maxfd, now, deadline) < 0) {
+        if (wait_until(&reads, maxfd, now, deadline) < 0) {
             result = 1;
             m->stopping = 1;
         }
-        if (!m->stopping && plan_loop_dispatch(&m->network, plan_loop_now_ms(), &reads)) {
-            char bindings[TC_BIND_TOKENS_MAX];
-            if (!device_plan_bind_tokens(&m->network.current, bindings, sizeof(bindings)) &&
-                (!m->have_bindings || !bindings_equal(bindings, m->bindings))) {
-                strcpy(m->bindings, bindings);
-                m->have_bindings = 1;
-                changed(m, plan_loop_now_ms());
-                /* A newly forbidden listener must not wait for HDD work or
-                 * staging retries. Compare with the running generation, not
-                 * a desired addition that might never have been applied. */
-                if (m->have_applied && !bindings_contain(bindings, m->applied_bindings))
-                    stop_role(&m->smb, plan_loop_now_ms(), 1);
-            }
-        }
     }
-    plan_loop_close(&m->network);
     tc_events_close(&m->events);
     tc_samba_discard();
     tc_child_close(&m->diskd.child);

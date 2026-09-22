@@ -37,7 +37,8 @@ def render(renderer, options=None, *, inventory=None, args=()):
 def test_default_config_preserves_the_working_shell_settings(renderer):
     conf = render(renderer)
     global_ = conf["global"]
-    assert global_["interfaces"] == "127.0.0.1/8 ::1/128 192.0.2.3/24"
+    assert "interfaces" not in global_
+    assert "bind interfaces only" not in global_
     assert global_["fruit:model"] == "TimeCapsule6,116"
     assert global_["lock directory"] == "/mnt/Locks"
     assert global_["cache directory"] == "/mnt/Memory/samba4/var"

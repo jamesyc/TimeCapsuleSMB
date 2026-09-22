@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 from tests.native.build import compile_service
-from tests.native.test_plan import NAT_OK, NAT_ACP_DEAD
 
 
 CHILD = '''
@@ -31,13 +30,6 @@ def stopped(sig,frame):
     sys.exit(0)
 signal.signal(signal.SIGTERM,stopped)
 signal.signal(signal.SIGHUP,lambda sig,frame:event('reload'))
-if role=='smbd' and (Path(os.environ['TC_TEST_ROOT'])/'hold-smb-worker').exists():
-    if os.fork()==0:
-        role='smb-worker'
-        signal.signal(signal.SIGTERM,signal.SIG_IGN)
-        event('start')
-        while (Path(os.environ['TC_TEST_ROOT'])/'hold-smb-worker').exists():time.sleep(.05)
-        sys.exit(0)
 event('start')
 if role=='diskd' and (Path(os.environ['TC_TEST_ROOT'])/'diskd-fail').exists():sys.exit(7)
 while True:
@@ -72,7 +64,6 @@ if (root/'record-acp').exists():
     import json
     with (root/'events').open('a') as out:
         out.write(json.dumps(dict(kind='command',role='acp',pid=os.getpid(),ppid=os.getppid(),group=os.getpgrp(),key=key))+'\\n')
-if key=='usbF' and (root/'slow-facts').exists():time.sleep(60)
 if key=='syNm' and (root/'bad-name').exists():sys.exit(1)
 if key=='syPW' and (root/'bad-auth').exists():sys.exit(1)
 if key=='MaSt':
@@ -118,8 +109,8 @@ import os,sys
 from pathlib import Path
 if not (Path(os.environ['TC_TEST_ROOT'])/'no-listener').exists():
     os.kill(int(sys.argv[-1]),0)
-    print('root smbd 1 3* internet stream tcp 192.0.2.1:445')
-    print('root smbd 1 4* internet6 stream tcp [fe80::1%bridge0]:445')
+    print('root smbd 1 3* internet stream tcp deadbeef *:445')
+    print('root smbd 1 4* internet6 stream tcp deadbeef *:445')
     print('root rsync 1 4* internet stream tcp 192.0.2.1:873')
 ''')
     binary=compile_service(root/'manager',flags=[
@@ -135,7 +126,7 @@ def manager(manager_tools):
     root,binary=manager_tools
     for path in ('ram','dk2','dk3'):
         shutil.rmtree(root/path,ignore_errors=True)
-    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','slow-facts','record-ps','hold-activation','hold-smb-worker'):
+    for name in ('bad-mast','bad-name','bad-auth','name','slow-mast','no-listener','external-processes','diskd-absent','diskd-fail','record-acp','fail-claim','record-ps','hold-activation'):
         (root/name).unlink(missing_ok=True)
     (root/'ram/var').mkdir(parents=True)
     (root/'dk2/.samba4/private').mkdir(parents=True)
@@ -143,7 +134,6 @@ def manager(manager_tools):
     image=root/'dk2/.samba4/smbd'
     image.write_text(f'#!{sys.executable}\n'+CHILD);image.chmod(0o755)
     (root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
-    (root/'facts').write_text(NAT_OK)
     (root/'config').write_text('TELEMETRY=0\n')
     (root/'events').write_text('')
     volumes=[dict(deviceName='sd0',builtin=True,partitions=[dict(deviceName='dk2',name='Data',format='hfs',users=1,
@@ -153,10 +143,10 @@ def manager(manager_tools):
     def inventory(disks): (root/'inventory').write_bytes(plistlib.dumps(disks))
     inventory(volumes)
     process=None
-    def start(real_facts=False):
+    def start():
         nonlocal process
         log=(root/'stderr').open('w')
-        process=subprocess.Popen([str(binary),'manager'] + ([] if real_facts else ['--facts-file',str(root/'facts')]),
+        process=subprocess.Popen([str(binary),'manager'],
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
             env={**os.environ,'TC_TEST_ROOT':str(root),'TC_TEST_MOUNTS':str(root/'mounts')})
         log.close()
@@ -398,23 +388,6 @@ def test_discovery_receives_exact_applied_names_devices_and_uuids_as_argv(manage
     assert not (root/'PWNED').exists()
 
 
-def test_network_history_survives_failed_facts_and_applies_new_binding_once(manager):
-    root,start,events,wait,_,_=manager
-    process=start();wait(started('smbd'))
-    original=(root/'ram/etc/smb.conf').read_bytes()
-    (root/'facts').write_text(NAT_ACP_DEAD)
-    (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
-    wait(started('telemetry'))
-    assert (root/'ram/etc/smb.conf').read_bytes()==original
-    assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
-    (root/'facts').write_text(NAT_OK.replace('10.0.1.1','10.0.1.2'));process.send_signal(signal.SIGHUP)
-    wait(lambda rows:len([e for e in rows if e['role']=='smbd' and e['kind']=='start'])==2)
-    assert '10.0.1.2/24' in (root/'ram/etc/smb.conf').read_text()
-    (root/'config').write_text('TELEMETRY=0\n');process.send_signal(signal.SIGHUP)
-    wait(lambda rows:any(e['role']=='telemetry' and e['kind']=='stop' for e in rows))
-    assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==2
-
-
 def test_native_cifs_reappearance_resets_discovery_but_keeps_samba(manager):
     root,start,events,wait,_,_=manager
     process=start()
@@ -472,7 +445,7 @@ def test_healthy_rechecks_do_not_restat_or_restage_disk_software(manager):
     root,start,events,wait,_,_=manager
     process=start();wait(started('smbd'))
     # Deploy owns software replacement. Reconciliation of unchanged MaSt and
-    # network facts must not read the sleeping HDD to fingerprint executables.
+    # Healthy reconciliation must not read the sleeping HDD to fingerprint executables.
     (root/'dk2/.samba4/smbd').unlink()
     (root/'config').write_text('TELEMETRY=1\n');process.send_signal(signal.SIGHUP)
     wait(started('telemetry'))
@@ -536,13 +509,12 @@ def test_ata_tuning_runs_at_start_and_preference_change_not_healthy_rechecks(man
         ['/dev/wd0','setidle','900'],['/dev/wd0','setstandby','1800']]
 
 
-@pytest.mark.parametrize("key", ["MaSt", "usbF"])
-def test_manager_death_cancels_inventory_job_and_its_acp(manager,key):
+def test_manager_death_cancels_inventory_job_and_its_acp(manager):
     root,start,events,wait,_,_=manager
-    (root/'record-acp').touch();(root/('slow-mast' if key=='MaSt' else 'slow-facts')).touch()
-    process=start(real_facts=key=='usbF')
-    rows=wait(lambda rows:any(e['role']=='acp' and e.get('key')==key for e in rows))
-    acp=next(e for e in rows if e['role']=='acp' and e.get('key')==key)
+    (root/'record-acp').touch();(root/'slow-mast').touch()
+    process=start()
+    rows=wait(lambda rows:any(e['role']=='acp' and e.get('key')=='MaSt' for e in rows))
+    acp=next(e for e in rows if e['role']=='acp' and e.get('key')=='MaSt')
     assert acp['group']==acp['ppid'] and acp['group']!=process.pid
     process.kill();process.wait(timeout=5)
     deadline=time.monotonic()+8
@@ -684,17 +656,6 @@ def test_payload_log_symlink_is_rejected_without_touching_target(manager):
     wait(started('smbd'))
 
 
-def test_manager_owned_facts_collection_can_finish_and_run_again(manager):
-    root,start,events,wait,_,_=manager
-    (root/'record-acp').touch()
-    process=start(real_facts=True)
-    wait(lambda rows:any(e['role']=='acp' and e.get('key')=='waMA' for e in rows))
-    time.sleep(.3)
-    process.send_signal(signal.SIGHUP)
-    wait(lambda rows:len([e for e in rows if e['role']=='acp' and e.get('key')=='waMA'])>=2)
-    assert process.poll() is None
-
-
 def test_pending_payload_does_not_reclaim_unchanged_users_zero_volume(manager):
     root,start,events,wait,inventory,volumes=manager
     volumes[0]['partitions'][0]['users']=0;inventory(volumes)
@@ -721,66 +682,6 @@ def test_unreadable_but_appendable_console_log_does_not_block_samba(manager):
     assert console.read_bytes()==content
 
 
-@pytest.mark.parametrize('change', ['remove', 'add', 'mixed', 'revert_add', 'reorder', 'failed'])
-def test_binding_changes_during_blocked_storage(manager, change):
-    root, start, events, wait, inventory, volumes = manager
-    initial = NAT_OK.replace('0x458', '0x450') if change in ('add', 'revert_add') else NAT_OK
-    (root/'facts').write_text(initial)
-    inventory(volumes[:1])
-    process = start()
-    rows = wait(started('smbd'))
-    pid = next(e['pid'] for e in rows if e['role'] == 'smbd' and e['kind'] == 'start')
-    (root/'hold-activation').touch()
-    inventory(volumes)
-    process.send_signal(signal.SIGHUP)
-    wait(lambda rows: any(e['role'] == 'activation' and e['kind'] == 'blocked' for e in rows), 20)
-    desired = NAT_OK.replace('0x458', '0x450') if change == 'remove' else NAT_OK
-    if change == 'mixed': desired = desired.replace('10.0.1.1', '10.0.1.2')
-    if change == 'reorder':
-        lines = desired.splitlines()
-        addresses = [line for line in lines if line.startswith('addr:')]
-        assert addresses
-        desired = '\n'.join([line for line in lines if not line.startswith('addr:')] + addresses[::-1]) + '\n'
-    if change == 'failed': desired = NAT_ACP_DEAD
-    (root/'facts').write_text(desired)
-    (root/'config').write_text('TELEMETRY=1\n')
-    process.send_signal(signal.SIGHUP)
-    wait(started('telemetry'))
-    if change in ('remove', 'mixed'):
-        wait(lambda rows: any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in rows))
-        # A failed storage job must not revive the old listener on retry.
-        (root/'mounts').write_text('unparseable mount snapshot\n')
-    else:
-        time.sleep(1)
-        os.kill(pid, 0)
-        assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
-        if change == 'revert_add':
-            (root/'facts').write_text(initial)
-            (root/'config').write_text('TELEMETRY=0\n')
-            process.send_signal(signal.SIGHUP)
-            wait(lambda rows: any(e['role'] == 'telemetry' and e['kind'] == 'stop' for e in rows))
-            time.sleep(1)
-            assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
-    (root/'hold-activation').unlink()
-    if change in ('remove', 'mixed'):
-        wait(lambda rows: any(e['role'] == 'activation' and e['kind'] == 'released' for e in rows))
-        time.sleep(1)
-        assert sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in events()) == 1
-        (root/'mounts').write_text(f'{root}/dk2 dk2 1\n{root}/dk3 dk3 1\n')
-        process.send_signal(signal.SIGHUP)
-    if change in ('remove', 'mixed', 'add'):
-        rows = wait(lambda rows: sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in rows) == 2, 20)
-        stopped = next(i for i,e in enumerate(rows) if e['role'] == 'smbd' and e['kind'] == 'stop')
-        released = next(i for i,e in enumerate(rows) if e['role'] == 'activation' and e['kind'] == 'released')
-        assert (stopped < released) == (change != 'add')
-        conf = (root/'ram/etc/smb.conf').read_text()
-        assert ('192.168.1.10/24' in conf) == (change != 'remove')
-        if change == 'mixed': assert '10.0.1.2/24' in conf and '10.0.1.1/24' not in conf
-    else:
-        wait(lambda rows: any(e['role'] == 'smbd' and e['kind'] == 'reload' for e in rows))
-        assert [e['pid'] for e in events() if e['role'] == 'smbd' and e['kind'] == 'start'] == [pid]
-
-
 @pytest.mark.parametrize('initial', [0, 1])
 def test_internal_export_root_change_reloads_without_restarting(manager, initial):
     root, start, events, wait, _, _ = manager
@@ -800,27 +701,3 @@ def test_internal_export_root_change_reloads_without_restarting(manager, initial
     assert usb in after
     assert [e['pid'] for e in events() if e['role'] == 'smbd' and e['kind'] == 'start'] == [pid]
     assert not any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in events())
-
-
-@pytest.mark.parametrize('restore', [False, True])
-def test_binding_revocation_drains_entire_group_even_if_plan_reverts(manager, restore):
-    root, start, events, wait, _, _ = manager
-    (root/'hold-smb-worker').touch()
-    process = start()
-    rows = wait(started('smb-worker'))
-    worker = next(e for e in rows if e['role'] == 'smb-worker')
-    wait(started('smbd'))
-    (root/'facts').write_text(NAT_OK.replace('0x458', '0x450'))
-    process.send_signal(signal.SIGHUP)
-    wait(lambda rows: any(e['role'] == 'smbd' and e['kind'] == 'stop' for e in rows))
-    if restore:
-        (root/'facts').write_text(NAT_OK)
-        (root/'config').write_text('TELEMETRY=1\n')
-        process.send_signal(signal.SIGHUP)
-        wait(started('telemetry'))
-    time.sleep(1)
-    os.kill(worker['pid'], 0)
-    assert sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in events()) == 1
-    (root/'hold-smb-worker').unlink()
-    wait(lambda rows: sum(e['role'] == 'smbd' and e['kind'] == 'start' for e in rows) == 2)
-    assert ('192.168.1.10/24' in (root/'ram/etc/smb.conf').read_text()) == restore

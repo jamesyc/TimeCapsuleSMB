@@ -1,5 +1,4 @@
-"""Shared device-plan collector: iflist parser, topology, policy, identity,
-bind tokens, retention (v3.1 guide C.2 / C.11)."""
+"""Discovery/telemetry plan: iflist parser, topology, policy and retention."""
 from __future__ import annotations
 
 import json
@@ -153,13 +152,6 @@ def status(plan):
     return next(f for kind, f in plan if kind == "plan")
 
 
-def bind(plan):
-    for line_kind, fields in plan:
-        if line_kind == "bind":
-            return set(fields)
-    return set()
-
-
 MODE = {"bridge": {"raNA": "0", "raDS": "0"}, "dhcp": {"raNA": "0", "raDS": "1"}, "nat": {"raNA": "1", "raDS": "1"},
         "unsupported": {"raNA": "1", "raDS": "0"}, "unknown": {}}
 BRIDGE_LINKS = [("bridge0", 9), ("bridge1", 10), ("mgi1", 2), ("lo0", 5)]
@@ -272,7 +264,6 @@ def test_unknown_mode_never_guesses_bridge_roles(tmp_path, guest):
     before, recovered = build_plans(tmp_path, cold, valid)
     assert status(before)["status"] == "cold-start" and status(before)["reason"] == "mode"
     assert all(role == ("isolated", "none") for role in roles(before).values())
-    assert bind(before) == {"127.0.0.1/8", "::1/128"}
     assert roles(recovered)["bridge0"] == ("lan", "smb,adisk")
     assert roles(recovered)["bridge1"] == ("guest", "none")
 
@@ -281,13 +272,14 @@ def test_topology_address_without_ifinfo_record_still_takes_its_role(tmp_path):
     """C.11 (decided with review finding 9): the kernel never reports an address
     for an interface it does not list, so a NEWADDR without IFINFO is a gap in
     our parsing. The address is still ACP's LAN address on that index: the
-    unnamed link is LAN, flagged synthetic, and bound -- never silently isolated."""
+    unnamed link is LAN and flagged synthetic -- never silently isolated."""
     plan, = build_plans(tmp_path, facts_text(acp={**MODE["bridge"], "laIP": "192.168.1.10", "usbF": "0x450"},
                                              links=[("lo0", 5)], addrs=[(9, "192.168.1.10", 24), (5, "127.0.0.1", 8)]))
     assert status(plan)["status"] == "validated"
     link = next(f for kind, f in plan if kind == "link" and f["index"] == "9")
     assert link == {"name": "", "index": "9", "role": "lan", "mask": "smb,adisk", "synthetic": "1"}
-    assert "192.168.1.10/24" in bind(plan)
+    assert any(kind == "addr" and fields["link"] == "9" and fields["addr"] == "192.168.1.10"
+               for kind, fields in plan)
     # A named link never carries the flag.
     assert "synthetic" not in next(f for kind, f in plan if kind == "link" and f["index"] == "5")
 
@@ -312,48 +304,21 @@ def test_topology_sixteen_links_fit_and_more_truncate(tmp_path):
     assert len(roles(plan)) == 16 and roles(plan)["vlan3"] == ("lan", "smb,adisk")
 
 
-def test_topology_one_link_may_own_sixty_three_addresses_all_bound(tmp_path):
+def test_topology_one_link_may_own_sixty_three_addresses(tmp_path):
     """Review finding 10: a link plan holds as many addresses as the interface
-    table (64), so nothing is dropped from the bind set. 63 addresses on
-    bridge0 plus loopback, IPv4 and IPv6 interleaved."""
+    table (64), so discovery does not silently drop address ownership. 63
+    addresses on bridge0 plus loopback, IPv4 and IPv6 interleaved."""
     addrs = [(5, "127.0.0.1", 8)]
-    expected = {"127.0.0.1/8", "::1/128"}
     for i in range(63):
         if i % 3 == 2:
             addrs.append((9, f"2001:db8:{i:x}::1", 64))
-            expected.add(f"2001:db8:{i:x}::1/64")
         else:
             addrs.append((9, f"10.0.{i}.1", 24))
-            expected.add(f"10.0.{i}.1/24")
     plan, = build_plans(tmp_path, facts_text(acp={**MODE["bridge"], "laIP": "10.0.0.1", "usbF": "0x450"},
                                              links=[("bridge0", 9), ("lo0", 5)], addrs=addrs))
     assert status(plan)["status"] == "validated"
     assert roles(plan)["bridge0"] == ("lan", "smb,adisk")
     assert len([f for kind, f in plan if kind == "addr" and f["link"] == "9"]) == 63
-    assert bind(plan) == expected
-
-
-def test_topology_sixty_three_widest_addresses_serialize_completely(tmp_path):
-    """Review 2 R7: capacity is text, not just count. 63 full-width IPv6
-    addresses plus IPv4 must serialize identically through the plan print
-    and the service projection, never `bind: overflow`."""
-    addrs = [(5, "127.0.0.1", 8), (9, "10.0.0.1", 24)]
-    expected = {"127.0.0.1/8", "::1/128", "10.0.0.1/24"}
-    for i in range(62):
-        # inet_ntop prints canonical (no leading zeros); use full-width groups
-        addr = f"2001:db8:ffff:ffff:ffff:ffff:ffff:{0x1000 + i:x}"
-        addrs.append((9, addr, 128))
-        expected.add(f"{addr}/128")
-    facts = facts_text(acp={**MODE["bridge"], "laIP": "10.0.0.1", "usbF": "0x450"}, links=[("bridge0", 9), ("lo0", 5)], addrs=addrs)
-    plan, = build_plans(tmp_path, facts)
-    assert status(plan)["status"] == "validated"
-    assert bind(plan) == expected
-    path = tmp_path / "facts-wide.txt"
-    path.write_text(facts)
-    binary = compile_service(tmp_path / "service")
-    result = subprocess.run([str(binary), "--print-smb-bind-interfaces", "--facts-file", str(path)], capture_output=True, text=True, timeout=10)
-    tokens, status_line = result.stdout.splitlines()
-    assert set(tokens.split()) == expected and status_line == "status=validated"
 
 
 def test_identity_quotes_and_backslashes_round_trip_through_the_plan_line(tmp_path):
@@ -373,7 +338,7 @@ def test_identity_quotes_and_backslashes_round_trip_through_the_plan_line(tmp_pa
     assert tokens[0] == f"instance={name}"
 
 
-def test_topology_table_overflow_is_incomplete_not_a_partial_bind(tmp_path):
+def test_topology_table_overflow_is_incomplete(tmp_path):
     """A 65th address exceeds the interface table: the collector keeps 64 and
     reports the snapshot truncated (a facts file cannot even carry a 65th
     row), and the plan is incomplete rather than validated with a subset."""
@@ -382,7 +347,6 @@ def test_topology_table_overflow_is_incomplete_not_a_partial_bind(tmp_path):
     text = text.replace("iflist: ok=1 truncated=0", "iflist: ok=1 truncated=1")
     plan, = build_plans(tmp_path, text)
     assert status(plan)["status"] == "cold-start" and status(plan)["reason"] == "iflist-truncated"
-    assert bind(plan) == {"127.0.0.1/8", "::1/128"}
 
 
 # ------------------------------------------------------------------ policy ----
@@ -510,7 +474,6 @@ def test_retention_aborted_hint_read_keeps_validated_policy(tmp_path, key):
         assert roles(step)["bridge0"] == ("lan", "smb,adisk")
         assert roles(step)["bridge1"] == ("guest", "none")
         assert roles(step)["mgi1"] == ("wan", "none")
-        assert bind(step) == {"127.0.0.1/8", "::1/128", "10.0.1.1/24", "fe80:9::ff:fe00:1/64"}
         assert next(f for kind, f in step if kind == "acp")[key] == "unavailable"
 
 
@@ -548,7 +511,6 @@ def test_cold_start_with_aborted_hint_grants_nothing(tmp_path, key):
     assert {mask for _, mask in roles(plan).values()} == {"none"}
     assert roles(plan)["bridge1"] == ("isolated", "none")
     assert roles(plan)["bridge0"] == ("isolated", "none")
-    assert bind(plan) == {"127.0.0.1/8", "::1/128"}
 
 
 def test_acp_budget_exhaustion_marks_unread_keys_aborted():
@@ -569,7 +531,9 @@ def test_retention_restart_without_history_is_cold_start(tmp_path):
 def test_kernel_failure_retains_native_addresses_until_complete_observation(tmp_path):
     unavailable = facts_text(acp={}, iflist_ok=0)
     first, failed, recovered = build_plans(tmp_path, NAT_OK, unavailable, NAT_DENIED)
-    assert bind(first) == bind(failed)
+    assert [(kind, fields) for kind, fields in first if kind == "addr"] == [
+        (kind, fields) for kind, fields in failed if kind == "addr"
+    ]
     assert status(failed)["reason"] == "iflist"
     assert roles(recovered)["mgi1"] == ("wan", "none")
 
@@ -585,9 +549,12 @@ def test_native_loop_history_does_not_resurrect_a_disappeared_link(tmp_path):
 def test_kernel_failure_keeps_latest_observed_address_without_refreshing_policy_age(tmp_path):
     changed_address = NAT_ACP_DEAD.replace("addr=10.0.1.1 ", "addr=10.0.1.2 ")
     first, changed, failed = build_plans(tmp_path, NAT_OK, changed_address, facts_text(acp={}, iflist_ok=0))
-    assert "10.0.1.1/24" in bind(first)
-    assert "10.0.1.2/24" in bind(changed) and "10.0.1.1/24" not in bind(changed)
-    assert bind(failed) == bind(changed)
+    first_addrs = [fields["addr"] for kind, fields in first if kind == "addr"]
+    changed_addrs = [fields["addr"] for kind, fields in changed if kind == "addr"]
+    failed_addrs = [fields["addr"] for kind, fields in failed if kind == "addr"]
+    assert "10.0.1.1" in first_addrs
+    assert "10.0.1.2" in changed_addrs and "10.0.1.1" not in changed_addrs
+    assert failed_addrs == changed_addrs
     assert status(changed)["stale_seconds"] == "10"
     assert status(failed)["stale_seconds"] == "20"
 
@@ -595,42 +562,6 @@ def test_kernel_failure_keeps_latest_observed_address_without_refreshing_policy_
 def test_retention_diskless_clears_retained_masks_but_keeps_roles(tmp_path):
     _, failed = build_plans(tmp_path, NAT_OK, NAT_ACP_DEAD, diskless=True)
     assert roles(failed)["mgi1"] == ("wan", "none") and roles(failed)["bridge0"] == ("lan", "none")
-
-
-# ------------------------------------------------------------ bind tokens ----
-
-def test_bind_tokens_property_every_smb_link_address_is_bound(tmp_path):
-    scenarios = [
-        facts_text(acp={**MODE["bridge"], "laIP": "192.168.1.10", "usbF": "0x450"}, links=BRIDGE_LINKS, addrs=BRIDGE_ADDRS),
-        NAT_OK, NAT_DENIED,
-        facts_text(acp={**MODE["nat"], "laIP": "10.0.1.1", "waIP": "192.168.1.10", "gnRo": "172.16.42.1", "usbF": "0x458"},
-                   links=[*NAT_LINKS, ("bridge1", 10)], addrs=[*NAT_ADDRS, (10, "172.16.42.1", 24), (10, "fe80::ff:fe00:a", 64)]),
-    ]
-    for text in scenarios:
-        plan, = build_plans(tmp_path, text)
-        tokens = bind(plan)
-        assert {"127.0.0.1/8", "::1/128"} <= tokens
-        for kind, fields in plan:
-            if kind != "link":
-                continue
-            link_addrs = [f for k, f in plan if k == "addr" and f["link"] == fields["index"]]
-            for addr in link_addrs:
-                if addr["family"] == "inet6" and addr["addr"].startswith("fe80:"):
-                    token = f"fe80:{int(fields['index']):x}:{addr['addr'][5:]}/{addr['prefix']}"
-                elif addr["family"] == "inet6":
-                    token = f"{addr['addr']}/{addr['prefix']}"
-                else:
-                    token = f"{addr['addr']}/{addr['prefix']}"
-                loopback = addr["addr"] in ("127.0.0.1", "::1") or addr["addr"] == "fe80::1"
-                if "smb" in fields["mask"]:
-                    assert token in tokens, (fields["name"], token)
-                elif not loopback:
-                    assert token not in tokens, (fields["name"], token)
-
-
-def test_bind_tokens_only_loopback_when_no_link_has_smb(tmp_path):
-    plan, = build_plans(tmp_path, NAT_DENIED, diskless=True)
-    assert bind(plan) == {"127.0.0.1/8", "::1/128"}
 
 
 # ---------------------------------------------------------- config reader ----
@@ -758,30 +689,6 @@ def test_identity_ignores_deprecated_overrides_and_uses_synm_then_hostname(tmp_p
     plan, = build_plans(tmp_path, facts_text(acp={**MODE["bridge"]}, hostname=""))
     identity = next(f for kind, f in plan if kind == "identity")
     assert identity == {"instance": "timecapsule", "netbios": "TimeCapsule", "wama": "unavailable"}
-
-
-# ----------------------------------------------------------- service CLI ----
-
-def test_service_bind_interfaces_prints_tokens_then_status(tmp_path):
-    binary = compile_service(tmp_path / "service")
-    facts = tmp_path / "facts.txt"
-    facts.write_text(NAT_OK)
-    result = subprocess.run([str(binary), "--print-smb-bind-interfaces", "--facts-file", str(facts)], capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0
-    tokens, status_line = result.stdout.splitlines()
-    assert tokens.split()[:2] == ["127.0.0.1/8", "::1/128"] and "10.0.1.1/24" in tokens and "fe80:9::ff:fe00:1/64" in tokens
-    assert "192.168.1.10/24" in tokens  # disks over WAN on: the WAN link binds too
-    assert status_line == "status=validated"
-    facts.write_text(NAT_ACP_DEAD)
-    result = subprocess.run([str(binary), "--print-smb-bind-interfaces", "--facts-file", str(facts)], capture_output=True, text=True, timeout=10)
-    tokens, status_line = result.stdout.splitlines()
-    # ACP dead at cold start: no external address binds before a validated pass.
-    assert tokens == "127.0.0.1/8 ::1/128"
-    assert status_line == "status=incomplete reason=mode"
-    result = subprocess.run([str(binary), "--print-link-plan", "--facts-file", str(tmp_path / "nope")], capture_output=True, text=True, timeout=10)
-    assert result.returncode == 13
-    assert subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=10).stdout == "30100\n"
-    assert subprocess.run([str(binary), "--print-smb-bind-interfaces-lan"], capture_output=True, text=True, timeout=10).returncode == 3
 
 
 def test_service_link_plan_reports_closed_output(tmp_path):

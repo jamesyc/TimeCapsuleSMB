@@ -241,7 +241,6 @@ static void print_quoted_body(FILE *stream, const char *text) {
 void device_plan_print(FILE *stream, const struct device_plan *plan) {
     size_t i, j;
     char text[INET6_ADDRSTRLEN];
-    char tokens[TC_BIND_TOKENS_MAX];
 
     fprintf(stream, "plan: status=%s", plan->status.validated ? "validated" : plan->status.cold_start ? "cold-start" : "incomplete");
     if (!plan->status.validated && plan->status.reason[0] != '\0') {
@@ -289,49 +288,4 @@ void device_plan_print(FILE *stream, const struct device_plan *plan) {
             }
         }
     }
-    if (device_plan_bind_tokens(plan, tokens, sizeof(tokens)) == 0) {
-        fprintf(stream, "bind: %s\n", tokens);
-    } else {
-        fputs("bind: overflow\n", stream);
-    }
-}
-
-/* B.4: on every link whose mask has SVC_SMB, 127.0.0.1/8 ::1/128 plus every
- * service address (IPv4 with prefix incl. 169.254, fe80 embedded-scope,
- * GUA/ULA with prefix). Links without SVC_SMB contribute nothing. */
-int device_plan_bind_tokens(const struct device_plan *plan, char *out, size_t out_len) {
-    size_t used;
-    size_t i, j;
-
-    if (out_len < 24) {
-        return -1;
-    }
-    strcpy(out, "127.0.0.1/8 ::1/128");
-    used = strlen(out);
-    for (i = 0; i < plan->link_count; i++) {
-        const struct link_plan *link = &plan->links[i];
-        if (!(link->mask & SVC_SMB)) {
-            continue;
-        }
-        for (j = 0; j < link->addr_count; j++) {
-            char token[INET6_ADDRSTRLEN + 8];
-            size_t token_len;
-            const struct if_addr *addr = &link->addrs[j];
-            if (!addr_is_service_address(addr)) {
-                continue;
-            }
-            if (addr->family == AF_INET ? bind_token_ipv4(token, sizeof(token), addr) != 0
-                                        : bind_token_ipv6(token, sizeof(token), addr) != 0) {
-                continue;
-            }
-            token_len = strlen(token);
-            if (used + 1 + token_len >= out_len) {
-                return -1;
-            }
-            out[used++] = ' ';
-            memcpy(out + used, token, token_len + 1);
-            used += token_len;
-        }
-    }
-    return 0;
 }

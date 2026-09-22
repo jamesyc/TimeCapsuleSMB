@@ -119,7 +119,7 @@ RUNTIME_ACTIVATION_CHECKS = [
     PlannedCheck("managed_share_volumes_mounted", "all managed share volumes are mounted"),
     PlannedCheck("managed_runtime_manager_process", "manager is running for managed runtime"),
     PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
-    PlannedCheck("managed_smbd_bound_445", "smbd is bound to required TCP 445 sockets"),
+    PlannedCheck("managed_smbd_bound_445", "smbd owns IPv4 and IPv6 wildcard TCP 445 listeners"),
     PlannedCheck("managed_mdns_registrant_ready", "managed mDNS registrant becomes ready"),
     PlannedCheck("managed_mdns_settle_healthy", "mdns remains healthy after settle delay"),
 ]

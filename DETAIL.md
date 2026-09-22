@@ -445,9 +445,9 @@ The hostname is Apple's (`AirPort-Time-Capsule.local`, from `syNm`), so SRV
 targets of our registrations resolve through Apple's host records. The doctor
 compares host labels case-insensitively.
 
-### The device plan
+### Discovery policy and Samba networking
 
-The unified service's manager, discovery, telemetry, and diagnostic paths share one collector in
+The unified service's discovery, telemetry, and diagnostic paths share one collector in
 [build/native/common/](build/native/common/): `acp -q` for
 `raNA raDS waNM usbF laIP waIP waLL gnRo syNm laMA waMA bjSd`, the kernel
 interface table via our own `sysctl(NET_RT_IFLIST)` parser (libc
@@ -457,13 +457,19 @@ From those facts the plan assigns each link a role — `gnRo` owner → GUEST,
 `laIP` owner → LAN, NAT mode and `waIP`/`waLL` owner → WAN, anything else →
 ISOLATED — and a service mask: LAN gets SMB+ADISK (+AFP when enabled); WAN and
 GUEST get the LAN mask only in NAT mode with disks-over-WAN (`usbF & 0x8`)
-enabled, exactly the AirPort Utility switch; ISOLATED gets nothing. Samba's
-`interfaces =` is derived from the same plan (loopback plus every service
-address of every SMB link, fe80 in NetBSD's embedded-scope form), so every
-address our records advertise is one Samba listens on. A failed ACP re-read
+enabled, exactly the AirPort Utility switch; ISOLATED gets nothing. A failed ACP re-read
 keeps the last validated roles on unchanged links and reports the age; a link
 recreated with a new index (an AirPort Utility apply) starts isolated until a
 coherent read. `service --print-link-plan` prints the whole plan.
+
+The manager does not collect this plan. Samba also does not consume it: the
+generated configuration omits `interfaces` and `bind interfaces only`, and
+Samba owns IPv4 and IPv6 wildcard TCP 445 listeners. Both tested NetBSD 4 and
+NetBSD 6 Time Capsules are dual-stack, including scoped IPv6 link-local SMB.
+The Samba build carries a NetBSD-only `NET_RT_IFLIST` reader because Apple's
+kernel routing-message layout does not match the SDK/libc layout. Bonjour
+policy controls where `_smb` is visible, while Apple's firewall controls WAN
+and guest reachability.
 
 Three details from the v3.1.0 review matter here. An ACP key has three outcomes,
 not two: `ok`, `unavailable` (`acp` answered that the key is not set — a real
@@ -531,9 +537,9 @@ The [manager](build/native/service/manager.c) owns repeated work:
 - Prepare ShareRoot/markers, RAM executables, authentication and Samba config
   in bounded child jobs. Supervision and shutdown stay responsive during slow
   ACP or disk operations. Failed or superseded jobs remain retryable.
-- Own `smbd -F --no-process-group` directly in a separate process group. Keep
-  explicit bind-policy history through shared native code; restart for changed
-  binds or executable generation, reload for ordinary configuration changes.
+- Own `smbd -F --no-process-group` directly in a separate process group.
+  Restart for executable replacement and reload ordinary configuration changes;
+  interface/address changes are Samba's responsibility and do not restart it.
 - Forward parent reloads to workers. Reset Samba's cwd cache and inspect real
   retained descriptors plus volume/root identity, disconnecting only affected
   trees through Samba's existing asynchronous AIO-draining path.
@@ -727,11 +733,11 @@ NBNS is provided by Apple's firmware `wcifsnd`; this project no longer ships a s
 - `--no-nbns` is supported on both NetBSD 6 and NetBSD 4
 - `uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config
 
-Once enabled, Apple's daemon enumerates interfaces according to firmware policy. The validated plan provides the coarse cold-start eligibility gate, but native NBNS does not promise the per-interface `SVC_SMB` filtering that Samba and Bonjour enforce. It provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
+Once enabled, Apple's daemon enumerates interfaces according to firmware policy. The validated plan provides the coarse cold-start eligibility gate, but native NBNS does not promise Bonjour's per-interface `SVC_SMB` filtering. Samba listens on wildcards and Apple's firewall enforces reachability. NBNS provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
 
 ## Service and Telemetry Helpers
 
-The Flash-resident `service` image provides NT hashing, `--print-smb-bind-interfaces` (the plan's Samba bind tokens plus a status line), `--print-link-plan`, and the telemetry role. Telemetry posts a heartbeat at startup and every 12 hours, and downloads and runs a signed debug executable only after verifying signed server authorization. See [build/native/README.md](build/native/README.md) for sources, commands, protocol, and cleanup behavior.
+The Flash-resident `service` image provides NT hashing, `--print-link-plan`, and the telemetry role. Telemetry posts a heartbeat at startup and every 12 hours, and downloads and runs a signed debug executable only after verifying signed server authorization. See [build/native/README.md](build/native/README.md) for sources, commands, protocol, and cleanup behavior.
 
 Sharing waits at cold start until mode, address ownership, and the relevant
 sharing permissions validate. Bridge names and PF heuristics no longer grant
@@ -823,13 +829,12 @@ same links as `_smb`, the generated ADISK flags change from SMB-only
 either setting; this option controls advertising only. It does not configure
 or authenticate an AFP server.
 
-Bonjour records are link-scoped by the device plan (see "The device plan"
+Bonjour records are link-scoped by the device plan (see "Discovery policy and Samba networking"
 above): LAN links get the full service set; WAN and guest links get it only in
 NAT mode with disks-over-WAN enabled, exactly as Apple's own file servers did;
 every other link is isolated. Apple's `_airport._tcp` and host records follow
-Apple's rules on every interface. Samba binds the same address set the
-records advertise. The AirPort
-Utility switches are the policy.
+Apple's rules on every interface. Samba wildcard-listens on IPv4 and IPv6;
+Bonjour visibility plus Apple's firewall implement the AirPort Utility policy.
 
 ### Use Netatalk for metadata
 
@@ -1240,7 +1245,7 @@ It checks:
 - managed `smbd`, the discovery role (Apple `mDNSResponder` on UDP `5353`, loopback `diskd`, a valid plan, and eligible native NBNS ready through the exact owned `wcifsnd` child), and enabled/disabled rsync readiness
 - a shared USB printer: when `acp -A prni` lists a plugged-in printer, Apple's `printd` must advertise it (`_pdl-datastream`/`_riousbprint`/`_printer`/`_ipp`) — we never touch printd, so this guards the one thing v3.1.0 changed for printers (v3.0 re-advertised them itself because it killed the responder); skipped when no printer is attached
 - active Samba version, RAM-staged binary/config/auth paths, manager state, mounted share volumes, and required service sockets
-- remote IPv4/IPv6 capabilities, current bind interfaces, local routes to advertised addresses, and family-specific direct SMB reachability
+- discovered IPv4/IPv6 SMB endpoints, client-local link-local scopes, route testability, and bounded family-specific TCP 445 reachability
 - advertised Bonjour instance name
 - advertised Bonjour host label
 - `_smb._tcp`, `_adisk._tcp`, `_device-info._tcp`, and `_airport._tcp` target consistency for the active instance

@@ -74,19 +74,19 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
 }
 
 int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
-                    const struct tc_samba_identity *identity, const char *bindings, const char *payload,
+                    const struct tc_samba_identity *identity, const char *payload,
                     const struct tc_share_set *shares) {
     size_t i;
-    if (!file || !bindings || !*bindings || !payload || !*payload || !identity->netbios[0] || !shares->count)
+    if (!file || !payload || !*payload || !identity->netbios[0] || !shares->count)
         return -1;
     fprintf(file,
             "[global]\n    netbios name = %s\n    workgroup = WORKGROUP\n"
-            "    interfaces = %s\n    bind interfaces only = yes\n    server string = %s\n"
+            "    server string = %s\n"
             "    security = user\n    map to guest = Never\n    restrict anonymous = %d\n"
             "    guest account = nobody\n    null passwords = no\n    ea support = yes\n"
             "    passdb backend = smbpasswd:" TC_RAM_ROOT "/private/smbpasswd\n"
             "    username map = " TC_RAM_ROOT "/private/username.map\n    dos charset = ASCII\n",
-            identity->netbios, bindings, identity->server, config->browse_compatibility ? 0 : 2);
+            identity->netbios, identity->server, config->browse_compatibility ? 0 : 2);
     if (config->require_encryption)
         fputs("    server smb encrypt = required\n    server min protocol = SMB3_00\n    server max protocol "
               "= SMB3\n",

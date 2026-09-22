@@ -26,7 +26,6 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_managed_mdns,
     _doctor_check_managed_rsync,
     _doctor_check_managed_smbd,
-    _doctor_check_network_plan,
     _doctor_check_nbns,
     _doctor_check_runtime_naming_identity,
     _doctor_check_runtime_ram_root,
@@ -95,17 +94,15 @@ def run_doctor_checks(
     _doctor_check_managed_mdns(target, remote, sink)
     _doctor_check_managed_rsync(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
-    network_plan = _doctor_check_network_plan(target, remote, smb_config, sink)
-    direct_smb = _doctor_check_direct_smb_port(target, remote, network_plan, sink)
     bonjour_result = _add_bonjour_results(
         inputs.config,
         naming.identity,
         proxied_ssh=target.proxied_ssh,
         skip_bonjour=inputs.options.skip_bonjour,
-        network_plan=network_plan.plan,
         active_share_names=parse_active_share_names(smb_config.text or ""),
         add_result=sink.add,
     )
+    direct_smb = _doctor_check_direct_smb_port(target, remote, bonjour_result.addresses, sink)
     _add_bonjour_debug_fields(
         sink.debug_fields,
         bonjour_debug_needed=bonjour_result.debug_needed,
@@ -117,8 +114,8 @@ def run_doctor_checks(
     _doctor_add_bonjour_naming_info(bonjour_result, sink)
     _doctor_check_usb_printer(target, remote, bonjour_result, sink)
     _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
-    _doctor_check_nbns(target, remote, smb_config, naming, network_plan, sink)
-    _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, network_plan, direct_smb, sink)
+    _doctor_check_nbns(target, remote, smb_config, naming, direct_smb, sink)
+    _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, direct_smb, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink)
     _doctor_apply_startup_grace(sink, startup_age, enabled=startup_grace)

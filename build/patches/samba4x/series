@@ -108,6 +108,10 @@
 # Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
 # interface enumeration through libreplace's ioctl-based fallback.
 0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD
+# The NetBSD4 kernel's routing ABI is newer than its SDK headers, while the
+# ioctl fallback above assumes fixed-size ifreq rows and returns no interfaces.
+# Decode NET_RT_IFLIST by its on-wire version, as the native service does.
+0043-netbsd-route-interface-enumeration.patch|parse Time Capsule interfaces from routing messages
 # Samba 4.25 includes the AFP_AfpInfo fstatat fix formerly carried as 0021.
 # Time Capsule payload logs live on Apple-managed HFS, where root-created
 # directories can report owner 4294967295 and fail Samba's strict corepath

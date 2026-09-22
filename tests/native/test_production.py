@@ -29,11 +29,7 @@ def test_production_service_rejects_fixtures_and_keeps_role_entrypoints(tmp_path
     assert live.returncode == 0, live.stderr
     assert live.stdout.startswith("plan: status=cold-start reason=")
     assert "mode=unknown" in live.stdout
-    bind = run("--print-smb-bind-interfaces")
-    assert bind.returncode == 0
-    tokens, status = bind.stdout.splitlines()
-    assert tokens == "127.0.0.1/8 ::1/128"
-    assert status in {"status=incomplete reason=mode", "status=incomplete reason=iflist"}
+    assert run("--print-smb-bind-interfaces").returncode == 3
 
     symbols = subprocess.run(["nm", str(binary)], capture_output=True, text=True, check=True).stdout
     assert "device_facts_parse_file" not in symbols

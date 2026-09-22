@@ -97,8 +97,7 @@ int tc_process_table_read(struct tc_process_table *table) {
     free(buffer);
     return rc;
 }
-unsigned tc_listener_families(const char *text, unsigned port) {
-    unsigned result = 0;
+int tc_listener_present(const char *text, unsigned port) {
     while (*text) {
         const char *end = strchr(text, '\n');
         size_t length = end ? (size_t)(end - text) : strlen(text);
@@ -113,22 +112,65 @@ unsigned tc_listener_families(const char *text, unsigned port) {
             if (address && !strncmp(address, needle, strlen(needle)) &&
                 (!address[strlen(needle)] || isspace((unsigned char)address[strlen(needle)])) &&
                 !strstr(line, "<->") && !strstr(line, "-->")) {
-                if (strstr(line, " internet stream tcp "))
-                    result |= 1;
-                if (strstr(line, " internet6 stream tcp "))
-                    result |= 2;
+                if (strstr(line, " internet stream tcp ") || strstr(line, " internet6 stream tcp "))
+                    return 1;
             }
         }
         text += length + (end != NULL);
     }
+    return 0;
+}
+unsigned tc_wildcard_listener_families(const char *text, unsigned port) {
+    unsigned result = 0;
+    while (*text) {
+        const char *end = strchr(text, '\n');
+        size_t length = end ? (size_t)(end - text) : strlen(text);
+        char line[2048], wildcard[32], ipv4[32], ipv6[32], ipv6_wildcard[32], *endpoint;
+        if (length >= sizeof(line)) {
+            text += length + (end != NULL);
+            continue;
+        }
+        memcpy(line, text, length);
+        line[length] = 0;
+        text += length + (end != NULL);
+        if (strstr(line, "<->") || strstr(line, "-->"))
+            continue;
+        endpoint = line + strlen(line);
+        while (endpoint > line && isspace((unsigned char)endpoint[-1]))
+            *--endpoint = 0;
+        while (endpoint > line && !isspace((unsigned char)endpoint[-1]))
+            endpoint--;
+        snprintf(wildcard, sizeof(wildcard), "*:%u", port);
+        snprintf(ipv4, sizeof(ipv4), "0.0.0.0:%u", port);
+        snprintf(ipv6, sizeof(ipv6), "[::]:%u", port);
+        snprintf(ipv6_wildcard, sizeof(ipv6_wildcard), "[*]:%u", port);
+        if (strcmp(endpoint, wildcard) && strcmp(endpoint, ipv4) && strcmp(endpoint, ipv6) &&
+            strcmp(endpoint, ipv6_wildcard))
+            continue;
+        if (strstr(line, " internet stream tcp "))
+            result |= 1;
+        if (strstr(line, " internet6 stream tcp "))
+            result |= 2;
+    }
     return result;
 }
-int tc_process_listeners(pid_t pid, unsigned port, unsigned *families) {
-    char buffer[32768], number[32];
+static int process_fstat(pid_t pid, char *buffer, size_t buffer_size) {
+    char number[32];
     char *argv[] = {TC_FSTAT_PATH, "-p", number, NULL};
     snprintf(number, sizeof(number), "%ld", (long)pid);
-    if (tc_command_capture(argv, buffer, sizeof(buffer), 5))
+    return tc_command_capture(argv, buffer, buffer_size, 5);
+}
+int tc_process_listener(pid_t pid, unsigned port, int *listening) {
+    char buffer[32768];
+    if (process_fstat(pid, buffer, sizeof(buffer)))
         return -1;
-    *families = tc_listener_families(buffer, port);
+    *listening = tc_listener_present(buffer, port);
+    return 0;
+}
+int tc_process_wildcard_listeners(pid_t pid, unsigned port, unsigned *families) {
+    char buffer[32768];
+    if (process_fstat(pid, buffer, sizeof(buffer)))
+        return -1;
+    *families = tc_wildcard_listener_families(buffer, port);
     return 0;
 }

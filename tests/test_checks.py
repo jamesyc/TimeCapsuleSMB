@@ -47,8 +47,7 @@ from timecapsulesmb.checks.doctor_steps import (
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
-from timecapsulesmb.checks.network_plan import RouteSelection
+from timecapsulesmb.checks.network import RouteSelection, check_smb_port, check_ssh_login, ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import build_nbns_query, check_nbns_name_resolution, extract_nbns_response_ip
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
@@ -67,7 +66,6 @@ from timecapsulesmb.device.probe import (
     FLASH_RUNTIME_CONFIG,
     ManagerStartupAgeProbeResult,
     RemoteInterfaceProbeResult,
-    RemoteNetworkCapabilitiesProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
@@ -100,6 +98,25 @@ DEFAULT_ACTIVE_SMB_CONF = """[global]
 class CheckTests(unittest.TestCase):
     def smb_listing_result(self, server: str = "timecapsulesamba4.local", disk_shares: list[str] | None = None) -> CheckResult:
         return CheckResult("PASS", "listing ok", {"server": server, "disk_shares": ["Data"] if disk_shares is None else disk_shares})
+
+    def dual_stack_discovery(
+        self,
+        ipv4: str | tuple[str, ...] = "10.0.0.2",
+        ipv6: str = "fd00::2",
+    ) -> mock.Mock:
+        instance = BonjourServiceInstance(
+            "_smb._tcp.local.", "Time Capsule Samba 4", "Time Capsule Samba 4._smb._tcp.local.",
+        )
+        snapshots = [
+            BonjourDiscoverySnapshot([instance], [BonjourResolvedService(
+                instance.name, "timecapsulesamba4.local", instance.service_type, port=445,
+                ipv4=[ipv4] if isinstance(ipv4, str) else list(ipv4),
+            )]),
+            BonjourDiscoverySnapshot([instance], [BonjourResolvedService(
+                instance.name, "timecapsulesamba4.local", instance.service_type, port=445, ipv6=[ipv6],
+            )]),
+        ]
+        return mock.Mock(side_effect=[(snapshot, None, None) for snapshot in snapshots])
 
     def doctor_config(self, values: dict[str, str], *, exists: bool = True) -> AppConfig:
         return AppConfig.from_values(
@@ -300,7 +317,7 @@ class CheckTests(unittest.TestCase):
                 )
             )
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
-                setattr(mocks, f"extra_{index}", stack.enter_context(mock.patch(target, replacement)))
+                setattr(mocks, f"extra_{index}", stack.enter_context(mock.patch(target, replacement, create=True)))
 
             results, fatal = run_doctor_checks(
                 self.doctor_config(resolved_values, exists=exists),
@@ -436,7 +453,7 @@ class CheckTests(unittest.TestCase):
                     lines=(
                         "PASS:managed runtime smb.conf present",
                         "PASS:managed smbd parent process is running",
-                        "PASS:smbd bound to required TCP 445 sockets",
+                "PASS:smbd owns IPv4 and IPv6 wildcard TCP 445 listeners",
                     ),
                 ),
             )
@@ -536,7 +553,7 @@ class CheckTests(unittest.TestCase):
             detail="managed smbd ready",
             lines=(
                 "PASS:managed runtime smbd binary present",
-                "PASS:smbd bound to required TCP 445 sockets",
+                "PASS:smbd owns IPv4 and IPv6 wildcard TCP 445 listeners",
                 "PASS:device Samba version: 4.24.3",
             ),
         )
@@ -548,7 +565,7 @@ class CheckTests(unittest.TestCase):
         )
 
         version_result = next(result for result in run.results if result.message == "device Samba version: 4.24.3")
-        smbd_result = next(result for result in run.results if result.message == "smbd bound to required TCP 445 sockets")
+        smbd_result = next(result for result in run.results if result.message == "smbd owns IPv4 and IPv6 wildcard TCP 445 listeners")
         self.assertEqual(version_result.status, "PASS")
         self.assertEqual(version_result.details, {})
         self.assertLess(run.results.index(smbd_result), run.results.index(version_result))
@@ -559,7 +576,7 @@ class CheckTests(unittest.TestCase):
             detail="device Samba version unavailable (exit code 1)",
             lines=(
                 "PASS:managed runtime smbd binary present",
-                "PASS:smbd bound to required TCP 445 sockets",
+                "PASS:smbd owns IPv4 and IPv6 wildcard TCP 445 listeners",
                 "FAIL:device Samba version unavailable (exit code 1)",
             ),
         )
@@ -745,23 +762,25 @@ class CheckTests(unittest.TestCase):
             "fda3::2": CheckResult("PASS", "SMB reachable at fda3::2:445"),
         }
         port_mock = mock.Mock(side_effect=port_results.__getitem__)
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Time Capsule Samba 4", "Time Capsule Samba 4._smb._tcp.local.")
+        snapshots = [
+            BonjourDiscoverySnapshot([instance], [BonjourResolvedService(
+                "Time Capsule Samba 4", "timecapsulesamba4.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.2"],
+            )]),
+            BonjourDiscoverySnapshot([instance], [BonjourResolvedService(
+                "Time Capsule Samba 4", "timecapsulesamba4.local", "_smb._tcp.local.", port=445,
+                ipv6=["fdbb::2", "fda3::2"],
+            )]),
+        ]
 
         run = self.run_doctor_with_mocks(
             ssh_login=CheckResult("PASS", "ssh ok"),
             xattr_result=CheckResult("PASS", "xattr ok"),
-            skip_bonjour=True,
             skip_smb=True,
             smb_port=REAL_SMB_PORT_CHECK,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fdbb::2/64 fda3::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
-                    return_value=("10.0.0.9", "fda3::9")
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    side_effect=[(snapshot, None, None) for snapshot in snapshots]
                 ),
                 "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
                 "timecapsulesmb.checks.doctor_steps.check_smb_port": port_mock,
@@ -770,9 +789,8 @@ class CheckTests(unittest.TestCase):
 
         self.assertFalse(run.fatal)
         self.assertEqual(port_mock.call_args_list, [mock.call("10.0.0.2"), mock.call("fda3::2")])
-        ipv6_info = next(result for result in run.results if result.details.get("code") == "smb_ipv6_no_client_route")
+        ipv6_info = next(result for result in run.results if "fdbb::2" in result.message)
         self.assertEqual(ipv6_info.status, "INFO")
-        self.assertIn("fdbb::2", ipv6_info.message)
         self.assertFalse(any(result.status == "WARN" and "fdbb::2" in result.message for result in run.results))
 
     def test_run_doctor_checks_warns_when_routable_ipv6_smb_fails(self) -> None:
@@ -782,34 +800,43 @@ class CheckTests(unittest.TestCase):
         }
         port_results = {
             "10.0.0.2": CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
-            "fd00::2": CheckResult("WARN", "SMB not reachable at fd00::2:445 (Connection refused)"),
+            "fd00::2": CheckResult("WARN", "SMB not reachable at fd00::2:445 (connection timed out)", {"error": "connection timed out"}),
         }
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Time Capsule Samba 4", "Time Capsule Samba 4._smb._tcp.local.")
+        snapshots = [
+            BonjourDiscoverySnapshot([instance], [BonjourResolvedService(
+                "Time Capsule Samba 4", "timecapsulesamba4.local", "_smb._tcp.local.", port=445, ipv4=["10.0.0.2"],
+            )]),
+            BonjourDiscoverySnapshot([instance], [BonjourResolvedService(
+                "Time Capsule Samba 4", "timecapsulesamba4.local", "_smb._tcp.local.", port=445, ipv6=["fd00::2"],
+            )]),
+        ]
+        listing = CheckResult("PASS", "authenticated SMB listing works over IPv4", {
+            "server": "timecapsulesamba4.local", "ip_address": "10.0.0.2", "disk_shares": ["Data"], "attempts": [],
+        })
+        listing_mock = mock.Mock(return_value=listing)
+        file_ops_mock = mock.Mock(return_value=[CheckResult("PASS", "file ops ok")])
 
         run = self.run_doctor_with_mocks(
             ssh_login=CheckResult("PASS", "ssh ok"),
             xattr_result=CheckResult("PASS", "xattr ok"),
-            skip_bonjour=True,
-            skip_smb=True,
             smb_port=REAL_SMB_PORT_CHECK,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
-                    return_value=("10.0.0.9", "fd00::9")
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
+                    side_effect=[(snapshot, None, None) for snapshot in snapshots]
                 ),
                 "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
                 "timecapsulesmb.checks.doctor_steps.check_smb_port": mock.Mock(side_effect=port_results.__getitem__),
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
+                "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
             },
         )
 
         self.assertFalse(run.fatal)
         ipv6_result = next(result for result in run.results if "fd00::2:445" in result.message)
         self.assertEqual(ipv6_result.status, "WARN")
+        self.assertEqual(listing_mock.call_args.args[2], [SmbClientTarget("timecapsulesamba4.local", "10.0.0.2")])
+        file_ops_mock.assert_called_once_with("admin", "pw", "timecapsulesamba4.local", "Data", port=445, ip_address="10.0.0.2")
 
     def test_run_doctor_checks_fails_when_enabled_native_nbns_does_not_answer(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -824,14 +851,6 @@ class CheckTests(unittest.TestCase):
             debug_fields=debug_fields,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(
                     return_value=CheckResult("FAIL", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137")
                 ),
@@ -936,7 +955,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(fatal)
         self.assertTrue(any(result.status == "FAIL" and "no resolved _smb._tcp service matched target IP 10.0.0.2" in result.message for result in results))
         self.assertEqual(debug_fields["bonjour_expected"], {"instance_name": None, "host_label": None, "target_ip": "10.0.0.2"})
-        self.assertIs(debug_fields["bonjour_zeroconf"], diagnostics)
+        self.assertEqual(debug_fields["bonjour_zeroconf"], [diagnostics, diagnostics])
         self.assertIs(debug_fields["bonjour_native_dns_sd"], native_diagnostics)
         native_mock.assert_called_once_with()
 
@@ -968,7 +987,8 @@ class CheckTests(unittest.TestCase):
                         )
 
         self.assertFalse(fatal)
-        self.assertEqual(debug_fields, {})
+        self.assertNotIn("bonjour_native_fallback", debug_fields)
+        self.assertEqual(debug_fields["smb_connectivity"]["reachable_addresses"], ["10.0.0.2"])
         self.assertTrue(any(result.status == "PASS" and "discovered _smb._tcp" in result.message for result in results))
 
     def test_run_doctor_checks_resolves_expected_smb_when_browse_misses_instance(self) -> None:
@@ -1033,14 +1053,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot([airport_instance, adisk_instance], [airport_record, adisk_record]), None, diagnostics)
                 ),
@@ -1056,13 +1068,14 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         self.assertNotIn("bonjour_native_dns_sd", debug_fields)
         self.assertNotIn("bonjour_native_dns_sd_error", debug_fields)
-        resolve_mock.assert_called_once()
-        resolved_instance = resolve_mock.call_args.args[0]
+        self.assertEqual(resolve_mock.call_count, 2)
+        first_resolve = resolve_mock.call_args_list[0]
+        resolved_instance = first_resolve.args[0]
         self.assertEqual(resolved_instance, build_expected_smb_instance("Home"))
-        self.assertEqual(resolve_mock.call_args.kwargs["target_ip"], "10.0.0.2")
-        self.assertEqual(resolve_mock.call_args.kwargs["family"], "ipv4")
-        self.assertEqual(resolve_mock.call_args.kwargs["interfaces"], ["10.0.0.9"])
-        self.assertIn("targeted query", resolve_mock.call_args.kwargs["missing_message"])
+        self.assertEqual(first_resolve.kwargs["target_ip"], "10.0.0.2")
+        self.assertEqual(first_resolve.kwargs["family"], "ipv4")
+        self.assertIsNone(first_resolve.kwargs["interfaces"])
+        self.assertIn("targeted query", first_resolve.kwargs["missing_message"])
         messages = [result.message for result in run.results]
         self.assertIn(
             "Bonjour IPv4: Python zeroconf browse did not observe expected _smb._tcp instance 'Home'; targeted resolve succeeded",
@@ -1096,14 +1109,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot([], []), None, None)
                 ),
@@ -1147,14 +1152,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot([], []), None, None)
                 ),
@@ -1247,14 +1244,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot([], []), None, zeroconf_debug)
                 ),
@@ -1284,8 +1273,8 @@ class CheckTests(unittest.TestCase):
         self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
         self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
         self.assertNotIn("Bonjour IPv4: no discovered _smb._tcp instance matched expected device instance 'Home'", messages)
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd"})
-        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd", "ipv6": "native_dns_sd"})
+        self.assertEqual(debug_fields["bonjour_native_fallback"], [native_debug, native_debug])
         self.assertIn("bonjour_zeroconf", debug_fields)
 
     def test_run_doctor_checks_uses_native_dns_sd_targeted_resolve_when_native_browse_misses_expected_smb(self) -> None:
@@ -1333,14 +1322,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot([], []), None, None)
                 ),
@@ -1365,9 +1346,9 @@ class CheckTests(unittest.TestCase):
         self.assertIn("Bonjour IPv4: native macOS dns-sd resolved expected _smb._tcp instance 'Home' by targeted query", messages)
         self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
         self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd"})
-        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
-        self.assertEqual(native_debug.resolves, [native_resolve])
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd", "ipv6": "native_dns_sd"})
+        self.assertEqual(debug_fields["bonjour_native_fallback"], [native_debug, native_debug])
+        self.assertEqual(native_debug.resolves, [native_resolve, native_resolve])
 
     def test_run_doctor_checks_uses_native_dns_sd_fallback_for_ip_only_bonjour_when_runtime_name_probe_fails(self) -> None:
         native_instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
@@ -1398,14 +1379,6 @@ class CheckTests(unittest.TestCase):
             debug_fields=debug_fields,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn": mock.Mock(side_effect=RuntimeError("probe failed")),
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot([], []), None, None)
                 ),
@@ -1427,7 +1400,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("Bonjour IPv4: discovered _smb._tcp service matching target IP 10.0.0.2", messages)
         self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", messages)
         self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd"})
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "native_dns_sd", "ipv6": "zeroconf"})
         self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
 
     def test_run_doctor_checks_can_use_native_dns_sd_for_one_bonjour_family_while_zeroconf_passes_another(self) -> None:
@@ -1489,14 +1462,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9", "fd00::9")),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": discover_mock,
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance": mock.Mock(return_value=(None, resolve_error)),
                 "timecapsulesmb.checks.doctor_steps.native_dns_sd_available": mock.Mock(return_value=True),
@@ -1509,7 +1474,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(discover_mock.call_count, 2)
         native_discover_mock.assert_called_once()
         self.assertEqual(native_discover_mock.call_args.kwargs["family"], "ipv6")
-        self.assertEqual(native_discover_mock.call_args.kwargs["target_ip"], "fd00::2")
+        self.assertIsNone(native_discover_mock.call_args.kwargs["target_ip"])
         messages = [result.message for result in run.results]
         self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Home'", messages)
         self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.0.2 from service record", messages)
@@ -1518,7 +1483,7 @@ class CheckTests(unittest.TestCase):
             messages,
         )
         self.assertIn("Bonjour IPv6: discovered _smb._tcp instance 'Home'", messages)
-        self.assertIn("Bonjour IPv6: resolved Bonjour host home.local to fd00::2 from service record", messages)
+        self.assertIn("Bonjour IPv6: resolved Bonjour host home.local to fd00::2", messages)
         self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "zeroconf", "ipv6": "native_dns_sd"})
         self.assertIs(debug_fields["bonjour_native_fallback"], native_v6_debug)
 
@@ -1561,14 +1526,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot([], []), None, None)
                 ),
@@ -1593,8 +1550,8 @@ class CheckTests(unittest.TestCase):
             "Bonjour IPv4: Python zeroconf did not produce a usable Bonjour result; using native macOS dns-sd fallback",
             messages,
         )
-        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "zeroconf"})
-        self.assertIs(debug_fields["bonjour_native_fallback"], native_debug)
+        self.assertEqual(debug_fields["bonjour_backend"], {"ipv4": "zeroconf", "ipv6": "native_dns_sd"})
+        self.assertEqual(debug_fields["bonjour_native_fallback"], [native_debug, native_debug])
 
     def test_run_doctor_checks_uses_ip_only_bonjour_fallback_when_runtime_name_probe_fails(self) -> None:
         run = self.run_doctor_with_mocks(
@@ -2435,7 +2392,7 @@ class CheckTests(unittest.TestCase):
             CheckResult("WARN", "could not inspect active smb.conf"),
             CheckResult(
                 "FAIL",
-                "smbd is not bound to required TCP 445 sockets",
+                "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
                 {"domain": "Runtime", STARTUP_GRACE_DETAIL_KEY: STARTUP_GRACE_MASK},
             ),
         ]
@@ -2450,7 +2407,7 @@ class CheckTests(unittest.TestCase):
                 ("PASS", "ssh ok"),
                 ("INFO", "managed runtime smbd binary missing"),
                 ("WARN", "could not inspect active smb.conf"),
-                ("INFO", "smbd is not bound to required TCP 445 sockets"),
+                ("INFO", "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener"),
                 ("FAIL", startup_fail.message),
             ],
         )
@@ -2462,7 +2419,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(startup_fail.details["startup_grace_seconds"], DOCTOR_STARTUP_GRACE_SECONDS)
         self.assertEqual(
             startup_fail.details["masked_failures"],
-            ["managed runtime smbd binary missing", "smbd is not bound to required TCP 445 sockets"],
+            ["managed runtime smbd binary missing", "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener"],
         )
         demoted = transformed[3]
         self.assertEqual(demoted.details["masked_by"], DOCTOR_CODE_DEVICE_STARTING_UP)
@@ -2941,11 +2898,11 @@ class CheckTests(unittest.TestCase):
     def test_run_doctor_checks_reports_managed_smbd_subchecks(self) -> None:
         smbd_probe = mock.Mock(
             ready=False,
-            detail="smbd is not bound to required TCP 445 sockets",
+            detail="smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
             lines=(
                 "PASS:managed runtime smb.conf present",
                 "PASS:managed smbd parent process is running",
-                "FAIL:smbd is not bound to required TCP 445 sockets",
+                "FAIL:smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
             ),
         )
         with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep_mock:
@@ -2962,7 +2919,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [10, 15])
         self.assertTrue(any(result.status == "PASS" and result.message == "managed smbd parent process is running" for result in run.results))
-        self.assertTrue(any(result.status == "FAIL" and result.message == "smbd is not bound to required TCP 445 sockets" for result in run.results))
+        self.assertTrue(any(result.status == "FAIL" and result.message == "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener" for result in run.results))
         self.assertFalse(any(result.message.startswith("managed smbd is not ready") for result in run.results))
 
     def test_run_doctor_checks_retries_transient_smbd_parent_failure_before_streaming_result(self) -> None:
@@ -2974,7 +2931,7 @@ class CheckTests(unittest.TestCase):
         ready = mock.Mock(
             ready=True,
             detail="managed smbd ready",
-            lines=("PASS:managed smbd parent process is running", "PASS:smbd bound to required TCP 445 sockets"),
+            lines=("PASS:managed smbd parent process is running", "PASS:smbd owns IPv4 and IPv6 wildcard TCP 445 listeners"),
         )
         smbd_mock = mock.Mock(side_effect=[transient, ready])
         streamed: list[CheckResult] = []
@@ -2993,15 +2950,15 @@ class CheckTests(unittest.TestCase):
         sleep_mock.assert_called_once_with(10)
         self.assertFalse(any(result.message == "managed smbd parent process is not running" for result in run.results))
         self.assertFalse(any(result.message == "managed smbd parent process is not running" for result in streamed))
-        self.assertTrue(any(result.status == "PASS" and result.message == "smbd bound to required TCP 445 sockets" for result in run.results))
+        self.assertTrue(any(result.status == "PASS" and result.message == "smbd owns IPv4 and IPv6 wildcard TCP 445 listeners" for result in run.results))
 
-    def test_run_doctor_checks_retries_transient_smbd_tcp_binding_failure(self) -> None:
+    def test_run_doctor_checks_retries_transient_missing_wildcard_listener(self) -> None:
         transient = mock.Mock(
             ready=False,
-            detail="smbd is not bound to required TCP 445 sockets",
+            detail="smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
             lines=(
                 "PASS:managed smbd parent process is running",
-                "FAIL:smbd is not bound to required TCP 445 sockets",
+                "FAIL:smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
             ),
         )
         ready = mock.Mock(
@@ -3009,7 +2966,7 @@ class CheckTests(unittest.TestCase):
             detail="managed smbd ready",
             lines=(
                 "PASS:managed smbd parent process is running",
-                "PASS:smbd bound to required TCP 445 sockets",
+                "PASS:smbd owns IPv4 and IPv6 wildcard TCP 445 listeners",
             ),
         )
         smbd_mock = mock.Mock(side_effect=[transient, ready])
@@ -3025,16 +2982,16 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         self.assertEqual(smbd_mock.call_count, 2)
         sleep_mock.assert_called_once_with(10)
-        self.assertFalse(any(result.message == "smbd is not bound to required TCP 445 sockets" for result in run.results))
-        self.assertTrue(any(result.status == "PASS" and result.message == "smbd bound to required TCP 445 sockets" for result in run.results))
+        self.assertFalse(any(result.message == "smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener" for result in run.results))
+        self.assertTrue(any(result.status == "PASS" and result.message == "smbd owns IPv4 and IPv6 wildcard TCP 445 listeners" for result in run.results))
 
     def test_run_doctor_checks_does_not_retry_structural_smbd_failure_mixed_with_transient_failure(self) -> None:
         smbd_probe = mock.Mock(
             ready=False,
-            detail="managed runtime smbd binary missing; smbd is not bound to required TCP 445 sockets",
+            detail="managed runtime smbd binary missing; smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
             lines=(
                 "FAIL:managed runtime smbd binary missing",
-                "FAIL:smbd is not bound to required TCP 445 sockets",
+                "FAIL:smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener",
             ),
         )
         smbd_mock = mock.Mock(return_value=smbd_probe)
@@ -3624,11 +3581,11 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(fatal)
         messages = [result.message for result in results]
         self.assertIn(
-            "advertised Bonjour service targets for \"James's AirPort Time Capsule\": _airport=Jamess-AirPort-Time-Capsule.local; _smb=james-s-airport-time-capsule.local; _adisk=james-s-airport-time-capsule.local; _device-info=james-s-airport-time-capsule.local",
+            "Bonjour IPv4: advertised Bonjour service targets for \"James's AirPort Time Capsule\": _airport=Jamess-AirPort-Time-Capsule.local; _smb=james-s-airport-time-capsule.local; _adisk=james-s-airport-time-capsule.local; _device-info=james-s-airport-time-capsule.local",
             messages,
         )
         self.assertIn(
-            "Bonjour services for \"James's AirPort Time Capsule\" advertise inconsistent host targets: _airport=Jamess-AirPort-Time-Capsule.local; _smb=james-s-airport-time-capsule.local; _adisk=james-s-airport-time-capsule.local; _device-info=james-s-airport-time-capsule.local",
+            "Bonjour IPv4: Bonjour services for \"James's AirPort Time Capsule\" advertise inconsistent host targets: _airport=Jamess-AirPort-Time-Capsule.local; _smb=james-s-airport-time-capsule.local; _adisk=james-s-airport-time-capsule.local; _device-info=james-s-airport-time-capsule.local",
             messages,
         )
 
@@ -3681,14 +3638,6 @@ class CheckTests(unittest.TestCase):
             read_active_smb_conf=active_smb_conf,
             runtime_naming_identity=identity,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="192.168.1.217/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("192.168.1.20",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
                 ),
@@ -3755,14 +3704,6 @@ class CheckTests(unittest.TestCase):
             read_active_smb_conf=active_smb_conf,
             runtime_naming_identity=identity,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="192.168.1.217/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("192.168.1.20",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
                 ),
@@ -3816,14 +3757,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             runtime_naming_identity=self.runtime_identity_from_values(values),
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
                 ),
@@ -3852,14 +3785,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             runtime_naming_identity=self.runtime_identity_from_values(values),
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
                 ),
@@ -4008,14 +3933,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             runtime_naming_identity=self.runtime_identity_from_values(values),
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24",
-                        mdns_families=("ipv4",),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": mock.Mock(
                     return_value=(BonjourDiscoverySnapshot(instances, records), None, None)
                 ),
@@ -4068,9 +3985,9 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         resolve_mock.assert_not_called()
         pass_messages = [result.message for result in run.results if result.status == "PASS"]
-        self.assertIn("discovered _smb._tcp instance 'Home'", pass_messages)
-        self.assertIn("resolved _smb._tcp instance 'Home' to home.local:445", pass_messages)
-        self.assertIn("resolved Bonjour host home.local to 10.0.1.1", pass_messages)
+        self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Home'", pass_messages)
+        self.assertIn("Bonjour IPv4: resolved _smb._tcp instance 'Home' to home.local:445", pass_messages)
+        self.assertIn("Bonjour IPv4: resolved Bonjour host home.local to 10.0.1.1", pass_messages)
 
     def test_run_doctor_checks_lists_shares_before_selecting_active_file_ops_share(self) -> None:
         values = {
@@ -4098,7 +4015,7 @@ class CheckTests(unittest.TestCase):
         run.mocks.check_authenticated_smb_listing.assert_called_once_with(
             "admin",
             "pw",
-            ["timecapsulesamba4.local", "10.0.0.2"],
+            [SmbClientTarget("timecapsulesamba4.local", "10.0.0.2")],
             port=445,
         )
         run.mocks.check_authenticated_smb_file_ops_detailed.assert_called_once_with(
@@ -4154,7 +4071,7 @@ class CheckTests(unittest.TestCase):
         listing_mock.assert_called_once_with(
             "admin",
             "pw",
-            ["10.0.0.2"],
+            [SmbClientTarget("10.0.0.2", "10.0.0.2")],
             port=445,
         )
         file_ops_mock.assert_called_once_with(
@@ -4252,7 +4169,7 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(any("TC_MDNS_HOST_LABEL" in result.message for result in run.results))
         self.assertFalse(run.fatal)
         called_servers = run.mocks.check_authenticated_smb_listing.call_args.args[2]
-        self.assertIn("time-capsule.local", called_servers)
+        self.assertIn(SmbClientTarget("time-capsule.local", "10.0.0.2"), called_servers)
         self.assertNotIn("10.0.1.99.local", called_servers)
 
     def test_check_authenticated_smb_listing_requires_expected_share(self) -> None:
@@ -4505,7 +4422,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(run.fatal)
         self.assertEqual(
             debug_fields["authenticated_smb_listing_servers"],
-            ["timecapsulesamba4.local", "10.0.0.2"],
+            ["timecapsulesamba4.local via 10.0.0.2"],
         )
         self.assertEqual(debug_fields["authenticated_smb_listing_active_shares"], ["Data"])
         self.assertEqual(debug_fields["authenticated_smb_listing_attempts"], listing_attempts)
@@ -4988,15 +4905,10 @@ class CheckTests(unittest.TestCase):
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             runtime_naming_identity=self.runtime_identity_from_values(values),
             startup_grace=False,
+            skip_bonjour=True,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
                 "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24", mdns_families=("ipv4",), nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9",)),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
             },
         )
@@ -5008,7 +4920,7 @@ class CheckTests(unittest.TestCase):
         self.assertLess(nbns_index, listing_index)
         nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "10.0.0.2")
 
-    def test_run_doctor_checks_uses_runtime_network_plan_for_hostname_target_nbns(self) -> None:
+    def test_run_doctor_checks_uses_discovered_ipv4_for_hostname_target_nbns(self) -> None:
         values = {
             "TC_HOST": "root@timecapsule.local",
             "TC_PASSWORD": "pw",
@@ -5036,20 +4948,15 @@ class CheckTests(unittest.TestCase):
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
                 "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="192.168.1.217/24", mdns_families=("ipv4",), nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("192.168.1.5",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
             },
         )
         self.assertFalse(run.fatal)
         self.assertEqual(next(result for result in run.results if result.message == "nbns ok").status, "PASS")
-        nbns_mock.assert_called_once_with("TimeCapsule", "192.168.1.217", "192.168.1.217")
+        nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "10.0.0.2")
 
-    def test_run_doctor_checks_uses_runtime_network_plan_for_wan_ssh_target_nbns(self) -> None:
+    def test_run_doctor_checks_uses_discovered_ipv4_instead_of_ssh_hostname_for_nbns(self) -> None:
         values = {
             "TC_HOST": "root@wan.example.com",
             "TC_PASSWORD": "pw",
@@ -5077,37 +4984,26 @@ class CheckTests(unittest.TestCase):
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
                 "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.9/24", mdns_families=("ipv4",), nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.5",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
             },
         )
         self.assertFalse(run.fatal)
         self.assertEqual(next(result for result in run.results if result.message == "nbns ok").status, "PASS")
-        nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.9", "10.0.0.9")
+        nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "10.0.0.2")
 
-    def test_run_doctor_checks_checks_nbns_only_for_reachable_ipv4(self) -> None:
+    def test_run_doctor_checks_nbns_prefers_non_link_local_reachable_ipv4(self) -> None:
         nbns_mock = mock.Mock(return_value=mock.Mock(status="PASS", message="nbns ok"))
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             xattr_result=CheckResult("PASS", "xattr ok"),
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
-            skip_bonjour=True,
             skip_smb=True,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4", "ipv6"),
-                    )
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(
+                    ("169.254.1.2", "10.0.0.2")
                 ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9", "fd00::9")),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
             },
         )
@@ -5148,16 +5044,8 @@ class CheckTests(unittest.TestCase):
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
             xattr_result=CheckResult("PASS", "xattr ok"),
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
-            skip_bonjour=True,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4", "ipv6"),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9", "fd00::9")),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
             },
@@ -5213,18 +5101,8 @@ class CheckTests(unittest.TestCase):
             ssh_login=CheckResult("PASS", "ssh ok"),
             xattr_result=CheckResult("PASS", "xattr ok"),
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
-            skip_bonjour=True,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(
-                    return_value=("10.0.0.9", "fd00::9")
-                ),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed": file_ops_mock,
             },
@@ -5266,17 +5144,9 @@ class CheckTests(unittest.TestCase):
             ssh_login=CheckResult("PASS", "ssh ok"),
             xattr_result=CheckResult("PASS", "xattr ok"),
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
-            skip_bonjour=True,
             smb_port=REAL_SMB_PORT_CHECK,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("fd00::9",)),
+                "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
                 "timecapsulesmb.checks.doctor_steps.select_route_to_address": mock.Mock(side_effect=routes.__getitem__),
                 "timecapsulesmb.checks.doctor_steps.check_smb_port": port_mock,
                 "timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing": listing_mock,
@@ -5299,7 +5169,7 @@ class CheckTests(unittest.TestCase):
             ip_address="fd00::2",
         )
 
-    def test_run_doctor_checks_bonjour_uses_family_specific_network_plan(self) -> None:
+    def test_run_doctor_checks_bonjour_runs_family_specific_discovery(self) -> None:
         instances = [
             BonjourServiceInstance(
                 service_type="_smb._tcp.local.",
@@ -5357,7 +5227,7 @@ class CheckTests(unittest.TestCase):
         host_ip_mock = mock.Mock(
             side_effect=lambda hostname, *, expected_ip, record_ips: CheckResult(
                 "PASS",
-                f"resolved Bonjour host {hostname} to {expected_ip} from service record",
+                f"resolved Bonjour host {hostname} to {expected_ip or record_ips[0]} from service record",
             )
         )
 
@@ -5367,14 +5237,6 @@ class CheckTests(unittest.TestCase):
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
             skip_smb=True,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_remote_network_capabilities_conn": mock.Mock(
-                    return_value=RemoteNetworkCapabilitiesProbeResult(
-                        smb_bind_interfaces="10.0.0.2/24 fd00::2/64",
-                        mdns_families=("ipv4", "ipv6"),
-                        nbns_families=("ipv4",),
-                    )
-                ),
-                "timecapsulesmb.checks.doctor_steps.local_interface_addresses": mock.Mock(return_value=("10.0.0.9", "fd00::9")),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": discover_mock,
                 "timecapsulesmb.checks.doctor_steps.check_bonjour_host_ip": host_ip_mock,
             },
@@ -5384,12 +5246,12 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(discover_mock.call_count, 2)
         self.assertEqual(discover_mock.call_args_list[0].kwargs["family"], "ipv4")
         self.assertEqual(discover_mock.call_args_list[0].kwargs["target_ip"], "10.0.0.2")
-        self.assertEqual(discover_mock.call_args_list[0].kwargs["interfaces"], ["10.0.0.9"])
+        self.assertIsNone(discover_mock.call_args_list[0].kwargs["interfaces"])
         self.assertEqual(discover_mock.call_args_list[1].kwargs["family"], "ipv6")
-        self.assertEqual(discover_mock.call_args_list[1].kwargs["target_ip"], "fd00::2")
-        self.assertEqual(discover_mock.call_args_list[1].kwargs["interfaces"], ["fd00::9"])
+        self.assertIsNone(discover_mock.call_args_list[1].kwargs["target_ip"])
+        self.assertIsNone(discover_mock.call_args_list[1].kwargs["interfaces"])
         self.assertEqual(host_ip_mock.call_args_list[0].kwargs["expected_ip"], "10.0.0.2")
-        self.assertEqual(host_ip_mock.call_args_list[1].kwargs["expected_ip"], "fd00::2")
+        self.assertIsNone(host_ip_mock.call_args_list[1].kwargs["expected_ip"])
         pass_messages = [result.message for result in run.results if result.status == "PASS"]
         self.assertIn("Bonjour IPv4: discovered _smb._tcp instance 'Time Capsule Samba 4'", pass_messages)
         self.assertIn("Bonjour IPv4: resolved Bonjour host timecapsulesamba4.local to 10.0.0.2 from service record", pass_messages)

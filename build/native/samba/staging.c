@@ -160,7 +160,7 @@ int tc_samba_publish(int rsync) {
 }
 
 int tc_samba_stage(const struct tc_storage_snapshot *storage, const struct tc_samba_settings *settings,
-                   const char *bindings, int copy_smbd, int copy_rsync) {
+                   int copy_smbd, int copy_rsync) {
     const struct tc_runtime_config *config = &settings->config;
     const struct tc_volume *volume;
     char path[512], source[352];
@@ -212,7 +212,7 @@ int tc_samba_stage(const struct tc_storage_snapshot *storage, const struct tc_sa
     if (!file)
         goto out;
     int render_failed =
-        tc_samba_render(file, config, &settings->identity, bindings, storage->payload, &storage->shares);
+        tc_samba_render(file, config, &settings->identity, storage->payload, &storage->shares);
     if (finish(file) || render_failed)
         goto out;
     file = prepare_file(TC_RAM_ROOT "/private/smbpasswd");

@@ -26,5 +26,5 @@ struct tc_runtime_config {
 };
 int tc_runtime_config_load(struct tc_runtime_config *);
 int tc_samba_render(FILE *, const struct tc_runtime_config *, const struct tc_samba_identity *,
-                    const char *bindings, const char *payload, const struct tc_share_set *);
+                    const char *payload, const struct tc_share_set *);
 #endif

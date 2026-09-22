@@ -802,7 +802,7 @@ MaSt = (
     # ---- v3.1.0 boot: Apple mDNSResponder stays, diskd moves to loopback ----
 
 
-    # ---- v3.1.0 manager: retained bind projection, registrant restarts ----
+    # ---- v3.1.0 discovery policy and registrant restarts ----
 
 
 if __name__ == "__main__":

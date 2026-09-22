@@ -30,8 +30,7 @@ int main(int argc, char **argv) {
     snprintf(storage.payload, sizeof(storage.payload), "%s/.samba4", inventory.volumes[0].root);
     snprintf(storage.smbd_source, sizeof(storage.smbd_source), "%s/smbd", storage.payload);
     assert(!tc_shares_build(&storage.shares, &inventory, 1, 0, 0));
-    result = tc_samba_stage(&storage, &settings, "127.0.0.1/8 192.0.2.1/24", !strcmp(argv[1], "copy"),
-                            !strcmp(argv[1], "copy"));
+    result = tc_samba_stage(&storage, &settings, !strcmp(argv[1], "copy"), !strcmp(argv[1], "copy"));
     if (result)
         return 3;
     if (!strcmp(argv[1], "discard")) {

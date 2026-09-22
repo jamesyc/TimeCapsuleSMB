@@ -95,7 +95,7 @@ static int print_samba_identity(void) {
 }
 
 static void usage(void) {
-    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-smb-bind-interfaces | --print-link-plan | --print-mast [--timeout-seconds N] | --version\n", stderr);
+    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-mast [--timeout-seconds N] | --version\n", stderr);
 }
 int main(int argc, char **argv) {
     const char *facts_file = NULL;
@@ -127,16 +127,12 @@ int main(int argc, char **argv) {
     if (!strcmp(command, "--print-samba-identity")) return print_samba_identity();
     if (!strcmp(command, "--print-device-nt-hash")) return print_device_nt_hash();
     if (!strcmp(command, "--print-nt-hash-from-stdin")) return print_nt_hash_from_stdin();
-    if (!strcmp(command, "--print-smb-bind-interfaces") || !strcmp(command, "--print-link-plan")) {
+    if (!strcmp(command, "--print-link-plan")) {
         if (service_collect_plan(&plan, facts_file) != 0) {
             fputs("service: device plan collection failed\n", stderr);
             return EXIT_PLAN_FAILED;
         }
-        if (!strcmp(command, "--print-link-plan")) {
-            return print_link_plan(stdout, &plan) == 0 ? EXIT_OK : EXIT_PLAN_FAILED;
-        }
-        if (print_smb_bind_interfaces(stdout, &plan) != 0) return EXIT_PLAN_FAILED;
-        return EXIT_OK;
+        return print_link_plan(stdout, &plan) == 0 ? EXIT_OK : EXIT_PLAN_FAILED;
     }
     usage();
     return EXIT_USAGE;

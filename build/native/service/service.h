@@ -10,7 +10,6 @@
 #define TC_HOSTS_PATH "/etc/hosts"
 #endif
 int tc_hosts_ensure(const char *path, const char *hostname);
-int print_smb_bind_interfaces(FILE *stream, const struct device_plan *plan);
 int print_link_plan(FILE *stream, const struct device_plan *plan);
 int service_collect_plan(struct device_plan *plan, const char *facts_file);
 int print_nt_hash_from_stdin(void);

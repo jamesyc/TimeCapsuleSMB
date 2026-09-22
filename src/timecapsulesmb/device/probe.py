@@ -235,43 +235,23 @@ runtime_share_volumes_mounted() {{
 
 smbd_bound_445() {{
     fstat_out=$1
-    bind_interfaces=$2
-    require_ipv4=0
-    require_ipv6=0
-    set -- $bind_interfaces
-    for token in "$@"; do
-        case "$token" in
-            127.*|::1/128) ;;
-            *:*) require_ipv6=1 ;;
-            *.*/*) require_ipv4=1 ;;
-        esac
-    done
-    if [ "$require_ipv4" -eq 0 ] && [ "$require_ipv6" -eq 0 ]; then
-        require_ipv4=1
-    fi
-
     has_ipv4=0
     has_ipv6=0
-    case "$fstat_out" in
-        *smbd*" internet stream tcp "*":445"*) has_ipv4=1 ;;
-    esac
-    case "$fstat_out" in
-        *smbd*" internet6 stream tcp "*":445"*) has_ipv6=1 ;;
-    esac
-    if [ "$require_ipv4" -eq 1 ] && [ "$has_ipv4" -ne 1 ]; then
-        return 1
-    fi
-    if [ "$require_ipv6" -eq 1 ] && [ "$has_ipv6" -ne 1 ]; then
-        return 1
-    fi
-    return 0
+    while IFS= read -r line; do
+        case "$line" in
+            *smbd*" internet stream tcp "*\*:445|*smbd*" internet stream tcp "*"0.0.0.0:445") has_ipv4=1 ;;
+            *smbd*" internet6 stream tcp "*\*:445|*smbd*" internet6 stream tcp "*"[::]:445"|*smbd*" internet6 stream tcp "*"[*]:445") has_ipv6=1 ;;
+        esac
+    done <<EOF
+$fstat_out
+EOF
+    [ "$has_ipv4" -eq 1 ] && [ "$has_ipv6" -eq 1 ]
 }}
 
 describe_managed_smbd_status() {{
     ps_out=$1
     fstat_out=$2
     status=0
-    bind_interfaces=$(read_smb_conf_value "interfaces" || true)
     if runtime_smbd_binary_present; then
         echo "PASS:managed runtime smbd binary present"
     else
@@ -332,10 +312,10 @@ describe_managed_smbd_status() {{
         echo "FAIL:managed smbd parent process is not running"
         status=1
     fi
-    if smbd_bound_445 "$fstat_out" "$bind_interfaces"; then
-        echo "PASS:smbd bound to required TCP 445 sockets"
+    if smbd_bound_445 "$fstat_out"; then
+        echo "PASS:smbd owns IPv4 and IPv6 wildcard TCP 445 listeners"
     else
-        echo "FAIL:smbd is not bound to required TCP 445 sockets"
+        echo "FAIL:smbd is missing an IPv4 or IPv6 wildcard TCP 445 listener"
         status=1
     fi
     if ! describe_runtime_smbd_version; then
@@ -451,14 +431,6 @@ class ReadinessProbeResult:
     @property
     def lines(self) -> tuple[str, ...]:
         return tuple(step.line for step in self.steps if step.detail)
-
-
-@dataclass(frozen=True)
-class RemoteNetworkCapabilitiesProbeResult:
-    smb_bind_interfaces: str = ""
-    mdns_families: tuple[str, ...] = ()
-    nbns_families: tuple[str, ...] = ()
-    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1658,81 +1630,6 @@ def probe_usb_printer_conn(connection: SshConnection, *, timeout_seconds: int = 
     if proc.returncode != 0:
         return UsbPrinterProbeResult(present=False, name=None, error=f"acp -A prni exited {proc.returncode}")
     return parse_prni_printers(proc.stdout or "")
-
-
-def _capability_family_tokens(value: str) -> tuple[str, ...]:
-    tokens: list[str] = []
-    for token in value.split():
-        token = token.strip().lower()
-        if token in {"ipv4", "ipv6"} and token not in tokens:
-            tokens.append(token)
-    return tuple(tokens)
-
-
-def probe_remote_network_capabilities_conn(connection: SshConnection, *, timeout_seconds: int = 25) -> RemoteNetworkCapabilitiesProbeResult:
-    script = rf'''
-RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
-RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
-RUNTIME_CONFIG_FILE=${{RUNTIME_CONFIG_FILE:-/mnt/Flash/tcapsulesmb.conf}}
-RUNTIME_SERVICE_BIN=${{RUNTIME_SERVICE_BIN:-$RUNTIME_RAM_SBIN/service}}
-
-tc_probe_cap() {{
-    cap_name=$1
-    cap_bin=$2
-    shift 2
-    if [ ! -x "$cap_bin" ]; then
-        echo "TC_CAP_ERROR $cap_name missing"
-        return 0
-    fi
-    cap_out=$("$cap_bin" "$@" 2>/dev/null)
-    cap_rc=$?
-    if [ "$cap_rc" -eq 0 ]; then
-        echo "TC_CAP $cap_name $cap_out"
-    else
-        echo "TC_CAP_ERROR $cap_name rc=$cap_rc"
-    fi
-}}
-
-tc_probe_cap smb "$RUNTIME_SERVICE_BIN" --print-smb-bind-interfaces
-# NBNS eligibility comes from the validated service plan. Runtime health is
-# checked separately so a crashed wcifsnd child cannot look like "disabled".
-echo "TC_CAP nbns ipv4"
-'''
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds,
-    )
-
-    smb_bind_interfaces = ""
-    mdns_families: tuple[str, ...] = ()
-    nbns_families: tuple[str, ...] = ()
-    errors: list[str] = []
-    for raw_line in (proc.stdout or "").splitlines():
-        line = raw_line.strip()
-        if line.startswith("TC_CAP "):
-            fields = line.split(" ", 2)
-            if len(fields) < 3:
-                errors.append(line.removeprefix("TC_CAP "))
-                continue
-            _prefix, cap_name, value = fields
-            if cap_name == "smb":
-                # Line 1 carries the tokens; the status line (guide B.9) is the manager's business.
-                smb_bind_interfaces = value.strip().splitlines()[0].strip() if value.strip() else ""
-            elif cap_name == "nbns":
-                nbns_families = _capability_family_tokens(value)
-        elif line.startswith("TC_CAP_ERROR "):
-            errors.append(line.removeprefix("TC_CAP_ERROR "))
-    stderr = (proc.stderr or "").strip()
-    if stderr:
-        errors.append(stderr)
-    return RemoteNetworkCapabilitiesProbeResult(
-        smb_bind_interfaces=smb_bind_interfaces,
-        mdns_families=mdns_families,
-        nbns_families=nbns_families,
-        errors=tuple(errors),
-    )
 
 
 def probe_netbsd4_rc_local_autostart_conn(

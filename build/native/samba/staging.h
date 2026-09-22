@@ -10,8 +10,8 @@ struct tc_samba_settings {
     char nt_hash[33];
 };
 int tc_samba_settings_read(struct tc_samba_settings *);
-int tc_samba_stage(const struct tc_storage_snapshot *, const struct tc_samba_settings *, const char *bindings,
-                   int copy_smbd, int copy_rsync);
+int tc_samba_stage(const struct tc_storage_snapshot *, const struct tc_samba_settings *, int copy_smbd,
+                   int copy_rsync);
 int tc_samba_publish(int rsync);
 void tc_samba_discard(void);
 /* Call only after ownership audit and the entire old smbd group has exited. */

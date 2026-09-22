@@ -9,24 +9,15 @@
 #endif
 
 /* The device plan: facts -> topology -> policy -> identity, shared by
- * discoveryd (Bonjour registrations and native NBNS eligibility), service
- * (Samba bind tokens) and telemetry (v2 fields). See the v3.1 guide B.2-B.9. */
+ * discovery (Bonjour registrations and native NBNS eligibility) and
+ * telemetry. Samba enumerates and binds interfaces itself. */
 
 enum link_role { LINK_ROLE_LAN, LINK_ROLE_WAN, LINK_ROLE_GUEST, LINK_ROLE_ISOLATED };
 enum router_mode { ROUTER_MODE_UNKNOWN, ROUTER_MODE_BRIDGE, ROUTER_MODE_DHCP, ROUTER_MODE_NAT };
 enum service_bit { SVC_SMB = 1, SVC_AFP = 2, SVC_ADISK = 4 };
-/* One link may own every address the interface table can hold (64): a
- * per-link cap below the table's silently dropped bind tokens (review
- * finding 10). Overflow is now impossible by construction but still
- * flagged (`addrs_truncated`) rather than trusted. */
+/* One link may own every address the interface table can hold (64). A lower
+ * per-link cap would silently drop discovery/telemetry address ownership. */
 #define TC_MAX_ADDRS_PER_LINK TC_MAX_ADDRS
-/* Bind projection text: every address the table can hold, at the widest
- * token (`ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128` = 43 bytes) plus a
- * separator, plus the two loopback tokens. Sized from the same limits as
- * the table so the serializer cannot overflow a plan that validated
- * (review 2, R7); an overflow is a programming error, not a runtime state. */
-#define TC_BIND_TOKEN_MAX 44
-#define TC_BIND_TOKENS_MAX (TC_MAX_ADDRS * (TC_BIND_TOKEN_MAX + 1) + 32)
 
 /* ---- raw facts ---- */
 
@@ -104,8 +95,6 @@ enum addr_kind { ADDR_UNUSABLE, ADDR_LOOPBACK, ADDR_LINK_LOCAL, ADDR_PRIVATE, AD
 enum addr_kind addr4_kind(uint32_t network_order);
 enum addr_kind addr6_kind(const struct in6_addr *addr);
 int addr_is_service_address(const struct if_addr *addr);
-int bind_token_ipv4(char *out, size_t out_len, const struct if_addr *addr);
-int bind_token_ipv6(char *out, size_t out_len, const struct if_addr *addr);
 const char *addr_text(const struct if_addr *addr, char *out, size_t out_len);
 
 /* facts.c */
@@ -160,7 +149,6 @@ int device_plan_collect_from_file(struct device_plan *out, const char *facts_pat
                                   const struct device_plan *previous, const struct plan_options *options);
 #endif
 void device_plan_print(FILE *stream, const struct device_plan *plan);
-int device_plan_bind_tokens(const struct device_plan *plan, char *out, size_t out_len);
 const struct link_plan *device_plan_find_link(const struct device_plan *plan, unsigned index);
 int link_plan_has_service_address(const struct link_plan *link);
 #endif

@@ -24,7 +24,9 @@ struct tc_process_table {
 };
 int tc_process_table_parse(struct tc_process_table *, const char *text);
 int tc_process_table_read(struct tc_process_table *);
-/* Bit 1 = IPv4 TCP listener, bit 2 = IPv6 TCP listener. */
-unsigned tc_listener_families(const char *text, unsigned port);
-int tc_process_listeners(pid_t, unsigned port, unsigned *families);
+int tc_listener_present(const char *text, unsigned port);
+/* Bit 1 = IPv4 wildcard, bit 2 = IPv6 wildcard. */
+unsigned tc_wildcard_listener_families(const char *text, unsigned port);
+int tc_process_listener(pid_t, unsigned port, int *listening);
+int tc_process_wildcard_listeners(pid_t, unsigned port, unsigned *families);
 #endif

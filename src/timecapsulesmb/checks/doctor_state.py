@@ -6,7 +6,6 @@ from pathlib import Path
 
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget
 from timecapsulesmb.checks.models import CheckResult, is_fatal
-from timecapsulesmb.checks.network_plan import NetworkCheckPlan
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult, RuntimeNamingIdentityProbeResult
 from timecapsulesmb.transport.ssh import SshConnection
@@ -23,6 +22,7 @@ class DoctorBonjourResult:
     zeroconf_debug: object | None
     native_fallback_debug: object | None = None
     backend_debug: dict[str, str] | None = None
+    addresses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,13 +91,9 @@ class RuntimeNamingState:
 
 
 @dataclass(frozen=True)
-class NetworkPlanState:
-    plan: NetworkCheckPlan | None
-    reason: str = ""
-
-
-@dataclass(frozen=True)
 class DirectSmbState:
+    observed_addresses: tuple[str, ...] = ()
+    testable_addresses: tuple[str, ...] = ()
     reachable_addresses: tuple[str, ...] = ()
 
 

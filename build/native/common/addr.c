@@ -40,9 +40,8 @@ enum addr_kind addr6_kind(const struct in6_addr *addr) {
     return ADDR_GLOBAL;
 }
 
-/* Apple-identical (Q1): link-local IPv4 and scoped fe80 are service
- * addresses; unspecified, loopback, multicast and unscoped fe80 are not.
- * Loopback is added to Samba's bind list separately as 127.0.0.1/8 ::1/128. */
+/* Discovery service addresses include link-local IPv4 and scoped fe80;
+ * unspecified, loopback, multicast and unscoped fe80 are not eligible. */
 int addr_is_service_address(const struct if_addr *addr) {
     enum addr_kind kind;
 
@@ -67,39 +66,4 @@ const char *addr_text(const struct if_addr *addr, char *out, size_t out_len) {
         out[out_len - 1] = '\0';
     }
     return out;
-}
-
-int bind_token_ipv4(char *out, size_t out_len, const struct if_addr *addr) {
-    char text[INET_ADDRSTRLEN];
-    int written;
-    unsigned prefix = addr->prefix;
-
-    if (prefix == 0 || prefix > 32) {
-        prefix = 32;
-    }
-    written = snprintf(out, out_len, "%s/%u", addr_text(addr, text, sizeof(text)), prefix);
-    return written < 0 || (size_t)written >= out_len ? -1 : 0;
-}
-
-/* Samba's IPv6 interface enumeration is IPv4-only, so fe80 tokens must use
- * NetBSD's embedded-scope form (fe80:<index hex>::iid/64), which the kernel
- * accepts on bind (M6/M7). GUA/ULA tokens are plain. */
-int bind_token_ipv6(char *out, size_t out_len, const struct if_addr *addr) {
-    struct in6_addr scoped = addr->v6;
-    char text[INET6_ADDRSTRLEN];
-    int written;
-    unsigned prefix = addr->prefix;
-
-    if (prefix == 0 || prefix > 128) {
-        prefix = addr->link_local ? 64 : 128;
-    }
-    if (addr->link_local) {
-        scoped.s6_addr[2] = (unsigned char)((addr->scope >> 8) & 0xff);
-        scoped.s6_addr[3] = (unsigned char)(addr->scope & 0xff);
-    }
-    if (inet_ntop(AF_INET6, &scoped, text, sizeof(text)) == NULL) {
-        return -1;
-    }
-    written = snprintf(out, out_len, "%s/%u", text, prefix);
-    return written < 0 || (size_t)written >= out_len ? -1 : 0;
 }

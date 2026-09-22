@@ -377,7 +377,7 @@ The commands have logging and telemetry enabled by default. Errors and exception
 
 The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](build) and depends on a NetBSD VM.
 
-One static `service` image provides manager, discovery, telemetry, and diagnostic entrypoints. The roles run as separate processes and collect their own network plans through shared code. See [build/native/README.md](build/native/README.md).
+One static `service` image provides manager, discovery, telemetry, and diagnostic entrypoints. The roles run as separate processes; discovery and telemetry collect network plans while the manager remains network-blind. See [build/native/README.md](build/native/README.md).
 
 The main build outputs are:
 

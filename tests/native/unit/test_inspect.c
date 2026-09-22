@@ -27,12 +27,25 @@ int main(void) {
     assert(table.processes[3].role == TC_PROC_WCIFSND);
     assert(table.processes[4].role == TC_PROC_TELEMETRY);
     assert(tc_process_table_parse(&table, "truncated\n") < 0);
-    assert(tc_listener_families("root smbd 30 3* internet stream tcp 192.0.2.2:445\n"
-                                "root smbd 30 4* internet6 stream tcp [fe80::445:1%bridge0]:445\n",
-                                445) == 3);
-    assert(tc_listener_families("root smbd 30 3* internet stream tcp 192.0.2.2:4455\n", 445) == 0);
-    assert(tc_listener_families("root smbd 30 3* internet stream tcp 192.0.2.2:445 <-> 192.0.2.3:2345\n",
-                                445) == 0);
-    assert(tc_listener_families("root wcifsnd 30 3* internet dgram udp 192.0.2.2:445\n", 445) == 0);
+    assert(tc_listener_present("root smbd 30 3* internet stream tcp 192.0.2.2:445\n", 445));
+    assert(tc_listener_present("root smbd 30 4* internet6 stream tcp [fe80::445:1%bridge0]:445\n", 445));
+    assert(!tc_listener_present("root smbd 30 3* internet stream tcp 192.0.2.2:4455\n", 445));
+    assert(!tc_listener_present("root smbd 30 3* internet stream tcp 192.0.2.2:445 <-> 192.0.2.3:2345\n",
+                                445));
+    assert(!tc_listener_present("root wcifsnd 30 3* internet dgram udp 192.0.2.2:445\n", 445));
+    assert(tc_wildcard_listener_families("root smbd 30 3* internet stream tcp deadbeef *:445\n"
+                                         "root smbd 30 4* internet6 stream tcp deadbeef *:445\n",
+                                         445) == 3);
+    assert(tc_wildcard_listener_families("root smbd 30 3* internet stream tcp 0.0.0.0:445\n"
+                                         "root smbd 30 4* internet6 stream tcp [::]:445\n",
+                                         445) == 3);
+    assert(tc_wildcard_listener_families("root smbd 30 3* internet stream tcp *:445\n"
+                                         "root smbd 30 4* internet6 stream tcp [*]:445\n",
+                                         445) == 3);
+    assert(tc_wildcard_listener_families("root smbd 30 3* internet stream tcp 192.0.2.2:445\n"
+                                         "root smbd 30 4* internet6 stream tcp [::1]:445\n",
+                                         445) == 0);
+    assert(tc_wildcard_listener_families("root smbd 30 3* internet stream tcp *:445 <-> 192.0.2.3:2345\n",
+                                         445) == 0);
     return 0;
 }

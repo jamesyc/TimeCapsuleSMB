@@ -9,8 +9,8 @@ diff --git a/lib/replace/wscript b/lib/replace/wscript
 +    #
 +    # AirPort Time Capsule targets run on older NetBSD kernels than the VM
 +    # SDK used for this build. Native NetBSD getifaddrs() can hang on the
-+    # appliance during Samba interface enumeration, so do not detect the libc
-+    # entry points. Samba will compile libreplace/getifaddrs.c instead.
++    # appliance, so do not expose those libc entry points to other Samba
++    # callers. interfaces.c has a separate NET_RT_IFLIST appliance reader.
 +    #
 +    conf.CHECK_FUNCS('timegm mmap setgroups syscall setsid')
      conf.CHECK_FUNCS('getgrent_r getgrgid_r getgrnam_r getgrouplist getpagesize')
@@ -22,9 +22,9 @@ diff --git a/lib/replace/wscript b/lib/replace/wscript
      # look for a method of finding the list of network interfaces
 -    for method in ['HAVE_IFACE_GETIFADDRS', 'HAVE_IFACE_AIX', 'HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ']:
 +    #
-+    # Keep interface enumeration on ioctl-based libreplace paths. The
-+    # HAVE_IFACE_GETIFADDRS method exercises the same native getifaddrs()
-+    # runtime path that can hang on Time Capsule devices.
++    # Do not select the native getifaddrs method. A later Time Capsule patch
++    # replaces interfaces.c's NetBSD path with its NET_RT_IFLIST reader; the
++    # remaining choices keep configure away from the broken libc entry point.
 +    #
 +    for method in ['HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ', 'HAVE_IFACE_AIX']:
          bsd_for_strlcpy = ''
