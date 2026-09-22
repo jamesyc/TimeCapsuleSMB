@@ -186,7 +186,7 @@ static int append_v2_fields(char *json, size_t cap, size_t used) {
                  json_bool_or_null(plan.waNM, 1),             /* waNM=1 means setup over WAN disabled */
                  plan.usbF.available ? (plan.wan_disks_allowed ? "true" : "false") : "null",
                  plan.gnRo.available ? "true" : "false",
-                 config_bool_json(plan.config.nbns_enabled),
+                 "true", /* Compatibility field: enabled policy, not child health. */
                  config_bool_json(plan.config.debug_logging),
                  config_bool_json(plan.config.advertise_afp));
     if (n < 0 || (size_t)n >= cap - used) return -1;

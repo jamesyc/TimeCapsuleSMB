@@ -226,6 +226,10 @@ class CheckTests(unittest.TestCase):
         resolved_values = values or self.valid_doctor_values()
         mocks = SimpleNamespace()
         with ExitStack() as stack:
+            mocks.check_nbns_name_resolution = stack.enter_context(mock.patch(
+                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution",
+                return_value=CheckResult("PASS", "native NBNS resolved"),
+            ))
             mocks.check_required_local_tools = stack.enter_context(
                 mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[] if local_tools is None else local_tools)
             )
@@ -850,7 +854,6 @@ class CheckTests(unittest.TestCase):
             skip_smb=True,
             debug_fields=debug_fields,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(
                     return_value=CheckResult("FAIL", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137")
                 ),
@@ -3357,7 +3360,7 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor_steps.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
-                    with mock.patch("timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn") as nbns_config_mock:
+                    with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution") as nbns_config_mock:
                         with mock.patch("timecapsulesmb.device.probe.run_ssh") as run_ssh_mock:
                             results, fatal = run_doctor_checks(
                                 self.doctor_config(values),
@@ -4849,7 +4852,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertIn("resolved to 192.168.1.16", result.message)
 
-    def test_run_doctor_checks_skips_nbns_when_flash_config_disabled(self) -> None:
+    def test_run_doctor_checks_checks_nbns_without_flash_preference(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -4870,17 +4873,17 @@ class CheckTests(unittest.TestCase):
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[mock.Mock(status="PASS", message="file ops ok")],
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=False),
+                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(return_value=CheckResult("PASS", "native nbns ok")),
             },
         )
         self.assertFalse(run.fatal)
-        nbns_result = next(result for result in run.results if "NBNS responder not enabled" in result.message)
-        self.assertEqual(nbns_result.status, "SKIP")
+        nbns_result = next(result for result in run.results if "native nbns ok" in result.message)
+        self.assertEqual(nbns_result.status, "PASS")
         nbns_index = run.results.index(nbns_result)
         listing_index = next(i for i, result in enumerate(run.results) if result.message == "listing ok")
         self.assertLess(nbns_index, listing_index)
 
-    def test_run_doctor_checks_checks_nbns_when_flash_config_enabled(self) -> None:
+    def test_run_doctor_checks_checks_nbns_automatically(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -4908,7 +4911,6 @@ class CheckTests(unittest.TestCase):
             skip_bonjour=True,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
             },
         )
@@ -4947,7 +4949,6 @@ class CheckTests(unittest.TestCase):
             startup_grace=False,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
             },
@@ -4983,7 +4984,6 @@ class CheckTests(unittest.TestCase):
             startup_grace=False,
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.probe_usb_printer_conn": mock.Mock(return_value=UsbPrinterProbeResult(present=False, name=None)),
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(),
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": nbns_mock,
             },
@@ -5000,7 +5000,6 @@ class CheckTests(unittest.TestCase):
             read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
             skip_smb=True,
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
                 "timecapsulesmb.checks.doctor_steps.discover_smb_services_detailed": self.dual_stack_discovery(
                     ("169.254.1.2", "10.0.0.2")
                 ),
@@ -5258,7 +5257,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn("Bonjour IPv6: discovered _smb._tcp instance 'Time Capsule Samba 4'", pass_messages)
         self.assertIn("Bonjour IPv6: resolved Bonjour host timecapsulesamba4.local to fd00::2 from service record", pass_messages)
 
-    def test_run_doctor_checks_warns_when_nbns_flash_config_probe_fails(self) -> None:
+    def test_run_doctor_checks_warns_when_nbns_query_fails(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -5281,16 +5280,16 @@ class CheckTests(unittest.TestCase):
             remote_interface_probe=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(
-                    side_effect=RuntimeError("flash config probe failed")
+                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(
+                    side_effect=RuntimeError("NBNS query failed")
                 ),
             },
         )
         self.assertFalse(run.fatal)
         nbns_result = next(result for result in run.results if result.status == "WARN" and result.message.startswith("NBNS check skipped:"))
-        self.assertIn("flash config probe failed", nbns_result.message)
+        self.assertIn("NBNS query failed", nbns_result.message)
 
-    def test_run_doctor_checks_warns_when_nbns_flash_config_probe_raises_transport_error(self) -> None:
+    def test_run_doctor_checks_warns_when_nbns_query_raises_transport_error(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -5313,7 +5312,7 @@ class CheckTests(unittest.TestCase):
             remote_interface_probe=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             extra_patches={
-                "timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn": mock.Mock(side_effect=SshError("ssh failed")),
+                "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(side_effect=SshError("ssh failed")),
             },
         )
         self.assertFalse(run.fatal)

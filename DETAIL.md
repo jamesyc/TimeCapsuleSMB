@@ -621,7 +621,6 @@ The selected payload home still contains `/Volumes/dkX/.samba4/private/` for per
 
 NBNS runtime enablement lives in flash config:
 - `/mnt/Flash/tcapsulesmb.conf`
-- `NBNS_ENABLED=0|1`
 
 Current persistent Time Machine metadata state also lives in the selected payload home:
 - `/Volumes/dkX/.samba4/private/xattr.tdb`
@@ -718,20 +717,17 @@ At runtime it:
 - registers `_afpovertcp._tcp` (port 548) only when `MDNS_ADVERTISE_AFP=1`
 - uses Apple's shared default instance name with automatic renaming; callback names such as "Name (2)" are accepted without replacing registrations, and ACP name changes do not force a restart
 - treats a daemon that stops answering as degraded, retries on the backoff timer, and never spawns `/sbin/mDNSResponder`
-- starts `/sbin/wcifsnd` only when the payload is ready, `NBNS_ENABLED=1`, the canonical name is available, and the validated plan has an SMB-eligible IPv4 address
+- starts `/sbin/wcifsnd` only when the payload is ready, the canonical name is available, and the validated plan has an SMB-eligible IPv4 address
 - sequentially registers machine `<00>`, `WORKGROUP<00>` and machine `<20>` exactly once for each fresh child generation; Apple's daemon supplies native conflict processing and WINS-configured behavior
-- refreshes the active child with SIGHUP after valid plan refreshes and stops the exact owned child on disable or shutdown; the manager removes orphans before replacement
+- refreshes the active child with SIGHUP after valid plan refreshes and stops the exact owned child on loss of eligibility or shutdown; the manager removes orphans before replacement
 - publishes `nbns=disabled|waiting|starting|ready`, payload mode, diskless state, and the canonical name in its process title. Doctor requires a single controller and, when eligible, a single child whose parent is that controller and which owns UDP `137` and `138`
 - logs one line per register/deregister/callback and one per plan change to the manager-provided log file
 
 ## Native NBNS Scope
 
-NBNS is provided by Apple's firmware `wcifsnd`; this project no longer ships a separate NBNS responder. Runtime enablement is controlled by:
-  - `NBNS_ENABLED=1` in `/mnt/Flash/tcapsulesmb.conf`
-- plain `tcapsule deploy` writes that flash config value
-- `--no-nbns` writes `NBNS_ENABLED=0`
-- `--no-nbns` is supported on both NetBSD 6 and NetBSD 4
-- `uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config
+NBNS is provided automatically by Apple's firmware `wcifsnd`; this project no longer ships a separate NBNS responder or an enable/disable preference. Old `NBNS_ENABLED` flash values and saved app preferences are ignored. The removed `--no-nbns` CLI flag and `nbns_enabled` app API parameter are rejected.
+
+`uninstall` stops the discovery role and any orphaned `wcifsnd`, then removes the flash runtime config.
 
 Once enabled, Apple's daemon enumerates interfaces according to firmware policy. The validated plan provides the coarse cold-start eligibility gate, but native NBNS does not promise Bonjour's per-interface `SVC_SMB` filtering. Samba listens on wildcards and Apple's firewall enforces reachability. NBNS provides name registration and conflict handling, not SMB1, NetBIOS session transport, or every legacy Windows browsing feature.
 
@@ -747,7 +743,7 @@ Each native plan loop keeps its latest validated policy in memory. Environment
 bind strings are not treated as validated history, and no policy file or text
 transport is used.
 
-Router heartbeats include `nbns_enabled`, `debug_logging` (Samba or mDNS),
+Router heartbeats include `nbns_enabled` (always true: enabled policy, not daemon health), `debug_logging` (Samba or mDNS),
 and `advertise_afp`. A short `plan_error` is sent only when the fresh sharing
 facts do not validate; a valid plan adds no error field. This is not a live
 service-health assertion. The old `ps` registration-status probe and constant
@@ -805,7 +801,7 @@ The Advanced panel stores these choices in the local device profile. Run **Insta
 
 ### Enable NBNS
 
-Default: on. Preserves the public `NBNS_ENABLED=1` setting. When the payload and an SMB-eligible IPv4 address are ready, `service discovery` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
+Always enabled when eligible. When the payload and an SMB-eligible IPv4 address are ready, `service discovery` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
 
 ### Enable rsync
 
@@ -999,7 +995,6 @@ Arguments:
 - `--dry-run`: build and print the deployment plan without changing the device
 - `--json`: emit the dry-run deployment plan as JSON; requires `--dry-run`
 - `--allow-unsupported`: continue when the detected device compatibility check is unsupported
-- `--no-nbns`: write `NBNS_ENABLED=0` so Apple's managed native NBNS service is disabled on the next boot
 - `--enable-rsync`: write `RSYNC_ENABLED=1` so the manager stages and starts the bundled rsync daemon from RAM; the binary and config are uploaded even when this flag is omitted
 - `--mount-wait SECONDS`: per-attempt wait for deployment-time `diskd.useVolume` mount guards; default is `30`
 
@@ -1153,10 +1148,6 @@ Test and coverage entry points:
 
 The root `make test` targets do not run the Swift suite; run both the Python/C and Swift entry points when a change crosses the backend/app boundary.
 
-Optional deploy flag:
-- `--no-nbns`
-  - disables the managed Apple NBNS service on the next boot by writing `NBNS_ENABLED=0` to `/mnt/Flash/tcapsulesmb.conf`
-
 Current defaults and fixed values:
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
 - `TC_SMB_BROWSE_COMPATIBILITY=false`
@@ -1255,7 +1246,7 @@ It checks:
 - active Samba share names
 - SMB reachability
 - `_smb._tcp` browse and resolve
-- NBNS name resolution unless `/mnt/Flash/tcapsulesmb.conf` has `NBNS_ENABLED=0`
+- NBNS name resolution when a reachable IPv4 SMB address and NetBIOS name are available
 - authenticated `smbclient -L` listing
 - authenticated SMB CRUD operations via `smbclient`
 - that at least one active Samba share is present in the authenticated SMB listing
@@ -1380,8 +1371,7 @@ Current deploy flow:
 - retains old `tcapsulesmb.conf` until metadata cleanup succeeds or reports accepted partial migration
 - installs new `/mnt/Flash/tcapsulesmb.conf` and enables `rc.local` last
 - does not upload password-derived Samba auth files; runtime staging generates RAM auth from live AirPort `syPW`
-- enables NBNS by default:
-  - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used
+- automatically runs Apple’s native NBNS service when eligible
 - disables rsync by default while keeping its HDD payload installed:
   - `RSYNC_ENABLED=0` in flash config unless `--enable-rsync` is used
 - verifies transfer sizes and applies file and directory permissions
@@ -1538,12 +1528,12 @@ Current important outputs:
 
 Current active deploy artifact sizes (stripped bytes, v3.1.0):
 - NetBSD 6 `smbd`: about `9.7M`
-- NetBSD 6 `service`: `363,324`
+- NetBSD 6 `service`: `360,684`
 - NetBSD 6 `rsync`: about `1.0M`
 - NetBSD 4 little-endian `smbd`: about `9.7M`
 - NetBSD 4 big-endian `smbd`: about `9.7M`
-- NetBSD 4 little-endian `service`: `321,920`
-- NetBSD 4 big-endian `service`: `321,320`
+- NetBSD 4 little-endian `service`: `319,908`
+- NetBSD 4 big-endian `service`: `319,308`
 - NetBSD 4 little-endian `rsync`: about `878K`
 - NetBSD 4 big-endian `rsync`: about `872K`
 

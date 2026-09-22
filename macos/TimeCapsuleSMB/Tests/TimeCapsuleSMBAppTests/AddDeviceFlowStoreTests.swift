@@ -568,7 +568,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             ])
         ])
         let defaultSettings = DeviceProfileSettings(
-            nbnsEnabled: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,
@@ -616,7 +615,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         )
         var editedExisting = existing
         editedExisting.settings = DeviceProfileSettings(
-            nbnsEnabled: false,
             internalShareUseDiskRoot: false,
             smbBrowseCompatibility: false,
             mdnsAdvertiseAFP: false,
@@ -631,7 +629,6 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         _ = try await fixture.registry.updateProfile(editedExisting)
         var appSettings = AppSettings.default
         appSettings.defaultDeviceSettings = DeviceProfileSettings(
-            nbnsEnabled: true,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
             mdnsAdvertiseAFP: true,

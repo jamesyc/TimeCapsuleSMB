@@ -84,7 +84,6 @@ private struct ConfirmationPresentation {
              "ssh_access.enable_reboot",
              "deploy.netbsd4",
              "deploy.netbsd4_no_wait",
-             "deploy.no_reboot",
              "deploy.reboot",
              "deploy.reboot_no_wait":
             guard let deviceName = stringValue(values, "device_name") else {

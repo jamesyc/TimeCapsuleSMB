@@ -105,10 +105,10 @@ final class RecoveryActionMapperTests: XCTestCase {
         )
 
         L10n.apply(language: .simplifiedChinese)
-        XCTAssertEqual(noHFS.message, "已找到磁盘，但未检测到有效的 HFS 分区。请重试，或使用 AirPort 实用工具（Erase Disk）抹掉磁盘，以便为 Time Capsule 格式化。注意：某些设备无法检测部分大于 2 TB 的分区。")
-        XCTAssertEqual(writeTest.message, "磁盘在测试时没有响应。它可能正在故障，或无法启动旋转。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
-        XCTAssertEqual(managerStop.message, "设备上的某项服务卡住了，通常是因为磁盘正在故障。请拔掉设备电源，重新接通，然后重试。")
-        XCTAssertEqual(upload.message, "复制 SMB 负载时磁盘没有响应。它可能正在故障，或无法启动旋转。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
+        XCTAssertEqual(noHFS.message, "已找到磁盘，但未检测到有效的 HFS 分区。请重试，或在 AirPort 实用工具中抹掉磁盘，将其格式化为适用于 Time Capsule 的格式。注意：某些设备无法检测部分大于 2 TB 的分区。")
+        XCTAssertEqual(writeTest.message, "磁盘在测试时没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
+        XCTAssertEqual(managerStop.message, "设备上的某项服务卡住了，通常是因为磁盘故障。请拔掉设备电源，重新接通，然后重试。")
+        XCTAssertEqual(upload.message, "复制 SMB 安装文件时磁盘没有响应。它可能出现故障或无法转动。请运行“磁盘修复”；如果问题持续发生，可能需要更换磁盘。")
     }
 
     func testRecoveryGuidancePresentationLocalizesConfigureAuthFailure() throws {
@@ -142,7 +142,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         XCTAssertEqual(chinese.title, "AirPort 密码被拒绝")
         XCTAssertEqual(chinese.errorMessage, "AirPort 管理员密码无效。")
         XCTAssertEqual(chinese.detail, "配置设备时 ACP 或 SSH 身份验证失败。")
-        XCTAssertEqual(chinese.steps, ["重新输入 AirPort 管理员密码。", "确认所选设备是目标 Apple 设备。"])
+        XCTAssertEqual(chinese.steps, ["重新输入 AirPort 管理员密码。", "确认所选设备是目标苹果设备。"])
     }
 
     func testSuggestedOperationMapsToUserFacingAction() throws {
@@ -304,7 +304,7 @@ final class RecoveryActionMapperTests: XCTestCase {
         let chinese = RecoveryGuidancePresentation(error: error)
         XCTAssertEqual(chinese.title, "重启未完成")
         XCTAssertEqual(chinese.steps[0], "再等待几分钟。")
-        XCTAssertEqual(chinese.steps[1], "设备可能有新的 IP 地址。运行 Discover 并重新选择它。")
+        XCTAssertEqual(chinese.steps[1], "设备可能获得了新的 IP 地址。请重新发现设备并选择它。")
         XCTAssertEqual(chinese.steps.count, 5)
         XCTAssertEqual(
             chinese.steps[4],

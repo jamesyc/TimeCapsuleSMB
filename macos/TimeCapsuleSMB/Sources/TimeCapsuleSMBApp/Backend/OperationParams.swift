@@ -179,7 +179,6 @@ enum OperationParams {
         static func params(
             dryRun: Bool,
             noWait: Bool,
-            nbnsEnabled: Bool,
             rsyncEnabled: Bool = false,
             internalShareUseDiskRoot: Bool = false,
             smbBrowseCompatibility: Bool = false,
@@ -197,7 +196,6 @@ enum OperationParams {
             var params: [String: JSONValue] = [
                 "dry_run": .bool(dryRun),
                 "no_wait": .bool(noWait),
-                "nbns_enabled": .bool(nbnsEnabled),
                 "rsync_enabled": .bool(rsyncEnabled),
                 "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
                 "smb_browse_compatibility": .bool(smbBrowseCompatibility),

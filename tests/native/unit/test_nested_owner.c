@@ -18,7 +18,9 @@ static pid_t recorded(const char *name, pid_t *group) {
     FILE *f = fopen(name, "r");
     long pid = 0, parent, pgid;
     if (f) {
-        if (fscanf(f, "%ld %ld %ld", &pid, &parent, &pgid) == 3 && group) *group = pgid;
+        /* The writer may still be filling the file: wait for the whole record. */
+        if (fscanf(f, "%ld %ld %ld", &pid, &parent, &pgid) != 3) pid = 0;
+        else if (group) *group = pgid;
         fclose(f);
     }
     return pid;
@@ -46,6 +48,11 @@ int main(int argc, char **argv) {
     int done = 0;
     assert(argc >= 2);
     program = argv[0]; mode = argv[1];
+    if (!strcmp(mode, "read-record")) {
+        nested = recorded("command", &pgid);
+        printf("%ld %ld\n", (long)nested, (long)pgid);
+        return 0;
+    }
     if (!strcmp(mode, "external") || !strcmp(mode, "-q")) {
         signal(SIGTERM, SIG_IGN);
         record("command");

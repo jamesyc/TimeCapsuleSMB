@@ -183,8 +183,8 @@ final class BackendEventTests: XCTestCase {
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(repair.localizedPayloadSummaryText, "发现 2 个元数据问题，其中 1 个可修复。")
-        XCTAssertEqual(fsck.localizedPayloadSummaryText, "已生成 fsck dry-run 计划。")
-        XCTAssertEqual(flash.localizedPayloadSummaryText, "Flash patch 写入已验证；需要手动断电重启。")
+        XCTAssertEqual(fsck.localizedPayloadSummaryText, "已生成 fsck 预演计划。")
+        XCTAssertEqual(flash.localizedPayloadSummaryText, "闪存补丁写入已验证；需要手动断电重启。")
     }
 
     func testJSONValueRoundTripsNestedObjects() throws {

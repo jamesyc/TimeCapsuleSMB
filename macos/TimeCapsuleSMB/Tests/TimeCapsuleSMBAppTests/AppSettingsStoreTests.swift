@@ -23,7 +23,6 @@ final class AppSettingsStoreTests: XCTestCase {
             appearance: .dark,
             defaultBonjourTimeoutSeconds: 12.5,
             defaultDeviceSettings: DeviceProfileSettings(
-                nbnsEnabled: false,
                 rsyncEnabled: true,
                 internalShareUseDiskRoot: true,
                 smbBrowseCompatibility: true,
@@ -85,7 +84,6 @@ final class AppSettingsStoreTests: XCTestCase {
 
         let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
 
-        XCTAssertTrue(settings.nbnsEnabled)
         XCTAssertTrue(settings.debugLogging)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
         XCTAssertTrue(settings.mdnsAdvertiseAFP)
@@ -144,7 +142,7 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(L10n.string("app_settings.title", language: .french), "Paramètres")
         XCTAssertEqual(L10n.string("app_settings.title", language: .german), "Einstellungen")
         XCTAssertEqual(L10n.string("app_settings.title", language: .dutch), "Instellingen")
-        XCTAssertEqual(L10n.string("app_settings.title", language: .spanish), "Ajustes")
+        XCTAssertEqual(L10n.string("app_settings.title", language: .spanish), "Configuración")
         XCTAssertEqual(L10n.string("app_settings.title", language: .italian), "Impostazioni")
         XCTAssertEqual(L10n.string("app_settings.title", language: .portuguese), "Configurações")
         XCTAssertEqual(L10n.string("app_settings.title", language: .russian), "Настройки")
@@ -155,7 +153,7 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(L10n.string("app_language.lithuanian", language: .lithuanian), "Lietuvių")
         XCTAssertEqual(
             L10n.string("app_settings.subtitle", language: .simplifiedChinese),
-            "新设备默认值和 App 级别行为。"
+            "新设备的默认设置和应用级行为。"
         )
         XCTAssertEqual(L10n.string("sidebar.activity", language: .simplifiedChinese), "活动")
         XCTAssertEqual(L10n.string("activity.active", language: .simplifiedChinese), "正在进行")
@@ -196,7 +194,6 @@ final class AppSettingsStoreTests: XCTestCase {
             "checkup.option.skip_bonjour",
             "checkup.option.skip_smb",
             "checkup.option.skip_ssh",
-            "toggle.enable_nbns",
             "toggle.smb_browse_compatibility",
             "toggle.use_netatalk_metadata",
             "toggle.enable_vfs_aio_fork",
@@ -249,10 +246,10 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(DeployWorkflowState.planStale.title, "计划已过期")
         XCTAssertEqual(MaintenanceWorkflow.fsck.title, "磁盘修复")
         XCTAssertEqual(FlashWorkflowState.writeLocked.title, "就绪")
-        XCTAssertEqual(error.message, "部署前请检查并重新生成部署计划。")
-        XCTAssertEqual(issue.message, "缺少捆绑的 TimeCapsuleSMB Helper。")
+        XCTAssertEqual(error.message, "继续前请检查并重新生成安装 / 更新计划。")
+        XCTAssertEqual(issue.message, "缺少 TimeCapsuleSMB 随附的辅助程序。")
         XCTAssertEqual(issue.recovery, "重新安装 TimeCapsuleSMB。")
-        XCTAssertEqual(checkup.localizedSummary, "PASS 2，WARN 1，FAIL 0")
+        XCTAssertEqual(checkup.localizedSummary, "通过 2，警告 1，失败 0")
         XCTAssertEqual(deploy.localizedSummary, "安装已完成。")
         XCTAssertEqual(L10n.string("install.timeline.title"), "状态")
 
@@ -275,7 +272,7 @@ final class AppSettingsStoreTests: XCTestCase {
             "app_appearance.dark": "深色",
             "checkup.presentation.row.fail": "失败",
             "backend.summary.doctor_checks_passed": "诊断检查通过。",
-            "backend.summary.fsck_plan_generated": "已生成 fsck dry-run 计划。",
+            "backend.summary.fsck_plan_generated": "已生成 fsck 预演计划。",
             "backend.summary.install_validation_passed": "安装验证通过。",
             "backend.summary.repair_xattrs_found": "发现 %d 个元数据问题，其中 %d 个可修复。",
             "dashboard.overview.connection_target": "连接目标",
@@ -288,11 +285,11 @@ final class AppSettingsStoreTests: XCTestCase {
             "toggle.enable_debug_logging": "启用调试日志",
             "toggle.smb_browse_compatibility": "允许浏览 SMB 共享",
             "toggle.mdns_advertise_afp": "通过 Bonjour 广播 AFP",
-            "toggle.force_disable_smb_signing_and_encryption": "强制停用 SMB 签名和加密",
-            "toggle.use_netatalk_metadata": "使用 Netatalk 存储元数据",
+            "toggle.force_disable_smb_signing_and_encryption": "禁用 SMB 签名和加密",
+            "toggle.use_netatalk_metadata": "使用 Netatalk 元数据",
             "toggle.enable_vfs_aio_fork": "启用 vfs_aio_fork",
             "value.never": "从未",
-            "workflow.state.deploying": "正在部署"
+            "workflow.state.deploying": "正在安装 / 更新"
         ]
 
         for (key, expectedValue) in expectedChinese {

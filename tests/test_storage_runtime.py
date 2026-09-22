@@ -496,7 +496,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
             debug_logging=True,
         )
 
@@ -524,7 +523,7 @@ MaSt = (
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
         self.assertIn("ATA_STANDBY=''\n", rendered)
-        self.assertIn("NBNS_ENABLED=1\n", rendered)
+        self.assertNotIn("NBNS_ENABLED=", rendered)
         self.assertIn("RSYNC_ENABLED=0\n", rendered)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertNotIn("SMB_NETBIOS_NAME", rendered)
@@ -546,7 +545,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=False,
             debug_logging=False,
         )
         # Old configs remain loadable, but neither shell nor native runtime
@@ -560,7 +558,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             AppConfig.from_values({}),
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
             telemetry_enabled=False,
         )
 
@@ -570,7 +567,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             AppConfig.from_values({}),
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
             rsync_enabled=True,
         )
 
@@ -603,7 +599,6 @@ MaSt = (
         rendered = render_gui_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
             debug_logging=None,
         )
 
@@ -616,7 +611,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
             debug_logging=False,
         )
 
@@ -637,7 +631,6 @@ MaSt = (
         rendered = render_gui_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=True,
             smb_browse_compatibility=True,
@@ -667,7 +660,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
         )
 
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
@@ -681,7 +673,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
         )
 
         self.assertIn("REQUIRE_SMB_ENCRYPTION=0\n", rendered)
@@ -699,7 +690,6 @@ MaSt = (
             render_flash_runtime_config(
                 config,
                 PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-                nbns_enabled=True,
             )
 
     def test_flash_runtime_config_rejects_any_protocol_with_smb_encryption(self) -> None:
@@ -714,7 +704,6 @@ MaSt = (
             render_flash_runtime_config(
                 config,
                 PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-                nbns_enabled=True,
             )
 
     def test_flash_runtime_config_deploy_time_overrides_can_disable_saved_values(self) -> None:
@@ -732,7 +721,6 @@ MaSt = (
         rendered = render_gui_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=True,
             debug_logging=False,
             internal_share_use_disk_root=False,
             smb_browse_compatibility=False,
@@ -762,7 +750,6 @@ MaSt = (
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=False,
             debug_logging=False,
         )
 

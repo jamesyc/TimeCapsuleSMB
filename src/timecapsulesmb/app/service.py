@@ -211,7 +211,7 @@ def _api_telemetry_session(operation: str, params: dict[str, object]) -> Operati
         telemetry = TelemetryClient.from_config(
             config,
             bootstrap_path=app_paths.bootstrap_path,
-            nbns_enabled=_nbns_enabled_for_telemetry(operation, params),
+            nbns_enabled=True if operation == "deploy" else None,
         )
         return OperationTelemetrySession(
             telemetry,
@@ -259,18 +259,3 @@ def _payload_error(payload: object | None) -> object | None:
     if not isinstance(payload, dict):
         return "operation returned an unsuccessful result"
     return payload.get("error") or payload.get("summary") or "operation returned an unsuccessful result"
-
-
-def _nbns_enabled_for_telemetry(operation: str, params: dict[str, object]) -> bool | None:
-    if operation != "deploy":
-        return None
-    value = params.get("nbns_enabled", True)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y"}:
-            return True
-        if normalized in {"0", "false", "no", "n"}:
-            return False
-    return None

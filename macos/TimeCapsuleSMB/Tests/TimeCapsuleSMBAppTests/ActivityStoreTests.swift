@@ -81,7 +81,7 @@ final class ActivityStoreTests: XCTestCase {
 
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.timeline.count == 2 }
         XCTAssertEqual(activity.snapshot.operationTitle, "安装 / 更新")
-        XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["上传 Payload", "完成"])
+        XCTAssertEqual(activity.snapshot.timeline.map(\.title), ["上传安装文件", "完成"])
 
         var settings = AppSettings.default
         settings.language = .english

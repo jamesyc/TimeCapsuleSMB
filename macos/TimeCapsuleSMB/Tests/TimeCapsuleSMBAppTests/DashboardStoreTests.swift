@@ -388,7 +388,6 @@ final class DashboardStoreTests: XCTestCase {
             preferredID: "device-one"
         )
         profile.settings = DeviceProfileSettings(
-            nbnsEnabled: false,
             rsyncEnabled: true,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
@@ -405,7 +404,6 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: profile)
 
-        XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)
@@ -443,7 +441,6 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: profile)
 
-        session.profileEditorStore.draft.nbnsEnabled = false
         session.profileEditorStore.draft.rsyncEnabled = true
         session.profileEditorStore.draft.internalShareUseDiskRoot = true
         session.profileEditorStore.draft.smbBrowseCompatibility = true
@@ -460,7 +457,6 @@ final class DashboardStoreTests: XCTestCase {
         try await waitUntilStoreState { session.profileEditorStore.state == .saved }
 
         XCTAssertEqual(session.profileEditorStore.state, .saved)
-        XCTAssertEqual(session.deployStore.nbnsEnabled, false)
         XCTAssertEqual(session.deployStore.rsyncEnabled, true)
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.smbBrowseCompatibility, true)

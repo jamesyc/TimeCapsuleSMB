@@ -8,7 +8,7 @@ enum wcifsnd_phase { WC_OFF, WC_STARTING, WC_REGISTERING, WC_ACTIVE, WC_STOPPING
 struct wcifsnd {
     enum wcifsnd_phase phase;
     pid_t child;
-    int fd, enabled, desired, validated, failed, killed, sent, record;
+    int fd, desired, validated, failed, killed, sent, record;
     unsigned failures;
     uint16_t transaction;
     long long deadline, wake, active_since;

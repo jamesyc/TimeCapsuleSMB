@@ -150,7 +150,7 @@ On older Gen 1-4 NetBSD 4 devices, `deploy` also reboots to clear the RAM disk, 
 .venv/bin/tcapsule deploy --yes
 ```
 
-There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them. `--no-reboot` uploads the files, stops the manager process and `wcifsfs`, and starts the deployed runtime immediately by running `/mnt/Flash/rc.local`.
+There are also other flags such as `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them. `--no-reboot` uploads the files, stops the manager process and `wcifsfs`, and starts the deployed runtime immediately by running `/mnt/Flash/rc.local`.
 
 If you want a machine-readable deployment plan without changing the device, use:
 

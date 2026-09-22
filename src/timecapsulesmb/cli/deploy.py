@@ -83,7 +83,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
-    parser.add_argument("--no-nbns", action="store_true", help="Disable Apple's native NBNS service on the next boot")
     parser.add_argument(
         "--enable-rsync",
         action="store_true",
@@ -155,7 +154,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.json and not args.dry_run:
         parser.error("--json currently requires --dry-run")
 
-    nbns_enabled = not args.no_nbns
     rsync_enabled = bool(args.enable_rsync)
     mdns_advertise_afp = args.mdns_advertise_afp
     any_protocol = args.any_protocol
@@ -199,10 +197,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
-    telemetry = TelemetryClient.from_config(config, nbns_enabled=nbns_enabled)
+    telemetry = TelemetryClient.from_config(config, nbns_enabled=True)
     with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
-            nbns_enabled=nbns_enabled,
+            nbns_enabled=True,
             rsync_enabled=rsync_enabled,
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
@@ -331,7 +329,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 connection=connection,
                 prepared_plan=prepared_plan,
                 runtime_config=DeployRuntimeConfig(
-                    nbns_enabled=nbns_enabled,
                     telemetry_enabled=telemetry_enabled,
                     rsync_enabled=deploy_options.rsync_enabled,
                     debug_logging=args.debug_logging,

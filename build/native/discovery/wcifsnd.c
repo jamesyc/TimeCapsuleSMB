@@ -94,7 +94,7 @@ static void fail(struct wcifsnd *w, const char *why, long long now) {
 
 void wcifsnd_init(struct wcifsnd *w, const char *name) {
     size_t i;
-    memset(w, 0, sizeof(*w)); w->fd = -1; w->enabled = -1; w->active_since = -1;
+    memset(w, 0, sizeof(*w)); w->fd = -1; w->active_since = -1;
     snprintf(w->name, sizeof(w->name), "%s", name);
     for (i = 0; w->name[i]; i++) w->name[i] = toupper((unsigned char)w->name[i]);
     if (!strcmp(w->name, "WORKGROUP"))
@@ -104,7 +104,6 @@ void wcifsnd_init(struct wcifsnd *w, const char *name) {
 void wcifsnd_apply_plan(struct wcifsnd *w, const struct device_plan *p, long long now) {
     size_t i, j;
     int ipv4 = 0;
-    if (p->config.nbns_enabled >= 0) w->enabled = p->config.nbns_enabled;
     for (i = 0; i < p->link_count; i++) {
         if (!(p->links[i].mask & SVC_SMB)) continue;
         for (j = 0; j < p->links[i].addr_count; j++) {
@@ -112,7 +111,8 @@ void wcifsnd_apply_plan(struct wcifsnd *w, const struct device_plan *p, long lon
             if (a->family == AF_INET && addr_is_service_address(a)) ipv4 = 1;
         }
     }
-    w->desired = w->enabled == 1 && w->name[0] && !p->options.diskless && ipv4;
+    /* Apple native NBNS is automatic; only live service eligibility gates it. */
+    w->desired = w->name[0] && !p->options.diskless && ipv4;
     /* Incomplete facts may retain a live native child, but every replacement
      * must pass the same validated-plan gate as initial startup. */
     w->validated = p->status.validated;

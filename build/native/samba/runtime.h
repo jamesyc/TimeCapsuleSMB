@@ -18,7 +18,7 @@
 #define TC_RSYNC_CONF TC_RAM_ROOT "/etc/rsyncd.conf"
 
 struct tc_runtime_config {
-    int netbsd4, telemetry, nbns, rsync, internal_root, browse_compatibility;
+    int netbsd4, telemetry, rsync, internal_root, browse_compatibility;
     int any_protocol, require_encryption, disable_security, netatalk, aio_fork;
     int debug, discovery_debug, advertise_afp;
     unsigned mount_attempts, mount_timeout, mount_poll, ata_idle;

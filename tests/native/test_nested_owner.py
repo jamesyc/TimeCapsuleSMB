@@ -16,6 +16,21 @@ def owner_driver(tmp_path_factory):
                     extra_sources=(ROOT / 'tests/native/unit/test_nested_owner.c',))
     return binary
 
+@pytest.mark.parametrize('record,expected', [
+    (None, '0 0'),
+    ('', '0 0'),
+    ('12345', '0 0'),
+    ('12345 12344', '0 0'),
+    ('12345 12344 pending', '0 0'),
+    ('12345 12344 12300\n', '12345 12300'),
+])
+def test_record_reader_waits_for_complete_process_identity(owner_driver, tmp_path, record, expected):
+    if record is not None:
+        (tmp_path / 'command').write_text(record)
+    result = subprocess.run([str(owner_driver), 'read-record'], cwd=tmp_path,
+                            capture_output=True, text=True, check=True, timeout=5)
+    assert result.stdout.strip() == expected
+
 @pytest.mark.parametrize('case', ['crash', 'term', 'parent-eof', 'timeout', 'grandchild', 'acp', 'acp-descendant', 'acp-timeout'])
 def test_nested_command_cannot_outlive_drained_job(owner_driver, tmp_path, case):
     try:

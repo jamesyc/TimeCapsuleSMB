@@ -105,7 +105,7 @@ def test_iflist_orphan_address_keeps_owner_index():
 def facts_text(*, acp=None, links=(), addrs=(), hostname="airport-time-capsule", config=None, iflist_ok=1):
     """Versioned facts file (native test-input format)."""
     acp = dict(acp or {})
-    config = {"advertise_afp": 0, "nbns_enabled": 0, "debug_logging": 0, "netbios": "", "instance": "", **(config or {})}
+    config = {"advertise_afp": 0, "debug_logging": 0, "netbios": "", "instance": "", **(config or {})}
     lines = ["facts: version=1"]
     for key in ("raNA", "raDS", "waNM", "usbF", "laIP", "waIP", "waLL", "gnRo", "syNm", "waMA"):
         value = acp.get(key)
@@ -601,23 +601,25 @@ def test_config_reader_last_assignment_wins(tmp_path):
 def test_device_config_reads_one_coherent_snapshot(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
     path.write_text("MDNS_ADVERTISE_AFP=1\nNBNS_ENABLED=0\nSMBD_DEBUG_LOGGING=0\nMDNS_DEBUG_LOGGING=1\n")
-    assert run_case("config_facts_snapshot", path) == "rc=0 afp=1 nbns=0 debug=1\n"
+    assert run_case("config_facts_snapshot", path) == "rc=0 afp=1 debug=1\n"
 
 
 def test_device_config_preserves_missing_false_and_invalid_states(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
     path.write_text("NBNS_ENABLED=invalid\nSMBD_DEBUG_LOGGING=1\n")
-    assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 nbns=-1 debug=1\n"
+    assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 debug=1\n"
     path.write_text("NBNS_ENABLED=0\n")
-    assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 nbns=0 debug=0\n"
-    assert run_case("config_facts_snapshot", tmp_path / "missing") == "rc=-1 afp=-1 nbns=-1 debug=-1\n"
+    assert run_case("config_facts_snapshot", path) == "rc=0 afp=0 debug=0\n"
+    path.write_text("MDNS_ADVERTISE_AFP=invalid\n")
+    assert run_case("config_facts_snapshot", path) == "rc=0 afp=-1 debug=0\n"
+    assert run_case("config_facts_snapshot", tmp_path / "missing") == "rc=-1 afp=-1 debug=-1\n"
 
 
 def test_device_config_rejects_overlong_physical_line_continuations(tmp_path):
     path = tmp_path / "tcapsulesmb.conf"
     prefix = "IGNORED="
     path.write_text(prefix + "x" * (1023 - len(prefix)) + "NBNS_ENABLED=1\n")
-    assert run_case("config_facts_snapshot", path) == "rc=-1 afp=-1 nbns=-1 debug=-1\n"
+    assert run_case("config_facts_snapshot", path) == "rc=-1 afp=-1 debug=-1\n"
     assert run_case("config_reader_decodes_shlex_quoting", path, "NBNS_ENABLED") == "unavailable\n"
 
 

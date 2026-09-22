@@ -685,7 +685,6 @@ final class DashboardPresentationTests: XCTestCase {
         let plan = try netbsd4DeployPlan().decode(DeployPlanPayload.self)
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
         let options = DeployOptions(
-            nbnsEnabled: true,
             noWait: true,
             internalShareUseDiskRoot: false,
             smbBrowseCompatibility: false,

@@ -1365,8 +1365,6 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         rc = "unknown" if plan_proc is None else str(plan_proc.returncode)
         _append_step(steps, "mdns_link_plan", "fail", f"mdns link plan probe failed with exit code {rc}")
     else:
-        nbns_enabled = any(line.startswith("config:") and "nbns_enabled=1" in line.split()
-                           for line in plan_proc.stdout.splitlines())
         plan = _parse_link_plan(plan_proc.stdout)
         status = str(plan["status"])
         links = plan["links"]
@@ -1402,7 +1400,7 @@ RUNTIME_SERVICE_BIN=${RUNTIME_SERVICE_BIN:-/mnt/Flash/service}
         title = discovery_lines[0] if len(discovery_lines) == 1 else ""
         marker = re.search(r"\bnbns=(disabled|waiting|starting|ready)\b", title)
         nbns_state = marker.group(1) if marker else ""
-        eligible = nbns_enabled and not diskless and status == "validated" and smb_ipv4
+        eligible = not diskless and status == "validated" and smb_ipv4
         wcifsnd_lines = [
             line for line in ps_out.splitlines()
             if len(line.split()) >= 5 and line.split()[4] == "wcifsnd" and not line.split()[2].startswith("Z")
@@ -1888,23 +1886,6 @@ def probe_managed_runtime_conn(
         soft_timeout_seconds=timeout_seconds,
         final_attempts_allowed=final_attempts,
     )
-
-
-def nbns_flash_config_enabled_conn(connection: SshConnection) -> bool:
-    quoted_config = shlex.quote(FLASH_RUNTIME_CONFIG)
-    script = (
-        f"if [ -f {quoted_config} ]; then "
-        f". {quoted_config}; "
-        "if [ \"${NBNS_ENABLED:-0}\" = \"1\" ]; then echo enabled; fi; "
-        "fi"
-    )
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
-    )
-    return proc.stdout.strip() == "enabled"
 
 
 def flash_runtime_config_present_conn(connection: SshConnection) -> bool:

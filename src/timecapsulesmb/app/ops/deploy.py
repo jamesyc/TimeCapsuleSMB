@@ -175,7 +175,11 @@ def _verify_runtime_for_service(
 
 def deploy_operation(params: dict[str, object], context: AppOperationContext) -> OperationResult:
     operation = "deploy"
-    nbns_enabled = bool_param(params, "nbns_enabled", True)
+    if "nbns_enabled" in params:
+        raise AppOperationError(
+            "nbns_enabled has been removed; Apple’s native NBNS service is always enabled.",
+            code="invalid_params",
+        )
     dry_run = bool_param(params, "dry_run")
     if bool_param(params, "no_reboot"):
         raise AppOperationError(
@@ -202,7 +206,7 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     )
     ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
     context.update_fields(
-        nbns_enabled=nbns_enabled,
+        nbns_enabled=True,
         rsync_enabled=rsync_enabled,
         reboot_was_attempted=False,
         device_came_back_after_reboot=False,
@@ -368,7 +372,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             connection=connection,
             prepared_plan=prepared_plan,
             runtime_config=DeployRuntimeConfig(
-                nbns_enabled=nbns_enabled,
                 telemetry_enabled=telemetry_enabled,
                 rsync_enabled=rsync_enabled,
                 debug_logging=debug_logging,

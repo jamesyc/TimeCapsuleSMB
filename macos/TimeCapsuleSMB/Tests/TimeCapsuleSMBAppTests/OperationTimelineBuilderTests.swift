@@ -100,7 +100,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             "Check Boot Startup",
             "Let Device Finish Booting",
             "Start SMB After Reboot",
-            "Let Runtime Settle",
+            "Wait for services to settle",
             "Verify SMB Startup"
         ])
         XCTAssertEqual(
@@ -131,7 +131,7 @@ final class OperationTimelineBuilderTests: XCTestCase {
             BackendEvent(type: "stage", operation: "activate", stage: "post_activation_settle")
         ])
 
-        XCTAssertEqual(timeline.map(\.title), ["Check Existing Runtime", "Let Runtime Settle"])
+        XCTAssertEqual(timeline.map(\.title), ["Check Existing Runtime", "Wait for services to settle"])
         XCTAssertEqual(
             timeline.first?.detail,
             "Checking whether TimeCapsuleSMB is already running before activating it."

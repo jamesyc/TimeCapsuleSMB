@@ -17,8 +17,8 @@ static unsigned number(const struct config_item *item, unsigned fallback, unsign
 }
 
 int tc_runtime_config_load(struct tc_runtime_config *config) {
+    /* Native NBNS is automatic; stale NBNS_ENABLED values must not block startup. */
     struct config_item items[] = {{"TELEMETRY", "", 0},
-                                  {"NBNS_ENABLED", "", 0},
                                   {"RSYNC_ENABLED", "", 0},
                                   {"INTERNAL_SHARE_USE_DISK_ROOT", "", 0},
                                   {"SMB_BROWSE_COMPATIBILITY", "", 0},
@@ -42,29 +42,28 @@ int tc_runtime_config_load(struct tc_runtime_config *config) {
     config->netbsd4 =
         uname(&system) == 0 && !strncmp(system.sysname, "NetBSD", 6) && system.release[0] == '4';
     config->telemetry = boolean(&items[0], 1);
-    config->nbns = boolean(&items[1], 0);
-    config->rsync = boolean(&items[2], 0);
-    config->internal_root = boolean(&items[3], 0);
-    config->browse_compatibility = boolean(&items[4], 0);
-    config->any_protocol = boolean(&items[5], 0);
-    config->require_encryption = boolean(&items[6], 0);
-    config->disable_security = boolean(&items[7], 0);
-    config->netatalk = boolean(&items[8], 1);
-    config->aio_fork = boolean(&items[9], 0);
-    config->debug = boolean(&items[10], 0);
-    config->discovery_debug = boolean(&items[11], 0);
-    config->advertise_afp = boolean(&items[12], 0);
-    config->mount_attempts = number(&items[13], 2, 1, 10);
-    config->mount_timeout = number(&items[14], 31, 0, 3600);
-    config->mount_poll = number(&items[15], 3, 1, 60);
-    config->ata_idle = number(&items[16], 300, 0, 86400);
-    if (items[17].present) {
-        if (strlen(items[17].value) >= sizeof(config->ata_standby) ||
-            strspn(items[17].value, "0123456789") != strlen(items[17].value))
+    config->rsync = boolean(&items[1], 0);
+    config->internal_root = boolean(&items[2], 0);
+    config->browse_compatibility = boolean(&items[3], 0);
+    config->any_protocol = boolean(&items[4], 0);
+    config->require_encryption = boolean(&items[5], 0);
+    config->disable_security = boolean(&items[6], 0);
+    config->netatalk = boolean(&items[7], 1);
+    config->aio_fork = boolean(&items[8], 0);
+    config->debug = boolean(&items[9], 0);
+    config->discovery_debug = boolean(&items[10], 0);
+    config->advertise_afp = boolean(&items[11], 0);
+    config->mount_attempts = number(&items[12], 2, 1, 10);
+    config->mount_timeout = number(&items[13], 31, 0, 3600);
+    config->mount_poll = number(&items[14], 3, 1, 60);
+    config->ata_idle = number(&items[15], 300, 0, 86400);
+    if (items[16].present) {
+        if (strlen(items[16].value) >= sizeof(config->ata_standby) ||
+            strspn(items[16].value, "0123456789") != strlen(items[16].value))
             return -1;
-        strcpy(config->ata_standby, items[17].value);
+        strcpy(config->ata_standby, items[16].value);
     }
-    if (config->telemetry < 0 || config->nbns < 0 || config->rsync < 0 || config->internal_root < 0 ||
+    if (config->telemetry < 0 || config->rsync < 0 || config->internal_root < 0 ||
         config->browse_compatibility < 0 || config->any_protocol < 0 || config->require_encryption < 0 ||
         config->disable_security < 0 || config->netatalk < 0 || config->aio_fork < 0 || config->debug < 0 ||
         config->discovery_debug < 0 || config->advertise_afp < 0 ||

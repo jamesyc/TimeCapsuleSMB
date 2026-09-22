@@ -536,7 +536,7 @@ class DeployModuleTests(unittest.TestCase):
             AppConfig.from_values({}),
             connection,
             prepared_plan,
-            DeployRuntimeConfig(nbns_enabled=True),
+            DeployRuntimeConfig(),
             callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
             run_remote_actions_func=mock.Mock(),
             upload_payload_func=fake_upload,
@@ -566,7 +566,7 @@ class DeployModuleTests(unittest.TestCase):
                     AppConfig.from_values({"TC_FRUIT_METADATA_NETATALK": saved}),
                     SshConnection("host", "pw", ""),
                     self._prepared_deploy_plan(),
-                    DeployRuntimeConfig(nbns_enabled=True, fruit_metadata_netatalk=override),
+                    DeployRuntimeConfig(fruit_metadata_netatalk=override),
                     run_remote_actions_func=mock.Mock(),
                     upload_payload_func=mock.Mock(),
                     migrate_xattrs_func=migrate,
@@ -593,7 +593,7 @@ class DeployModuleTests(unittest.TestCase):
                 with self.assertRaises(DeployDeviceError) as caught:
                     upload_and_verify_deployment_payload(
                         AppConfig.from_values({}), SshConnection("host", "pw", ""),
-                        self._prepared_deploy_plan(), DeployRuntimeConfig(nbns_enabled=True),
+                        self._prepared_deploy_plan(), DeployRuntimeConfig(),
                         callbacks=OperationCallbacks(record_execution_measurement=lambda kind, **fields: measurements.append((kind, fields))),
                         run_remote_actions_func=remote_actions, upload_payload_func=mock.Mock(),
                         migrate_xattrs_func=mock.Mock(side_effect=error),
@@ -629,7 +629,7 @@ class DeployModuleTests(unittest.TestCase):
                     AppConfig.from_values({}),
                     SshConnection("host", "pw", ""),
                     self._prepared_deploy_plan(),
-                    DeployRuntimeConfig(nbns_enabled=True),
+                    DeployRuntimeConfig(),
                     run_remote_actions_func=remote_actions,
                     upload_payload_func=mock.Mock(),
                     migrate_xattrs_func=migrate,
@@ -669,7 +669,7 @@ class DeployModuleTests(unittest.TestCase):
             AppConfig.from_values({}),
             connection,
             prepared_plan,
-            DeployRuntimeConfig(nbns_enabled=True, fruit_metadata_netatalk=False),
+            DeployRuntimeConfig(fruit_metadata_netatalk=False),
             callbacks=OperationCallbacks(),
             run_remote_actions_func=remote_actions,
             migrate_xattrs_func=migrate,
@@ -716,7 +716,7 @@ class DeployModuleTests(unittest.TestCase):
             AppConfig.from_values({}),
             connection,
             prepared_plan,
-            DeployRuntimeConfig(nbns_enabled=True),
+            DeployRuntimeConfig(),
             run_remote_actions_func=run_actions,
             upload_payload_func=mock.Mock(),
             migrate_xattrs_func=migrate,
@@ -741,7 +741,7 @@ class DeployModuleTests(unittest.TestCase):
                 AppConfig.from_values({}),
                 SshConnection("host", "pw", "-o foo"),
                 prepared_plan,
-                DeployRuntimeConfig(nbns_enabled=True),
+                DeployRuntimeConfig(),
                 run_remote_actions_func=fail_afp_stop,
                 upload_payload_func=upload,
                 migrate_xattrs_func=migrate,
@@ -760,7 +760,7 @@ class DeployModuleTests(unittest.TestCase):
                 AppConfig.from_values({}),
                 connection,
                 prepared_plan,
-                DeployRuntimeConfig(nbns_enabled=True),
+                DeployRuntimeConfig(),
                 callbacks=OperationCallbacks(),
                 run_remote_actions_func=mock.Mock(side_effect=SshError("process manager did not stop")),
                 upload_payload_func=mock.Mock(),
@@ -788,7 +788,7 @@ class DeployModuleTests(unittest.TestCase):
                 AppConfig.from_values({}),
                 connection,
                 prepared_plan,
-                DeployRuntimeConfig(nbns_enabled=True),
+                DeployRuntimeConfig(),
                 callbacks=OperationCallbacks(),
                 run_remote_actions_func=mock.Mock(),
                 upload_payload_func=timeout_upload,
@@ -1297,7 +1297,7 @@ describe_managed_smbd_status "" ""
         "root     wcifsnd  917    6* internet dgram udp *:138\n"
     )
     PLAN_V31 = (
-        "config: nbns_enabled=1 advertise_afp=0\n"
+        "config: advertise_afp=0\n"
         "plan: status=validated mode=bridge stale_seconds=0 diskless=0\n"
         "acp: raNA=0 raDS=0 waNM=1 usbF=0x450 laIP=192.168.1.10 waIP=192.168.1.10 waLL=unavailable gnRo=unavailable\n"
         'identity: instance="AirPort Time Capsule" netbios=airport-time-ca wama=E8:8D:28:58:F1:5C\n'

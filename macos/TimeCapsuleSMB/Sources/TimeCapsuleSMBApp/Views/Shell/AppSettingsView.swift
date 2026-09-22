@@ -44,44 +44,21 @@ struct AppSettingsView: View {
                         TextField("", text: $editor.draft.defaultBonjourTimeoutSeconds)
                             .frame(width: 120)
                     }
-                    Toggle(L10n.string("toggle.enable_nbns"), isOn: $editor.draft.nbnsEnabled)
-                    Toggle(L10n.string("toggle.enable_rsync"), isOn: $editor.draft.rsyncEnabled)
-                    Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $editor.draft.internalShareUseDiskRoot)
-                    Toggle(L10n.string("toggle.smb_browse_compatibility"), isOn: $editor.draft.smbBrowseCompatibility)
-                    Toggle(L10n.string("toggle.mdns_advertise_afp"), isOn: $editor.draft.mdnsAdvertiseAFP)
-                        .help(L10n.string("toggle.mdns_advertise_afp.help"))
-                    Toggle(L10n.string("toggle.any_protocol"), isOn: anyProtocolBinding)
-                        .disabled(!SMBProtocolOptionPolicy.allowsAnyProtocol(requireSMBEncryption: editor.draft.requireSMBEncryption))
-                    Toggle(L10n.string("toggle.require_smb_encryption"), isOn: requireSMBEncryptionBinding)
-                        .disabled(!SMBProtocolOptionPolicy.allowsRequireSMBEncryption(
-                            anyProtocol: editor.draft.anyProtocol,
-                            forceDisableSMBSigningAndEncryption: editor.draft.forceDisableSMBSigningAndEncryption
-                        ))
-                    Toggle(
-                        L10n.string("toggle.force_disable_smb_signing_and_encryption"),
-                        isOn: forceDisableSMBSigningAndEncryptionBinding
+                    DeviceAdvancedSettingsFields(
+                        rsyncEnabled: $editor.draft.rsyncEnabled,
+                        internalShareUseDiskRoot: $editor.draft.internalShareUseDiskRoot,
+                        smbBrowseCompatibility: $editor.draft.smbBrowseCompatibility,
+                        mdnsAdvertiseAFP: $editor.draft.mdnsAdvertiseAFP,
+                        anyProtocol: $editor.draft.anyProtocol,
+                        requireSMBEncryption: $editor.draft.requireSMBEncryption,
+                        forceDisableSMBSigningAndEncryption: $editor.draft.forceDisableSMBSigningAndEncryption,
+                        fruitMetadataNetatalk: $editor.draft.fruitMetadataNetatalk,
+                        vfsAIOForkEnabled: $editor.draft.vfsAIOForkEnabled,
+                        debugLogging: $editor.draft.debugLogging,
+                        mountWaitSeconds: $editor.draft.mountWaitSeconds,
+                        ataIdleSeconds: $editor.draft.ataIdleSeconds,
+                        ataStandby: $editor.draft.ataStandby
                     )
-                    .disabled(!SMBProtocolOptionPolicy.allowsForceDisableSMBSigningAndEncryption(
-                        requireSMBEncryption: editor.draft.requireSMBEncryption
-                    ))
-                    Text(L10n.string("toggle.force_disable_smb_signing_and_encryption.note"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Toggle(L10n.string("toggle.use_netatalk_metadata"), isOn: $editor.draft.fruitMetadataNetatalk)
-                    Toggle(L10n.string("toggle.enable_vfs_aio_fork"), isOn: $editor.draft.vfsAIOForkEnabled)
-                    Toggle(L10n.string("toggle.force_debug_logging"), isOn: $editor.draft.debugLogging)
-                    SettingsFormRow(title: L10n.string("field.mount_wait")) {
-                        TextField("", text: $editor.draft.mountWaitSeconds)
-                            .frame(width: 120)
-                    }
-                    SettingsFormRow(title: L10n.string("field.ata_idle_seconds")) {
-                        TextField("", text: $editor.draft.ataIdleSeconds)
-                            .frame(width: 120)
-                    }
-                    SettingsFormRow(title: L10n.string("field.ata_standby")) {
-                        TextField(L10n.string("app_settings.blank_uses_device_default"), text: $editor.draft.ataStandby)
-                            .frame(width: 180)
-                    }
                 }
 
                 SettingsFormSection(title: L10n.string("app_settings.section.diagnostics"), contentWidth: contentWidth) {
@@ -138,43 +115,6 @@ struct AppSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private var anyProtocolBinding: Binding<Bool> {
-        Binding(
-            get: { editor.draft.anyProtocol },
-            set: { value in
-                editor.draft.anyProtocol = value
-                if value {
-                    editor.draft.requireSMBEncryption = false
-                }
-            }
-        )
-    }
-
-    private var requireSMBEncryptionBinding: Binding<Bool> {
-        Binding(
-            get: { editor.draft.requireSMBEncryption },
-            set: { value in
-                editor.draft.requireSMBEncryption = value
-                if value {
-                    editor.draft.anyProtocol = false
-                    editor.draft.forceDisableSMBSigningAndEncryption = false
-                }
-            }
-        )
-    }
-
-    private var forceDisableSMBSigningAndEncryptionBinding: Binding<Bool> {
-        Binding(
-            get: { editor.draft.forceDisableSMBSigningAndEncryption },
-            set: { value in
-                editor.draft.forceDisableSMBSigningAndEncryption = value
-                if value {
-                    editor.draft.requireSMBEncryption = false
-                }
-            }
-        )
     }
 
     private var header: some View {
