@@ -167,3 +167,8 @@
 # without changing source mtimes, and retire whole databases oldest-first only
 # after verified volume coverage is available to the deploy completion files.
 0042-merge-legacy-metadata-sources.patch|merge read-only legacy TDBs and report verified volume coverage
+
+# A forked connection child inherits the master's listener tree. Its active
+# accept callback has aborted while recursively freeing that copied tree;
+# close the inherited listeners and let process exit reclaim the child copy.
+0044-smbd-child-retain-listener-tree.patch|retain copied listener tree in connection children

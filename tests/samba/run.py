@@ -18,7 +18,9 @@ HERE = Path(__file__).resolve().parent
 TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
            "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
-BUILD_TARGETS = (*TARGETS, MIGRATOR_TARGET)
+SMBD_TARGET = "smbd/smbd"
+# Compile the production accept/fork call site as well as the extracted helper.
+BUILD_TARGETS = (SMBD_TARGET, *TARGETS, MIGRATOR_TARGET)
 AIO_CASES = (
     "read", "short", "empty", "zero", "oversized", "read_error", "pwrite", "append", "fsync",
     "pwrite_error", "append_error", "fsync_error",
@@ -26,7 +28,7 @@ AIO_CASES = (
     "sync_append", "sync_append_error", "sync_fsync", "sync_fsync_error",
     "queue", "cancel_queued", "cancel_active", "queued_fork_failure",
     "dispatch_failure", "allocation_failure", "response_failure",
-    "limits", "unlimited", "cleanup", "fork_stack",
+    "limits", "unlimited", "cleanup", "fork_stack", "listener_handoff",
 )
 DURABLE_CASES = (
     "transition", "exhausted", "already_disconnected", "client_mismatch",
@@ -69,6 +71,10 @@ def stage(source: Path) -> None:
             end = text.index("\n}", text.index("\n{", start)) + 2
             callbacks.append(text[start:end])
     (modules / "tc_storage_reload_callbacks.inc").write_text("\n\n".join(callbacks) + "\n")
+    server = (source / "source3/smbd/server.c").read_text()
+    start = server.index("static void smbd_child_detach_parent(")
+    end = server.index("\n}", start) + 2
+    (modules / "tc_smbd_child_detach_parent.inc").write_text(server[start:end] + "\n")
     script.write_text(original + marker + (HERE / "targets.py").read_text())
 
 

@@ -126,8 +126,10 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             "server.c": ("smbd_parent_conf_updated", "smbd_parent_sig_hup_handler"),
             "smb2_process.c": ("smbd_sig_hup_handler", "smbd_conf_updated"),
         }.items():
+            helper = ("\nstatic void smbd_child_detach_parent(void)\n{\n}\n"
+                      if filename == "server.c" else "")
             self.make_file(src_dir / "source3/smbd" / filename,
-                           "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names))
+                           "\n".join(f"static void {name}(void)\n{{\n}}\n" for name in names) + helper)
         self.make_executable(
             src_dir / "configure",
             textwrap.dedent(

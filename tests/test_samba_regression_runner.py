@@ -78,7 +78,8 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
     smbd.mkdir()
     names = ("smbd_parent_conf_updated", "smbd_parent_sig_hup_handler", "smbd_sig_hup_handler", "smbd_conf_updated")
     bodies = [f"static void {name}(void)\n{{\n    observed += {1 << i};\n}}\n" for i, name in enumerate(names)]
-    (smbd / "server.c").write_text("\n".join(bodies[:2]))
+    helper = "static void smbd_child_detach_parent(void)\n{\n    observed += 16;\n}\n"
+    (smbd / "server.c").write_text("\n".join([*bodies[:2], helper]))
     (smbd / "smb2_process.c").write_text("\n".join(bodies[2:]))
     run.stage(tmp_path)
     run.stage(tmp_path)
@@ -103,8 +104,10 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
         assert arguments["install"] is False
         assert (modules / arguments["source"]).read_bytes() == (run.HERE / (name + ".c")).read_bytes()
     driver = modules / "callbacks.c"
-    driver.write_text('static int observed;\n#include "tc_storage_reload_callbacks.inc"\nint main(void) {\n' +
-                      "".join(f"{name}();\n" for name in names) + "return observed == 15 ? 0 : 1;\n}\n")
+    driver.write_text('static int observed;\n#include "tc_storage_reload_callbacks.inc"\n'
+                      '#include "tc_smbd_child_detach_parent.inc"\nint main(void) {\n' +
+                      "".join(f"{name}();\n" for name in names) +
+                      "smbd_child_detach_parent();\nreturn observed == 31 ? 0 : 1;\n}\n")
     binary = tmp_path / "callbacks"
     subprocess.run(["cc", str(driver), "-o", str(binary)], check=True, capture_output=True)
     subprocess.run([str(binary)], check=True, timeout=5)

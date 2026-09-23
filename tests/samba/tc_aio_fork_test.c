@@ -5,6 +5,7 @@
 #include "smbd/globals.h"
 #include "lib/async_req/async_sock.h"
 #include "lib/util/sys_rw.h"
+#include "lib/util/sys_rw_data.h"
 #include "lib/global_contexts.h"
 #include <sys/wait.h>
 #ifdef HAVE_PTHREAD
@@ -126,6 +127,138 @@ NTSTATUS vfs_aio_fork_init(TALLOC_CTX *ctx);
 #undef sys_pread_full
 #undef sys_pwrite_full
 #undef sys_write_full
+
+/* Exercise the production connection-child cleanup with real talloc and
+ * tevent objects. server.c itself owns main(), so stage only this helper. */
+struct smbd_open_socket;
+struct smbd_parent_context {
+	struct smbd_open_socket *sockets;
+};
+struct smbd_open_socket {
+	struct smbd_open_socket *prev, *next;
+	struct smbd_parent_context *parent;
+	int fd;
+	struct tevent_fd *fde;
+};
+#include "tc_smbd_child_detach_parent.inc"
+
+static unsigned listener_parent_frees, listener_closes;
+
+static int listener_parent_destructor(struct smbd_parent_context *parent)
+{
+	(void)parent;
+	listener_parent_frees++;
+	return 0;
+}
+
+static void listener_close(struct tevent_context *ev, struct tevent_fd *fde,
+			   int fd, void *private_data)
+{
+	(void)ev; (void)fde; (void)private_data;
+	listener_closes++;
+	close(fd);
+}
+
+static void listener_signal(struct tevent_context *ev, struct tevent_signal *se,
+			    int signum, int count, void *siginfo, void *private_data)
+{
+	(void)ev; (void)se; (void)signum; (void)count;
+	(void)siginfo; (void)private_data;
+}
+
+struct listener_handoff {
+	struct smbd_parent_context *parent;
+	int listeners[2];
+	int client;
+	int done;
+	struct sigaction original_signal;
+};
+
+static void listener_accept(struct tevent_context *ev, struct tevent_fd *fde,
+			    uint16_t flags, void *private_data)
+{
+	struct listener_handoff *test = private_data;
+	struct sigaction action;
+	int accepted, status;
+	pid_t pid;
+	char reply[2];
+	(void)fde; (void)flags;
+	accepted = accept(test->listeners[0], NULL, NULL);
+	CHECK(accepted >= 0);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0) {
+		alarm(15);
+		smbd_child_detach_parent(test->parent);
+		CHECK(listener_parent_frees == 0 && listener_closes == 0);
+		CHECK(fcntl(test->listeners[0], F_GETFD) == -1 && errno == EBADF);
+		CHECK(fcntl(test->listeners[1], F_GETFD) == -1 && errno == EBADF);
+		CHECK(fcntl(accepted, F_GETFD) >= 0);
+		CHECK(tevent_re_initialise(ev) == 0);
+		CHECK(sigaction(SIGUSR1, NULL, &action) == 0);
+		CHECK(action.sa_handler == test->original_signal.sa_handler);
+		TALLOC_FREE(ev);
+		CHECK(listener_parent_frees == 0 && listener_closes == 0);
+		CHECK(write_data(accepted, "ok", 2) == 2);
+		close(accepted);
+		_exit(0);
+	}
+	CHECK(waitpid(pid, &status, 0) == pid);
+	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	CHECK(read_data(test->client, reply, sizeof(reply)) == sizeof(reply));
+	CHECK(memcmp(reply, "ok", sizeof(reply)) == 0);
+	CHECK(fcntl(test->listeners[0], F_GETFD) >= 0);
+	CHECK(fcntl(test->listeners[1], F_GETFD) >= 0);
+	CHECK(listener_parent_frees == 0 && listener_closes == 0);
+	close(accepted);
+	test->done = 1;
+}
+
+static void test_listener_handoff(void)
+{
+	struct listener_handoff test = {0};
+	struct sockaddr_in address = {0};
+	struct sockaddr_in bind_address = {0};
+	socklen_t address_size = sizeof(address);
+	int i;
+	CHECK(sigaction(SIGUSR1, NULL, &test.original_signal) == 0);
+	test.parent = talloc_zero(event, struct smbd_parent_context);
+	CHECK(test.parent != NULL);
+	talloc_set_destructor(test.parent, listener_parent_destructor);
+	CHECK(tevent_add_signal(event, test.parent, SIGUSR1, 0,
+				listener_signal, NULL) != NULL);
+	for (i = 0; i < 2; i++) {
+		struct smbd_open_socket *listener = talloc_zero(
+			test.parent, struct smbd_open_socket);
+		CHECK(listener != NULL);
+		listener->parent = test.parent;
+		listener->fd = socket(AF_INET, SOCK_STREAM, 0);
+		CHECK(listener->fd >= 0);
+		bind_address.sin_family = AF_INET;
+		bind_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		bind_address.sin_port = 0;
+		CHECK(bind(listener->fd, (struct sockaddr *)&bind_address,
+			   sizeof(bind_address)) == 0);
+		CHECK(listen(listener->fd, 2) == 0);
+		test.listeners[i] = listener->fd;
+		listener->fde = tevent_add_fd(event, listener, listener->fd,
+			TEVENT_FD_READ, listener_accept, &test);
+		CHECK(listener->fde != NULL);
+		tevent_fd_set_close_fn(listener->fde, listener_close);
+		DLIST_ADD_END(test.parent->sockets, listener);
+		if (i == 0) {
+			CHECK(getsockname(listener->fd, (struct sockaddr *)&address,
+				&address_size) == 0);
+		}
+	}
+	test.client = socket(AF_INET, SOCK_STREAM, 0);
+	CHECK(test.client >= 0);
+	CHECK(connect(test.client, (struct sockaddr *)&address, address_size) == 0);
+	CHECK(tevent_loop_once(event) == 0 && test.done);
+	close(test.client);
+	TALLOC_FREE(test.parent);
+	CHECK(listener_parent_frees == 1 && listener_closes == 2);
+}
 
 static struct vfs_handle_struct *share(TALLOC_CTX *ctx, unsigned limit)
 {
@@ -376,6 +509,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
 	else if (!strcmp(argv[1], "fork_stack")) test_fork_stackframes(frame);
+	else if (!strcmp(argv[1], "listener_handoff")) test_listener_handoff();
 	else test_io(h, argv[1]);
 	CHECK(destructors == 0 && talloc_tos() == frame);
 	TALLOC_FREE(h);
