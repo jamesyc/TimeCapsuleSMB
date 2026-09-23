@@ -18,16 +18,28 @@ static int fake_socket(int domain, int type, int protocol) {
     (void)domain; (void)type; (void)protocol;
     errno = socket_error; return -1;
 }
+static int inspection_done;
+static int fake_inspection_poll(struct tc_child *child, long long now) {
+    (void)child; (void)now;
+    return inspection_done;
+}
 #define fork fake_fork
 #define waitpid fake_waitpid
 #define kill fake_kill
 #define socket fake_socket
+#define tc_child_poll fake_inspection_poll
 #include "../../../build/native/discovery/wcifsnd.c"
+#undef tc_child_poll
+
+int tc_native_nbns_sockets_present(const char *text, pid_t pid, unsigned control_port) {
+    (void)text; (void)pid; (void)control_port;
+    return 1;
+}
 
 static void init(struct wcifsnd *w) {
     wcifsnd_init(w, "machine");
     w->desired = w->validated = 1;
-    forks = signals = last_signal = wait_error = fork_error = socket_error = 0;
+    forks = signals = last_signal = wait_error = fork_error = socket_error = inspection_done = 0;
     waited = 0;
 }
 
@@ -79,6 +91,34 @@ static void cleanup_before_retry(void) {
     waited = 0;
     assert(!wcifsnd_dispatch(&w, NULL, 2250) && forks == 1);
     assert(w.record == 0 && !w.sent);
+}
+
+static void stopped_inspection_defers_retry(void) {
+    struct wcifsnd w;
+    fd_set reads;
+    int maxfd = -1;
+    long long deadline = -1;
+    init(&w);
+    w.child = 42; w.phase = WC_INSPECTING;
+    w.inspection.group = 77; w.inspection.nested = 1;
+    w.inspection.lifetime = w.inspection.output = -1;
+    w.inspection_limit = 20000;
+    waited = 42; /* Native child exits while the inspector ignores TERM. */
+    assert(!wcifsnd_dispatch(&w, NULL, 100));
+    assert(w.phase == WC_OFF && !w.child && w.inspection.stopping);
+    assert(w.wake == 2100 && w.inspection.deadline == 10100 && !forks);
+
+    FD_ZERO(&reads);
+    wcifsnd_prepare(&w, &reads, &maxfd, &deadline);
+    assert(deadline == 10100 && deadline > w.wake);
+    assert(!wcifsnd_dispatch(&w, NULL, 3100) && !forks);
+    deadline = -1;
+    wcifsnd_prepare(&w, &reads, &maxfd, &deadline);
+    assert(deadline == 10100); /* No expired retry deadline or busy select. */
+
+    inspection_done = 1;
+    assert(!wcifsnd_dispatch(&w, NULL, 5100));
+    assert(!w.inspection.group && forks == 1 && w.child == 42);
 }
 
 static void errors_and_stale_replies(void) {
@@ -181,6 +221,7 @@ static void eligibility_and_shutdown(void) {
 }
 
 int main(void) {
-    retry_deadlines(); cleanup_before_retry(); errors_and_stale_replies(); eligibility_and_shutdown();
+    retry_deadlines(); cleanup_before_retry(); stopped_inspection_defers_retry();
+    errors_and_stale_replies(); eligibility_and_shutdown();
     return 0;
 }

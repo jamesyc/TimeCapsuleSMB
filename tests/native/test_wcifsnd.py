@@ -58,6 +58,7 @@ WCIFSND_UNIT_MODULES = (
     "native/common/acp.c",
     "native/common/addr.c",
     "native/common/log.c",
+    "native/common/process.c",
 )
 
 
@@ -67,10 +68,14 @@ def rig():
     port = free_port()
     fake = ROOT / "tests/native/integration/fake_wcifsnd.py"
     fake.chmod(0o755)
+    fake_fstat = ROOT / "tests/native/integration/fake_fstat.py"
+    fake_fstat.chmod(0o755)
     sock = root / "mDNSResponder"
     binary = compile_service(root / "service", flags=[
         f'-DMDNS_UDS_SERVERPATH="{sock}"', f'-DWCIFSND_PATH="{fake}"',
-        f"-DWCIFSND_PORT={port}", "-DWCIFSND_START_MS=3000", "-DWCIFSND_REPLY_MS=1500",
+        f'-DTC_FSTAT_PATH="{fake_fstat}"',
+        f"-DWCIFSND_PORT={port}", "-DWCIFSND_START_MS=3000", "-DWCIFSND_INSPECT_MS=3000",
+        "-DTC_CHILD_GRACE_MS=500", "-DWCIFSND_REPLY_MS=1500",
         "-DWCIFSND_STOP_MS=500", "-DTC_PLAN_POLL_MS=200", "-DREG_BACKOFF_MIN_MS=100",
         "-DREG_BACKOFF_MAX_MS=200", "-DREG_IPC_ALARM_SECONDS=1", "-D_DNS_SD_LIBDISPATCH=0"])
     return root, sock, binary, port
@@ -78,16 +83,19 @@ def rig():
 
 class Discovery:
     def __init__(self, rig, facts=NAT_OK, name="machine", diskless=False, mode="success",
-                 extra_env=None, pass_fds=(), shares=False, stdin=None):
+                 extra_env=None, pass_fds=(), shares=False, stdin=None, fstat_mode="owned"):
         root, _, binary, port = rig
         stamp = time.monotonic_ns()
         self.facts = root / f"facts-{stamp}"
         self.events = root / f"events-{stamp}"
         self.mode = root / f"mode-{stamp}"
+        self.fstat_mode = root / f"fstat-mode-{stamp}"
         self.facts.write_text(facts)
         self.mode.write_text(mode)
+        self.fstat_mode.write_text(fstat_mode)
         env = {**os.environ, "TC_FAKE_WCIFSND_PORT": str(port),
-               "TC_FAKE_WCIFSND_EVENTS": str(self.events), "TC_FAKE_WCIFSND_MODE": str(self.mode)}
+               "TC_FAKE_WCIFSND_EVENTS": str(self.events), "TC_FAKE_WCIFSND_MODE": str(self.mode),
+               "TC_FAKE_FSTAT_MODE": str(self.fstat_mode)}
         env.update(extra_env or {})
         args = [str(binary), "discovery", "--facts-file", str(self.facts)]
         if diskless:
@@ -104,14 +112,14 @@ class Discovery:
         temporary.write_text(facts)
         os.replace(temporary, self.facts)
 
-    def stop(self):
+    def stop(self, timeout=3):
         if self.proc.poll() is None:
             self.proc.terminate()
         try:
-            return self.proc.communicate(timeout=3)
+            return self.proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             self.proc.kill()
-            return self.proc.communicate(timeout=3)
+            return self.proc.communicate(timeout=timeout)
 
 
 @pytest.fixture
@@ -127,6 +135,14 @@ def adds(discovery):
 
 def children(discovery):
     return [int(line.split()[1]) for line in event_lines(discovery.events) if line.startswith("START ")]
+
+
+def process_exists(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def assert_reaped(pid, owner_pid=None, timeout=1):
@@ -247,6 +263,7 @@ def test_startup_hup_ipv4_loss_and_child_death_lifecycle(rig, dnssd):
             ("MACHINE", 0), ("WORKGROUP", 0), ("MACHINE", 0x20)]
         time.sleep(0.35)
         assert len(adds(discovery)) == 3
+        assert len([line for line in event_lines(discovery.events) if line.startswith("FSTAT ")]) == 1
         assert wait_for(lambda: event_lines(discovery.events).count("HUP") >= 1)
         assert len(adds(discovery)) == 3
 
@@ -306,6 +323,132 @@ def test_failed_child_retries_without_withdrawing_bonjour(rig, dnssd, mode, requ
         assert_bonjour_unchanged(discovery, dnssd, connections)
     finally:
         discovery.stop()
+
+
+@pytest.mark.parametrize("fstat_mode,reason", [
+    ("foreign", "native child does not own UDP 137/138/922"),
+    ("missing-control", "native child does not own UDP 137/138/922"),
+    ("error", "native socket ownership inspection failed"),
+])
+def test_unverified_native_listener_never_receives_an_add(rig, dnssd, fstat_mode, reason):
+    discovery = Discovery(rig, shares=True, fstat_mode=fstat_mode)
+    try:
+        connections = bonjour_connections(dnssd)
+        assert wait_for(lambda: "STOP" in event_lines(discovery.events), timeout=10)
+        assert not adds(discovery)
+        first = children(discovery)[0]
+        assert_reaped(first, discovery.proc.pid)
+        discovery.fstat_mode.write_text("owned")
+        assert wait_for(lambda: len(adds(discovery)) == 3, timeout=15)
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        log = discovery.stop()[1]
+    assert reason in log
+
+
+def test_child_exit_during_ownership_check_is_reported_and_retried(rig, dnssd):
+    discovery = Discovery(rig, shares=True, fstat_mode="kill")
+    try:
+        connections = bonjour_connections(dnssd)
+        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=12)
+        assert not adds(discovery)
+        first = children(discovery)[0]
+        assert_reaped(first, discovery.proc.pid)
+        discovery.fstat_mode.write_text("owned")
+        assert wait_for(lambda: len(adds(discovery)) == 3, timeout=15)
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        log = discovery.stop()[1]
+    assert "killed by signal" in log
+
+
+def test_stalled_inspection_keeps_bonjour_responsive_and_stops_cleanly(rig, dnssd):
+    discovery = Discovery(rig, shares=True, fstat_mode="hang")
+    captured = bytearray()
+    try:
+        connections = bonjour_connections(dnssd)
+        assert wait_for(lambda: any(line.startswith("HANG ") for line in event_lines(discovery.events)))
+        helper = int(next(line.split()[1] for line in event_lines(discovery.events) if line.startswith("HANG ")))
+        dnssd.rename_default("During Inspection")
+        fd = discovery.proc.stderr.fileno()
+        os.set_blocking(fd, False)
+
+        def callback_logged():
+            try:
+                captured.extend(os.read(fd, 4096))
+            except BlockingIOError:
+                pass
+            return b"During Inspection" in captured
+
+        try:
+            assert wait_for(callback_logged, timeout=2)
+        finally:
+            os.set_blocking(fd, True)
+        assert not adds(discovery)
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+        started = time.monotonic()
+        rest = discovery.stop(timeout=8)[1]
+        assert discovery.proc.returncode == 0
+        assert time.monotonic() - started < 8
+        assert wait_for(lambda: not process_exists(helper), timeout=2)
+    finally:
+        if discovery.proc.poll() is None:
+            discovery.stop(timeout=8)
+    assert "During Inspection" in captured.decode() + rest
+
+
+def test_stalled_inspection_times_out_then_recovers_without_an_add(rig, dnssd):
+    discovery = Discovery(rig, shares=True, fstat_mode="hang")
+    try:
+        connections = bonjour_connections(dnssd)
+        assert wait_for(lambda: any(line.startswith("HANG ") for line in event_lines(discovery.events)))
+        helper = int(next(line.split()[1] for line in event_lines(discovery.events) if line.startswith("HANG ")))
+        assert not adds(discovery)
+        discovery.fstat_mode.write_text("owned")
+        assert wait_for(lambda: len(adds(discovery)) == 3, timeout=15)
+        assert wait_for(lambda: not process_exists(helper), timeout=2)
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        log = discovery.stop()[1]
+    assert "native socket ownership inspection failed" in log
+
+
+def test_losing_ipv4_cancels_pending_inspection_without_restarting(rig, dnssd):
+    discovery = Discovery(rig, shares=True, fstat_mode="hang")
+    try:
+        assert wait_for(lambda: any(line.startswith("HANG ") for line in event_lines(discovery.events)))
+        helper = int(next(line.split()[1] for line in event_lines(discovery.events) if line.startswith("HANG ")))
+        discovery.replace(NAT_OK.replace("family=inet addr=", "family=inet6 addr=::ffff:"))
+        assert wait_for(lambda: "STOP" in event_lines(discovery.events))
+        assert wait_for(lambda: not process_exists(helper), timeout=3)
+        time.sleep(2.5)
+        assert len(children(discovery)) == 1
+        assert not adds(discovery)
+        assert discovery.proc.poll() is None
+    finally:
+        discovery.stop()
+
+
+def test_native_child_exit_status_and_port_collision_recover(rig, dnssd):
+    port = rig[3]
+    foreign = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    foreign.bind(("127.0.0.1", port))
+    discovery = Discovery(rig, mode="exit-7", shares=True)
+    try:
+        connections = bonjour_connections(dnssd)
+        assert wait_for(lambda: len(children(discovery)) >= 2, timeout=12)
+        assert not adds(discovery)
+        discovery.mode.write_text("success")
+        assert wait_for(lambda: "BIND_FAILED" in event_lines(discovery.events), timeout=15)
+        assert not adds(discovery)
+        foreign.close()
+        assert wait_for(lambda: len(adds(discovery)) == 3, timeout=20)
+        assert_bonjour_unchanged(discovery, dnssd, connections)
+    finally:
+        foreign.close()
+        log = discovery.stop()[1]
+    assert "exited with status 7" in log
+    assert "exited with status 1" in log
 
 
 def test_wack_then_success_and_workgroup_collision(rig, dnssd):

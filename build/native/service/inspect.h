@@ -1,6 +1,9 @@
 #ifndef TC_SERVICE_INSPECT_H
 #define TC_SERVICE_INSPECT_H
 #include "../common/platform.h"
+#ifndef TC_FSTAT_PATH
+#define TC_FSTAT_PATH "/usr/bin/fstat"
+#endif
 #define TC_PROCESS_MAX 128
 
 enum tc_process_role {
@@ -29,4 +32,6 @@ int tc_listener_present(const char *text, unsigned port);
 unsigned tc_wildcard_listener_families(const char *text, unsigned port);
 int tc_process_listener(pid_t, unsigned port, int *listening);
 int tc_process_wildcard_listeners(pid_t, unsigned port, unsigned *families);
+/* Apple's wcifsnd must own its NBNS sockets and the private control listener. */
+int tc_native_nbns_sockets_present(const char *fstat_text, pid_t pid, unsigned control_port);
 #endif

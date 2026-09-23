@@ -47,5 +47,25 @@ int main(void) {
                                          445) == 0);
     assert(tc_wildcard_listener_families("root smbd 30 3* internet stream tcp *:445 <-> 192.0.2.3:2345\n",
                                          445) == 0);
+    const char *native = "root wcifsnd 21 3* internet dgram udp *:137\n"
+                         "root wcifsnd 21 4* internet dgram udp *:138\n"
+                         "root wcifsnd 21 5* internet dgram udp *:922\n";
+    assert(tc_native_nbns_sockets_present(native, 21, 922));
+    assert(tc_native_nbns_sockets_present("root wcifsnd 21 3* internet dgram udp c276b870 *:137\n"
+                                          "root wcifsnd 21 4* internet dgram udp c276b8dc *:138\n"
+                                          "root wcifsnd 21 5* internet dgram udp c276b438 *:922\n", 21, 922));
+    assert(!tc_native_nbns_sockets_present(native, 22, 922));
+    assert(!tc_native_nbns_sockets_present("root wcifsnd 21 3* internet dgram udp *:137\n"
+                                           "root wcifsnd 22 4* internet dgram udp *:138\n"
+                                           "root wcifsnd 21 5* internet dgram udp *:922\n", 21, 922));
+    assert(!tc_native_nbns_sockets_present("root wcifsnd 21 3* internet dgram udp *:137\n"
+                                           "root wcifsnd 21 4* internet dgram udp *:138\n"
+                                           "root wcifsnd 21 5* internet dgram udp *:9220\n", 21, 922));
+    assert(!tc_native_nbns_sockets_present("root wcifsnd 21 3* internet dgram udp *:137\n"
+                                           "root wcifsnd 21 4* internet dgram udp *:138\n"
+                                           "root wcifsnd 21 5* internet dgram udp *:922 <-> 127.0.0.1:1\n", 21, 922));
+    assert(!tc_native_nbns_sockets_present("root wcifsnd 21 3* internet stream tcp *:137\n"
+                                           "root wcifsnd 21 4* internet dgram udp *:138\n"
+                                           "root wcifsnd 21 5* internet dgram udp *:922\n", 21, 922));
     return 0;
 }

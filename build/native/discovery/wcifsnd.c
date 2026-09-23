@@ -1,11 +1,13 @@
 #include "wcifsnd.h"
 #include "../common/log.h"
+#include "../service/inspect.h"
 
 /* Only test builds may substitute a fake child/port or shorten deadlines. */
 #ifndef TC_NATIVE_TEST
 #undef WCIFSND_PATH
 #undef WCIFSND_PORT
 #undef WCIFSND_START_MS
+#undef WCIFSND_INSPECT_MS
 #undef WCIFSND_REPLY_MS
 #undef WCIFSND_STOP_MS
 #endif
@@ -17,6 +19,9 @@
 #endif
 #ifndef WCIFSND_START_MS
 #define WCIFSND_START_MS 5000
+#endif
+#ifndef WCIFSND_INSPECT_MS
+#define WCIFSND_INSPECT_MS 5000
 #endif
 #ifndef WCIFSND_REPLY_MS
 #define WCIFSND_REPLY_MS 10000
@@ -76,6 +81,7 @@ static struct sockaddr_in endpoint(unsigned port) {
 
 static void stop_child(struct wcifsnd *w, long long now) {
     if (w->fd >= 0) { close(w->fd); w->fd = -1; }
+    if (w->inspection.group) tc_child_stop(&w->inspection, now, 1);
     if (w->phase == WC_STOPPING) return;
     if (w->child > 0) {
         (void)kill(w->child, SIGTERM);
@@ -95,6 +101,7 @@ static void fail(struct wcifsnd *w, const char *why, long long now) {
 void wcifsnd_init(struct wcifsnd *w, const char *name) {
     size_t i;
     memset(w, 0, sizeof(*w)); w->fd = -1; w->active_since = -1;
+    w->inspection.lifetime = w->inspection.output = -1;
     snprintf(w->name, sizeof(w->name), "%s", name);
     for (i = 0; w->name[i]; i++) w->name[i] = toupper((unsigned char)w->name[i]);
     if (!strcmp(w->name, "WORKGROUP"))
@@ -128,6 +135,12 @@ void wcifsnd_apply_plan(struct wcifsnd *w, const struct device_plan *p, long lon
 }
 
 void wcifsnd_prepare(struct wcifsnd *w, fd_set *reads, int *maxfd, long long *deadline) {
+    if (w->inspection.group) {
+        tc_child_prepare(&w->inspection, reads, maxfd, deadline);
+        /* A retry cannot start until the old inspection has exited. Its
+         * expired wake must not turn the shared discovery select into a spin. */
+        if (w->phase == WC_OFF) return;
+    }
     if (w->fd >= 0 && w->sent && w->phase == WC_REGISTERING) {
         FD_SET(w->fd, reads); if (w->fd > *maxfd) *maxfd = w->fd;
     }
@@ -178,16 +191,56 @@ static int ready_socket(struct wcifsnd *w) {
     return connect(w->fd, (struct sockaddr *)&a, sizeof(a)) ? -1 : 1;
 }
 
+static int observe_child(struct wcifsnd *w, long long now) {
+    int status;
+    pid_t child = w->child, got;
+    char reason[96];
+    if (child <= 0) return 0;
+    got = waitpid(child, &status, WNOHANG);
+    if (got == 0 || (got < 0 && errno == EINTR)) return 0;
+    if (got < 0 && errno != ECHILD) {
+        timestamped_fprintf(stderr, "wcifsnd: waitpid failed; cannot safely replace child\n");
+        return -1;
+    }
+    int stopping = w->phase == WC_STOPPING;
+    w->child = 0; w->phase = WC_OFF; w->wake = 0;
+    if (!stopping) {
+        if (got == child && WIFEXITED(status))
+            snprintf(reason, sizeof(reason), "child %ld exited with status %d", (long)child, WEXITSTATUS(status));
+        else if (got == child && WIFSIGNALED(status))
+            snprintf(reason, sizeof(reason), "child %ld killed by signal %d", (long)child, WTERMSIG(status));
+        else
+            snprintf(reason, sizeof(reason), "child %ld disappeared without wait status", (long)child);
+        fail(w, reason, now);
+    }
+    return 1;
+}
+
 int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
-    if (w->child > 0) {
-        int status;
-        pid_t got = waitpid(w->child, &status, WNOHANG);
-        if (got == w->child || (got < 0 && errno == ECHILD)) {
-            int stopping = w->phase == WC_STOPPING;
-            w->child = 0; w->phase = WC_OFF; w->wake = 0;
-            if (!stopping) fail(w, "child exited", now);
-        } else if (got < 0 && errno != EINTR) {
-            timestamped_fprintf(stderr, "wcifsnd: waitpid failed; cannot safely replace child\n");
+    if (observe_child(w, now) < 0) return -1;
+    if (w->inspection.group) {
+        if (tc_child_poll(&w->inspection, now)) {
+            int inspected = !w->inspection.stopping && tc_child_ok(&w->inspection);
+            int owned = 0;
+            if (inspected) {
+                w->inspection_output[w->inspection.used] = 0;
+                owned = tc_native_nbns_sockets_present(w->inspection_output, w->child, WCIFSND_PORT);
+            }
+            tc_child_close(&w->inspection);
+            if (w->phase == WC_INSPECTING) {
+                if (!inspected || !owned) {
+                    fail(w, inspected ? "native child does not own UDP 137/138/922" :
+                                        "native socket ownership inspection failed", now);
+                } else {
+                    if (observe_child(w, now) < 0) return -1;
+                    if (w->phase == WC_INSPECTING) {
+                        w->phase = WC_REGISTERING; w->deadline = now + WCIFSND_REPLY_MS;
+                        w->wake = now; request_name(w);
+                    }
+                }
+            }
+        } else if (now >= w->inspection_limit) {
+            timestamped_fprintf(stderr, "wcifsnd: native socket inspection did not stop; replacing discovery generation\n");
             return -1;
         }
     }
@@ -202,7 +255,7 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
             w->wake = now + (1000LL << w->failures);
             timestamped_fprintf(stderr, "wcifsnd: retry in %lld ms\n", w->wake - now);
         }
-        if (w->desired && w->validated && now >= w->wake) spawn_child(w, now);
+        if (!w->inspection.group && w->desired && w->validated && now >= w->wake) spawn_child(w, now);
         return 0;
     }
     if (w->phase == WC_STOPPING) {
@@ -224,9 +277,22 @@ int wcifsnd_dispatch(struct wcifsnd *w, const fd_set *reads, long long now) {
         }
         w->wake = now + 100;
         if (!ready) return 0;
-        w->phase = WC_REGISTERING; w->deadline = now + WCIFSND_REPLY_MS;
-        request_name(w);
+        /* Inspect once in our process group without blocking Bonjour's loop.
+         * A bound control port alone may belong to ACPd's wcifsnd. */
+        char pid[32];
+        char *argv[] = {TC_FSTAT_PATH, "-p", pid, NULL};
+        snprintf(pid, sizeof(pid), "%ld", (long)w->child);
+        if (tc_command_exec(&w->inspection, argv, w->inspection_output,
+                            sizeof(w->inspection_output) - 1)) {
+            fail(w, "native socket ownership inspection failed", now);
+            return 0;
+        }
+        w->inspection.deadline = now + WCIFSND_INSPECT_MS;
+        w->inspection_limit = now + WCIFSND_INSPECT_MS + TC_CHILD_GRACE_MS + 3000;
+        w->phase = WC_INSPECTING;
+        return 0;
     }
+    if (w->phase == WC_INSPECTING) { w->wake = now + 100; return 0; }
     if (w->phase == WC_REGISTERING) {
         if (now >= w->deadline) { fail(w, "registration timed out", now); return 0; }
         if (!w->sent && now >= w->wake) {
@@ -265,9 +331,17 @@ void wcifsnd_shutdown(struct wcifsnd *w) {
     int i;
     w->desired = 0; w->failed = 0;
     stop_child(w, acp_monotonic_ms());
-    for (i = 0; w->child > 0 && i < 50; i++) {
+    for (i = 0; (w->child > 0 || w->inspection.group) && i < 50; i++) {
         struct timeval pause = {0, 100000};
         if (wcifsnd_dispatch(w, NULL, acp_monotonic_ms()) < 0) break;
-        if (w->child > 0) select(0, NULL, NULL, NULL, &pause);
+        if (w->child > 0 || w->inspection.group) select(0, NULL, NULL, NULL, &pause);
+    }
+    if (w->inspection.group && w->inspection.pid > 0) {
+        (void)kill(w->inspection.pid, SIGKILL);
+        for (i = 0; w->inspection.group && i < 20; i++) {
+            struct timeval pause = {0, 100000};
+            if (tc_child_poll(&w->inspection, acp_monotonic_ms())) tc_child_close(&w->inspection);
+            if (w->inspection.group) select(0, NULL, NULL, NULL, &pause);
+        }
     }
 }

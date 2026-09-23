@@ -56,13 +56,19 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ.get("TC_FAKE_WCIFSND_
 signal.signal(signal.SIGHUP, hup)
 record(f"START {os.getpid()}")
 record(f"OWNER {os.getppid()}")
+if mode_now() == "exit-7":
+    raise SystemExit(7)
 while running and mode_now() == "no-listener":
     time.sleep(0.1)
 if not running:
     record("STOP")
     raise SystemExit(0)
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(("127.0.0.1", PORT))
+try:
+    sock.bind(("127.0.0.1", PORT))
+except OSError:
+    record("BIND_FAILED")
+    raise
 sock.settimeout(0.1)
 adds = 0
 while running:

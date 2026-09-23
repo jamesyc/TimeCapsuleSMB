@@ -4,9 +4,6 @@
 #ifndef TC_PS_PATH
 #define TC_PS_PATH "/bin/ps"
 #endif
-#ifndef TC_FSTAT_PATH
-#define TC_FSTAT_PATH "/usr/bin/fstat"
-#endif
 
 static int argument(const char *command, const char *text) {
     size_t length = strlen(text);
@@ -159,6 +156,32 @@ static int process_fstat(pid_t pid, char *buffer, size_t buffer_size) {
     char *argv[] = {TC_FSTAT_PATH, "-p", number, NULL};
     snprintf(number, sizeof(number), "%ld", (long)pid);
     return tc_command_capture(argv, buffer, buffer_size, 5);
+}
+int tc_native_nbns_sockets_present(const char *text, pid_t pid, unsigned control_port) {
+    unsigned found = 0;
+    while (*text) {
+        const char *end = strchr(text, '\n');
+        size_t length = end ? (size_t)(end - text) : strlen(text);
+        char line[2048], *endpoint;
+        long owner;
+        int offset = 0;
+        if (length >= sizeof(line)) return 0;
+        memcpy(line, text, length);
+        line[length] = 0;
+        text += length + (end != NULL);
+        if (sscanf(line, "%*s %*s %ld %*s %n", &owner, &offset) != 1 ||
+            !offset || owner != (long)pid || !strstr(line + offset, "internet dgram udp ") ||
+            strstr(line, "<->") || strstr(line, "-->")) continue;
+        endpoint = line + strlen(line);
+        while (endpoint > line && isspace((unsigned char)endpoint[-1])) *--endpoint = 0;
+        while (endpoint > line && !isspace((unsigned char)endpoint[-1])) endpoint--;
+        if (!strcmp(endpoint, "*:137") || !strcmp(endpoint, "0.0.0.0:137")) found |= 1;
+        if (!strcmp(endpoint, "*:138") || !strcmp(endpoint, "0.0.0.0:138")) found |= 2;
+        char control[32];
+        snprintf(control, sizeof(control), "*:%u", control_port);
+        if (!strcmp(endpoint, control)) found |= 4;
+    }
+    return found == 7;
 }
 int tc_process_listener(pid_t pid, unsigned port, int *listening) {
     char buffer[32768];

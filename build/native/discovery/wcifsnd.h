@@ -1,19 +1,22 @@
 #ifndef TC_WCIFSND_H
 #define TC_WCIFSND_H
 #include "../common/plan.h"
+#include "../common/process.h"
 
 /* Names belong to this child generation, not to the UDP client connection.
  * Never retransmit an accepted add: Apple's registrations are refcounted. */
-enum wcifsnd_phase { WC_OFF, WC_STARTING, WC_REGISTERING, WC_ACTIVE, WC_STOPPING };
+enum wcifsnd_phase { WC_OFF, WC_STARTING, WC_INSPECTING, WC_REGISTERING, WC_ACTIVE, WC_STOPPING };
 struct wcifsnd {
     enum wcifsnd_phase phase;
     pid_t child;
+    struct tc_child inspection;
     int fd, desired, validated, failed, killed, sent, record;
     unsigned failures;
     uint16_t transaction;
-    long long deadline, wake, active_since;
+    long long deadline, wake, active_since, inspection_limit;
     char name[16];
     unsigned char request[68];
+    char inspection_output[4096];
 };
 void wcifsnd_init(struct wcifsnd *w, const char *name);
 void wcifsnd_apply_plan(struct wcifsnd *w, const struct device_plan *plan, long long now);

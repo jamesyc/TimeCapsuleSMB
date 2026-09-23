@@ -1,5 +1,10 @@
 #include "../../../build/native/discovery/wcifsnd.c"
 
+int tc_native_nbns_sockets_present(const char *text, pid_t pid, unsigned control_port) {
+    (void)text; (void)pid; (void)control_port;
+    return 1;
+}
+
 static void hex(const unsigned char *p, size_t n) {
     size_t i;
     for (i = 0; i < n; i++) printf("%02x", p[i]);
