@@ -61,6 +61,48 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertEqual(runtimeState?.verified, false)
     }
 
+    func testDeployResultUsesCurrentOperationIdentityWhenPriorDeployExists() throws {
+        var profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        var prior = testDeployState(startedAt: Date(timeIntervalSince1970: 100))
+        prior.operationID = "prior-operation"
+        profile.lastDeployState = prior
+        let operation = ActiveOperation(operation: "deploy", profileID: profile.id, context: nil)
+        let finishedAt = Date(timeIntervalSince1970: 200)
+        let result = try testDeployResultPayload().decode(DeployResultPayload.self)
+
+        let succeeded = DeviceDashboardSnapshotMapper.succeededDeploySnapshots(
+            operation: operation,
+            profile: profile,
+            result: result,
+            payloadFamily: "netbsd6_samba4",
+            stage: nil,
+            finishedAt: finishedAt
+        )
+        let failed = DeviceDashboardSnapshotMapper.failedDeploySnapshots(
+            operation: operation,
+            profile: profile,
+            stage: nil,
+            payloadFamily: "netbsd6_samba4",
+            error: nil,
+            failedAt: finishedAt
+        )
+        XCTAssertEqual(succeeded.deployState.operationID, operation.id.uuidString)
+        XCTAssertEqual(succeeded.deployState.startedAt, finishedAt)
+        XCTAssertEqual(failed?.deployState.operationID, operation.id.uuidString)
+        XCTAssertEqual(failed?.deployState.startedAt, finishedAt)
+
+        profile.lastDeployState?.operationID = operation.id.uuidString
+        let sameOperation = DeviceDashboardSnapshotMapper.succeededDeploySnapshots(
+            operation: operation,
+            profile: profile,
+            result: result,
+            payloadFamily: "netbsd6_samba4",
+            stage: nil,
+            finishedAt: finishedAt
+        )
+        XCTAssertEqual(sameOperation.deployState.startedAt, prior.startedAt)
+    }
+
     private func makeDoctorSummary(checks: [JSONValue]) throws -> DoctorSummary {
         DoctorSummary(payload: try testDoctorPayload(checks: checks).decode(DoctorPayload.self))
     }

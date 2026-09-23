@@ -343,7 +343,8 @@ def test_rsync_is_owned_then_drained_before_its_ram_files_are_removed(manager):
     assert rsync['ppid']==process.pid and rsync['group']==rsync['pid']
     assert rsync['args'][:2]==['--daemon','--no-detach']
     (root/'config').write_text('TELEMETRY=0\nRSYNC_ENABLED=0\n');process.send_signal(signal.SIGHUP)
-    wait(lambda rows:any(e['role']=='rsync' and e['kind']=='stop' for e in rows) and not (root/'ram/sbin/rsync').exists())
+    wait(lambda rows:any(e['role']=='rsync' and e['kind']=='stop' for e in rows)
+         and not (root/'ram/sbin/rsync').exists() and not (root/'ram/etc/rsyncd.conf').exists())
     assert not (root/'ram/etc/rsyncd.conf').exists()
     with pytest.raises(ProcessLookupError):os.kill(rsync['pid'],0)
 

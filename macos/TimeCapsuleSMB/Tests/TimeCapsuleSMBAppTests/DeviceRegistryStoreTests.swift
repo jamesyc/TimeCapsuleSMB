@@ -44,6 +44,49 @@ final class DeviceRegistryStoreTests: XCTestCase {
         )
     }
 
+    func testLateProgressCannotOverwriteCompletedDeployButNewOperationCanStart() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let profile = try await store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        var completed = testDeployState(status: .succeeded)
+        completed.operationID = "completed-operation"
+        await store.updateInstallOperationState(
+            deployState: completed,
+            runtimeState: testRuntimeState(state: .installedVerified),
+            for: profile.id
+        )
+
+        var lateProgress = testDeployState(status: .deploying, finishedAt: nil, verified: nil)
+        lateProgress.operationID = completed.operationID
+        let installing = testRuntimeState(state: .installing, verified: nil)
+        await store.updateInstallOperationState(
+            deployState: lateProgress,
+            runtimeState: installing,
+            for: profile.id
+        )
+        XCTAssertEqual(store.profile(id: profile.id)?.lastDeployState?.status, .succeeded)
+        XCTAssertEqual(store.profile(id: profile.id)?.runtimeState?.state, .installedVerified)
+
+        let reloaded = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await reloaded.load()
+        XCTAssertEqual(reloaded.profile(id: profile.id)?.lastDeployState?.status, .succeeded)
+
+        lateProgress.operationID = "next-operation"
+        await store.updateInstallOperationState(
+            deployState: lateProgress,
+            runtimeState: installing,
+            for: profile.id
+        )
+        XCTAssertEqual(store.profile(id: profile.id)?.lastDeployState?.status, .deploying)
+        XCTAssertEqual(store.profile(id: profile.id)?.runtimeState?.state, .installing)
+    }
+
     func testCorruptRegistryEntersFailedStateWithoutDeletingFile() async throws {
         let temp = try TemporaryDirectory()
         let registryURL = temp.url.appendingPathComponent("devices.json")

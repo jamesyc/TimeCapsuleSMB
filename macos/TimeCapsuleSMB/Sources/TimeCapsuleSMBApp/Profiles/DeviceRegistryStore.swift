@@ -530,6 +530,14 @@ private actor DeviceRegistryRepository {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
+        if let operationID = deployState.operationID,
+           let current = profiles[index].lastDeployState,
+           current.operationID == operationID,
+           !current.status.isInProgress,
+           deployState.status.isInProgress {
+            // Async stage/start writes must not undo this operation's result.
+            return nil
+        }
         var updatedProfiles = profiles
         updatedProfiles[index].lastDeployState = deployState
         updatedProfiles[index].runtimeState = runtimeState

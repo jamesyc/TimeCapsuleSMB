@@ -171,13 +171,14 @@ enum DeviceDashboardSnapshotMapper {
         error: BackendErrorViewModel?,
         failedAt: Date
     ) -> (deployState: DeviceDeployStateSnapshot, runtimeState: DeviceRuntimeStateSnapshot)? {
-        let current = profile?.lastDeployState
+        let current = profile?.lastDeployState?.operationID == operation.id.uuidString
+            ? profile?.lastDeployState : nil
         let errorCode = error?.code
         let errorMessage = error?.message ?? L10n.string("install.state.deploy_failed")
         let recovery = error?.recovery.map(DeviceRecoverySnapshot.init)
         return (
             deployState: DeviceDeployStateSnapshot(
-                operationID: current?.operationID ?? operation.id.uuidString,
+                operationID: operation.id.uuidString,
                 startedAt: current?.startedAt ?? failedAt,
                 updatedAt: failedAt,
                 finishedAt: failedAt,
@@ -214,12 +215,14 @@ enum DeviceDashboardSnapshotMapper {
         stage: String?,
         finishedAt: Date
     ) -> (deployState: DeviceDeployStateSnapshot, runtimeState: DeviceRuntimeStateSnapshot) {
+        let current = profile.lastDeployState?.operationID == operation.id.uuidString
+            ? profile.lastDeployState : nil
         let runtimeState: DeviceRuntimeState = result.verified == true ? .installedVerified : .installedUnverified
         let summary = result.message ?? ""
         return (
             deployState: DeviceDeployStateSnapshot(
-                operationID: profile.lastDeployState?.operationID ?? operation.id.uuidString,
-                startedAt: profile.lastDeployState?.startedAt ?? finishedAt,
+                operationID: operation.id.uuidString,
+                startedAt: current?.startedAt ?? finishedAt,
                 updatedAt: finishedAt,
                 finishedAt: finishedAt,
                 status: .succeeded,
