@@ -170,7 +170,14 @@ class FakeDnssdDaemon:
                 if kind == "listen":
                     self._accept()
                 else:
-                    self._read(conn_id, key.fileobj)
+                    try:
+                        self._read(conn_id, key.fileobj)
+                    except ConnectionError:
+                        # A stopping registrant can reset its socket while we
+                        # read or reply. Keep serving the other connections.
+                        with self.lock:
+                            if conn_id in self._conns:
+                                self._close(conn_id, key.fileobj, record=True)
 
     def _accept(self):
         try:

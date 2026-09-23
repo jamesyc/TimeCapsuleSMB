@@ -59,7 +59,11 @@ jobs:
         run: |
           # Native children close descriptors up to the host soft limit.
           ulimit -n 256
-          python -m pytest tests/native tests/test_deploy_modules.py
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            python -m pytest -n 3 --dist worksteal tests/native tests/test_deploy_modules.py
+          else
+            python -m pytest tests/native tests/test_deploy_modules.py
+          fi
 
       - name: Run Ruff
         run: python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule

@@ -619,7 +619,7 @@ def test_acp_unavailable_fields_and_extra_output_preserve_normal_reporting(cycle
 def test_default_acp_deadline_allows_slow_success_and_stops_at_twenty_seconds(cycle, production_collector, acp_calls):
     _, state, _, _, env = cycle
     result = subprocess.run(telemetry_command(production_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'slow'},
-                            capture_output=True, timeout=12)
+                            capture_output=True, timeout=25)
     assert result.returncode == 0 and len(state['calls']) == 1
     state['calls'].clear()
     calls = acp_calls

@@ -129,37 +129,62 @@ def children(discovery):
     return [int(line.split()[1]) for line in event_lines(discovery.events) if line.startswith("START ")]
 
 
-def assert_reaped(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return
-    # A busy parallel suite can recycle the PID. Accept a different live
-    # process, but reject zombies even when ps has discarded their argv.
-    process = subprocess.run(["ps", "-p", str(pid), "-o", "stat=", "-o", "command="],
-                             capture_output=True, text=True)
-    row = process.stdout.strip()
-    assert not row.startswith("Z") and "fake_wcifsnd.py" not in row, row
+def assert_reaped(pid, owner_pid=None, timeout=1):
+    row = ""
+
+    def reaped():
+        nonlocal row
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        process = subprocess.run(["ps", "-p", str(pid), "-o", "ppid=", "-o", "stat=", "-o", "command="],
+                                 capture_output=True, text=True)
+        row = process.stdout.strip()
+        if not row:
+            return True  # Exited between kill(0) and ps.
+        parent, state, *command = row.split(maxsplit=2)
+        # A different parent means the original child was reaped and this PID
+        # was reused. Zombie argv alone cannot establish process identity.
+        if owner_pid is not None and int(parent) != owner_pid:
+            return True
+        return not state.startswith("Z") and "fake_wcifsnd.py" not in " ".join(command)
+
+    assert wait_for(reaped, timeout=timeout), row
 
 
-@pytest.mark.parametrize("missing,output,reaped", [
-    (True, "", True),
-    (False, "", True),  # Exited between kill(0) and ps.
-    (False, "S    python unrelated.py\n", True),  # Reused PID.
-    (False, "S    python fake_wcifsnd.py\n", False),
-    (False, "Z    <defunct>\n", False),  # macOS drops the argv.
-    (False, "Z+   [python3] <defunct>\n", False),  # Linux zombie.
+@pytest.mark.parametrize("missing,output,owner_pid,reaped", [
+    (True, "", 123, True),
+    (False, "", 123, True),
+    (False, "456 S python unrelated.py\n", 123, True),
+    (False, "456 Z <defunct>\n", 123, True),  # Reused PID, including a zombie.
+    (False, "123 S python fake_wcifsnd.py\n", 123, False),
+    (False, "123 Z <defunct>\n", 123, False),  # macOS drops the argv.
+    (False, "123 Z+ [python3] <defunct>\n", 123, False),  # Linux zombie.
+    (False, "456 Z <defunct>\n", None, False),  # No owner to disambiguate shutdown.
 ])
-def test_assert_reaped_distinguishes_gone_reused_live_and_zombie_pids(missing, output, reaped):
+def test_assert_reaped_distinguishes_gone_reused_live_and_zombie_pids(missing, output, owner_pid, reaped):
     with mock.patch.object(os, "kill", side_effect=ProcessLookupError if missing else None), \
          mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
              [], 0 if output else 1, stdout=output, stderr="")) as ps:
         if reaped:
-            assert_reaped(12345)
+            assert_reaped(12345, owner_pid, timeout=0.05)
         else:
             with pytest.raises(AssertionError):
-                assert_reaped(12345)
-        assert ps.call_count == (0 if missing else 1)
+                assert_reaped(12345, owner_pid, timeout=0.05)
+        if missing:
+            assert ps.call_count == 0
+        else:
+            assert ps.call_count >= 1
+
+
+def test_assert_reaped_waits_for_transient_zombie():
+    outputs = ["123 Z <defunct>\n", ""]
+    with mock.patch.object(os, "kill"), mock.patch.object(subprocess, "run", side_effect=[
+        subprocess.CompletedProcess([], 0, stdout=output, stderr="") for output in outputs
+    ]) as ps, mock.patch(f"{__name__}.wait_for", side_effect=lambda predicate, timeout: predicate() or predicate()):
+        assert_reaped(12345, 123, timeout=0.1)
+        assert ps.call_count == 2
 
 
 def bonjour_connections(daemon):
@@ -236,7 +261,7 @@ def test_startup_hup_ipv4_loss_and_child_death_lifecycle(rig, dnssd):
         os.kill(child, signal.SIGKILL)
         assert wait_for(lambda: len(children(discovery)) == 3, timeout=15)
         assert wait_for(lambda: len(adds(discovery)) == 9)
-        assert_reaped(child)
+        assert_reaped(child, discovery.proc.pid)
         assert discovery.proc.poll() is None
     finally:
         discovery.stop()
@@ -268,7 +293,7 @@ def test_failed_child_retries_without_withdrawing_bonjour(rig, dnssd, mode, requ
         connections = bonjour_connections(dnssd)
         assert wait_for(lambda: len(children(discovery)) >= 2, timeout=20)
         first = children(discovery)[0]
-        assert_reaped(first)
+        assert_reaped(first, discovery.proc.pid)
         # Apple keeps accepted adds even after client exit. Every uncertain
         # request is sent once, then the native child is discarded before retry.
         first_events = event_lines(discovery.events)
@@ -339,7 +364,7 @@ def test_failed_term_ignoring_child_is_reaped_before_retry(rig, dnssd):
     try:
         connections = bonjour_connections(dnssd)
         assert wait_for(lambda: len(children(discovery)) == 2, timeout=15)
-        assert_reaped(children(discovery)[0])
+        assert_reaped(children(discovery)[0], discovery.proc.pid)
         assert_bonjour_unchanged(discovery, dnssd, connections)
         discovery.mode.write_text('success')
         assert wait_for(lambda: 'HUP' in event_lines(discovery.events), timeout=20)
@@ -403,7 +428,7 @@ def test_repeated_child_death_preserves_bonjour_and_processes_callbacks(rig, dns
                 # absent. Apple can rename its shared default instance then.
                 dnssd.rename_default('Renamed Capsule')
             assert wait_for(lambda: len(children(discovery)) == generation + 1, timeout=20)
-            assert_reaped(old)
+            assert_reaped(old, discovery.proc.pid)
             assert_bonjour_unchanged(discovery, dnssd, connections)
         assert wait_for(lambda: len(adds(discovery)) == 12)
     finally:
@@ -457,7 +482,7 @@ def test_retry_waits_for_valid_facts_without_dropping_bonjour(rig, dnssd):
         old = children(discovery)[0]
         os.kill(old, signal.SIGKILL)
         time.sleep(3)  # The retry deadline expires, but startup is not eligible.
-        assert_reaped(old)
+        assert_reaped(old, discovery.proc.pid)
         assert children(discovery) == [old]
         assert_bonjour_unchanged(discovery, dnssd, connections)
         discovery.replace(NAT_OK)
