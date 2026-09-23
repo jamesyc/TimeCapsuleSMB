@@ -89,20 +89,22 @@ class ReachabilityTests(unittest.TestCase):
             tcp_calls.append((host, port))
             return None
 
-        with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
-            with mock.patch(
-                "timecapsulesmb.services.reachability.subprocess.run",
-                return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
-            ):
-                with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
-                    with self.ssh_auth_succeeds():
-                        result = reachability.run_reachability(
-                            config,
-                            {"smb_hosts": ["capsule.local:445"]},
-                            password="",
-                        )
+        with mock.patch("timecapsulesmb.services.reachability.resolve_host_ips", return_value=("10.0.0.2",)) as resolve:
+            with mock.patch("timecapsulesmb.services.reachability.shutil.which", return_value="/sbin/ping"):
+                with mock.patch(
+                    "timecapsulesmb.services.reachability.subprocess.run",
+                    return_value=subprocess.CompletedProcess(["ping"], 0, stderr=b""),
+                ):
+                    with mock.patch("timecapsulesmb.services.reachability.tcp_connect_error", side_effect=tcp):
+                        with self.ssh_auth_succeeds():
+                            result = reachability.run_reachability(
+                                config,
+                                {"smb_hosts": ["capsule.local:445"]},
+                                password="",
+                            )
 
         self.assertEqual(result.status, "reachable")
+        resolve.assert_called_once_with("capsule.local")
         self.assertIn(("10.0.0.2", 22), tcp_calls)
         self.assertIn(("capsule.local", 445), tcp_calls)
 

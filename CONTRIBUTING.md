@@ -23,6 +23,10 @@ For a full local verification run, prefer:
 make test-parallel
 ```
 
+The first Make test run installs the repo-local Python dependencies. Later runs
+reuse them until `pyproject.toml` or `requirements.txt` changes. Run
+`make -B install` to refresh dependencies explicitly.
+
 Use single-process pytest for focused debugging when xdist makes a failure harder to inspect:
 
 ```bash

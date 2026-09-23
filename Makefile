@@ -11,7 +11,7 @@
 #
 # Targets:
 #   make venv                    - create local virtualenv at .venv
-#   make install                 - install Python dependencies into .venv
+#   make install                 - install Python dependencies when inputs change
 #   make lint                    - run Ruff against Python sources and tests
 #   make test                    - run C compile checks and Python pytest suite
 #   make test-parallel           - run C compile checks and pytest-xdist suite
@@ -30,27 +30,35 @@ VENVDIR := .venv
 PYTHON := python3
 PIP := $(VENVDIR)/bin/pip
 PY := $(VENVDIR)/bin/python
+# Editable installs see source edits immediately; dependency inputs need pip again.
+DEPS_STAMP := $(VENVDIR)/.deps-installed
 
-venv:
+$(PY):
 	$(PYTHON) -m venv $(VENVDIR)
+
+venv: $(PY)
 	@echo "Run: source $(VENVDIR)/bin/activate"
 
-install: venv
+$(DEPS_STAMP): $(PY) pyproject.toml requirements.txt
 	$(PIP) install -U pip
 	$(PIP) install -r requirements.txt
 	$(PIP) install -e ".[dev]"
+	@touch $@
+
+install: $(DEPS_STAMP)
 
 lint: install
 	$(PY) -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
 
 test: install test-c
-	$(PY) -m pytest
+	@# Native test children close descriptors up to the host soft limit, which can exceed a million.
+	ulimit -n 256; $(PY) -m pytest
 
 test-parallel: install test-c
-	$(PY) -m pytest -n auto --dist loadfile
+	ulimit -n 256; $(PY) -m pytest -n auto --dist worksteal
 
 coverage: install
-	$(PY) -m coverage run -m pytest
+	ulimit -n 256; $(PY) -m coverage run -m pytest
 	$(PY) -m coverage report
 
 coverage-native:

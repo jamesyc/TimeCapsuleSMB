@@ -320,6 +320,16 @@ class CheckTests(unittest.TestCase):
                     return_value=RouteSelection("unknown"),
                 )
             )
+            # Most Doctor cases supply Bonjour records and do not exercise DNS.
+            # Keep those cases independent of the host's .local resolver while
+            # DNS-specific cases still exercise their patched getaddrinfo calls.
+            if "timecapsulesmb.core.net.socket.getaddrinfo" not in (extra_patches or {}):
+                mocks.resolve_host_ips = stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ips", return_value=())
+                )
+                mocks.resolve_bonjour_host_ips = stack.enter_context(
+                    mock.patch("timecapsulesmb.checks.bonjour.resolve_host_ips", return_value=())
+                )
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
                 setattr(mocks, f"extra_{index}", stack.enter_context(mock.patch(target, replacement, create=True)))
 
@@ -2596,22 +2606,24 @@ class CheckTests(unittest.TestCase):
             "authenticated SMB listing failed after 1 attempt(s): attempt 1 home.local: NT_STATUS_IO_TIMEOUT",
             {"attempts": [{"server": "home.local", "outcome": "error", "failure": "NT_STATUS_IO_TIMEOUT"}]},
         )
-        run = self.run_doctor_with_mocks(
-            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
-            smb_port=mock.Mock(status="PASS", message="445 ok"),
-            smb_instance=[],
-            smb_listing=connection_failure,
-            smbd_probe=mock.Mock(ready=True, detail="managed smbd is ready"),
-            mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
-            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
-            extra_patches={
-                "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
-                    return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
-                ),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
-                "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
-            },
-        )
+        with mock.patch("timecapsulesmb.checks.doctor_steps.time.sleep") as sleep:
+            run = self.run_doctor_with_mocks(
+                ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+                smb_port=mock.Mock(status="PASS", message="445 ok"),
+                smb_instance=[],
+                smb_listing=connection_failure,
+                smbd_probe=mock.Mock(ready=True, detail="managed smbd is ready"),
+                mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
+                run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n",
+                extra_patches={
+                    "timecapsulesmb.checks.doctor_steps.probe_manager_startup_age_conn": mock.Mock(
+                        return_value=ManagerStartupAgeProbeResult(41.0, "manager started 41s ago")
+                    ),
+                    "timecapsulesmb.checks.doctor_debug.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+                    "timecapsulesmb.checks.doctor_debug.read_runtime_ram_diagnostics_conn": mock.Mock(return_value="ram ok"),
+                },
+            )
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [10, 15])
 
         failures = [result for result in run.results if result.status == "FAIL"]
         self.assertEqual(len(failures), 1)

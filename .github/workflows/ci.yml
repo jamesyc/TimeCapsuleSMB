@@ -56,7 +56,10 @@ jobs:
         env:
           TC_NATIVE_SANITIZERS: "1"
           UBSAN_OPTIONS: "halt_on_error=1"
-        run: python -m pytest tests/native tests/test_deploy_modules.py
+        run: |
+          # Native children close descriptors up to the host soft limit.
+          ulimit -n 256
+          python -m pytest tests/native tests/test_deploy_modules.py
 
       - name: Run Ruff
         run: python -m ruff check src tests macos/TimeCapsuleSMB/tools tcapsule
@@ -65,7 +68,9 @@ jobs:
         run: python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py
 
       - name: Run full test suite
-        run: python -m pytest
+        run: |
+          ulimit -n 256
+          python -m pytest -n 4 --dist worksteal
 
   swift-test:
     name: Swift Tests (macOS)
