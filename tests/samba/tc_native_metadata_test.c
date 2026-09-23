@@ -1198,6 +1198,7 @@ static void test_resource_views(struct vfs_handle_struct *handle,
 		.stream_name = discard_const_p(char, ":AFP_Resource"),
 	};
 	struct stream_struct *streams = NULL;
+	struct readdir_attr_data attr = {0};
 	SMB_STRUCT_STAT sbuf = {0};
 	unsigned int num_streams = 0;
 	NTSTATUS status;
@@ -1225,6 +1226,33 @@ static void test_resource_views(struct vfs_handle_struct *handle,
 	CHECK(fruit_fstatat_rsrc(
 		      handle, &config, NULL, &stream_name, &sbuf, 0) == -1);
 	CHECK(errno == ENOENT);
+
+	config.readdir_attr_rsize = true;
+	reset_stores();
+	test_resource_size = 4096;
+	status = readdir_attr_macmeta(handle, smb_fname, &attr);
+	CHECK(NT_STATUS_IS_OK(status));
+	CHECK(attr.attr_data.aapl.rfork_size == 4096);
+	CHECK(strcmp(test_fstatat_name, "object/..namedfork/rsrc") == 0);
+
+	smb_fname->st.st_ex_mode = S_IFDIR | 0700;
+	reset_stores();
+	test_resource_size = 4096;
+	ZERO_STRUCT(attr);
+	status = readdir_attr_macmeta(handle, smb_fname, &attr);
+	CHECK(NT_STATUS_IS_OK(status));
+	CHECK(attr.attr_data.aapl.rfork_size == 0);
+	CHECK(test_fstatat_name[0] == '\0');
+
+	smb_fname->st.st_ex_mode = S_IFLNK | 0700;
+	reset_stores();
+	test_resource_size = 4096;
+	ZERO_STRUCT(attr);
+	status = readdir_attr_macmeta(handle, smb_fname, &attr);
+	CHECK(NT_STATUS_IS_OK(status));
+	CHECK(attr.attr_data.aapl.rfork_size == 0);
+	CHECK(test_fstatat_name[0] == '\0');
+	smb_fname->st.st_ex_mode = S_IFREG | 0600;
 }
 
 int main(int argc, char **argv)

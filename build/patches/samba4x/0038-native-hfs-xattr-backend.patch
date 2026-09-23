@@ -592,7 +592,7 @@ index 80c1510..1e46958 100644
  	if (S_ISREG(smb_fname->st.st_ex_mode)) {
  		/* finder_type */
  		memcpy(&attr_data->attr_data.aapl.finder_info[0],
-@@ -1367,6 +1372,44 @@ static uint64_t readdir_attr_rfork_size_stream(
+@@ -1367,6 +1372,49 @@ static uint64_t readdir_attr_rfork_size_stream(
  	return rfork_size;
  }
  
@@ -624,6 +624,11 @@ index 80c1510..1e46958 100644
 +	const struct smb_filename *smb_fname)
 +{
 +	SMB_STRUCT_STAT st = {0};
++
++	/* HFS warns when a directory is probed for a named resource fork. */
++	if (!S_ISREG(smb_fname->st.st_ex_mode)) {
++		return 0;
++	}
 +
 +	if (tc_native_rsrc_statat(
 +			handle, handle->conn->cwd_fsp, smb_fname, &st, 0) != 0 ||
