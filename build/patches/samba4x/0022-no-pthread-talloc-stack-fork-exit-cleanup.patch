@@ -1,5 +1,5 @@
 diff --git a/lib/util/talloc_stack.c b/lib/util/talloc_stack.c
-index 0148b11..5f62932 100644
+index fbad185..818dd2d 100644
 --- a/lib/util/talloc_stack.c
 +++ b/lib/util/talloc_stack.c
 @@ -92,7 +92,9 @@ static void talloc_stackframe_init(void)
@@ -13,13 +13,15 @@ index 0148b11..5f62932 100644
  }
  
  static void talloc_stackframe_init(void)
-@@ -159,6 +161,45 @@ static struct talloc_stackframe *talloc_stackframe_get(void)
+@@ -156,12 +158,77 @@ static struct talloc_stackframe *talloc_stackframe_get(void)
  	return ts;
  }
  
 +void talloc_stackframe_reinit_after_fork(void)
 +{
 +#ifndef HAVE_PTHREAD
++	struct talloc_stackframe *ts = global_ts;
++
 +	/*
 +	 * The appliance build intentionally removes pthread support. In that
 +	 * mode Samba stores the talloc stack in process-global state instead
@@ -27,12 +29,17 @@ index 0148b11..5f62932 100644
 +	 * active event-loop stack tracking even though the parent loop will
 +	 * never finish in the child.
 +	 *
-+	 * Drop only the stack tracking. The copied parent allocations are
-+	 * process-private after fork and will be reclaimed when the child
-+	 * exits. Code that later needs a talloc stack will create a fresh one
-+	 * in the child.
++	 * Keep the tracker itself: an inherited frame can still be freed after
++	 * this reset, and its talloc_pop destructor needs a valid tracker. The
++	 * copied allocations remain process-private and are reclaimed when the
++	 * child exits; only the parent's active stack entries are forgotten.
 +	 */
-+	global_ts = NULL;
++	if (ts == NULL) {
++		return;
++	}
++	while (ts->talloc_stacksize > 0) {
++		ts->talloc_stack[--ts->talloc_stacksize] = NULL;
++	}
 +#endif
 +}
 +
@@ -59,6 +66,31 @@ index 0148b11..5f62932 100644
  static int talloc_pop(TALLOC_CTX *frame)
  {
  	struct talloc_stackframe *ts = talloc_stackframe_get_existing();
+ 	size_t blocks;
+ 	int i;
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * A copied parent frame can outlive the fork reset. Freeing it must not
++	 * pop frames subsequently created by this child, even if they exist now.
++	 * Talloc will free the old frame's children after this destructor returns.
++	 */
++	if (ts == NULL || ts->talloc_stacksize == 0) {
++		return 0;
++	}
++	for (i = ts->talloc_stacksize - 1; i >= 0; i--) {
++		if (ts->talloc_stack[i] == frame) {
++			break;
++		}
++	}
++	if (i < 0) {
++		return 0;
++	}
++#endif
++
+ 	/* Catch lazy frame-freeing. */
+ 	if (ts->talloc_stack[ts->talloc_stacksize-1] != frame) {
+ 		DEBUG(0, ("Freed frame %s, expected %s.\n",
 diff --git a/lib/util/talloc_stack.h b/lib/util/talloc_stack.h
 index 89bf6ab..1f81655 100644
 --- a/lib/util/talloc_stack.h

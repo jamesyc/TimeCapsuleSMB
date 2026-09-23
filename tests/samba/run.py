@@ -26,7 +26,7 @@ AIO_CASES = (
     "sync_append", "sync_append_error", "sync_fsync", "sync_fsync_error",
     "queue", "cancel_queued", "cancel_active", "queued_fork_failure",
     "dispatch_failure", "allocation_failure", "response_failure",
-    "limits", "unlimited", "cleanup",
+    "limits", "unlimited", "cleanup", "fork_stack",
 )
 DURABLE_CASES = (
     "transition", "exhausted", "already_disconnected", "client_mismatch",

@@ -19,6 +19,7 @@ static bool oversized_reply;
 static pid_t workers[128];
 static size_t worker_count;
 static unsigned destructors;
+static unsigned inherited_destructors;
 
 static pid_t controlled_fork(void)
 {
@@ -33,6 +34,13 @@ static int mark_destroyed(int *marker)
 {
 	(void)marker;
 	destructors++;
+	return 0;
+}
+
+static int mark_inherited_destroyed(int *marker)
+{
+	(void)marker;
+	inherited_destructors++;
 	return 0;
 }
 
@@ -297,6 +305,50 @@ static void test_cleanup(struct vfs_handle_struct *h)
 	CHECK(list->num_children == 1 && list->cleanup_event != NULL);
 }
 
+static void test_fork_stackframes(TALLOC_CTX *root)
+{
+	TALLOC_CTX *inherited = talloc_stackframe();
+	int *marker = talloc_zero(inherited, int);
+	int mode;
+
+	CHECK(inherited != NULL && marker != NULL);
+	talloc_set_destructor(marker, mark_inherited_destroyed);
+	for (mode = 0; mode < 2; mode++) {
+		pid_t pid = fork();
+		int status;
+
+		CHECK(pid >= 0);
+		if (pid == 0) {
+			TALLOC_CTX *fresh = NULL;
+			TALLOC_CTX *nested = NULL;
+
+			alarm(15);
+			talloc_stackframe_reinit_after_fork();
+			CHECK(!talloc_stackframe_exists());
+			if (mode != 0) {
+				fresh = talloc_stackframe();
+				nested = talloc_stackframe();
+				CHECK(talloc_tos() == nested);
+			}
+			TALLOC_FREE(inherited);
+			CHECK(inherited_destructors == 1);
+			if (mode != 0) {
+				CHECK(talloc_tos() == nested);
+				TALLOC_FREE(nested);
+				CHECK(talloc_tos() == fresh);
+				TALLOC_FREE(fresh);
+			}
+			CHECK(!talloc_stackframe_exists());
+			_exit(0);
+		}
+		CHECK(waitpid(pid, &status, 0) == pid);
+		CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		CHECK(inherited_destructors == 0 && talloc_tos() == inherited);
+	}
+	TALLOC_FREE(inherited);
+	CHECK(inherited_destructors == 1 && talloc_tos() == root);
+}
+
 int main(int argc, char **argv)
 {
 	char path[] = "/tmp/tc-aio-test.XXXXXX";
@@ -323,6 +375,7 @@ int main(int argc, char **argv)
 	else if (strstr(argv[1], "failure")) test_failures(h, argv[1]);
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
+	else if (!strcmp(argv[1], "fork_stack")) test_fork_stackframes(frame);
 	else test_io(h, argv[1]);
 	CHECK(destructors == 0 && talloc_tos() == frame);
 	TALLOC_FREE(h);
