@@ -509,6 +509,9 @@ Second review follow-up (2026-09-24), smbd only:
   - NetBSD 4 LE: unit test passes from RAM; links suite 74/74 three times;
     manual_delete 121/121; Doctor passed.
   - pytest: 2270 passed.
+- Issue #304 review: the device suite gained its link shapes (links to `.`,
+  `..`, nothing, a directory and outside the tree; the `repair-xattrs` walk;
+  renames of each shape; `rm -rf`). It passed 87/87 on both LAN devices.
 
 | Lane | smbd bytes |
 | --- | ---: |

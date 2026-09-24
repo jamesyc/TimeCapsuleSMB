@@ -23,6 +23,7 @@ import urllib.parse
 import uuid
 
 from timecapsulesmb.core.config import DEFAULTS, parse_env_file
+from timecapsulesmb.repair_xattrs import RepairSummary, iter_scan_paths
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_input
 
 TEST_DIR = "__tc_links_test__"
@@ -141,8 +142,15 @@ def fixtures(device: Device) -> None:
         "ln -s t.txt link-file", "ln -s missing link-dangling", "ln -s sub/d link-dir",
         f"ln -s {d}/t.txt link-abs", "ln -s /etc/rc.conf link-outside", "ln -s ../t.txt rmdir-test/l",
     ] + [f"ln -s t.txt {shlex.quote('s' + name)}" for name in MAPPED_NAMES]
-    device.sh(f"rm -rf {d} && mkdir -p {d}/sub/d {d}/rmdir-test && cd {d} && echo hello-file > t.txt && "
-              + " && ".join(links))
+    # Issue #304's shapes: a walk over self, parent, dangling, directory and outside links, and one
+    # link of each shape to rename.
+    walk = ["echo a > walk/a.txt", "echo f > walk/sub/f", "ln -s . walk/.fcpcache", "ln -s .. walk/up",
+            "ln -s missing walk/dangling", "ln -s sub walk/dirlink", "ln -s ../t.txt walk/out"]
+    moves = ["echo t > moves/t.txt", "echo old > moves/existing", "ln -s t.txt moves/m-file",
+             "ln -s nowhere moves/m-dangling", "ln -s into moves/m-dir", "ln -s . moves/m-self",
+             "ln -s t.txt moves/m-over", "ln -s t.txt moves/m-across"]
+    device.sh(f"rm -rf {d} && mkdir -p {d}/sub/d {d}/rmdir-test {d}/walk/sub {d}/moves/into && cd {d} && "
+              "echo hello-file > t.txt && " + " && ".join(links + walk + moves))
     # A link an earlier release wrote over SMB: an XSym file on disk.
     device.put(f"{device.dir}/legacy", xsym("t.txt"))
 
@@ -418,6 +426,48 @@ def windows_checks(r: Results, device: Device) -> None:
         w.close()
 
 
+def mac_shape_checks(r: Results, device: Device, m: Path) -> None:
+    """Issue #304: links to ., .., nothing, a directory and outside the tree, walked, renamed and removed."""
+    walk, moves = m / "walk", m / "moves"
+    shapes = {".fcpcache": ".", "up": "..", "dangling": "missing", "dirlink": "sub", "out": "../t.txt"}
+    r.check("mac: self, parent, dangling, directory and outside links list as links",
+            lambda: all((walk / n).is_symlink() for n in shapes))
+    r.check("mac: readlink returns each of them verbatim",
+            lambda: all(os.readlink(walk / n) == t for n, t in shapes.items()))
+
+    def repair_walk() -> bool:
+        # The issue saw 20 paths for 9 objects: the walk entered .fcpcache -> . as a directory.
+        summary = RepairSummary()
+        seen = sorted(str(p.relative_to(walk.resolve())) for p, _ in iter_scan_paths(
+            walk, recursive=True, max_depth=None, include_hidden=True, include_time_machine=True,
+            include_directories=True, summary=summary))
+        return seen == ["a.txt", "sub", "sub/f"] and summary.skipped == len(shapes)
+
+    r.check("mac: repair-xattrs visits each object once and skips the links", repair_walk)
+    r.check("mac: find does not descend into a link to .", lambda: sorted(subprocess.run(
+        ["find", str(walk)], capture_output=True, text=True, timeout=60).stdout.splitlines()) == sorted(
+        [str(walk)] + [str(walk / n) for n in ("a.txt", "sub", "sub/f", *shapes)]))
+    # macOS renames with a plain open, not FILE_OPEN_REPARSE_POINT, whatever the link points at.
+    for src, dst, target in (("m-dangling", "m-dangling2", "nowhere"), ("m-dir", "m-dir2", "into"),
+                             ("m-self", "m-self2", "."), ("m-file", "into/m-file", "t.txt")):
+        r.check(f"mac: mv {src} to {dst} moves the link", lambda s=src, t=dst, g=target: (
+            os.rename(moves / s, moves / t), device.is_native_link(f"moves/{t}", g)
+            and device.absent(f"moves/{s}"))[1])
+    r.check("mac: mv -f a link over a file replaces the file", lambda: subprocess.run(
+        ["mv", "-f", str(moves / "m-over"), str(moves / "existing")], timeout=60).returncode == 0
+        and device.is_native_link("moves/existing", "t.txt") and device.absent("moves/m-over"))
+    r.check("mac: mv a link into another folder", lambda: (
+        os.rename(moves / "m-across", walk / "sub" / "across"), device.is_native_link("walk/sub/across", "t.txt"))[1])
+    os.symlink("t.txt", moves / "mac-made")
+    r.check("mac: mv a link this Mac just made", lambda: (
+        os.rename(moves / "mac-made", moves / "mac-moved"), device.is_native_link("moves/mac-moved", "t.txt"))[1])
+    r.check("mac: every move leaves the targets alone",
+            lambda: device.ls_l("moves/t.txt").startswith("-") and device.is_dir("moves/into"))
+    r.check("mac: rm -rf folders holding self, parent and outside links keeps what they point at", lambda: (
+        subprocess.run(["rm", "-rf", str(walk), str(moves)], timeout=120).returncode == 0
+        and device.absent("walk") and device.absent("moves") and device.ls_l("t.txt").startswith("-")))
+
+
 def afp_checks(r: Results, device: Device, m: Path, a: Path) -> None:
     os.symlink("t.txt", m / "smb-made")
     r.check("afp: a link made over SMB is a link over AFP", lambda: os.readlink(a / "smb-made") == "t.txt")
@@ -443,6 +493,7 @@ def main() -> int:
         mount("smb", device, smb)
         try:
             mac_checks(results, device, smb / TEST_DIR)
+            mac_shape_checks(results, device, smb / TEST_DIR)
             if args.afp:
                 mount("afp", device, afp)
                 try:
