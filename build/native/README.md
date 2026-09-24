@@ -75,8 +75,9 @@ the existing service executable, without a new PID or status file.
 
 Apple's mDNSResponder and afpserver remain alive; the AFP preference controls
 advertising only. Loopback diskd retains filesystem ownership. Discovery alone
-owns wcifsnd; controller failure or a returning wcifsfs conflict replaces that
-generation. See [runtime tests](../../tests/native/README.md).
+owns its wcifsnd child; the manager removes ACPd's competing wcifsnd and
+wcifsfs by PID without replacing a running discovery generation. See
+[runtime tests](../../tests/native/README.md).
 
 Telemetry creates only `/mnt/Memory/debug` and `/mnt/Memory/debug.sig`. It locks
 the existing `/mnt/Memory` directory to exclude concurrent cycles, including

@@ -370,32 +370,20 @@ static void pump_storage(struct manager *m, long long now) {
 }
 static void apply_audit(struct manager *m, long long now) {
     size_t i;
-    int conflict = 0, controllers = 0, diskd = 0, external = 0;
+    int diskd = 0, external = 0;
     struct stale_process stale[TC_PROCESS_MAX];
     size_t stale_count = 0;
     m->blocked = 0;
     const struct tc_process_table *table = &m->audit_result.table;
     for (i = 0; i < table->count; i++) {
-        if (table->processes[i].role == TC_PROC_DISCOVERY)
-            controllers++;
-        if (table->processes[i].role == TC_PROC_WCIFSFS)
-            conflict = 1;
-        /* ACPd can launch wcifsnd after our controller, even after wcifsfs
-         * was stopped. Local NBNS retries cannot clear that foreign owner's
-         * ports/names. Drain controllers first, then use orphan cleanup below;
-         * never interrupt a native child owned by our live discovery process. */
-        if (table->processes[i].role == TC_PROC_WCIFSND &&
-            table->processes[i].parent != m->discovery.child.pid) {
-            conflict = 1;
-            m->blocked |= BLOCK_DISCOVERY;
-            external = 1;
-        }
-        if (table->processes[i].role == TC_PROC_DISKD || table->processes[i].role == TC_PROC_DISKD_LOOPBACK)
-            diskd++;
-    }
-    for (i = 0; i < table->count; i++) {
         const struct tc_process_info *p = &table->processes[i];
-        int stop = p->role == TC_PROC_WCIFSFS || p->role == TC_PROC_DISKD;
+        /* Discovery verifies its own child's sockets before registering names.
+         * Clear only a foreign child; discovery can keep Bonjour alive
+         * and retry native NBNS locally without surrendering a working socket. */
+        int stop = p->role == TC_PROC_WCIFSFS || p->role == TC_PROC_DISKD ||
+                   (p->role == TC_PROC_WCIFSND && p->parent != m->discovery.child.pid);
+        if (p->role == TC_PROC_DISKD || p->role == TC_PROC_DISKD_LOOPBACK)
+            diskd++;
         if (p->role == TC_PROC_SMBD && p->group != m->smb.child.group)
             stop = 1;
         if (p->role == TC_PROC_RSYNC && p->group != m->rsync.child.group)
@@ -403,9 +391,6 @@ static void apply_audit(struct manager *m, long long now) {
         if (p->role == TC_PROC_DISCOVERY && p->pid != m->discovery.child.pid)
             stop = 1;
         if (p->role == TC_PROC_TELEMETRY && p->pid != m->telemetry.child.pid)
-            stop = 1;
-        /* Never kill native NBNS independently of its live controller. */
-        if (p->role == TC_PROC_WCIFSND && !controllers)
             stop = 1;
         if (stop) {
             size_t j;
@@ -432,11 +417,6 @@ static void apply_audit(struct manager *m, long long now) {
     }
     memcpy(m->stale, stale, stale_count * sizeof(stale[0]));
     m->stale_count = stale_count;
-    if (conflict) {
-        if (m->discovery.child.group && !m->discovery.requested_stop)
-            timestamped_fprintf(stderr, "manager: native discovery ownership conflict; resetting discovery\n");
-        stop_role(&m->discovery, now, 1);
-    }
     if (external) {
         m->audit_at = now + 1000;
     }

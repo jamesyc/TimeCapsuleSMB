@@ -389,22 +389,28 @@ def test_discovery_receives_exact_applied_names_devices_and_uuids_as_argv(manage
     assert not (root/'PWNED').exists()
 
 
-def test_native_cifs_reappearance_resets_discovery_but_keeps_samba(manager):
+@pytest.mark.parametrize('apple_roles', [('wcifsfs',), ('wcifsfs', 'wcifsnd')])
+def test_native_cifs_reappearance_keeps_discovery_and_samba(manager, apple_roles):
     root,start,events,wait,_,_=manager
     process=start()
     values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
     before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
-    native=subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(30)'],
-                            stdout=subprocess.PIPE,text=True,start_new_session=True)
-    assert native.stdout.readline().strip()=='ready'
+    stopped=len([e for e in values if e['role']=='discovery' and e['kind']=='stop'])
+    apple=[subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(30)'],
+                            stdout=subprocess.PIPE,text=True,start_new_session=True) for _ in apple_roles]
     try:
-        (root/'external-processes').write_text(f'{native.pid} 1 {native.pid} S wcifsfs /sbin/wcifsfs\n')
+        for child in apple:assert child.stdout.readline().strip()=='ready'
+        (root/'external-processes').write_text(''.join(
+            f'{child.pid} 1 {child.pid} S {role} /sbin/{role}\n' for child,role in zip(apple,apple_roles)))
         process.send_signal(signal.SIGHUP)
-        wait(lambda rows:native.poll() is not None and len([e for e in rows if e['role']=='discovery' and e['kind']=='start'])>before)
+        wait(lambda rows:all(child.poll() is not None for child in apple))
+        assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==before
+        assert len([e for e in events() if e['role']=='discovery' and e['kind']=='stop'])==stopped
         assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
     finally:
-        if native.poll() is None:native.kill()
-        native.wait()
+        for child in apple:
+            if child.poll() is None:child.kill()
+            child.wait()
 
 
 @pytest.mark.parametrize('owned', [False, True])
@@ -414,6 +420,7 @@ def test_native_nbns_audit_distinguishes_foreign_and_owned_children(manager, own
     values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
     controller=[e for e in values if e['role']=='discovery' and e['kind']=='start'][-1]
     before=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
+    stopped=len([e for e in values if e['role']=='discovery' and e['kind']=='stop'])
     native=subprocess.Popen([sys.executable,'-c','import time; print("ready",flush=True); time.sleep(60)'],
                             stdout=subprocess.PIPE,text=True,start_new_session=True)
     assert native.stdout.readline().strip()=='ready'
@@ -435,7 +442,35 @@ def test_native_nbns_audit_distinguishes_foreign_and_owned_children(manager, own
             assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==before
         else:
             process.send_signal(signal.SIGHUP)
-            wait(lambda rows:native.poll() is not None and len([e for e in rows if e['role']=='discovery' and e['kind']=='start'])>before)
+            wait(lambda rows:native.poll() is not None)
+        assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==before
+        assert len([e for e in events() if e['role']=='discovery' and e['kind']=='stop'])==stopped
+        assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
+    finally:
+        if native.poll() is None:native.kill()
+        native.wait()
+
+
+def test_term_resistant_foreign_wcifsnd_does_not_reset_discovery(manager):
+    root,start,events,wait,_,_=manager
+    process=start()
+    values=wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
+    starts=len([e for e in values if e['role']=='discovery' and e['kind']=='start'])
+    stops=len([e for e in values if e['role']=='discovery' and e['kind']=='stop'])
+    native=subprocess.Popen([sys.executable,'-c',
+                             'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print("ready",flush=True); time.sleep(60)'],
+                            stdout=subprocess.PIPE,text=True,start_new_session=True)
+    assert native.stdout.readline().strip()=='ready'
+    try:
+        (root/'external-processes').write_text(f'{native.pid} 1 {native.pid} S wcifsnd /sbin/wcifsnd\n')
+        (root/'record-ps').touch()
+        process.send_signal(signal.SIGHUP)
+        wait(lambda rows:sum(e['role']=='ps' for e in rows)>=2)
+        assert native.poll() is None
+        assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==starts
+        wait(lambda rows:native.poll() is not None,timeout=17)
+        assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==starts
+        assert len([e for e in events() if e['role']=='discovery' and e['kind']=='stop'])==stops
         assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
     finally:
         if native.poll() is None:native.kill()

@@ -55,6 +55,7 @@ The controller tests cover partial registration, deadline/reset arithmetic,
 validated-plan startup gating, disable/shutdown during retry, and escalation
 when the old child cannot be safely cleaned up. Device supervision verifies
 that repeated native child deaths preserve discovery, Bonjour, and an SMB handle.
-An ACPd-owned wcifsnd appearing after boot is an ownership conflict: the manager
-drains discovery before removing the foreign daemon. Audit tests distinguish
-that case from a healthy child owned by the managed discovery process.
+An ACPd-owned wcifsnd appearing after boot is removed by the manager while
+discovery and Bonjour remain running. A returning wcifsfs is stopped without
+resetting discovery. Audit tests distinguish those foreign processes from the
+healthy child owned by discovery and still clean an orphan after controller death.
