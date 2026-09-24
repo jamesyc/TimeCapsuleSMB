@@ -513,6 +513,9 @@ private actor DeviceRegistryRepository {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
+        guard !isStaleDeployProgress(snapshot, replacing: profiles[index].lastDeployState) else {
+            return nil
+        }
         var updatedProfiles = profiles
         updatedProfiles[index].lastDeployState = snapshot
         updatedProfiles[index].updatedAt = now()
@@ -530,12 +533,7 @@ private actor DeviceRegistryRepository {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
             return nil
         }
-        if let operationID = deployState.operationID,
-           let current = profiles[index].lastDeployState,
-           current.operationID == operationID,
-           !current.status.isInProgress,
-           deployState.status.isInProgress {
-            // Async stage/start writes must not undo this operation's result.
+        guard !isStaleDeployProgress(deployState, replacing: profiles[index].lastDeployState) else {
             return nil
         }
         var updatedProfiles = profiles
@@ -548,6 +546,18 @@ private actor DeviceRegistryRepository {
         try persist(updatedProfiles)
         profiles = updatedProfiles
         return updatedProfiles
+    }
+
+    private func isStaleDeployProgress(
+        _ incoming: DeviceDeployStateSnapshot,
+        replacing current: DeviceDeployStateSnapshot?
+    ) -> Bool {
+        guard let operationID = incoming.operationID, let current else {
+            return false
+        }
+        // Async stage/start writes must not undo this operation's result.
+        return current.operationID == operationID &&
+            !current.status.isInProgress && incoming.status.isInProgress
     }
 
     func updateRuntimeState(_ snapshot: DeviceRuntimeStateSnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {

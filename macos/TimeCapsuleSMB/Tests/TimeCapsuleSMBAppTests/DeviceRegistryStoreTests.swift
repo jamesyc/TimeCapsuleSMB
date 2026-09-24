@@ -44,7 +44,7 @@ final class DeviceRegistryStoreTests: XCTestCase {
         )
     }
 
-    func testLateProgressCannotOverwriteCompletedDeployButNewOperationCanStart() async throws {
+    func testLateProgressCannotOverwriteCompletedDeployThroughEitherWritePath() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
         await store.load()
@@ -70,6 +70,7 @@ final class DeviceRegistryStoreTests: XCTestCase {
             runtimeState: installing,
             for: profile.id
         )
+        await store.updateDeployState(lateProgress, for: profile.id)
         XCTAssertEqual(store.profile(id: profile.id)?.lastDeployState?.status, .succeeded)
         XCTAssertEqual(store.profile(id: profile.id)?.runtimeState?.state, .installedVerified)
 
@@ -78,6 +79,8 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.profile(id: profile.id)?.lastDeployState?.status, .succeeded)
 
         lateProgress.operationID = "next-operation"
+        await store.updateDeployState(lateProgress, for: profile.id)
+        XCTAssertEqual(store.profile(id: profile.id)?.lastDeployState?.status, .deploying)
         await store.updateInstallOperationState(
             deployState: lateProgress,
             runtimeState: installing,
