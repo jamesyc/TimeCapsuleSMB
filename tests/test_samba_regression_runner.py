@@ -99,6 +99,8 @@ def test_staged_targets_compile_current_fixtures_and_preserve_existing_rules(tmp
                 "STRING_REPLACE", "dbwrap", "xattr_tdb",
             ],
             "tc_xattr_migrate_test": ["smbd_base", "dbwrap", "xattr_tdb"],
+            # Includes vfs_catia.c, which maps names through STRING_REPLACE.
+            "tc_catia_links_test": ["smbd_base", "STRING_REPLACE"],
         }.get(name, ["smbd_base"])
         assert arguments["deps"].split() == expected_deps
         assert arguments["install"] is False

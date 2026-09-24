@@ -414,3 +414,80 @@ manifest hashes updated after the required delay.
 
 Every release image is static ARM ELF with the expected endianness; all
 artifact hashes match `artifact-manifest.json`. BE hardware was not tested.
+
+## Native symlinks, patch 0045 (2026-09-24)
+
+Patch 0045 keeps symlinks native on disk. It serves them to SMB clients as
+reparse points, and when a newly created XSym file or symlink reparse
+placeholder is closed, it replaces it with a native link. See `DETAIL.md`
+"Symbolic Links".
+
+- `tc_native_links_test` passed all 16 cases:
+  - on NetBSD 6, on the mounted HFS volume;
+  - on NetBSD 4 LE, run from `/mnt/Memory` with its working directory on HFS.
+    Run from the disk, the same image aborted in talloc, as documented above.
+
+  The cases include other clients replacing or recreating the name between the
+  conversion's steps, rollback on every failure, metadata carried over without
+  Finder info or resource forks, and the counted journal commits.
+- `tests.samba.links_device --afp` passed 73/73 on both LAN devices after
+  `tcapsule deploy`, three runs each:
+  - Links named with `: * ? " < > |` work from macOS.
+  - Windows, NFS and WSL symlink payloads become native links.
+  - FIFOs, sockets, `mklink /D` and Windows-only targets are refused, and
+    nothing is left behind.
+
+  `manual_delete` passed 121/121 on both devices, and Doctor passed on both.
+- The device suite found four bugs that the unit cases did not:
+  - catia had no `readlinkat`/`symlinkat` hooks;
+  - a NULL-size `FLISTXATTR` segfaulted smbd inside `vfs_acl_xattr`;
+  - macOS sends a zero-length write at offset 1067 right after creating a
+    link, which was refused;
+  - the test was missing from wafsamba's static allowlist.
+- HFS journal panic, `jnl: start_tr: active_tr is NULL`:
+  - Without a workaround, completed conversions left the device ready to panic.
+    The firmware records the panic in `/mnt/Flash/dmesg.panic`.
+  - A repeated cycle (smbd restart, then the device suite) panicked NetBSD 6
+    within one to three cycles.
+  - Bisecting with runtime switches showed that a completed conversion is
+    required. Pre-0045 smbd, xattrs only, and conversions that roll back gave no
+    panic in 4–6 cycles each. Synthetic syscall loops never reproduced it.
+  - Journal replay after one of these crashes overwrote the first 4 KiB of a
+    newly written smbd with an old symlink block.
+  - With the original unlinked only after `fd_close` and a `sync()` after each
+    conversion, 16 consecutive cycles passed (6 with the on-disk unit test)
+    without a panic. The same cycle is the release check for this code path.
+- NetBSD 4 BE was build and ELF validated only; the UK device was offline.
+
+| Lane | smbd bytes | Hardware validation |
+| --- | ---: | --- |
+| NetBSD 6 (NetBSD 7 SDK) | 10,230,852 | Passed |
+| NetBSD 4 LE | 10,243,348 | Passed |
+| NetBSD 4 BE | 10,242,216 | Build/ELF validation only |
+
+All three lanes were built from sources that matched the exported patch, with
+the existing SDKs; no toolchain was rebuilt. The stripped binaries were copied
+back after the required delay, and `artifact-manifest.json` was updated.
+
+Review follow-up (2026-09-24):
+- The rollback also commits the journal before it removes the link it made.
+- The generated `smb.conf` vetoes `.tc-xsym.*`, with `delete veto files = yes`.
+- The device suite no longer waits for smbd sessions.
+- Changes to unit tests:
+  - `tc_native_links_test` counts the `sync()` calls on every outcome.
+  - New `tc_catia_links_test` covers the catia link hooks. It is a separate
+    binary because including `vfs_catia.c` made the combined test large enough
+    that four unrelated cases aborted in talloc when run from the HFS disk. They
+    passed from RAM, and the cause was not found.
+- Results:
+  - NetBSD 6: both tests pass from disk; the crash loop passed 6/6 cycles.
+  - NetBSD 4 LE: both tests pass from RAM.
+  - Both devices, after `tcapsule deploy`: links suite 73/73, manual_delete
+    121/121, Doctor passed. A leftover `.tc-xsym.*` is invisible over SMB, and
+    its folder deletes.
+
+| Lane | service bytes | smbd bytes |
+| --- | ---: | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 362,348 | 10,230,860 |
+| NetBSD 4 LE | 321,648 | 10,243,352 |
+| NetBSD 4 BE | 321,048 | 10,242,220 |

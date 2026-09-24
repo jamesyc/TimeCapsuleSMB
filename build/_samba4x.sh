@@ -658,7 +658,7 @@ configure_samba4x() {
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
         # Storage reload tests use the same static, no-pthread connection and
         # AIO teardown code as the shipped appliance smbd.
-        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test"
+        samba4x_nonshared_binaries="$samba4x_nonshared_binaries,tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test"
     fi
 
     set -- \
@@ -1185,7 +1185,7 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     fi
 
     if [ "$SAMBA4X_BUILD_REGRESSION_TESTS" = "1" ]; then
-        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test
+        PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=tc_aio_fork_test,tc_durable_reconnect_test,tc_streams_xattr_test,tc_native_metadata_test,tc_xattr_migrate_test,tc_storage_reload_test,tc_native_links_test,tc_catia_links_test
         # Debug information can dwarf the tests on these small appliances.
         # Keep the ordinary Waf outputs and upload separate stripped copies.
         for test_relative in \
@@ -1195,7 +1195,9 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
             source3/modules/tc_streams_xattr_test \
             source3/modules/tc_native_metadata_test \
             source3/modules/tc_xattr_migrate_test \
-            source3/modules/tc_storage_reload_test
+            source3/modules/tc_storage_reload_test \
+            source3/modules/tc_native_links_test \
+            source3/modules/tc_catia_links_test
         do
             test_binary="$SAMBA4X_SRC_DIR/bin/default/$test_relative"
             if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$test_binary" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then

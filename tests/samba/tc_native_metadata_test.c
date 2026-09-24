@@ -24,6 +24,11 @@ struct test_store {
 };
 
 static struct test_store native_store;
+/* Attributes of a symlink itself, reached by path (patch 0045). */
+static struct test_store link_store;
+static const char *link_store_path = "/share/link";
+static bool link_list_duplicates;
+static unsigned link_ops;
 static struct test_store fake_tdb;
 static unsigned native_gets;
 static unsigned native_sets;
@@ -68,6 +73,11 @@ static int test_primary_remove(void);
 
 static int test_xattr_flock(int fd, int operation)
 {
+	if (fd == -1) {
+		/* As the kernel does for a descriptor-less handle. */
+		errno = EBADF;
+		return -1;
+	}
 	CHECK(fd == 42);
 	if (operation == LOCK_EX) {
 		CHECK(native_lock_depth == 0);
@@ -119,6 +129,9 @@ static void reset_stores(void)
 	test_openat_dirfsp = NULL;
 	test_fstatat_name[0] = '\0';
 	test_fstatat_dirfsp = NULL;
+	ZERO_STRUCT(link_store);
+	link_list_duplicates = false;
+	link_ops = 0;
 	mutation_count = 0;
 	mutation_order[0] = '\0';
 	errno = 0;
@@ -134,6 +147,92 @@ static void seed_store(struct test_store *store,
 	snprintf(store->name, sizeof(store->name), "%s", name);
 	memcpy(store->data, data, size);
 	store->size = size;
+}
+
+static long test_native_syscall_376(const char *path,
+				    const char *name,
+				    const void *value,
+				    size_t size,
+				    int options)
+{
+	link_ops++;
+	CHECK(options == 0);
+	if (strcmp(path, link_store_path) != 0) {
+		errno = ENOENT;
+		return -1;
+	}
+	seed_store(&link_store, name, value, size);
+	/* NetBSD 4 returns the size written; the wrapper must report 0. */
+	return (long)size;
+}
+
+static long test_native_syscall_379(const char *path,
+				    const char *name,
+				    void *value,
+				    size_t size)
+{
+	link_ops++;
+	if (strcmp(path, link_store_path) != 0) {
+		errno = ENOENT;
+		return -1;
+	}
+	if (!link_store.exists || strcmp(link_store.name, name) != 0) {
+		errno = ENOATTR;
+		return -1;
+	}
+	if (value == NULL) {
+		return link_store.size;
+	}
+	if (size < link_store.size) {
+		errno = ERANGE;
+		return -1;
+	}
+	memcpy(value, link_store.data, link_store.size);
+	return link_store.size;
+}
+
+static long test_native_syscall_382(const char *path, char *list, size_t size)
+{
+	size_t one, required;
+
+	link_ops++;
+	if (strcmp(path, link_store_path) != 0) {
+		errno = ENOENT;
+		return -1;
+	}
+	if (!link_store.exists) {
+		return 0;
+	}
+	one = strlen(link_store.name) + 1;
+	/* NetBSD 6 lists an HFS attribute twice. */
+	required = link_list_duplicates ? 2 * one : one;
+	if (list == NULL) {
+		return required;
+	}
+	if (size < required) {
+		errno = ERANGE;
+		return -1;
+	}
+	memcpy(list, link_store.name, one);
+	if (link_list_duplicates) {
+		memcpy(list + one, link_store.name, one);
+	}
+	return required;
+}
+
+static long test_native_syscall_385(const char *path, const char *name)
+{
+	link_ops++;
+	if (strcmp(path, link_store_path) != 0) {
+		errno = ENOENT;
+		return -1;
+	}
+	if (!link_store.exists || strcmp(link_store.name, name) != 0) {
+		errno = ENOATTR;
+		return -1;
+	}
+	ZERO_STRUCT(link_store);
+	return 0;
 }
 
 static long test_native_syscall_377(int fd,
@@ -1255,6 +1354,84 @@ static void test_resource_views(struct vfs_handle_struct *handle,
 	smb_fname->st.st_ex_mode = S_IFREG | 0600;
 }
 
+static void test_link_xattrs(struct vfs_handle_struct *handle,
+			     connection_struct *conn,
+			     TALLOC_CTX *mem_ctx)
+{
+	struct xattr_tdb_config config = {.native_hfs = true};
+	struct smb_filename link_name = {
+		.base_name = discard_const_p(char, "link"),
+		.st = {.st_ex_mode = S_IFLNK | 0777},
+	};
+	struct smb_filename file_name = {
+		.base_name = discard_const_p(char, "link"),
+		.st = {.st_ex_mode = S_IFREG | 0600},
+	};
+	files_struct link = {.conn = conn, .fsp_name = &link_name};
+	files_struct pathref = {.conn = conn, .fsp_name = &file_name};
+	const char *stream = "user.DosStream.com.apple.provenance:$DATA";
+	const uint8_t value[] = {1, 2, 3, 4};
+	const uint8_t prov[] = {'p', 'v', 0};
+	char list[256];
+	uint8_t result[16] = {0};
+
+	/* Path ABI: act on the link, normalize both kernels' results. */
+	reset_stores();
+	CHECK(tc_airport_lsetxattr("/share/link", "user.t", value, sizeof(value), 0) == 0);
+	CHECK(tc_airport_lgetxattr("/share/link", "user.t", NULL, 0) == sizeof(value));
+	CHECK(tc_airport_lgetxattr("/share/link", "user.t", result, sizeof(result)) == sizeof(value));
+	CHECK(memcmp(result, value, sizeof(value)) == 0);
+	errno = 0;
+	CHECK(tc_airport_lsetxattr("/share/link", "user.t", value, sizeof(value), XATTR_CREATE) == -1);
+	CHECK(errno == EEXIST);
+	errno = 0;
+	CHECK(tc_airport_lsetxattr("/share/link", "user.u", value, sizeof(value), XATTR_REPLACE) == -1);
+	CHECK(errno == ENOATTR);
+	CHECK(tc_airport_lsetxattr("/share/link", "user.t", value, 2, XATTR_REPLACE) == 0);
+	CHECK(link_store.size == 2);
+	link_list_duplicates = true;
+	CHECK(tc_airport_llistxattr("/share/link", NULL, 0) == 7);
+	CHECK(tc_airport_llistxattr("/share/link", list, sizeof(list)) == 7);
+	CHECK(strcmp(list, "user.t") == 0);
+	errno = 0;
+	CHECK(tc_airport_llistxattr("/share/link", list, 3) == -1 && errno == ERANGE);
+	CHECK(tc_airport_lremovexattr("/share/link", "user.t") == 0);
+	CHECK(!link_store.exists);
+	CHECK(native_sets == 0 && native_gets == 0 && native_removes == 0);
+
+	/* xattr_tdb: a descriptor-less link uses its own path, never the fd path. */
+	handle->data = &config;
+	conn->connectpath = discard_const_p(char, "/share");
+	link.fh = fd_handle_create(mem_ctx);
+	pathref.fh = fd_handle_create(mem_ctx);
+	CHECK(link.fh != NULL && pathref.fh != NULL);
+	fsp_set_fd(&link, -1);
+	fsp_set_fd(&pathref, -1);
+	reset_stores();
+	CHECK(xattr_tdb_fsetxattr(handle, &link, "user.plain", value, sizeof(value), 0) == 0);
+	CHECK(link_store.exists && strcmp(link_store.name, "user.plain") == 0);
+	CHECK(xattr_tdb_fgetxattr(handle, &link, "user.plain", result, sizeof(result)) == sizeof(value));
+	CHECK(xattr_tdb_flistxattr(handle, &link, list, sizeof(list)) == (ssize_t)strlen("user.plain") + 1);
+	CHECK(xattr_tdb_fremovexattr(handle, &link, "user.plain") == 0);
+	CHECK(!link_store.exists);
+	/* Apple streams map to the native name on the link, as AFP stores them. */
+	CHECK(xattr_tdb_fsetxattr(handle, &link, stream, prov, sizeof(prov), 0) == 0);
+	CHECK(strcmp(link_store.name, "com.apple.provenance") == 0 && link_store.size == 2);
+	CHECK(xattr_tdb_fgetxattr(handle, &link, stream, result, sizeof(result)) == sizeof(prov));
+	CHECK(memcmp(result, prov, sizeof(prov)) == 0);
+	CHECK(native_sets == 0 && native_gets == 0 && native_removes == 0);
+	/* Any other descriptor-less handle still fails; nothing is followed. */
+	reset_stores();
+	errno = 0;
+	CHECK(xattr_tdb_fgetxattr(handle, &pathref, "user.plain", result, sizeof(result)) == -1);
+	CHECK(errno == EBADF && link_ops == 0);
+	errno = 0;
+	CHECK(xattr_tdb_fsetxattr(handle, &pathref, "user.plain", value, sizeof(value), 0) == -1);
+	CHECK(errno == EBADF && link_ops == 0 && !link_store.exists);
+	fsp_set_fd(&link, -1);
+	fsp_set_fd(&pathref, -1);
+}
+
 int main(int argc, char **argv)
 {
 	TALLOC_CTX *frame = NULL;
@@ -1296,6 +1473,9 @@ int main(int argc, char **argv)
 		test_resource_backend(&handle, conn, &file, frame);
 		test_resource_views(&handle, &file, &smb_fname, frame);
 		test_native_stream_boundary(&file);
+		test_link_xattrs(&handle, conn, frame);
+	} else if (strcmp(argv[1], "link_xattrs") == 0) {
+		test_link_xattrs(&handle, conn, frame);
 	} else if (strcmp(argv[1], "native_xattrs") == 0) {
 		test_native_xattrs(&handle, &file, frame);
 	} else if (strcmp(argv[1], "native_xattr_list") == 0) {

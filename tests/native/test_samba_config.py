@@ -58,6 +58,8 @@ def test_default_config_preserves_the_working_shell_settings(renderer):
         assert share["fruit:resource"] == "file"
         assert share["xattr_tdb:file"] == "/Volumes/dk2/.samba4/private/xattr.tdb"
         assert share["vfs objects"] == "catia fruit streams_xattr acl_xattr xattr_tdb"
+        assert share["tc:native symlinks"] == "yes"
+        assert share["veto files"] == "/.samba4/.tc-xsym.*/" and share["delete veto files"] == "yes"
         assert share["smbd max xattr size"] == "3802" and share["streams_xattr:max xattrs per stream"] == "35"
         assert global_["tc:volume " + share["tc:volume device"]] == share["tc:volume uuid"] + "|" + share["path"]
 
@@ -98,7 +100,10 @@ def test_unavailable_volume_not_projected_and_usb_payload_remains_a_share(render
     conf = render(renderer, args=("skip-first",))
     assert conf.sections() == ["global", "Data"]
     assert conf["Data"]["path"] == "/Volumes/dk3"
-    assert conf["Data"]["veto files"] == "/.samba4/"
+    assert conf["Data"]["veto files"] == "/.samba4/.tc-xsym.*/"
+    # Patch 0045 moves a converted file aside under .tc-xsym.*; a leftover must
+    # not keep its folder from being deleted over SMB.
+    assert conf["Data"]["delete veto files"] == "yes"
     assert "tc:volume dk2" not in conf["global"]
     assert conf["global"]["tc:volume dk3"] == conf["Data"]["tc:volume uuid"] + "|" + conf["Data"]["path"]
 

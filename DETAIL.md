@@ -685,6 +685,41 @@ Operational note:
 - temporary debug edits such as one-off `log level = ...` lines will disappear after reboot
 - manager logs under `/mnt/Memory/samba4/var` are also ephemeral for the same reason
 
+## Symbolic Links
+
+Symlinks are stored on disk as native POSIX links, the same objects Apple's AFP
+server and SSH create, so every protocol sees one link (Samba patch 0045,
+`tc:native symlinks` in the generated `smb.conf`):
+
+- macOS clients see native links as links and create them as usual; each new
+  link becomes native when its creating handle closes. XSym link files written
+  by earlier releases keep working and are never migrated; rewriting one makes
+  it native.
+- Windows `mklink` works. `mklink /D` (directory symlinks) is refused ("Access is
+  denied"); directory links made by other clients are listed as directory
+  symlinks and can be followed and removed.
+- Linux clients (`fs/smb/client`) create links with the symlink, NFS or WSL
+  reparse forms, depending on the `symlink=` mount option, and all three are
+  accepted. FIFOs, sockets and device nodes are refused, which that client
+  reports as `EOPNOTSUPP`. The device suite checks this by sending the same SMB2
+  requests the Linux source sends; no Linux mount was tested.
+- While converting, smbd moves the original aside as `.tc-xsym.<ino>.<pid>`
+  and removes it when its handle closes. The generated `smb.conf` vetoes that
+  name, and `delete veto files = yes` lets a folder be removed even if a crash
+  left one behind.
+- Attributes and streams set on a link stay on the link. `touch -h` does not
+  change a link's times on HFS, the same as over AFP.
+
+The devices' HFS driver has a journaling bug: a kernel panic, `jnl: start_tr:
+active_tr is NULL`, recorded in `/mnt/Flash/dmesg.panic`. Without a workaround,
+converting new SMB links triggered it within minutes of link-heavy testing, and
+journal replay after the unclean restart can overwrite recently reused blocks.
+Each conversion therefore ends with `sync()`. Keep the conversion path and that
+`sync()` together when changing either.
+
+Device checks: `.venv/bin/python -m tests.samba.links_device --env .env --afp`
+(see `tests/samba/README.md`).
+
 ## Discovery Controller Details
 
 The discovery controller is:

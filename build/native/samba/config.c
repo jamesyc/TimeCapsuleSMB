@@ -125,11 +125,18 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
     for (i = 0; i < shares->count; i++)
         fprintf(file, "    tc:volume %s = %s|%s\n", shares->values[i].device,
                 shares->values[i].uuid, shares->values[i].path);
+    /* tc:native symlinks (Samba patch 0045): AFP and SSH store real POSIX
+     * symlinks on these disks. Present them to SMB clients as symlink reparse
+     * points and turn an XSym file or reparse placeholder a client just
+     * created into a native link. The conversion moves the original aside as
+     * .tc-xsym.<ino>.<pid> for a moment; veto that name so no client lists it,
+     * even if a crash leaves one behind, and let folder deletion remove it. */
     for (i = 0; i < shares->count; i++) {
         const struct tc_share *share = &shares->values[i];
         fprintf(file,
                 "\n[%s]\n    path = %s\n    browseable = yes\n    read only = no\n"
-                "    guest ok = no\n    valid users = root\n    veto files = /.samba4/\n"
+                "    guest ok = no\n    valid users = root\n    veto files = /.samba4/.tc-xsym.*/\n"
+                "    delete veto files = yes\n"
                 "    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb%s\n",
                 share->name, share->path, config->aio_fork ? " aio_fork" : "");
         if (config->aio_fork)
@@ -138,7 +145,8 @@ int tc_samba_render(FILE *file, const struct tc_runtime_config *config,
                 "    acl_xattr:ignore system acls = yes\n    smbd max xattr size = 3802\n"
                 "    streams_xattr:max xattrs per stream = 35\n    fruit:resource = file\n"
                 "    fruit:metadata = %s\n    fruit:encoding = native\n    fruit:time machine = yes\n"
-                "    fruit:posix_rename = yes\n    xattr_tdb:file = %s/private/xattr.tdb\n"
+                "    fruit:posix_rename = yes\n    tc:native symlinks = yes\n"
+                "    xattr_tdb:file = %s/private/xattr.tdb\n"
                 "    tc:volume uuid = %s\n"
                 "    tc:volume device = %s\n"
                 "    force user = root\n    force group = wheel\n    create mask = 0666\n"

@@ -16,7 +16,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TARGETS = ("pthreadpool_tevent_sync_test", "tc_aio_fork_test", "tc_durable_reconnect_test",
-           "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test")
+           "tc_streams_xattr_test", "tc_native_metadata_test", "tc_xattr_migrate_test", "tc_storage_reload_test",
+           "tc_native_links_test", "tc_catia_links_test")
 MIGRATOR_TARGET = "tc_xattr_hfs_migrate"
 SMBD_TARGET = "smbd/smbd"
 # Compile the production accept/fork call site as well as the extracted helper.
@@ -41,11 +42,16 @@ STREAM_CASES = ("hfs_windows_boundary", "charset_types", "root_delete", "nested_
 NATIVE_METADATA_CASES = (
     "syscall_abi", "native_xattrs", "native_xattr_list", "non_hfs_tdb",
     "finderinfo", "finderinfo_views", "resource_backend", "resource_views", "stream_boundary",
+    "link_xattrs",
 )
 XATTR_MIGRATE_CASES = (
     "guard", "appledouble", "embedded_xattrs", "resource", "cleanup", "tdb", "errors", "resume", "scan",
     "orphans", "multi",
 )
+NATIVE_LINKS_CASES = ("apple_format", "format_limits", "parse_rejects", "convert_created", "convert_refused",
+                      "sole_open", "commit_races", "commit_failures", "metadata", "read_xsym", "write_xsym",
+                      "reparse_created", "reparse_refused", "capabilities", "dos_mode")
+CATIA_LINKS_CASES = ("catia_links",)
 STORAGE_RELOAD_CASES = ("descriptors", "sentinels", "identity", "aio", "callbacks",
                         "root", "root_widen", "root_rename", "root_no_fds", "root_aio", "root_failed", "root_unchanged")
 
@@ -101,11 +107,15 @@ def cases():
         yield TARGETS[5], (case,)
     for case in STORAGE_RELOAD_CASES:
         yield TARGETS[6], (case,)
+    for case in NATIVE_LINKS_CASES:
+        yield TARGETS[7], (case,)
+    for case in CATIA_LINKS_CASES:
+        yield TARGETS[8], (case,)
 
 
 def execution_cases(cross_exec: bool):
     """Upload each large native fixture once on storage-constrained devices."""
-    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6])
+    combined_targets = (TARGETS[4], TARGETS[5], TARGETS[6], TARGETS[7])
     seen: set[str] = set()
     for target, arguments in cases():
         if target in combined_targets:

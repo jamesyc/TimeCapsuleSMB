@@ -181,3 +181,60 @@ Physical USB detach/reconnect after this refactor remains pending because the
 spare disk was unavailable. The scratch-root test verifies targeted reload and
 unchanged-share continuity, while the native tests inject Apple's observed
 revoked-descriptor behavior. Neither substitutes for the missing cable test.
+
+### Native symlinks (patch 0045)
+
+The `tc_native_links_test` cases run the real `source3/smbd/tc_native_links.c`
+in a scratch directory under `$TMPDIR` or the working directory, with real
+symlink, rename, unlink, readlink and stat calls; Samba's VFS indirection, the
+share-mode table, xattr storage and change notification are replaced. They pin
+the XSym body byte for byte to digests the macOS client wrote on a Time Capsule,
+reject every malformed or ordinary 1067-byte file, and accept only symlink
+reparse payloads (Windows, NFS and WSL forms), refusing FIFOs, sockets, devices,
+junctions and unknown tags. Hooks inside the replaced rename let other "clients"
+replace or recreate the name between the conversion's steps: nothing of theirs
+is replaced, and every failure (symlink, rename, attribute copy, times) puts the
+original file back. The original is only unlinked after its fd is closed. Each
+conversion commits the journal with `sync()`, and so does a rollback before it
+removes the link it made; the test counts these calls (see the HFS journal note
+in `DETAIL.md`). The metadata case checks that attributes and
+streams set before close move to the link, but never Finder info or resource
+forks, through buffers that must grow on `ERANGE` (`vfs_acl_xattr` does not
+accept NULL-size queries). The read and write cases serve and
+accept the XSym view a Mac still holds of a link it just created: its bytes,
+and writes (such as the zero-length write at its end macOS sends) that leave it
+unchanged.
+
+`tc_catia_links_test` runs the real `vfs_catia.c` link hooks against a recording
+NEXT module, with the mappings vfs_fruit sets for macOS. Link reads and creates,
+and the xattr calls made by path on a link without an fd, must reach the name on
+disk (`x:y`, not the private-use character the Mac sends). The caller's handle
+must keep its client name. It is a separate binary because including
+`vfs_catia.c` pulls in most of the VFS layer. At that size, the other link cases
+aborted in talloc when run from the HFS disk and passed from RAM; the cause is
+not known. On NetBSD 4 the catia binary itself needs the RAM procedure above.
+
+`links_device.py` exercises a deployed device from a Mac. It needs device SSH
+credentials in the env file; its Windows and Linux client cases also need
+`smbprotocol` on the host (not a runtime dependency) and are skipped without it:
+
+```sh
+.venv/bin/python -m tests.samba.links_device --env .env --afp
+```
+
+It uses `TC_SHARE_NAME`, or the device's only share; pass `--share` otherwise.
+
+It creates links over SSH (including names with `: * ? " < > |`) and an XSym
+file as an earlier release wrote it, then checks them from a macOS SMB mount:
+listing, readlink, reading through, `ln -s`/`ln -sf`, xattrs on the link, `touch
+-h`, `mv`, `cp -pR`, `rm`/`rm -rf`, and rewriting a legacy link. `--afp` checks
+that links made over SMB and AFP read the same over the other protocol. The SMB2
+cases check the reparse listing, `FSCTL_GET_REPARSE_POINT`, removing a directory
+link, `mklink` and Linux NFS/WSL symlink creation, refusal of `mklink /D`,
+Windows-only targets, FIFOs and sockets with nothing left behind, and that a
+stream and DOS attributes set before close move to the new link. It works only
+in a `__tc_links_test__` folder on the share and removes it at the end.
+
+After changing the conversion path, run the suite several times in a row and
+check `/mnt/Flash/dmesg.panic` on the device: without the journal commit, the
+HFS panic appeared within one to three runs, while each run on its own passed.
