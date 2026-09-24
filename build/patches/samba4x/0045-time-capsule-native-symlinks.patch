@@ -1333,7 +1333,7 @@ diff --git a/source3/smbd/tc_native_links.c b/source3/smbd/tc_native_links.c
 new file mode 100644
 --- /dev/null
 +++ b/source3/smbd/tc_native_links.c
-@@ -0,0 +1,1032 @@
+@@ -0,0 +1,1146 @@
 +/*
 + * Time Capsule native symlinks.
 + *
@@ -1725,12 +1725,81 @@ new file mode 100644
 +}
 +
 +/*
-+ * The link target a created file stands for, read through its open fd: a
-+ * complete XSym body (macOS, Linux mfsymlinks) or an empty placeholder
-+ * carrying a symlink reparse payload. *sbuf is the file's fstat.
++ * Read the start of a created file. Its creating handle may be write-only:
++ * Linux mfsymlinks creates the XSym file with GENERIC_WRITE, which smbd opens
++ * O_WRONLY. Then read through an internal pathref of the same file, found by
++ * "name" in its directory (the aside name once it was moved, otherwise its
++ * own) and accepted only if it is the same regular file. The client's handle
++ * never gets more access than it asked for. Without O_PATH a pathref is an
++ * O_RDONLY fd opened as root; with O_PATH it cannot be read, and the file is
++ * kept as it is. openat_pathref_fsp() does not apply "veto files", which hide
++ * the aside name.
++ */
++static ssize_t tc_read_created(struct files_struct *fsp,
++			       const char *name,
++			       const SMB_STRUCT_STAT *fst,
++			       uint8_t *buf,
++			       size_t len)
++{
++	struct smb_filename *parent = NULL;
++	struct smb_filename *atname = NULL;
++	struct smb_filename *rel = NULL;
++	NTSTATUS status;
++	ssize_t n;
++	int fd;
++
++	n = SMB_VFS_PREAD(fsp, buf, len, 0);
++	if (n >= 0 || errno != EBADF) {
++		return n;
++	}
++	status = parent_pathref(talloc_tos(),
++				fsp->conn->cwd_fsp,
++				fsp->fsp_name,
++				&parent,
++				&atname);
++	if (!NT_STATUS_IS_OK(status)) {
++		goto fail;
++	}
++	rel = synthetic_smb_fname(talloc_tos(),
++				  name != NULL ? name : atname->base_name,
++				  NULL,
++				  NULL,
++				  atname->twrp,
++				  atname->flags);
++	if (rel == NULL) {
++		goto fail;
++	}
++	status = openat_pathref_fsp(parent->fsp, rel);
++	if (!NT_STATUS_IS_OK(status) ||
++	    rel->fsp == NULL ||
++	    !S_ISREG(rel->st.st_ex_mode) ||
++	    rel->st.st_ex_dev != fst->st_ex_dev ||
++	    rel->st.st_ex_ino != fst->st_ex_ino) {
++		DBG_NOTICE("%s: cannot read it through another handle\n",
++			   fsp_str_dbg(fsp));
++		goto fail;
++	}
++	fd = fsp_get_pathref_fd(rel->fsp);
++	n = (fd == -1) ? -1 : sys_pread(fd, buf, len, 0);
++	TALLOC_FREE(rel);
++	TALLOC_FREE(parent);
++	return n;
++fail:
++	TALLOC_FREE(rel);
++	TALLOC_FREE(parent);
++	errno = EBADF;
++	return -1;
++}
++
++/*
++ * The link target a created file stands for: a complete XSym body (macOS,
++ * Linux mfsymlinks) or an empty placeholder carrying a symlink reparse
++ * payload. *sbuf is the fstat of the creating handle; "name" is where the
++ * file is in its directory if it was moved (see tc_read_created()).
 + */
 +static bool tc_candidate_target(TALLOC_CTX *mem_ctx,
 +				struct files_struct *fsp,
++				const char *name,
 +				SMB_STRUCT_STAT *sbuf,
 +				char **_target)
 +{
@@ -1764,7 +1833,7 @@ new file mode 100644
 +	if (sbuf->st_ex_size != TC_XSYM_FILE_SIZE) {
 +		return false;
 +	}
-+	nread = SMB_VFS_PREAD(fsp, buf, sizeof(buf), 0);
++	nread = tc_read_created(fsp, name, sbuf, buf, sizeof(buf));
 +	if (nread != TC_XSYM_FILE_SIZE) {
 +		return false;
 +	}
@@ -1821,7 +1890,7 @@ new file mode 100644
 +	{
 +		return false;
 +	}
-+	if (!tc_candidate_target(mem_ctx, fsp, &sbuf, &cand->target)) {
++	if (!tc_candidate_target(mem_ctx, fsp, NULL, &sbuf, &cand->target)) {
 +		return false;
 +	}
 +	if (tc_has_resource_fork(fsp)) {
@@ -1947,21 +2016,66 @@ new file mode 100644
 +}
 +
 +/*
-+ * Attributes a link must not take from the file it replaces: the reparse
-+ * payload (the link replaces it), and Finder info and resource forks in any
-+ * of their stores. HFS keeps a link's own FinderInfo (type 'slnk', creator
-+ * 'rhap') and lets it be overwritten; a link cannot carry a resource fork.
++ * Is "name" streams_xattr's attribute for "stream": its prefix, the stream
++ * name (matched without case, as stream names are), and ":$DATA" unless
++ * stream types are not stored. Only exact names count: a client's own stream
++ * may well contain these words.
 + */
-+static bool tc_link_skips_xattr(const char *name)
++static bool tc_is_stream_xattr(const struct connection_struct *conn,
++			       const char *name,
++			       const char *stream)
 +{
-+	return name[0] == '\0' ||
-+	       strequal(name, SAMBA_XATTR_REPARSE_ATTRIB) ||
-+	       strequal(name, "com.apple.FinderInfo") ||
-+	       strequal(name, "com.apple.ResourceFork") ||
-+	       /* streams_xattr stores ":AFP_AfpInfo" without its colon */
-+	       strcasestr(name, AFPINFO_STREAM_NAME + 1) != NULL ||
-+	       strcasestr(name, AFPRESOURCE_STREAM_NAME + 1) != NULL ||
-+	       strcasestr(name, "org.netatalk.") != NULL;
++	const char *prefix = lp_parm_const_string(SNUM(conn),
++						  "streams_xattr",
++						  "prefix",
++						  SAMBA_XATTR_DOSSTREAM_PREFIX);
++	size_t prefix_len = strlen(prefix);
++	size_t stream_len = strlen(stream);
++
++	if (strncmp(name, prefix, prefix_len) != 0) {
++		return false;
++	}
++	name += prefix_len;
++	if (strncasecmp_m(name, stream, stream_len) != 0) {
++		return false;
++	}
++	name += stream_len;
++	return name[0] == '\0' || strequal(name, ":$DATA");
++}
++
++/*
++ * Attributes a link must not take from the file it replaces: the reparse
++ * payload (the link replaces it), and Finder info and resource forks in each
++ * of their stores (native HFS, netatalk, streams_xattr). HFS keeps a link's
++ * own FinderInfo (type 'slnk', creator 'rhap') and lets it be overwritten; a
++ * link cannot carry a resource fork. Anything else, whatever its name, is
++ * copied.
++ */
++static bool tc_link_skips_xattr(const struct connection_struct *conn,
++				const char *name)
++{
++	static const char *const reserved[] = {
++		SAMBA_XATTR_REPARSE_ATTRIB,
++		"com.apple.FinderInfo",
++		"com.apple.ResourceFork",
++		"org.netatalk.Metadata",
++		"user.org.netatalk.Metadata",
++		"org.netatalk.ResourceFork",
++		"user.org.netatalk.ResourceFork",
++	};
++	size_t i;
++
++	if (name[0] == '\0') {
++		return true;
++	}
++	for (i = 0; i < ARRAY_SIZE(reserved); i++) {
++		if (strcmp(name, reserved[i]) == 0) {
++			return true;
++		}
++	}
++	/* streams_xattr stores ":AFP_AfpInfo" without its leading colon */
++	return tc_is_stream_xattr(conn, name, AFPINFO_STREAM_NAME + 1) ||
++	       tc_is_stream_xattr(conn, name, AFPRESOURCE_STREAM_NAME + 1);
 +}
 +
 +/*
@@ -1993,7 +2107,7 @@ new file mode 100644
 +		ssize_t vlen;
 +		int ret;
 +
-+		if (tc_link_skips_xattr(name)) {
++		if (tc_link_skips_xattr(from->conn, name)) {
 +			continue;
 +		}
 +		vlen = tc_read_xattr(from, name, names, &value);
@@ -2112,7 +2226,7 @@ new file mode 100644
 +	ret = SMB_VFS_FSTATAT(conn, parent->fsp, aside, &aside->st,
 +			      AT_SYMLINK_NOFOLLOW);
 +	same = ret == 0 &&
-+	       tc_candidate_target(talloc_tos(), fsp, &fst, &now_target) &&
++	       tc_candidate_target(talloc_tos(), fsp, tmp, &fst, &now_target) &&
 +	       aside->st.st_ex_dev == fst.st_ex_dev &&
 +	       aside->st.st_ex_ino == fst.st_ex_ino &&
 +	       fst.st_ex_dev == cand->dev &&

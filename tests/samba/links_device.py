@@ -380,13 +380,25 @@ def windows_checks(r: Results, device: Device) -> None:
                     lambda n=name, p=payload, d=directory, st=status: w.create_reparse(n, p, d) == st
                     and device.absent(n))
 
+        def write_only_xsym() -> bool:
+            # Linux mfsymlinks (smb3_create_mf_symlink) asks only for GENERIC_WRITE: smbd holds it O_WRONLY.
+            h = w.open("mf-link", 0x40000000, 0x40, 2)  # GENERIC_WRITE, NON_DIRECTORY_FILE, FILE_CREATE
+            h.write(xsym("sub/d"))
+            h.close()
+            return device.is_native_link("mf-link", "sub/d")
+
+        r.check("win: an XSym file written without read access (Linux mfsymlinks) becomes a native link",
+                write_only_xsym)
+
         def metadata() -> bool:
-            # An XSym file with a named stream and the HIDDEN attribute, all set before close.
+            # An XSym file with named streams and the HIDDEN attribute, all set before close. A stream
+            # whose name contains AFP_AfpInfo is the client's own, not Finder info.
             h = w.open("meta", 0x12019F, 0x40, 2)  # read/write/attributes, FILE_CREATE
             h.write(xsym("t.txt"))
-            s = w.open("meta:tcstream", 0x12019F, 0x40, 2)
-            s.write(b"sv")
-            s.close()
+            for stream in ("tcstream", "backup.AFP_AfpInfo.notes"):
+                s = w.open("meta:" + stream, 0x12019F, 0x40, 2)
+                s.write(b"sv")
+                s.close()
             w.set_attributes(h, 0x2)
             h.close()
             if not device.is_native_link("meta", "t.txt"):
@@ -396,7 +408,8 @@ def windows_checks(r: Results, device: Device) -> None:
                 streams = w.query(link, 1, 22).decode("utf-16-le", errors="ignore")
             finally:
                 link.close()
-            return ":tcstream:$DATA" in streams and w.listing()["meta"][0] & 0x2 == 0x2
+            return ":tcstream:$DATA" in streams and ":backup.AFP_AfpInfo.notes:$DATA" in streams and \
+                w.listing()["meta"][0] & 0x2 == 0x2
 
         r.check("win: stream and DOS attributes set before close move to the link", metadata)
     except SMBResponseException as error:

@@ -700,7 +700,7 @@ server and SSH create, so every protocol sees one link (Samba patch 0045,
   symlinks and can be followed and removed.
 - Linux clients (`fs/smb/client`) create links with the symlink, NFS or WSL
   reparse forms, depending on the `symlink=` mount option, and all three are
-  accepted. FIFOs, sockets and device nodes are refused, which that client
+  accepted. With `mfsymlinks` they write XSym files, which become native too. FIFOs, sockets and device nodes are refused, which that client
   reports as `EOPNOTSUPP`. The device suite checks this by sending the same SMB2
   requests the Linux source sends; no Linux mount was tested.
 - While converting, smbd moves the original aside as `.tc-xsym.<ino>.<pid>`

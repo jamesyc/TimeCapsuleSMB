@@ -34,6 +34,9 @@ static char workdir[PATH_MAX];
 /* Something another client does while a conversion is between two steps. */
 static void (*before_grab)(void);
 static void (*after_grab)(void);
+/* Names read through an internal pathref because the creating handle was write-only. */
+static char pathref_reads[4][64];
+static size_t num_pathref_reads;
 
 static void to_stat_ex(const struct stat *st, SMB_STRUCT_STAT *out)
 {
@@ -121,6 +124,35 @@ static NTSTATUS test_openat_pathref_lcomp(struct files_struct *dirfsp, struct sm
 	return NT_STATUS_OK;
 }
 
+static int close_pathref(struct files_struct *fsp)
+{
+	if (fsp_get_pathref_fd(fsp) != -1) close(fsp_get_pathref_fd(fsp));
+	fsp_set_fd(fsp, -1); /* fd_handle's destructor insists */
+	return 0;
+}
+
+/* An internal pathref without O_PATH: an O_RDONLY fd, whatever the client's access. */
+static NTSTATUS test_openat_pathref(const struct files_struct *dirfsp, struct smb_filename *name)
+{
+	struct files_struct *fsp = NULL;
+	(void)dirfsp;
+	CHECK(name->fsp == NULL && strchr(name->base_name, '/') == NULL);
+	if (test_fstatat(name, &name->st) != 0) return map_nt_error_from_unix(errno);
+	fsp = talloc_zero(name, struct files_struct);
+	CHECK(fsp != NULL);
+	fsp->fh = fd_handle_create(fsp);
+	CHECK(fsp->fh != NULL);
+	fsp->fsp_flags.is_pathref = true;
+	fsp_set_fd(fsp, open(name->base_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK));
+	CHECK(fsp_get_pathref_fd(fsp) != -1);
+	talloc_set_destructor(fsp, close_pathref);
+	fsp->fsp_name = name;
+	name->fsp = fsp;
+	CHECK(num_pathref_reads < ARRAY_SIZE(pathref_reads));
+	strlcpy(pathref_reads[num_pathref_reads++], name->base_name, sizeof(pathref_reads[0]));
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS test_readlink(TALLOC_CTX *ctx, struct files_struct *dirfsp,
 	struct smb_filename *name, char **out)
 {
@@ -174,7 +206,7 @@ static NTSTATUS test_fstreaminfo(struct files_struct *fsp, TALLOC_CTX *ctx,
 }
 
 /* xattrs, keyed by inode like a real store: the created file's and the link's are distinct. */
-static struct { bool used; SMB_INO_T ino; char name[64]; uint8_t value[600]; size_t len; } xattrs[40];
+static struct { bool used; SMB_INO_T ino; char name[64]; uint8_t value[600]; size_t len; } xattrs[64];
 
 static SMB_INO_T ino_of(struct files_struct *fsp)
 {
@@ -283,6 +315,8 @@ static bool test_stale(struct share_mode_entry *e)
 }
 
 #define lp_parm_bool(snum, type, option, def) (feature_enabled)
+#define lp_parm_const_string(snum, type, option, def) (def)
+#define openat_pathref_fsp test_openat_pathref
 #define parent_pathref test_parent_pathref
 #define readlink_talloc test_readlink
 #define openat_pathref_fsp_lcomp test_openat_pathref_lcomp
@@ -476,23 +510,30 @@ static void reset_hooks(void)
 	resource_fork_size = 0;
 	stored_reparse_len = 0;
 	notifies = ntimes_calls = syncs = 0;
+	num_pathref_reads = 0;
 	ZERO_STRUCT(xattrs);
 }
 
 /* close_normal_file() order: prepare with the fd open; close_remove_share_mode() commits
  * under the share mode lock, still before fd_close(); the original is removed after it.
  * Returns whether it converted. */
-static bool convert(TALLOC_CTX *ctx, const char *name, uint32_t action, enum file_close_type type)
+static bool convert_as(TALLOC_CTX *ctx, const char *name, uint32_t action, enum file_close_type type,
+	int flags)
 {
 	struct handle h;
 	struct tc_xsym_candidate cand;
 	bool converted = false;
-	open_handle(ctx, &h, name, action, O_RDWR);
+	open_handle(ctx, &h, name, action, flags);
 	if (t_close_prepare(ctx, &h.fsp, type, &cand)) converted = t_close_commit(&h.fsp, &cand);
 	TALLOC_FREE(cand.target);
 	close_handle(&h);
 	t_close_finish(&h.fsp, &cand);
 	return converted;
+}
+
+static bool convert(TALLOC_CTX *ctx, const char *name, uint32_t action, enum file_close_type type)
+{
+	return convert_as(ctx, name, action, type, O_RDWR);
 }
 
 /* Race actors, run from inside the conversion's rename. */
@@ -624,6 +665,50 @@ int main(int argc, char **argv)
 		put_file("absolute", body, sizeof(body));
 		CHECK(convert(frame, "absolute", FILE_WAS_CREATED, NORMAL_CLOSE));
 		CHECK(is_link_to("absolute", "/Users/somebody/abs target"));
+		CHECK(num_pathref_reads == 0);
+	}
+	if (all || strcmp(c, "convert_write_only") == 0) {
+		/* Linux mfsymlinks creates the file with GENERIC_WRITE only, so smbd holds it
+		 * O_WRONLY. It is read through an internal handle: by its name before the commit,
+		 * by its private name during it. */
+		struct handle h;
+		struct tc_xsym_candidate cand;
+		reset_hooks();
+		t_xsym_format("sub/target", body);
+		put_file("wronly", body, sizeof(body));
+		CHECK(convert_as(frame, "wronly", FILE_WAS_CREATED, NORMAL_CLOSE, O_WRONLY));
+		CHECK(is_link_to("wronly", "sub/target") && no_temp_left() && syncs == 2);
+		CHECK(num_pathref_reads == 2 && strcmp(pathref_reads[0], "wronly") == 0);
+		CHECK(is_aside(pathref_reads[1]));
+		/* A rewrite after close_prepare is still seen. */
+		reset_hooks();
+		put_file("wrewritten", body, sizeof(body));
+		open_handle(frame, &h, "wrewritten", FILE_WAS_CREATED, O_WRONLY);
+		CHECK(t_close_prepare(frame, &h.fsp, NORMAL_CLOSE, &cand));
+		t_xsym_format("elsewhere", made);
+		put_file("wrewritten", made, sizeof(made));
+		CHECK(!t_close_commit(&h.fsp, &cand));
+		close_handle(&h);
+		t_close_finish(&h.fsp, &cand);
+		CHECK(has_content("wrewritten", made, sizeof(made)) && no_temp_left());
+		/* Only the file the handle holds is read: another file now at its name is not. */
+		reset_hooks();
+		put_file("wmoved", body, sizeof(body));
+		open_handle(frame, &h, "wmoved", FILE_WAS_CREATED, O_WRONLY);
+		CHECK(rename("wmoved", "wmoved.old") == 0);
+		put_file("wmoved", body, sizeof(body));
+		CHECK(!t_close_prepare(frame, &h.fsp, NORMAL_CLOSE, &cand));
+		CHECK(num_pathref_reads == 1);
+		close_handle(&h);
+		CHECK(is_regular("wmoved") && is_regular("wmoved.old"));
+		/* Nor a name that is gone. */
+		reset_hooks();
+		put_file("wgone", body, sizeof(body));
+		open_handle(frame, &h, "wgone", FILE_WAS_CREATED, O_WRONLY);
+		CHECK(rename("wgone", "wgone.old") == 0);
+		CHECK(!t_close_prepare(frame, &h.fsp, NORMAL_CLOSE, &cand));
+		close_handle(&h);
+		CHECK(is_regular("wgone.old") && notifies == 0);
 	}
 	if (all || strcmp(c, "convert_refused") == 0) {
 		struct handle h;
@@ -791,11 +876,18 @@ int main(int argc, char **argv)
 		static const char *copied[] = {
 			"user.DOSATTRIB", "security.NTACL", "user.DosStream.com.apple.provenance:$DATA",
 			"user.$LXUID",
+			/* The client's own streams, however close their names come. */
+			"user.DosStream.backup.AFP_AfpInfo.notes:$DATA", "user.DosStream.AFP_AfpInfo.bak:$DATA",
+			"user.DosStream.backup.AFP_Resource.notes:$DATA", "user.DosStream.AFP_AfpInfo:$DATAX",
+			"user.DosStream.report.org.netatalk.notes:$DATA", "user.org.netatalk.Metadata.bak",
+			"com.apple.FinderInfo.copy", "AFP_AfpInfo",
 		};
 		/* HFS owns a link's Finder info (slnk/rhap); a link has no resource fork. */
 		static const char *kept_behind[] = {
 			"com.apple.FinderInfo", "com.apple.ResourceFork", "user.DosStream.AFP_AfpInfo:$DATA",
-			"user.DosStream.afp_resource:$DATA", "org.netatalk.Metadata", "user.org.netatalk.Metadata",
+			"user.DosStream.afp_resource:$DATA", "user.DosStream.AFP_AfpInfo",
+			"user.DosStream.AFP_Resource:$data", "org.netatalk.Metadata", "user.org.netatalk.Metadata",
+			"org.netatalk.ResourceFork", "user.org.netatalk.ResourceFork",
 		};
 		struct stat st, lst;
 		struct timespec mtime = { .tv_sec = 1600000000 };
@@ -1038,8 +1130,8 @@ int main(int argc, char **argv)
 		feature_enabled = true;
 	}
 	if (!all && strcmp(c, "apple_format") && strcmp(c, "format_limits") && strcmp(c, "parse_rejects") &&
-	    strcmp(c, "convert_created") && strcmp(c, "convert_refused") && strcmp(c, "sole_open") &&
-	    strcmp(c, "commit_races") && strcmp(c, "commit_failures") && strcmp(c, "metadata") &&
+	    strcmp(c, "convert_created") && strcmp(c, "convert_write_only") && strcmp(c, "convert_refused") &&
+	    strcmp(c, "sole_open") && strcmp(c, "commit_races") && strcmp(c, "commit_failures") && strcmp(c, "metadata") &&
 	    strcmp(c, "read_xsym") && strcmp(c, "write_xsym") && strcmp(c, "reparse_created") && strcmp(c, "reparse_refused") &&
 	    strcmp(c, "capabilities") && strcmp(c, "dos_mode")) {
 		CHECK(false);

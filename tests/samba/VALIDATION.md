@@ -491,3 +491,27 @@ Review follow-up (2026-09-24):
 | NetBSD 6 (NetBSD 7 SDK) | 362,348 | 10,230,860 |
 | NetBSD 4 LE | 321,648 | 10,243,352 |
 | NetBSD 4 BE | 321,048 | 10,242,220 |
+
+Second review follow-up (2026-09-24), smbd only:
+- Finder info and resource forks are left behind only under their exact stored
+  names: native, netatalk, and streams_xattr under its configured prefix. A
+  substring match used to drop client streams such as
+  `backup.AFP_AfpInfo.notes`.
+- When the creating handle is write-only (Linux `mfsymlinks` asks only for
+  `GENERIC_WRITE`), the XSym body is read through an internal handle. That
+  handle must be the same file, and the client's access is not widened.
+- Tests: new unit case `convert_write_only`, near-miss names in `metadata`, and
+  two device checks (a write-only XSym file; a `backup.AFP_AfpInfo.notes`
+  stream). Both device checks fail against the previous smbd.
+- Results:
+  - NetBSD 6: unit test passes from disk; links suite 74/74 three times; crash
+    loop 6/6; manual_delete 121/121; Doctor passed.
+  - NetBSD 4 LE: unit test passes from RAM; links suite 74/74 three times;
+    manual_delete 121/121; Doctor passed.
+  - pytest: 2270 passed.
+
+| Lane | smbd bytes |
+| --- | ---: |
+| NetBSD 6 (NetBSD 7 SDK) | 10,231,584 |
+| NetBSD 4 LE | 10,244,304 |
+| NetBSD 4 BE | 10,243,176 |
