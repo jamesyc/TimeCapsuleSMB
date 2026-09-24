@@ -14,6 +14,11 @@ from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
 from tests.native.build import ROOT, compile_service
 
+# Hang guards only. Under ASan on shared hosted macOS runners, process startup
+# alone can take seconds; tests with real deadlines assert elapsed time
+# themselves.
+HANG_TIMEOUT = 20
+
 
 def telemetry_command(binary, *args):
     return [str(binary), 'telemetry', *args]
@@ -76,7 +81,7 @@ def rig(tmp_path_factory):
             if self.path.endswith('.sig'):
                 if mode == 'hold_signature':
                     state['signature_started'].set()
-                    state['hold'].wait(timeout=5)
+                    state['hold'].wait(timeout=HANG_TIMEOUT)
 
                 if mode == 'missing_signature': return self.answer(b'', 404)
                 signature = signer.sign(binary)
@@ -107,7 +112,7 @@ def rig(tmp_path_factory):
     binary = compile_service(root / 'service', flags=['-include', str(config), '-I', str(ROOT / 'build/native')],
                              exclude=['iflist.c'], extra_sources=[ROOT / 'tests/native/integration/iflist_fixture.c'])
     yield root, binary, state
-    server.shutdown(); server.server_close(); thread.join(timeout=5)
+    server.shutdown(); server.server_close(); thread.join(timeout=HANG_TIMEOUT)
 
 @pytest.fixture
 def cycle(rig, tmp_path):
@@ -121,7 +126,7 @@ def cycle(rig, tmp_path):
         if name.lower().endswith('_proxy'): env.pop(name)
     def run(mode, **changes):
         state['mode'] = mode
-        result = subprocess.run(telemetry_command(binary, '--once', 'manual'), env={**env, **changes}, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(telemetry_command(binary, '--once', 'manual'), env={**env, **changes}, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert not (root / 'work/debug').exists()
         assert not (root / 'work/debug.sig').exists()
         assert (root / 'work/keep.txt').read_text() == 'unrelated runtime file'
@@ -169,14 +174,14 @@ def test_running_debug_survives_stop_and_excludes_another_cycle(cycle, tmp_path)
         wait_until(marker.exists)
         process.terminate()
         assert process.poll() is None
-        blocked = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=5)
+        blocked = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
         assert blocked.returncode == 75
         finish.touch()
-        assert process.wait(timeout=5) == 0
+        assert process.wait(timeout=HANG_TIMEOUT) == 0
         assert len(state['calls']) == 3
     finally:
         finish.touch()
-        process.communicate(timeout=5)
+        process.communicate(timeout=HANG_TIMEOUT)
 
 
 def test_print_payload_has_no_network(cycle):
@@ -194,7 +199,7 @@ def test_device_opt_out_exits_without_network_or_debug_files(cycle, rig, args, s
     root, _, _ = rig
     (root / 'config').write_text(setting)
     state['mode'] = 'true'
-    result = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, timeout=5)
+    result = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, result.stderr
     assert state['calls'] == [] and not marker.exists()
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
@@ -217,11 +222,11 @@ def test_idle_daemon_exits_when_device_config_disables_telemetry(cycle, rig):
     try:
         wait_until(lambda: len(state['calls']) == 1)
         (root / 'config').write_text('TELEMETRY=false\n')
-        assert process.wait(timeout=5) == 0
+        assert process.wait(timeout=HANG_TIMEOUT) == 0
         assert len(state['calls']) == 1
     finally:
         if process.poll() is None: process.terminate()
-        process.communicate(timeout=5)
+        process.communicate(timeout=HANG_TIMEOUT)
 
 
 def test_opt_out_keeps_local_cleanup_available(cycle, rig):
@@ -230,15 +235,13 @@ def test_opt_out_keeps_local_cleanup_available(cycle, rig):
     (root / 'config').write_text('TELEMETRY=false\n')
     (root / 'work/debug').write_text('stale')
     (root / 'work/debug.sig').write_text('stale')
-    result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
+    result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     assert state['calls'] == []
 
 
-def wait_until(predicate, seconds=15):
-    # ASan process startup on hosted macOS runners can take several seconds;
-    # tests with actual deadline requirements make their own tighter checks.
+def wait_until(predicate, seconds=HANG_TIMEOUT):
     deadline = time.monotonic() + seconds
     while not predicate() and time.monotonic() < deadline:
         time.sleep(.01)
@@ -251,7 +254,7 @@ def test_cleanup_removes_stale_files_without_network(cycle, rig):
     for name in ('debug', 'debug.sig'):
         (root / 'work' / name).write_bytes(b'interrupted download')
     for _ in range(2):
-        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     assert state['calls'] == []
@@ -264,7 +267,7 @@ def test_cleanup_unlinks_symlinks_without_touching_targets(cycle, rig, tmp_path)
     directory = tmp_path / 'directory'; directory.mkdir(); (directory / 'file').write_text('preserved')
     (root / 'work/debug').symlink_to(target)
     (root / 'work/debug.sig').symlink_to(directory)
-    result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
+    result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, result.stderr
     assert target.read_text() == (directory / 'file').read_text() == 'preserved'
     assert not (root / 'work/debug').is_symlink()
@@ -278,7 +281,7 @@ def test_directory_at_reserved_name_is_reported_and_blocks_download(cycle, rig):
     (directory / 'file').write_text('preserve')
     try:
         for args in (['--cleanup'], ['--once']):
-            result = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, text=True, timeout=5)
+            result = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             assert result.returncode == 1
             assert 'cannot remove' in result.stderr
         assert (directory / 'file').read_text() == 'preserve'
@@ -293,7 +296,7 @@ def test_successful_child_cannot_hide_cleanup_error(cycle, rig):
     state['mode'] = 'true'
     try:
         result = subprocess.run(telemetry_command(binary, '--once'), env={**env, 'TC_TEST_LEAVE_SIG_DIR': '1'},
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 1
         assert 'cannot remove' in result.stderr and 'debug.sig' in result.stderr
         assert not (root / 'work/debug').exists()
@@ -308,15 +311,15 @@ def test_interrupted_signature_download_cleans_or_recovers_nonexecutable_binary(
     state['mode'] = 'hold_signature'
     process = subprocess.Popen(telemetry_command(binary, '--once'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        assert state['signature_started'].wait(timeout=15)
+        assert state['signature_started'].wait(timeout=HANG_TIMEOUT)
         assert (root / 'work/debug').exists()
         assert (root / 'work/debug').stat().st_mode & 0o111 == 0
         if kill: process.kill()
         else: process.terminate()
-        assert process.wait(timeout=5) != 0
+        assert process.wait(timeout=HANG_TIMEOUT) != 0
         if kill:
             assert (root / 'work/debug').exists()
-            cleanup = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
+            cleanup = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
             assert cleanup.returncode == 0, cleanup.stderr
         assert not marker.exists()
         assert not (root / 'work/debug').exists()
@@ -324,7 +327,7 @@ def test_interrupted_signature_download_cleans_or_recovers_nonexecutable_binary(
     finally:
         state['hold'].set()
         if process.poll() is None: process.kill()
-        process.communicate(timeout=5)
+        process.communicate(timeout=HANG_TIMEOUT)
 
 
 @pytest.mark.parametrize('detach', [False, True])
@@ -340,25 +343,25 @@ def test_inherited_owner_survives_parent_death_and_cleanup_waits(cycle, rig, tmp
     try:
         wait_until(lambda: marker.exists() and marker.read_text().startswith('executed\n'))
         if detach:
-            assert process.wait(timeout=5) == 0
+            assert process.wait(timeout=HANG_TIMEOUT) == 0
         else:
-            process.kill(); process.wait(timeout=5)
+            process.kill(); process.wait(timeout=HANG_TIMEOUT)
         assert (root / 'work/debug').exists()
         assert not (root / 'work/debug.sig').exists()
         for args in (['--cleanup'], ['--once']):
-            blocked = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, timeout=5)
+            blocked = subprocess.run(telemetry_command(binary, *args), env=env, capture_output=True, timeout=HANG_TIMEOUT)
             assert blocked.returncode == 75
         assert len(state['calls']) == 3
         finish.touch()
         def recovered():
-            return subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5).returncode == 0
+            return subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT).returncode == 0
         wait_until(recovered)
         assert sorted(p.name for p in (root / 'work').iterdir()) == ['keep.txt']
     finally:
         finish.touch()
         try: os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError: pass
-        process.communicate(timeout=5)
+        process.communicate(timeout=HANG_TIMEOUT)
 
 
 def test_debug_crash_is_reaped_and_cleaned(cycle):
@@ -384,7 +387,7 @@ def test_daemon_housekeeping_cleans_between_heartbeats(cycle, rig):
         wait_until(lambda: not (root / 'work/debug').exists() and not (root / 'work/debug.sig').exists())
         assert len(state['calls']) == 1
     finally:
-        process.terminate(); process.communicate(timeout=5)
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
 
 def test_shared_ram_root_requires_sticky_permissions(cycle, rig):
@@ -395,10 +398,10 @@ def test_shared_ram_root_requires_sticky_permissions(cycle, rig):
     (work / 'debug').write_text('stale')
     try:
         work.chmod(0o777)
-        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 1 and (work / 'debug').exists()
         work.chmod(0o1777)
-        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0 and not (work / 'debug').exists()
         assert state['calls'] == []
     finally:
@@ -512,17 +515,17 @@ def test_acp_failure_aborts_cycle_reaps_children_and_releases_lock(cycle, short_
     state['mode'] = 'true'
     started = time.monotonic()
     result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': mode,
-                            'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=6)
+                            'TC_TEST_ACP_CALLS': str(calls)}, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 1
     assert time.monotonic() - started < 5
     assert 'acp: syAP' in result.stderr
     if mode in ('drip', 'drip_after_line'): assert 'timed out' in result.stderr
     assert state['calls'] == [] and not marker.exists()
     assert_collectors_stopped(calls)
-    assert subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=5).returncode == 0
+    assert subprocess.run(telemetry_command(binary, '--cleanup'), env=env, capture_output=True, timeout=HANG_TIMEOUT).returncode == 0
     # A fresh invocation can collect/post after the failed owner exits.
     state['mode'] = 'false'
-    assert subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=15).returncode == 0
+    assert subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, timeout=HANG_TIMEOUT).returncode == 0
     assert len(state['calls']) == 1
 
 
@@ -563,7 +566,7 @@ def test_acp_exec_failure_aborts_without_posting(cycle, rig):
     permissions = acp.stat().st_mode & 0o777
     try:
         acp.chmod(0o600)
-        result = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(telemetry_command(binary, '--once'), env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 1 and 'exec' in result.stderr
         assert state['calls'] == []
     finally:
@@ -576,7 +579,7 @@ def test_acp_timeout_at_later_field_never_posts_partial_identity(cycle, short_co
     calls = acp_calls
     result = subprocess.run(telemetry_command(short_collector, '--once'), env={**env, 'TC_TEST_ACP_MODE': 'hang',
                             'TC_TEST_ACP_KEY': key, 'TC_TEST_ACP_CALLS': str(calls)},
-                            capture_output=True, text=True, timeout=6)
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 1 and f'acp: {key} timed out' in result.stderr
     assert state['calls'] == []
     assert calls.read_text().splitlines()[-1].startswith(key + ' ')
@@ -597,14 +600,14 @@ def test_stop_during_acp_collection_is_prompt_even_with_long_timeout(cycle, prod
         if mode == 'descendant': wait_until(lambda: ' descendant' in calls.read_text())
         started = time.monotonic()
         process.send_signal(stop_signal)
-        out, err = process.communicate(timeout=4)
+        out, err = process.communicate(timeout=HANG_TIMEOUT)
         assert process.returncode == 1 and b'cancelled' in err
         assert time.monotonic() - started < 3
         assert out == b'' and state['calls'] == []
         assert_collectors_stopped(calls)
     finally:
         if process.poll() is None: process.kill()
-        process.communicate(timeout=5)
+        process.communicate(timeout=HANG_TIMEOUT)
 
 
 @pytest.mark.parametrize('mode', ['empty', 'nonzero', 'drain'])

@@ -556,8 +556,10 @@ final class DashboardStoreTests: XCTestCase {
         secondSession.runCheckup(profile: second)
 
         try await waitUntilStoreState { fixture.runner.calls.count == 2 }
-        XCTAssertEqual(secondSession.doctorStore.state, .running)
+        // The second response is not paused, so it may already be done here; the first one stays
+        // paused until finishAll(), so passing now proves the second did not wait for the first.
         try await waitUntilStoreState { secondSession.doctorStore.state == .passed }
+        XCTAssertTrue(deviceLaneIsRunning(first, appStore: fixture.appStore))
         XCTAssertEqual(Set(fixture.runner.calls.map { $0.context?.profileID }), ["device-one", "device-two"])
         fixture.runner.finishAll()
         try await waitUntilStoreState { !self.deviceLaneIsRunning(first, appStore: fixture.appStore) }
