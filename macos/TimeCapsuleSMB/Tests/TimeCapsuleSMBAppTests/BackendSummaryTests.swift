@@ -152,44 +152,65 @@ final class BackendSummaryContractTests: XCTestCase {
         }
     }
 
+    /// The typed payload the app decodes a result into. Operations with several
+    /// result shapes are told apart by their summary key, so each shape's own
+    /// decoding of `summary_key` is checked (a lenient shape tried first would
+    /// otherwise accept every row).
+    private func typedSummary(operation: String, key: String) -> ((JSONValue) throws -> BackendSummary)? {
+        let name = key.replacingOccurrences(of: "backend.summary.", with: "")
+        switch operation {
+        case "capabilities": return { try $0.decode(CapabilitiesPayload.self).summaryRef }
+        case "validate-install": return { try $0.decode(InstallValidationPayload.self).summaryRef }
+        case "version-check": return { try $0.decode(VersionCheckPayload.self).summaryRef }
+        case "reachability": return { try $0.decode(ReachabilityPayload.self).summaryRef }
+        case "discover": return { try $0.decode(DiscoverPayload.self).summaryRef }
+        case "configure": return { try $0.decode(ConfigurePayload.self).summaryRef }
+        case "deploy": return { try $0.decode(DeployResultPayload.self).summaryRef }
+        case "doctor": return { try $0.decode(DoctorPayload.self).summaryRef }
+        case "activate": return { try $0.decode(ActivationResultPayload.self).summaryRef }
+        case "uninstall": return { try $0.decode(MaintenanceResultPayload.self).summaryRef }
+        case "set-ssh": return { try $0.decode(SSHAccessPayload.self).summaryRef }
+        case "repair-xattrs": return { try $0.decode(RepairXattrsPayload.self).summaryRef }
+        case "fsck":
+            switch name {
+            case "hfs_volumes_found": return { try $0.decode(FsckVolumeListPayload.self).summaryRef }
+            case "fsck_plan_generated": return { try $0.decode(FsckPlanPayload.self).summaryRef }
+            default: return { try $0.decode(FsckResultPayload.self).summaryRef }
+            }
+        case "flash":
+            if name == "flash_backup_saved" {
+                return { try $0.decode(FlashBackupPayload.self).summaryRef }
+            }
+            if ["flash_write_", "flash_patch_write_validated", "flash_restore_write_validated"].contains(where: name.hasPrefix) {
+                return { try $0.decode(FlashWritePayload.self).summaryRef }
+            }
+            return { try $0.decode(FlashPlanPayload.self).summaryRef }
+        default:
+            return nil
+        }
+    }
+
     func testTypedPayloadsKeepTheHelperSummaryKey() throws {
-        let decoders: [String: [(JSONValue) throws -> BackendSummary]] = [
-            "capabilities": [{ try $0.decode(CapabilitiesPayload.self).summaryRef }],
-            "validate-install": [{ try $0.decode(InstallValidationPayload.self).summaryRef }],
-            "version-check": [{ try $0.decode(VersionCheckPayload.self).summaryRef }],
-            "reachability": [{ try $0.decode(ReachabilityPayload.self).summaryRef }],
-            "discover": [{ try $0.decode(DiscoverPayload.self).summaryRef }],
-            "configure": [{ try $0.decode(ConfigurePayload.self).summaryRef }],
-            "deploy": [{ try $0.decode(DeployResultPayload.self).summaryRef }],
-            "doctor": [{ try $0.decode(DoctorPayload.self).summaryRef }],
-            "activate": [{ try $0.decode(ActivationResultPayload.self).summaryRef }],
-            "uninstall": [{ try $0.decode(MaintenanceResultPayload.self).summaryRef }],
-            "set-ssh": [{ try $0.decode(SSHAccessPayload.self).summaryRef }],
-            "repair-xattrs": [{ try $0.decode(RepairXattrsPayload.self).summaryRef }],
-            "fsck": [
-                { try $0.decode(FsckVolumeListPayload.self).summaryRef },
-                { try $0.decode(FsckPlanPayload.self).summaryRef },
-                { try $0.decode(FsckResultPayload.self).summaryRef }
-            ],
-            "flash": [
-                { try $0.decode(FlashBackupPayload.self).summaryRef },
-                { try $0.decode(FlashWritePayload.self).summaryRef },
-                { try $0.decode(FlashPlanPayload.self).summaryRef }
-            ]
-        ]
-        var checked = 0
+        var checked: [String: Int] = [:]
         for row in try rows() where row.event.type == "result" {
             // "Operation exited." replaces the result of any operation, so its
             // payload carries only the summary and has no typed form.
-            guard let candidates = decoders[row.event.operation],
-                  let payload = row.event.payload,
-                  BackendSummary(payload: payload)?.key != "backend.summary.operation_exited" else {
+            guard let payload = row.event.payload,
+                  let expected = BackendSummary(payload: payload),
+                  let key = expected.key,
+                  key != "backend.summary.operation_exited",
+                  let decode = typedSummary(operation: row.event.operation, key: key) else {
                 continue
             }
-            let typed = candidates.lazy.compactMap { try? $0(payload) }.first
-            XCTAssertEqual(typed, BackendSummary(payload: payload), row.name)
-            checked += 1
+            do {
+                XCTAssertEqual(try decode(payload), expected, row.name)
+            } catch {
+                XCTFail("\(row.name) did not decode into its typed payload: \(error)")
+            }
+            checked[row.event.operation, default: 0] += 1
         }
-        XCTAssertGreaterThan(checked, 50)
+        XCTAssertGreaterThan(checked.values.reduce(0, +), 50)
+        XCTAssertGreaterThan(checked["flash", default: 0], 15)
+        XCTAssertEqual(checked["fsck", default: 0], 4)
     }
 }

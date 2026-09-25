@@ -405,8 +405,11 @@ struct DeviceRuntimeStateSnapshot: Codable, Equatable {
         case .activationNeeded:
             return L10n.string("dashboard.health.runtime.activation_needed")
         case .unhealthy:
-            let trimmed = (errorMessage ?? summary).trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? L10n.string("runtime.state.unhealthy") : trimmed
+            // A failed checkup stores no error message, only its counts.
+            if let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                return message
+            }
+            return BackendSummary.saved(summaryRef, text: summary)?.localized ?? L10n.string("runtime.state.unhealthy")
         }
     }
 

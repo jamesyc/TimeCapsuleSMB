@@ -157,6 +157,50 @@ final class DeviceDashboardSnapshotMapperTests: XCTestCase {
         XCTAssertNotEqual(runtimeState.localizedSummary, "PASS 1, WARN 1, FAIL 0")
     }
 
+    func testFailedCheckupCountsFollowTheLanguageInUseWhenShown() throws {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+        let summary = try makeDoctorSummary(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime"),
+            testDoctorCheck(status: "FAIL", message: "share missing", domain: "SMB")
+        ])
+        L10n.apply(language: .english)
+
+        let runtimeState = try XCTUnwrap(DeviceDashboardSnapshotMapper.runtimeStateFromCheckup(
+            profile: profile,
+            skipSSH: false,
+            state: .failed,
+            summary: summary
+        ))
+
+        XCTAssertEqual(runtimeState.state, .unhealthy)
+        XCTAssertNil(runtimeState.errorMessage)
+        XCTAssertEqual(runtimeState.localizedSummary, "PASS 1, WARN 0, FAIL 1")
+        L10n.apply(language: .german)
+        XCTAssertEqual(
+            runtimeState.localizedSummary,
+            String(format: L10n.string("summary.checkup_counts"), locale: AppLanguage.german.locale, 1, 0, 1)
+        )
+        XCTAssertNotEqual(runtimeState.localizedSummary, "PASS 1, WARN 0, FAIL 1")
+    }
+
+    func testUnhealthyRuntimePrefersItsErrorMessageOverSavedCounts() {
+        var runtimeState = testRuntimeState(state: .unhealthy, summary: "PASS 1, WARN 0, FAIL 1")
+        runtimeState.summaryRef = BackendSummary(
+            key: "summary.checkup_counts",
+            arguments: [.int(1), .int(0), .int(1)],
+            text: "PASS 1, WARN 0, FAIL 1"
+        )
+        runtimeState.errorMessage = "  smbd crashed  "
+        XCTAssertEqual(runtimeState.localizedSummary, "smbd crashed")
+
+        runtimeState.errorMessage = "  "
+        runtimeState.summaryRef = nil
+        runtimeState.summary = ""
+        XCTAssertEqual(runtimeState.localizedSummary, L10n.string("runtime.state.unhealthy"))
+    }
+
     private func makeDoctorSummary(checks: [JSONValue]) throws -> DoctorSummary {
         DoctorSummary(payload: try testDoctorPayload(checks: checks).decode(DoctorPayload.self))
     }
