@@ -1,8 +1,8 @@
 diff --git a/main.c b/main.c
-index 229a889..fbad789 100644
+index 229a889..4076bb0 100644
 --- a/main.c
 +++ b/main.c
-@@ -1729,10 +1729,42 @@ static void unset_env_var(const char *var)
+@@ -1729,6 +1729,43 @@ static void unset_env_var(const char *var)
  }
  
  
@@ -19,11 +19,19 @@ index 229a889..fbad789 100644
 + * fault-ahead off for the writable segment, and children inherit it.
 + * .preinit_array opens the part of the segment that is ever written and "end"
 + * closes .bss (both from the linker script; "end" is what libc's sbrk() starts
-+ * from). Samba's talloc and the unified service do the same.
++ * from). Samba's talloc and the unified service do the same. Running it as a
++ * constructor, first among them where GCC 4.3+ has priorities (the NetBSD 6
++ * lane), leaves only libc's own startup writes before it. The build fails if
++ * the binary lacks this call (build/_data_segment_check.sh).
 + */
 +extern char tc_data_first[] __asm__("__preinit_array_start");
 +extern char tc_data_end[] __asm__("end");
 +
++#if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3)
++__attribute__((constructor(101)))
++#else
++__attribute__((constructor))
++#endif
 +static void tc_disable_data_faultahead(void)
 +{
 +	uintptr_t page = (uintptr_t)getpagesize();
@@ -38,10 +46,3 @@ index 229a889..fbad789 100644
  int main(int argc,char *argv[])
  {
  	int ret;
- 
-+#if defined(__NetBSD__)
-+	tc_disable_data_faultahead();
-+#endif
- 	raw_argc = argc;
- 	raw_argv = argv;
- 

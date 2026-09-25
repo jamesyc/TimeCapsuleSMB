@@ -25,6 +25,34 @@ class ServiceBuildWrapperTests(unittest.TestCase):
             self.assertTrue((root / "stage" / "service.stripped").exists())
             self.assertIn("service.sources", log.read_text())
 
+    def test_data_faultahead_check_gates_stripping(self) -> None:
+        for wrapper in ("service.sh", "serviceoldle.sh", "serviceoldbe.sh"):
+            with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                helper = BuildWrapperHarness()
+                env, log, _, _ = helper.env_for(root, triple="armeb--netbsdelf" if "be" in wrapper else "arm--netbsdelf")
+                objdump_args = root / "objdump.args"
+                env["TEST_OBJDUMP_ARGS"] = str(objdump_args)
+
+                result = helper.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertIn("service: disable_data_faultahead turns off fault-ahead", log.read_text())
+                # The unstripped image is checked, before strip drops the symbols.
+                self.assertEqual(objdump_args.read_text().splitlines()[-1], str(root / "stage" / "service"))
+
+                # An image without entry.c's madvise call is never stripped for packaging.
+                (root / "stage" / "service.stripped").unlink()
+                no_call = root / "no-madvise.txt"
+                no_call.write_text("")
+                env["TEST_OBJDUMP_DISASM"] = str(no_call)
+
+                result = helper.run_wrapper(wrapper, env)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("disable_data_faultahead does not call madvise", log.read_text())
+                self.assertFalse((root / "stage" / "service.stripped").exists())
+
     def test_netbsd4le_uses_little_endian_lane_without_sysroot(self) -> None:
         helper = BuildWrapperHarness()
         with tempfile.TemporaryDirectory() as tmp:

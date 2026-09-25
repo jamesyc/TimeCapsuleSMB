@@ -2,6 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/_data_segment_check.sh"
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
@@ -94,6 +95,8 @@ mkdir -p "$RSYNC_WORK" "$RSYNC_BUILD" "$RSYNC_STAGE" "$RSYNC_STAGE/bin" "$(dirna
         exit 1
     fi
 
+    # rsync patch 0003's constructor keeps .data writes on Apple's kernels.
+    verify_data_faultahead "$RSYNC_BUILD/rsync" tc_disable_data_faultahead || exit 1
     cp "$RSYNC_BUILD/rsync" "$RSYNC_STAGE/bin/$RSYNC_BIN_NAME"
     cp "$RSYNC_STAGE/bin/$RSYNC_BIN_NAME" "$RSYNC_STAGE/$RSYNC_BIN_NAME.stripped"
     "$STRIP" --strip-unneeded "$RSYNC_STAGE/$RSYNC_BIN_NAME.stripped"

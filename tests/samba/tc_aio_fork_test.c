@@ -446,10 +446,11 @@ static void test_cleanup(struct vfs_handle_struct *h)
  * copy-on-write from the executable. The first write to a page faults, and
  * the kernel gives the process a private copy of that page. While handling
  * that fault, UVM "fault-ahead" also maps the neighbouring pages that are
- * already in memory: 4 below and 3 above (UVM's MADV_NORMAL window). On
- * Apple's NetBSD 4 and NetBSD 6 kernels it maps those neighbours from the
- * executable file even when the process already has its own modified copy,
- * so every global on them silently returns to its initial value. A forked
+ * already in memory: 4 below and 3 above as measured, which matches UVM's
+ * default fault-ahead window. On Apple's NetBSD 4 and NetBSD 6 kernels it
+ * maps those neighbours from the executable file even when the process
+ * already has its own modified copy, so every global on them silently
+ * returns to its initial value. A forked
  * child is hit the same way: its first write to a page can undo what the
  * parent set on the pages around it. .bss beyond the file is not affected;
  * only file-backed pages can revert. Linux never does this, so this test
@@ -487,18 +488,21 @@ static void test_cleanup(struct vfs_handle_struct *h)
  * The mitigation. madvise(MADV_RANDOM) on the writable segment turns
  * fault-ahead off there, and fork() children inherit it. Touching every page
  * at startup also stops it, but each of those touches is itself a first write
- * that can revert what libc already set. The call runs before anything else
- * writes globals:
- *   - every Samba binary: talloc_lib_init() (Samba patch 0046);
- *   - the unified service: main() in build/native/service/entry.c;
- *   - the bundled rsync: main() (rsync patch 0003).
+ * that can revert what libc already set. The call is a constructor, first
+ * among them where GCC 4.3+ has priorities (NetBSD 6), so only libc's own
+ * startup writes come before it:
+ *   - every Samba binary: talloc (Samba patch 0046), which also calls it from
+ *     talloc_lib_init() because NetBSD 4's GCC 4.1 has no priorities;
+ *   - the unified service: build/native/service/entry.c;
+ *   - the bundled rsync: rsync patch 0003.
  * The range runs from __preinit_array_start (the writable segment before it
  * is only .eh_frame, never written) to "end", both from the linker script.
  * Use "end", not "_end": the NetBSD 4 migrator link gets a wrong _end, while
  * "end" (where libc's own sbrk() starts) is right in every lane. The cost is
  * a few extra minor faults per process: pages that are only read are now
  * mapped one at a time. Any new static binary shipped to the devices needs
- * the same call. Apple's own daemons are not protected; the kernel is not
+ * the same call, and build/_data_segment_check.sh must verify it before the
+ * binary is staged. Apple's own daemons are not protected; the kernel is not
  * ours to fix.
  *
  * If it comes back. Suspect this when a device-only failure moves or vanishes

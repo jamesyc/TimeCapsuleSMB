@@ -200,6 +200,7 @@
 # dropping this process's (or its parent's) changes to them. Globals silently
 # returned to their initial values; talloc_magic did, so talloc aborted with
 # "Bad talloc magic value" in forked children and elsewhere, depending only on
-# code layout. talloc's constructor, linked into every Samba binary, turns
-# fault-ahead off for the writable segment with MADV_RANDOM before it writes.
+# code layout. A first-priority constructor in talloc, linked into every Samba
+# binary, turns fault-ahead off for the writable segment with MADV_RANDOM, and
+# talloc_lib_init repeats it where NetBSD 4's GCC has no constructor priorities.
 0046-time-capsule-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment

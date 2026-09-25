@@ -2,6 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/_data_segment_check.sh"
 SERVICE_BIN_NAME=service
 
 TOOLDIR="$TOOLS"
@@ -80,6 +81,8 @@ if ! {
         "$@" \
         -o "$SERVICE_STAGE/$SERVICE_BIN_NAME" \
         $SERVICE_LDFLAGS || exit 1
+    # entry.c's constructor keeps .data writes on Apple's kernels.
+    verify_data_faultahead "$SERVICE_STAGE/$SERVICE_BIN_NAME" disable_data_faultahead || exit 1
 
     cp "$SERVICE_STAGE/$SERVICE_BIN_NAME" "$SERVICE_STAGE/$SERVICE_BIN_NAME.stripped" || exit 1
     "$TOOLDIR/bin/$TRIPLE-strip" --strip-unneeded "$SERVICE_STAGE/$SERVICE_BIN_NAME.stripped" || exit 1

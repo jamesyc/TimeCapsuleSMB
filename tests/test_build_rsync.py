@@ -7,6 +7,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from tests.build_wrapper_harness import make_fake_elf_tools
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,18 +32,7 @@ class RsyncBuildScriptTests(unittest.TestCase):
         self.make_executable(tools / f"{triple}-ar", "#!/bin/sh\nexit 0\n")
         self.make_executable(tools / f"{triple}-ranlib", "#!/bin/sh\nexit 0\n")
         self.make_executable(tools / f"{triple}-strip", "#!/bin/sh\nexit 0\n")
-        self.make_executable(
-            tools / f"{triple}-objdump",
-            textwrap.dedent(
-                """\
-                #!/bin/sh
-                if [ "${1:-}" = "-p" ]; then
-                    printf 'Program Header:\\n'
-                fi
-                exit 0
-                """
-            ),
-        )
+        make_fake_elf_tools(tools, triple)
 
     def prepare_fake_rsync_source(self, src_dir: Path) -> None:
         self.make_executable(
@@ -183,6 +174,32 @@ class RsyncBuildScriptTests(unittest.TestCase):
                     self.assertIn(expected_host, capture.read_text().splitlines())
                     log_path = Path(env["RSYNC_NETBSD7_LOG" if lane == "netbsd7" else "RSYNC_NETBSD4BE_LOG" if lane == "netbsd4be" else "RSYNC_NETBSD4LE_LOG"])
                     self.assertIn(expected_abi_log, log_path.read_text())
+
+    def test_data_faultahead_check_gates_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env_for_lane(root, "netbsd7", root / "configure-args.txt", root / "configure-env.txt")
+            stage = Path(env["RSYNC_NETBSD7_STAGE"])
+            log = Path(env["RSYNC_NETBSD7_LOG"])
+
+            result = self.run_wrapper("rsync.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("rsync: tc_disable_data_faultahead turns off fault-ahead", log.read_text())
+
+            # A binary without patch 0003's madvise call is never staged.
+            for staged in (stage / "bin" / "rsync", stage / "rsync.stripped"):
+                staged.unlink()
+            no_call = root / "no-madvise.txt"
+            no_call.write_text("")
+            env["TEST_OBJDUMP_DISASM"] = str(no_call)
+
+            result = self.run_wrapper("rsync.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tc_disable_data_faultahead does not call madvise", log.read_text())
+            self.assertFalse((stage / "bin" / "rsync").exists())
+            self.assertFalse((stage / "rsync.stripped").exists())
 
     def test_missing_source_fails_before_configure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

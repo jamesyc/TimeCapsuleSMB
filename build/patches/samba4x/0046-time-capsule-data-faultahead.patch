@@ -1,11 +1,11 @@
 diff --git a/lib/talloc/talloc.c b/lib/talloc/talloc.c
 --- a/lib/talloc/talloc.c
 +++ b/lib/talloc/talloc.c
-@@ -392,11 +392,51 @@ _PUBLIC_ void talloc_set_log_fn(void (*log_fn)(const char *message))
+@@ -392,11 +392,61 @@ _PUBLIC_ void talloc_set_log_fn(void (*log_fn)(const char *message))
  #define CONSTRUCTOR
  #pragma init (talloc_lib_init)
  #endif
-+#if defined(__NetBSD__) && defined(TC_SAMBA4X_VFS_AT_PATH_COMPAT)
++#if defined(__NetBSD__) && defined(TC_SAMBA4X_APPLIANCE)
 +#include <sys/mman.h>
 +/*
 + * Time Capsule appliance builds (patch 0046). Apple's NetBSD 4 and NetBSD 6
@@ -19,16 +19,26 @@ diff --git a/lib/talloc/talloc.c b/lib/talloc/talloc.c
 + * layout (tc_aio_fork_test, and tc_native_links_test once cases were added).
 + *
 + * MADV_RANDOM turns fault-ahead off for the writable segment, and a forked
-+ * child inherits that. Every Samba binary links talloc, and this constructor
-+ * writes talloc_magic, so do it here, first. The linker script provides both
++ * child inherits that. Every Samba binary links talloc, so it lives here,
++ * ahead of talloc_lib_init's own writes. The linker script provides both
 + * bounds: .preinit_array opens the part of the segment that is ever written
 + * (only .eh_frame, never written, precedes it), and "end" closes .bss. Use "end",
 + * which libc's own sbrk() starts from: the NetBSD 4 migrator link gets a wrong
 + * _end (and _edata), while "end" is right in every lane.
++ *
++ * It runs as its own constructor, ahead of every other one where GCC 4.3+ has
++ * constructor priorities (the NetBSD 6 lane). NetBSD 4's GCC 4.1 has none, so
++ * talloc_lib_init also calls it before it writes. The build fails if a staged
++ * binary lacks this function (build/_data_segment_check.sh).
 + */
 +extern char tc_data_first[] __asm__("__preinit_array_start");
 +extern char tc_data_end[] __asm__("end");
 +
++#if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3)
++__attribute__((constructor(101)))
++#else
++__attribute__((constructor))
++#endif
 +static void tc_disable_data_faultahead(void)
 +{
 +	uintptr_t page = (uintptr_t)getpagesize();
@@ -47,7 +57,7 @@ diff --git a/lib/talloc/talloc.c b/lib/talloc/talloc.c
  void talloc_lib_init(void)
  {
  	uint32_t random_value;
-+#if defined(__NetBSD__) && defined(TC_SAMBA4X_VFS_AT_PATH_COMPAT)
++#if defined(__NetBSD__) && defined(TC_SAMBA4X_APPLIANCE)
 +	tc_disable_data_faultahead();
 +#endif
  #if defined(HAVE_GETAUXVAL) && defined(AT_RANDOM)

@@ -16,10 +16,18 @@ int tc_telemetry_main(int argc, char **argv);
  * segment; every role and child inherits it. .preinit_array opens the part of
  * the segment that is ever written and "end" closes .bss (both from the linker
  * script; "end" is what libc's sbrk() starts from, and is right where _end is
- * not). Samba's talloc does the same for smbd (Samba patch 0046). */
+ * not). Samba's talloc does the same for smbd (Samba patch 0046). Running it as a
+ * constructor, first among them where GCC 4.3+ has priorities (the NetBSD 6
+ * lane), leaves only libc's own startup writes before it. The build fails if the
+ * binary lacks this call (build/_data_segment_check.sh). */
 extern char data_first[] __asm__("__preinit_array_start");
 extern char data_end[] __asm__("end");
 
+#if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3)
+__attribute__((constructor(101)))
+#else
+__attribute__((constructor))
+#endif
 static void disable_data_faultahead(void) {
     uintptr_t page = (uintptr_t)getpagesize();
     uintptr_t start = (uintptr_t)data_first & ~(page - 1);
@@ -31,9 +39,6 @@ static void disable_data_faultahead(void) {
 /* One static image, independent processes. Each daemon still owns its own
  * collector/history; this dispatcher does not introduce a plan IPC protocol. */
 int main(int argc, char **argv) {
-#if defined(__NetBSD__)
-    disable_data_faultahead();
-#endif
     if (argc > 1 && !strcmp(argv[1], "manager"))
         return tc_manager_main(argc - 1, argv + 1);
     if (argc > 1 && !strcmp(argv[1], "discovery"))

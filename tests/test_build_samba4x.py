@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+
+from tests.build_wrapper_harness import make_fake_elf_tools
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -97,25 +100,8 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 """
             ),
         )
-        self.make_executable(
-            tools / f"{triple}-objdump",
-            textwrap.dedent(
-                """\
-                #!/bin/sh
-                case "${1:-}" in
-                    -h)
-                        printf '  1 .note.netbsd.ident 00000000\\n'
-                        printf '  2 .note.netbsd.pax 00000000\\n'
-                        ;;
-                    -p)
-                        printf 'Program Header:\\n'
-                        ;;
-                esac
-                exit 0
-                """
-            ),
-        )
-        for name in ("ar", "ranlib", "readelf", "strip"):
+        make_fake_elf_tools(tools, triple)
+        for name in ("ar", "ranlib", "strip"):
             self.make_executable(tools / f"{triple}-{name}", "#!/bin/sh\nexit 0\n")
 
     def prepare_fake_samba_source(self, src_dir: Path) -> None:
@@ -374,7 +360,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertTrue(cross_answers.endswith("/samba4x-4.25.0rc2-netbsd7.answers"))
             self.assertFalse(cross_exec_capture.exists())
 
-    def test_appliance_lanes_enable_private_xattr_syscalls(self) -> None:
+    def test_appliance_lanes_enable_private_kernel_workarounds(self) -> None:
         for wrapper, lane, log_name in (
             ("samba4x.sh", "netbsd7", "SAMBA4X_NETBSD7_LOG"),
             ("samba4xoldle.sh", "netbsd4le", "SAMBA4X_NETBSD4LE_LOG"),
@@ -391,6 +377,7 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 for variable in ("CFLAGS=", "CPPFLAGS="):
                     line = next(item for item in log if item.startswith(variable))
                     self.assertIn("-DTC_AIRPORT_NATIVE_XATTR_SYSCALLS=1", line)
+                    self.assertIn("-DTC_SAMBA4X_APPLIANCE=1", line)
 
     def test_generation_helper_starts_from_fresh_seed_and_ignores_stale_answers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -742,6 +729,37 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                         " ".join((target + ".stripped", *arguments)).rstrip() + (" " if not arguments else "")
                         for target, arguments in execution_cases(True)
                     ])
+
+    def test_data_faultahead_check_gates_staging_of_smbd_and_migrator(self) -> None:
+        for wrapper, lane in (("samba4x.sh", "netbsd7"),
+                              ("samba4xoldle.sh", "netbsd4le"),
+                              ("samba4xoldbe.sh", "netbsd4be")):
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.env_for_lane(root, lane, root / "configure.txt")
+                log = Path(env[f"SAMBA4X_{lane.upper()}_LOG"])
+                stage = Path(env[f"SAMBA4X_{lane.upper()}_STAGE"])
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                checked = [line for line in log.read_text().splitlines()
+                           if "tc_disable_data_faultahead turns off fault-ahead" in line]
+                self.assertEqual([line.split(":")[0].rsplit("/", 1)[1] for line in checked],
+                                 ["smbd", "tc_xattr_hfs_migrate"])
+
+                # A binary without patch 0046's madvise call is never staged.
+                shutil.rmtree(stage)
+                no_call = root / "no-madvise.txt"
+                no_call.write_text("")
+                env["TEST_OBJDUMP_DISASM"] = str(no_call)
+
+                result = self.run_wrapper(wrapper, env)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("tc_disable_data_faultahead does not call madvise", log.read_text())
+                self.assertFalse((stage / "sbin/smbd").exists())
+                self.assertFalse((stage / "sbin/smbd.stripped").exists())
 
     def test_rc2_size_budget_accepts_boundary_and_rejects_growth(self) -> None:
         for wrapper, lane in (("samba4x.sh", "netbsd7"),
