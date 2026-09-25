@@ -422,7 +422,7 @@ reparse points, and when a newly created XSym file or symlink reparse
 placeholder is closed, it replaces it with a native link. See `DETAIL.md`
 "Symbolic Links".
 
-- `tc_native_links_test` passed all 16 cases:
+- `tc_native_links_test` passed all 15 cases:
   - on NetBSD 6, on the mounted HFS volume;
   - on NetBSD 4 LE, run from `/mnt/Memory` with its working directory on HFS.
     Run from the disk, the same image aborted in talloc, as documented above.

@@ -68,7 +68,7 @@ Once deployment is complete, you can connect via:
 
 #### Can I keep using an existing Time Machine backup?
 
-Yes. Install with the standard settings first and confirm the SMB connection works. Then move the existing `.sparsebundle` into the root of the SMB share Time Machine sees. With standard internal-disk settings, that is the `ShareRoot` folder. If you intentionally enabled "Internal Share Uses Disk Root", that is the disk root.
+Yes. Install with the standard settings first and confirm the SMB connection works. Then move the existing `.sparsebundle` into the root of the SMB share Time Machine sees. With standard internal-disk settings, that is the `ShareRoot` folder. If you intentionally enabled "Share internal disk root", that is the disk root.
 
 After the bundle is in the right place, reconnect Time Machine to the new SMB share and choose the existing backup when macOS offers it.
 
@@ -213,7 +213,7 @@ For more information, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177
 
 We use ACP `MaSt` to check what hard drives are connected to the device. If you see the message `No internal disk was detected after 10 MaSt queries spaced 3 seconds apart`, that means we checked 10 times and the hard drive never loaded. 
 
-- If you are using an AirPort Express with an external hard drive, make sure it is plugged in.
+- If you are using an AirPort Extreme with an external hard drive, make sure it is plugged in.
 - If you are using an external hard drive, make sure it's properly formatted with HFS+
 - If you have a Time Capsule with an internal hard drive, then Apple ACP cannot detect the hard drive for some reason. Try reformatting it or swapping to a different hard drive.
 
@@ -318,16 +318,16 @@ Yes! If you want to rebuild `smbd` yourself, run the scripts in `build/` on a Ne
 
 In the macOS app, each saved device has advanced settings for the managed SMB runtime. These settings are saved to the local device profile first. Run **Install / Update** afterward to push runtime-affecting changes to the Time Capsule.
 
-- **Mount wait seconds**: default `30`. How long deploy, uninstall, fsck, and related operations wait for the AirPort disk to wake and mount.
-- **ATA idle seconds**: default `300`. Sets the built-in ATA disk idle timer when the managed runtime starts. Use `0` to disable the idle timer.
-- **ATA standby seconds**: default blank. Optionally sets the built-in ATA disk standby timer. Leave blank to avoid applying a standby timer; use `0` to disable the standby timer.
+- **Mount wait**: default `30`. How long deploy, uninstall, fsck, and related operations wait for the AirPort disk to wake and mount.
+- **ATA idle**: default `300`. Sets the built-in ATA disk idle timer when the managed runtime starts. Use `0` to disable the idle timer.
+- **ATA standby**: default blank. Optionally sets the built-in ATA disk standby timer. Leave blank to avoid applying a standby timer; use `0` to disable the standby timer.
 - **NBNS**: always on. Apple's native NetBIOS name responder runs automatically so older SMB/Windows-style network browsing can find the device.
-- **Internal Share Uses Disk Root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.
+- **Share internal disk root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.
 - **Allow SMB Share Browsing**: default off. Relaxes anonymous browse restrictions so clients can enumerate shares more easily. Shares still require authentication.
 - **Advertise AFP over Bonjour**: default off — leave it off; macOS 26.x/27 hides Time Capsules that advertise AFP. When off, Time Machine ADisk records advertise SMB-only `adVF=0x82`. When on, `_afpovertcp` is registered too and ADisk records use AFP+SMB `adVF=0x83`. Apple's AFP server stays running with either setting; this option controls advertising only. Which interfaces get SMB/ADISK follows the AirPort Utility switches (LAN always; WAN and guest only in router mode with "share disks over WAN"), the same way Apple's own file servers did.
 - **Allow Any SMB Protocol**: default off. Removes the SMB2/SMB3-only protocol restriction. Leave off unless an old client needs legacy SMB compatibility.
-- **Force Debug Logging**: default off. Enables verbose smbd/mDNS logging on the device. Use only for troubleshooting because it writes more logs.
-- **Use Netatalk for metadata**: default on. Selects the preferred legacy migration representation (`fruit:metadata = netatalk`); if unchecked, it selects `stream`. HFS runtime metadata is native after migration, while this setting remains the backend choice for a future non-HFS filesystem.
+- **Enable debug logging**: default off. Enables verbose smbd/mDNS logging on the device. Use only for troubleshooting because it writes more logs.
+- **Use Netatalk metadata**: default on. Selects the preferred legacy migration representation (`fruit:metadata = netatalk`); if unchecked, it selects `stream`. HFS runtime metadata is native after migration, while this setting remains the backend choice for a future non-HFS filesystem.
 
 Share names and Bonjour names still come from the Time Capsule itself. For most users, the defaults are recommended.
 
@@ -337,7 +337,7 @@ Share names and Bonjour names still come from the Time Capsule itself. For most 
 
 Download a new zip file from the releases page: https://github.com/jamesyc/TimeCapsuleSMB/releases
 
-If using the macOS app, just open the app and click "Install". 
+If using the macOS app, just open the app and click "Install / Update Samba". 
 
 To use git to update to a newer version:
 1. `git pull` in the TimeCapsuleSMB folder

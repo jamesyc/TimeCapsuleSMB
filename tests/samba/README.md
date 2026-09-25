@@ -95,7 +95,7 @@ blank resource-fork payload. A real temporary `xattr.tdb` case migrates
 FinderInfo under both public metadata settings, canonical Apple xattrs,
 ordinary ACL data, and a fragmented Windows stream, then verifies TDB deletion
 and detached-volume orphan retention through the program entry point. Additional
-cases cover per-file TDB retirement, failed transaction commits, subsequent boots
+cases cover per-file TDB retirement, failed transaction commits, subsequent deploys
 with a previously absent volume, prevention of stale-value replay, directory-read
 errors, and ordinary directories whose names begin with `._`. The `orphans` case
 (v3.1.0) covers the proven-orphan versus unresolved split of unmatched rows,
@@ -150,7 +150,7 @@ python -m tests.samba.device_supervision --config .env.backup6
 ```
 
 The test verifies direct-child process groups, durable network reconnect,
-SIGHUP forwarding, and disconnection of one replaced or reconfigured scratch
+SIGHUP reload, and disconnection of one replaced or reconfigured scratch
 share root while a second tree in the same session stays usable. Root changes
 cover narrowing, widening and a simultaneous rename without restarting smbd. It keeps a file open during
 Samba, discovery, telemetry, and manager failures, checks fresh-client recovery,

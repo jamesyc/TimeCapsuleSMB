@@ -485,14 +485,14 @@ published with a subset.
 
 ## Bonjour Discovery Boundaries
 
-Local Bonjour discovery is intentionally service-centric. `timecapsulesmb.discovery.bonjour.discover()` returns one normalized record per service instance, not one merged record per physical device.
+Local Bonjour discovery is intentionally service-centric. `timecapsulesmb.discovery.bonjour.discover_snapshot_merged_detailed()` returns one normalized record per service instance, not one merged record per physical device.
 
 That distinction matters:
 - `_airport._tcp.local.` is the Apple device identity and is the only service configure uses for the interactive device list
-- `_smb._tcp.local.` is the managed Samba service identity and is what doctor/deploy Bonjour checks use
+- `_smb._tcp.local.` is the managed Samba service identity and is what doctor Bonjour checks use
 - `_device-info._tcp.local.` may share the same name, hostname, and IP as `_smb._tcp.local.`, but it must remain a separate raw record
 
-Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.discover()`. Merging service records creates ambiguous objects with one name/hostname but multiple meanings, and it causes duplicate-looking or misleading configure/doctor output. The stored `service_type` should remain the raw observed value. Callers should filter raw discovery results by the service prefix they actually need, such as `_airport` for configure and `_smb` for doctor/deploy. Prefix filtering intentionally matches both `_smb._tcp.local.` and `_smb._tcp.local`.
+Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.discover_snapshot_merged_detailed()`. Merging service records creates ambiguous objects with one name/hostname but multiple meanings, and it causes duplicate-looking or misleading configure/doctor output. The stored `service_type` should remain the raw observed value. Callers should filter raw discovery results by the service prefix they actually need, such as `_airport` for configure and `_smb` for doctor. Prefix filtering intentionally matches both `_smb._tcp.local.` and `_smb._tcp.local`.
 
 ## Registered mDNS Records
 
@@ -715,7 +715,7 @@ Device checks: `.venv/bin/python -m tests.samba.links_device --env .env --afp`
 
 ## Discovery Controller Details
 
-The discovery controller is:
+The discovery controller is the `service discovery` role of `bin/service/service`.
 
 It is built from:
 - [build/native/discovery/](build/native/discovery/) (controller entry point and `wcifsnd` lifecycle/IPC)
@@ -835,7 +835,7 @@ Always enabled when eligible. When the payload and an SMB-eligible IPv4 address 
 
 Default: off. Enables `RSYNC_ENABLED=1`, causing the manager to stage the bundled daemon into RAM and expose a writable `shareroot` module on TCP `873`, running as Unix `root:wheel`. The generated rsync configuration has no rsync authentication block, so enable this only on a trusted LAN; the SMB link policy does not restrict the separate rsync daemon.
 
-### Internal Share Uses Disk Root
+### Share internal disk root
 
 Default: off. When off, an internal disk share points at `/Volumes/dkN/ShareRoot`; when on, it exposes the whole `/Volumes/dkN` root instead. External disks always use their volume root, and the `.samba4` payload remains hidden from SMB clients through the share veto rule.
 
@@ -860,11 +860,11 @@ every other link is isolated. Apple's `_airport._tcp` and host records follow
 Apple's rules on every interface. Samba wildcard-listens on IPv4 and IPv6;
 Bonjour visibility plus Apple's firewall implement the AirPort Utility policy.
 
-### Use Netatalk for metadata
+### Use Netatalk metadata
 
 Default: on. Selects `fruit:metadata = netatalk`; turning it off selects `fruit:metadata = stream`. On HFS, the selection is used by the one-shot migrator to choose between conflicting legacy representations, after which `fruit` reads and writes native FinderInfo regardless of this setting. It remains the runtime backend choice for a future non-HFS filesystem.
 
-### Force Debug Logging
+### Enable debug logging
 
 Default: off. Enables `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1`, sets Samba to `log level = 10`, and removes the normal managed payload-log size cap. Use it only while troubleshooting because verbose unbounded logs can grow on the disk and add overhead.
 
@@ -878,9 +878,9 @@ Default: off. Omits the generated SMB2-to-SMB3 minimum/maximum protocol lines an
 
 ### Require SMB Encryption
 
-Default: off. Writes `server smb encrypt = required`, `server min protocol = SMB3_00`, and `server max protocol = SMB3`, so clients must negotiate encrypted SMB3. The app disables **Allow Any SMB Protocol** and **Force Disable SMB Signing and Encryption** when this option is selected.
+Default: off. Writes `server smb encrypt = required`, `server min protocol = SMB3_00`, and `server max protocol = SMB3`, so clients must negotiate encrypted SMB3. The app disables **Allow Any SMB Protocol** and **Disable SMB signing and encryption** when this option is selected.
 
-### Force Disable SMB Signing and Encryption
+### Disable SMB signing and encryption
 
 Default: off. Writes `server signing = disabled` and `server smb encrypt = off`. This may improve throughput when a client would otherwise require signing, but it weakens SMB transport security and cannot be combined with **Require SMB Encryption**.
 
@@ -973,6 +973,7 @@ Arguments:
 - `--enable-ssh`: enable SSH via ACP if SSH is closed
 - `--no-enable-ssh`: fail instead of enabling SSH via ACP if SSH is closed
 - `--json`: emit a machine-readable result; requires `--no-input`
+- `--force-disable-smb-signing-and-encryption` / `--no-force-disable-smb-signing-and-encryption`: write `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true|false`; `--disable-smb-security` and `--no-disable-smb-security` are aliases
 
 Hidden advanced arguments:
 - `--internal-share-use-disk-root` / `--no-internal-share-use-disk-root`: write `TC_INTERNAL_SHARE_USE_DISK_ROOT=true|false`
@@ -980,7 +981,6 @@ Hidden advanced arguments:
 - `--mdns-advertise-afp` / `--no-mdns-advertise-afp`: write `TC_MDNS_ADVERTISE_AFP=true|false`
 - `--any-protocol` / `--no-any-protocol`: write `TC_ANY_PROTOCOL=true|false`
 - `--require-smb-encryption` / `--no-require-smb-encryption`: write `TC_REQUIRE_SMB_ENCRYPTION=true|false`
-- `--force-disable-smb-signing-and-encryption` / `--no-force-disable-smb-signing-and-encryption`: write `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true|false`; `--disable-smb-security` and `--no-disable-smb-security` are aliases
 - `--netatalk` / `--no-netatalk`: write `TC_FRUIT_METADATA_NETATALK=true|false`
 - `--enable-vfs-aio-fork` / `--disable-vfs-aio-fork`: writes `TC_VFS_AIO_FORK_ENABLED=true|false`; toggles the bounded `vfs_aio_fork` runtime profile
 - `--debug-logging` / `--no-debug-logging`: explicitly enable or disable managed runtime debug logging
@@ -1383,7 +1383,7 @@ Current deploy flow:
 - selects exactly one writable persistent payload home:
   - first writable internal `builtin=true` HFS volume
   - else first writable external HFS volume
-  - else fails with `no writable persistent volume found`
+  - else fails with `MaSt found N deployable HFS volume(s), but deploy could not write to any of them.`
 - computes the device-specific runtime and payload paths from that payload home
 - builds the plan and renders configuration locally before stopping services
 - confirms installation and reboot before stopping or replacing managed software (unless `--yes` is used)
@@ -1569,8 +1569,8 @@ Current active deploy artifact sizes (stripped bytes, v3.1.1):
 - NetBSD 4 big-endian `rsync`: about `872K`
 
 The unified service lives on `/mnt/Flash`; `smbd` and optional rsync are
-RAM-staged from the payload. Deploy performs a read-only Flash-capacity
-preflight before stopping services, verifies the replacement, removes legacy
+RAM-staged from the payload. Deploy checks free Flash space after removing
+old software, verifies the replacement, removes legacy
 standalone binaries, and flushes that cleanup.
 
 It assumes:

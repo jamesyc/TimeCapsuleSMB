@@ -52,9 +52,9 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 6. Wait for the app to enable SSH for your Time Capsule.
     - If it fails, close the app, reopen the app, remove the saved device, and try again.
     - Also, try rebooting your device.
-7. Click the added device in the left sidebar, and then click on the "Install/Update" tab.  
+7. Click the added device in the left sidebar, and then click on the "Install / Update" tab.  
    <img width="543" height="390" alt="image" src="https://github.com/user-attachments/assets/ea17ef0e-7624-4a06-888c-72ba6f8d4f8f" />  
-8. Click "Install/Update" to deploy to the device.  
+8. Click "Install / Update Samba" to deploy to the device.  
    <img width="544" height="390" alt="image" src="https://github.com/user-attachments/assets/49975391-29e5-46df-b249-2a75762983a7" />    
     - If deploying to the device fails, try removing the saved device from the app, then go back to step 4 above to "Add Device" again. It sometimes takes more than one deploy to copy all the files over.
     - There are reports the device may reset during a deploy, see [this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/177) for more information.
