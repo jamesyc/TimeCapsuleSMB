@@ -253,7 +253,8 @@ def test_failed_payload_switch_then_reversion_recopies_ram_image(manager):
     inventory(volumes[1:]);(root/'mounts').write_text(f'{root}/dk3 dk3 1\n')
     process.send_signal(signal.SIGHUP)
     wait(lambda rows:any(e['role']=='smbd' and e['kind']=='stop' for e in rows),20)
-    deadline=time.monotonic()+10
+    # The image is removed by the next stage job, after another storage job.
+    deadline=time.monotonic()+20
     while (root/'ram/sbin/smbd').exists() and time.monotonic()<deadline:time.sleep(.05)
     assert not (root/'ram/sbin/smbd').exists()
     # Desired state reverts to the old applied config, whose image was already
@@ -467,7 +468,9 @@ def test_term_resistant_foreign_wcifsnd_does_not_reset_discovery(manager):
         wait(lambda rows:sum(e['role']=='ps' for e in rows)>=2)
         assert native.poll() is None
         assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==starts
-        wait(lambda rows:native.poll() is not None,timeout=17)
+        # SIGKILL follows 10 s after first sighting, via ~1 s audits that
+        # can each run for seconds on a loaded host.
+        wait(lambda rows:native.poll() is not None,timeout=25)
         assert len([e for e in events() if e['role']=='discovery' and e['kind']=='start'])==starts
         assert len([e for e in events() if e['role']=='discovery' and e['kind']=='stop'])==stops
         assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
@@ -608,7 +611,8 @@ def test_preparation_recovers_on_unchanged_inventory(manager,failure):
     assert not started('smbd')(events())
     repair()
     # No HUP/topology/mount/user-count change: the explicit retry must recover.
-    wait(started('smbd'),12)
+    # Automatic storage retries back off 5 s then 15 s (storage/settle.c).
+    wait(started('smbd'),25)
     wait(lambda rows:any(e['role']=='discovery' and '--adisk-share' in e['args'] for e in rows))
     assert '[Data]' in (root/'ram/etc/smb.conf').read_text()
     assert process.poll() is None
@@ -622,7 +626,7 @@ def test_partial_retry_preserves_healthy_payload_and_does_not_inspect_it(manager
     # If retry touches the healthy payload, this would stop Samba or recopy it.
     (root/'dk2/.samba4/smbd').unlink()
     block.unlink()
-    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows),12)
+    wait(lambda rows:any(e['role']=='smbd' and e['kind']=='reload' for e in rows),25)
     assert '[USB]' in (root/'ram/etc/smb.conf').read_text()
     assert len([e for e in events() if e['role']=='smbd' and e['kind']=='start'])==1
     assert not any(e['role']=='smbd' and e['kind']=='stop' for e in events())
@@ -662,7 +666,9 @@ def test_launch_trims_actual_payload_logs_and_preserves_debug(manager,debug_key)
     for path in paths:path.write_bytes(content)
     (root/'ram/var/discovery.log').write_bytes(content)
     process.send_signal(signal.SIGHUP)
-    deadline=time.monotonic()+5
+    # The trim runs at the start of an audit. HUP cannot start one while an
+    # earlier audit (budget 20 s) is still reading the process table.
+    deadline=time.monotonic()+25
     while (root/'ram/var/discovery.log').stat().st_size>32768 and time.monotonic()<deadline:time.sleep(.05)
     assert (root/'ram/var/discovery.log').stat().st_size==16384
     assert [p.read_bytes() for p in paths]==[content,content]
@@ -679,7 +685,8 @@ def test_payload_log_symlink_is_rejected_without_touching_target(manager):
     protected=root/'protected-log';protected.write_bytes(b'preserve'*10000)
     (logs/'smbd-console.log').symlink_to(protected)
     process=start()
-    deadline=time.monotonic()+5
+    # First launch follows the MaSt, settings, storage and stage jobs.
+    deadline=time.monotonic()+20
     runtime=root/'ram/var/runtime.log'
     while time.monotonic()<deadline:
         if runtime.exists() and 'log destination unavailable' in runtime.read_text():break
