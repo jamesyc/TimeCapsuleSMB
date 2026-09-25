@@ -438,19 +438,90 @@ static void test_cleanup(struct vfs_handle_struct *h)
 	CHECK(list->num_children == 1 && list->cleanup_event != NULL);
 }
 
-/* Initialized and page-aligned, so it lives in .data and is backed by the executable. */
+/*
+ * Time Capsule kernel bug: lost writes to static data (reference notes)
+ * ====================================================================
+ *
+ * What happens. A static binary's initialized globals (.data) are mapped
+ * copy-on-write from the executable. The first write to a page faults, and
+ * the kernel gives the process a private copy of that page. While handling
+ * that fault, UVM "fault-ahead" also maps the neighbouring pages that are
+ * already in memory: 4 below and 3 above (UVM's MADV_NORMAL window). On
+ * Apple's NetBSD 4 and NetBSD 6 kernels it maps those neighbours from the
+ * executable file even when the process already has its own modified copy,
+ * so every global on them silently returns to its initial value. A forked
+ * child is hit the same way: its first write to a page can undo what the
+ * parent set on the pages around it. .bss beyond the file is not affected;
+ * only file-backed pages can revert. Linux never does this, so this test
+ * always passes on the host.
+ *
+ * What it looked like. Mostly nothing: a global quietly holds an old value.
+ * The loud case was talloc: talloc_lib_init() stores a randomized
+ * talloc_magic at startup (on NetBSD, derived from its own address) and
+ * checks every chunk header against it, so a reverted talloc_magic made the
+ * next talloc call abort with "Bad talloc magic value - unknown value". Here
+ * fork_stack and listener_handoff failed only on the devices, in forked
+ * children; later tc_native_links_test's convert_created aborted the same way
+ * in a single process. The allocator corruption seen in create_aio_child()
+ * (issue #295) fits too: jemalloc's own state lives in .data. Which global
+ * gets hit depends on which variables share pages and on the order of first
+ * writes, i.e. on the code layout. So the failure is deterministic for one
+ * binary but comes and goes with unrelated code changes, while padding .data,
+ * padding the environment or junk-filling the heap changes nothing.
+ *
+ * How it was found (2026-09-25). Source edits hid it, so the failing
+ * executable itself was binary-patched (layout unchanged): abort() replaced
+ * with _exit(<byte of lr>) to find the caller, talloc_abort() replaced with a
+ * write of its message and 1 KB of stack to stderr (a backtrace without a
+ * debugger), then a dump of the chunk header next to talloc_magic. The header
+ * held the randomized magic and the global held its file value: the whole
+ * page matched the executable. Logging trampolines on all 107 syscall stubs
+ * showed the value was intact at chdir() and gone by the next open(). What
+ * ran in between was one user-space store to a global two pages away,
+ * the first write to its page. Removing that single store fixed the run;
+ * removing a different store did not. A 60-line static C program (a
+ * page-aligned initialized array: change page 8, make the first write at
+ * distance d, re-read page 8) then showed pages -4..+3 reverting on both
+ * kernels, in one process and across fork(), with nothing but libc.
+ *
+ * The mitigation. madvise(MADV_RANDOM) on the writable segment turns
+ * fault-ahead off there, and fork() children inherit it. Touching every page
+ * at startup also stops it, but each of those touches is itself a first write
+ * that can revert what libc already set. The call runs before anything else
+ * writes globals:
+ *   - every Samba binary: talloc_lib_init() (Samba patch 0046);
+ *   - the unified service: main() in build/native/service/entry.c;
+ *   - the bundled rsync: main() (rsync patch 0003).
+ * The range runs from __preinit_array_start (the writable segment before it
+ * is only .eh_frame, never written) to "end", both from the linker script.
+ * Use "end", not "_end": the NetBSD 4 migrator link gets a wrong _end, while
+ * "end" (where libc's own sbrk() starts) is right in every lane. The cost is
+ * a few extra minor faults per process: pages that are only read are now
+ * mapped one at a time. Any new static binary shipped to the devices needs
+ * the same call. Apple's own daemons are not protected; the kernel is not
+ * ours to fix.
+ *
+ * If it comes back. Suspect this when a device-only failure moves or vanishes
+ * with unrelated code changes, or a global holds its initial value. Run this
+ * case on the device first. To dig in, do not rebuild with prints (that moves
+ * the layout): patch the binary instead, keep its layout, and compare the
+ * suspect global against its value in the executable.
+ */
+
+/* Initialized (non-zero), so it lives in .data backed by the executable, not
+ * in .bss; page-aligned so each index is one page. */
 #define DATA_PAGE 4096
 #define DATA_PAGES 16
 static volatile unsigned char data_pages[DATA_PAGES * DATA_PAGE] __attribute__((aligned(DATA_PAGE))) = { 1 };
 #define DATA_WORD(p) (*(volatile unsigned *)&data_pages[(p) * DATA_PAGE + 64])
 
 /*
- * The appliance kernels, handling the first write to a .data page, map the
- * neighbouring pages (4 below, 3 above) from the executable again and lose
- * this process's changes to them; talloc's constructor turns that fault-ahead
- * off (patch 0046). Change a page, then make the first write to a page near
- * it: the change must survive, and so must a parent's change in a forked
- * child that makes its own first write.
+ * Change a page (the victim), then make the first write to a page d pages
+ * away (the trigger): the victim must keep its value. Then fork, and make the
+ * child's first write to another nearby page: the parent's value must survive
+ * in the child too. Distances ±7 cover the -4..+3 fault-ahead window with
+ * margin. Without the mitigation, 7 of the 14 distances fail on the devices,
+ * the first at -4 ("distance -4: page 8 lost its write").
  */
 static void test_data_page_writes(void)
 {
@@ -471,11 +542,18 @@ static void test_data_page_writes(void)
 			pid_t grandchild;
 
 			alarm(15);
+			/* The victim's first write gives this process a private copy. */
 			DATA_WORD(victim) = 0x12345678;
+			/* The first write to the trigger page: its fault-ahead must not
+			 * map the victim from the executable again. Status 1: it did. */
 			DATA_WORD(victim + d) = 0xabcdef00;
 			if (DATA_WORD(victim) != 0x12345678) {
 				_exit(1);
 			}
+			/* After fork, the grandchild makes the first write to a page this
+			 * child never wrote (victim - d). Status 2: the value inherited
+			 * from the parent reverted in the grandchild. Status 3: the
+			 * grandchild could not be run or reaped. */
 			grandchild = fork();
 			if (grandchild == 0) {
 				DATA_WORD(victim - d) = 0xabcdef00;
