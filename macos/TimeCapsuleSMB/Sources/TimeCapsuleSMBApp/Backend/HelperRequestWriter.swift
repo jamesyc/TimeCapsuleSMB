@@ -54,7 +54,7 @@ private final class PipeRequestWriteState: @unchecked Sendable {
     }
 
     func start(continuation: CheckedContinuation<Void, Error>) {
-        queue.async {
+        queue.async { [self] in
             if self.completed {
                 continuation.resume(throwing: CancellationError())
                 return
