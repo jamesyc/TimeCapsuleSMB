@@ -13,7 +13,6 @@
 .PHONY: help
 .PHONY: require-build-tree preflight
 .PHONY: service service-netbsd7 service-netbsd4le service-netbsd4be service-all
-.PHONY: samba4 samba4-netbsd7 samba4-netbsd4le samba4-netbsd4be samba4-all
 .PHONY: samba4x samba4x-netbsd7 samba4x-netbsd4le samba4x-netbsd4be samba4x-all
 .PHONY: rsync rsync-netbsd7 rsync-netbsd4le rsync-netbsd4be rsync-all
 .PHONY: hello hello-netbsd7 hello-netbsd4le hello-netbsd4be hello-all
@@ -29,9 +28,9 @@ help:
 	@printf '%s\n' ''
 	@printf '%s\n' 'Common artifact targets:'
 	@printf '%s\n' '  make service-all           # unified native service for all three lanes'
-	@printf '%s\n' '  make samba4-netbsd7        # download Samba 4 source, then build NetBSD 6/7 lane'
-	@printf '%s\n' '  make samba4-netbsd4le      # download Samba 4 source, then build NetBSD 4 LE lane'
-	@printf '%s\n' '  make samba4-netbsd4be      # download Samba 4 source, then build NetBSD 4 BE lane'
+	@printf '%s\n' '  make samba4x-netbsd7       # download Samba 4.x source, then build NetBSD 6/7 lane'
+	@printf '%s\n' '  make samba4x-netbsd4le     # download Samba 4.x source, then build NetBSD 4 LE lane'
+	@printf '%s\n' '  make samba4x-netbsd4be     # download Samba 4.x source, then build NetBSD 4 BE lane'
 	@printf '%s\n' '  make rsync-netbsd7         # download rsync source, then build NetBSD 6/7 lane'
 	@printf '%s\n' '  make rsync-netbsd4le       # download rsync source, then build NetBSD 4 LE lane'
 	@printf '%s\n' '  make rsync-netbsd4be       # download rsync source, then build NetBSD 4 BE lane'
@@ -90,28 +89,6 @@ service-all: require-build-tree
 	./service.sh
 	./serviceoldle.sh
 	./serviceoldbe.sh
-
-samba4: require-build-tree samba4-netbsd7
-
-samba4-netbsd7: require-build-tree
-	./downloadsamba4.sh
-	./samba4.sh
-
-samba4-netbsd4le: require-build-tree
-	./downloadsamba4oldle.sh
-	./samba4oldle.sh
-
-samba4-netbsd4be: require-build-tree
-	./downloadsamba4oldbe.sh
-	./samba4oldbe.sh
-
-samba4-all: require-build-tree
-	./downloadsamba4.sh
-	./samba4.sh
-	./downloadsamba4oldle.sh
-	./samba4oldle.sh
-	./downloadsamba4oldbe.sh
-	./samba4oldbe.sh
 
 samba4x: require-build-tree samba4x-netbsd7
 
