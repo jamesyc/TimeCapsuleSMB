@@ -25,6 +25,8 @@ static bool name_mapping = true;
 static NTSTATUS fail_translate;
 static unsigned translate_calls;
 static int fail_symlink, fail_rename, fail_readlink, fail_setxattr, fail_ntimes, fail_unlink_aside;
+/* errno for SMB_VFS_FSTATAT of a symlink under its public name: the new link's check. */
+static int fail_stat_link;
 static unsigned notifies;
 /* sync() commits the HFS journal after a conversion; see tc_native_links_close_commit(). */
 static unsigned syncs;
@@ -38,6 +40,7 @@ static char workdir[PATH_MAX];
 /* Something another client does while a conversion is between two steps. */
 static void (*before_grab)(void);
 static void (*after_grab)(void);
+static void (*after_symlink)(void);
 /* Names read through an internal pathref because the creating handle was write-only. */
 static char pathref_reads[4][64];
 static size_t num_pathref_reads;
@@ -72,13 +75,27 @@ static int test_fstatat(const struct smb_filename *name, SMB_STRUCT_STAT *out)
 
 static int test_symlinkat(const struct smb_filename *target, const struct smb_filename *name)
 {
+	int ret;
 	if (fail_symlink) { errno = fail_symlink; return -1; }
-	return symlink(target->base_name, name->base_name);
+	ret = symlink(target->base_name, name->base_name);
+	if (ret == 0 && after_symlink != NULL) after_symlink();
+	return ret;
 }
 
 static bool is_aside(const char *name)
 {
 	return strncmp(name, ".tc-xsym.", 9) == 0;
+}
+
+static int test_vfs_fstatat(const struct smb_filename *name, SMB_STRUCT_STAT *out)
+{
+	struct stat st;
+	if (fail_stat_link && !is_aside(name->base_name) && lstat(name->base_name, &st) == 0 &&
+	    S_ISLNK(st.st_mode)) {
+		errno = fail_stat_link;
+		return -1;
+	}
+	return test_fstatat(name, out);
 }
 
 static int test_renameat(const struct smb_filename *from, const struct smb_filename *to)
@@ -378,7 +395,7 @@ static bool test_stale(struct share_mode_entry *e)
 #undef SMB_VFS_TRANSLATE_NAME
 #define SMB_VFS_FSTAT(fsp, st) test_fstat(fsp, st)
 #define SMB_VFS_PREAD(fsp, data, n, off) pread(fsp_get_io_fd(fsp), data, n, off)
-#define SMB_VFS_FSTATAT(conn, dirfsp, name, st, flags) test_fstatat(name, st)
+#define SMB_VFS_FSTATAT(conn, dirfsp, name, st, flags) test_vfs_fstatat(name, st)
 #define SMB_VFS_SYMLINKAT(conn, target, dirfsp, name) test_symlinkat(target, name)
 #define SMB_VFS_RENAMEAT(conn, sd, from, dd, to, how) test_renameat(from, to)
 #define SMB_VFS_UNLINKAT(conn, dirfsp, name, flags) test_unlinkat(name)
@@ -546,8 +563,9 @@ static bool no_temp_left(void)
 
 static void reset_hooks(void)
 {
-	before_grab = after_grab = NULL;
+	before_grab = after_grab = after_symlink = NULL;
 	fail_symlink = fail_rename = fail_readlink = fail_setxattr = fail_ntimes = fail_unlink_aside = 0;
+	fail_stat_link = 0;
 	resource_fork_size = 0;
 	stored_reparse_len = 0;
 	name_mapping = true;
@@ -591,6 +609,35 @@ static void replace_name(void)
 static void create_in_gap(void)
 {
 	put_file("gap", "newer", 5);
+}
+
+/* Another client acts on the new link before the conversion checks it. */
+static void remove_new_link(void)
+{
+	CHECK(unlink("unlinked") == 0);
+}
+
+static void replace_new_link(void)
+{
+	CHECK(unlink("relinked") == 0);
+	put_file("relinked", "newer", 5);
+}
+
+/* The one aside name left in the directory, or NULL. */
+static const char *aside_left(char *out, size_t len)
+{
+	DIR *d = opendir(".");
+	struct dirent *e;
+	const char *found = NULL;
+	CHECK(d != NULL);
+	while ((e = readdir(d)) != NULL) {
+		if (!is_aside(e->d_name)) continue;
+		CHECK(found == NULL);
+		snprintf(out, len, "%s", e->d_name);
+		found = out;
+	}
+	closedir(d);
+	return found;
 }
 
 /* A handle for opening "name" through the real default VFS module. */
@@ -942,6 +989,39 @@ int main(int argc, char **argv)
 		CHECK(convert(frame, "noremove", FILE_WAS_CREATED, NORMAL_CLOSE));
 		CHECK(is_link_to("noremove", "t.txt") && !no_temp_left() && syncs == 2);
 		CHECK(system("rm -f .tc-xsym.*") == 0);
+		/* The new link cannot be checked: neither it nor the original is removed, and the
+		 * original keeps what the client stored on it. */
+		reset_hooks();
+		put_file("unchecked", body, sizeof(body));
+		{
+			struct stat st, ast;
+			char name[64];
+			CHECK(stat("unchecked", &st) == 0);
+			xput(st.st_ino, "user.DOSATTRIB", "d", 1);
+			fail_stat_link = EIO;
+			CHECK(!convert(frame, "unchecked", FILE_WAS_CREATED, NORMAL_CLOSE));
+			CHECK(is_link_to("unchecked", "t.txt"));
+			CHECK(aside_left(name, sizeof(name)) != NULL);
+			CHECK(has_content(name, body, sizeof(body)));
+			CHECK(stat(name, &ast) == 0 && ast.st_ino == st.st_ino);
+			CHECK(xfind(st.st_ino, "user.DOSATTRIB") >= 0);
+			CHECK(ntimes_calls == 0 && notifies == 0 && syncs == 1);
+		}
+		CHECK(system("rm -f .tc-xsym.*") == 0);
+		/* Another client removed the new link: that removal stands, the original goes. */
+		reset_hooks();
+		put_file("unlinked", body, sizeof(body));
+		after_symlink = remove_new_link;
+		CHECK(!convert(frame, "unlinked", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(access("unlinked", F_OK) != 0 && errno == ENOENT);
+		CHECK(no_temp_left() && notifies == 0 && syncs == 1);
+		/* Another client put a file over the new link: the newer file wins. */
+		reset_hooks();
+		put_file("relinked", body, sizeof(body));
+		after_symlink = replace_new_link;
+		CHECK(!convert(frame, "relinked", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(has_content("relinked", "newer", 5));
+		CHECK(no_temp_left() && notifies == 0 && syncs == 1);
 	}
 	if (all || strcmp(c, "metadata") == 0) {
 		/* What the client stored on the created file moves to the link. */

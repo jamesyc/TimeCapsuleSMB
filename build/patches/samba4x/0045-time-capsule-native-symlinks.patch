@@ -1420,7 +1420,7 @@ diff --git a/source3/smbd/tc_native_links.c b/source3/smbd/tc_native_links.c
 new file mode 100644
 --- /dev/null
 +++ b/source3/smbd/tc_native_links.c
-@@ -0,0 +1,1200 @@
+@@ -0,0 +1,1219 @@
 +/*
 + * Time Capsule native symlinks.
 + *
@@ -2289,10 +2289,12 @@ new file mode 100644
 + * The name is never replaced blindly: whatever is there is renamed aside
 + * first and checked to be this very file, still unchanged; the link is then
 + * created with symlinkat(), which fails rather than replace an object that
-+ * appeared meanwhile. On any failure the original goes back. For the
-+ * microseconds between the two steps the name does not exist: the creating
-+ * client, whose requests are handled one at a time, never sees that, other
-+ * connections may. An SMB open that walked to the file before the lock was
++ * appeared meanwhile. On any failure the original goes back, except when
++ * the new link can no longer be checked: then the original stays aside,
++ * where no other object can be lost to it. For the microseconds between
++ * the two steps the name does not exist: the creating client, whose
++ * requests are handled one at a time, never sees that, other connections
++ * may. An SMB open that walked to the file before the lock was
 + * taken can still end up on the removed inode, as with delete on close.
 + *
 + * A file taken aside and no longer needed is left in cand->aside for
@@ -2408,6 +2410,23 @@ new file mode 100644
 +	/* 4. Carry the file's metadata over, or undo. */
 +	ret = SMB_VFS_FSTATAT(conn, parent->fsp, atname, &created,
 +			      AT_SYMLINK_NOFOLLOW);
++	if (ret != 0 && errno != ENOENT) {
++		int err = errno;
++
++		/*
++		 * An error such as EIO says nothing about the link: removing
++		 * whatever holds the name, or renaming the original back over
++		 * it, could destroy another object, and removing the original
++		 * would lose the metadata not yet copied. Keep the original
++		 * aside instead, as when removing it fails in close_finish().
++		 * The link was created, so commit it as in step 5.
++		 */
++		DBG_ERR("checking the link for %s failed: %s; leaving the "
++			"original as %s\n",
++			fsp_str_dbg(fsp), strerror(err), tmp);
++		sync();
++		goto out;
++	}
 +	if (ret != 0 || !S_ISLNK(created.st_ex_mode)) {
 +		DBG_NOTICE("the link for %s vanished while converting\n",
 +			   fsp_str_dbg(fsp));
