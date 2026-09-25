@@ -127,6 +127,7 @@ static void release_ref(struct reg_entry *entry) {
         entry->ref = NULL;
     }
     entry->pending_until_ms = 0;
+    entry->polled = 0;
 }
 
 static void schedule_retry(struct registrant *reg, long long now_ms) {
@@ -211,6 +212,7 @@ static void try_register(struct registrant *reg, struct reg_entry *entry, long l
     completed_ms = acp_monotonic_ms();
     if (err == kDNSServiceErr_NoError) {
         entry->ref = ref;
+        entry->polled = 0;
         entry->status = REG_PENDING;
         entry->pending_until_ms = completed_ms + REG_PENDING_TIMEOUT_MS;
         if (reg->daemon_unreachable) {
@@ -309,12 +311,13 @@ void registrant_apply_plan(struct registrant *reg, const struct device_plan *pla
 void registrant_prepare(struct registrant *reg, fd_set *reads, int *maxfd, long long *deadline_ms) {
     size_t i;
     for (i = 0; i < REG_MAX_ENTRIES; i++) {
-        const struct reg_entry *entry = &reg->entries[i];
+        struct reg_entry *entry = &reg->entries[i];
         int fd;
         if (!entry->in_use || entry->ref == NULL) {
             continue;
         }
         fd = DNSServiceRefSockFD(entry->ref);
+        entry->polled = fd >= 0;
         if (fd >= 0) {
             FD_SET(fd, reads);
             if (fd > *maxfd) *maxfd = fd;
@@ -343,7 +346,13 @@ void registrant_dispatch(struct registrant *reg, const fd_set *reads, long long 
         }
         live++;
         fd = DNSServiceRefSockFD(entry->ref);
-        if (fd >= 0 && reads != NULL && FD_ISSET(fd, reads)) {
+        /* Only a socket this wait watched may be read. A plan applied after
+         * the wait can close a readable descriptor (the facts pipe, another
+         * ref) and register a new ref that reuses its number; the stale
+         * readable bit would then block DNSServiceProcessResult until the
+         * daemon answers or the IPC fence exits the process. */
+        if (entry->polled && fd >= 0 && reads != NULL && FD_ISSET(fd, reads)) {
+            entry->polled = 0;
             ipc_begin();
             err = DNSServiceProcessResult(entry->ref);
             ipc_end();

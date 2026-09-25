@@ -39,6 +39,7 @@ struct reg_entry {
     DNSServiceRef ref;             /* NULL while waiting for a retry */
     enum reg_status status;
     long long pending_until_ms;    /* initial callback deadline, 0 otherwise */
+    int polled;                    /* ref's socket is in the current select() set */
 };
 
 struct registrant {

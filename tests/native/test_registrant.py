@@ -581,6 +581,36 @@ def test_slow_ack_gets_full_pending_callback_deadline(rig, daemon):
         adv.stop()
 
 
+def test_registration_after_the_wait_ignores_a_reused_ready_descriptor(rig, daemon):
+    # Discovery applies a plan between select() and registrant_dispatch. A
+    # descriptor closed in between (the drained facts pipe) can be reused by
+    # the new registration's socket; its stale readable bit must not make the
+    # registrant block reading a reply the daemon has not sent.
+    root, sock, _ = rig
+    binary = compile_case(native_case_source("registrant_stale_ready_fd"), (
+        f'-DMDNS_UDS_SERVERPATH="{sock}"', "-DREG_IPC_ALARM_SECONDS=2"))
+    facts = root / f"stale-ready-{time.monotonic_ns()}.txt"
+    facts.write_text(NAT_DENIED)
+    daemon.script("AirPort Time Capsule", "delay")
+    proc = subprocess.Popen([str(binary), str(facts)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        # Precondition: the scenario really reused the ready descriptor.
+        assert proc.stdout.readline().strip() == "reused=1"
+        dispatched = proc.stdout.readline().strip()
+        assert dispatched == "dispatched status=0", proc.communicate(timeout=5)[1]
+        assert daemon.wait_for(lambda _events: daemon.held_reply_count() == 1, timeout=3) is not None
+        # A socket the next wait really watches is still dispatched.
+        daemon.release("AirPort Time Capsule")
+        out, err = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    assert proc.returncode == 0, err
+    assert out.strip() == "final status=1"  # REG_REGISTERED
+    assert daemon.registrations() == []  # shutdown deregistered it
+
+
 def test_dropped_connection_is_retried(rig, daemon):
     root, _, binary = rig
     daemon.script("AirPort Time Capsule", "drop")

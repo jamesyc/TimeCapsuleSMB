@@ -31,3 +31,21 @@ def test_payload_device_boundary(tmp_path):
     assert payload['router_mode'] == 'unknown' and payload['links'] == []
     assert payload['plan_error'] == 'mode'
     assert payload['router_id'] == 'tc1-' + sha512(expected_input.encode()).hexdigest()[:64]
+
+
+@pytest.mark.parametrize(('mode', 'curl_sleep'), [('step', '0.2'), ('expire', '10')])
+def test_http_deadline_uses_monotonic_clock(tmp_path, mode, curl_sleep):
+    # The boot heartbeat is in flight when NTP steps the wall clock: a forward
+    # step must not abort it, and a hung curl must still be killed on time.
+    native = ROOT / 'build/native'
+    curl = tmp_path / 'curl'
+    curl.write_text('#!/bin/sh\ncat >/dev/null\nsleep "$FAKE_CURL_SLEEP"\nprintf \'ok\\n200\'\n')
+    curl.chmod(0o755)
+    output = tmp_path / 'http'
+    compile_modules(output, ('native/telemetry/http.c', 'native/common/acp.c'),
+                    flags=('-I', str(native / 'telemetry'), '-I', str(native / 'common'),
+                           f'-DTC_CURL_PATH="{curl}"', '-DTC_HTTP_DEADLINE_MS=2000'),
+                    extra_sources=(Path(__file__).parent / 'unit/test_http.c',))
+    run = subprocess.run([str(output), mode], capture_output=True, text=True, timeout=15,
+                         env={'PATH': '/usr/bin:/bin', 'FAKE_CURL_SLEEP': curl_sleep})
+    assert run.returncode == 0, run.stderr

@@ -1,4 +1,17 @@
 #include "telemetry.h"
+#include "../common/acp.h"
+
+/* curl's own --max-time is 60 s; this parent deadline also covers startup
+ * and reaping. It runs on the monotonic clock: NTP steps the wall clock right
+ * after boot, when the boot heartbeat is in flight. */
+#ifndef TC_HTTP_DEADLINE_MS
+#define TC_HTTP_DEADLINE_MS 70000
+#endif
+
+static int deadline_passed(long long started) {
+    long long now = acp_monotonic_ms();
+    return now < 0 || now - started >= TC_HTTP_DEADLINE_MS;
+}
 
 /* Read curl stdout ourselves. A server that omits Content-Length must not be
  * able to fill the device ramdisk before a post-download size check. */
@@ -7,10 +20,10 @@ int telemetry_http(const char *url, const char *payload, unsigned char **out, si
     pid_t pid;
     size_t used = 0, sent = 0, payload_len = payload ? strlen(payload) : 0;
     unsigned char *buf;
-    time_t started = time(NULL);
+    long long started = acp_monotonic_ms();
     char auth[128];
     *out = NULL; *len = 0;
-    if (limit > TC_DEBUG_MAX || pipe(input)) return -1;
+    if (started < 0 || limit > TC_DEBUG_MAX || pipe(input)) return -1;
     if (pipe(output)) { close(input[0]); close(input[1]); return -1; }
     buf = malloc(limit + 5);
     if (!buf) { close(input[0]); close(input[1]); close(output[0]); close(output[1]); return -1; }
@@ -36,7 +49,7 @@ int telemetry_http(const char *url, const char *payload, unsigned char **out, si
         struct timeval timeout;
         int maxfd = output[0], ready;
         ssize_t n;
-        if (telemetry_stop || time(NULL) - started >= 70) { failed = 1; break; }
+        if (telemetry_stop || deadline_passed(started)) { failed = 1; break; }
         FD_ZERO(&reads); FD_ZERO(&writes); FD_SET(output[0], &reads);
         if (input[1] >= 0) { FD_SET(input[1], &writes); if (input[1] > maxfd) maxfd = input[1]; }
         timeout.tv_sec = 1; timeout.tv_usec = 0;
@@ -62,7 +75,7 @@ int telemetry_http(const char *url, const char *payload, unsigned char **out, si
      * handling active while reaping as well as while reading its output. */
     while (1) {
         pid_t done;
-        if (telemetry_stop || time(NULL) - started >= 70) failed = 1;
+        if (telemetry_stop || deadline_passed(started)) failed = 1;
         if (failed) kill(pid, SIGKILL);
         done = waitpid(pid, &status, failed ? 0 : WNOHANG);
         if (done == pid) break;

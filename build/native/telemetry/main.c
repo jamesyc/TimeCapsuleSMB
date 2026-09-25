@@ -8,6 +8,12 @@ volatile sig_atomic_t telemetry_stop = 0;
 static int parent_fd = -1;
 static int collect_cancelled(void) { return telemetry_stop || !tc_parent_alive(parent_fd); }
 static void stop(int sig) { (void)sig; telemetry_stop = 1; acp_stop_requested = 1; }
+/* Scheduling runs on the monotonic clock. NTP steps the wall clock after
+ * boot; a backward step would otherwise postpone heartbeats by its size. */
+static time_t monotonic_seconds(void) {
+    long long ms = acp_monotonic_ms();
+    return ms < 0 ? -1 : (time_t)(ms / 1000);
+}
 
 int main(int argc, char **argv) {
     int rc = 0, daemon = 0, cleanup_only = 0;
@@ -43,8 +49,13 @@ int main(int argc, char **argv) {
 #endif
     }
     do {
-        time_t now = time(NULL);
-        int due = !daemon || telemetry_schedule_due(&schedule, now);
+        time_t now = monotonic_seconds();
+        int due;
+        if (now < 0) {
+            fputs("telemetry: cannot read monotonic clock\n", stderr);
+            return 1;
+        }
+        due = !daemon || telemetry_schedule_due(&schedule, now);
         /* Recheck while idle so a running daemon observes a manual opt-out.
          * An active cycle still finishes its normal child/cleanup handling. */
         if (!telemetry_enabled() || !tc_parent_alive(parent_fd)) return 0;
@@ -63,7 +74,7 @@ int main(int argc, char **argv) {
                     const char *cycle_reason = daemon ? (schedule.boot_sent ? "scheduled" : "boot") : reason;
                     int cleanup_rc, delivered;
                     rc = telemetry_cycle(cycle_reason, lock, &delivered);
-                    telemetry_schedule_finished(&schedule, time(NULL), delivered);
+                    telemetry_schedule_finished(&schedule, monotonic_seconds(), delivered);
                     /* Closing this reference preserves an inherited child's
                      * lock. Never LOCK_UN a lock shared with a running job. */
                     close(lock);
@@ -74,7 +85,7 @@ int main(int argc, char **argv) {
                 } else {
                     close(lock);
                 }
-                next_cleanup = time(NULL) + TC_CLEANUP_INTERVAL_SECONDS;
+                next_cleanup = monotonic_seconds() + TC_CLEANUP_INTERVAL_SECONDS;
                 retry_after = rc ? next_cleanup : 0;
             }
         }

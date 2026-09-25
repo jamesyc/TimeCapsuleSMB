@@ -1,5 +1,6 @@
 """Native regression cases link modules; Python retains the output assertions."""
 from functools import lru_cache
+import hashlib
 from pathlib import Path
 import subprocess
 from tests.native.build import ROOT, sources, build_root, compile_modules
@@ -24,10 +25,12 @@ def run_case(name, *args, timeout=10):
 
 
 @lru_cache(maxsize=None)
-def compile_case(source):
+def compile_case(source, flags=()):
     case = Path(source)
-    directory = _DIRECTORY / case.stem
+    # Flags (e.g. a per-test daemon socket path) get their own output directory.
+    suffix = '-' + hashlib.sha256(repr(flags).encode()).hexdigest()[:12] if flags else ''
+    directory = _DIRECTORY / f'{case.stem}{suffix}'
     directory.mkdir(parents=True, exist_ok=True)
     binary = directory / 'case'
-    return compile_modules(binary, _MODULES, flags=('-I', str(ROOT / 'build/native')),
+    return compile_modules(binary, _MODULES, flags=('-I', str(ROOT / 'build/native'), *flags),
                            extra_sources=(case,))
