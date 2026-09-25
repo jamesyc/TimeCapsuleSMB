@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 import ipaddress
 import shlex
 import subprocess
@@ -1942,10 +1941,7 @@ def runtime_ram_root_present_conn(connection: SshConnection) -> bool:
     return proc.returncode == 0
 
 
-MANAGER_LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
-MANAGER_LOG_TIMESTAMP_CHARS = 19
-RUNTIME_MANAGER_LOG = f"{RUNTIME_RAM_ROOT}/var/manager.log"
-_MANAGER_LOG_MISSING_MARKER = "(missing manager.log)"
+MANAGER_ELAPSED_PS_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o etime= -o ucomm= -o command="
 
 
 @dataclass(frozen=True)
@@ -1954,47 +1950,44 @@ class ManagerStartupAgeProbeResult:
     detail: str
 
 
-def _parse_manager_log_timestamp(line: str) -> datetime.datetime | None:
-    try:
-        return datetime.datetime.strptime(line[:MANAGER_LOG_TIMESTAMP_CHARS], MANAGER_LOG_TIMESTAMP_FORMAT)
-    except ValueError:
+def _parse_ps_elapsed(value: str) -> int | None:
+    # BSD ps etime is [[dd-]hh:]mm:ss.
+    days, separator, clock = value.rpartition("-")
+    parts = clock.split(":")
+    if not 2 <= len(parts) <= 3 or not all(part.isdigit() for part in parts):
         return None
+    if separator and not days.isdigit():
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds + int(days or 0) * 86400
 
 
 def probe_manager_startup_age_conn(connection: SshConnection) -> ManagerStartupAgeProbeResult:
-    # The manager log lives on the ramdisk and is recreated per runtime
-    # session, so its first line carries this session's start timestamp in
-    # device-local time. Reading the device clock in the same format lets the
-    # host compute the age without epoch math or timezone assumptions on the
-    # tiny NetBSD userspace (sh, sed, and date only; no wc/grep/awk on device).
-    script = (
-        f"date '+{MANAGER_LOG_TIMESTAMP_FORMAT}'; "
-        f"if [ -f {shlex.quote(RUNTIME_MANAGER_LOG)} ]; then /usr/bin/sed -n 1p {shlex.quote(RUNTIME_MANAGER_LOG)}; "
-        f"else echo '{_MANAGER_LOG_MISSING_MARKER}'; fi"
-    )
+    # The kernel's elapsed time for the live manager process is the startup
+    # age: no log, state file or device clock is involved. boot.sh execs the
+    # service binary, so the count includes boot.sh's brief preparation.
     try:
         proc = run_ssh(
             connection,
-            f"/bin/sh -c {shlex.quote(script)}",
+            MANAGER_ELAPSED_PS_COMMAND,
             check=False,
             timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
         )
     except SshCommandTimeout:
         return ManagerStartupAgeProbeResult(None, "manager startup age probe timed out")
-    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
-    if proc.returncode != 0 or len(lines) < 2:
+    if proc.returncode != 0:
         return ManagerStartupAgeProbeResult(None, f"manager startup age probe failed (rc={proc.returncode})")
-    device_now_line, manager_first_line = lines[0], lines[1]
-    if manager_first_line == _MANAGER_LOG_MISSING_MARKER:
-        return ManagerStartupAgeProbeResult(None, "manager log missing")
-    device_now = _parse_manager_log_timestamp(device_now_line)
-    manager_started = _parse_manager_log_timestamp(manager_first_line)
-    if device_now is None or manager_started is None:
+    rows = service_role_lines(proc.stdout or "", "manager")
+    if not rows:
+        return ManagerStartupAgeProbeResult(None, "manager is not running")
+    if len(rows) > 1:
+        return ManagerStartupAgeProbeResult(None, f"{len(rows)} manager processes are running")
+    seconds_ago = _parse_ps_elapsed(rows[0].split()[3])
+    if seconds_ago is None:
         return ManagerStartupAgeProbeResult(None, "manager startup age probe output unparseable")
-    seconds_ago = (device_now - manager_started).total_seconds()
-    if seconds_ago < 0:
-        return ManagerStartupAgeProbeResult(None, f"manager start is {-seconds_ago:.0f}s in the future; ignoring")
-    return ManagerStartupAgeProbeResult(seconds_ago, f"manager started {seconds_ago:.0f}s ago")
+    return ManagerStartupAgeProbeResult(float(seconds_ago), f"manager started {seconds_ago}s ago")
 
 
 def _limit_remote_log_tail(text: str) -> str:

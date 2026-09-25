@@ -131,73 +131,81 @@ class ProbeTests(unittest.TestCase):
 
         self.assertFalse(result)
 
-    def test_probe_manager_startup_age_conn_computes_age_from_device_clock_and_manager_log(self) -> None:
+    def _probe_manager_age(self, stdout: str, returncode: int = 0) -> tuple[probe.ManagerStartupAgeProbeResult, mock.Mock]:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="2026-07-07 17:58:40\n2026-07-07 17:57:59 manager: manager startup beginning\n",
-        )
-
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=returncode, stdout=stdout)
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = probe_manager_startup_age_conn(connection)
+            return probe_manager_startup_age_conn(connection), run_ssh_mock
+
+    # Rows as NetBSD 4 and 6 print them: pid ppid stat etime ucomm command.
+    _MANAGER_PEERS = (
+        " 4390  9751 S       2:47:30 service       service: role=telemetry --daemon\n"
+        " 9070  9751 Ss      2:47:29 smbd          /mnt/Memory/samba4/sbin/smbd -F --no-process-group\n"
+        " 9807  9751 S       2:47:27 service       service: role=discovery nbns=ready mode=payload\n"
+    )
+
+    def test_probe_manager_startup_age_conn_reads_manager_elapsed_time(self) -> None:
+        result, run_ssh_mock = self._probe_manager_age(
+            self._MANAGER_PEERS + "  250     1 Ss         0:41 service       service: role=manager\n"
+        )
 
         self.assertEqual(result.manager_started_seconds_ago, 41.0)
         self.assertEqual(result.detail, "manager started 41s ago")
         args, kwargs = run_ssh_mock.call_args
-        self.assertEqual(args[0], connection)
-        self.assertIn(probe.RUNTIME_MANAGER_LOG, args[1])
+        self.assertEqual(args[1], probe.MANAGER_ELAPSED_PS_COMMAND)
+        self.assertIn("etime=", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
 
-    def test_probe_manager_startup_age_conn_returns_none_when_manager_log_is_missing(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="2026-07-07 17:58:40\n(missing manager.log)\n",
-        )
+    def test_probe_manager_startup_age_conn_parses_every_elapsed_format(self) -> None:
+        cases = {
+            "0:00": 0,
+            "2:59": 179,
+            "3:00": 180,
+            "2:47:30": 10050,
+            "1-02:03:04": 93784,
+            "12-00:00:00": 1036800,
+        }
+        for elapsed, seconds in cases.items():
+            with self.subTest(elapsed=elapsed):
+                result, _ = self._probe_manager_age(f" 250 1 Ss {elapsed} service service: role=manager\n")
+                self.assertEqual(result.manager_started_seconds_ago, float(seconds))
 
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            result = probe_manager_startup_age_conn(connection)
-
-        self.assertIsNone(result.manager_started_seconds_ago)
-        self.assertEqual(result.detail, "manager log missing")
-
-    def test_probe_manager_startup_age_conn_returns_none_for_unparseable_log_line(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="2026-07-07 17:58:40\ngarbage first line without timestamp\n",
-        )
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            result = probe_manager_startup_age_conn(connection)
+    def test_probe_manager_startup_age_conn_returns_none_when_manager_is_not_running(self) -> None:
+        result, _ = self._probe_manager_age(self._MANAGER_PEERS)
 
         self.assertIsNone(result.manager_started_seconds_ago)
-        self.assertIn("unparseable", result.detail)
+        self.assertEqual(result.detail, "manager is not running")
 
-    def test_probe_manager_startup_age_conn_returns_none_when_manager_start_is_in_the_future(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="2026-07-07 17:57:00\n2026-07-07 17:57:59 manager: manager startup beginning\n",
+    def test_probe_manager_startup_age_conn_ignores_zombie_and_lookalike_managers(self) -> None:
+        result, _ = self._probe_manager_age(
+            " 250 1 Z 0:05 service service: role=manager\n"
+            " 251 1 S 0:05 service service: role=manager-helper\n"
+            " 252 1 S 0:05 sh sh -c echo service: role=manager\n"
+            " 253 1 S 0:05 service service: role=job manager\n"
         )
 
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            result = probe_manager_startup_age_conn(connection)
+        self.assertIsNone(result.manager_started_seconds_ago)
+        self.assertEqual(result.detail, "manager is not running")
+
+    def test_probe_manager_startup_age_conn_returns_none_when_several_managers_run(self) -> None:
+        result, _ = self._probe_manager_age(
+            " 250 1 Ss 5:00 service service: role=manager\n"
+            " 900 1 Ss 0:03 service service: role=manager\n"
+        )
 
         self.assertIsNone(result.manager_started_seconds_ago)
-        self.assertIn("in the future", result.detail)
+        self.assertEqual(result.detail, "2 manager processes are running")
+
+    def test_probe_manager_startup_age_conn_returns_none_for_unparseable_elapsed_time(self) -> None:
+        for elapsed in ("41", "a:bc", "1:2:3:4", "x-01:00:00", "-01:00"):
+            with self.subTest(elapsed=elapsed):
+                result, _ = self._probe_manager_age(f" 250 1 Ss {elapsed} service service: role=manager\n")
+                self.assertIsNone(result.manager_started_seconds_ago)
+                self.assertIn("unparseable", result.detail)
 
     def test_probe_manager_startup_age_conn_returns_none_on_probe_failure(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout="")
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            result = probe_manager_startup_age_conn(connection)
+        result, _ = self._probe_manager_age("", returncode=1)
 
         self.assertIsNone(result.manager_started_seconds_ago)
         self.assertIn("rc=1", result.detail)
