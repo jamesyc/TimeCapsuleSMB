@@ -128,13 +128,13 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>lld</string>
 			<key>few</key>
-			<string>%lld taisomos</string>
+			<string>%lld pataisomos</string>
 			<key>many</key>
-			<string>%lld taisomos</string>
+			<string>%lld pataisomos</string>
 			<key>one</key>
-			<string>%lld taisoma</string>
+			<string>%lld pataisoma</string>
 			<key>other</key>
-			<string>%lld taisomų</string>
+			<string>%lld pataisomų</string>
 		</dict>
 	</dict>
 	<key>backend.summary.repair_xattrs_no_safe_repairs</key>

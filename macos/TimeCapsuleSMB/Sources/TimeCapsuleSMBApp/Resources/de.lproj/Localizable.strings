@@ -357,7 +357,7 @@
 "backend.summary.ssh.configured" = "SSH ist eingerichtet.";
 "backend.summary.ssh.disable_requested" = "SSH-Deaktivierung angefordert; es wird weder auf den Neustart gewartet noch geprüft, ob SSH geschlossen bleibt.";
 "backend.summary.ssh.disabled" = "SSH deaktiviert (bleibt nach dem Neustart geschlossen).";
-"backend.summary.ssh.enable_requested" = "SSH-Aktivierung angefordert; es wird nicht gewartet, bis SSH erreichbar ist.";
+"backend.summary.ssh.enable_requested" = "SSH-Aktivierung angefordert; es wird nicht gewartet, bis SSH geöffnet ist.";
 "backend.summary.ssh.reachable" = "SSH ist erreichbar.";
 "backend.summary.ssh.unreachable" = "AirPort ACP und SSH sind nicht erreichbar.";
 "backend.summary.repair_xattrs_approval_required" = "Keine Änderungen vorgenommen; Reparaturen erfordern eine Bestätigung.";

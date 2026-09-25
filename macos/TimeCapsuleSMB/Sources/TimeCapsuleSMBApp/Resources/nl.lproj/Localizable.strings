@@ -330,7 +330,7 @@
 "backend.summary.update_available" = "Update beschikbaar.";
 "backend.summary.update_required" = "Update vereist.";
 "backend.summary.version_metadata_unavailable" = "Versiemetadata zijn niet beschikbaar.";
-"backend.summary.activation_completed_followup" = "NetBSD4-activering voltooid. Voer `activate` uit na een herstart als het apparaat Samba niet automatisch startte.";
+"backend.summary.activation_completed_followup" = "NetBSD4-activering voltooid. Voer `activate` uit na een herstart als het apparaat Samba niet automatisch heeft gestart.";
 "backend.summary.flash.apple_all_match" = "Alle kandidaat-firmwarebanken komen overeen met de originele Apple-firmware.";
 "backend.summary.flash.apple_all_match_version" = "Alle kandidaat-firmwarebanken komen overeen met de originele Apple-firmware %@.";
 "backend.summary.flash.apple_none_match" = "Geen kandidaat-firmwarebank komt overeen met de originele Apple-firmware.";

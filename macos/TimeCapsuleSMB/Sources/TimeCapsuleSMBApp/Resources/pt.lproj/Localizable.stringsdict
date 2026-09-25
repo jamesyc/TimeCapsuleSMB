@@ -18,6 +18,8 @@
 			<string>%lld operação ativa</string>
 			<key>other</key>
 			<string>%lld operações ativas</string>
+			<key>zero</key>
+			<string>%lld operações ativas</string>
 		</dict>
 	</dict>
 	<key>backend.summary.discovered_devices</key>
@@ -35,6 +37,8 @@
 			<key>one</key>
 			<string>%lld dispositivo encontrado.</string>
 			<key>other</key>
+			<string>%lld dispositivos encontrados.</string>
+			<key>zero</key>
 			<string>%lld dispositivos encontrados.</string>
 		</dict>
 	</dict>
@@ -54,6 +58,8 @@
 			<string>corresponde</string>
 			<key>other</key>
 			<string>correspondem</string>
+			<key>zero</key>
+			<string>correspondem</string>
 		</dict>
 	</dict>
 	<key>backend.summary.flash.apple_some_match_version</key>
@@ -71,6 +77,8 @@
 			<key>one</key>
 			<string>corresponde</string>
 			<key>other</key>
+			<string>correspondem</string>
+			<key>zero</key>
 			<string>correspondem</string>
 		</dict>
 	</dict>
@@ -90,6 +98,8 @@
 			<string>Foi encontrado %lld volume HFS montado.</string>
 			<key>other</key>
 			<string>Foram encontrados %lld volumes HFS montados.</string>
+			<key>zero</key>
+			<string>Foram encontrados %lld volumes HFS montados.</string>
 		</dict>
 	</dict>
 	<key>backend.summary.repair_xattrs_found</key>
@@ -108,6 +118,8 @@
 			<string>Foi encontrado %lld problema de metadados</string>
 			<key>other</key>
 			<string>Foram encontrados %lld problemas de metadados</string>
+			<key>zero</key>
+			<string>Foram encontrados %lld problemas de metadados</string>
 		</dict>
 		<key>repairable</key>
 		<dict>
@@ -120,6 +132,8 @@
 			<key>one</key>
 			<string>%lld é reparável</string>
 			<key>other</key>
+			<string>%lld são reparáveis</string>
+			<key>zero</key>
 			<string>%lld são reparáveis</string>
 		</dict>
 	</dict>
@@ -139,6 +153,8 @@
 			<string>Foi encontrado %lld problema de metadados</string>
 			<key>other</key>
 			<string>Foram encontrados %lld problemas de metadados</string>
+			<key>zero</key>
+			<string>Foram encontrados %lld problemas de metadados</string>
 		</dict>
 	</dict>
 	<key>backend.summary.repair_xattrs_unresolved</key>
@@ -157,6 +173,8 @@
 			<string>Resta %lld problema de metadados</string>
 			<key>other</key>
 			<string>Restam %lld problemas de metadados</string>
+			<key>zero</key>
+			<string>Restam %lld problemas de metadados</string>
 		</dict>
 	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
@@ -174,6 +192,8 @@
 			<key>one</key>
 			<string>Falta %lld arquivo de instalação no pacote incluído com TimeCapsuleSMB.</string>
 			<key>other</key>
+			<string>Faltam %lld arquivos de instalação no pacote incluído com TimeCapsuleSMB.</string>
+			<key>zero</key>
 			<string>Faltam %lld arquivos de instalação no pacote incluído com TimeCapsuleSMB.</string>
 		</dict>
 	</dict>

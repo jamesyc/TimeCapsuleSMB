@@ -155,7 +155,7 @@
 "confirm.flash.patch_write.message" = "Pataisyti pirminio programinės įrangos banko įkrovos įskiepį %@? Sėkmingai įrašius reikalingas rankinis maitinimo ciklas.";
 "confirm.flash.patch_write.title" = "Pataisyti programinės įrangos įkrovos įskiepį?";
 "confirm.flash.restore_write.action" = "Įrašyti programinę įrangą";
-"confirm.flash.restore_write.message" = "Atkurti „Apple“ originalią programinę įrangą į programinės įrangos banką %@ įrenginyje %@ ir paleisti iš naujo po patvirtinimo?";
+"confirm.flash.restore_write.message" = "Atkurti Apple originalią programinę įrangą į programinės įrangos banką %@ įrenginyje %@ ir paleisti iš naujo po patvirtinimo?";
 "confirm.flash.restore_write.title" = "Atkurti Apple programinę įrangą?";
 "confirm.repair_xattrs.action" = "Taisyti xattrs";
 "confirm.repair_xattrs.message" = "Taisyti žinomus saugius macOS metaduomenų sutrikimus %@?";
@@ -331,10 +331,10 @@
 "backend.summary.update_required" = "Reikalingas naujinimas.";
 "backend.summary.version_metadata_unavailable" = "Versijos metaduomenys nepasiekiami.";
 "backend.summary.activation_completed_followup" = "NetBSD4 aktyvavimas baigtas. Paleiskite `activate` po paleidimo iš naujo, jei įrenginys nepaleido Samba automatiškai.";
-"backend.summary.flash.apple_all_match" = "Visi kandidatų programinės įrangos bankai atitinka Apple originalią programinę įrangą.";
-"backend.summary.flash.apple_all_match_version" = "Visi kandidatų programinės įrangos bankai atitinka Apple originalią programinę įrangą %@.";
-"backend.summary.flash.apple_none_match" = "Nė vienas kandidato programinės įrangos bankas neatitinka Apple originalios programinės įrangos.";
-"backend.summary.flash.apple_none_match_version" = "Nė vienas kandidato programinės įrangos bankas neatitinka Apple originalios programinės įrangos %@.";
+"backend.summary.flash.apple_all_match" = "Visi tikrinami programinės įrangos bankai atitinka Apple originalią programinę įrangą.";
+"backend.summary.flash.apple_all_match_version" = "Visi tikrinami programinės įrangos bankai atitinka Apple originalią programinę įrangą %@.";
+"backend.summary.flash.apple_none_match" = "Nė vienas tikrinamas programinės įrangos bankas neatitinka Apple originalios programinės įrangos.";
+"backend.summary.flash.apple_none_match_version" = "Nė vienas tikrinamas programinės įrangos bankas neatitinka Apple originalios programinės įrangos %@.";
 "backend.summary.flash.apple_restore_validated" = "Apple atkūrimo programinė įranga patvirtinta.";
 "backend.summary.flash.apple_restore_validated_product" = "Apple atkūrimo programinė įranga patvirtinta (produktas %@).";
 "backend.summary.flash.apple_restore_validated_version" = "Apple atkūrimo programinė įranga patvirtinta (versija %@).";
@@ -343,10 +343,10 @@
 "backend.summary.flash.apple_stock_match_version" = "Aktyvus programinės įrangos bankas atitinka Apple originalią programinę įrangą %@.";
 "backend.summary.flash.apple_stock_mismatch" = "Aktyvus programinės įrangos bankas neatitinka Apple originalios programinės įrangos.";
 "backend.summary.flash.apple_stock_mismatch_version" = "Aktyvus programinės įrangos bankas neatitinka Apple originalios programinės įrangos %@.";
-"backend.summary.flash.patch_plan_generated" = "Flash pataisymo planas sugeneruotas.";
-"backend.summary.flash.patch_write_plan_generated" = "Flash pataisymo įrašymo planas sugeneruotas.";
-"backend.summary.flash.restore_plan_generated" = "Flash atkūrimo planas sugeneruotas.";
-"backend.summary.flash.restore_write_plan_generated" = "Flash atkūrimo įrašymo planas sugeneruotas.";
+"backend.summary.flash.patch_plan_generated" = "Flash atminties pataisymo planas sugeneruotas.";
+"backend.summary.flash.patch_write_plan_generated" = "Flash atminties pataisymo įrašymo planas sugeneruotas.";
+"backend.summary.flash.restore_plan_generated" = "Flash atminties atkūrimo planas sugeneruotas.";
+"backend.summary.flash.restore_write_plan_generated" = "Flash atminties atkūrimo įrašymo planas sugeneruotas.";
 "backend.summary.fsck_failed" = "fsck_hfs baigė darbą su būsena %d; diską gali tekti dar taisyti.";
 "backend.summary.reachability.auth_failed" = "Įrenginys atmetė nurodytą slaptažodį arba SSH kredencialus.";
 "backend.summary.reachability.no_candidates" = "Nebuvo jokių išsaugotų kompiuterių pavadinimų.";
@@ -479,7 +479,7 @@
 "maintenance.plan.row.mountpoint" = "Prijungimo taškas";
 "maintenance.plan.row.path" = "Kelias";
 "maintenance.plan.row.reboot" = "Paleidimas iš naujo";
-"maintenance.plan.row.repairable" = "Taisoma";
+"maintenance.plan.row.repairable" = "Pataisoma";
 "maintenance.plan.row.wait_after_reboot" = "Laukti po paleidimo iš naujo";
 "maintenance.result.already_active" = "Jau aktyvu";
 "maintenance.result.acp" = "ACP";
@@ -867,7 +867,7 @@
 
 "settings.note.standby" = "Tuščia reikšmė nekeičia nuostatos; 0 išjungia budėjimą.";
 
-"settings.note.nbns" = "Integruota „Apple“ NetBIOS aptikimo paslauga veikia automatiškai.";
+"settings.note.nbns" = "Integruota Apple NetBIOS aptikimo paslauga veikia automatiškai.";
 
 "settings.note.rsync" = "Įjungti rsync paslaugą";
 
@@ -875,7 +875,7 @@
 
 "settings.note.afp" = "Įjungti AFP skelbimą per Bonjour. Sukelia suderinamumo problemų su macOS 27";
 
-"settings.note.root" = "Bendrinti vidinio disko šakninį katalogą, o ne numatytąjį „Apple“ ShareRoot";
+"settings.note.root" = "Bendrinti vidinio disko šakninį katalogą, o ne numatytąjį Apple ShareRoot";
 
 "settings.note.metadata" = "Naudoti su Netatalk suderinamus „Mac“ metaduomenis.";
 

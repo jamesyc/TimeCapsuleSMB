@@ -18,7 +18,8 @@ from tests.test_summaries import LANGUAGES, RESOURCES, STRING_LINE, catalog, pla
 # The forms each language's plural entries must define: the CLDR categories
 # its integer counts use, plus the "other" fallback Foundation requires.
 # Lithuanian "many" only applies to fractions, so it is allowed but not
-# required.
+# required. Portuguese also defines "zero": CLDR puts 0 in "one", but Brazilian
+# usage says "0 dispositivos", and Foundation uses a zero form for exactly 0.
 REQUIRED_FORMS = {
     "en": {"one", "other"},
     "de": {"one", "other"},
@@ -26,7 +27,7 @@ REQUIRED_FORMS = {
     "es": {"one", "many", "other"},
     "it": {"one", "many", "other"},
     "fr": {"one", "many", "other"},
-    "pt": {"one", "many", "other"},
+    "pt": {"zero", "one", "many", "other"},
     "ru": {"one", "few", "many", "other"},
     "lt": {"one", "few", "other"},
     "zh-Hans": {"other"},
@@ -107,7 +108,8 @@ class PluralRuleTests(unittest.TestCase):
         for language in LANGUAGES:
             with self.subTest(language=language):
                 categories = {plural_rule(language, count) for count in counts}
-                self.assertEqual(categories | {"other"}, REQUIRED_FORMS[language])
+                extra = {"zero"} if language == "pt" else set()
+                self.assertEqual(categories | {"other"} | extra, REQUIRED_FORMS[language])
 
 
 class PluralCatalogTests(unittest.TestCase):
@@ -149,6 +151,12 @@ class PluralCatalogTests(unittest.TestCase):
                         categories = set(forms) - {"NSStringFormatSpecTypeKey", "NSStringFormatValueTypeKey"}
                         self.assertLessEqual(REQUIRED_FORMS[language], categories)
                         self.assertLessEqual(categories, ALLOWED_FORMS[language])
+
+    def test_portuguese_zero_uses_the_plural_wording(self) -> None:
+        for key, entry in stringsdict("pt").items():
+            for name, forms in variables(entry).items():
+                with self.subTest(key=key, variable=name):
+                    self.assertEqual(forms["zero"], forms["other"])
 
     def test_plural_forms_show_only_their_own_count(self) -> None:
         for language in LANGUAGES:

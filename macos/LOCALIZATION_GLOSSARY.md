@@ -41,7 +41,7 @@ Preserve `%@`, `%d`, `%lld`, positional specifiers, `%%`, URLs, backticks, and i
 | Simplified Chinese | 钥匙串 | [钥匙串访问](https://support.apple.com/zh-cn/guide/keychain-access/welcome/mac) | [磁盘工具](https://support.apple.com/zh-cn/guide/disk-utility/dskutl1027/mac) |
 | Lithuanian | Keychain | Keychain Access | Disk Utility |
 
-macOS has no Lithuanian localization, so Lithuanian keeps Apple application and product names in English, unquoted and uninflected: `iš Keychain`, `Atidaryti Finder`, `AirPort Utility`, `Time Machine`. The company name may take Lithuanian quotation marks (`„Apple“`), as in the human translation. Generic OS concepts are translated: System Settings is **sistemos nustatymai**.
+macOS has no Lithuanian localization, so Lithuanian keeps Apple application and product names in English, unquoted and uninflected: `iš Keychain`, `Atidaryti Finder`, `AirPort Utility`, `Time Machine`. The company name is unquoted too (`Apple originali programinė įranga`), even though the human translation quoted it once; the catalog keeps one form. Generic OS concepts are translated: System Settings is **sistemos nustatymai**.
 
 “Cannot read the password from Keychain” refers to the **store**, not to opening the Keychain Access app. Do not turn every storage error into an application error. The newer Passwords app is also not a replacement term for the keychain API.
 
@@ -126,7 +126,7 @@ Technical borrowings can be correct: Dutch `share`, Italian `log`, and Portugues
 |---|---|
 | payload | Deployment files: say “installation files” / “Samba files” in the local language. JSON response: say “response data”. Firmware image segment: preserve the technical distinction, e.g. “firmware payload”; do not describe it as a complete firmware image. No global replacement. Lithuanian: *diegimo failai* / *diegimo tomas* / *diegimo aplankas* for deployment, *programinės įrangos turinys* for the firmware segment; not *apkrova* (a physical load). |
 | runtime | User-facing service status: prefer “services” or “service status”. Technical execution environment: translate “runtime environment”. Do not turn a running process into an abstract “runtime” noun everywhere. |
-| backend | Prefer “background operation” in user-facing progress; retain `backend` where describing the actual app/helper architecture or raw events. Lithuanian: *foninė operacija* for progress, *pagalbinė programa* for raw events; not *serveris*, since the helper runs on the Mac. Chinese: 后台操作 for progress, 后端 only for raw events. |
+| backend | Prefer “background operation” in user-facing progress; retain `backend` where describing the actual app/helper architecture or raw events. Lithuanian: *foninė operacija* for progress, *pagalbinė programa* for raw events; not *serveris*, since the helper runs on the Mac. Russian: *фоновая операция* for progress, *вспомогательная программа* for raw events; not *фоновая служба*, which suggests a service on the device. Chinese: 后台操作 for progress, 后端 only for raw events. |
 | boot hook | Describe as a startup hook / startup mechanism in the local language; retain `boot hook` parenthetically in specialist firmware UI if it helps recognition. This is not the bootloader itself. |
 | firmware bank | A firmware storage bank/slot, not a financial bank, disk partition, or hardware memory bank unless the source says so. Preserve primary/inactive/active distinctions. |
 | flash | Flash storage or the act of writing it; not a light flash. French “mémoire flash”, Russian “флеш-память”, Chinese “闪存”. |
@@ -145,6 +145,10 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 - Use concise action labels. Use an action verb for a button and a state/result for a status. Match references to other screen titles to their actual localized labels.
 - Prefer sentence case except language-required noun capitalization and exact OS/product names. Do not mechanically propagate English title case.
 - Use consistent voice within a locale. German buttons use infinitives; Dutch buttons normally place the verb last; Russian buttons use infinitives. Avoid mixing polite commands, infinitives, and noun phrases arbitrarily.
+- French and Italian use the typographic apostrophe `’` (`l’appareil`, `dell’app`), never the straight `'`.
+- French uses *Paramètres* for this app's own settings and keeps *Réglages* for Apple's *Réglages Système*.
+- Lithuanian *pataisomas* means repairable and *taisomas* means being repaired: "Repairable" is *Pataisoma*, "Repairing" is *Taisoma*.
+- Chinese "already enabled/disabled" keeps "already" as 已处于…状态 (`SSH 已处于禁用状态。`), so it cannot be read as the plain result `SSH 已禁用`.
 - Portuguese proposals use `arquivo`, `compartilhamento`, `configuração`, `criptografia`, `salvar`, and `planejar`; avoid mixing these with European `ficheiro`, `partilha`, `definição`, `encriptação`, `guardar`, and `planear` in the same catalog.
 - Preserve meaning and severity in errors, especially “not”, “only”, “before”, “after”, “may”, and “must”. Do not strengthen “may help” into a guarantee.
 - Do not erase technical detail merely to shorten a warning. Conversely, do not insert new behavioral claims during translation.
@@ -188,12 +192,13 @@ Foundation picks the form from the locale the app formats with, not the system l
 |---|---|---|
 | en, de, nl | one, other | 1 device / 0 devices, 2 devices |
 | es, it | one, many (round millions), other | 1 dispositivo / 2 dispositivos / 1.000.000 de dispositivos |
-| fr, pt-BR | one (0 and 1), many (round millions), other | 0 appareil, 1 appareil / 2 appareils / 1 000 000 d’appareils |
+| fr | one (0 and 1), many (round millions), other | 0 appareil, 1 appareil / 2 appareils / 1 000 000 d’appareils |
+| pt-BR | zero, one, many (round millions), other | 0 dispositivos / 1 dispositivo / 2 dispositivos / 1.000.000 de dispositivos |
 | ru | one, few, many, other | 1, 21 устройство; 2, 22 устройства; 0, 5, 11 устройств |
 | lt | one, few, other (many optional) | 1, 21 įrenginys; 2, 9, 22 įrenginiai; 0, 10, 11, 20 įrenginių |
 | zh-Hans | no variable: a plain `%lld` format | 发现 %lld 个设备。 |
 
-Russian and Lithuanian choose the form from the last digits (21 takes the singular, 11–19 the plural genitive), so never special-case only 1. Russian `other` and Lithuanian `many` apply only to fractions, but Russian still needs `other` because Foundation requires it as the fallback; use the genitive singular there.
+Russian and Lithuanian choose the form from the last digits (21 takes the singular, 11–19 the plural genitive), so never special-case only 1. CLDR puts Portuguese 0 in `one`, but Brazilian usage takes the plural (*0 dispositivos*), so every Portuguese plural variable also defines `zero`, worded like `other`; Foundation uses a zero form for exactly 0 and for no other count (verified 2026-09-25). French keeps 0 in the singular, which is correct French. Russian `other` and Lithuanian `many` apply only to fractions, but Russian still needs `other` because Foundation requires it as the fallback; use the genitive singular there.
 
 How to write a plural entry:
 

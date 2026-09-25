@@ -15,12 +15,12 @@
 	<key>backend.summary.flash.apple_some_match</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
-		<string>%1$lld/%2$lld 个候选固件区与苹果原厂固件匹配。</string>
+		<string>%2$lld 个候选固件区中有 %1$lld 个与苹果原厂固件匹配。</string>
 	</dict>
 	<key>backend.summary.flash.apple_some_match_version</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
-		<string>%1$lld/%2$lld 个候选固件区与苹果原厂固件 %3$@ 匹配。</string>
+		<string>%2$lld 个候选固件区中有 %1$lld 个与苹果原厂固件 %3$@ 匹配。</string>
 	</dict>
 	<key>backend.summary.hfs_volumes_found</key>
 	<dict>

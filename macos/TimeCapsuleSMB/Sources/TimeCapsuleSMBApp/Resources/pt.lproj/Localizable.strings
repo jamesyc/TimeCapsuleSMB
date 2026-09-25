@@ -343,10 +343,10 @@
 "backend.summary.flash.apple_stock_match_version" = "O banco de firmware ativo corresponde ao firmware original da Apple %@.";
 "backend.summary.flash.apple_stock_mismatch" = "O banco de firmware ativo não corresponde ao firmware original da Apple.";
 "backend.summary.flash.apple_stock_mismatch_version" = "O banco de firmware ativo não corresponde ao firmware original da Apple %@.";
-"backend.summary.flash.patch_plan_generated" = "Plano de patch flash gerado.";
-"backend.summary.flash.patch_write_plan_generated" = "Plano de gravação flash do patch gerado.";
-"backend.summary.flash.restore_plan_generated" = "Plano de restauração flash gerado.";
-"backend.summary.flash.restore_write_plan_generated" = "Plano de gravação flash da restauração gerado.";
+"backend.summary.flash.patch_plan_generated" = "Plano de patch da memória flash gerado.";
+"backend.summary.flash.patch_write_plan_generated" = "Plano de gravação do patch na memória flash gerado.";
+"backend.summary.flash.restore_plan_generated" = "Plano de restauração da memória flash gerado.";
+"backend.summary.flash.restore_write_plan_generated" = "Plano de gravação da restauração na memória flash gerado.";
 "backend.summary.fsck_failed" = "fsck_hfs terminou com o status %d; o disco ainda pode precisar de reparo.";
 "backend.summary.reachability.auth_failed" = "O dispositivo rejeitou a senha ou as credenciais SSH fornecidas.";
 "backend.summary.reachability.no_candidates" = "Nenhum host salvo estava disponível.";

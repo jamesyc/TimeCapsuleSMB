@@ -79,7 +79,7 @@
 "app_settings.section.privacy" = "Конфиденциальность";
 "app_settings.section.time_machine" = "Time Machine";
 "app_settings.section.updates" = "Обновления";
-"app_settings.show_raw_events" = "Показывать исходные события фоновой службы в разделе «Диагностика»";
+"app_settings.show_raw_events" = "Показывать исходные события вспомогательной программы в разделе «Диагностика»";
 "app_settings.subtitle" = "Настройки по умолчанию для новых устройств и параметры приложения.";
 "app_settings.telemetry_enabled" = "Отправлять анонимную телеметрию";
 "app_settings.time_machine_warnings" = "Показывать предупреждения о совместимости Time Machine с macOS";
@@ -248,7 +248,7 @@
 "runtime.state.unknown" = "Не установлено.";
 "runtime.state.not_installed" = "Не установлено.";
 "runtime.state.unhealthy" = "Проверка выявила проблемы в работе служб.";
-"diagnostics.backend_events" = "События фоновой службы";
+"diagnostics.backend_events" = "События вспомогательной программы";
 "diagnostics.copied" = "Диагностические данные скопированы.";
 "diagnostics.copy" = "Скопировать диагностику";
 "diagnostics.distribution" = "Дистрибутив";
@@ -330,7 +330,7 @@
 "backend.summary.update_available" = "Доступно обновление.";
 "backend.summary.update_required" = "Требуется обновление.";
 "backend.summary.version_metadata_unavailable" = "Метаданные версии недоступны.";
-"backend.summary.activation_completed_followup" = "Активация NetBSD4 завершена. Запустите `activate` после перезагрузки, если устройство не запустило автоматически Samba.";
+"backend.summary.activation_completed_followup" = "Активация NetBSD4 завершена. Запустите `activate` после перезагрузки, если устройство не запустило Samba автоматически.";
 "backend.summary.flash.apple_all_match" = "Все проверяемые банки прошивки соответствуют оригинальной прошивке Apple.";
 "backend.summary.flash.apple_all_match_version" = "Все проверяемые банки прошивки соответствуют оригинальной прошивке Apple %@.";
 "backend.summary.flash.apple_none_match" = "Ни один проверяемый банк прошивки не соответствует оригинальной прошивке Apple.";
@@ -347,9 +347,9 @@
 "backend.summary.flash.patch_write_plan_generated" = "Создан план записи патча во флеш-память.";
 "backend.summary.flash.restore_plan_generated" = "Создан план восстановления флеш-памяти.";
 "backend.summary.flash.restore_write_plan_generated" = "Создан план записи восстановления во флеш-память.";
-"backend.summary.fsck_failed" = "fsck_hfs завершился с кодом %d; диску может все еще требоваться исправление.";
+"backend.summary.fsck_failed" = "fsck_hfs завершился с кодом %d; диск, возможно, все еще требует исправления.";
 "backend.summary.reachability.auth_failed" = "Устройство отклонило указанный пароль или учетные данные SSH.";
-"backend.summary.reachability.no_candidates" = "Нет сохраненных вариантов адреса устройства.";
+"backend.summary.reachability.no_candidates" = "Не было доступных сохраненных хостов.";
 "backend.summary.settings_synchronized" = "Настройки профиля устройства синхронизированы.";
 "backend.summary.ssh.acp_reachable_ssh_closed" = "AirPort ACP доступен, но SSH закрыт.";
 "backend.summary.ssh.already_disabled" = "SSH уже отключен.";

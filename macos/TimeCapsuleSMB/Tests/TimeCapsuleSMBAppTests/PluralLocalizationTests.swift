@@ -77,7 +77,13 @@ final class PluralLocalizationTests: XCTestCase {
             (.french, "backend.summary.discovered_devices", [.int(2)], "2 appareils découverts."),
             (.spanish, "backend.summary.discovered_devices", [.int(1)], "Se descubrió 1 dispositivo."),
             (.spanish, "backend.summary.discovered_devices", [.int(3)], "Se descubrieron 3 dispositivos."),
-            (.portuguese, "backend.summary.discovered_devices", [.int(0)], "0 dispositivo encontrado."),
+            (.portuguese, "backend.summary.discovered_devices", [.int(0)], "0 dispositivos encontrados."),
+            (.portuguese, "backend.summary.discovered_devices", [.int(1)], "1 dispositivo encontrado."),
+            (.portuguese, "backend.summary.discovered_devices", [.int(2)], "2 dispositivos encontrados."),
+            (.portuguese, "backend.summary.repair_xattrs_found", [.int(0), .int(0)],
+             "Foram encontrados 0 problemas de metadados; 0 são reparáveis."),
+            (.portuguese, "backend.summary.repair_xattrs_found", [.int(1), .int(1)],
+             "Foi encontrado 1 problema de metadados; 1 é reparável."),
             (.russian, "backend.summary.discovered_devices", [.int(1)], "Обнаружено 1 устройство."),
             (.russian, "backend.summary.discovered_devices", [.int(3)], "Обнаружено 3 устройства."),
             (.russian, "backend.summary.discovered_devices", [.int(11)], "Обнаружено 11 устройств."),
@@ -102,7 +108,7 @@ final class PluralLocalizationTests: XCTestCase {
             (.russian, "backend.summary.repair_xattrs_found", [.int(22), .int(5)],
              "Найдено 22 проблемы с метаданными, из них 5 исправимых."),
             (.lithuanian, "backend.summary.repair_xattrs_found", [.int(2), .int(0)],
-             "Rastos 2 metaduomenų problemos, iš jų 0 taisomų."),
+             "Rastos 2 metaduomenų problemos, iš jų 0 pataisomų."),
             (.english, "backend.summary.flash.apple_some_match", [.int(1), .int(2)],
              "1 of 2 candidate firmware banks matches Apple stock firmware."),
             (.english, "backend.summary.flash.apple_some_match_version", [.int(2), .int(3), .string("7.8.1")],
@@ -116,7 +122,7 @@ final class PluralLocalizationTests: XCTestCase {
             (.lithuanian, "backend.summary.flash.apple_some_match", [.int(1), .int(21)],
              "1 iš 21 tikrinamo programinės įrangos banko atitinka Apple originalią programinę įrangą."),
             (.simplifiedChinese, "backend.summary.flash.apple_some_match_version", [.int(1), .int(2), .string("7.8.1")],
-             "1/2 个候选固件区与苹果原厂固件 7.8.1 匹配。"),
+             "2 个候选固件区中有 1 个与苹果原厂固件 7.8.1 匹配。"),
             (.english, "backend.summary.repair_xattrs_no_safe_repairs", [.int(1)],
              "Found 1 metadata issue, but no known-safe repair is available."),
             (.russian, "backend.summary.repair_xattrs_no_safe_repairs", [.int(5)],
@@ -194,12 +200,14 @@ final class PluralLocalizationTests: XCTestCase {
                     let rendered = try XCTUnwrap(render(key, arguments, in: language), context)
                     XCTAssertFalse(rendered.contains("%"), "\(context): \(rendered)")
                     XCTAssertFalse(rendered.contains("#@"), "\(context): \(rendered)")
+                    // Foundation uses a zero form, where one exists, for exactly 0.
                     let expected = Self.category(language, count)
                     for (name, value) in entry {
                         guard let forms = value as? [String: String] else { continue }
-                        let form = try XCTUnwrap(forms[expected] ?? forms["other"], "\(context) \(name)")
+                        let chosen = count == 0 && forms["zero"] != nil ? "zero" : expected
+                        let form = try XCTUnwrap(forms[chosen] ?? forms["other"], "\(context) \(name)")
                         for piece in form.components(separatedBy: "%lld") where !piece.isEmpty {
-                            XCTAssertTrue(rendered.contains(piece), "\(context) \(name) \(expected): \"\(piece)\" not in \"\(rendered)\"")
+                            XCTAssertTrue(rendered.contains(piece), "\(context) \(name) \(chosen): \"\(piece)\" not in \"\(rendered)\"")
                         }
                     }
                 }

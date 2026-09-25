@@ -343,10 +343,10 @@
 "backend.summary.flash.apple_stock_match_version" = "El banco de firmware activo coincide con el firmware original de Apple %@.";
 "backend.summary.flash.apple_stock_mismatch" = "El banco de firmware activo no coincide con el firmware original de Apple.";
 "backend.summary.flash.apple_stock_mismatch_version" = "El banco de firmware activo no coincide con el firmware original de Apple %@.";
-"backend.summary.flash.patch_plan_generated" = "Plan de parche flash generado.";
-"backend.summary.flash.patch_write_plan_generated" = "Plan de escritura flash del parche generado.";
-"backend.summary.flash.restore_plan_generated" = "Plan de restauración flash generado.";
-"backend.summary.flash.restore_write_plan_generated" = "Plan de escritura flash de la restauración generado.";
+"backend.summary.flash.patch_plan_generated" = "Plan de parche de la memoria flash generado.";
+"backend.summary.flash.patch_write_plan_generated" = "Plan de escritura del parche en la memoria flash generado.";
+"backend.summary.flash.restore_plan_generated" = "Plan de restauración de la memoria flash generado.";
+"backend.summary.flash.restore_write_plan_generated" = "Plan de escritura de la restauración en la memoria flash generado.";
 "backend.summary.fsck_failed" = "fsck_hfs terminó con el estado %d; es posible que el disco aún necesite reparación.";
 "backend.summary.reachability.auth_failed" = "El dispositivo rechazó la contraseña o las credenciales SSH proporcionadas.";
 "backend.summary.reachability.no_candidates" = "No había hosts guardados disponibles.";
@@ -357,7 +357,7 @@
 "backend.summary.ssh.configured" = "SSH está configurado.";
 "backend.summary.ssh.disable_requested" = "Se solicitó deshabilitar SSH; no se espera al reinicio ni se comprueba que SSH siga cerrado.";
 "backend.summary.ssh.disabled" = "SSH deshabilitado (sigue cerrado tras el reinicio).";
-"backend.summary.ssh.enable_requested" = "Se solicitó habilitar SSH; no se espera a que SSH esté disponible.";
+"backend.summary.ssh.enable_requested" = "Se solicitó habilitar SSH; no se espera a que SSH se abra.";
 "backend.summary.ssh.reachable" = "SSH es accesible.";
 "backend.summary.ssh.unreachable" = "AirPort ACP y SSH no son accesibles.";
 "backend.summary.repair_xattrs_approval_required" = "No se realizaron cambios; las reparaciones requieren confirmación.";

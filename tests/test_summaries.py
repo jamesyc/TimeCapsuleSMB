@@ -296,6 +296,24 @@ class SummaryCatalogTests(unittest.TestCase):
                 keys = {key.removeprefix("backend.summary.") for key in catalog(language) if key.startswith("backend.summary.")}
                 self.assertEqual(keys - set(SUMMARY_KEYS), set())
 
+    def test_french_and_italian_use_typographic_apostrophes(self) -> None:
+        straight = re.compile(r"(?<=[^\W\d_])'(?=[^\W\d_])")
+        for language in ("fr", "it"):
+            for key, text in catalog(language).items():
+                with self.subTest(language=language, key=key):
+                    self.assertIsNone(straight.search(text), text)
+            with open(RESOURCES / f"{language}.lproj" / "Localizable.stringsdict", "rb") as handle:
+                for key, entry in plistlib.load(handle).items():
+                    for forms in entry.values():
+                        for text in forms.values() if isinstance(forms, dict) else [forms]:
+                            with self.subTest(language=language, key=key):
+                                self.assertIsNone(straight.search(text), text)
+
+    def test_lithuanian_keeps_apple_names_unquoted(self) -> None:
+        for key, text in catalog("lt").items():
+            with self.subTest(key=key):
+                self.assertNotIn("„Apple“", text)
+
     def test_placeholder_parser_accepts_reordered_and_plural_forms(self) -> None:
         self.assertEqual(placeholder_types("%2$@ then %1$lld"), ("int", "str"))
         self.assertEqual(placeholder_types("%#@devices@ in %@"), ("int", "str"))

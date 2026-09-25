@@ -298,7 +298,7 @@
 "event.summary.stage" = "%@：%@";
 "backend.summary.activation_already_active" = "NetBSD4 上的软件已在运行。";
 "backend.summary.activation_completed" = "NetBSD4 启动已完成。";
-"backend.summary.configuration_saved" = "配置已保存，并已验证 SSH 身份验证。";
+"backend.summary.configuration_saved" = "配置已保存，SSH 身份验证已通过。";
 "backend.summary.deploy_completed" = "Samba 安装或更新已完成。";
 "backend.summary.doctor_checks_passed" = "诊断检查通过。";
 "backend.summary.doctor_found_fatal" = "诊断发现一个或多个严重问题。";
@@ -352,8 +352,8 @@
 "backend.summary.reachability.no_candidates" = "没有可用的已保存主机地址。";
 "backend.summary.settings_synchronized" = "设备配置设置已同步。";
 "backend.summary.ssh.acp_reachable_ssh_closed" = "AirPort ACP 可达，但 SSH 已关闭。";
-"backend.summary.ssh.already_disabled" = "SSH 已禁用。";
-"backend.summary.ssh.already_enabled" = "SSH 已启用。";
+"backend.summary.ssh.already_disabled" = "SSH 已处于禁用状态。";
+"backend.summary.ssh.already_enabled" = "SSH 已处于启用状态。";
 "backend.summary.ssh.configured" = "SSH 已配置。";
 "backend.summary.ssh.disable_requested" = "已请求禁用 SSH；不等待重启，也不验证 SSH 是否保持关闭。";
 "backend.summary.ssh.disabled" = "SSH 已禁用（重启后保持关闭）。";
