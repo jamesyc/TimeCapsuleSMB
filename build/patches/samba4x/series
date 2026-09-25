@@ -193,3 +193,13 @@
 # macOS keeps creating XSym. Existing XSym files stay as they are; there is no
 # migration.
 0045-time-capsule-native-symlinks.patch|native POSIX symlinks as reparse points; new SMB links become native
+
+# Apple's NetBSD 4 and NetBSD 6 kernels lose writes to a static binary's
+# initialized data: handling the first write to a .data page, UVM fault-ahead
+# maps the neighbouring pages (4 below, 3 above) from the executable again,
+# dropping this process's (or its parent's) changes to them. Globals silently
+# returned to their initial values; talloc_magic did, so talloc aborted with
+# "Bad talloc magic value" in forked children and elsewhere, depending only on
+# code layout. talloc's constructor, linked into every Samba binary, turns
+# fault-ahead off for the writable segment with MADV_RANDOM before it writes.
+0046-time-capsule-data-faultahead.patch|keep static-data writes: no UVM fault-ahead on the writable segment

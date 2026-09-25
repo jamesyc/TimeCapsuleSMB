@@ -438,6 +438,64 @@ static void test_cleanup(struct vfs_handle_struct *h)
 	CHECK(list->num_children == 1 && list->cleanup_event != NULL);
 }
 
+/* Initialized and page-aligned, so it lives in .data and is backed by the executable. */
+#define DATA_PAGE 4096
+#define DATA_PAGES 16
+static volatile unsigned char data_pages[DATA_PAGES * DATA_PAGE] __attribute__((aligned(DATA_PAGE))) = { 1 };
+#define DATA_WORD(p) (*(volatile unsigned *)&data_pages[(p) * DATA_PAGE + 64])
+
+/*
+ * The appliance kernels, handling the first write to a .data page, map the
+ * neighbouring pages (4 below, 3 above) from the executable again and lose
+ * this process's changes to them; talloc's constructor turns that fault-ahead
+ * off (patch 0046). Change a page, then make the first write to a page near
+ * it: the change must survive, and so must a parent's change in a forked
+ * child that makes its own first write.
+ */
+static void test_data_page_writes(void)
+{
+	const int victim = DATA_PAGES / 2;
+	int d;
+
+	for (d = -7; d <= 7; d++) {
+		pid_t pid;
+		int status;
+
+		if (d == 0) {
+			continue;
+		}
+		/* A fresh child per distance: no page of the array is written yet. */
+		pid = fork();
+		CHECK(pid >= 0);
+		if (pid == 0) {
+			pid_t grandchild;
+
+			alarm(15);
+			DATA_WORD(victim) = 0x12345678;
+			DATA_WORD(victim + d) = 0xabcdef00;
+			if (DATA_WORD(victim) != 0x12345678) {
+				_exit(1);
+			}
+			grandchild = fork();
+			if (grandchild == 0) {
+				DATA_WORD(victim - d) = 0xabcdef00;
+				_exit(DATA_WORD(victim) == 0x12345678 ? 0 : 2);
+			}
+			if (grandchild < 0 || waitpid(grandchild, &status, 0) != grandchild ||
+			    !WIFEXITED(status)) {
+				_exit(3);
+			}
+			_exit(WEXITSTATUS(status));
+		}
+		CHECK(waitpid(pid, &status, 0) == pid);
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+			fprintf(stderr, "distance %+d: page %d lost its write (status %d)\n",
+				d, victim, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+		}
+		CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	}
+}
+
 static void test_fork_stackframes(TALLOC_CTX *root)
 {
 	TALLOC_CTX *inherited = talloc_stackframe();
@@ -509,6 +567,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(argv[1], "limits") || !strcmp(argv[1], "unlimited")) test_limits(frame, h, !strcmp(argv[1], "unlimited"));
 	else if (!strcmp(argv[1], "cleanup")) test_cleanup(h);
 	else if (!strcmp(argv[1], "fork_stack")) test_fork_stackframes(frame);
+	else if (!strcmp(argv[1], "data_page_writes")) test_data_page_writes();
 	else if (!strcmp(argv[1], "listener_handoff")) test_listener_handoff();
 	else test_io(h, argv[1]);
 	CHECK(destructors == 0 && talloc_tos() == frame);

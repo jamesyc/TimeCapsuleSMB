@@ -14,39 +14,39 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "88a8e82174b48f9afae6c81572bd7186a493d02dd63bcb1289ade450f4e0dfce"
+      "sha256": "f7853ed144e376171a5794b2b2d863367f4a4a1d56b4b5d7e69611b9f444b613"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "713535bdfa25bbf0e9de7fff04b0e5ab1d9ed72bc7e5847dab08c3804ed380da"
+      "sha256": "dcd2d3f490186c921a2ab78033a834392fecd7d655ef1d221869b1b43c471cb4"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "998b570b4039e4107952673a835c36e94ccae2f037ae6f678586caf27195531a"
+      "sha256": "e840b11f5ba4d60f520c25486e0c41a35feb6cbdce4b42fb3d9c4a3571e827b7"
     },
     "xattr-migrator": {
       "path": "bin/xattr-migrate/xattr-hfs-migrate",
-      "sha256": "a979e5c60904552c33728bacbf87d07c2bb836b38cb9360b353fab504b729772"
+      "sha256": "94a01d3718029545bb626fa0ee53b82de14fc3fc330a12827a40d57b19695e6e"
     },
     "xattr-migrator-netbsd4le": {
       "path": "bin/xattr-migrate-netbsd4le/xattr-hfs-migrate",
-      "sha256": "869bf40a78ddfe946ac4ea79efee0e54b0054faf6224fe012dd0bb81976eeb66"
+      "sha256": "f8ee710b74526c691cad0c314f4911261af57ba24876897852835bdc11e09994"
     },
     "xattr-migrator-netbsd4be": {
       "path": "bin/xattr-migrate-netbsd4be/xattr-hfs-migrate",
-      "sha256": "05e5d60a7abfaa41804941318d864655546a2e93c89304bc70cd62d330a5517b"
+      "sha256": "f081c25fd086ceccf0f686cde434780226f535fcc51c49a545839cada662e468"
     },
     "service": {
       "path": "bin/service/service",
-      "sha256": "877051af611e7e776903ad004e026582cd94cb646030b323f1cb6221dcca211d"
+      "sha256": "e7753b60ba59f2412c6ca237b703e78d6ca8d2d46269eaf256db2db2ad4b5fff"
     },
     "service-netbsd4le": {
       "path": "bin/service-netbsd4le/service",
-      "sha256": "254228b6b1c4cee086240bffc0ef7e6521cbd3cd2617e8be598b12a010bbcad8"
+      "sha256": "b00266ccb4fdcba7aa792c304ab2e8095e2c8959e4b02c40e9e4acdfbbf6b70c"
     },
     "service-netbsd4be": {
       "path": "bin/service-netbsd4be/service",
-      "sha256": "e16d447fe6080c6ba22aae0edff720054e015786e4d879c1c7b73269c858e730"
+      "sha256": "dd9eecea5b36c83c35e10239fa1d819ff5f824c3462736b32871f4b3082000c3"
     }
   }
 }

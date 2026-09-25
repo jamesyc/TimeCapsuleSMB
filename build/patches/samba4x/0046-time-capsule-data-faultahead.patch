@@ -1,0 +1,55 @@
+diff --git a/lib/talloc/talloc.c b/lib/talloc/talloc.c
+--- a/lib/talloc/talloc.c
++++ b/lib/talloc/talloc.c
+@@ -392,11 +392,51 @@ _PUBLIC_ void talloc_set_log_fn(void (*log_fn)(const char *message))
+ #define CONSTRUCTOR
+ #pragma init (talloc_lib_init)
+ #endif
++#if defined(__NetBSD__) && defined(TC_SAMBA4X_VFS_AT_PATH_COMPAT)
++#include <sys/mman.h>
++/*
++ * Time Capsule appliance builds (patch 0046). Apple's NetBSD 4 and NetBSD 6
++ * kernels lose writes to a static binary's initialized data: handling the
++ * first write to a .data page, UVM fault-ahead also maps the neighbouring
++ * pages (4 below, 3 above) straight from the executable, even the ones this
++ * process already modified, so their globals silently return to their
++ * initial values. A forked child is hit the same way by its own first
++ * writes. talloc_magic, set below, was the first casualty seen: a later
++ * talloc call aborted with "Bad talloc magic value" depending only on code
++ * layout (tc_aio_fork_test, and tc_native_links_test once cases were added).
++ *
++ * MADV_RANDOM turns fault-ahead off for the writable segment, and a forked
++ * child inherits that. Every Samba binary links talloc, and this constructor
++ * writes talloc_magic, so do it here, first. The linker script provides both
++ * bounds: .preinit_array opens the part of the segment that is ever written
++ * (only .eh_frame, never written, precedes it), and "end" closes .bss. Use "end",
++ * which libc's own sbrk() starts from: the NetBSD 4 migrator link gets a wrong
++ * _end (and _edata), while "end" is right in every lane.
++ */
++extern char tc_data_first[] __asm__("__preinit_array_start");
++extern char tc_data_end[] __asm__("end");
++
++static void tc_disable_data_faultahead(void)
++{
++	uintptr_t page = (uintptr_t)getpagesize();
++	uintptr_t start = (uintptr_t)tc_data_first & ~(page - 1);
++	uintptr_t end = ((uintptr_t)tc_data_end + page - 1) & ~(page - 1);
++
++	/* Nothing else can be done if it fails; there is no log yet. */
++	if (end > start) {
++		(void)madvise((void *)start, end - start, MADV_RANDOM);
++	}
++}
++#endif
++
+ #if defined(HAVE_CONSTRUCTOR_ATTRIBUTE) || defined(HAVE_PRAGMA_INIT)
+ void talloc_lib_init(void) CONSTRUCTOR;
+ void talloc_lib_init(void)
+ {
+ 	uint32_t random_value;
++#if defined(__NetBSD__) && defined(TC_SAMBA4X_VFS_AT_PATH_COMPAT)
++	tc_disable_data_faultahead();
++#endif
+ #if defined(HAVE_GETAUXVAL) && defined(AT_RANDOM)
+ 	uint8_t *p;
+ 	/*
