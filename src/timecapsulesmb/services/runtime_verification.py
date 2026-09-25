@@ -5,6 +5,7 @@ from collections.abc import Callable
 from time import sleep
 
 from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.deploy.verify import render_managed_runtime_verification
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
@@ -18,11 +19,11 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 BOOT_SETTLE_STAGE = "post_reboot_boot_settle"
 BOOT_SETTLE_SECONDS = 20
-BOOT_SETTLE_MESSAGE = "Waiting a few seconds for device to boot..."
+BOOT_SETTLE_MESSAGE = Summary("waiting_device_boot", "Waiting a few seconds for device to boot...")
 
 ACTIVATION_SETTLE_STAGE = "post_activation_settle"
 ACTIVATION_SETTLE_SECONDS = 20
-ACTIVATION_SETTLE_MESSAGE = "Waiting a few seconds for device to activate..."
+ACTIVATION_SETTLE_MESSAGE = Summary("waiting_device_activate", "Waiting a few seconds for device to activate...")
 
 
 def wait_for_boot_settle(

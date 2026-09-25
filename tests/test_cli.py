@@ -6103,7 +6103,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(verify_mock.call_args.kwargs["timeout_seconds"], 200)
         sleep_mock.assert_called_once_with(ACTIVATION_SETTLE_SECONDS)
         self.assertIn("without file transfer", output.getvalue())
-        self.assertIn(ACTIVATION_SETTLE_MESSAGE, output.getvalue())
+        self.assertIn(ACTIVATION_SETTLE_MESSAGE.text, output.getvalue())
 
     def test_main_registers_flash_command(self) -> None:
         self.assertIs(cli_main_module.COMMANDS["flash"], cli_flash.main)

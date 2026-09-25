@@ -33,13 +33,20 @@ class SetSshStatusResult:
 
     @property
     def summary(self) -> str:
+        return self._summary[1]
+
+    @property
+    def summary_key(self) -> str:
+        return self._summary[0]
+
+    @property
+    def _summary(self) -> tuple[str, str]:
+        # Keys are registered in core/summaries.py.
         if self.ssh_port_reachable:
-            return "SSH is reachable."
+            return "ssh.reachable", "SSH is reachable."
         if self.ssh_disabled_likely:
-            return "AirPort ACP is reachable, but SSH is closed."
-        if self.acp_port_reachable:
-            return "AirPort ACP is reachable."
-        return "AirPort ACP and SSH are not reachable."
+            return "ssh.acp_reachable_ssh_closed", "AirPort ACP is reachable, but SSH is closed."
+        return "ssh.unreachable", "AirPort ACP and SSH are not reachable."
 
 
 @dataclass(frozen=True)
@@ -58,6 +65,7 @@ class SetSshResult:
     ssh_reboot_observed_down: bool | None = None
     device_recovered: bool | None = None
     summary: str = ""
+    summary_key: str = "ssh.configured"  # see core/summaries.py
 
 
 class SetSshAction(Enum):
@@ -136,6 +144,7 @@ def enable_set_ssh(
             acp_port_error=initial_status.acp_port_error,
             ssh_port_error=initial_status.ssh_port_error,
             summary="SSH is already enabled.",
+            summary_key="ssh.already_enabled",
         )
 
     enable_ssh_with_port_preflight(
@@ -158,6 +167,7 @@ def enable_set_ssh(
             ssh_port_error=initial_status.ssh_port_error,
             ssh_verification_skipped=True,
             summary="SSH enable requested; not waiting for SSH to open.",
+            summary_key="ssh.enable_requested",
         )
 
     callbacks.stage("wait_for_ssh_enabled")
@@ -183,6 +193,7 @@ def enable_set_ssh(
         acp_port_error=initial_status.acp_port_error,
         ssh_port_error=None,
         summary="SSH is configured.",
+        summary_key="ssh.configured",
     )
 
 
@@ -216,6 +227,7 @@ def disable_set_ssh(
             acp_port_error=initial_status.acp_port_error,
             ssh_port_error=initial_status.ssh_port_error,
             summary="SSH already disabled.",
+            summary_key="ssh.already_disabled",
         )
 
     callbacks.stage("disable_ssh")
@@ -234,6 +246,7 @@ def disable_set_ssh(
             ssh_port_error=initial_status.ssh_port_error,
             ssh_verification_skipped=True,
             summary="SSH disable requested; not waiting for reboot or verifying SSH stays closed.",
+            summary_key="ssh.disable_requested",
         )
 
     callbacks.message("Device is starting reboot now, waiting for it to shut down...")
@@ -290,6 +303,7 @@ def disable_set_ssh(
         ssh_reboot_observed_down=True,
         device_recovered=True,
         summary="SSH disabled (remains closed after reboot).",
+        summary_key="ssh.disabled",
     )
 
 

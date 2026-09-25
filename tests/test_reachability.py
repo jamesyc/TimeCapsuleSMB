@@ -55,6 +55,7 @@ class ReachabilityTests(unittest.TestCase):
 
         self.assertEqual(result.status, "reachable")
         self.assertEqual(result.summary, "SSH reachable; SMB port reachable.")
+        self.assertEqual(result.summary_key, "reachability.all_reachable")
         self.assertEqual({check.id: check.status for check in result.checks}, {
             "dns": "PASS",
             "ping": "PASS",
@@ -79,6 +80,7 @@ class ReachabilityTests(unittest.TestCase):
         self.assertEqual(ssh.call_args.args[0].password, "")
         self.assertEqual(result.status, "reachable")
         self.assertEqual(result.summary, "SSH reachable; SMB port reachable.")
+        self.assertEqual(result.summary_key, "reachability.all_reachable")
         self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "PASS")
 
     def test_reachability_strips_ports_from_host_candidates(self) -> None:
@@ -125,6 +127,7 @@ class ReachabilityTests(unittest.TestCase):
 
         self.assertEqual(result.status, "partial")
         self.assertEqual(result.summary, "SSH reachable, SMB port closed.")
+        self.assertEqual(result.summary_key, "reachability.ssh_only")
 
     def test_ssh_proxy_skips_direct_port_check_but_auth_can_pass(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_SSH_OPTS": "-J jump"})
@@ -160,6 +163,7 @@ class ReachabilityTests(unittest.TestCase):
 
         self.assertEqual(result.status, "unreachable")
         self.assertEqual(result.summary, "Could not reach SSH or SMB.")
+        self.assertEqual(result.summary_key, "reachability.unreachable")
 
     def test_all_failed_checks_return_unreachable_without_raising(self) -> None:
         config = AppConfig.from_values({"TC_HOST": "root@tc.local", "TC_SSH_OPTS": DEFAULTS["TC_SSH_OPTS"]})
@@ -333,6 +337,7 @@ class ReachabilityTests(unittest.TestCase):
 
         self.assertEqual(result.status, "partial")
         self.assertEqual(result.summary, "SSH authentication failed.")
+        self.assertEqual(result.summary_key, "reachability.auth_failed")
         self.assertEqual({check.id: check.status for check in result.checks}["ssh_auth"], "FAIL")
 
     def test_ssh_network_failure_makes_auth_check_unavailable(self) -> None:

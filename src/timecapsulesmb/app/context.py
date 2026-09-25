@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.core.redaction import SENSITIVE_KEY_PARTS, redact_sensitive_fields
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import OperationContext, exception_cause_detail
 from timecapsulesmb.telemetry import build_device_os_version
@@ -79,6 +80,9 @@ class AppOperationContext:
     def log(self, message: str, *, level: str = "info") -> None:
         self.sink.log(self.operation, message, level=level)
 
+    def log_summary(self, summary: Summary) -> None:
+        self.sink.log(self.operation, summary.text, summary=summary)
+
     def check(self, *, status: str, message: str, details: dict[str, object] | None = None) -> None:
         self.sink.check(self.operation, status=status, message=message, details=details)
 
@@ -89,6 +93,7 @@ class AppOperationContext:
         return OperationCallbacks(
             set_stage=self.stage,
             log=self.log,
+            log_summary=self.log_summary,
             add_debug_fields=self.add_debug_fields,
             update_fields=self.update_fields,
             record_execution_measurement=self.record_execution_measurement,

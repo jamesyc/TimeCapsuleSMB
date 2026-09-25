@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from timecapsulesmb.core.summaries import Summary
+
 
 @dataclass(frozen=True)
 class OperationCallbacks:
@@ -10,6 +12,8 @@ class OperationCallbacks:
 
     set_stage: Callable[[str], None] | None = None
     log: Callable[[str], None] | None = None
+    # Receives keyed messages the app can translate; plain `log` gets their text.
+    log_summary: Callable[[Summary], None] | None = None
     add_debug_fields: Callable[..., None] | None = None
     update_fields: Callable[..., None] | None = None
     record_execution_measurement: Callable[..., None] | None = None
@@ -18,7 +22,13 @@ class OperationCallbacks:
         if self.set_stage is not None:
             self.set_stage(stage)
 
-    def message(self, message: str) -> None:
+    def message(self, message: str | Summary) -> None:
+        if isinstance(message, Summary):
+            if self.log_summary is not None:
+                self.log_summary(message)
+            elif self.log is not None:
+                self.log(message.text)
+            return
         if self.log is not None:
             self.log(message)
 

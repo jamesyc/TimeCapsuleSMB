@@ -33,6 +33,7 @@ class ReachabilityResult:
     ssh_host: str | None
     smb_host: str | None
     checks: list[ReachabilityCheck] = field(default_factory=list)
+    summary_key: str = "reachability.unreachable"  # see core/summaries.py
 
 
 def run_reachability(
@@ -59,6 +60,7 @@ def run_reachability(
         return ReachabilityResult(
             status="skipped",
             summary="No saved host candidates were available.",
+            summary_key="reachability.no_candidates",
             ssh_host=ssh_target or None,
             smb_host=None,
             checks=[check],
@@ -325,20 +327,15 @@ def result_from_checks(
     smb_signal = by_id.get("smb_port") and by_id["smb_port"].status == "PASS"
 
     if ssh_auth_failed:
-        status = "partial"
-        summary = "SSH authentication failed."
+        status, summary_key, summary = "partial", "reachability.auth_failed", "SSH authentication failed."
     elif ssh_signal and smb_signal:
-        status = "reachable"
-        summary = "SSH reachable; SMB port reachable."
+        status, summary_key, summary = "reachable", "reachability.all_reachable", "SSH reachable; SMB port reachable."
     elif ssh_signal and not smb_signal:
-        status = "partial"
-        summary = "SSH reachable, SMB port closed."
+        status, summary_key, summary = "partial", "reachability.ssh_only", "SSH reachable, SMB port closed."
     elif smb_signal and not ssh_signal:
-        status = "partial"
-        summary = "SMB port reachable, SSH closed."
+        status, summary_key, summary = "partial", "reachability.smb_only", "SMB port reachable, SSH closed."
     else:
-        status = "unreachable"
-        summary = "Could not reach SSH or SMB."
+        status, summary_key, summary = "unreachable", "reachability.unreachable", "Could not reach SSH or SMB."
 
     smb_host = None
     smb_check = by_id.get("smb_port")
@@ -353,6 +350,7 @@ def result_from_checks(
         ssh_host=ssh_target or None,
         smb_host=smb_host,
         checks=list(checks),
+        summary_key=summary_key,
     )
 
 

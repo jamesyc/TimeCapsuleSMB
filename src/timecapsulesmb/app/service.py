@@ -11,6 +11,7 @@ from timecapsulesmb.app.recovery import recovery_for, ssh_timeout_slow_device_re
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.app import AppOperationError, OperationResult, config_path
 from timecapsulesmb.services.runtime import load_optional_env_config
@@ -145,7 +146,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         message = system_exit_message(exc)
         result = "success" if message in {"0", "None", ""} else "failure"
         if result == "success":
-            context.emit_result(ok=True, payload={"summary": "Operation exited."})
+            context.emit_result(ok=True, payload=Summary("operation_exited", "Operation exited.").fields())
             _finish_api_telemetry(
                 telemetry_session,
                 context,

@@ -39,6 +39,7 @@ from timecapsulesmb.services.configure import (
 )
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.configure_target import resolve_configure_target
+from timecapsulesmb.core.summaries import Summary
 
 
 LOCAL_NETWORK_PREFLIGHT_PARAM_KEYS = (
@@ -154,7 +155,7 @@ def update_config_settings_operation(
     context.values = values
     return OperationResult(True, {
         "config_path": str(env_path),
-        "summary": "Device profile settings synchronized.",
+        **Summary("settings_synchronized", "Device profile settings synchronized.").fields(),
     })
 
 

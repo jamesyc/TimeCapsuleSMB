@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
 from timecapsulesmb.services.reachability import ReachabilityResult
@@ -35,7 +36,7 @@ def capabilities_payload(
         "distribution_root": distribution_root,
         "artifact_manifest_sha256": artifact_manifest_sha256,
         "confirmation_schema_version": 1,
-        "summary": "Helper capabilities resolved.",
+        **Summary("helper_capabilities_resolved", "Helper capabilities resolved.").fields(),
     })
 
 
@@ -58,7 +59,7 @@ def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
             "resolved": len(resolved),
             "devices": len(devices),
         },
-        "summary": f"Discovered {len(devices)} device(s).",
+        **Summary("discovered_devices", f"Discovered {len(devices)} device(s).", (len(devices),)).fields(),
     })
 
 
@@ -75,7 +76,8 @@ def install_validation_payload(*, ok: bool, checks: list[object]) -> dict[str, o
             "pass": pass_count,
             "fail": fail_count,
         },
-        "summary": "Install validation passed." if ok else "Install validation failed.",
+        **(Summary("install_validation_passed", "Install validation passed.") if ok
+           else Summary("install_validation_failed", "Install validation failed.")).fields(),
     })
 
 
@@ -84,7 +86,8 @@ def telemetry_preference_payload(*, install_id: str, telemetry_enabled: bool, bo
         "install_id": install_id,
         "telemetry_enabled": telemetry_enabled,
         "bootstrap_path": bootstrap_path,
-        "summary": "Telemetry is enabled." if telemetry_enabled else "Telemetry is disabled.",
+        **(Summary("telemetry_enabled", "Telemetry is enabled.") if telemetry_enabled
+           else Summary("telemetry_disabled", "Telemetry is disabled.")).fields(),
     })
 
 
@@ -93,14 +96,14 @@ def version_check_payload(result: VersionCheckResult) -> dict[str, object]:
         result.current_version is not None
         and result.current_version > result.local_version_code
     )
-    if result.should_block:
-        summary = "Update required."
-    elif update_available:
-        summary = "Update available."
-    else:
-        summary = "TimeCapsuleSMB is up to date."
     if result.source == "unavailable":
-        summary = "Version metadata is unavailable."
+        summary = Summary("version_metadata_unavailable", "Version metadata is unavailable.")
+    elif result.should_block:
+        summary = Summary("update_required", "Update required.")
+    elif update_available:
+        summary = Summary("update_available", "Update available.")
+    else:
+        summary = Summary("up_to_date", "TimeCapsuleSMB is up to date.")
     return _with_schema({
         "should_block": result.should_block,
         "update_available": update_available,
@@ -112,7 +115,7 @@ def version_check_payload(result: VersionCheckResult) -> dict[str, object]:
         "min_supported_version": result.min_supported_version,
         "latest_tag": result.latest_tag,
         "source": result.source,
-        "summary": summary,
+        **summary.fields(),
     })
 
 
@@ -133,7 +136,7 @@ def reachability_payload(result: ReachabilityResult) -> dict[str, object]:
         "smb_host": result.smb_host,
         "checks": checks,
         "counts": counts,
-        "summary": result.summary,
+        **Summary(result.summary_key, result.summary).fields(),
     })
 
 
@@ -148,7 +151,7 @@ def set_ssh_payload(result: SetSshStatusResult | SetSshResult) -> dict[str, obje
     if "ssh_port_error" not in payload:
         payload["ssh_port_error"] = None
     payload["ssh_disabled_likely"] = bool(payload.get("acp_port_reachable")) and not bool(payload.get("ssh_port_reachable"))
-    payload["summary"] = getattr(result, "summary", "")
+    payload.update(Summary(result.summary_key, result.summary).fields())
     return _with_schema(payload)
 
 
@@ -171,7 +174,7 @@ def configure_payload(
         "device_model": device_model,
         "compatibility": jsonable(compatibility),
         "device": _device_payload(host=host, syap=device_syap, model=device_model),
-        "summary": "Configuration saved and SSH authentication verified.",
+        **Summary("configuration_saved", "Configuration saved and SSH authentication verified.").fields(),
     })
 
 
@@ -197,12 +200,18 @@ def deploy_result_payload(
     message: str | None = None,
     payload_family: str | None = None,
 ) -> dict[str, object]:
+    # The only message a deploy result carries is the activation outcome, and
+    # only NetBSD 4's needs a follow-up; every other completion is generic.
+    if netbsd4 and message is not None:
+        summary = Summary("activation_completed_followup", message)
+    else:
+        summary = Summary("deploy_completed", message or "Deployment completed.")
     payload: dict[str, object] = {
         "payload_dir": payload_dir,
         "netbsd4": netbsd4,
         "payload_family": payload_family,
         "requires_reboot": bool(rebooted or reboot_requested),
-        "summary": "Deployment completed.",
+        **summary.fields(),
     }
     if rebooted is not None:
         payload["rebooted"] = rebooted
@@ -214,7 +223,6 @@ def deploy_result_payload(
         payload["verified"] = verified
     if message is not None:
         payload["message"] = message
-        payload["summary"] = message
     return _with_schema(payload)
 
 
@@ -232,13 +240,19 @@ def activation_plan_payload(raw: object) -> dict[str, object]:
 
 
 def activation_result_payload(*, already_active: bool, message: str | None = None) -> dict[str, object]:
+    if already_active:
+        summary = Summary("activation_already_active", "NetBSD4 payload was already active.")
+    elif message is not None:
+        # The only activation message is NetBSD 4's reboot follow-up.
+        summary = Summary("activation_completed_followup", message)
+    else:
+        summary = Summary("activation_completed", "NetBSD4 activation completed.")
     payload: dict[str, object] = {
         "already_active": already_active,
-        "summary": "NetBSD4 payload was already active." if already_active else "NetBSD4 activation completed.",
+        **summary.fields(),
     }
     if message is not None:
         payload["message"] = message
-        payload["summary"] = message
     return _with_schema(payload)
 
 
@@ -265,7 +279,8 @@ def uninstall_result_payload(
         "rebooted": rebooted,
         "verified": verified,
         "requires_reboot": bool(rebooted or reboot_requested),
-        "summary": "Uninstall completed." if verified else "Uninstall completed without post-reboot verification.",
+        **(Summary("uninstall_completed", "Uninstall completed.") if verified
+           else Summary("uninstall_unverified", "Uninstall completed without post-reboot verification.")).fields(),
     }
     if reboot_requested is not None:
         payload["reboot_requested"] = reboot_requested
@@ -280,14 +295,14 @@ def fsck_volume_list_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema({
         **raw,
         "counts": {"targets": target_count},
-        "summary": f"Found {target_count} mounted HFS volume(s).",
+        **Summary("hfs_volumes_found", f"Found {target_count} mounted HFS volume(s).", (target_count,)).fields(),
     })
 
 
 def fsck_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema({
         **raw,
-        "summary": "Dry-run plan generated for fsck.",
+        **Summary("fsck_plan_generated", "Dry-run plan generated for fsck.").fields(),
     })
 
 
@@ -301,10 +316,16 @@ def fsck_result_payload(
     verified: bool | None = None,
     error: str | None = None,
 ) -> dict[str, object]:
+    if error is not None:
+        if not isinstance(returncode, int):
+            raise ValueError("a failed fsck result needs fsck_hfs's exit status")
+        summary = Summary("fsck_failed", error, (returncode,))
+    else:
+        summary = Summary("fsck_completed", "Disk repair completed with fsck.")
     payload: dict[str, object] = {
         "device": device,
         "mountpoint": mountpoint,
-        "summary": error or "Disk repair completed with fsck.",
+        **summary.fields(),
     }
     if error is not None:
         payload["error"] = error
@@ -323,15 +344,19 @@ def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
     finding_count = int(raw.get("finding_count") or 0)
     repairable_count = int(raw.get("repairable_count") or 0)
     stats = raw.get("stats")
-    summary = f"Found {finding_count} metadata issue(s), {repairable_count} repairable."
+    summary = Summary(
+        "repair_xattrs_found",
+        f"Found {finding_count} metadata issue(s), {repairable_count} repairable.",
+        (finding_count, repairable_count),
+    )
     payload = {
         **raw,
         "counts": {
             "findings": finding_count,
             "repairable": repairable_count,
         },
-        "summary": summary,
-        "summary_text": summary,
+        **summary.fields(),
+        "summary_text": summary.text,
     }
     if stats is not None:
         payload["stats"] = jsonable(stats)
@@ -344,7 +369,7 @@ def flash_backup_payload(raw: Mapping[str, object]) -> dict[str, object]:
     return _with_schema({
         **raw,
         "counts": {"banks": bank_count},
-        "summary": f"Flash backup saved to {raw.get('backup_dir')}.",
+        **Summary("flash_backup_saved", f"Flash backup saved to {raw.get('backup_dir')}.", (str(raw.get("backup_dir")),)).fields(),
     })
 
 
@@ -396,36 +421,59 @@ def _apple_match_count(matches: list[Mapping[str, object]], *, matched: bool) ->
     return count
 
 
+def _nonempty(value: object) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _apple_firmware_summary(
     mode: str,
     match: Mapping[str, object] | None,
     payload: Mapping[str, object] | None,
     matches: list[Mapping[str, object]],
-) -> str | None:
+) -> Summary | None:
+    # Each variant is a whole sentence so translations never splice fragments.
     if mode == "check_apple":
-        version = None if match is None else match.get("template_version")
-        version_text = f" {version}" if isinstance(version, str) and version.strip() else ""
+        version = _nonempty(None if match is None else match.get("template_version"))
+        suffix = f" {version}" if version else ""
+        with_version = (version,) if version else ()
+        variant = "_version" if version else ""
         if len(matches) > 1:
             matched_count = _apple_match_count(matches, matched=True)
             if matched_count == len(matches):
-                return f"All candidate firmware banks match Apple stock firmware{version_text}."
+                return Summary(f"flash.apple_all_match{variant}",
+                               f"All candidate firmware banks match Apple stock firmware{suffix}.", with_version)
             if matched_count == 0:
-                return f"No candidate firmware banks match Apple stock firmware{version_text}."
-            return f"{matched_count} of {len(matches)} candidate firmware banks match Apple stock firmware{version_text}."
+                return Summary(f"flash.apple_none_match{variant}",
+                               f"No candidate firmware banks match Apple stock firmware{suffix}.", with_version)
+            return Summary(
+                f"flash.apple_some_match{variant}",
+                f"{matched_count} of {len(matches)} candidate firmware banks match Apple stock firmware{suffix}.",
+                (matched_count, len(matches), *with_version),
+            )
         if match is not None and match.get("matched") is True:
-            return f"Active firmware bank matches Apple stock firmware{version_text}."
-        return f"Active firmware bank does not match Apple stock firmware{version_text}."
+            return Summary(f"flash.apple_stock_match{variant}",
+                           f"Active firmware bank matches Apple stock firmware{suffix}.", with_version)
+        return Summary(f"flash.apple_stock_mismatch{variant}",
+                       f"Active firmware bank does not match Apple stock firmware{suffix}.", with_version)
     if mode == "download_only":
-        version = None if payload is None else payload.get("template_version")
-        product = None if payload is None else payload.get("template_product_id")
-        detail_parts = []
-        if isinstance(version, str) and version.strip():
-            detail_parts.append(f"version {version}")
-        if isinstance(product, str) and product.strip():
-            detail_parts.append(f"product {product}")
-        detail = f" ({', '.join(detail_parts)})" if detail_parts else ""
-        return f"Apple restore firmware validated{detail}."
+        version = _nonempty(None if payload is None else payload.get("template_version"))
+        product = _nonempty(None if payload is None else payload.get("template_product_id"))
+        if version and product:
+            return Summary("flash.apple_restore_validated_version_product",
+                           f"Apple restore firmware validated (version {version}, product {product}).", (version, product))
+        if version:
+            return Summary("flash.apple_restore_validated_version",
+                           f"Apple restore firmware validated (version {version}).", (version,))
+        if product:
+            return Summary("flash.apple_restore_validated_product",
+                           f"Apple restore firmware validated (product {product}).", (product,))
+        return Summary("flash.apple_restore_validated", "Apple restore firmware validated.")
     return None
+
+
+def _flash_summary_fields(key: str | None, text: str) -> dict[str, object]:
+    # Modes outside patch/restore are not reachable here; they keep English text.
+    return Summary(key, text).fields() if key is not None else {"summary": text}
 
 
 def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
@@ -444,13 +492,15 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     warnings = _flash_plan_warnings(plan)
     apple_summary = _apple_firmware_summary(mode, apple_firmware_match, firmware_payload, apple_firmware_matches)
     if apple_summary is not None:
-        summary = apple_summary
+        summary_fields = apple_summary.fields()
     elif already_satisfied:
-        summary = "Flash plan is already satisfied; no write is needed."
+        summary_fields = Summary("flash_plan_already_satisfied", "Flash plan is already satisfied; no write is needed.").fields()
     elif write_requested:
-        summary = f"Flash {mode} write plan generated."
+        key = f"flash.{mode}_write_plan_generated" if mode in ("patch", "restore") else None
+        summary_fields = _flash_summary_fields(key, f"Flash {mode} write plan generated.")
     else:
-        summary = f"Flash {mode} plan generated."
+        key = f"flash.{mode}_plan_generated" if mode in ("patch", "restore") else None
+        summary_fields = _flash_summary_fields(key, f"Flash {mode} plan generated.")
     return _with_schema({
         **raw,
         "mode": mode,
@@ -462,7 +512,7 @@ def flash_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
         "firmware_payload": firmware_payload,
         "firmware_payload_path": firmware_payload_path,
         "warnings": warnings,
-        "summary": summary,
+        **summary_fields,
     })
 
 
@@ -484,20 +534,24 @@ def flash_write_payload(raw: Mapping[str, object]) -> dict[str, object]:
         rebooted = bool(outcome.get("rebooted"))
         waited_after_reboot = bool(outcome.get("waited_after_reboot"))
     if status == "not_needed":
-        summary = "Flash write was not needed."
+        summary_fields = Summary("flash_write_not_needed", "Flash write was not needed.").fields()
     elif write_validated and mode == "patch":
-        summary = "Flash patch write validated; manual power cycle required."
+        summary_fields = Summary("flash_patch_write_validated_power_cycle",
+                                 "Flash patch write validated; manual power cycle required.").fields()
     elif write_validated and mode == "restore":
         if post_write_action == "ssh_reboot" and rebooted:
-            summary = "Flash restore write validated; device rebooted."
+            summary = Summary("flash_restore_write_validated_rebooted", "Flash restore write validated; device rebooted.")
         elif post_write_action == "ssh_reboot" and reboot_requested:
-            summary = "Flash restore write validated; reboot requested."
+            summary = Summary("flash_restore_write_validated_reboot_requested",
+                              "Flash restore write validated; reboot requested.")
         else:
-            summary = "Flash restore write validated; manual reboot required."
+            summary = Summary("flash_restore_write_validated_manual_reboot",
+                              "Flash restore write validated; manual reboot required.")
+        summary_fields = summary.fields()
     elif write_validated:
-        summary = f"Flash {mode} write validated."
+        summary_fields = _flash_summary_fields(None, f"Flash {mode} write validated.")
     else:
-        summary = "Flash write completed."
+        summary_fields = Summary("flash_write_completed", "Flash write completed.").fields()
     return _with_schema({
         **raw,
         "mode": mode,
@@ -507,7 +561,7 @@ def flash_write_payload(raw: Mapping[str, object]) -> dict[str, object]:
         "reboot_requested": reboot_requested,
         "rebooted": rebooted,
         "waited_after_reboot": waited_after_reboot,
-        "summary": summary,
+        **summary_fields,
     })
 
 
@@ -523,7 +577,8 @@ def doctor_payload(
         "fatal": fatal,
         "results": result_payload,
         "counts": counts,
-        "summary": "Doctor found one or more fatal problems." if fatal else "Doctor checks passed.",
+        **(Summary("doctor_found_fatal", "Doctor found one or more fatal problems.") if fatal
+           else Summary("doctor_checks_passed", "Doctor checks passed.")).fields(),
     }
     if error:
         payload["error"] = error

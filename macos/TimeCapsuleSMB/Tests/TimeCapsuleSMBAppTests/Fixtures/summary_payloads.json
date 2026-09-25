@@ -1,0 +1,2074 @@
+[
+  {
+    "event": {
+      "ok": true,
+      "operation": "capabilities",
+      "payload": {
+        "api_schema_version": 1,
+        "artifact_manifest_sha256": null,
+        "confirmation_schema_version": 1,
+        "distribution_root": "/tmp/dist",
+        "helper_version": "1.0",
+        "helper_version_code": 1,
+        "operations": [
+          "doctor"
+        ],
+        "schema_version": 1,
+        "summary": "Helper capabilities resolved.",
+        "summary_args": [],
+        "summary_key": "helper_capabilities_resolved"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "capabilities"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "doctor",
+      "payload": {
+        "summary": "Operation exited.",
+        "summary_args": [],
+        "summary_key": "operation_exited"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "operation_exited"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "discover",
+      "payload": {
+        "counts": {
+          "devices": 2,
+          "instances": 0,
+          "resolved": 0
+        },
+        "devices": [
+          {
+            "name": "A"
+          },
+          {
+            "name": "B"
+          }
+        ],
+        "schema_version": 1,
+        "summary": "Discovered 2 device(s).",
+        "summary_args": [
+          2
+        ],
+        "summary_key": "discovered_devices"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "discover"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "validate-install",
+      "payload": {
+        "checks": [],
+        "counts": {
+          "checks": 0,
+          "fail": 0,
+          "pass": 0
+        },
+        "ok": true,
+        "schema_version": 1,
+        "summary": "Install validation passed.",
+        "summary_args": [],
+        "summary_key": "install_validation_passed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "validate_install_passed"
+  },
+  {
+    "event": {
+      "ok": false,
+      "operation": "validate-install",
+      "payload": {
+        "checks": [],
+        "counts": {
+          "checks": 0,
+          "fail": 0,
+          "pass": 0
+        },
+        "ok": false,
+        "schema_version": 1,
+        "summary": "Install validation failed.",
+        "summary_args": [],
+        "summary_key": "install_validation_failed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "validate_install_failed"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-telemetry",
+      "payload": {
+        "bootstrap_path": "/tmp/b",
+        "install_id": "id",
+        "schema_version": 1,
+        "summary": "Telemetry is enabled.",
+        "summary_args": [],
+        "summary_key": "telemetry_enabled",
+        "telemetry_enabled": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "telemetry_enabled"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-telemetry",
+      "payload": {
+        "bootstrap_path": "/tmp/b",
+        "install_id": "id",
+        "schema_version": 1,
+        "summary": "Telemetry is disabled.",
+        "summary_args": [],
+        "summary_key": "telemetry_disabled",
+        "telemetry_enabled": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "telemetry_disabled"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "version-check",
+      "payload": {
+        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
+        "current_version": 10,
+        "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
+        "latest_tag": null,
+        "local_version_code": 5,
+        "message": "This version is no longer supported. Please update before continuing.",
+        "min_supported_version": null,
+        "schema_version": 1,
+        "should_block": true,
+        "source": "remote",
+        "summary": "Update required.",
+        "summary_args": [],
+        "summary_key": "update_required",
+        "update_available": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "version_required"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "version-check",
+      "payload": {
+        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
+        "current_version": 10,
+        "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
+        "latest_tag": null,
+        "local_version_code": 5,
+        "message": "This version is no longer supported. Please update before continuing.",
+        "min_supported_version": null,
+        "schema_version": 1,
+        "should_block": false,
+        "source": "remote",
+        "summary": "Update available.",
+        "summary_args": [],
+        "summary_key": "update_available",
+        "update_available": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "version_available"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "version-check",
+      "payload": {
+        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
+        "current_version": 5,
+        "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
+        "latest_tag": null,
+        "local_version_code": 5,
+        "message": "This version is no longer supported. Please update before continuing.",
+        "min_supported_version": null,
+        "schema_version": 1,
+        "should_block": false,
+        "source": "remote",
+        "summary": "TimeCapsuleSMB is up to date.",
+        "summary_args": [],
+        "summary_key": "up_to_date",
+        "update_available": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "version_current"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "version-check",
+      "payload": {
+        "checked_url": "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json",
+        "current_version": null,
+        "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
+        "latest_tag": null,
+        "local_version_code": 30101,
+        "message": "This version is no longer supported. Please update before continuing.",
+        "min_supported_version": null,
+        "schema_version": 1,
+        "should_block": false,
+        "source": "unavailable",
+        "summary": "Version metadata is unavailable.",
+        "summary_args": [],
+        "summary_key": "version_metadata_unavailable",
+        "update_available": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "version_unavailable"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "configure",
+      "payload": {
+        "compatibility": null,
+        "config_path": "/tmp/.env",
+        "configure_id": "c",
+        "device": {
+          "host": "root@10.0.0.2",
+          "model": "TimeCapsule8,119",
+          "syap": "119"
+        },
+        "device_model": "TimeCapsule8,119",
+        "device_syap": "119",
+        "host": "root@10.0.0.2",
+        "schema_version": 1,
+        "ssh_authenticated": true,
+        "summary": "Configuration saved and SSH authentication verified.",
+        "summary_args": [],
+        "summary_key": "configuration_saved"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "configure"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "update-config-settings",
+      "payload": {
+        "config_path": "/tmp/.env",
+        "summary": "Device profile settings synchronized.",
+        "summary_args": [],
+        "summary_key": "settings_synchronized"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "settings_synchronized"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "reachability",
+      "payload": {
+        "checks": [],
+        "counts": {},
+        "schema_version": 1,
+        "smb_host": "10.0.0.2",
+        "ssh_host": "root@10.0.0.2",
+        "status": "reachable",
+        "summary": "SSH reachable; SMB port reachable.",
+        "summary_args": [],
+        "summary_key": "reachability.all_reachable"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "reachability_all"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "reachability",
+      "payload": {
+        "checks": [],
+        "counts": {},
+        "schema_version": 1,
+        "smb_host": "10.0.0.2",
+        "ssh_host": "root@10.0.0.2",
+        "status": "partial",
+        "summary": "SSH reachable, SMB port closed.",
+        "summary_args": [],
+        "summary_key": "reachability.ssh_only"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "reachability_ssh_only"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "reachability",
+      "payload": {
+        "checks": [],
+        "counts": {},
+        "schema_version": 1,
+        "smb_host": "10.0.0.2",
+        "ssh_host": "root@10.0.0.2",
+        "status": "partial",
+        "summary": "SMB port reachable, SSH closed.",
+        "summary_args": [],
+        "summary_key": "reachability.smb_only"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "reachability_smb_only"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "reachability",
+      "payload": {
+        "checks": [],
+        "counts": {},
+        "schema_version": 1,
+        "smb_host": "10.0.0.2",
+        "ssh_host": "root@10.0.0.2",
+        "status": "unreachable",
+        "summary": "Could not reach SSH or SMB.",
+        "summary_args": [],
+        "summary_key": "reachability.unreachable"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "reachability_unreachable"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "reachability",
+      "payload": {
+        "checks": [],
+        "counts": {},
+        "schema_version": 1,
+        "smb_host": "10.0.0.2",
+        "ssh_host": "root@10.0.0.2",
+        "status": "partial",
+        "summary": "SSH authentication failed.",
+        "summary_args": [],
+        "summary_key": "reachability.auth_failed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "reachability_auth_failed"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "reachability",
+      "payload": {
+        "checks": [],
+        "counts": {},
+        "schema_version": 1,
+        "smb_host": "10.0.0.2",
+        "ssh_host": "root@10.0.0.2",
+        "status": "skipped",
+        "summary": "No saved host candidates were available.",
+        "summary_args": [],
+        "summary_key": "reachability.no_candidates"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "reachability_no_candidates"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "host": "10.0.0.2",
+        "schema_version": 1,
+        "ssh_disabled_likely": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": true,
+        "summary": "SSH is reachable.",
+        "summary_args": [],
+        "summary_key": "ssh.reachable"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_status_reachable"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "host": "10.0.0.2",
+        "schema_version": 1,
+        "ssh_disabled_likely": true,
+        "ssh_port_error": null,
+        "ssh_port_reachable": false,
+        "summary": "AirPort ACP is reachable, but SSH is closed.",
+        "summary_args": [],
+        "summary_key": "ssh.acp_reachable_ssh_closed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_status_acp_only"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": false,
+        "host": "10.0.0.2",
+        "schema_version": 1,
+        "ssh_disabled_likely": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": false,
+        "summary": "AirPort ACP and SSH are not reachable.",
+        "summary_args": [],
+        "summary_key": "ssh.unreachable"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_status_unreachable"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "deploy",
+      "payload": {
+        "netbsd4": false,
+        "payload_dir": "/Volumes/dk2/.samba4",
+        "payload_family": null,
+        "requires_reboot": false,
+        "schema_version": 1,
+        "summary": "Deployment completed.",
+        "summary_args": [],
+        "summary_key": "deploy_completed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "deploy_completed"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "deploy",
+      "payload": {
+        "message": "Runtime activation complete.",
+        "netbsd4": false,
+        "payload_dir": "/Volumes/dk2/.samba4",
+        "payload_family": null,
+        "requires_reboot": false,
+        "schema_version": 1,
+        "summary": "Runtime activation complete.",
+        "summary_args": [],
+        "summary_key": "deploy_completed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "deploy_runtime_activated"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "deploy",
+      "payload": {
+        "message": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "netbsd4": true,
+        "payload_dir": "/Volumes/dk2/.samba4",
+        "payload_family": null,
+        "requires_reboot": false,
+        "schema_version": 1,
+        "summary": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "summary_args": [],
+        "summary_key": "activation_completed_followup"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "deploy_netbsd4_followup"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "activate",
+      "payload": {
+        "already_active": true,
+        "schema_version": 1,
+        "summary": "NetBSD4 payload was already active.",
+        "summary_args": [],
+        "summary_key": "activation_already_active"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "activation_already_active"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "activate",
+      "payload": {
+        "already_active": false,
+        "schema_version": 1,
+        "summary": "NetBSD4 activation completed.",
+        "summary_args": [],
+        "summary_key": "activation_completed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "activation_completed"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "activate",
+      "payload": {
+        "already_active": false,
+        "message": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "schema_version": 1,
+        "summary": "NetBSD4 activation complete. Run `activate` after a reboot if the device did not auto-start Samba.",
+        "summary_args": [],
+        "summary_key": "activation_completed_followup"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "activation_followup"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "uninstall",
+      "payload": {
+        "rebooted": true,
+        "requires_reboot": true,
+        "schema_version": 1,
+        "summary": "Uninstall completed.",
+        "summary_args": [],
+        "summary_key": "uninstall_completed",
+        "verified": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "uninstall_completed"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "uninstall",
+      "payload": {
+        "rebooted": true,
+        "requires_reboot": true,
+        "schema_version": 1,
+        "summary": "Uninstall completed without post-reboot verification.",
+        "summary_args": [],
+        "summary_key": "uninstall_unverified",
+        "verified": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "uninstall_unverified"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "fsck",
+      "payload": {
+        "counts": {
+          "targets": 1
+        },
+        "schema_version": 1,
+        "summary": "Found 1 mounted HFS volume(s).",
+        "summary_args": [
+          1
+        ],
+        "summary_key": "hfs_volumes_found",
+        "targets": [
+          {
+            "device": "/dev/dk2"
+          }
+        ]
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "fsck_volumes"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "fsck",
+      "payload": {
+        "device": "/dev/dk2",
+        "mountpoint": "/Volumes/dk2",
+        "reboot_required": true,
+        "schema_version": 1,
+        "summary": "Dry-run plan generated for fsck.",
+        "summary_args": [],
+        "summary_key": "fsck_plan_generated",
+        "target": {
+          "builtin": true,
+          "device": "/dev/dk2",
+          "mountpoint": "/Volumes/dk2",
+          "name": "Data"
+        },
+        "wait_after_reboot": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "fsck_plan"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "fsck",
+      "payload": {
+        "device": "/dev/dk2",
+        "mountpoint": "/Volumes/dk2",
+        "reboot_requested": true,
+        "returncode": 0,
+        "schema_version": 1,
+        "summary": "Disk repair completed with fsck.",
+        "summary_args": [],
+        "summary_key": "fsck_completed",
+        "verified": true,
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "fsck_completed"
+  },
+  {
+    "event": {
+      "ok": false,
+      "operation": "fsck",
+      "payload": {
+        "device": "/dev/dk2",
+        "error": "fsck_hfs exited with status 8; the disk may still need repair.",
+        "mountpoint": "/Volumes/dk2",
+        "reboot_requested": true,
+        "returncode": 8,
+        "schema_version": 1,
+        "summary": "fsck_hfs exited with status 8; the disk may still need repair.",
+        "summary_args": [
+          8
+        ],
+        "summary_key": "fsck_failed",
+        "verified": true,
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "fsck_failed"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "repair-xattrs",
+      "payload": {
+        "counts": {
+          "findings": 3,
+          "repairable": 2
+        },
+        "finding_count": 3,
+        "repairable_count": 2,
+        "returncode": 0,
+        "root": "/Volumes/Data",
+        "schema_version": 1,
+        "summary": "Found 3 metadata issue(s), 2 repairable.",
+        "summary_args": [
+          3,
+          2
+        ],
+        "summary_key": "repair_xattrs_found",
+        "summary_text": "Found 3 metadata issue(s), 2 repairable."
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "repair_xattrs"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "doctor",
+      "payload": {
+        "counts": {
+          "FAIL": 0,
+          "INFO": 0,
+          "PASS": 0,
+          "WARN": 0
+        },
+        "fatal": false,
+        "results": [],
+        "schema_version": 1,
+        "summary": "Doctor checks passed.",
+        "summary_args": [],
+        "summary_key": "doctor_checks_passed"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "doctor_passed"
+  },
+  {
+    "event": {
+      "ok": false,
+      "operation": "doctor",
+      "payload": {
+        "counts": {
+          "FAIL": 1,
+          "INFO": 0,
+          "PASS": 0,
+          "WARN": 0
+        },
+        "error": "Doctor failures:\nFAIL smbd is not running",
+        "fatal": true,
+        "results": [
+          {
+            "details": {},
+            "message": "smbd is not running",
+            "status": "FAIL"
+          }
+        ],
+        "schema_version": 1,
+        "summary": "Doctor found one or more fatal problems.",
+        "summary_args": [],
+        "summary_key": "doctor_found_fatal"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "doctor_fatal"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "backup_dir": "/tmp/flash-backup",
+        "banks": [],
+        "counts": {
+          "banks": 0
+        },
+        "schema_version": 1,
+        "summary": "Flash backup saved to /tmp/flash-backup.",
+        "summary_args": [
+          "/tmp/flash-backup"
+        ],
+        "summary_key": "flash_backup_saved"
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_backup"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": true,
+          "template_version": null
+        },
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": true,
+            "template_version": null
+          },
+          "apple_matches": [],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "Active firmware bank matches Apple stock firmware.",
+        "summary_args": [],
+        "summary_key": "flash.apple_stock_match",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_stock_match"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": true,
+          "template_version": "7.8.1"
+        },
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": true,
+            "template_version": "7.8.1"
+          },
+          "apple_matches": [],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "Active firmware bank matches Apple stock firmware 7.8.1.",
+        "summary_args": [
+          "7.8.1"
+        ],
+        "summary_key": "flash.apple_stock_match_version",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_stock_match_version"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": false,
+          "template_version": null
+        },
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": false,
+            "template_version": null
+          },
+          "apple_matches": [],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "Active firmware bank does not match Apple stock firmware.",
+        "summary_args": [],
+        "summary_key": "flash.apple_stock_mismatch",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_stock_mismatch"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": false,
+          "template_version": "7.8.1"
+        },
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": false,
+            "template_version": "7.8.1"
+          },
+          "apple_matches": [],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "Active firmware bank does not match Apple stock firmware 7.8.1.",
+        "summary_args": [
+          "7.8.1"
+        ],
+        "summary_key": "flash.apple_stock_mismatch_version",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_stock_mismatch_version"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": true,
+          "template_version": null
+        },
+        "apple_firmware_matches": [
+          {
+            "bank": "bank0",
+            "match": {
+              "matched": true,
+              "template_version": null
+            }
+          },
+          {
+            "bank": "bank1",
+            "match": {
+              "matched": true,
+              "template_version": null
+            }
+          }
+        ],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": true,
+            "template_version": null
+          },
+          "apple_matches": [
+            {
+              "bank": "bank0",
+              "match": {
+                "matched": true,
+                "template_version": null
+              }
+            },
+            {
+              "bank": "bank1",
+              "match": {
+                "matched": true,
+                "template_version": null
+              }
+            }
+          ],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "All candidate firmware banks match Apple stock firmware.",
+        "summary_args": [],
+        "summary_key": "flash.apple_all_match",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_all_match"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": true,
+          "template_version": "7.8.1"
+        },
+        "apple_firmware_matches": [
+          {
+            "bank": "bank0",
+            "match": {
+              "matched": true,
+              "template_version": "7.8.1"
+            }
+          },
+          {
+            "bank": "bank1",
+            "match": {
+              "matched": true,
+              "template_version": "7.8.1"
+            }
+          }
+        ],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": true,
+            "template_version": "7.8.1"
+          },
+          "apple_matches": [
+            {
+              "bank": "bank0",
+              "match": {
+                "matched": true,
+                "template_version": "7.8.1"
+              }
+            },
+            {
+              "bank": "bank1",
+              "match": {
+                "matched": true,
+                "template_version": "7.8.1"
+              }
+            }
+          ],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "All candidate firmware banks match Apple stock firmware 7.8.1.",
+        "summary_args": [
+          "7.8.1"
+        ],
+        "summary_key": "flash.apple_all_match_version",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_all_match_version"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": false,
+          "template_version": null
+        },
+        "apple_firmware_matches": [
+          {
+            "bank": "bank0",
+            "match": {
+              "matched": false,
+              "template_version": null
+            }
+          },
+          {
+            "bank": "bank1",
+            "match": {
+              "matched": false,
+              "template_version": null
+            }
+          }
+        ],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": false,
+            "template_version": null
+          },
+          "apple_matches": [
+            {
+              "bank": "bank0",
+              "match": {
+                "matched": false,
+                "template_version": null
+              }
+            },
+            {
+              "bank": "bank1",
+              "match": {
+                "matched": false,
+                "template_version": null
+              }
+            }
+          ],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "No candidate firmware banks match Apple stock firmware.",
+        "summary_args": [],
+        "summary_key": "flash.apple_none_match",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_none_match"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": false,
+          "template_version": "7.8.1"
+        },
+        "apple_firmware_matches": [
+          {
+            "bank": "bank0",
+            "match": {
+              "matched": false,
+              "template_version": "7.8.1"
+            }
+          },
+          {
+            "bank": "bank1",
+            "match": {
+              "matched": false,
+              "template_version": "7.8.1"
+            }
+          }
+        ],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": false,
+            "template_version": "7.8.1"
+          },
+          "apple_matches": [
+            {
+              "bank": "bank0",
+              "match": {
+                "matched": false,
+                "template_version": "7.8.1"
+              }
+            },
+            {
+              "bank": "bank1",
+              "match": {
+                "matched": false,
+                "template_version": "7.8.1"
+              }
+            }
+          ],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "No candidate firmware banks match Apple stock firmware 7.8.1.",
+        "summary_args": [
+          "7.8.1"
+        ],
+        "summary_key": "flash.apple_none_match_version",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_none_match_version"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": true,
+          "template_version": null
+        },
+        "apple_firmware_matches": [
+          {
+            "bank": "bank0",
+            "match": {
+              "matched": true,
+              "template_version": null
+            }
+          },
+          {
+            "bank": "bank1",
+            "match": {
+              "matched": false,
+              "template_version": null
+            }
+          }
+        ],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": true,
+            "template_version": null
+          },
+          "apple_matches": [
+            {
+              "bank": "bank0",
+              "match": {
+                "matched": true,
+                "template_version": null
+              }
+            },
+            {
+              "bank": "bank1",
+              "match": {
+                "matched": false,
+                "template_version": null
+              }
+            }
+          ],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "1 of 2 candidate firmware banks match Apple stock firmware.",
+        "summary_args": [
+          1,
+          2
+        ],
+        "summary_key": "flash.apple_some_match",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_some_match"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": {
+          "matched": true,
+          "template_version": "7.8.1"
+        },
+        "apple_firmware_matches": [
+          {
+            "bank": "bank0",
+            "match": {
+              "matched": true,
+              "template_version": "7.8.1"
+            }
+          },
+          {
+            "bank": "bank1",
+            "match": {
+              "matched": false,
+              "template_version": "7.8.1"
+            }
+          }
+        ],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "apple_match": {
+            "matched": true,
+            "template_version": "7.8.1"
+          },
+          "apple_matches": [
+            {
+              "bank": "bank0",
+              "match": {
+                "matched": true,
+                "template_version": "7.8.1"
+              }
+            },
+            {
+              "bank": "bank1",
+              "match": {
+                "matched": false,
+                "template_version": "7.8.1"
+              }
+            }
+          ],
+          "mode": "check_apple"
+        },
+        "mode": "check_apple",
+        "schema_version": 1,
+        "summary": "1 of 2 candidate firmware banks match Apple stock firmware 7.8.1.",
+        "summary_args": [
+          1,
+          2,
+          "7.8.1"
+        ],
+        "summary_key": "flash.apple_some_match_version",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_apple_some_match_version"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": {},
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "download_only",
+          "payload": {}
+        },
+        "mode": "download_only",
+        "schema_version": 1,
+        "summary": "Apple restore firmware validated.",
+        "summary_args": [],
+        "summary_key": "flash.apple_restore_validated",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_validated"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": {
+          "template_version": "7.8.1"
+        },
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "download_only",
+          "payload": {
+            "template_version": "7.8.1"
+          }
+        },
+        "mode": "download_only",
+        "schema_version": 1,
+        "summary": "Apple restore firmware validated (version 7.8.1).",
+        "summary_args": [
+          "7.8.1"
+        ],
+        "summary_key": "flash.apple_restore_validated_version",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_validated_version"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": {
+          "template_product_id": "119"
+        },
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "download_only",
+          "payload": {
+            "template_product_id": "119"
+          }
+        },
+        "mode": "download_only",
+        "schema_version": 1,
+        "summary": "Apple restore firmware validated (product 119).",
+        "summary_args": [
+          "119"
+        ],
+        "summary_key": "flash.apple_restore_validated_product",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_validated_product"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": {
+          "template_product_id": "119",
+          "template_version": "7.8.1"
+        },
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "download_only",
+          "payload": {
+            "template_product_id": "119",
+            "template_version": "7.8.1"
+          }
+        },
+        "mode": "download_only",
+        "schema_version": 1,
+        "summary": "Apple restore firmware validated (version 7.8.1, product 119).",
+        "summary_args": [
+          "7.8.1",
+          "119"
+        ],
+        "summary_key": "flash.apple_restore_validated_version_product",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_validated_version_product"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": true,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "already_satisfied": true,
+          "mode": "patch"
+        },
+        "mode": "patch",
+        "schema_version": 1,
+        "summary": "Flash plan is already satisfied; no write is needed.",
+        "summary_args": [],
+        "summary_key": "flash_plan_already_satisfied",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_plan_satisfied"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "patch"
+        },
+        "mode": "patch",
+        "schema_version": 1,
+        "summary": "Flash patch plan generated.",
+        "summary_args": [],
+        "summary_key": "flash.patch_plan_generated",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_patch_plan"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "restore"
+        },
+        "mode": "restore",
+        "schema_version": 1,
+        "summary": "Flash restore plan generated.",
+        "summary_args": [],
+        "summary_key": "flash.restore_plan_generated",
+        "warnings": [],
+        "write_requested": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_plan"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "patch",
+          "write_requested": true
+        },
+        "mode": "patch",
+        "schema_version": 1,
+        "summary": "Flash patch write plan generated.",
+        "summary_args": [],
+        "summary_key": "flash.patch_write_plan_generated",
+        "warnings": [],
+        "write_requested": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_patch_write_plan"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "already_satisfied": false,
+        "apple_firmware_match": null,
+        "apple_firmware_matches": [],
+        "apple_match_status": null,
+        "firmware_payload": null,
+        "firmware_payload_path": null,
+        "flash_plan": {
+          "mode": "restore",
+          "write_requested": true
+        },
+        "mode": "restore",
+        "schema_version": 1,
+        "summary": "Flash restore write plan generated.",
+        "summary_args": [],
+        "summary_key": "flash.restore_write_plan_generated",
+        "warnings": [],
+        "write_requested": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_write_plan"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "mode": "patch",
+        "post_write_action": "",
+        "reboot_requested": false,
+        "rebooted": false,
+        "schema_version": 1,
+        "summary": "Flash write was not needed.",
+        "summary_args": [],
+        "summary_key": "flash_write_not_needed",
+        "waited_after_reboot": false,
+        "write_outcome": {
+          "mode": "patch",
+          "status": "not_needed"
+        },
+        "write_status": "not_needed",
+        "write_validated": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_write_not_needed"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "mode": "patch",
+        "post_write_action": "manual_power_cycle",
+        "reboot_requested": false,
+        "rebooted": false,
+        "schema_version": 1,
+        "summary": "Flash patch write validated; manual power cycle required.",
+        "summary_args": [],
+        "summary_key": "flash_patch_write_validated_power_cycle",
+        "waited_after_reboot": false,
+        "write_outcome": {
+          "mode": "patch",
+          "post_write_action": "manual_power_cycle",
+          "status": "written",
+          "write_validated": true
+        },
+        "write_status": "written",
+        "write_validated": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_patch_write_validated"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "mode": "restore",
+        "post_write_action": "ssh_reboot",
+        "reboot_requested": true,
+        "rebooted": true,
+        "schema_version": 1,
+        "summary": "Flash restore write validated; device rebooted.",
+        "summary_args": [],
+        "summary_key": "flash_restore_write_validated_rebooted",
+        "waited_after_reboot": false,
+        "write_outcome": {
+          "mode": "restore",
+          "post_write_action": "ssh_reboot",
+          "reboot_requested": true,
+          "rebooted": true,
+          "status": "written",
+          "write_validated": true
+        },
+        "write_status": "written",
+        "write_validated": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_write_rebooted"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "mode": "restore",
+        "post_write_action": "ssh_reboot",
+        "reboot_requested": true,
+        "rebooted": false,
+        "schema_version": 1,
+        "summary": "Flash restore write validated; reboot requested.",
+        "summary_args": [],
+        "summary_key": "flash_restore_write_validated_reboot_requested",
+        "waited_after_reboot": false,
+        "write_outcome": {
+          "mode": "restore",
+          "post_write_action": "ssh_reboot",
+          "reboot_requested": true,
+          "status": "written",
+          "write_validated": true
+        },
+        "write_status": "written",
+        "write_validated": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_write_reboot_requested"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "mode": "restore",
+        "post_write_action": "manual_reboot",
+        "reboot_requested": false,
+        "rebooted": false,
+        "schema_version": 1,
+        "summary": "Flash restore write validated; manual reboot required.",
+        "summary_args": [],
+        "summary_key": "flash_restore_write_validated_manual_reboot",
+        "waited_after_reboot": false,
+        "write_outcome": {
+          "mode": "restore",
+          "post_write_action": "manual_reboot",
+          "status": "written",
+          "write_validated": true
+        },
+        "write_status": "written",
+        "write_validated": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_restore_write_manual_reboot"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "flash",
+      "payload": {
+        "mode": "patch",
+        "post_write_action": "",
+        "reboot_requested": false,
+        "rebooted": false,
+        "schema_version": 1,
+        "summary": "Flash write completed.",
+        "summary_args": [],
+        "summary_key": "flash_write_completed",
+        "waited_after_reboot": false,
+        "write_outcome": {
+          "mode": "patch",
+          "status": "written"
+        },
+        "write_status": "written",
+        "write_validated": false
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "flash_write_completed"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Waiting a few seconds for device to boot...",
+      "message_args": [],
+      "message_key": "waiting_device_boot",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_waiting_boot"
+  },
+  {
+    "event": {
+      "level": "info",
+      "message": "Waiting a few seconds for device to activate...",
+      "message_args": [],
+      "message_key": "waiting_device_activate",
+      "operation": "deploy",
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "log"
+    },
+    "name": "log_waiting_activate"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "action": "enable",
+        "device_recovered": null,
+        "host": "10.0.0.2",
+        "reboot_requested": true,
+        "schema_version": 1,
+        "ssh_disable_persisted": null,
+        "ssh_disabled_likely": false,
+        "ssh_final_reachable": true,
+        "ssh_initially_reachable": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": true,
+        "ssh_reboot_observed_down": null,
+        "ssh_verification_skipped": false,
+        "summary": "SSH is already enabled.",
+        "summary_args": [],
+        "summary_key": "ssh.already_enabled",
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_already_enabled"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "action": "enable",
+        "device_recovered": null,
+        "host": "10.0.0.2",
+        "reboot_requested": true,
+        "schema_version": 1,
+        "ssh_disable_persisted": null,
+        "ssh_disabled_likely": false,
+        "ssh_final_reachable": true,
+        "ssh_initially_reachable": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": true,
+        "ssh_reboot_observed_down": null,
+        "ssh_verification_skipped": false,
+        "summary": "SSH enable requested; not waiting for SSH to open.",
+        "summary_args": [],
+        "summary_key": "ssh.enable_requested",
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_enable_requested"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "action": "enable",
+        "device_recovered": null,
+        "host": "10.0.0.2",
+        "reboot_requested": true,
+        "schema_version": 1,
+        "ssh_disable_persisted": null,
+        "ssh_disabled_likely": false,
+        "ssh_final_reachable": true,
+        "ssh_initially_reachable": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": true,
+        "ssh_reboot_observed_down": null,
+        "ssh_verification_skipped": false,
+        "summary": "SSH is configured.",
+        "summary_args": [],
+        "summary_key": "ssh.configured",
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_configured"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "action": "enable",
+        "device_recovered": null,
+        "host": "10.0.0.2",
+        "reboot_requested": true,
+        "schema_version": 1,
+        "ssh_disable_persisted": null,
+        "ssh_disabled_likely": false,
+        "ssh_final_reachable": true,
+        "ssh_initially_reachable": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": true,
+        "ssh_reboot_observed_down": null,
+        "ssh_verification_skipped": false,
+        "summary": "SSH already disabled.",
+        "summary_args": [],
+        "summary_key": "ssh.already_disabled",
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_already_disabled"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "action": "enable",
+        "device_recovered": null,
+        "host": "10.0.0.2",
+        "reboot_requested": true,
+        "schema_version": 1,
+        "ssh_disable_persisted": null,
+        "ssh_disabled_likely": false,
+        "ssh_final_reachable": true,
+        "ssh_initially_reachable": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": true,
+        "ssh_reboot_observed_down": null,
+        "ssh_verification_skipped": false,
+        "summary": "SSH disable requested; not waiting for reboot or verifying SSH stays closed.",
+        "summary_args": [],
+        "summary_key": "ssh.disable_requested",
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_disable_requested"
+  },
+  {
+    "event": {
+      "ok": true,
+      "operation": "set-ssh",
+      "payload": {
+        "acp_port_error": null,
+        "acp_port_reachable": true,
+        "action": "enable",
+        "device_recovered": null,
+        "host": "10.0.0.2",
+        "reboot_requested": true,
+        "schema_version": 1,
+        "ssh_disable_persisted": null,
+        "ssh_disabled_likely": false,
+        "ssh_final_reachable": true,
+        "ssh_initially_reachable": false,
+        "ssh_port_error": null,
+        "ssh_port_reachable": true,
+        "ssh_reboot_observed_down": null,
+        "ssh_verification_skipped": false,
+        "summary": "SSH disabled (remains closed after reboot).",
+        "summary_args": [],
+        "summary_key": "ssh.disabled",
+        "waited": true
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "ssh_disabled"
+  }
+]

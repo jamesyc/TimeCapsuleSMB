@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from timecapsulesmb.core.redaction import redact_sensitive_fields
+from timecapsulesmb.core.summaries import Summary
 from timecapsulesmb.app.stage_policy import stage_policy
 
 
@@ -77,8 +78,11 @@ class EventSink:
             self._current_risk_by_operation[operation] = risk
         self.emit(AppEvent("stage", operation, fields))
 
-    def log(self, operation: str, message: str, *, level: str = "info") -> None:
-        self.emit(AppEvent("log", operation, {"level": level, "message": message}))
+    def log(self, operation: str, message: str, *, level: str = "info", summary: Summary | None = None) -> None:
+        fields: dict[str, object] = {"level": level, "message": message}
+        if summary is not None:
+            fields.update(summary.message_fields())
+        self.emit(AppEvent("log", operation, fields))
 
     def check(
         self,
