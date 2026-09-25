@@ -655,43 +655,6 @@ def inspect_flash_banks(
     return FlashInspection(primary=primary, secondary=secondary, active_selection=active_selection)
 
 
-def analyze_flash_banks(
-    *,
-    primary_data: bytes,
-    secondary_data: bytes,
-    cks1: int | None,
-    cks2: int | None,
-    os_release: str,
-    build_patch_candidate: bool = True,
-) -> FlashAnalysis:
-    inspection = inspect_flash_banks(
-        primary_data=primary_data,
-        secondary_data=secondary_data,
-        cks1=cks1,
-        cks2=cks2,
-        os_release=os_release,
-        build_primary_patch_candidate=False,
-    )
-    if inspection.strict_analysis is None:
-        raise FlashAnalysisError(inspection_error_message(inspection))
-    primary = inspection.primary.analysis
-    secondary = inspection.secondary.analysis
-    assert primary is not None
-    assert secondary is not None
-    active_bank = inspection.active_bank
-    active_selection = inspection.active_selection
-    if build_patch_candidate and active_bank == primary.name:
-        primary = _with_patch_candidate(primary)
-    elif build_patch_candidate and active_bank == secondary.name:
-        secondary = _with_patch_candidate(secondary)
-    return FlashAnalysis(
-        primary=primary,
-        secondary=secondary,
-        active_bank=active_bank,
-        active_selection=active_selection,
-    )
-
-
 def bank_to_jsonable(
     bank: BankAnalysis,
     *,

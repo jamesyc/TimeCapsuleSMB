@@ -6,7 +6,6 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest import mock
 
 
@@ -18,7 +17,6 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli.runtime import (
     json_text,
     print_json,
-    write_json_file,
 )
 from timecapsulesmb.core.config import AppConfig, ConfigError, DEFAULTS
 from timecapsulesmb.services.runtime import resolve_env_connection, ssh_target_link_local_resolution_error
@@ -163,12 +161,6 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("nested-secret", output.getvalue())
         self.assertNotIn("token-secret", output.getvalue())
         self.assertNotIn("session-secret-value", output.getvalue())
-
-    def test_write_json_file_adds_trailing_newline(self) -> None:
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "manifest.json"
-            write_json_file(path, {"b": 1, "a": 2})
-            self.assertEqual(path.read_text(), '{\n  "a": 2,\n  "b": 1\n}\n')
 
 
 if __name__ == "__main__":

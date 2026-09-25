@@ -10,16 +10,6 @@ REMOTE_WRITE = "remote_write"
 DESTRUCTIVE = "destructive"
 REBOOT = "reboot"
 
-RISK_VALUES = frozenset({
-    LOCAL_READ,
-    LOCAL_WRITE,
-    REMOTE_READ,
-    REMOTE_WRITE,
-    DESTRUCTIVE,
-    REBOOT,
-})
-
-
 @dataclass(frozen=True)
 class StagePolicy:
     risk: str

@@ -318,33 +318,6 @@ def build_patch_payload_for_bank(
     )
 
 
-def build_patch_payload_for_active_bank(
-    active: BankAnalysis,
-    *,
-    syap: str | int | None,
-    firmware_template: Path | None,
-    firmware_version: str | None = None,
-    cache_dir: Path | None = None,
-) -> AcpFlashPayload:
-    candidates = resolve_firmware_template_candidates(
-        syap=syap,
-        firmware_template=firmware_template,
-        firmware_version=firmware_version,
-        cache_dir=cache_dir,
-    )
-    return _try_candidates(
-        syap=syap,
-        candidates=candidates,
-        target_label="active bank",
-        build=lambda candidate: build_patch_payload_from_template(
-            bank=active,
-            syap=syap,
-            candidate=candidate,
-            target_label="active bank",
-        ),
-    )
-
-
 def build_restore_payload_for_bank(
     bank: BankAnalysis,
     *,
@@ -363,23 +336,6 @@ def build_restore_payload_for_bank(
         syap=syap,
         candidates=candidates,
         build=lambda candidate: build_restore_payload_from_template(bank=bank, syap=syap, candidate=candidate),
-    )
-
-
-def build_restore_payload_for_active_bank(
-    active: BankAnalysis,
-    *,
-    syap: str | int | None,
-    firmware_template: Path | None,
-    firmware_version: str | None = None,
-    cache_dir: Path | None = None,
-) -> AcpFlashPayload:
-    return build_restore_payload_for_bank(
-        active,
-        syap=syap,
-        firmware_template=firmware_template,
-        firmware_version=firmware_version,
-        cache_dir=cache_dir,
     )
 
 

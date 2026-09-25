@@ -322,11 +322,8 @@ def fsck_result_payload(
 def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
     finding_count = int(raw.get("finding_count") or 0)
     repairable_count = int(raw.get("repairable_count") or 0)
-    legacy_summary = raw.get("summary")
-    stats = raw.get("stats", legacy_summary if not isinstance(legacy_summary, str) else None)
-    summary = legacy_summary if isinstance(legacy_summary, str) and legacy_summary.strip() else (
-        f"Found {finding_count} metadata issue(s), {repairable_count} repairable."
-    )
+    stats = raw.get("stats")
+    summary = f"Found {finding_count} metadata issue(s), {repairable_count} repairable."
     payload = {
         **raw,
         "counts": {

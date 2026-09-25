@@ -31,9 +31,9 @@ import timecapsulesmb.cli.main as cli_main_module
 from timecapsulesmb import apple_firmware
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.apple_firmware import APPLE_FIRMWARE_CATALOG_URL, FirmwareTemplateCandidate
-from timecapsulesmb.flash import analyze_flash_banks
-from timecapsulesmb.flash_payloads import build_patch_payload_for_active_bank
-from timecapsulesmb.flash_workflow import require_patch_ready
+from timecapsulesmb.flash import inspect_flash_banks
+from timecapsulesmb.flash_payloads import build_patch_payload_for_bank
+from timecapsulesmb.flash_workflow import require_primary_patch_ready
 from timecapsulesmb.services.flash import default_flash_backup_root
 from timecapsulesmb.basebinary import (
     BasebinaryHeader,
@@ -524,14 +524,15 @@ class CliTests(unittest.TestCase):
     def make_patched_flash_bank(self, bank: bytes, secondary: bytes | None = None) -> bytes:
         fallback_secondary = secondary or self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
         with self.flash_zopfli_available():
-            analysis = analyze_flash_banks(
+            inspection = inspect_flash_banks(
                 primary_data=bank,
                 secondary_data=fallback_secondary,
                 cks1=self.flash_bank_checksum(bank),
                 cks2=self.flash_bank_checksum(fallback_secondary),
                 os_release="4.0_STABLE",
+                build_primary_patch_candidate=True,
             )
-        active = require_patch_ready(analysis)
+        active = require_primary_patch_ready(inspection)
         assert active.patch is not None
         return active.patch.target_bank
 
@@ -6784,23 +6785,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("--yes is only valid with --patch or --restore", stderr.getvalue())
 
-    def test_build_acp_flash_payload_for_active_bank_uses_matching_template(self) -> None:
+    def test_build_acp_flash_payload_for_primary_bank_uses_matching_template(self) -> None:
         primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
         with tempfile.TemporaryDirectory() as tmp:
             template_path = Path(tmp) / "7.8.1.basebinary"
             template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
             with self.flash_zopfli_available():
-                analysis = analyze_flash_banks(
+                inspection = inspect_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
                 )
-            active = require_patch_ready(analysis)
+            active = require_primary_patch_ready(inspection)
 
-            payload = build_patch_payload_for_active_bank(
+            payload = build_patch_payload_for_bank(
                 active,
                 syap="113",
                 firmware_template=template_path,
@@ -6838,17 +6840,18 @@ class CliTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with self.flash_zopfli_available():
-                analysis = analyze_flash_banks(
+                inspection = inspect_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
                 )
-            active = require_patch_ready(analysis)
+            active = require_primary_patch_ready(inspection)
 
             with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download) as download_mock:
-                payload = build_patch_payload_for_active_bank(
+                payload = build_patch_payload_for_bank(
                     active,
                     syap="113",
                     firmware_template=None,
@@ -6899,17 +6902,18 @@ class CliTests(unittest.TestCase):
             cached_path.parent.mkdir(parents=True)
             cached_path.write_bytes(b"\x00" * len(template))
             with self.flash_zopfli_available():
-                analysis = analyze_flash_banks(
+                inspection = inspect_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
                 )
-            active = require_patch_ready(analysis)
+            active = require_primary_patch_ready(inspection)
 
             with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
-                payload = build_patch_payload_for_active_bank(
+                payload = build_patch_payload_for_bank(
                     active,
                     syap="113",
                     firmware_template=None,
@@ -6957,14 +6961,15 @@ class CliTests(unittest.TestCase):
             cached_path.parent.mkdir(parents=True)
             cached_path.write_bytes(b"\x00" * len(template))
             with self.flash_zopfli_available():
-                analysis = analyze_flash_banks(
+                inspection = inspect_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
                 )
-            active = require_patch_ready(analysis)
+            active = require_primary_patch_ready(inspection)
 
             with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
                 match = find_apple_firmware_match(
@@ -6990,24 +6995,25 @@ class CliTests(unittest.TestCase):
             modified_inner = compose_basebinary(template.inner.header, modified_payload, key=template.inner.key)
             template_path.write_bytes(compose_basebinary(template.outer.header, modified_inner, key=template.outer.key))
             with self.flash_zopfli_available():
-                analysis = analyze_flash_banks(
+                inspection = inspect_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
                 )
-            active = require_patch_ready(analysis)
+            active = require_primary_patch_ready(inspection)
 
             with self.assertRaises(cli_flash.FlashAnalysisError) as raised:
-                build_patch_payload_for_active_bank(
+                build_patch_payload_for_bank(
                     active,
                     syap="113",
                     firmware_template=template_path,
                     cache_dir=Path(tmp) / "cache",
                 )
 
-        self.assertIn("does not match the live active bank", str(raised.exception))
+        self.assertIn("does not match the live target bank", str(raised.exception))
 
     def test_build_acp_flash_payload_refuses_unknown_key_with_issue_url(self) -> None:
         primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
@@ -7017,17 +7023,18 @@ class CliTests(unittest.TestCase):
             template_path = Path(tmp) / "7.8.1.basebinary"
             template_path.write_bytes(self.make_firmware_template(primary, product_id=113, key=unknown_key))
             with self.flash_zopfli_available():
-                analysis = analyze_flash_banks(
+                inspection = inspect_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
                 )
-            active = require_patch_ready(analysis)
+            active = require_primary_patch_ready(inspection)
 
             with self.assertRaises(cli_flash.FlashAnalysisError) as raised:
-                build_patch_payload_for_active_bank(
+                build_patch_payload_for_bank(
                     active,
                     syap="113",
                     firmware_template=template_path,

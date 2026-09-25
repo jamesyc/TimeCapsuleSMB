@@ -5,10 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from timecapsulesmb.core.config import parse_env_value
-from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
-
-
-BOOTSTRAP_PATH = package_project_root() / ".bootstrap"
+from timecapsulesmb.core.paths import resolve_app_paths
 
 
 @dataclass(frozen=True)

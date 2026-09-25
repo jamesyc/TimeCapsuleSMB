@@ -32,7 +32,6 @@ PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
 GENERATED_RSYNC_CONFIG_SOURCE = "generated:rsyncd.conf"
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
-DEFAULT_ATA_IDLE_SECONDS = 300
 DEFAULT_DISKD_USE_VOLUME_ATTEMPTS = 2
 PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
 XATTR_MIGRATOR_UPLOAD_TIMEOUT_SECONDS = 180
@@ -120,7 +119,6 @@ RUNTIME_ACTIVATION_CHECKS = [
     PlannedCheck("managed_mdns_registrant_ready", "managed mDNS registrant becomes ready"),
     PlannedCheck("managed_mdns_settle_healthy", "mdns remains healthy after settle delay"),
 ]
-NETBSD4_ACTIVATION_CHECKS = RUNTIME_ACTIVATION_CHECKS
 
 NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),

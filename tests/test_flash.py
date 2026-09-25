@@ -21,7 +21,6 @@ from timecapsulesmb.flash import (
     STOCK_LOGIN_NETBSD4_DUMMY,
     FlashAnalysisError,
     analyze_bank,
-    analyze_flash_banks,
     build_patch,
     classify_login,
     find_gzip_member,
@@ -32,7 +31,7 @@ from timecapsulesmb.flash import (
 )
 from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.flash_payloads import AcpFlashPayload
-from timecapsulesmb.flash_workflow import RESTORE_PRIMARY_AMBIGUOUS_WARNING
+from timecapsulesmb.flash_workflow import RESTORE_PRIMARY_AMBIGUOUS_WARNING, require_primary_patch_ready
 from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
@@ -230,17 +229,20 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertGreaterEqual(first.patch.changed_range_start, first.login.offset or 0)
         self.assertLessEqual(first.patch.changed_range_end, (first.login.offset or 0) + (first.login.length or 0))
 
-    def test_zopfli_gzip_patches_active_bank_only_when_both_fit(self) -> None:
+    def test_zopfli_gzip_patches_requested_primary_bank_only_when_both_fit(self) -> None:
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
             secondary_data=secondary,
             cks1=bank_checksum(primary),
             cks2=bank_checksum(secondary),
             os_release="4.0_STABLE",
+            build_primary_patch_candidate=True,
         )
+        analysis = inspection.strict_analysis
+        assert analysis is not None
 
         self.assertEqual(analysis.active_bank, "primary")
         self.assertIsNotNone(analysis.primary.patch)
@@ -249,7 +251,7 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis.primary.patch.compression_method, "zopfli-gzip")
         self.assertEqual(len(analysis.primary.patch.target_bank), len(primary))
 
-    def test_analyze_flash_banks_reuses_active_bank_metadata_for_patch(self) -> None:
+    def test_inspect_flash_banks_reuses_primary_bank_metadata_for_patch(self) -> None:
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
         cks1 = bank_checksum(primary)
@@ -257,13 +259,16 @@ class FlashAnalysisTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.flash.find_footer", wraps=find_footer) as footer_mock:
             with mock.patch("timecapsulesmb.flash.find_gzip_member", wraps=find_gzip_member) as gzip_mock:
-                analysis = analyze_flash_banks(
+                inspection = inspect_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=cks1,
                     cks2=cks2,
                     os_release="4.0_STABLE",
+                    build_primary_patch_candidate=True,
                 )
+                analysis = inspection.strict_analysis
+                assert analysis is not None
 
         self.assertEqual(analysis.active_bank, "primary")
         self.assertIsNotNone(analysis.primary.patch)
@@ -283,7 +288,7 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertIn("Python package zopfli is required", str(raised.exception))
         self.assertIn("bootstrap", str(raised.exception))
 
-    def test_patch_errors_are_reported_for_active_bank_only_when_zopfli_gzip_is_too_large(self) -> None:
+    def test_patch_errors_are_reported_for_primary_bank_only_when_zopfli_gzip_is_too_large(self) -> None:
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
 
@@ -293,13 +298,16 @@ class FlashAnalysisTests(unittest.TestCase):
                 return b"z" * 100000
 
         with mock.patch("timecapsulesmb.flash._load_zopfli_gzip", return_value=TooLargeZopfliGzip):
-            analysis = analyze_flash_banks(
+            inspection = inspect_flash_banks(
                 primary_data=primary,
                 secondary_data=secondary,
                 cks1=bank_checksum(primary),
                 cks2=bank_checksum(secondary),
                 os_release="4.0_STABLE",
+                build_primary_patch_candidate=True,
             )
+            analysis = inspection.strict_analysis
+            assert analysis is not None
 
         self.assertIsNone(analysis.primary.patch)
         self.assertIsNone(analysis.secondary.patch)
@@ -315,17 +323,20 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertIsNone(analysis.patch)
         self.assertIsNone(analysis.patch_error)
 
-    def test_analyze_flash_banks_reports_active_already_patched_as_noop(self) -> None:
+    def test_inspect_flash_banks_reports_active_already_patched_as_noop(self) -> None:
         primary = make_bank(login=PATCHED_LOGIN_SCRIPT, release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
             secondary_data=secondary,
             cks1=bank_checksum(primary),
             cks2=bank_checksum(secondary),
             os_release="4.0_STABLE",
+            build_primary_patch_candidate=True,
         )
+        analysis = inspection.strict_analysis
+        assert analysis is not None
 
         self.assertEqual(analysis.active_bank, "primary")
         self.assertEqual(analysis.primary.login.classification, "already_patched")
@@ -333,17 +344,20 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertEqual(write_decision_for_bank(analysis, analysis.primary), "active bank already patched; no patched output written")
         self.assertEqual(write_decision_for_bank(analysis, analysis.secondary), "inactive bank left unmodified")
 
-    def test_analyze_flash_banks_refuses_active_unknown_login(self) -> None:
+    def test_inspect_flash_banks_refuses_active_unknown_login(self) -> None:
         primary = make_bank(login=b"#!/bin/sh\n# PROVIDE: LOGIN\nexit 0\n", release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
             secondary_data=secondary,
             cks1=bank_checksum(primary),
             cks2=bank_checksum(secondary),
             os_release="4.0_STABLE",
+            build_primary_patch_candidate=True,
         )
+        analysis = inspection.strict_analysis
+        assert analysis is not None
 
         self.assertEqual(analysis.active_bank, "primary")
         self.assertEqual(analysis.primary.login.classification, "unknown")
@@ -361,13 +375,15 @@ class FlashAnalysisTests(unittest.TestCase):
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
             secondary_data=secondary,
             cks1=0,
             cks2=bank_checksum(secondary),
             os_release="4.0_STABLE",
         )
+        analysis = inspection.strict_analysis
+        assert analysis is not None
 
         self.assertIsNone(analysis.active_bank)
         self.assertIsNone(analysis.primary.patch)
@@ -375,6 +391,9 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertFalse(analysis.primary.valid_for_active_selection)
         self.assertEqual(analysis.active_selection.status, "no_candidates")
         self.assertIn("cks1 mismatch", analysis.primary.active_selection_failures[0])
+        # The patch preflight refuses a bank whose ACP checksum does not validate.
+        with self.assertRaises(FlashAnalysisError):
+            require_primary_patch_ready(inspection)
 
     def test_patch_build_failure_is_reported_per_bank(self) -> None:
         bank = make_bank()
@@ -404,13 +423,15 @@ class FlashAnalysisTests(unittest.TestCase):
         cks1 = find_footer(primary).checksum
         cks2 = find_footer(secondary).checksum
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
             secondary_data=secondary,
             cks1=cks1,
             cks2=cks2,
             os_release="4.0_STABLE",
         )
+        analysis = inspection.strict_analysis
+        assert analysis is not None
 
         self.assertEqual(analysis.active_bank, "primary")
 
@@ -418,13 +439,15 @@ class FlashAnalysisTests(unittest.TestCase):
         primary = make_bank()
         secondary = make_bank()
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
             secondary_data=secondary,
             cks1=find_footer(primary).checksum,
             cks2=find_footer(secondary).checksum,
             os_release="4.0",
         )
+        analysis = inspection.strict_analysis
+        assert analysis is not None
 
         self.assertIsNone(analysis.active_bank)
         self.assertEqual(analysis.active_selection.status, "multiple_candidates")

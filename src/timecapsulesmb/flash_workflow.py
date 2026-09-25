@@ -7,7 +7,6 @@ import zlib
 
 from timecapsulesmb.flash import (
     BankAnalysis,
-    FlashAnalysis,
     FlashAnalysisError,
     FlashInspection,
     active_selection_error_message,
@@ -71,36 +70,6 @@ class FlashPlan:
 RESTORE_PRIMARY_AMBIGUOUS_WARNING = (
     "restore targets primary because multiple firmware banks passed active selection checks"
 )
-
-
-def inactive_bank(analysis: FlashAnalysis) -> BankAnalysis | None:
-    if analysis.active_bank == "primary":
-        return analysis.secondary
-    if analysis.active_bank == "secondary":
-        return analysis.primary
-    return None
-
-
-def require_active_and_inactive_valid(analysis: FlashAnalysis) -> BankAnalysis:
-    active = analysis.active
-    inactive = inactive_bank(analysis)
-    if active is None:
-        raise FlashAnalysisError(active_selection_error_message(analysis, write=True))
-    if inactive is None or not inactive.footer_valid or inactive.acp_checksum_matches is not True:
-        raise FlashAnalysisError("refusing to write because inactive firmware bank backup did not validate")
-    return active
-
-
-def require_patch_ready(analysis: FlashAnalysis) -> BankAnalysis:
-    active = require_active_and_inactive_valid(analysis)
-    if active.login.classification == "already_patched":
-        return active
-    if active.login.classification != "stock":
-        raise FlashAnalysisError(f"refusing to write active bank with LOGIN classification {active.login.classification}")
-    if active.patch is None:
-        detail = f": {active.patch_error}" if active.patch_error else ""
-        raise FlashAnalysisError(f"refusing to write because active bank has no patch candidate{detail}")
-    return active
 
 
 def _patch_preflight_lines(reason: str, inspection: FlashInspection) -> list[str]:
@@ -199,13 +168,6 @@ def require_restore_target_bank(inspection: FlashInspection) -> tuple[BankAnalys
             inspection,
         ))
     )
-
-
-def require_active_for_read_plan(analysis: FlashAnalysis) -> BankAnalysis:
-    active = analysis.active
-    if active is None:
-        raise FlashAnalysisError(active_selection_error_message(analysis, write=False))
-    return active
 
 
 def _candidate_analyses(inspection: FlashInspection) -> tuple[BankAnalysis, ...]:

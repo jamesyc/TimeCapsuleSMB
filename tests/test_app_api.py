@@ -429,17 +429,6 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(repair["summary_text"], "Found 2 metadata issue(s), 1 repairable.")
         self.assertEqual(repair["stats"], {"scanned": 3})
 
-    def test_repair_xattrs_payload_preserves_legacy_summary_stats_as_stats(self) -> None:
-        repair = contracts.repair_xattrs_payload({
-            "finding_count": 2,
-            "repairable_count": 1,
-            "summary": {"scanned": 3},
-        })
-
-        self.assertEqual(repair["summary"], "Found 2 metadata issue(s), 1 repairable.")
-        self.assertEqual(repair["summary_text"], "Found 2 metadata issue(s), 1 repairable.")
-        self.assertEqual(repair["stats"], {"scanned": 3})
-
     def test_request_id_propagates_to_every_event(self) -> None:
         collector = CollectingSink()
 
@@ -1354,7 +1343,8 @@ class AppApiTests(unittest.TestCase):
                     )
                 self.assertEqual(rc, 1)
                 error = self.assert_single_terminal_event(collector, "error")
-                self.assertEqual(error["code"], "invalid_params")
+                self.assertEqual(error["code"], "validation_failed")
+                self.assertEqual(error["recovery"]["title"], "Deployment validation failed")
                 self.assertIn("always enabled", error["message"])
                 load_config.assert_not_called()
 
@@ -3369,7 +3359,8 @@ class AppApiTests(unittest.TestCase):
                         )
                     self.assertEqual(rc, 1)
                     error = self.assert_single_terminal_event(collector, "error")
-                    self.assertEqual(error["code"], "invalid_params")
+                    self.assertEqual(error["code"], "validation_failed")
+                    self.assertEqual(error["recovery"]["title"], "Deployment validation failed")
                     self.assertIn("requires a reboot", error["message"])
                     config.assert_not_called()
 

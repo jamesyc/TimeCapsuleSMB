@@ -149,10 +149,6 @@ def print_json(data: object) -> None:
     print(json_text(redact_sensitive_fields(data)))
 
 
-def write_json_file(path: Path, data: object) -> None:
-    path.write_text(json_text(data) + "\n")
-
-
 def prefixed_logger(prefix: str, *, enabled: bool) -> LogCallback:
     if not enabled:
         return None

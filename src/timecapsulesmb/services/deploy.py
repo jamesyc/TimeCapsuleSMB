@@ -234,28 +234,6 @@ class DeployPreflight:
         return bool(self.plan.reboot_required)
 
 
-@dataclass(frozen=True)
-class DeployServiceDependencies:
-    validate_artifacts: Callable[..., object]
-    resolve_payload_artifacts: Callable[..., object]
-    build_deployment_plan: Callable[..., DeploymentPlan]
-    wait_for_mast_volumes: Callable[..., MaStDiscoveryResult]
-    select_payload_home: Callable[..., PayloadHomeSelection]
-    run_remote_actions: Callable[..., object]
-    render_flash_config: Callable[..., str]
-    boot_asset_path: Callable[..., object]
-    upload_deployment_payload: Callable[..., object]
-    verify_payload_home: Callable[..., PayloadVerificationResult]
-    flush_remote_writes: Callable[..., object]
-    migrate_xattrs: Callable[..., str]
-    inventory_metadata: Callable[..., object]
-    inspect_migration_sources: Callable[..., object]
-    request_reboot: Callable[..., object]
-    request_reboot_and_wait: Callable[..., object]
-    decide_post_reboot_activation: Callable[..., object]
-    verify_runtime: Callable[..., object]
-
-
 class DeployArtifactValidationError(ValueError):
     """Raised when local deploy artifacts fail validation."""
 
@@ -289,29 +267,6 @@ def _probe_flash_capacity(
             code="flash_capacity_probe_failed",
         ) from exc
     return available, required
-
-
-def default_deploy_service_dependencies() -> DeployServiceDependencies:
-    return DeployServiceDependencies(
-        validate_artifacts=validate_artifacts,
-        resolve_payload_artifacts=resolve_payload_artifacts,
-        build_deployment_plan=build_deployment_plan,
-        wait_for_mast_volumes=storage_service.wait_for_mast_volumes_conn,
-        select_payload_home=select_payload_home_with_diagnostics_conn,
-        run_remote_actions=run_remote_actions,
-        render_flash_config=render_flash_runtime_config,
-        boot_asset_path=boot_asset_path,
-        upload_deployment_payload=upload_deployment_payload,
-        verify_payload_home=verify_payload_home_conn,
-        flush_remote_writes=flush_remote_filesystem_writes,
-        migrate_xattrs=migrate_xattr_tdb_to_hfs,
-        inventory_metadata=inventory_metadata,
-        inspect_migration_sources=inspect_sources,
-        request_reboot=request_reboot,
-        request_reboot_and_wait=request_reboot_and_wait,
-        decide_post_reboot_activation=decide_netbsd4_post_reboot_activation,
-        verify_runtime=verify_managed_runtime_ready,
-    )
 
 
 def _best_effort_debug_summary(render, value: object) -> object | None:
@@ -486,10 +441,9 @@ def resolve_deploy_artifact_paths(
     payload_family: str,
     *,
     resolver=None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> DeployArtifactPaths:
     if resolver is None:
-        resolver = (dependencies or default_deploy_service_dependencies()).resolve_payload_artifacts
+        resolver = resolve_payload_artifacts
     resolved_artifacts = resolver(distribution_root, payload_family)
     return DeployArtifactPaths(
         smbd=resolved_artifacts["smbd"].absolute_path,
@@ -506,13 +460,11 @@ def prepare_deploy_preflight(
     options: DeployOptions,
     *,
     callbacks: OperationCallbacks | None = None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> DeployPreflight:
     callbacks = callbacks or OperationCallbacks()
-    dependencies = dependencies or default_deploy_service_dependencies()
 
     callbacks.stage("validate_artifacts")
-    failures = deploy_artifact_failures(distribution_root, validate=dependencies.validate_artifacts)
+    failures = deploy_artifact_failures(distribution_root, validate=validate_artifacts)
     if failures:
         raise DeployArtifactValidationError("; ".join(failures))
 
@@ -526,9 +478,8 @@ def prepare_deploy_preflight(
     artifacts = resolve_deploy_artifact_paths(
         distribution_root,
         payload_context.payload_family,
-        dependencies=dependencies,
     )
-    plan = dependencies.build_deployment_plan(
+    plan = build_deployment_plan(
         connection.host,
         build_dry_run_payload_home(options.payload_dir_name),
         artifacts.smbd,
@@ -650,15 +601,12 @@ def prepare_deployment_plan(
     select_payload_home: Callable[..., PayloadHomeSelection] | None = None,
     build_plan=None,
     artifacts: DeployArtifactPaths | None = None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> PreparedDeployPlan:
-    dependencies = dependencies or default_deploy_service_dependencies()
     if artifacts is None:
         artifacts = resolve_deploy_artifact_paths(
             distribution_root,
             payload_context.payload_family,
             resolver=resolver,
-            dependencies=dependencies,
         )
     payload_home = select_deploy_payload_home(
         connection,
@@ -666,13 +614,13 @@ def prepare_deployment_plan(
         payload_dir_name=payload_dir_name,
         mount_wait_seconds=mount_wait_seconds,
         callbacks=callbacks,
-        wait_for_mast_volumes=wait_for_mast_volumes or dependencies.wait_for_mast_volumes,
-        select_payload_home=select_payload_home or dependencies.select_payload_home,
+        wait_for_mast_volumes=wait_for_mast_volumes or storage_service.wait_for_mast_volumes_conn,
+        select_payload_home=select_payload_home or select_payload_home_with_diagnostics_conn,
     )
     if callbacks is not None:
         callbacks.stage("build_deployment_plan")
     if build_plan is None:
-        build_plan = dependencies.build_deployment_plan
+        build_plan = build_deployment_plan
     plan = build_plan(
         connection.host,
         payload_home,
@@ -705,13 +653,7 @@ def _deployment_upload_sources(
     rsync_config_text: str,
     tmpdir: Path,
     boot_assets: ExitStack,
-    *,
-    boot_asset_path_func=None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> Mapping[str, Path]:
-    dependencies = dependencies or default_deploy_service_dependencies()
-    if boot_asset_path_func is None:
-        boot_asset_path_func = dependencies.boot_asset_path
     generated_flash_config = tmpdir / "tcapsulesmb.conf"
     generated_flash_config.write_text(flash_config_text)
     generated_rsync_config = tmpdir / "rsyncd.conf"
@@ -723,9 +665,9 @@ def _deployment_upload_sources(
         BINARY_RSYNC_SOURCE: plan.rsync_path,
         GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
         GENERATED_RSYNC_CONFIG_SOURCE: generated_rsync_config,
-        PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path_func("rc.local")),
-        PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path_func("dfree.sh")),
-        PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path_func("boot.sh")),
+        PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path("rc.local")),
+        PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
+        PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
     }
 
 
@@ -738,10 +680,9 @@ def _verify_deployed_payload(
     post_sync: bool,
     verify_payload_home=None,
     on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> None:
     if verify_payload_home is None:
-        verify_payload_home = (dependencies or default_deploy_service_dependencies()).verify_payload_home
+        verify_payload_home = verify_payload_home_conn
     callbacks.stage("verify_payload_upload_after_sync" if post_sync else "verify_payload_upload")
     verification = verify_payload_home(connection, payload_home, wait_seconds=wait_seconds)
     callbacks.debug(
@@ -771,36 +712,27 @@ def upload_and_verify_deployment_payload(
     on_before_flush: Callable[[], None] | None = None,
     on_verified: Callable[[PayloadVerificationResult, bool], None] | None = None,
     run_remote_actions_func=None,
-    render_flash_config_func=None,
-    render_rsync_config_func=None,
-    boot_asset_path_func=None,
     upload_payload_func=None,
     verify_payload_home=None,
     flush_remote_writes=None,
     migrate_xattrs_func=None,
     probe_flash_capacity_func=None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> None:
     callbacks = callbacks or OperationCallbacks()
-    dependencies = dependencies or default_deploy_service_dependencies()
     if run_remote_actions_func is None:
-        run_remote_actions_func = dependencies.run_remote_actions
-    if render_flash_config_func is None:
-        render_flash_config_func = dependencies.render_flash_config
-    if render_rsync_config_func is None:
-        render_rsync_config_func = render_rsync_daemon_config
+        run_remote_actions_func = run_remote_actions
     if upload_payload_func is None:
-        upload_payload_func = dependencies.upload_deployment_payload
+        upload_payload_func = upload_deployment_payload
     if flush_remote_writes is None:
-        flush_remote_writes = dependencies.flush_remote_writes
+        flush_remote_writes = flush_remote_filesystem_writes
     if migrate_xattrs_func is None:
-        migrate_xattrs_func = dependencies.migrate_xattrs
+        migrate_xattrs_func = migrate_xattr_tdb_to_hfs
     if probe_flash_capacity_func is None:
         probe_flash_capacity_func = _probe_flash_capacity
     plan = prepared_plan.plan
     payload_home = prepared_plan.payload_home
     callbacks.stage("inventory_legacy_metadata")
-    inventory = dependencies.inventory_metadata(connection, plan)
+    inventory = inventory_metadata(connection, plan)
     callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
                     legacy_unavailable_roots=inventory.unavailable)
 
@@ -888,7 +820,7 @@ def upload_and_verify_deployment_payload(
 
     callbacks.stage("prepare_deployment_files")
     callbacks.update(upload_transport="ssh_pipe")
-    flash_config_text = render_flash_config_func(
+    flash_config_text = render_flash_runtime_config(
         config,
         payload_home,
         telemetry_enabled=runtime_config.telemetry_enabled,
@@ -905,7 +837,7 @@ def upload_and_verify_deployment_payload(
         ata_idle_seconds=runtime_config.ata_idle_seconds,
         ata_standby=runtime_config.ata_standby,
     )
-    rsync_config_text = render_rsync_config_func(payload_home)
+    rsync_config_text = render_rsync_daemon_config(payload_home)
     migration_helper_cleanup_safe = False
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
         upload_sources = _deployment_upload_sources(
@@ -914,8 +846,6 @@ def upload_and_verify_deployment_payload(
             rsync_config_text,
             Path(tmp),
             boot_assets,
-            boot_asset_path_func=boot_asset_path_func,
-            dependencies=dependencies,
         )
         callbacks.stage("pre_upload_actions")
         try:
@@ -930,7 +860,7 @@ def upload_and_verify_deployment_payload(
         # A legacy writer could create its first TDB between the initial
         # inventory and shutdown. Probe again now that writers are stopped;
         # old configuration and payload software are still available.
-        inventory = dependencies.inventory_metadata(connection, plan)
+        inventory = inventory_metadata(connection, plan)
         callbacks.debug(legacy_tdb_paths=[item["path"] for item in inventory.candidates],
                         legacy_unavailable_roots=inventory.unavailable)
 
@@ -1010,7 +940,7 @@ def upload_and_verify_deployment_payload(
             callbacks.stage("inspect_migration_sources")
             inspection_started = time.monotonic()
             try:
-                dependencies.inspect_migration_sources(connection, inventory)
+                inspect_sources(connection, inventory)
             except Exception as exc:
                 raise_migration_failure("inspect", inspection_started, None, exc)
             run_xattr_migration_phase("copy")
@@ -1111,7 +1041,6 @@ def upload_and_verify_deployment_payload(
             post_sync=False,
             verify_payload_home=verify_payload_home,
             on_verified=on_verified,
-            dependencies=dependencies,
         )
         callbacks.stage("flush_payload_upload")
         if on_before_flush is not None:
@@ -1127,7 +1056,6 @@ def upload_and_verify_deployment_payload(
             post_sync=True,
             verify_payload_home=verify_payload_home,
             on_verified=on_verified,
-            dependencies=dependencies,
         )
         if inventory.candidates:
             run_xattr_migration_phase("cleanup")
@@ -1166,13 +1094,11 @@ def _run_activation_actions_and_verify(
     failure_message: str,
     run_remote_actions_func=None,
     verify_runtime_func=None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> None:
-    dependencies = dependencies or default_deploy_service_dependencies()
     if run_remote_actions_func is None:
-        run_remote_actions_func = dependencies.run_remote_actions
+        run_remote_actions_func = run_remote_actions
     if verify_runtime_func is None:
-        verify_runtime_func = dependencies.verify_runtime
+        verify_runtime_func = verify_managed_runtime_ready
     callbacks.stage(activation_stage)
     callbacks.message(activation_message)
     run_remote_actions_func(connection, activation_actions)
@@ -1199,21 +1125,19 @@ def complete_deployment_after_upload(
     request_reboot_and_wait_func=None,
     decide_post_reboot_activation=None,
     verify_runtime_func=None,
-    dependencies: DeployServiceDependencies | None = None,
 ) -> DeployCompletionResult:
     callbacks = callbacks or OperationCallbacks()
     messages = messages or DeployCompletionMessages()
-    dependencies = dependencies or default_deploy_service_dependencies()
     if run_remote_actions_func is None:
-        run_remote_actions_func = dependencies.run_remote_actions
+        run_remote_actions_func = run_remote_actions
     if request_reboot_func is None:
-        request_reboot_func = dependencies.request_reboot
+        request_reboot_func = request_reboot
     if request_reboot_and_wait_func is None:
-        request_reboot_and_wait_func = dependencies.request_reboot_and_wait
+        request_reboot_and_wait_func = request_reboot_and_wait
     if decide_post_reboot_activation is None:
-        decide_post_reboot_activation = dependencies.decide_post_reboot_activation
+        decide_post_reboot_activation = decide_netbsd4_post_reboot_activation
     if verify_runtime_func is None:
-        verify_runtime_func = dependencies.verify_runtime
+        verify_runtime_func = verify_managed_runtime_ready
     plan = prepared_plan.plan
     payload_context = prepared_plan.payload_context
     payload_family = payload_context.payload_family
@@ -1273,7 +1197,6 @@ def complete_deployment_after_upload(
                 failure_message=messages.netbsd4_failure,
                 run_remote_actions_func=run_remote_actions_func,
                 verify_runtime_func=verify_runtime_func,
-                dependencies=dependencies,
             )
         else:
             callbacks.message(messages.netbsd4_autostart_message)

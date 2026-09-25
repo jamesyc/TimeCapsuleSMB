@@ -178,13 +178,13 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     if "nbns_enabled" in params:
         raise AppOperationError(
             "nbns_enabled has been removed; Apple’s native NBNS service is always enabled.",
-            code="invalid_params",
+            code="validation_failed",
         )
     dry_run = bool_param(params, "dry_run")
     if bool_param(params, "no_reboot"):
         raise AppOperationError(
             "Deployment now requires a reboot. Remove no_reboot and retry; no device changes were made.",
-            code="invalid_params",
+            code="validation_failed",
         )
     no_wait = bool_param(params, "no_wait")
     rsync_enabled = bool_param(params, "rsync_enabled")

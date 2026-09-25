@@ -9,7 +9,6 @@ from timecapsulesmb.flash import (
     ActiveSelectionInfo,
     BankAnalysis,
     BankInspection,
-    FlashAnalysis,
     FlashAnalysisError,
     FlashInspection,
     FooterInfo,
@@ -26,8 +25,7 @@ from timecapsulesmb.flash_workflow import (
     plan_check_apple,
     plan_patch_primary,
     plan_restore_apple,
-    require_active_and_inactive_valid,
-    require_patch_ready,
+    require_primary_patch_ready,
     write_and_validate_plan,
 )
 from timecapsulesmb.integrations.acp import ACPError, ACPFlashResult
@@ -76,23 +74,6 @@ def make_patch(bank: BankAnalysis) -> PatchBuildInfo:
         changed_range_end=7,
         footer_checksum=0x11111111,
         target_bank=b"patched",
-    )
-
-
-def make_analysis(
-    *,
-    active_bank: str | None = "primary",
-    primary: BankAnalysis | None = None,
-    secondary: BankAnalysis | None = None,
-) -> FlashAnalysis:
-    primary = primary or make_bank("primary")
-    secondary = secondary or make_bank("secondary")
-    candidates = () if active_bank is None else (active_bank,)
-    return FlashAnalysis(
-        primary=primary,
-        secondary=secondary,
-        active_bank=active_bank,
-        active_selection=ActiveSelectionInfo("single_candidate" if active_bank else "no_candidates", candidates, "test"),
     )
 
 
@@ -161,25 +142,29 @@ def make_payload(*, expected_prefix: bytes = b"PATCHED!") -> AcpFlashPayload:
 
 
 class FlashWorkflowTests(unittest.TestCase):
-    def test_require_active_and_inactive_valid_rejects_missing_active(self) -> None:
-        with self.assertRaisesRegex(FlashAnalysisError, "no firmware bank passed active selection"):
-            require_active_and_inactive_valid(make_analysis(active_bank=None))
+    def test_require_primary_patch_ready_rejects_primary_that_is_not_active(self) -> None:
+        with self.assertRaisesRegex(FlashAnalysisError, "primary is not an active firmware candidate"):
+            require_primary_patch_ready(make_inspection(primary_active_candidate=False))
 
-    def test_require_active_and_inactive_valid_rejects_bad_inactive_backup(self) -> None:
-        secondary = make_bank("secondary", acp_checksum_matches=False)
+    def test_require_primary_patch_ready_rejects_bad_backup_bank(self) -> None:
+        with self.assertRaisesRegex(FlashAnalysisError, "both firmware banks must be valid backups"):
+            require_primary_patch_ready(make_inspection(secondary_backup_valid=False))
 
-        with self.assertRaisesRegex(FlashAnalysisError, "inactive firmware bank backup did not validate"):
-            require_active_and_inactive_valid(make_analysis(secondary=secondary))
+    def test_require_primary_patch_ready_force_skips_selection_checks(self) -> None:
+        primary = make_bank("primary", patch=make_patch(make_bank("primary")))
+        inspection = make_inspection(primary=primary, secondary_backup_valid=False, primary_active_candidate=False)
 
-    def test_require_patch_ready_covers_login_and_patch_states(self) -> None:
+        self.assertIs(require_primary_patch_ready(inspection, force=True), primary)
+
+    def test_require_primary_patch_ready_covers_login_and_patch_states(self) -> None:
         patched = make_bank("primary", classification="already_patched")
-        self.assertIs(require_patch_ready(make_analysis(primary=patched)), patched)
+        self.assertIs(require_primary_patch_ready(make_inspection(primary=patched)), patched)
 
         with self.assertRaisesRegex(FlashAnalysisError, "LOGIN classification unknown"):
-            require_patch_ready(make_analysis(primary=make_bank("primary", classification="unknown")))
+            require_primary_patch_ready(make_inspection(primary=make_bank("primary", classification="unknown")))
 
         with self.assertRaisesRegex(FlashAnalysisError, "no patch candidate: too large"):
-            require_patch_ready(make_analysis(primary=make_bank("primary", patch=None, patch_error="too large")))
+            require_primary_patch_ready(make_inspection(primary=make_bank("primary", patch=None, patch_error="too large")))
 
     def test_plan_patch_primary_respects_force_warnings_and_noop(self) -> None:
         patched = make_bank("primary", classification="already_patched")
