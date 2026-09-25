@@ -7,10 +7,6 @@ final class DeployWorkflowStoreTests: XCTestCase {
     func testStateInventoryIsExplicit() {
         XCTAssertEqual(DeployWorkflowState.allCases, [
             .idle,
-            .planning,
-            .planReady,
-            .planStale,
-            .planFailed,
             .deploying,
             .awaitingConfirmation,
             .deployed,
@@ -18,23 +14,23 @@ final class DeployWorkflowStoreTests: XCTestCase {
         ])
     }
 
-    func testInvalidMountWaitMovesToPlanFailedWithoutRunningHelper() {
+    func testInvalidMountWaitMovesToDeployFailedWithoutRunningHelper() {
         let runner = StoreTestRunner(responses: [])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
         store.mountWait = "1.5"
 
-        store.runPlan(password: "pw")
+        store.runDeploy(password: "pw")
 
-        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.state, .deployFailed)
         XCTAssertEqual(store.error?.code, "mount_wait_invalid")
         XCTAssertEqual(runner.calls, [])
     }
 
-    func testPlanSendsDryRunParamsAndMovesToPlanReady() async throws {
+    func testDeploySendsCurrentOptionsWithoutDryRunAndRecordsThem() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "stage", operation: "deploy", stage: "build_deployment_plan", risk: "local_read", cancellable: true),
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+                BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload", risk: "remote_write", cancellable: false),
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
             ])
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
@@ -53,15 +49,17 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.ataIdleSeconds = "0"
         store.ataStandby = "0"
 
-        store.runPlan(password: "pw")
+        store.runDeploy(password: "pw")
 
-        XCTAssertEqual(store.state, .planning)
-        try await waitUntilStoreState { store.state == .planReady }
-        XCTAssertEqual(store.currentStage?.stage, "build_deployment_plan")
-        XCTAssertEqual(store.plan?.payloadDir, "/Volumes/dk2/.samba4")
+        XCTAssertEqual(store.state, .deploying)
+        // The profile's rsync setting is persisted from the options the run used.
+        XCTAssertEqual(store.runOptions?.rsyncEnabled, true)
+        XCTAssertEqual(store.runOptions?.noWait, true)
+        try await waitUntilStoreState { store.state == .deployed }
+        XCTAssertEqual(store.currentStage?.stage, "upload_payload")
         XCTAssertEqual(runner.calls.count, 1)
         XCTAssertEqual(runner.calls[0].operation, "deploy")
-        XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(true))
+        XCTAssertNil(runner.calls[0].params["dry_run"])
         XCTAssertNil(runner.calls[0].params["nbns_enabled"])
         XCTAssertNil(runner.calls[0].params["no_reboot"])
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
@@ -81,10 +79,10 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
     }
 
-    func testPublishesWhenBackendFinishesAfterPlanResult() async throws {
+    func testPublishesWhenBackendFinishesAfterDeployResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
             ])
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
@@ -95,7 +93,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
             .sink { [weak store] _ in
                 Task { @MainActor in
                     guard !didFulfill,
-                          store?.state == .planReady,
+                          store?.state == .deployed,
                           store?.isBusy == false else {
                         return
                     }
@@ -105,68 +103,63 @@ final class DeployWorkflowStoreTests: XCTestCase {
             }
             .store(in: &cancellables)
 
-        store.runPlan(password: "pw")
+        store.runDeploy(password: "pw")
 
-        try await waitUntilStoreState { store.state == .planReady }
+        try await waitUntilStoreState { store.state == .deployed }
         await fulfillment(of: [finishPublished], timeout: 2)
         XCTAssertFalse(store.isBusy)
         _ = cancellables
     }
 
-    func testInvalidAtaOptionsMoveToPlanFailedWithoutRunningHelper() {
+    func testInvalidAtaOptionsMoveToDeployFailedWithoutRunningHelper() {
         let runner = StoreTestRunner(responses: [])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
 
         store.ataIdleSeconds = "bad"
-        store.runPlan(password: "pw")
+        store.runDeploy(password: "pw")
 
-        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.state, .deployFailed)
         XCTAssertEqual(store.error?.code, "ata_idle_seconds_invalid")
         XCTAssertEqual(store.error?.message, "ATA idle time must be a non-negative number of seconds.")
         XCTAssertEqual(runner.calls, [])
 
         store.ataIdleSeconds = "300"
         store.ataStandby = "bad"
-        store.runPlan(password: "pw")
+        store.runDeploy(password: "pw")
 
-        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.state, .deployFailed)
         XCTAssertEqual(store.error?.code, "ata_standby_invalid")
         XCTAssertEqual(store.error?.message, "ATA standby time must be blank or a non-negative number of seconds.")
         XCTAssertEqual(runner.calls, [])
     }
 
-    func testNoWaitChangesPlanAndNeverSendsNoReboot() async throws {
+    func testNoWaitChangesDeployParamsAndNeverSendsNoReboot() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
             ])
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
         store.noWait = true
 
-        XCTAssertTrue(store.noWait)
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
+        store.runDeploy(password: "pw")
+        try await waitUntilStoreState { store.state == .deployed && !store.isBusy }
 
         XCTAssertNil(runner.calls[0].params["no_reboot"])
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
 
         store.noWait = false
-
-        XCTAssertFalse(store.noWait)
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { runner.calls.count == 2 && store.state == .planReady }
+        store.runDeploy(password: "pw")
+        try await waitUntilStoreState { runner.calls.count == 2 && store.state == .deployed }
 
         XCTAssertNil(runner.calls[1].params["no_reboot"])
         XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(false))
     }
 
-    func testRejectedPlanDoesNotEnterPlanning() async throws {
+    func testRejectedDeployDoesNotEnterDeploying() async throws {
         let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
@@ -177,17 +170,18 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         _ = coordinator.run(operation: "doctor", profile: nil)
         try await waitUntilStoreState { runner.calls.count == 1 && coordinator.backend.isRunning }
-        let result = store.runPlan(password: "pw")
+        let result = store.runDeploy(password: "pw")
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
-        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.state, .deployFailed)
         XCTAssertEqual(store.error?.code, "operation_already_running")
+        XCTAssertNil(store.runOptions)
         XCTAssertEqual(runner.calls.count, 1)
         runner.finishAll()
         try await waitUntilStoreState { !store.isRunning }
     }
 
-    func testMalformedPlanPayloadMovesToPlanFailed() async throws {
+    func testMalformedDeployPayloadMovesToDeployFailed() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: .object(["schema_version": .string("wrong")]))
@@ -195,16 +189,49 @@ final class DeployWorkflowStoreTests: XCTestCase {
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
 
-        store.runPlan(password: "")
+        store.runDeploy(password: "")
 
-        try await waitUntilStoreState { store.state == .planFailed }
+        try await waitUntilStoreState { store.state == .deployFailed }
         XCTAssertEqual(store.error?.code, "contract_decode_failed")
     }
 
-    func testDeployBeforePlanRunsWithCurrentOptions() async throws {
+    func testOptionChangeWhileDeployingDoesNotAffectTheRunningDeploy() async throws {
+        let runner = PausingStoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
+            ], pauseBeforeEvents: true),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
+            ])
+        ])
+        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
+
+        store.runDeploy(password: "pw")
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        XCTAssertEqual(store.state, .deploying)
+
+        store.noWait = true
+
+        XCTAssertEqual(store.state, .deploying)
+        XCTAssertFalse(store.canDeploy)
+        XCTAssertEqual(store.runOptions?.noWait, false)
+        runner.finishAll()
+
+        try await waitUntilStoreState { store.state == .deployed && !store.isBusy }
+        XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(false))
+        XCTAssertEqual(store.runOptions?.noWait, false)
+        XCTAssertTrue(store.canDeploy)
+
+        store.runDeploy(password: "pw")
+
+        try await waitUntilStoreState { store.state == .deployed && runner.calls.count == 2 }
+        XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(true))
+        XCTAssertEqual(store.runOptions?.noWait, true)
+    }
+
+    func testDefaultRuntimeOverridesAreSentExplicitly() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload", risk: "remote_write", cancellable: false),
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
             ])
         ])
@@ -212,153 +239,16 @@ final class DeployWorkflowStoreTests: XCTestCase {
 
         XCTAssertTrue(store.canDeploy)
         store.runDeploy(password: "pw")
-
-        XCTAssertEqual(store.state, .deploying)
         try await waitUntilStoreState { store.state == .deployed }
-        XCTAssertEqual(store.currentStage?.stage, "upload_payload")
-        XCTAssertEqual(runner.calls.count, 1)
-        XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(false))
-        XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
-    }
-
-    func testOptionChangeAfterPlanMarksPlanStale() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ])
-        ])
-        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
-
-        store.internalShareUseDiskRoot = true
-
-        XCTAssertEqual(store.state, .planStale)
-        XCTAssertTrue(store.canDeploy)
-
-        store.internalShareUseDiskRoot = false
-
-        XCTAssertEqual(store.state, .planReady)
-        XCTAssertTrue(store.canDeploy)
-
-        store.smbBrowseCompatibility = true
-
-        XCTAssertEqual(store.state, .planStale)
-        XCTAssertTrue(store.canDeploy)
-
-        store.smbBrowseCompatibility = false
-
-        XCTAssertEqual(store.state, .planReady)
-        XCTAssertTrue(store.canDeploy)
-
-        store.rsyncEnabled = true
-
-        XCTAssertEqual(store.state, .planStale)
-        XCTAssertTrue(store.canDeploy)
-
-        store.rsyncEnabled = false
-
-        XCTAssertEqual(store.state, .planReady)
-        XCTAssertTrue(store.canDeploy)
-
-        store.smbBrowseCompatibility = true
-
-        XCTAssertEqual(store.state, .planStale)
-        XCTAssertTrue(store.canDeploy)
-
-        store.smbBrowseCompatibility = false
-
-        XCTAssertEqual(store.state, .planReady)
-        XCTAssertTrue(store.canDeploy)
-
-        store.mdnsAdvertiseAFP = true
-
-        XCTAssertEqual(store.state, .planStale)
-        XCTAssertTrue(store.canDeploy)
-
-        store.mdnsAdvertiseAFP = false
-
-        XCTAssertEqual(store.state, .planReady)
-        XCTAssertTrue(store.canDeploy)
-
-        store.fruitMetadataNetatalk = false
-
-        XCTAssertEqual(store.state, .planStale)
-        XCTAssertTrue(store.canDeploy)
-
-        store.fruitMetadataNetatalk = true
-
-        XCTAssertEqual(store.state, .planReady)
-        XCTAssertTrue(store.canDeploy)
-
-        store.vfsAIOForkEnabled = true
-
-        XCTAssertEqual(store.state, .planStale)
-        XCTAssertTrue(store.canDeploy)
-
-        store.vfsAIOForkEnabled = false
-
-        XCTAssertEqual(store.state, .planReady)
-        XCTAssertTrue(store.canDeploy)
-    }
-
-    func testOptionChangeWhilePlanningMakesReturnedPlanStaleAndAllowsRegeneration() async throws {
-        let runner = PausingStoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ], pauseBeforeEvents: true),
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ])
-        ])
-        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { runner.calls.count == 1 }
-        XCTAssertEqual(store.state, .planning)
-
-        store.noWait = true
-
-        XCTAssertEqual(store.state, .planning)
-        XCTAssertFalse(store.canDeploy)
-        XCTAssertNil(store.plan)
-        runner.finishAll()
-
-        try await waitUntilStoreState { store.state == .planStale }
-        XCTAssertNotNil(store.plan)
-        XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(false))
-        XCTAssertTrue(store.canDeploy)
-        try await waitUntilStoreState { !store.isBusy }
-
-        store.runPlan(password: "pw")
-
-        try await waitUntilStoreState { store.state == .planReady && runner.calls.count == 2 }
-        XCTAssertTrue(store.canDeploy)
-        XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(true))
-    }
-
-    func testDefaultRuntimeOverridesAreSentExplicitlyInPlanParams() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ])
-        ])
-        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
 
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(false))
+        XCTAssertEqual(runner.calls[0].params["rsync_enabled"], .bool(false))
     }
 
-    func testDeploySendsRunParamsFromPlanOptionsAndStoresResult() async throws {
+    func testDeploySendsRunParamsAndStoresResult() async throws {
         let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ]),
             .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload", risk: "remote_write", cancellable: false),
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
@@ -372,79 +262,48 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.anyProtocol = true
         store.fruitMetadataNetatalk = true
 
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
         store.runDeploy(password: "pw2")
 
         XCTAssertEqual(store.state, .deploying)
         try await waitUntilStoreState { store.state == .deployed }
         XCTAssertEqual(store.currentStage?.stage, "upload_payload")
         XCTAssertEqual(store.result?.verified, true)
-        XCTAssertEqual(runner.calls.count, 2)
-        XCTAssertEqual(runner.calls[1].params["dry_run"], .bool(false))
-        XCTAssertEqual(runner.calls[1].params["mount_wait"], .number(30))
-        XCTAssertEqual(runner.calls[1].params["internal_share_use_disk_root"], .bool(true))
-        XCTAssertEqual(runner.calls[1].params["smb_browse_compatibility"], .bool(true))
-        XCTAssertEqual(runner.calls[1].params["any_protocol"], .bool(true))
-        XCTAssertEqual(runner.calls[1].params["fruit_metadata_netatalk"], .bool(true))
-        XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(30))
+        XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["smb_browse_compatibility"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["fruit_metadata_netatalk"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw2")]))
     }
 
-    func testDeployCanRunAgainDirectlyFromDeployedState() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ]),
+    func testDeployCanRunAgainFromDeployedStateWithNewOptions() async throws {
+        let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
-            ])
+            ], pauseBeforeEvents: true)
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
 
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
         store.runDeploy(password: "pw")
-        try await waitUntilStoreState { store.state == .deployed }
+        try await waitUntilStoreState { store.state == .deployed && !store.isBusy }
+        XCTAssertNotNil(store.result)
 
+        store.noWait = true
         let result = store.runDeploy(password: "pw2")
 
         XCTAssertNil(result.rejectionMessage)
-        try await waitUntilStoreState { store.state == .deployed && runner.calls.count == 3 }
-        XCTAssertEqual(runner.calls[2].params["dry_run"], .bool(false))
-        XCTAssertEqual(runner.calls[2].params["credentials"], .object(["password": .string("pw2")]))
-    }
-
-    func testReinstallCreatesFreshPlanFromDeployedState() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ])
-        ])
-        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
-        store.runDeploy(password: "pw")
-        try await waitUntilStoreState { store.state == .deployed }
-
-        store.noWait = true
-        store.runPlan(password: "pw2")
-
-        try await waitUntilStoreState { store.state == .planReady && runner.calls.count == 3 }
+        // A new run discards the previous result until the new one arrives.
+        XCTAssertEqual(store.state, .deploying)
         XCTAssertNil(store.result)
-        XCTAssertEqual(runner.calls[2].operation, "deploy")
-        XCTAssertEqual(runner.calls[2].params["dry_run"], .bool(true))
-        XCTAssertEqual(runner.calls[2].params["no_wait"], .bool(true))
-        XCTAssertEqual(runner.calls[2].params["credentials"], .object(["password": .string("pw2")]))
+        runner.finishAll()
+        try await waitUntilStoreState { store.state == .deployed && runner.calls.count == 2 }
+        XCTAssertNotNil(store.result)
+        XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(true))
+        XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
     }
 
     func testConfirmationRequiredMovesToAwaitingConfirmationThenConfirmedDeployCompletes() async throws {
@@ -500,86 +359,19 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runDeploy(password: "pw")
         try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
 
+        store.noWait = true
         backend.cancelPendingConfirmation()
 
         try await waitUntilStoreState { store.state == .idle && backend.pendingConfirmation == nil }
         XCTAssertNil(store.error)
         XCTAssertNil(store.currentStage)
+        XCTAssertNil(store.result)
         XCTAssertTrue(store.canDeploy)
-        XCTAssertNil(store.plan)
         XCTAssertEqual(runner.calls.count, 1)
-    }
-
-    func testDirectDeployFromStalePlanClearsOldPlanOnConfirmationCancel() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "error",
-                    operation: "deploy",
-                    code: "confirmation_required",
-                    message: "Confirm deployment.",
-                    details: .object(["confirmation_id": .string("confirm-1")])
-                )
-            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
-        ])
-        let backend = BackendClient(runner: runner)
-        let store = DeployWorkflowStore(backend: backend)
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
-        store.noWait = true
-        XCTAssertEqual(store.state, .planStale)
-
-        store.runDeploy(password: "pw")
-        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
-        backend.cancelPendingConfirmation()
-
-        try await waitUntilStoreState { store.state == .idle && backend.pendingConfirmation == nil }
-        XCTAssertNil(store.plan)
-        XCTAssertNil(store.error)
-    }
-
-    func testCancellingDeployConfirmationRestoresStalePlanWhenOptionsChanged() async throws {
-        let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ]),
-            .init(events: [
-                BackendEvent(
-                    type: "error",
-                    operation: "deploy",
-                    code: "confirmation_required",
-                    message: "Confirm deployment.",
-                    details: .object(["confirmation_id": .string("confirm-1")])
-                )
-            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
-        ])
-        let backend = BackendClient(runner: runner)
-        let store = DeployWorkflowStore(backend: backend)
-
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
-        store.runDeploy(password: "pw")
-        try await waitUntilStoreState { store.state == .awaitingConfirmation && backend.pendingConfirmation != nil && !backend.isRunning }
-
-        store.noWait = true
-        backend.cancelPendingConfirmation()
-
-        try await waitUntilStoreState { store.state == .planStale && backend.pendingConfirmation == nil }
-        XCTAssertNil(store.error)
-        XCTAssertTrue(store.canDeploy)
-        XCTAssertNotNil(store.plan)
-        XCTAssertEqual(runner.calls.count, 2)
     }
 
     func testDeployBackendErrorMovesToDeployFailedWithRecovery() async throws {
         let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ]),
             .init(events: [
                 BackendEvent(
                     type: "error",
@@ -592,8 +384,6 @@ final class DeployWorkflowStoreTests: XCTestCase {
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
 
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
         store.runDeploy(password: "pw")
 
         try await waitUntilStoreState { store.state == .deployFailed }
@@ -604,16 +394,11 @@ final class DeployWorkflowStoreTests: XCTestCase {
     func testFalseDeployResultMovesToDeployFailed() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
-            ]),
-            .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: false, payload: .object(["summary": .string("deployment failed.")]))
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
 
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
         store.runDeploy(password: "pw")
 
         try await waitUntilStoreState { store.state == .deployFailed }
@@ -623,43 +408,20 @@ final class DeployWorkflowStoreTests: XCTestCase {
     func testClearResetsDeployState() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployResultPayload())
             ])
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
 
-        store.runPlan(password: "pw")
-        try await waitUntilStoreState { store.state == .planReady }
+        store.runDeploy(password: "pw")
+        try await waitUntilStoreState { store.state == .deployed }
         store.clear()
 
         XCTAssertEqual(store.state, .idle)
-        XCTAssertNil(store.plan)
         XCTAssertNil(store.result)
         XCTAssertNil(store.error)
         XCTAssertNil(store.currentStage)
-        XCTAssertNil(store.plannedOptions)
-    }
-
-    private func deployPlanPayload() -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "host": .string("root@10.0.0.2"),
-            "volume_root": .string("/Volumes/dk2"),
-            "payload_dir": .string("/Volumes/dk2/.samba4"),
-            "payload_family": .string("netbsd6_samba4"),
-            "netbsd4": .bool(false),
-            "requires_reboot": .bool(true),
-            "reboot_required": .bool(true),
-            "startup_mode": .string("reboot_then_verify"),
-            "uploads": .array([.object(["description": .string("smbd")])]),
-            "pre_upload_actions": .array([.object(["type": .string("stop_process")])]),
-            "post_upload_actions": .array([]),
-            "activation_actions": .array([]),
-            "post_deploy_checks": .array([
-                .object(["id": .string("ssh_returns_after_reboot"), "description": .string("SSH returns after reboot")])
-            ]),
-            "summary": .string("Deployment dry-run plan generated.")
-        ])
+        XCTAssertNil(store.runOptions)
     }
 
     private func deployResultPayload() -> JSONValue {

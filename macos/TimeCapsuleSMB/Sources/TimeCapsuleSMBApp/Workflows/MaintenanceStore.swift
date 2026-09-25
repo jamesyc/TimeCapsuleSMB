@@ -62,9 +62,7 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var repairState: MaintenanceOperationState = .idle
     @Published private(set) var sshAccessState: MaintenanceOperationState = .idle
 
-    @Published private(set) var activationPlan: ActivationPlanPayload?
     @Published private(set) var activationResult: ActivationResultPayload?
-    @Published private(set) var uninstallPlan: UninstallPlanPayload?
     @Published private(set) var uninstallResult: MaintenanceResultPayload?
     @Published private(set) var fsckTargets: [FsckTargetViewModel] = []
     @Published private(set) var fsckPlan: FsckPlanPayload?
@@ -245,7 +243,7 @@ final class MaintenanceStore: ObservableObject {
         case .activate:
             activationStore.cancelPendingConfirmation()
         case .uninstall:
-            uninstallStore.cancelPendingConfirmation(options: currentOptions)
+            uninstallStore.cancelPendingConfirmation()
         case .fsck:
             fsckStore.cancelPendingConfirmation(options: currentOptions)
         case .repairXattrs:
@@ -299,29 +297,11 @@ final class MaintenanceStore: ObservableObject {
     }
 
     @discardableResult
-    func planActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        startMaintenanceWorkflow(
-            .activate,
-            rejectAlreadyRunning: { activationStore.rejectAlreadyRunning() },
-            start: { activationStore.planActivation(password: password, profile: profile) }
-        )
-    }
-
-    @discardableResult
     func runActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         startMaintenanceWorkflow(
             .activate,
             rejectAlreadyRunning: { activationStore.rejectAlreadyRunning() },
             start: { activationStore.runActivation(password: password, profile: profile) }
-        )
-    }
-
-    @discardableResult
-    func planUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        startMaintenanceWorkflow(
-            .uninstall,
-            rejectAlreadyRunning: { uninstallStore.rejectAlreadyRunning() },
-            start: { uninstallStore.planUninstall(options: currentOptions, password: password, profile: profile) }
         )
     }
 
@@ -495,7 +475,6 @@ final class MaintenanceStore: ObservableObject {
     }
 
     private func markPlansStaleForOptionChange() {
-        uninstallStore.markPlanStaleIfNeeded(options: currentOptions)
         fsckStore.markPlanStaleIfNeeded(options: currentOptions)
         syncFromWorkflowStores()
     }
@@ -507,11 +486,9 @@ final class MaintenanceStore: ObservableObject {
 
     private func syncFromWorkflowStores() {
         activateState = activationStore.state
-        activationPlan = activationStore.plan
         activationResult = activationStore.result
 
         uninstallState = uninstallStore.state
-        uninstallPlan = uninstallStore.plan
         uninstallResult = uninstallStore.result
 
         fsckState = fsckStore.state

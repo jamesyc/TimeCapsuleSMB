@@ -386,71 +386,6 @@ struct DeviceCompatibilityPayload: Decodable, Equatable {
     }
 }
 
-enum DeployStartupMode: String, Decodable, Equatable {
-    case rebootThenVerify = "reboot_then_verify"
-    case rebootThenActivate = "reboot_then_activate"
-
-    static func fallback(netbsd4: Bool) -> DeployStartupMode {
-        netbsd4 ? .rebootThenActivate : .rebootThenVerify
-    }
-}
-
-struct DeployPlanPayload: Decodable, Equatable {
-    let schemaVersion: Int
-    let host: String
-    let volumeRoot: String?
-    let payloadDir: String
-    let payloadFamily: String?
-    let netbsd4: Bool
-    let rsyncEnabled: Bool
-    let requiresReboot: Bool
-    let startupMode: DeployStartupMode
-    let uploads: [JSONValue]
-    let preUploadActions: [JSONValue]
-    let postUploadActions: [JSONValue]
-    let activationActions: [JSONValue]
-    let postDeployChecks: [PlannedCheckPayload]
-    let summary: String
-
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion = "schema_version"
-        case host
-        case volumeRoot = "volume_root"
-        case payloadDir = "payload_dir"
-        case payloadFamily = "payload_family"
-        case netbsd4
-        case rsyncEnabled = "rsync_enabled"
-        case requiresReboot = "requires_reboot"
-        case startupMode = "startup_mode"
-        case uploads
-        case preUploadActions = "pre_upload_actions"
-        case postUploadActions = "post_upload_actions"
-        case activationActions = "activation_actions"
-        case postDeployChecks = "post_deploy_checks"
-        case summary
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        self.host = try container.decode(String.self, forKey: .host)
-        self.volumeRoot = try container.decodeIfPresent(String.self, forKey: .volumeRoot)
-        self.payloadDir = try container.decode(String.self, forKey: .payloadDir)
-        self.payloadFamily = try container.decodeIfPresent(String.self, forKey: .payloadFamily)
-        self.netbsd4 = try container.decode(Bool.self, forKey: .netbsd4)
-        self.rsyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .rsyncEnabled) ?? false
-        self.requiresReboot = try container.decode(Bool.self, forKey: .requiresReboot)
-        self.startupMode = try container.decodeIfPresent(DeployStartupMode.self, forKey: .startupMode)
-            ?? DeployStartupMode.fallback(netbsd4: netbsd4)
-        self.uploads = try container.decodeIfPresent([JSONValue].self, forKey: .uploads) ?? []
-        self.preUploadActions = try container.decodeIfPresent([JSONValue].self, forKey: .preUploadActions) ?? []
-        self.postUploadActions = try container.decodeIfPresent([JSONValue].self, forKey: .postUploadActions) ?? []
-        self.activationActions = try container.decodeIfPresent([JSONValue].self, forKey: .activationActions) ?? []
-        self.postDeployChecks = try container.decodeIfPresent([PlannedCheckPayload].self, forKey: .postDeployChecks) ?? []
-        self.summary = try container.decode(String.self, forKey: .summary)
-    }
-}
-
 struct DeployResultPayload: Decodable, Equatable {
     let schemaVersion: Int
     let payloadDir: String
@@ -541,31 +476,6 @@ struct FsckTargetPayload: Decodable, Equatable {
     let mountpoint: String
 }
 
-struct ActivationPlanPayload: Decodable, Equatable {
-    let schemaVersion: Int
-    let actions: [JSONValue]
-    let postActivationChecks: [PlannedCheckPayload]
-    let counts: [String: Int]
-    let summary: String
-
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion = "schema_version"
-        case actions
-        case postActivationChecks = "post_activation_checks"
-        case counts
-        case summary
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        self.actions = try container.decodeIfPresent([JSONValue].self, forKey: .actions) ?? []
-        self.postActivationChecks = try container.decodeIfPresent([PlannedCheckPayload].self, forKey: .postActivationChecks) ?? []
-        self.counts = try container.decodeIfPresent([String: Int].self, forKey: .counts) ?? [:]
-        self.summary = try container.decode(String.self, forKey: .summary)
-    }
-}
-
 struct ActivationResultPayload: Decodable, Equatable {
     let schemaVersion: Int
     let alreadyActive: Bool
@@ -577,46 +487,6 @@ struct ActivationResultPayload: Decodable, Equatable {
         case alreadyActive = "already_active"
         case message
         case summary
-    }
-}
-
-struct UninstallPlanPayload: Decodable, Equatable {
-    let schemaVersion: Int
-    let host: String
-    let volumeRoots: [String]
-    let payloadDirs: [String]
-    let remoteActions: [JSONValue]
-    let requiresReboot: Bool
-    let rebootRequired: Bool?
-    let postUninstallChecks: [PlannedCheckPayload]
-    let counts: [String: Int]
-    let summary: String
-
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion = "schema_version"
-        case host
-        case volumeRoots = "volume_roots"
-        case payloadDirs = "payload_dirs"
-        case remoteActions = "remote_actions"
-        case requiresReboot = "requires_reboot"
-        case rebootRequired = "reboot_required"
-        case postUninstallChecks = "post_uninstall_checks"
-        case counts
-        case summary
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        self.host = try container.decode(String.self, forKey: .host)
-        self.volumeRoots = try container.decodeIfPresent([String].self, forKey: .volumeRoots) ?? []
-        self.payloadDirs = try container.decodeIfPresent([String].self, forKey: .payloadDirs) ?? []
-        self.remoteActions = try container.decodeIfPresent([JSONValue].self, forKey: .remoteActions) ?? []
-        self.requiresReboot = try container.decode(Bool.self, forKey: .requiresReboot)
-        self.rebootRequired = try container.decodeIfPresent(Bool.self, forKey: .rebootRequired)
-        self.postUninstallChecks = try container.decodeIfPresent([PlannedCheckPayload].self, forKey: .postUninstallChecks) ?? []
-        self.counts = try container.decodeIfPresent([String: Int].self, forKey: .counts) ?? [:]
-        self.summary = try container.decode(String.self, forKey: .summary)
     }
 }
 
@@ -1109,11 +979,6 @@ struct MaintenanceResultPayload: Decodable, Equatable {
         case returncode
         case counts
     }
-}
-
-struct PlannedCheckPayload: Decodable, Equatable {
-    let id: String
-    let description: String
 }
 
 struct BackendRecoveryPayload: Decodable, Equatable {

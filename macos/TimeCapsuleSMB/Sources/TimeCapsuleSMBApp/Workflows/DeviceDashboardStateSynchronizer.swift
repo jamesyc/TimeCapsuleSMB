@@ -130,7 +130,7 @@ final class DeviceDashboardStateSynchronizer {
 
     private func persistStartedDeployState(operation: ActiveOperation, profile: DeviceProfile) {
         let startedAt = Date()
-        let payloadFamily = deployStore.plan?.payloadFamily ?? profile.payloadFamily
+        let payloadFamily = profile.payloadFamily
         let stage = deployStore.currentStage?.stage
         let snapshots = DeviceDashboardSnapshotMapper.startedDeploySnapshots(
             operation: operation,
@@ -205,7 +205,6 @@ final class DeviceDashboardStateSynchronizer {
             let profile = appStore.deviceRegistry.profile(id: profileID)
             let stage = deployStore.currentStage?.stage
             let payloadFamily = profile?.lastDeployState?.payloadFamily
-                ?? deployStore.plan?.payloadFamily
                 ?? profile?.payloadFamily
             guard let snapshots = DeviceDashboardSnapshotMapper.failedDeploySnapshots(
                 operation: operation,
@@ -233,7 +232,7 @@ final class DeviceDashboardStateSynchronizer {
         Task {
             let finishedAt = Date()
             let stage = deployStore.currentStage?.stage ?? profile.lastDeployState?.stage
-            let payloadFamily = deployStore.plan?.payloadFamily ?? profile.payloadFamily
+            let payloadFamily = profile.payloadFamily
             let snapshots = DeviceDashboardSnapshotMapper.succeededDeploySnapshots(
                 operation: operation,
                 profile: profile,
@@ -245,7 +244,7 @@ final class DeviceDashboardStateSynchronizer {
             await appStore.deviceRegistry.updateInstallOperationState(
                 deployState: snapshots.deployState,
                 runtimeState: snapshots.runtimeState,
-                rsyncEnabled: deployStore.plannedOptions?.rsyncEnabled ?? deployStore.plan?.rsyncEnabled,
+                rsyncEnabled: deployStore.runOptions?.rsyncEnabled,
                 for: profile.id
             )
         }

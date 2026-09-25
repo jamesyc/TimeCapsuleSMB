@@ -61,7 +61,6 @@ struct DeviceDashboardView: View {
                         profile: profile,
                         session: session,
                         operationCoordinator: operationCoordinator,
-                        appSettings: appSettingsStore.settings,
                         showDiagnostics: showDiagnostics,
                         diagnosticsText: diagnosticsText
                     )

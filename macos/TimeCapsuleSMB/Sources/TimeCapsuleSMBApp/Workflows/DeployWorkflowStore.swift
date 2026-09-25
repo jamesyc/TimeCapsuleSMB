@@ -52,10 +52,6 @@ struct DeployOptions: Equatable {
 
 enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
     case idle
-    case planning
-    case planReady
-    case planStale
-    case planFailed
     case deploying
     case awaitingConfirmation
     case deployed
@@ -65,14 +61,6 @@ enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
         switch self {
         case .idle:
             return L10n.string("workflow.state.idle")
-        case .planning:
-            return L10n.string("workflow.state.planning")
-        case .planReady:
-            return L10n.string("workflow.state.plan_ready")
-        case .planStale:
-            return L10n.string("workflow.state.plan_stale")
-        case .planFailed:
-            return L10n.string("workflow.state.plan_failed")
         case .deploying:
             return L10n.string("workflow.state.deploying")
         case .awaitingConfirmation:
@@ -87,27 +75,16 @@ enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
 
 @MainActor
 final class DeployWorkflowStore: ObservableObject {
-    @Published var rsyncEnabled = false {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var noWait = false {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var internalShareUseDiskRoot = false {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var smbBrowseCompatibility = false {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var mdnsAdvertiseAFP = DeviceProfileSettings.default.mdnsAdvertiseAFP {
-        didSet { reconcilePlanFreshness() }
-    }
+    @Published var rsyncEnabled = false
+    @Published var noWait = false
+    @Published var internalShareUseDiskRoot = false
+    @Published var smbBrowseCompatibility = false
+    @Published var mdnsAdvertiseAFP = DeviceProfileSettings.default.mdnsAdvertiseAFP
     @Published var anyProtocol = false {
         didSet {
             if anyProtocol && requireSMBEncryption {
                 requireSMBEncryption = false
             }
-            reconcilePlanFreshness()
         }
     }
     @Published var requireSMBEncryption = DeviceProfileSettings.default.requireSMBEncryption {
@@ -118,7 +95,6 @@ final class DeployWorkflowStore: ObservableObject {
             if requireSMBEncryption && forceDisableSMBSigningAndEncryption {
                 forceDisableSMBSigningAndEncryption = false
             }
-            reconcilePlanFreshness()
         }
     }
     @Published var forceDisableSMBSigningAndEncryption = DeviceProfileSettings.default.forceDisableSMBSigningAndEncryption {
@@ -126,34 +102,21 @@ final class DeployWorkflowStore: ObservableObject {
             if forceDisableSMBSigningAndEncryption && requireSMBEncryption {
                 requireSMBEncryption = false
             }
-            reconcilePlanFreshness()
         }
     }
-    @Published var fruitMetadataNetatalk = DeviceProfileSettings.default.fruitMetadataNetatalk {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var vfsAIOForkEnabled = DeviceProfileSettings.default.vfsAIOForkEnabled {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var debugLogging = false {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var ataIdleSeconds = String(DeviceProfileSettings.default.ataIdleSeconds) {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var ataStandby = DeviceProfileSettings.default.ataStandby.map { String($0) } ?? "" {
-        didSet { reconcilePlanFreshness() }
-    }
-    @Published var mountWait = "30" {
-        didSet { reconcilePlanFreshness() }
-    }
+    @Published var fruitMetadataNetatalk = DeviceProfileSettings.default.fruitMetadataNetatalk
+    @Published var vfsAIOForkEnabled = DeviceProfileSettings.default.vfsAIOForkEnabled
+    @Published var debugLogging = false
+    @Published var ataIdleSeconds = String(DeviceProfileSettings.default.ataIdleSeconds)
+    @Published var ataStandby = DeviceProfileSettings.default.ataStandby.map { String($0) } ?? ""
+    @Published var mountWait = "30"
 
     @Published private(set) var state: DeployWorkflowState = .idle
-    @Published private(set) var plan: DeployPlanPayload?
     @Published private(set) var result: DeployResultPayload?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var currentStage: OperationStageState?
-    @Published private(set) var plannedOptions: DeployOptions?
+    /// Options of the most recent deploy run; persisted as the profile's rsync setting on success.
+    @Published private(set) var runOptions: DeployOptions?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
     let backend: BackendClient
@@ -231,67 +194,12 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     @discardableResult
-    func runPlan(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard let options = currentOptions else {
-            let localError = deployOptionsValidationError ?? .deployOptionsInvalid
-            failLocally(state: .planFailed, localError: localError)
-            return .rejected(localError.message)
-        }
-        guard !isBusy else {
-            rejectRun(state: .planFailed, localError: .operationAlreadyRunning)
-            return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
-        }
-        backend.clear()
-        let start = run(
-            operation: "deploy",
-            params: OperationParams.Deploy.params(
-                dryRun: true,
-                noWait: options.noWait,
-                rsyncEnabled: options.rsyncEnabled,
-                internalShareUseDiskRoot: options.internalShareUseDiskRoot,
-                smbBrowseCompatibility: options.smbBrowseCompatibility,
-                mdnsAdvertiseAFP: options.mdnsAdvertiseAFP,
-                anyProtocol: options.anyProtocol,
-                requireSMBEncryption: options.requireSMBEncryption,
-                forceDisableSMBSigningAndEncryption: options.forceDisableSMBSigningAndEncryption,
-                fruitMetadataNetatalk: options.fruitMetadataNetatalk,
-                vfsAIOForkEnabled: options.vfsAIOForkEnabled,
-                debugLogging: options.debugLogging,
-                ataIdleSeconds: options.ataIdleSeconds,
-                ataStandby: options.ataStandby,
-                mountWait: Double(options.mountWait)
-            ),
-            profile: profile,
-            password: password
-        )
-        guard case .started(let operation) = start else {
-            if let message = start.rejectionMessage {
-                rejectRun(state: .planFailed, message: message)
-            } else {
-                rejectRun(state: .planFailed, localError: .operationCouldNotStart)
-            }
-            return start
-        }
-        operationObserver.start(operation)
-        state = .planning
-        plan = nil
-        result = nil
-        error = nil
-        currentStage = nil
-        plannedOptions = options
-        passwordInvalidProfileID = nil
-        process(backend.events)
-        return start
-    }
-
-    @discardableResult
     func runDeploy(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = currentOptions else {
             let localError = deployOptionsValidationError ?? .deployOptionsInvalid
             failLocally(state: .deployFailed, localError: localError)
             return .rejected(localError.message)
         }
-        let hasFreshPlan = plan != nil && plannedOptions == options
         guard !isBusy else {
             rejectRun(state: .deployFailed, localError: .operationAlreadyRunning)
             return .rejected(WorkflowLocalError.operationAlreadyRunning.message)
@@ -300,7 +208,6 @@ final class DeployWorkflowStore: ObservableObject {
         let start = run(
             operation: "deploy",
             params: OperationParams.Deploy.params(
-                dryRun: false,
                 noWait: options.noWait,
                 rsyncEnabled: options.rsyncEnabled,
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
@@ -329,13 +236,10 @@ final class DeployWorkflowStore: ObservableObject {
         }
         operationObserver.start(operation)
         state = .deploying
-        if !hasFreshPlan {
-            plan = nil
-        }
         result = nil
         error = nil
         currentStage = nil
-        plannedOptions = options
+        runOptions = options
         passwordInvalidProfileID = nil
         process(backend.events)
         return start
@@ -345,11 +249,10 @@ final class DeployWorkflowStore: ObservableObject {
         backend.clear()
         operationObserver.clear()
         state = .idle
-        plan = nil
         result = nil
         error = nil
         currentStage = nil
-        plannedOptions = nil
+        runOptions = nil
         passwordInvalidProfileID = nil
         operationObserver.finish()
     }
@@ -413,17 +316,6 @@ final class DeployWorkflowStore: ObservableObject {
         deployOptionsValidationError?.message
     }
 
-    private func reconcilePlanFreshness() {
-        guard plan != nil, state == .planReady || state == .planStale else {
-            return
-        }
-        if currentOptions == plannedOptions {
-            state = .planReady
-        } else {
-            state = .planStale
-        }
-    }
-
     private func process(_ events: [BackendEvent]) {
         operationObserver.process(events) { event, operation in
             handle(event, activeOperation: operation)
@@ -456,26 +348,8 @@ final class DeployWorkflowStore: ObservableObject {
             return
         }
 
-        switch state {
-        case .planning:
-            applyPlanResult(event)
-        case .deploying, .awaitingConfirmation:
+        if state == .deploying || state == .awaitingConfirmation {
             applyDeployResult(event)
-        default:
-            break
-        }
-    }
-
-    private func applyPlanResult(_ event: BackendEvent) {
-        do {
-            plan = try event.decodePayload(DeployPlanPayload.self)
-            result = nil
-            error = nil
-            operationObserver.finish()
-            state = .planReady
-            reconcilePlanFreshness()
-        } catch {
-            failContract(state: .planFailed, error: error)
         }
     }
 
@@ -504,7 +378,7 @@ final class DeployWorkflowStore: ObservableObject {
             passwordInvalidProfileID = activeOperation.profileID
         }
         error = BackendErrorViewModel(event: event)
-        state = state == .planning ? .planFailed : .deployFailed
+        state = .deployFailed
         operationObserver.finish()
     }
 
@@ -512,17 +386,12 @@ final class DeployWorkflowStore: ObservableObject {
         error = nil
         currentStage = nil
         operationObserver.finish()
-        guard plan != nil else {
-            state = .idle
-            return
-        }
-        state = .planReady
-        reconcilePlanFreshness()
+        state = .idle
     }
 
     private func applyFailureResult(_ event: BackendEvent) {
         error = BackendErrorViewModel(event: event)
-        state = state == .planning ? .planFailed : .deployFailed
+        state = .deployFailed
         operationObserver.finish()
     }
 

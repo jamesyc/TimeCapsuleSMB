@@ -4,7 +4,6 @@ struct InstallTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
     @ObservedObject var operationCoordinator: OperationCoordinator
-    let appSettings: AppSettings
     let showDiagnostics: () -> Void
     let diagnosticsText: () -> String
 
@@ -13,14 +12,11 @@ struct InstallTab: View {
         let summary = session.summary(for: profile)
         let presentation = InstallWorkflowPresentation(
             state: store.state,
-            plan: store.plan,
             result: store.result,
             error: store.error,
             events: store.events,
             currentStage: store.currentStage,
-            plannedOptions: store.plannedOptions,
             profile: profile,
-            hostWarning: HostCompatibilityPolicy.warning(enabled: appSettings.timeMachineWarningsEnabled),
             isCheckupRunning: summary.displayStatus == .checking
         )
         let progress = InstallProgressPresentation(state: store.state, currentStage: store.currentStage)
@@ -60,10 +56,6 @@ struct InstallTab: View {
                         ) { action in
                             handleRecovery(action: action, error: error)
                         }
-                    }
-
-                    if let plan = presentation.plan {
-                        InstallPlanView(presentation: plan)
                     }
 
                     if let completion = presentation.completion {
@@ -138,31 +130,6 @@ private struct InstallActionButton: View {
                 Label(action.title, systemImage: action.systemImage)
             }
             .buttonStyle(.bordered)
-        }
-    }
-}
-
-private struct InstallPlanView: View {
-    let presentation: InstallPlanPresentation
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(presentation.title)
-                .font(.headline)
-
-            ForEach(presentation.sections) { section in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(section.title)
-                        .font(.subheadline.weight(.medium))
-                    SummaryGrid(rows: section.rows.map { ($0.label, $0.value) })
-                }
-            }
-
-            ForEach(presentation.warnings, id: \.self) { warning in
-                Label(warning, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.yellow)
-            }
         }
     }
 }

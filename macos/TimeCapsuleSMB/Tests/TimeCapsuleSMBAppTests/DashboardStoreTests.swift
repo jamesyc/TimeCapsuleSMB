@@ -103,7 +103,7 @@ final class DashboardStoreTests: XCTestCase {
         session.performPrimaryAction(.installSMB, profile: profile)
         try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
+        XCTAssertNil(fixture.runner.calls[1].params["dry_run"])
         XCTAssertEqual(session.selectedTab, .install)
 
         session.performPrimaryAction(.viewCheckup, profile: profile)
@@ -174,9 +174,6 @@ final class DashboardStoreTests: XCTestCase {
     func testRefreshStatusDoesNotClearSuccessfulDeployTimeline() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
-            ]),
-            .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
             ]),
@@ -193,15 +190,12 @@ final class DashboardStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
 
-        session.runInstallPlan(profile: profile)
-        try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: profile)
         try await waitUntilStoreState { session.deployStore.state == .deployed }
 
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         let beforeRefresh = InstallWorkflowPresentation(
             state: session.deployStore.state,
-            plan: session.deployStore.plan,
             result: session.deployStore.result,
             error: session.deployStore.error,
             events: session.deployStore.events,
@@ -215,7 +209,6 @@ final class DashboardStoreTests: XCTestCase {
 
         let afterRefresh = InstallWorkflowPresentation(
             state: session.deployStore.state,
-            plan: session.deployStore.plan,
             result: session.deployStore.result,
             error: session.deployStore.error,
             events: session.deployStore.events,
@@ -224,7 +217,7 @@ final class DashboardStoreTests: XCTestCase {
         )
         XCTAssertEqual(afterRefresh.timeline?.items.map(\.title), ["Upload smbd", "Done"])
         XCTAssertEqual(afterRefresh.timeline?.items.last?.detail, "Samba installation or update completed.")
-        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "deploy", "reachability"])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "reachability"])
     }
 
     func testDeployFailureRefreshesSSHAccessStatusWithoutSSHSpecificErrorText() async throws {
@@ -265,9 +258,6 @@ final class DashboardStoreTests: XCTestCase {
     func testCheckupDoesNotClearSuccessfulDeployTimeline() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
-            ]),
-            .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd"),
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
             ]),
@@ -286,8 +276,6 @@ final class DashboardStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
 
-        session.runInstallPlan(profile: profile)
-        try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: profile)
         try await waitUntilStoreState { session.deployStore.state == .deployed }
         session.runCheckup(profile: profile)
@@ -296,7 +284,6 @@ final class DashboardStoreTests: XCTestCase {
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         let presentation = InstallWorkflowPresentation(
             state: session.deployStore.state,
-            plan: session.deployStore.plan,
             result: session.deployStore.result,
             error: session.deployStore.error,
             events: session.deployStore.events,
@@ -304,7 +291,7 @@ final class DashboardStoreTests: XCTestCase {
             profile: installed
         )
         XCTAssertEqual(presentation.timeline?.items.map(\.title), ["Upload smbd", "Done"])
-        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "deploy", "doctor"])
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["deploy", "doctor"])
     }
 
     func testProfileEditorPasswordSaveUpdatesPasswordStateAndClearsDraft() async throws {
@@ -574,14 +561,6 @@ final class DashboardStoreTests: XCTestCase {
                 ]))
             ]),
             .init(events: [
-                BackendEvent(
-                    type: "result",
-                    operation: "deploy",
-                    ok: true,
-                    payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4", rsyncEnabled: true)
-                )
-            ]),
-            .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
             ], pauseBeforeEvents: true)
         ])
@@ -612,8 +591,6 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(fixture.runner.calls[0].context?.profileID, profile.id)
 
-        session.runInstallPlan(profile: checked)
-        try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: checked)
 
         try await waitUntilStoreState {
@@ -638,10 +615,9 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(installed.settings.rsyncEnabled, true)
         let reopenedSession = DeviceDashboardSession(profile: installed, appStore: fixture.appStore)
         XCTAssertEqual(reopenedSession.deployStore.rsyncEnabled, true)
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
-        XCTAssertEqual(fixture.runner.calls[2].params["dry_run"], .bool(false))
-        XCTAssertEqual(fixture.runner.calls[2].params["rsync_enabled"], .bool(true))
-        XCTAssertEqual(fixture.runner.calls[2].context?.profileID, profile.id)
+        XCTAssertNil(fixture.runner.calls[1].params["dry_run"])
+        XCTAssertEqual(fixture.runner.calls[1].params["rsync_enabled"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[1].context?.profileID, profile.id)
     }
 
     func testFailedInstallPersistsUnifiedDeployState() async throws {
@@ -655,9 +631,6 @@ final class DashboardStoreTests: XCTestCase {
         ])
         let failure = "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart."
         let fixture = try await makeFixture(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
-            ]),
             .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
                 BackendEvent(
@@ -682,8 +655,6 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: installed)
 
-        session.runInstallPlan(profile: installed)
-        try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: installed)
 
         try await waitUntilStoreState {
@@ -709,9 +680,6 @@ final class DashboardStoreTests: XCTestCase {
         let failure = "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart."
         let fixture = try await makeFixture(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
-            ]),
-            .init(events: [
                 BackendEvent(type: "stage", operation: "deploy", stage: "read_mast"),
                 BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: failure)
             ]),
@@ -734,12 +702,14 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: profile)
 
-        session.runInstallPlan(profile: profile)
-        try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: profile)
+        // A failed install also refreshes SSH access status in the background;
+        // let it take its response before the checkup starts.
         try await waitUntilStoreState {
             session.deployStore.state == .deployFailed
                 && fixture.registry.profile(id: profile.id)?.runtimeState?.state == .installFailed
+                && fixture.runner.calls.map(\.operation) == ["deploy", "set-ssh"]
+                && fixture.appStore.sshAccessStore.snapshot(for: profile) != nil
         }
         let failed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
@@ -793,54 +763,6 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: checked).displayStatus, .readyToInstall)
     }
 
-    func testInstallPlanDoesNotChangePersistedInstallState() async throws {
-        let fixture = try await makeFixture(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
-            ])
-        ])
-        let profile = try await fixture.registry.saveConfiguredDevice(
-            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
-            discoveredDevice: nil,
-            passwordState: .available,
-            preferredID: "device-one"
-        )
-        let failedState = testDeployState(
-            status: .failed,
-            startedAt: Date(timeIntervalSince1970: 120),
-            updatedAt: Date(timeIntervalSince1970: 120),
-            finishedAt: Date(timeIntervalSince1970: 120),
-            stage: "read_mast",
-            verified: nil,
-            summary: "",
-            errorCode: "remote_error",
-            errorMessage: "No deployable HFS disk was found."
-        )
-        let failedRuntimeState = testRuntimeState(
-            state: .installFailed,
-            stage: "read_mast",
-            verified: false,
-            summary: "",
-            errorCode: "remote_error",
-            errorMessage: "No deployable HFS disk was found."
-        )
-        await fixture.registry.updateDeployState(failedState, for: profile.id)
-        await fixture.registry.updateRuntimeState(failedRuntimeState, for: profile.id)
-        let failed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
-        try fixture.passwordStore.save("pw", for: failed.keychainAccount)
-        let dashboard = DashboardStore(appStore: fixture.appStore)
-        let session = dashboard.session(for: failed)
-        session.deployStore.rsyncEnabled = true
-
-        session.runInstallPlan(profile: failed)
-
-        try await waitUntilStoreState { session.deployStore.state == .planReady }
-        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.lastDeployState, failedState)
-        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.runtimeState, failedRuntimeState)
-        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.settings.rsyncEnabled, false)
-        XCTAssertEqual(fixture.appStore.dashboardSummary(for: failed).displayStatus, .failed)
-    }
-
     func testSuccessfulUninstallClearsInstalledSnapshot() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
@@ -883,7 +805,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastDeployState)
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.runtimeState)
         XCTAssertNil(fixture.registry.profile(id: installed.id)?.lastCheckup)
-        XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(false))
+        XCTAssertNil(fixture.runner.calls[0].params["dry_run"])
     }
 
     func testActivationInvalidatesCheckupWhenRunStarts() async throws {
@@ -919,7 +841,7 @@ final class DashboardStoreTests: XCTestCase {
         }
         fixture.runner.finishAll()
         try await waitUntilStoreState { session.maintenanceStore.activateState == .succeeded }
-        XCTAssertEqual(fixture.runner.calls[0].params["dry_run"], .bool(false))
+        XCTAssertNil(fixture.runner.calls[0].params["dry_run"])
     }
 
     func testCheckupSnapshotUsesStartedProfileWhenSelectionChanges() async throws {
@@ -999,9 +921,6 @@ final class DashboardStoreTests: XCTestCase {
     func testDeploySnapshotUsesStartedProfileWhenSelectionChanges() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
-            ]),
-            .init(events: [
                 BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
             ], pauseBeforeEvents: true)
         ])
@@ -1022,8 +941,6 @@ final class DashboardStoreTests: XCTestCase {
         let dashboard = DashboardStore(appStore: fixture.appStore)
         let session = dashboard.session(for: first)
 
-        session.runInstallPlan(profile: first)
-        try await waitUntilStoreState { session.deployStore.state == .planReady }
         session.runInstall(profile: first)
         fixture.appStore.select(second)
         fixture.runner.finishAll()
@@ -1167,7 +1084,7 @@ final class DashboardStoreTests: XCTestCase {
         ))
         try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
+        XCTAssertNil(fixture.runner.calls[1].params["dry_run"])
         XCTAssertEqual(fixture.runner.calls[1].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(session.selectedTab, .install)
     }
@@ -1178,9 +1095,6 @@ final class DashboardStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
                 ]))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
             ])
         ])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -1269,7 +1183,7 @@ final class DashboardStoreTests: XCTestCase {
         }
         try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
-        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(false))
+        XCTAssertNil(fixture.runner.calls[1].params["dry_run"])
         XCTAssertEqual(session.selectedTab, .install)
 
         session.performInstallAction(.viewDiagnostics, profile: profile) {

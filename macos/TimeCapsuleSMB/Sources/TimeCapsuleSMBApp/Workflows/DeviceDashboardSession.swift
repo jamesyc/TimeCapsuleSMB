@@ -189,18 +189,10 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     func performMaintenanceAction(_ action: MaintenanceUserAction, profile: DeviceProfile, showDiagnostics: () -> Void) {
         switch action {
-        case .planActivation:
-            if let password = maintenancePassword(for: profile) {
-                maintenanceStore.planActivation(password: password, profile: profile)
-            }
         case .runActivation:
             if let password = maintenancePassword(for: profile) {
                 let start = maintenanceStore.runActivation(password: password, profile: profile)
                 stateSynchronizer.invalidateCheckupIfStarted(start)
-            }
-        case .planUninstall:
-            if let password = maintenancePassword(for: profile) {
-                maintenanceStore.planUninstall(password: password, profile: profile)
             }
         case .runUninstall:
             if let password = maintenancePassword(for: profile) {
@@ -282,16 +274,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         if case .started(let operation) = doctorStore.runDoctor(password: password, profile: profile) {
             stateSynchronizer.trackCheckupStart(operation)
         }
-    }
-
-    func runInstallPlan(profile: DeviceProfile) {
-        guard let password = appStore.password(for: profile) else {
-            promptForPasswordReplacement(error: L10n.string("password.error.required"))
-            return
-        }
-        profileEditorStore.clearPasswordAttention()
-        selectedTab = .install
-        deployStore.runPlan(password: password, profile: profile)
     }
 
     func runInstall(profile: DeviceProfile) {

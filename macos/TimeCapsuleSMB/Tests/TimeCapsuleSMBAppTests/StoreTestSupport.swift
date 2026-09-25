@@ -817,35 +817,6 @@ func testSSHAccessPayload(
     ])
 }
 
-func testDeployPlanPayload(
-    payloadFamily: String = "netbsd6_samba4",
-    netbsd4: Bool? = nil,
-    rsyncEnabled: Bool = false,
-    requiresReboot: Bool = true,
-    startupMode: DeployStartupMode? = nil
-) -> JSONValue {
-    let isNetBSD4 = netbsd4 ?? payloadFamily.localizedCaseInsensitiveContains("netbsd4")
-    let resolvedStartupMode = startupMode ?? DeployStartupMode.fallback(netbsd4: isNetBSD4)
-    return .object([
-        "schema_version": .number(1),
-        "host": .string("root@10.0.0.2"),
-        "volume_root": .string("/Volumes/dk2"),
-        "payload_dir": .string("/Volumes/dk2/.samba4"),
-        "payload_family": .string(payloadFamily),
-        "netbsd4": .bool(isNetBSD4),
-        "rsync_enabled": .bool(rsyncEnabled),
-        "requires_reboot": .bool(requiresReboot),
-        "reboot_required": .bool(requiresReboot),
-        "startup_mode": .string(resolvedStartupMode.rawValue),
-        "uploads": .array([.object(["description": .string("smbd")])]),
-        "pre_upload_actions": .array([]),
-        "post_upload_actions": .array([]),
-        "activation_actions": .array([]),
-        "post_deploy_checks": .array([]),
-        "summary": .string("Deployment dry-run plan generated.")
-    ])
-}
-
 func testDeployResultPayload(
     payloadFamily: String = "netbsd6_samba4",
     verified: Bool = true,
@@ -923,40 +894,11 @@ func testRuntimeState(
     )
 }
 
-func testActivationPlanPayload() -> JSONValue {
-    .object([
-        "schema_version": .number(1),
-        "actions": .array([.object(["type": .string("run_script")])]),
-        "post_activation_checks": .array([
-            .object(["id": .string("runtime_ready"), "description": .string("runtime ready")])
-        ]),
-        "counts": .object(["actions": .number(1)]),
-        "summary": .string("NetBSD4 activation dry-run plan generated.")
-    ])
-}
-
 func testActivationResultPayload(alreadyActive: Bool) -> JSONValue {
     .object([
         "schema_version": .number(1),
         "already_active": .bool(alreadyActive),
         "summary": .string(alreadyActive ? "NetBSD4 payload was already active." : "NetBSD4 activation completed.")
-    ])
-}
-
-func testUninstallPlanPayload() -> JSONValue {
-    .object([
-        "schema_version": .number(1),
-        "host": .string("root@10.0.0.2"),
-        "volume_roots": .array([.string("/Volumes/dk2")]),
-        "payload_dirs": .array([.string("/Volumes/dk2/.samba4")]),
-        "remote_actions": .array([.object(["type": .string("remove_path")])]),
-        "requires_reboot": .bool(true),
-        "reboot_required": .bool(true),
-        "post_uninstall_checks": .array([
-            .object(["id": .string("managed_files_absent"), "description": .string("managed files absent")])
-        ]),
-        "counts": .object(["payload_dirs": .number(1)]),
-        "summary": .string("Uninstall dry-run plan generated.")
     ])
 }
 

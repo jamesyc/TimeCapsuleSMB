@@ -29,18 +29,12 @@ enum BackendSummaryLocalization {
             return L10n.string("backend.summary.version_metadata_unavailable")
         case "configuration saved and ssh authentication verified.":
             return L10n.string("backend.summary.configuration_saved")
-        case "deployment dry-run plan generated.":
-            return L10n.string("backend.summary.deploy_plan_generated")
         case "deployment completed.":
             return L10n.string("backend.summary.deploy_completed")
-        case "netbsd4 activation dry-run plan generated.":
-            return L10n.string("backend.summary.activation_plan_generated")
         case "netbsd4 payload was already active.":
             return L10n.string("backend.summary.activation_already_active")
         case "netbsd4 activation completed.":
             return L10n.string("backend.summary.activation_completed")
-        case "uninstall dry-run plan generated.":
-            return L10n.string("backend.summary.uninstall_plan_generated")
         case "uninstall completed.":
             return L10n.string("backend.summary.uninstall_completed")
         case "uninstall completed without post-reboot verification.":
@@ -280,9 +274,6 @@ enum BackendSummaryLocalization {
     }
 
     private static func deploySummary(payload: JSONValue) -> String? {
-        if payload.array("uploads") != nil || payload.array("post_deploy_checks") != nil {
-            return L10n.string("backend.summary.deploy_plan_generated")
-        }
         if isNetBSD4ActivationMessage(payload.string("message") ?? payload.string("summary")) {
             return netbsd4ActivationCompletedWithFollowup()
         }
@@ -294,9 +285,6 @@ enum BackendSummaryLocalization {
     }
 
     private static func activationSummary(payload: JSONValue) -> String? {
-        if payload.array("actions") != nil || payload.array("post_activation_checks") != nil {
-            return L10n.string("backend.summary.activation_plan_generated")
-        }
         return activationResultSummary(
             summary: payload.string("summary") ?? "",
             message: payload.string("message"),
@@ -305,9 +293,6 @@ enum BackendSummaryLocalization {
     }
 
     private static func uninstallSummary(payload: JSONValue) -> String? {
-        if payload.array("remote_actions") != nil || payload.array("payload_dirs") != nil {
-            return L10n.string("backend.summary.uninstall_plan_generated")
-        }
         if let verified = payload.bool("verified") {
             return verified
                 ? L10n.string("backend.summary.uninstall_completed")
@@ -457,12 +442,6 @@ extension ConfigurePayload {
     }
 }
 
-extension DeployPlanPayload {
-    var localizedSummary: String {
-        L10n.string("backend.summary.deploy_plan_generated")
-    }
-}
-
 extension DeployResultPayload {
     var localizedSummary: String {
         BackendSummaryLocalization.deployResultSummary(summary: summary, message: message, netbsd4: netbsd4)
@@ -492,12 +471,6 @@ extension DoctorCheckPayload {
     }
 }
 
-extension ActivationPlanPayload {
-    var localizedSummary: String {
-        L10n.string("backend.summary.activation_plan_generated")
-    }
-}
-
 extension ActivationResultPayload {
     var localizedSummary: String {
         BackendSummaryLocalization.activationResultSummary(summary: summary, message: message, alreadyActive: alreadyActive)
@@ -505,12 +478,6 @@ extension ActivationResultPayload {
 
     var localizedMessage: String {
         localizedSummary
-    }
-}
-
-extension UninstallPlanPayload {
-    var localizedSummary: String {
-        L10n.string("backend.summary.uninstall_plan_generated")
     }
 }
 

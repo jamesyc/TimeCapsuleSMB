@@ -1,96 +1,5 @@
 import Foundation
 
-struct InstallPlanSection: Equatable, Identifiable {
-    let title: String
-    let rows: [PresentationRow]
-
-    var id: String { title }
-}
-
-struct InstallPlanPresentation: Equatable {
-    let title: String
-    let sections: [InstallPlanSection]
-    let warnings: [String]
-
-    init(
-        plan: DeployPlanPayload,
-        profile: DeviceProfile,
-        options: DeployOptions? = nil,
-        hostWarning: HostCompatibilityWarning? = nil
-    ) {
-        // Every deploy reboots the device, so No Wait always returns once the reboot is requested.
-        let returnsAfterRebootRequest = options?.noWait == true
-        self.title = Self.title(for: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)
-        self.sections = [
-            InstallPlanSection(title: L10n.string("install.plan.section.target"), rows: [
-                PresentationRow(label: L10n.string("deploy.presentation.row.target"), value: profile.title),
-                PresentationRow(label: L10n.string("deploy.presentation.row.host"), value: plan.host),
-                PresentationRow(label: L10n.string("deploy.presentation.row.payload"), value: plan.payloadFamily ?? profile.payloadFamily ?? L10n.string("value.unknown"))
-            ]),
-            InstallPlanSection(title: L10n.string("install.plan.section.device_actions"), rows: [
-                PresentationRow(label: L10n.string("install.plan.row.uploads"), value: "\(plan.uploads.count)"),
-                PresentationRow(label: L10n.string("install.plan.row.rsync"), value: plan.rsyncEnabled ? L10n.string("value.yes") : L10n.string("value.no")),
-                PresentationRow(label: L10n.string("deploy.presentation.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
-                PresentationRow(label: L10n.string("install.plan.row.expected_downtime"), value: Self.expectedDowntime(plan: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)),
-                PresentationRow(label: L10n.string("install.plan.row.remote_actions"), value: "\(plan.preUploadActions.count + plan.postUploadActions.count + plan.activationActions.count)"),
-                PresentationRow(label: L10n.string("deploy.presentation.row.post_install_checks"), value: "\(plan.postDeployChecks.count)")
-            ])
-        ]
-        var warnings: [String] = []
-        if returnsAfterRebootRequest {
-            warnings.append(Self.noWaitWarning(for: plan))
-        }
-        if plan.netbsd4 && !returnsAfterRebootRequest {
-            warnings.append(Self.netbsd4Warning(for: plan))
-        }
-        if plan.rsyncEnabled {
-            warnings.append(L10n.string("install.plan.warning.rsync"))
-        }
-        if let hostWarning {
-            warnings.append(hostWarning.message)
-        }
-        self.warnings = warnings
-    }
-
-    private static func expectedDowntime(plan: DeployPlanPayload, returnsAfterRebootRequest: Bool) -> String {
-        if returnsAfterRebootRequest {
-            return L10n.string("install.plan.downtime.no_wait")
-        }
-        switch plan.startupMode {
-        case .rebootThenVerify, .rebootThenActivate:
-            return L10n.string("install.plan.downtime.reboot")
-        }
-    }
-
-    private static func title(for plan: DeployPlanPayload, returnsAfterRebootRequest: Bool) -> String {
-        if returnsAfterRebootRequest {
-            return L10n.string("install.plan.title.reboot_no_wait")
-        }
-        switch plan.startupMode {
-        case .rebootThenActivate:
-            return L10n.string("install.plan.title.reboot_then_activate")
-        case .rebootThenVerify:
-            return L10n.string("install.plan.title.standard")
-        }
-    }
-
-    private static func noWaitWarning(for plan: DeployPlanPayload) -> String {
-        if plan.startupMode == .rebootThenActivate {
-            return L10n.string("deploy.presentation.warning.no_wait_post_reboot_activation")
-        }
-        return L10n.string("deploy.presentation.warning.no_wait_post_reboot_verification")
-    }
-
-    private static func netbsd4Warning(for plan: DeployPlanPayload) -> String {
-        switch plan.startupMode {
-        case .rebootThenActivate:
-            return L10n.string("deploy.presentation.warning.netbsd4_reboot_then_activate")
-        case .rebootThenVerify:
-            return L10n.string("deploy.presentation.warning.netbsd4_activation")
-        }
-    }
-}
-
 enum InstallUserAction: String, Equatable, Identifiable {
     case installUpdate
     case reinstall
@@ -290,10 +199,6 @@ struct InstallProgressPresentation: Equatable, BlockingProgressPresenting {
             self.title = L10n.string("install.progress.deploying.title")
             self.message = L10n.string("install.progress.deploying.message")
         case .idle,
-             .planning,
-             .planReady,
-             .planStale,
-             .planFailed,
              .awaitingConfirmation,
              .deployed,
              .deployFailed:
@@ -317,7 +222,6 @@ struct InstallWorkflowPresentation: Equatable {
     let statusMessage: String
     let actions: [InstallUserAction]
     let notices: [String]
-    let plan: InstallPlanPresentation?
     let timeline: InstallTimelinePresentation?
     let completion: InstallCompletionPresentation?
     let error: BackendErrorViewModel?
@@ -325,14 +229,11 @@ struct InstallWorkflowPresentation: Equatable {
 
     init(
         state: DeployWorkflowState,
-        plan: DeployPlanPayload?,
         result: DeployResultPayload?,
         error: BackendErrorViewModel?,
         events: [BackendEvent],
         currentStage: OperationStageState?,
-        plannedOptions: DeployOptions? = nil,
         profile: DeviceProfile,
-        hostWarning: HostCompatibilityWarning? = nil,
         isCheckupRunning: Bool = false
     ) {
         let restoredFailure = Self.restoredDeployFailure(state: state, result: result, error: error, profile: profile)
@@ -340,9 +241,6 @@ struct InstallWorkflowPresentation: Equatable {
         let effectiveState = restoredFailure == nil ? state : DeployWorkflowState.deployFailed
         let effectiveError = error ?? restoredFailure.map { BackendErrorViewModel(operation: "deploy", deployState: $0) }
         self.title = L10n.string("dashboard.tab.install")
-        self.plan = plan.map {
-            InstallPlanPresentation(plan: $0, profile: profile, options: plannedOptions, hostWarning: hostWarning)
-        }
         self.timeline = Self.timeline(
             for: effectiveState,
             events: events,
@@ -368,22 +266,6 @@ struct InstallWorkflowPresentation: Equatable {
                 self.statusMessage = L10n.string("install.state.deployed")
                 self.actions = []
             }
-            self.notices = []
-        case .planning:
-            self.statusMessage = L10n.string("install.state.planning")
-            self.actions = Self.deployActions()
-            self.notices = []
-        case .planReady:
-            self.statusMessage = L10n.string("install.state.plan_ready")
-            self.actions = Self.deployActions()
-            self.notices = []
-        case .planStale:
-            self.statusMessage = L10n.string("install.state.plan_stale")
-            self.actions = Self.deployActions()
-            self.notices = [L10n.string("install.warning.plan_stale")]
-        case .planFailed:
-            self.statusMessage = effectiveError?.message ?? L10n.string("install.state.plan_failed")
-            self.actions = Self.deployActions()
             self.notices = []
         case .deploying:
             self.statusMessage = L10n.string("install.state.deploying")
@@ -450,7 +332,7 @@ struct InstallWorkflowPresentation: Equatable {
                 return nil
             }
             return InstallTimelinePresentation(restoredDeploySuccess: restoredSuccess)
-        case .planning, .deploying, .awaitingConfirmation, .deployFailed, .deployed:
+        case .deploying, .awaitingConfirmation, .deployFailed, .deployed:
             if let restoredFailure, currentStage == nil, !hasDeployEvents {
                 return InstallTimelinePresentation(
                     events: [],
@@ -466,8 +348,6 @@ struct InstallWorkflowPresentation: Equatable {
                 fallbackState: state == .deployed ? .succeeded : .running
             )
             return state == .deployed && presentation.items.isEmpty ? nil : presentation
-        case .planReady, .planStale, .planFailed:
-            return nil
         }
     }
 }

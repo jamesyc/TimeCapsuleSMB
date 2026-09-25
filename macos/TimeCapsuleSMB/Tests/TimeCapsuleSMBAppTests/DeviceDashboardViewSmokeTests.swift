@@ -51,44 +51,18 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
         }
     }
 
-    func testRendersInstallPlanningPlanReadyDeployingConfirmationFailedAndCompletedStates() async throws {
+    func testRendersInstallDeployingConfirmationFailedAndCompletedStates() async throws {
         try await renderInstallState(
             responses: [
-                .init(
-                    events: [BackendEvent(type: "stage", operation: "deploy", stage: "build_deployment_plan")],
-                    pauseAfterEvents: true
-                )
-            ],
-            expectedState: .planning,
-            runDeploy: false
-        )
-        try await renderInstallState(
-            responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
-                ])
-            ],
-            expectedState: .planReady,
-            runDeploy: false
-        )
-        try await renderInstallState(
-            responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
-                ]),
                 .init(
                     events: [BackendEvent(type: "stage", operation: "deploy", stage: "upload_smbd")],
                     pauseAfterEvents: true
                 )
             ],
-            expectedState: .deploying,
-            runDeploy: true
+            expectedState: .deploying
         )
         try await renderInstallState(
             responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
-                ]),
                 .init(events: [
                     BackendEvent(
                         type: "error",
@@ -98,32 +72,23 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
                     )
                 ])
             ],
-            expectedState: .awaitingConfirmation,
-            runDeploy: true
+            expectedState: .awaitingConfirmation
         )
         try await renderInstallState(
             responses: [
-                .init(events: [
-                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
-                ]),
                 .init(events: [
                     BackendEvent(type: "error", operation: "deploy", code: "remote_error", message: "Upload failed.")
                 ])
             ],
-            expectedState: .deployFailed,
-            runDeploy: true
+            expectedState: .deployFailed
         )
         try await renderInstallState(
             responses: [
                 .init(events: [
-                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
-                ]),
-                .init(events: [
                     BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
                 ])
             ],
-            expectedState: .deployed,
-            runDeploy: true
+            expectedState: .deployed
         )
     }
 
@@ -189,13 +154,13 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
 
         let activation = try await AppViewFixture(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ])
         ])
         let activationProfile = try await activation.saveProfile(id: "activation-device")
         let activationSession = activation.dashboardSession(for: activationProfile)
-        activationSession.maintenanceStore.planActivation(password: "pw", profile: activationProfile)
-        try await waitUntilStoreState { activationSession.maintenanceStore.activateState == .planReady }
+        activationSession.maintenanceStore.runActivation(password: "pw", profile: activationProfile)
+        try await waitUntilStoreState { activationSession.maintenanceStore.activateState == .succeeded }
         activationSession.selectedTab = .maintenance
         try assertRendersNonBlank(dashboardView(fixture: activation, profile: activationProfile, session: activationSession))
 
@@ -241,20 +206,15 @@ final class DeviceDashboardViewSmokeTests: XCTestCase {
 
     private func renderInstallState(
         responses: [StoreTestRunner.Response],
-        expectedState: DeployWorkflowState,
-        runDeploy: Bool
+        expectedState: DeployWorkflowState
     ) async throws {
         let runner = PausingStoreTestRunner(responses: responses)
         let fixture = try await AppViewFixture(runner: runner)
         let profile = try await fixture.saveProfile(id: "device-one")
         let session = fixture.dashboardSession(for: profile)
 
-        session.runInstallPlan(profile: profile)
-        if runDeploy {
-            try await waitUntilStoreState { session.deployStore.state == .planReady }
-            session.runInstall(profile: profile)
-        }
-        if expectedState != .planning && expectedState != .deploying {
+        session.runInstall(profile: profile)
+        if expectedState != .deploying {
             try await waitUntilStoreState { session.deployStore.state == expectedState }
         }
 

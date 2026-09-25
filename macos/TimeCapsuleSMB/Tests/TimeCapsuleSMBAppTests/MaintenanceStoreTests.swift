@@ -28,7 +28,7 @@ final class MaintenanceStoreTests: XCTestCase {
     func testNoRebootAndNoWaitAreMutuallyExclusiveAndRequestsAreNormalized() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: false, verified: false))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
@@ -38,8 +38,8 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertFalse(store.noReboot)
         XCTAssertTrue(store.noWait)
 
-        store.planUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+        store.runUninstall(password: "pw")
+        try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
 
         XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
@@ -49,37 +49,28 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertFalse(store.noWait)
     }
 
-    func testActivationPlanAndAlreadyActiveResult() async throws {
+    func testActivationAlreadyActiveResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "stage", operation: "activate", stage: "build_activation_plan", risk: "local_read", cancellable: true),
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
-            ]),
-            .init(events: [
+                BackendEvent(type: "stage", operation: "activate", stage: "probe_runtime", risk: "remote_read", cancellable: true),
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
 
-        store.planActivation(password: "pw")
-
-        try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
-        XCTAssertEqual(store.currentStage?.stage, "build_activation_plan")
-        XCTAssertEqual(store.activationPlan?.actions.count, 1)
-        XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(true))
-
         store.runActivation(password: "pw2")
 
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
+        XCTAssertEqual(store.currentStage?.stage, "probe_runtime")
         XCTAssertEqual(store.activationResult?.alreadyActive, true)
-        XCTAssertEqual(runner.calls[1].params["dry_run"], .bool(false))
-        XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
+        XCTAssertNil(runner.calls[0].params["dry_run"])
+        XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw2")]))
     }
 
-    func testPublishesWhenBackendFinishesAfterActivationPlanResult() async throws {
+    func testPublishesWhenBackendFinishesAfterActivationResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
@@ -90,7 +81,7 @@ final class MaintenanceStoreTests: XCTestCase {
             .sink { [weak store] _ in
                 Task { @MainActor in
                     guard !didFulfill,
-                          store?.activateState == .planReady,
+                          store?.activateState == .succeeded,
                           store?.isBusy == false else {
                         return
                     }
@@ -100,15 +91,15 @@ final class MaintenanceStoreTests: XCTestCase {
             }
             .store(in: &cancellables)
 
-        store.planActivation(password: "pw")
+        store.runActivation(password: "pw")
 
-        try await waitUntilStoreState { store.activateState == .planReady }
+        try await waitUntilStoreState { store.activateState == .succeeded }
         await fulfillment(of: [finishPublished], timeout: 2)
         XCTAssertFalse(store.isBusy)
         _ = cancellables
     }
 
-    func testSameDeviceRejectedActivationPlanDoesNotEnterPlanning() async throws {
+    func testSameDeviceRejectedActivationDoesNotStartRunning() async throws {
         let runner = PausingStoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
@@ -128,7 +119,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
         _ = coordinator.run(operation: "doctor", profile: profile)
         try await waitUntilStoreState { runner.calls.count == 1 && coordinator.isDeviceBusy(profile) }
-        let result = store.planActivation(password: "pw", profile: profile)
+        let result = store.runActivation(password: "pw", profile: profile)
 
         XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
         XCTAssertEqual(store.activateState, .failed)
@@ -157,7 +148,7 @@ final class MaintenanceStoreTests: XCTestCase {
 
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
         XCTAssertEqual(store.currentStage?.stage, "run_activation")
-        XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(false))
+        XCTAssertNil(runner.calls[0].params["dry_run"])
         XCTAssertEqual(runner.calls[1].params["confirmation_id"], .string("activate-confirm"))
     }
 
@@ -165,21 +156,16 @@ final class MaintenanceStoreTests: XCTestCase {
         do {
             let runner = StoreTestRunner(responses: [
                 .init(events: [
-                    BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
-                ]),
-                .init(events: [
                     confirmationRequired(operation: "activate", id: "activate-confirm")
                 ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
             ])
             let store = MaintenanceStore(backend: BackendClient(runner: runner))
 
-            store.planActivation(password: "pw")
-            try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
             store.runActivation(password: "pw")
             try await waitUntilStoreState { store.activateState == .awaitingConfirmation && store.pendingConfirmation(for: .activate) != nil && !store.isRunning }
             store.cancelPendingConfirmation(for: .activate)
 
-            try await waitUntilStoreState { store.activateState == .planReady && store.pendingConfirmation(for: .activate) == nil }
+            try await waitUntilStoreState { store.activateState == .idle && store.pendingConfirmation(for: .activate) == nil }
             XCTAssertNil(store.error)
         }
 
@@ -268,20 +254,17 @@ final class MaintenanceStoreTests: XCTestCase {
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
 
-        store.planActivation(password: "")
+        store.runActivation(password: "")
         try await waitUntilStoreState { store.activateState == .failed && !store.isRunning }
         XCTAssertEqual(store.error?.code, "unsupported_device")
         XCTAssertEqual(store.error?.recovery?.title, "Activation unavailable")
 
-        store.planActivation(password: "")
+        store.runActivation(password: "")
         try await waitUntilStoreState { store.activateState == .failed && store.error?.code == "contract_decode_failed" && !store.isRunning }
     }
 
-    func testUninstallPlanDirectRunAndBackendError() async throws {
+    func testUninstallDirectRunAndBackendError() async throws {
         let runner = StoreTestRunner(responses: [
-            .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
-            ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: false, verified: false))
             ]),
@@ -297,33 +280,24 @@ final class MaintenanceStoreTests: XCTestCase {
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
         store.mountWait = "15"
-        store.noReboot = true
-
-        store.planUninstall(password: "pw")
-
-        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
-        XCTAssertEqual(store.uninstallPlan?.payloadDirs, ["/Volumes/dk2/.samba4"])
-        XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(15))
-
         store.noWait = true
-        XCTAssertEqual(store.uninstallState, .planStale)
+
         store.runUninstall(password: "pw")
         try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
         XCTAssertEqual(store.uninstallResult?.waited, false)
         XCTAssertEqual(store.uninstallResult?.verified, false)
-        XCTAssertNil(store.uninstallPlan)
-        XCTAssertEqual(runner.calls[1].params["dry_run"], .bool(false))
-        XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(true))
+        XCTAssertNil(runner.calls[0].params["dry_run"])
+        XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(15))
+        XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
 
         store.runUninstall(password: "pw")
         try await waitUntilStoreState { store.uninstallState == .failed }
         XCTAssertEqual(store.error?.code, "remote_error")
         XCTAssertEqual(store.error?.recovery?.title, "Uninstall failed")
-        XCTAssertEqual(runner.calls[2].params["dry_run"], .bool(false))
+        XCTAssertNil(runner.calls[1].params["dry_run"])
     }
 
-    func testUninstallInvalidMountWaitAndMalformedPlanFail() async throws {
+    func testUninstallInvalidMountWaitAndMalformedResultFail() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "uninstall", ok: true, payload: .object(["schema_version": .string("wrong")]))
@@ -339,7 +313,7 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls, [])
 
         store.mountWait = "30"
-        store.planUninstall(password: "")
+        store.runUninstall(password: "")
 
         try await waitUntilStoreState { store.uninstallState == .failed && store.error?.code == "contract_decode_failed" && !store.isRunning }
     }
@@ -364,7 +338,7 @@ final class MaintenanceStoreTests: XCTestCase {
         try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
         XCTAssertEqual(store.currentStage?.stage, "remove_payload")
         XCTAssertEqual(store.uninstallResult?.verified, true)
-        XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(false))
+        XCTAssertNil(runner.calls[0].params["dry_run"])
         XCTAssertEqual(runner.calls[1].params["confirmation_id"], .string("uninstall-confirm"))
     }
 
@@ -636,10 +610,10 @@ final class MaintenanceStoreTests: XCTestCase {
     func testCoordinatorMaintenanceWorkflowsUseSeparateLanes() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
             ])
         ])
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
@@ -648,10 +622,10 @@ final class MaintenanceStoreTests: XCTestCase {
             laneKey: .deviceWorkflow("device-one", .maintenance)
         )
 
-        store.planActivation(password: "pw")
-        try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
-        store.planUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+        store.runActivation(password: "pw")
+        try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
+        store.runUninstall(password: "pw")
+        try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
 
         let activateLane = OperationLaneKey.deviceWorkflow("device-one", .activate)
         let uninstallLane = OperationLaneKey.deviceWorkflow("device-one", .uninstall)
@@ -674,15 +648,15 @@ final class MaintenanceStoreTests: XCTestCase {
                 )
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
 
-        store.planActivation(password: "pw")
+        store.runActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .failed && !store.isRunning }
-        store.planUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+        store.runUninstall(password: "pw")
+        try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
 
         XCTAssertEqual(store.error(for: .activate)?.code, "remote_error")
         XCTAssertNil(store.error(for: .uninstall))
@@ -691,21 +665,21 @@ final class MaintenanceStoreTests: XCTestCase {
     func testClearResetsMaintenanceState() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
 
-        store.planActivation(password: "")
-        try await waitUntilStoreState { store.activateState == .planReady }
+        store.runActivation(password: "")
+        try await waitUntilStoreState { store.activateState == .succeeded }
         store.clear()
 
         XCTAssertEqual(store.activateState, .idle)
         XCTAssertEqual(store.uninstallState, .idle)
         XCTAssertEqual(store.fsckState, .idle)
         XCTAssertEqual(store.repairState, .idle)
-        XCTAssertNil(store.activationPlan)
-        XCTAssertNil(store.uninstallPlan)
+        XCTAssertNil(store.activationResult)
+        XCTAssertNil(store.uninstallResult)
         XCTAssertNil(store.fsckPlan)
         XCTAssertNil(store.repairScan)
         XCTAssertNil(store.error)

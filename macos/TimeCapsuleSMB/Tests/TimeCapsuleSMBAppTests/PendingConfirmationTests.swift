@@ -11,10 +11,10 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(L10n.format("event.summary.result", "deploy", "Finished"), "deploy: Finished")
     }
 
-    func testUninstallPlanParamsCarryNoRebootSelection() {
-        let params = OperationParams.Uninstall.params(dryRun: true, noReboot: true, noWait: true, mountWait: 9)
+    func testUninstallParamsCarryNoRebootSelectionAndNeverRequestADryRun() {
+        let params = OperationParams.Uninstall.params(noReboot: true, noWait: true, mountWait: 9)
 
-        XCTAssertEqual(params["dry_run"], .bool(true))
+        XCTAssertNil(params["dry_run"])
         XCTAssertEqual(params["no_reboot"], .bool(true))
         XCTAssertEqual(params["no_wait"], .bool(true))
         XCTAssertEqual(params["mount_wait"], .number(9))
@@ -23,7 +23,6 @@ final class PendingConfirmationTests: XCTestCase {
 
     func testDeployRunParamsCarryOptionsWithoutFrontendConsentFlags() {
         let params = OperationParams.Deploy.params(
-            dryRun: false,
             noWait: true,
             debugLogging: true,
             ataIdleSeconds: 0,
@@ -31,7 +30,7 @@ final class PendingConfirmationTests: XCTestCase {
             mountWait: 45
         )
 
-        XCTAssertEqual(params["dry_run"], .bool(false))
+        XCTAssertNil(params["dry_run"])
         XCTAssertNil(params["confirm_deploy"])
         XCTAssertNil(params["confirm_reboot"])
         XCTAssertNil(params["confirm_netbsd4_activation"])
@@ -52,9 +51,8 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertNil(params["credentials"])
     }
 
-    func testDeployPlanParamsCarryAdvancedRuntimeOverridesWhenEnabled() {
+    func testDeployParamsCarryAdvancedRuntimeOverridesWhenEnabled() {
         let params = OperationParams.Deploy.params(
-            dryRun: true,
             noWait: false,
             internalShareUseDiskRoot: true,
             smbBrowseCompatibility: true,
@@ -70,7 +68,7 @@ final class PendingConfirmationTests: XCTestCase {
             mountWait: 30
         )
 
-        XCTAssertEqual(params["dry_run"], .bool(true))
+        XCTAssertNil(params["dry_run"])
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(params["smb_browse_compatibility"], .bool(true))
         XCTAssertEqual(params["mdns_advertise_afp"], .bool(true))
@@ -220,7 +218,7 @@ final class PendingConfirmationTests: XCTestCase {
         )
         let originalParams = OperationCredentialInjector.injectingPassword(
             "pw",
-            into: OperationParams.Uninstall.params(dryRun: false, noReboot: true, noWait: true, mountWait: 12)
+            into: OperationParams.Uninstall.params(noReboot: true, noWait: true, mountWait: 12)
         )
 
         let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: originalParams))

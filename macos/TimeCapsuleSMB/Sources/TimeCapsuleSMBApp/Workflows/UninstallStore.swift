@@ -4,15 +4,12 @@ import Foundation
 @MainActor
 final class UninstallStore: ObservableObject {
     @Published private(set) var state: MaintenanceOperationState = .idle
-    @Published private(set) var plan: UninstallPlanPayload?
     @Published private(set) var result: MaintenanceResultPayload?
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
     private let operation: MaintenanceWorkflowOperation
-    private var plannedOptions: MaintenanceOptions?
-    private var latestOptions: MaintenanceOptions?
 
     init(backend: BackendClient, coordinator: OperationCoordinator? = nil, laneKey: OperationLaneKey? = nil) {
         self.operation = MaintenanceWorkflowOperation(
@@ -38,21 +35,13 @@ final class UninstallStore: ObservableObject {
         return !isBusy && options != nil
     }
 
-    func markPlanStaleIfNeeded(options: MaintenanceOptions?) {
-        latestOptions = options
-        if state == .planReady, options != plannedOptions {
-            state = .planStale
-        }
-    }
-
     func confirmPending() {
         operation.confirmPending()
     }
 
-    func cancelPendingConfirmation(options: MaintenanceOptions?) {
-        latestOptions = options
+    func cancelPendingConfirmation() {
         operation.cancelPendingConfirmation()
-        restoreStateAfterCancellation(options: options)
+        state = .idle
     }
 
     func cancel() {
@@ -62,44 +51,10 @@ final class UninstallStore: ObservableObject {
     func clear() {
         operation.clear()
         state = .idle
-        plan = nil
         result = nil
         currentStage = nil
         error = nil
         passwordInvalidProfileID = nil
-        plannedOptions = nil
-        latestOptions = nil
-    }
-
-    @discardableResult
-    func planUninstall(
-        options: MaintenanceOptions?,
-        password: String,
-        profile: DeviceProfile? = nil
-    ) -> OperationStartResult {
-        latestOptions = options
-        guard let options else {
-            failLocally(.mountWaitInvalid)
-            return .rejected(WorkflowLocalError.mountWaitInvalid.message)
-        }
-        let start = startRun(
-            params: OperationParams.Uninstall.params(
-                dryRun: true,
-                noReboot: options.noReboot,
-                noWait: options.noWait,
-                mountWait: Double(options.mountWait)
-            ),
-            profile: profile,
-            password: password
-        )
-        guard case .started = start else {
-            return start
-        }
-        state = .planning
-        plan = nil
-        result = nil
-        plannedOptions = options
-        return start
     }
 
     @discardableResult
@@ -108,7 +63,6 @@ final class UninstallStore: ObservableObject {
         password: String,
         profile: DeviceProfile? = nil
     ) -> OperationStartResult {
-        latestOptions = options
         guard !isBusy else {
             return rejectAlreadyRunning()
         }
@@ -116,10 +70,8 @@ final class UninstallStore: ObservableObject {
             failLocally(.mountWaitInvalid)
             return .rejected(WorkflowLocalError.mountWaitInvalid.message)
         }
-        let hasFreshPlan = plan != nil && currentOptions == plannedOptions
         let start = startRun(
             params: OperationParams.Uninstall.params(
-                dryRun: false,
                 noReboot: currentOptions.noReboot,
                 noWait: currentOptions.noWait,
                 mountWait: Double(currentOptions.mountWait)
@@ -131,11 +83,7 @@ final class UninstallStore: ObservableObject {
             return start
         }
         state = .running
-        if !hasFreshPlan {
-            plan = nil
-        }
         result = nil
-        plannedOptions = currentOptions
         return start
     }
 
@@ -193,17 +141,6 @@ final class UninstallStore: ObservableObject {
             return
         }
 
-        if state == .planning {
-            do {
-                plan = try event.decodePayload(UninstallPlanPayload.self)
-                state = .planReady
-                operation.finishObserver()
-            } catch {
-                failContract(error)
-            }
-            return
-        }
-
         do {
             result = try event.decodePayload(MaintenanceResultPayload.self)
             state = .succeeded
@@ -224,7 +161,7 @@ final class UninstallStore: ObservableObject {
             error = nil
             currentStage = nil
             operation.finishObserver()
-            restoreStateAfterCancellation(options: latestOptions)
+            state = .idle
             return
         }
         if event.code == "auth_failed" {
@@ -233,19 +170,6 @@ final class UninstallStore: ObservableObject {
         error = BackendErrorViewModel(event: event)
         state = .failed
         operation.finishObserver()
-    }
-
-    private func restoreStateAfterCancellation(options: MaintenanceOptions?) {
-        guard plan != nil else {
-            state = .idle
-            return
-        }
-        state = options == plannedOptions ? .planReady : .planStale
-    }
-
-    private func markStale(_ localError: WorkflowLocalError) {
-        state = .planStale
-        error = operation.localError(localError)
     }
 
     private func applyFalseResult(_ event: BackendEvent) {

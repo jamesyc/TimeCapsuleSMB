@@ -134,7 +134,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         let runner = OperationKeyedStoreTestRunner(responses: [
             .init("activate", profileID: "device-one"): [
                 .init(events: [
-                    BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+                    BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
                 ])
             ]
         ])

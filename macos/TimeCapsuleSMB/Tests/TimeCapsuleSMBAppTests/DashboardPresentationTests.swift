@@ -661,84 +661,6 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertFalse(installing.isEnabled(try XCTUnwrap(checkup.action)))
     }
 
-    func testInstallPlanPresentationShowsDeviceImpactAndWarnings() throws {
-        let plan = try netbsd4DeployPlan().decode(DeployPlanPayload.self)
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        let warning = HostCompatibilityWarning(title: "macOS Warning", message: "Time Machine warning.")
-
-        let presentation = InstallPlanPresentation(plan: plan, profile: profile, hostWarning: warning)
-
-        XCTAssertEqual(presentation.title, "Install / Update Samba, Reboot, and Start Runtime")
-        XCTAssertFalse(presentation.sections.contains { $0.title == "Files" })
-        let target = try XCTUnwrap(presentation.sections.first { $0.title == "Target" })
-        XCTAssertTrue(target.rows.contains(PresentationRow(label: "Payload", value: "netbsd4_samba4")))
-        XCTAssertFalse(target.rows.contains { $0.label == "Disk" || $0.label == "Payload Directory" })
-        let actions = try XCTUnwrap(presentation.sections.first { $0.title == "Device Actions" })
-        XCTAssertTrue(actions.rows.contains(PresentationRow(label: "Uploads", value: "1")))
-        XCTAssertTrue(actions.rows.contains(PresentationRow(label: "Remote Actions", value: "1")))
-        XCTAssertTrue(actions.rows.contains(PresentationRow(label: "Expected Downtime", value: "Several minutes while the device reboots.")))
-        XCTAssertEqual(presentation.warnings.count, 2)
-    }
-
-    func testInstallPlanPresentationUsesRebootMode() throws {
-        let plan = try testDeployPlanPayload(
-            requiresReboot: true,
-            startupMode: .rebootThenVerify
-        ).decode(DeployPlanPayload.self)
-        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
-
-        let presentation = InstallPlanPresentation(plan: plan, profile: profile)
-
-        XCTAssertEqual(presentation.title, "Install / Update Samba")
-        XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(PresentationRow(
-                label: "Expected Downtime",
-                value: "Several minutes while the device reboots."
-            ))
-        })
-        XCTAssertEqual(presentation.warnings, [])
-    }
-
-    func testInstallPlanPresentationShowsEnabledRsyncAndExposureWarning() throws {
-        let plan = try testDeployPlanPayload(rsyncEnabled: true).decode(DeployPlanPayload.self)
-        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
-
-        let presentation = InstallPlanPresentation(plan: plan, profile: profile)
-
-        XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(PresentationRow(label: "rsync daemon", value: "yes"))
-        })
-        XCTAssertTrue(presentation.warnings.contains(
-            "rsync exposes ShareRoot as a writable, unauthenticated module on TCP 873."
-        ))
-    }
-
-    func testInstallPlanPresentationShowsNoWaitPostRebootImpact() throws {
-        let plan = try netbsd4DeployPlan().decode(DeployPlanPayload.self)
-        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
-        let options = DeployOptions(
-            noWait: true,
-            internalShareUseDiskRoot: false,
-            smbBrowseCompatibility: false,
-            anyProtocol: false,
-            debugLogging: false,
-            mountWait: 30
-        )
-
-        let presentation = InstallPlanPresentation(plan: plan, profile: profile, options: options)
-
-        XCTAssertEqual(presentation.title, "Install / Update Samba and Request Reboot")
-        XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(PresentationRow(
-                label: "Expected Downtime",
-                value: "The app will request reboot and return immediately."
-            ))
-        })
-        XCTAssertEqual(presentation.warnings, [
-            "No Wait will return after requesting reboot. Samba activation will not run automatically after SSH returns."
-        ])
-    }
-
     func testInstallWorkflowPresentationRestoresPersistedDeployFailure() throws {
         var profile = try makeProfile()
         profile.lastDeployState = testDeployState(
@@ -766,7 +688,6 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallWorkflowPresentation(
             state: .idle,
-            plan: nil,
             result: nil,
             error: nil,
             events: [
@@ -802,7 +723,6 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallWorkflowPresentation(
             state: .idle,
-            plan: nil,
             result: nil,
             error: nil,
             events: [
@@ -822,33 +742,28 @@ final class DashboardPresentationTests: XCTestCase {
 
     func testInstallWorkflowPresentationCoversAllDeployStates() throws {
         let profile = try makeProfile()
-        let plan = try testDeployPlanPayload().decode(DeployPlanPayload.self)
         let result = try testDeployResultPayload().decode(DeployResultPayload.self)
         let error = BackendErrorViewModel(operation: "deploy", code: "operation_failed", message: "failed")
 
-        let cases: [(DeployWorkflowState, DeployPlanPayload?, DeployResultPayload?, BackendErrorViewModel?, [InstallUserAction])] = [
-            (.idle, nil, nil, nil, [.installUpdate]),
-            (.planning, nil, nil, nil, [.installUpdate]),
-            (.planReady, plan, nil, nil, [.installUpdate]),
-            (.planStale, plan, nil, nil, [.installUpdate]),
-            (.planFailed, nil, nil, error, [.installUpdate]),
-            (.deploying, plan, nil, nil, [.installUpdate]),
-            (.awaitingConfirmation, plan, nil, nil, [.installUpdate]),
-            (.deployed, plan, result, nil, []),
-            (.deployFailed, plan, nil, error, [.installUpdate])
+        let cases: [(DeployWorkflowState, DeployResultPayload?, BackendErrorViewModel?, [InstallUserAction])] = [
+            (.idle, nil, nil, [.installUpdate]),
+            (.deploying, nil, nil, [.installUpdate]),
+            (.awaitingConfirmation, nil, nil, [.installUpdate]),
+            (.deployed, result, nil, []),
+            (.deployFailed, nil, error, [.installUpdate])
         ]
+        XCTAssertEqual(Set(cases.map(\.0)), Set(DeployWorkflowState.allCases))
 
         for testCase in cases {
             let presentation = InstallWorkflowPresentation(
                 state: testCase.0,
-                plan: testCase.1,
-                result: testCase.2,
-                error: testCase.3,
+                result: testCase.1,
+                error: testCase.2,
                 events: [],
                 currentStage: nil,
                 profile: profile
             )
-            XCTAssertEqual(presentation.actions, testCase.4, "Unexpected actions for \(testCase.0)")
+            XCTAssertEqual(presentation.actions, testCase.3, "Unexpected actions for \(testCase.0)")
         }
     }
 
@@ -867,7 +782,6 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallWorkflowPresentation(
             state: .idle,
-            plan: nil,
             result: nil,
             error: nil,
             events: [
@@ -897,7 +811,6 @@ final class DashboardPresentationTests: XCTestCase {
             .decode(DeployResultPayload.self)
         let presentation = InstallWorkflowPresentation(
             state: .deployed,
-            plan: nil,
             result: result,
             error: nil,
             events: [
@@ -933,7 +846,6 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallWorkflowPresentation(
             state: .idle,
-            plan: nil,
             result: nil,
             error: nil,
             events: [],
@@ -957,25 +869,22 @@ final class DashboardPresentationTests: XCTestCase {
             verified: true,
             summary: "Installed from previous app session."
         )
-        let plan = try testDeployPlanPayload().decode(DeployPlanPayload.self)
         let error = BackendErrorViewModel(operation: "deploy", code: "operation_failed", message: "failed")
 
-        let planReady = InstallWorkflowPresentation(
-            state: .planReady,
-            plan: plan,
+        let deploying = InstallWorkflowPresentation(
+            state: .deploying,
             result: nil,
             error: nil,
             events: [],
             currentStage: nil,
             profile: profile
         )
-        XCTAssertEqual(planReady.stateTitle, "Plan Ready")
-        XCTAssertEqual(planReady.actions, [.installUpdate])
-        XCTAssertNil(planReady.completion)
+        XCTAssertEqual(deploying.stateTitle, "Installing / Updating")
+        XCTAssertEqual(deploying.actions, [.installUpdate])
+        XCTAssertNil(deploying.completion)
 
         let deployFailed = InstallWorkflowPresentation(
             state: .deployFailed,
-            plan: plan,
             result: nil,
             error: error,
             events: [],
@@ -1152,13 +1061,7 @@ final class DashboardPresentationTests: XCTestCase {
     func testMaintenancePresentationBuildsWorkflowPlansAndCompletions() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
-            ]),
-            .init(events: [
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
-            ]),
-            .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))
@@ -1173,28 +1076,23 @@ final class DashboardPresentationTests: XCTestCase {
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
 
-        store.planActivation(password: "pw")
-        try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
+        store.runActivation(password: "pw")
+        try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
         var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
         XCTAssertEqual(presentation.detail.actions, [.runActivation])
         XCTAssertTrue(presentation.detail.isEnabled(.runActivation))
-        XCTAssertEqual(presentation.detail.plan?.title, "Activation Plan")
-        XCTAssertEqual(presentation.detail.plan?.rows.first, PresentationRow(label: "Device", value: profile.title))
-
-        store.runActivation(password: "pw")
-        try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
-        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertNil(presentation.detail.plan)
         XCTAssertEqual(presentation.detail.completion?.title, "Activation Complete")
         XCTAssertTrue(presentation.detail.completion?.rows.contains(PresentationRow(label: "Already Active", value: "yes")) == true)
 
-        store.planUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+        // Uninstall runs directly: it offers only its run action and never shows a plan.
+        store.selectedWorkflow = .uninstall
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .uninstall)
         XCTAssertEqual(presentation.detail.actions, [.runUninstall])
         XCTAssertTrue(presentation.detail.isEnabled(.runUninstall))
-        XCTAssertEqual(presentation.detail.plan?.warnings, ["Uninstall removes installed files from this device."])
+        XCTAssertNil(presentation.detail.plan)
 
         store.refreshFsckTargets(password: "pw")
         try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
@@ -1226,22 +1124,17 @@ final class DashboardPresentationTests: XCTestCase {
     func testMaintenancePresentationKeepsTimelineAfterWorkflowCompletes() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
-            ]),
-            .init(events: [
                 BackendEvent(type: "stage", operation: "activate", stage: "probe_runtime"),
                 BackendEvent(type: "stage", operation: "activate", stage: "run_activation"),
                 BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
 
-        store.planActivation(password: "pw")
-        try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
         store.runActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
 
@@ -1253,8 +1146,8 @@ final class DashboardPresentationTests: XCTestCase {
         ])
         XCTAssertEqual(presentation.detail.timeline?.items.map(\.state), [.succeeded, .succeeded, .succeeded])
 
-        store.planUninstall(password: "pw")
-        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+        store.runUninstall(password: "pw")
+        try await waitUntilStoreState { store.uninstallState == .succeeded && !store.isRunning }
         store.selectedWorkflow = .activate
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
@@ -1274,26 +1167,6 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.items.count, 1)
         XCTAssertEqual(presentation.items.first?.title, "Remove Payload")
-    }
-
-    private func netbsd4DeployPlan() -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "host": .string("root@10.0.0.2"),
-            "volume_root": .string("/Volumes/dk2"),
-            "payload_dir": .string("/Volumes/dk2/.samba4"),
-            "payload_family": .string("netbsd4_samba4"),
-            "netbsd4": .bool(true),
-            "requires_reboot": .bool(true),
-            "reboot_required": .bool(true),
-            "startup_mode": .string("reboot_then_activate"),
-            "uploads": .array([.object(["description": .string("smbd")])]),
-            "pre_upload_actions": .array([]),
-            "post_upload_actions": .array([]),
-            "activation_actions": .array([.object(["description": .string("start smbd")])]),
-            "post_deploy_checks": .array([]),
-            "summary": .string("Deployment dry-run plan generated.")
-        ])
     }
 
     private func doctorCheckWithoutDomain(status: String, message: String) -> JSONValue {

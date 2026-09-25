@@ -3,9 +3,7 @@ import Foundation
 enum MaintenanceUserAction: String, Equatable, Identifiable {
     case checkSSHAccess
     case enableSSHAccess
-    case planActivation
     case runActivation
-    case planUninstall
     case runUninstall
     case findVolumes
     case planFsck
@@ -22,12 +20,8 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return L10n.string("maintenance.action.check_ssh_access")
         case .enableSSHAccess:
             return L10n.string("maintenance.action.enable_ssh_access")
-        case .planActivation:
-            return L10n.string("maintenance.action.plan_start_smb")
         case .runActivation:
             return L10n.string("maintenance.action.start_smb")
-        case .planUninstall:
-            return L10n.string("maintenance.action.plan_uninstall")
         case .runUninstall:
             return L10n.string("maintenance.action.uninstall")
         case .findVolumes:
@@ -51,7 +45,7 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
             return "network"
         case .enableSSHAccess:
             return "key"
-        case .planActivation, .planUninstall, .planFsck:
+        case .planFsck:
             return "doc.text.magnifyingglass"
         case .runActivation:
             return "play.circle"
@@ -74,7 +68,7 @@ enum MaintenanceUserAction: String, Equatable, Identifiable {
         switch self {
         case .enableSSHAccess, .runActivation, .runUninstall, .runFsck, .repairMetadata:
             return true
-        case .checkSSHAccess, .planActivation, .planUninstall, .findVolumes, .planFsck, .scanMetadata, .viewDiagnostics:
+        case .checkSSHAccess, .findVolumes, .planFsck, .scanMetadata, .viewDiagnostics:
             return false
         }
     }
@@ -280,7 +274,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     let timeline: MaintenanceTimelinePresentation?
 
     @MainActor
-    init(store: MaintenanceStore, profile: DeviceProfile, workflow selectedWorkflow: MaintenanceWorkflow? = nil) {
+    init(store: MaintenanceStore, workflow selectedWorkflow: MaintenanceWorkflow? = nil) {
         let workflow = selectedWorkflow ?? store.selectedWorkflow
         let state = store.state(for: workflow)
         self.workflow = workflow
@@ -291,7 +285,7 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
         self.statusMessage = state.maintenanceStatusMessage(for: workflow)
         self.actions = MaintenanceActionPolicy.actions(for: workflow)
         self.enabledActions = MaintenanceActionPolicy.enabledActions(workflow: workflow, store: store)
-        self.plan = Self.plan(workflow: workflow, store: store, profile: profile)
+        self.plan = Self.plan(workflow: workflow, store: store)
         self.completion = Self.completion(workflow: workflow, store: store)
         self.timeline = Self.timeline(workflow: workflow, state: state, store: store)
     }
@@ -303,36 +297,11 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     @MainActor
     private static func plan(
         workflow: MaintenanceWorkflow,
-        store: MaintenanceStore,
-        profile: DeviceProfile
+        store: MaintenanceStore
     ) -> MaintenancePlanPresentation? {
         switch workflow {
-        case .sshAccess:
+        case .sshAccess, .activate, .uninstall:
             return nil
-        case .activate:
-            guard let plan = store.activationPlan else { return nil }
-            return MaintenancePlanPresentation(
-                title: L10n.string("maintenance.plan.activate"),
-                rows: [
-                    PresentationRow(label: L10n.string("maintenance.plan.row.device"), value: profile.title),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.actions"), value: "\(plan.actions.count)"),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.post_checks"), value: "\(plan.postActivationChecks.count)")
-                ],
-                warnings: []
-            )
-        case .uninstall:
-            guard let plan = store.uninstallPlan else { return nil }
-            return MaintenancePlanPresentation(
-                title: L10n.string("maintenance.plan.uninstall"),
-                rows: [
-                    PresentationRow(label: L10n.string("maintenance.plan.row.host"), value: plan.host),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.payload_dirs"), value: "\(plan.payloadDirs.count)"),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.remote_actions"), value: "\(plan.remoteActions.count)"),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
-                    PresentationRow(label: L10n.string("maintenance.plan.row.post_checks"), value: "\(plan.postUninstallChecks.count)")
-                ],
-                warnings: [L10n.string("maintenance.warning.destructive_uninstall")]
-            )
         case .fsck:
             guard let plan = store.fsckPlan else { return nil }
             return MaintenancePlanPresentation(
@@ -465,7 +434,7 @@ struct MaintenanceDashboardPresentation: Equatable {
                 isSelected: workflow == selectedWorkflow
             )
         }
-        self.detail = MaintenanceWorkflowDetailPresentation(store: store, profile: profile, workflow: selectedWorkflow)
+        self.detail = MaintenanceWorkflowDetailPresentation(store: store, workflow: selectedWorkflow)
     }
 }
 

@@ -177,7 +177,6 @@ enum OperationParams {
 
     enum Deploy {
         static func params(
-            dryRun: Bool,
             noWait: Bool,
             rsyncEnabled: Bool = false,
             internalShareUseDiskRoot: Bool = false,
@@ -194,7 +193,6 @@ enum OperationParams {
             mountWait: Double
         ) -> [String: JSONValue] {
             var params: [String: JSONValue] = [
-                "dry_run": .bool(dryRun),
                 "no_wait": .bool(noWait),
                 "rsync_enabled": .bool(rsyncEnabled),
                 "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
@@ -219,15 +217,14 @@ enum OperationParams {
     }
 
     enum Activation {
-        static func params(dryRun: Bool) -> [String: JSONValue] {
-            ["dry_run": .bool(dryRun)]
+        static func params() -> [String: JSONValue] {
+            [:]
         }
     }
 
     enum Uninstall {
-        static func params(dryRun: Bool, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
+        static func params(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
             [
-                "dry_run": .bool(dryRun),
                 "no_reboot": .bool(noReboot),
                 "no_wait": .bool(noWait),
                 "mount_wait": .number(mountWait)

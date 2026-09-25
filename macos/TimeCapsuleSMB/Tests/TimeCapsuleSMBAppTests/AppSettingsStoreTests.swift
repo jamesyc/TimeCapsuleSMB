@@ -243,7 +243,7 @@ final class AppSettingsStoreTests: XCTestCase {
 
         L10n.apply(language: .simplifiedChinese)
         XCTAssertEqual(DoctorWorkflowState.running.title, "运行中")
-        XCTAssertEqual(DeployWorkflowState.planStale.title, "计划已过期")
+        XCTAssertEqual(DeployWorkflowState.deployFailed.title, "安装 / 更新失败")
         XCTAssertEqual(MaintenanceWorkflow.fsck.title, "磁盘修复")
         XCTAssertEqual(FlashWorkflowState.writeLocked.title, "就绪")
         XCTAssertEqual(error.message, "安装 / 更新选项无效。")
@@ -255,7 +255,7 @@ final class AppSettingsStoreTests: XCTestCase {
 
         L10n.apply(language: .english)
         XCTAssertEqual(DoctorWorkflowState.running.title, "Running")
-        XCTAssertEqual(DeployWorkflowState.planStale.title, "Plan Stale")
+        XCTAssertEqual(DeployWorkflowState.deployFailed.title, "Install / Update Failed")
         XCTAssertEqual(MaintenanceWorkflow.fsck.title, "Disk Repair")
         XCTAssertEqual(FlashWorkflowState.writeLocked.title, "Ready")
         XCTAssertEqual(error.message, "Install / Update options are invalid.")
@@ -276,7 +276,6 @@ final class AppSettingsStoreTests: XCTestCase {
             "backend.summary.install_validation_passed": "安装验证通过。",
             "backend.summary.repair_xattrs_found": "发现 %d 个元数据问题，其中 %d 个可修复。",
             "dashboard.overview.connection_target": "连接目标",
-            "deploy.presentation.row.post_install_checks": "安装后检查",
             "diagnostics.title": "诊断",
             "install.advanced_options": "高级选项",
             "maintenance.workflow.repair_xattrs": "文件元数据修复",

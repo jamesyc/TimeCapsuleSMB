@@ -4,7 +4,6 @@ import Foundation
 @MainActor
 final class ActivationStore: ObservableObject {
     @Published private(set) var state: MaintenanceOperationState = .idle
-    @Published private(set) var plan: ActivationPlanPayload?
     @Published private(set) var result: ActivationResultPayload?
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var error: BackendErrorViewModel?
@@ -51,27 +50,10 @@ final class ActivationStore: ObservableObject {
     func clear() {
         operation.clear()
         state = .idle
-        plan = nil
         result = nil
         currentStage = nil
         error = nil
         passwordInvalidProfileID = nil
-    }
-
-    @discardableResult
-    func planActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        let start = startRun(
-            params: OperationParams.Activation.params(dryRun: true),
-            profile: profile,
-            password: password
-        )
-        guard case .started = start else {
-            return start
-        }
-        state = .planning
-        plan = nil
-        result = nil
-        return start
     }
 
     @discardableResult
@@ -80,7 +62,7 @@ final class ActivationStore: ObservableObject {
             return rejectAlreadyRunning()
         }
         let start = startRun(
-            params: OperationParams.Activation.params(dryRun: false),
+            params: OperationParams.Activation.params(),
             profile: profile,
             password: password
         )
@@ -146,17 +128,6 @@ final class ActivationStore: ObservableObject {
             return
         }
 
-        if state == .planning {
-            do {
-                plan = try event.decodePayload(ActivationPlanPayload.self)
-                state = .planReady
-                operation.finishObserver()
-            } catch {
-                failContract(error)
-            }
-            return
-        }
-
         do {
             result = try event.decodePayload(ActivationResultPayload.self)
             state = .succeeded
@@ -177,7 +148,7 @@ final class ActivationStore: ObservableObject {
             error = nil
             currentStage = nil
             operation.finishObserver()
-            state = plan == nil ? .idle : .planReady
+            state = .idle
             return
         }
         if event.code == "auth_failed" {

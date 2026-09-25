@@ -152,33 +152,6 @@ final class BackendPayloadTests: XCTestCase {
     }
 
     func testDecodesDeployDoctorAndMaintenancePayloads() throws {
-        let deployPlan = try jsonValue("""
-        {
-          "schema_version": 1,
-          "host": "root@10.0.0.2",
-          "volume_root": "/Volumes/dk2",
-          "payload_dir": "/Volumes/dk2/.samba4",
-          "payload_family": "netbsd6_samba4",
-          "netbsd4": false,
-          "rsync_enabled": true,
-          "requires_reboot": true,
-          "reboot_required": true,
-          "startup_mode": "reboot_then_verify",
-          "uploads": [{"description": "smbd"}],
-          "pre_upload_actions": [{"type": "stop_process"}],
-          "post_upload_actions": [],
-          "activation_actions": [],
-          "post_deploy_checks": [{"id": "ssh_returns_after_reboot", "description": "SSH returns after reboot"}],
-          "summary": "Deployment dry-run plan generated."
-        }
-        """).decode(DeployPlanPayload.self)
-
-        XCTAssertEqual(deployPlan.payloadFamily, "netbsd6_samba4")
-        XCTAssertTrue(deployPlan.requiresReboot)
-        XCTAssertTrue(deployPlan.rsyncEnabled)
-        XCTAssertEqual(deployPlan.startupMode, .rebootThenVerify)
-        XCTAssertEqual(deployPlan.uploads.count, 1)
-
         let deployResult = try jsonValue("""
         {
           "schema_version": 1,
@@ -237,29 +210,6 @@ final class BackendPayloadTests: XCTestCase {
 
         XCTAssertEqual(maintenance.rebooted, true)
         XCTAssertEqual(maintenance.counts?["payload_dirs"], 1)
-    }
-
-    func testDeployPlanWithoutStartupModeFallsBackByPlatform() throws {
-        func plan(netbsd4: Bool) throws -> DeployPlanPayload {
-            try jsonValue("""
-            {
-              "schema_version": 1,
-              "host": "root@10.0.0.2",
-              "payload_dir": "/Volumes/dk2/.samba4",
-              "netbsd4": \(netbsd4),
-              "requires_reboot": true,
-              "summary": "Deployment dry-run plan generated."
-            }
-            """).decode(DeployPlanPayload.self)
-        }
-
-        let netbsd6 = try plan(netbsd4: false)
-        XCTAssertEqual(netbsd6.startupMode, .rebootThenVerify)
-        XCTAssertTrue(netbsd6.requiresReboot)
-        XCTAssertFalse(netbsd6.rsyncEnabled)
-        XCTAssertEqual(netbsd6.uploads, [])
-
-        XCTAssertEqual(try plan(netbsd4: true).startupMode, .rebootThenActivate)
     }
 
     func testDecodesRecoveryAndReportsContractFailures() throws {
