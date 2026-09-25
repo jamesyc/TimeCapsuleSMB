@@ -1,2 +1,3 @@
 0001-netbsd4-o-directory-fallback.patch
 0002-time-capsule-hfs-stat-owner.patch
+0003-time-capsule-data-faultahead.patch

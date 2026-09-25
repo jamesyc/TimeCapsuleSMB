@@ -2,15 +2,15 @@
   "artifacts": {
     "rsync": {
       "path": "bin/rsync/rsync",
-      "sha256": "5f0908da9e958b34b88915a29d5e66a14f7ef383ba77c9ade22d91ad956fe28f"
+      "sha256": "28c5e171c2bcc8a142301f18daec4e224fffe071be2440e2b492a527c743121b"
     },
     "rsync-netbsd4le": {
       "path": "bin/rsync-netbsd4le/rsync",
-      "sha256": "c081d71d38a0b05507807c8bb7d4f8f1adf0569aae5617b72bfd5a305fb722e4"
+      "sha256": "a2131108708c743aa5f18368ce348e24e1173798ef12dff49656a554613f01d2"
     },
     "rsync-netbsd4be": {
       "path": "bin/rsync-netbsd4be/rsync",
-      "sha256": "4a53d16c4d5196b410986c58dbc4153f85ba682ccd9c07108e0b7f126c106312"
+      "sha256": "61e701f752350ad015c4d7a8c012c5d6a98f51cb3e32c9b788c459e361429f34"
     },
     "smbd": {
       "path": "bin/samba4/smbd",

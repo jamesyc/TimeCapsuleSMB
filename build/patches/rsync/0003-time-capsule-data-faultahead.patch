@@ -1,0 +1,47 @@
+diff --git a/main.c b/main.c
+index 229a889..fbad789 100644
+--- a/main.c
++++ b/main.c
+@@ -1729,10 +1729,42 @@ static void unset_env_var(const char *var)
+ }
+ 
+ 
++#if defined(__NetBSD__)
++#include <sys/mman.h>
++
++/*
++ * Time Capsule appliance builds. Apple's NetBSD 4 and NetBSD 6 kernels lose
++ * writes to a static binary's initialized data: handling the first write to
++ * a .data page, UVM fault-ahead maps the neighbouring pages (4 below, 3
++ * above) from the executable again, dropping this process's changes to them,
++ * and a forked child's first writes drop its parent's (rsync forks a child
++ * per daemon connection and per transfer role). MADV_RANDOM turns
++ * fault-ahead off for the writable segment, and children inherit it.
++ * .preinit_array opens the part of the segment that is ever written and "end"
++ * closes .bss (both from the linker script; "end" is what libc's sbrk() starts
++ * from). Samba's talloc and the unified service do the same.
++ */
++extern char tc_data_first[] __asm__("__preinit_array_start");
++extern char tc_data_end[] __asm__("end");
++
++static void tc_disable_data_faultahead(void)
++{
++	uintptr_t page = (uintptr_t)getpagesize();
++	uintptr_t start = (uintptr_t)tc_data_first & ~(page - 1);
++	uintptr_t end = ((uintptr_t)tc_data_end + page - 1) & ~(page - 1);
++
++	if (end > start)
++		(void)madvise((void *)start, end - start, MADV_RANDOM);
++}
++#endif
++
+ int main(int argc,char *argv[])
+ {
+ 	int ret;
+ 
++#if defined(__NetBSD__)
++	tc_disable_data_faultahead();
++#endif
+ 	raw_argc = argc;
+ 	raw_argv = argv;
+ 
