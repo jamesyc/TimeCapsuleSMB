@@ -564,7 +564,7 @@ MaSt = (
 
         self.assertIn("RSYNC_ENABLED=1\n", rendered)
 
-    def test_rsync_daemon_config_exposes_payload_volume_share_root_without_pid_file(self) -> None:
+    def test_rsync_daemon_config_chroots_payload_volume_share_root_without_pid_file(self) -> None:
         rendered = render_rsync_daemon_config(PayloadHome("/Volumes/dk5", "/dev/dk5", ".samba4"))
 
         self.assertEqual(
@@ -575,6 +575,7 @@ MaSt = (
                 log file = /mnt/Memory/samba4/var/rsync.log
                 uid = root
                 gid = wheel
+                use chroot = yes
                 read only = false
                 list = true
 

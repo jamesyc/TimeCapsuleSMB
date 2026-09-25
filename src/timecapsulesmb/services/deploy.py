@@ -1400,11 +1400,17 @@ def render_flash_runtime_config(
 
 def render_rsync_daemon_config(payload_home: PayloadHome) -> str:
     share_root = f"{payload_home.volume_root.rstrip('/')}/ShareRoot"
+    # Without a chroot, rsync 3.4's daemon guards against symlink races with
+    # openat()-family calls (secure_relative_open, do_*_at) that Apple's kernels
+    # do not have, so transfers fail with ENOSYS. The chroot confines the module
+    # instead. Left unset, rsync silently drops the chroot when a test chroot
+    # fails; set, a failure refuses the connection.
     return (
         "port = 873\n"
         "log file = /mnt/Memory/samba4/var/rsync.log\n"
         "uid = root\n"
         "gid = wheel\n"
+        "use chroot = yes\n"
         "read only = false\n"
         "list = true\n"
         "\n"
