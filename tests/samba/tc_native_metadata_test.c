@@ -1354,6 +1354,49 @@ static void test_resource_views(struct vfs_handle_struct *handle,
 	smb_fname->st.st_ex_mode = S_IFREG | 0600;
 }
 
+static void put_regular(const char *path)
+{
+	int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644);
+	CHECK(fd >= 0 && close(fd) == 0);
+}
+
+/*
+ * Every attribute call through a link handle whose name no longer holds its
+ * link fails with ENOENT before any syscall reaches the object now there. The
+ * store keeps what that object had.
+ */
+static void link_replaced_fails(struct vfs_handle_struct *handle,
+				files_struct *link,
+				const char *stream)
+{
+	const uint8_t value[] = {9};
+	uint8_t result[16];
+	char list[64];
+
+	reset_stores();
+	seed_store(&link_store, "user.theirs", "x", 1);
+	errno = 0;
+	CHECK(xattr_tdb_fsetxattr(handle, link, "user.mine", value, sizeof(value), 0) == -1);
+	CHECK(errno == ENOENT);
+	errno = 0;
+	CHECK(xattr_tdb_fgetxattr(handle, link, "user.theirs", result, sizeof(result)) == -1);
+	CHECK(errno == ENOENT);
+	errno = 0;
+	CHECK(xattr_tdb_flistxattr(handle, link, list, sizeof(list)) == -1);
+	CHECK(errno == ENOENT);
+	errno = 0;
+	CHECK(xattr_tdb_fremovexattr(handle, link, "user.theirs") == -1);
+	CHECK(errno == ENOENT);
+	/* Apple streams on a link take the same path. */
+	errno = 0;
+	CHECK(xattr_tdb_fsetxattr(handle, link, stream, "pv", 3, 0) == -1);
+	CHECK(errno == ENOENT);
+	CHECK(link_ops == 0);
+	CHECK(link_store.exists && strcmp(link_store.name, "user.theirs") == 0);
+	CHECK(link_store.size == 1 && link_store.data[0] == 'x');
+	CHECK(native_sets == 0 && native_gets == 0 && native_removes == 0);
+}
+
 static void test_link_xattrs(struct vfs_handle_struct *handle,
 			     connection_struct *conn,
 			     TALLOC_CTX *mem_ctx)
@@ -1374,6 +1417,9 @@ static void test_link_xattrs(struct vfs_handle_struct *handle,
 	const uint8_t prov[] = {'p', 'v', 0};
 	char list[256];
 	uint8_t result[16] = {0};
+	char cwd[PATH_MAX];
+	char *dir = NULL, *path = NULL, *moved = NULL;
+	struct stat st;
 
 	/* Path ABI: act on the link, normalize both kernels' results. */
 	reset_stores();
@@ -1399,9 +1445,26 @@ static void test_link_xattrs(struct vfs_handle_struct *handle,
 	CHECK(!link_store.exists);
 	CHECK(native_sets == 0 && native_gets == 0 && native_removes == 0);
 
-	/* xattr_tdb: a descriptor-less link uses its own path, never the fd path. */
+	/*
+	 * xattr_tdb: a descriptor-less link uses its own path, never the fd path.
+	 * The link is real, so the backend's identity check sees what another
+	 * client did to the name; the path-keyed syscall store stands in for
+	 * the attributes on whatever object the path reaches.
+	 */
 	handle->data = &config;
-	conn->connectpath = discard_const_p(char, "/share");
+	CHECK(realpath(getenv("TMPDIR") ? getenv("TMPDIR") : ".", cwd) != NULL);
+	dir = talloc_asprintf(mem_ctx, "%s/tc-link-xattrs.XXXXXX", cwd);
+	CHECK(dir != NULL && mkdtemp(dir) != NULL);
+	path = talloc_asprintf(mem_ctx, "%s/link", dir);
+	moved = talloc_asprintf(mem_ctx, "%s/link.moved", dir);
+	CHECK(path != NULL && moved != NULL);
+	CHECK(symlink("target", path) == 0 && lstat(path, &st) == 0);
+	conn->connectpath = dir;
+	link_store_path = path;
+	/* As opened: its own lstat, and the file id taken from it. */
+	link_name.st.st_ex_dev = st.st_dev;
+	link_name.st.st_ex_ino = st.st_ino;
+	link.file_id = (struct file_id){.devid = st.st_dev, .inode = st.st_ino};
 	link.fh = fd_handle_create(mem_ctx);
 	pathref.fh = fd_handle_create(mem_ctx);
 	CHECK(link.fh != NULL && pathref.fh != NULL);
@@ -1428,6 +1491,34 @@ static void test_link_xattrs(struct vfs_handle_struct *handle,
 	errno = 0;
 	CHECK(xattr_tdb_fsetxattr(handle, &pathref, "user.plain", value, sizeof(value), 0) == -1);
 	CHECK(errno == EBADF && link_ops == 0 && !link_store.exists);
+
+	/*
+	 * Between two requests an AFP or SSH client renames the link away and
+	 * puts a regular file, then another link, at its name. The old handle
+	 * must fail as if its link were gone and leave the new object alone.
+	 */
+	CHECK(rename(path, moved) == 0);
+	put_regular(path);
+	link_replaced_fails(handle, &link, stream);
+	CHECK(unlink(path) == 0 && symlink("target", path) == 0);
+	link_replaced_fails(handle, &link, stream);
+	/* vfs_stat_fsp() refreshes a fd-less handle's stat from the name; the file id stays. */
+	CHECK(lstat(path, &st) == 0);
+	link.fsp_name->st.st_ex_dev = st.st_dev;
+	link.fsp_name->st.st_ex_ino = st.st_ino;
+	link_replaced_fails(handle, &link, stream);
+	/* Renamed away with nothing in its place. */
+	CHECK(unlink(path) == 0);
+	link_replaced_fails(handle, &link, stream);
+	/* Renamed back, the link is reachable again. */
+	CHECK(rename(moved, path) == 0);
+	reset_stores();
+	CHECK(xattr_tdb_fsetxattr(handle, &link, "user.back", value, sizeof(value), 0) == 0);
+	CHECK(link_store.exists && strcmp(link_store.name, "user.back") == 0);
+
+	CHECK(unlink(path) == 0 && rmdir(dir) == 0);
+	link_store_path = "/share/link";
+	conn->connectpath = NULL;
 	fsp_set_fd(&link, -1);
 	fsp_set_fd(&pathref, -1);
 }

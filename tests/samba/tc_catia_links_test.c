@@ -1,7 +1,9 @@
 /* Execute the real vfs_catia link hooks (Samba patch 0045) against a recording NEXT module.
  * macOS sends ':' '*' '?' ... as private-use code points that vfs_fruit tells catia to map
  * back to the real characters on disk; symlink reads, creates and the xattr calls a
- * descriptor-less link makes by path must all see the name on disk. Kept apart from
+ * descriptor-less link makes by path must all see the name on disk. Link targets are mapped
+ * the same way, through catia's translate_name: the production tc_native_links_map_target()
+ * and the real FSCTL_GET_REPARSE_POINT symlink path of util_reparse.c. Kept apart from
  * tc_native_links_test: including vfs_catia.c links most of the VFS layer into the binary. */
 #include "includes.h"
 #include "system/filesys.h"
@@ -12,13 +14,35 @@
 
 /* vfs_catia maps the private-use characters macOS sends (as vfs_fruit configures it) back to
  * the real ones on disk. Its link hooks run against a recording NEXT module. */
-static const char *test_catia_maps[] = { "0x3a:0xf022", "0x2a:0xf021", NULL };
+static const char *test_catia_maps[] = { "0x3a:0xf022", "0x2a:0xf021", "0x5c:0xf026", NULL };
 #define lp_parm_string_list(snum, type, option, def) \
 	((snum) != -1 && strcmp((type), "catia") == 0 && strcmp((option), "mappings") == 0 ? \
 	 test_catia_maps : (def))
 #define vfs_catia_init regression_catia_init
 #include "vfs_catia.c"
 #undef lp_parm_string_list
+
+/* util_reparse.c reads a link's target; smbd_base links the production copy, so this one
+ * runs under distinct names with the link and its directory supplied here. */
+static bool links_enabled = true;
+static const char *native_target;
+static NTSTATUS test_parent_pathref(TALLOC_CTX *ctx, struct files_struct *dirfsp,
+	const struct smb_filename *name, struct smb_filename **parent, struct smb_filename **atname);
+static NTSTATUS test_read_symlink_reparse(TALLOC_CTX *ctx, struct files_struct *dirfsp,
+	struct smb_filename *name, struct reparse_data_buffer **reparse);
+#define fsctl_get_reparse_point t_fsctl_get_reparse_point
+#define fsctl_get_reparse_tag t_fsctl_get_reparse_tag
+#define fsctl_set_reparse_point t_fsctl_set_reparse_point
+#define fsctl_del_reparse_point t_fsctl_del_reparse_point
+#define fdos_mode(fsp) ((void)(fsp), FILE_ATTRIBUTE_REPARSE_POINT)
+#define parent_pathref test_parent_pathref
+#define read_symlink_reparse test_read_symlink_reparse
+#define tc_native_links_enabled(conn) ((void)(conn), links_enabled)
+#include "util_reparse.c"
+#undef tc_native_links_enabled
+#undef read_symlink_reparse
+#undef parent_pathref
+#undef fdos_mode
 
 static char next_seen[256];
 
@@ -70,12 +94,60 @@ static int next_fremovexattr(vfs_handle_struct *h, struct files_struct *fsp, con
 	return 0;
 }
 
+/* vfs_default: nothing to map below catia. */
+static NTSTATUS next_translate_name(vfs_handle_struct *h, const char *name,
+	enum vfs_translate_direction direction, TALLOC_CTX *ctx, char **mapped)
+{
+	(void)h; (void)name; (void)direction; (void)ctx; (void)mapped;
+	return NT_STATUS_NONE_MAPPED;
+}
+
+static NTSTATUS test_parent_pathref(TALLOC_CTX *ctx, struct files_struct *dirfsp,
+	const struct smb_filename *name, struct smb_filename **parent, struct smb_filename **atname)
+{
+	(void)dirfsp;
+	*parent = synthetic_smb_fname(ctx, ".", NULL, NULL, 0, 0);
+	CHECK(*parent != NULL);
+	*atname = synthetic_smb_fname(*parent, name->base_name, NULL, NULL, 0, 0);
+	CHECK(*atname != NULL);
+	return NT_STATUS_OK;
+}
+
+/* files.c: the link's own bytes, a relative target. */
+static NTSTATUS test_read_symlink_reparse(TALLOC_CTX *ctx, struct files_struct *dirfsp,
+	struct smb_filename *name, struct reparse_data_buffer **reparse)
+{
+	(void)dirfsp; (void)name;
+	*reparse = talloc_zero(ctx, struct reparse_data_buffer);
+	CHECK(*reparse != NULL);
+	(*reparse)->tag = IO_REPARSE_TAG_SYMLINK;
+	(*reparse)->parsed.lnk.substitute_name = talloc_strdup(*reparse, native_target);
+	(*reparse)->parsed.lnk.flags = SYMLINK_FLAG_RELATIVE;
+	CHECK((*reparse)->parsed.lnk.substitute_name != NULL);
+	return NT_STATUS_OK;
+}
+
+/* The target a client reads for "lnk" through FSCTL_GET_REPARSE_POINT. */
+static const char *client_target(TALLOC_CTX *ctx, struct files_struct *lnk, const char *native)
+{
+	struct reparse_data_buffer *buf = talloc_zero(ctx, struct reparse_data_buffer);
+	uint8_t *data = NULL;
+	uint32_t tag = 0, len = 0;
+	CHECK(buf != NULL);
+	native_target = native;
+	CHECK(NT_STATUS_IS_OK(t_fsctl_get_reparse_point(lnk, ctx, &tag, &data, UINT16_MAX, &len)));
+	CHECK(tag == IO_REPARSE_TAG_SYMLINK);
+	CHECK(NT_STATUS_IS_OK(reparse_data_buffer_parse(buf, buf, data, len)));
+	return buf->parsed.lnk.substitute_name;
+}
+
 static struct vfs_fn_pointers next_fns = {
 	.readlinkat_fn = next_readlinkat,
 	.symlinkat_fn = next_symlinkat,
 	.fgetxattr_fn = next_fgetxattr,
 	.fsetxattr_fn = next_fsetxattr,
 	.fremovexattr_fn = next_fremovexattr,
+	.translate_name_fn = next_translate_name,
 };
 
 static struct files_struct *test_fsp(TALLOC_CTX *ctx, connection_struct *conn, const char *name,
@@ -132,6 +204,44 @@ int main(int argc, char **argv)
 		CHECK(catia_fremovexattr(cat, lnk, "user.k") == 0 && strcmp(next_seen, "d/x:y|user.k") == 0);
 		/* After each call the handle keeps the name the client knows it by. */
 		CHECK(strcmp(lnk->fsp_name->base_name, "d/x\xef\x80\xa2y") == 0);
+
+		/*
+		 * Link targets: a client's "x<U+F022>y" is "x:y" on disk, a mapped '\\' is a
+		 * literal '\\' in a name, and '/' separators are never touched.
+		 */
+		conn->vfs_handles = cat;
+		{
+			char *t = talloc_strdup(frame, "../d/x\xef\x80\xa2y/a\xef\x80\xa6" "b\xef\x80\xa1");
+			CHECK(t != NULL);
+			CHECK(NT_STATUS_IS_OK(tc_native_links_map_target(conn, frame, &t, vfs_translate_to_unix)));
+			CHECK(strcmp(t, "../d/x:y/a\\b*") == 0);
+			CHECK(NT_STATUS_IS_OK(tc_native_links_map_target(conn, frame, &t,
+									 vfs_translate_to_windows)));
+			CHECK(strcmp(t, "../d/x\xef\x80\xa2y/a\xef\x80\xa6" "b\xef\x80\xa1") == 0);
+			TALLOC_FREE(t);
+			t = talloc_strdup(frame, "plain/target");
+			CHECK(t != NULL);
+			CHECK(NT_STATUS_IS_OK(tc_native_links_map_target(conn, frame, &t, vfs_translate_to_unix)));
+			CHECK(strcmp(t, "plain/target") == 0);
+			TALLOC_FREE(t);
+		}
+		/*
+		 * FSCTL_GET_REPARSE_POINT: Windows and macOS read the target in their own names,
+		 * mapped before the separators turn into '\\' (macOS maps both back itself), so
+		 * a literal '\\' on disk cannot pass for a separator.
+		 */
+		CHECK(strcmp(client_target(frame, lnk, "d/x:y/a\\b"),
+			     "d\\x\xef\x80\xa2y\\a\xef\x80\xa6" "b") == 0);
+		CHECK(strcmp(client_target(frame, lnk, "plain/t"), "plain\\t") == 0);
+		/* POSIX clients get the bytes on disk. */
+		lnk->fsp_flags.posix_open = true;
+		CHECK(strcmp(client_target(frame, lnk, "d/x:y/a\\b"), "d/x:y/a\\b") == 0);
+		lnk->fsp_flags.posix_open = false;
+		/* With native links off, upstream behavior: the target unchanged. */
+		links_enabled = false;
+		CHECK(strcmp(client_target(frame, lnk, "d/x:y/a\\b"), "d/x:y/a\\b") == 0);
+		links_enabled = true;
+		conn->vfs_handles = NULL;
 		TALLOC_FREE(lnk);
 		TALLOC_FREE(dir);
 	}

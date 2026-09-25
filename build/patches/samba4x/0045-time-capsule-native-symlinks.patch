@@ -175,23 +175,36 @@ diff --git a/source3/modules/airport_native_xattr.h b/source3/modules/airport_na
 diff --git a/source3/modules/util_reparse.c b/source3/modules/util_reparse.c
 --- a/source3/modules/util_reparse.c
 +++ b/source3/modules/util_reparse.c
-@@ -187,6 +187,15 @@ static NTSTATUS fsctl_get_reparse_point_lnk(struct files_struct *fsp,
+@@ -187,6 +187,28 @@ static NTSTATUS fsctl_get_reparse_point_lnk(struct files_struct *fsp,
  		return status;
  	}
  
 +	if (!fsp->fsp_flags.posix_open &&
 +	    tc_native_links_enabled(fsp->conn)) {
 +		/*
-+		 * Non-POSIX clients (macOS and Windows) read the target
-+		 * with '\\' separators and convert them back themselves.
++		 * Non-POSIX clients (macOS and Windows) read the target in
++		 * their own namespace: names mapped as catia maps them (a
++		 * native "a:b" is "a<U+F022>b"; macOS maps them back with
++		 * UTF_SFM_CONVERSIONS, Windows would take ':' for a stream),
++		 * and '\\' separators they convert back themselves. Map the
++		 * names first: catia maps a literal '\\' in a name to U+F026.
 +		 */
++		status = tc_native_links_map_target(
++			fsp->conn,
++			reparse,
++			&reparse->parsed.lnk.substitute_name,
++			vfs_translate_to_windows);
++		if (!NT_STATUS_IS_OK(status)) {
++			TALLOC_FREE(reparse);
++			return status;
++		}
 +		string_replace(reparse->parsed.lnk.substitute_name, '/', '\\');
 +	}
 +
  	status = fsctl_get_reparse_point_int(
  		fsp, reparse, mem_ctx, _out_data, max_out_len, _out_len);
  	TALLOC_FREE(reparse);
-@@ -343,6 +352,11 @@ NTSTATUS fsctl_set_reparse_point(struct files_struct *fsp,
+@@ -343,6 +365,11 @@ NTSTATUS fsctl_set_reparse_point(struct files_struct *fsp,
  		  reparse_tag,
  		  reparse_data_length);
  
@@ -603,7 +616,7 @@ diff --git a/source3/modules/vfs_streams_xattr.c b/source3/modules/vfs_streams_x
 diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
 --- a/source3/modules/vfs_xattr_tdb.c
 +++ b/source3/modules/vfs_xattr_tdb.c
-@@ -77,6 +77,90 @@ static bool tc_fruit_owned_native_xattr(const char *name)
+@@ -77,6 +77,135 @@ static bool tc_fruit_owned_native_xattr(const char *name)
  		strcmp(name, TC_RESOURCEFORK_XATTR) == 0;
  }
  
@@ -612,26 +625,62 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
 + * has no descriptor. Its attributes live on the link, as Apple's AFP server
 + * stores them, and are reached by path with the no-follow syscalls. Any
 + * other descriptor-less handle keeps failing with EBADF.
++ *
++ * The handle keeps only the link's name, and an AFP or SSH client can rename
++ * the link between two SMB requests and put another object there. So check
++ * that the name still holds the link this handle opened, by the file id taken
++ * at open (vfs_stat_fsp() re-lstats the name and would follow a replacement),
++ * and fail with ENOENT otherwise. This is the practical fix, not an atomic
++ * one: NetBSD cannot open a symlink itself (no O_PATH or O_SYMLINK), so
++ * nothing binds the syscall to the inode, and the name can still change in
++ * the microseconds between the lstat() and the syscall. vfs_default's own
++ * path-based pathref calls ("This is no longer a handle based call") have
++ * the same gap with no check at all; it is tolerable.
++ *
++ * Returns 0 with *_path NULL for a handle that has a descriptor.
 + */
-+static char *tc_native_link_path(files_struct *fsp)
++static int tc_native_link_path(files_struct *fsp, char **_path)
 +{
++	struct stat st;
++	char *path = NULL;
++
++	*_path = NULL;
 +	if (fsp_get_pathref_fd(fsp) != -1 || fsp->fsp_name == NULL ||
 +	    !S_ISLNK(fsp->fsp_name->st.st_ex_mode))
 +	{
-+		return NULL;
++		return 0;
 +	}
-+	return talloc_asprintf(talloc_tos(), "%s/%s",
++	path = talloc_asprintf(talloc_tos(), "%s/%s",
 +			       fsp->conn->connectpath,
 +			       fsp->fsp_name->base_name);
++	if (path == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++	if (lstat(path, &st) != 0 || !S_ISLNK(st.st_mode) ||
++	    (uint64_t)st.st_dev != fsp->file_id.devid ||
++	    (uint64_t)st.st_ino != fsp->file_id.inode)
++	{
++		DBG_NOTICE("%s is no longer the link this handle opened\n",
++			   path);
++		TALLOC_FREE(path);
++		errno = ENOENT;
++		return -1;
++	}
++	*_path = path;
++	return 0;
 +}
 +
 +static ssize_t tc_native_fgetxattr(files_struct *fsp, const char *name,
 +				   void *value, size_t size)
 +{
-+	char *path = tc_native_link_path(fsp);
++	char *path = NULL;
 +	ssize_t ret;
 +	int err;
 +
++	if (tc_native_link_path(fsp, &path) != 0) {
++		return -1;
++	}
 +	if (path == NULL) {
 +		return tc_airport_fgetxattr(
 +			fsp_get_pathref_fd(fsp), name, value, size);
@@ -646,9 +695,12 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
 +static int tc_native_fsetxattr(files_struct *fsp, const char *name,
 +			       const void *value, size_t size, int flags)
 +{
-+	char *path = tc_native_link_path(fsp);
++	char *path = NULL;
 +	int ret, err;
 +
++	if (tc_native_link_path(fsp, &path) != 0) {
++		return -1;
++	}
 +	if (path == NULL) {
 +		return tc_airport_fsetxattr(
 +			fsp_get_pathref_fd(fsp), name, value, size, flags);
@@ -662,10 +714,13 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
 +
 +static ssize_t tc_native_flistxattr(files_struct *fsp, char *list, size_t size)
 +{
-+	char *path = tc_native_link_path(fsp);
++	char *path = NULL;
 +	ssize_t ret;
 +	int err;
 +
++	if (tc_native_link_path(fsp, &path) != 0) {
++		return -1;
++	}
 +	if (path == NULL) {
 +		return tc_airport_flistxattr(fsp_get_pathref_fd(fsp), list, size);
 +	}
@@ -678,9 +733,12 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
 +
 +static int tc_native_fremovexattr(files_struct *fsp, const char *name)
 +{
-+	char *path = tc_native_link_path(fsp);
++	char *path = NULL;
 +	int ret, err;
 +
++	if (tc_native_link_path(fsp, &path) != 0) {
++		return -1;
++	}
 +	if (path == NULL) {
 +		return tc_airport_fremovexattr(fsp_get_pathref_fd(fsp), name);
 +	}
@@ -694,7 +752,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  static ssize_t tc_native_apple_stream_get(files_struct *fsp,
  					   const char *native_name,
  					   void *value,
-@@ -84,9 +168,8 @@ static ssize_t tc_native_apple_stream_get(files_struct *fsp,
+@@ -84,9 +213,8 @@ static ssize_t tc_native_apple_stream_get(files_struct *fsp,
  {
  	ssize_t raw_size;
  	ssize_t ret;
@@ -705,7 +763,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	if (raw_size < 0) {
  		return -1;
  	}
-@@ -101,7 +184,7 @@ static ssize_t tc_native_apple_stream_get(files_struct *fsp,
+@@ -101,7 +229,7 @@ static ssize_t tc_native_apple_stream_get(files_struct *fsp,
  		errno = ERANGE;
  		return -1;
  	}
@@ -714,7 +772,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	if (ret < 0) {
  		return -1;
  	}
-@@ -129,8 +212,7 @@ static int tc_native_apple_stream_set(files_struct *fsp,
+@@ -129,8 +257,7 @@ static int tc_native_apple_stream_set(files_struct *fsp,
  		errno = E2BIG;
  		return -1;
  	}
@@ -724,7 +782,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  }
  
  static ssize_t tc_native_list_with_apple_streams(
-@@ -143,7 +225,7 @@ static ssize_t tc_native_list_with_apple_streams(
+@@ -143,7 +270,7 @@ static ssize_t tc_native_list_with_apple_streams(
  	size_t required = 0;
  	size_t written_size = 0;
  
@@ -733,7 +791,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	if (raw_size <= 0) {
  		return raw_size;
  	}
-@@ -152,8 +234,7 @@ static ssize_t tc_native_list_with_apple_streams(
+@@ -152,8 +279,7 @@ static ssize_t tc_native_list_with_apple_streams(
  		errno = ENOMEM;
  		return -1;
  	}
@@ -743,7 +801,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	if (ret < 0) {
  		TALLOC_FREE(raw);
  		return -1;
-@@ -306,8 +387,7 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
+@@ -306,8 +432,7 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
  			xattr_size = tc_native_apple_stream_get(
  				fsp, native_name, NULL, 0);
  		} else {
@@ -753,7 +811,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  		}
  		if (xattr_size < 0) {
  			tevent_req_error(req, errno);
-@@ -342,9 +422,7 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
+@@ -342,9 +467,7 @@ static struct tevent_req *xattr_tdb_getxattrat_send(
  				state->xattr_value,
  				state->xattr_size);
  		} else {
@@ -764,7 +822,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  				state->xattr_value,
  				state->xattr_size);
  		}
-@@ -486,8 +564,7 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
+@@ -486,8 +609,7 @@ static ssize_t xattr_tdb_fgetxattr(struct vfs_handle_struct *handle,
  			errno = ENOTSUP;
  			return -1;
  		}
@@ -774,7 +832,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	}
  
  	if (config->ignore_user_xattr && is_user_xattr(name)) {
-@@ -557,8 +634,7 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
+@@ -557,8 +679,7 @@ static int xattr_tdb_fsetxattr(struct vfs_handle_struct *handle,
  			errno = ENOTSUP;
  			return -1;
  		}
@@ -784,7 +842,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  	}
  
  	if (config->ignore_user_xattr && is_user_xattr(name)) {
-@@ -645,8 +721,7 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
+@@ -645,8 +766,7 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
  				errno = ENOATTR;
  				return -1;
  			}
@@ -794,7 +852,7 @@ diff --git a/source3/modules/vfs_xattr_tdb.c b/source3/modules/vfs_xattr_tdb.c
  			TALLOC_FREE(native_name);
  			return ret;
  		}
-@@ -654,7 +729,7 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
+@@ -654,7 +774,7 @@ static int xattr_tdb_fremovexattr(struct vfs_handle_struct *handle,
  			errno = ENOTSUP;
  			return -1;
  		}
@@ -979,6 +1037,31 @@ diff --git a/source3/smbd/filename.c b/source3/smbd/filename.c
  	if (req->flags2 & FLAGS2_DFS_PATHNAMES) {
  		ucf_flags |= UCF_DFS_PATHNAME;
  	}
+@@ -1156,6 +1163,24 @@ next:
+ 	 * resolve all symlinks locally.
+ 	 */
+ 
++	if (tc_native_links_enabled(conn)) {
++		/*
++		 * Time Capsule native links (patch 0045): the target is joined
++		 * with the client's path and resolved again as a client name,
++		 * so map its native names to theirs first. Unmapped, a ':' in
++		 * the target would split off a stream name, and catia maps
++		 * the names back to the disk's on the way down.
++		 */
++		status = tc_native_links_map_target(conn,
++						    symlink_err,
++						    &lnk->substitute_name,
++						    vfs_translate_to_windows);
++		if (!NT_STATUS_IS_OK(status)) {
++			TALLOC_FREE(symlink_err);
++			return status;
++		}
++	}
++
+ 	ret = symlink_target_path(mem_ctx,
+ 				  name_in,
+ 				  lnk->unparsed_path_length,
 diff --git a/source3/smbd/files.c b/source3/smbd/files.c
 --- a/source3/smbd/files.c
 +++ b/source3/smbd/files.c
@@ -1144,7 +1227,7 @@ diff --git a/source3/smbd/open.c b/source3/smbd/open.c
 diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 --- a/source3/smbd/proto.h
 +++ b/source3/smbd/proto.h
-@@ -1233,4 +1233,53 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
+@@ -1233,4 +1233,57 @@ NTSTATUS delay_for_handle_lease_break_recv(struct tevent_req *req,
  					   TALLOC_CTX *mem_ctx,
  					   struct share_mode_lock **lck);
  
@@ -1189,6 +1272,10 @@ diff --git a/source3/smbd/proto.h b/source3/smbd/proto.h
 +				  struct tc_xsym_candidate *cand);
 +uint32_t tc_native_links_dos_mode(struct files_struct *fsp, uint32_t dosmode);
 +uint32_t tc_native_links_fs_capabilities(const struct connection_struct *conn);
++NTSTATUS tc_native_links_map_target(struct connection_struct *conn,
++				    TALLOC_CTX *mem_ctx,
++				    char **_target,
++				    enum vfs_translate_direction direction);
 +NTSTATUS tc_native_links_check_set(struct files_struct *fsp,
 +				   uint32_t reparse_tag,
 +				   const uint8_t *data,
@@ -1333,7 +1420,7 @@ diff --git a/source3/smbd/tc_native_links.c b/source3/smbd/tc_native_links.c
 new file mode 100644
 --- /dev/null
 +++ b/source3/smbd/tc_native_links.c
-@@ -0,0 +1,1146 @@
+@@ -0,0 +1,1200 @@
 +/*
 + * Time Capsule native symlinks.
 + *
@@ -1579,6 +1666,36 @@ new file mode 100644
 +}
 +
 +/*
++ * Map a link target between the names on disk and the names SMB clients use.
++ * With fruit:encoding = native, catia maps the characters Windows cannot put
++ * in a name (controls, '"' '*' ':' '<' '>' '?' '\\' '|') to private-use code
++ * points on the wire, e.g. ':' <-> U+F022. A link's own name gets that
++ * mapping in every VFS call, but its target is data to the VFS, so the names
++ * inside it are mapped here. '/' is never mapped, so a whole target maps in
++ * one call. Without a mapping module the target stays as it is.
++ */
++NTSTATUS tc_native_links_map_target(struct connection_struct *conn,
++				    TALLOC_CTX *mem_ctx,
++				    char **_target,
++				    enum vfs_translate_direction direction)
++{
++	char *mapped = NULL;
++	NTSTATUS status;
++
++	status = SMB_VFS_TRANSLATE_NAME(conn, *_target, direction, mem_ctx,
++					&mapped);
++	if (NT_STATUS_EQUAL(status, NT_STATUS_NONE_MAPPED)) {
++		return NT_STATUS_OK;
++	}
++	if (!NT_STATUS_IS_OK(status)) {
++		return status;
++	}
++	TALLOC_FREE(*_target);
++	*_target = mapped;
++	return NT_STATUS_OK;
++}
++
++/*
 + * Clients told FILE_SUPPORTS_REPARSE_POINTS create a link as an empty file
 + * plus FSCTL_SET_REPARSE_POINT: Windows and Linux (default) with the symlink
 + * tag, Linux symlink=nfs with an NFS_SPECFILE_LNK payload and symlink=wsl
@@ -1586,8 +1703,14 @@ new file mode 100644
 + * '\\' separators become '/', and Windows-only absolute forms (\\??\\ device
 + * paths, UNC paths, drive letters) have no meaning on the disk. Everything
 + * else (FIFOs, sockets, devices, junctions) has no native form here.
++ *
++ * A symlink-tag target names files as the client sees them, so its names are
++ * mapped back to the disk's (a client's "a<U+F022>b" is "a:b" on disk), after
++ * the separators: catia maps U+F026 to a literal '\\' in a name. NFS and WSL
++ * payloads carry POSIX bytes and are kept as they are.
 + */
-+static NTSTATUS tc_reparse_native_target(TALLOC_CTX *mem_ctx,
++static NTSTATUS tc_reparse_native_target(struct connection_struct *conn,
++					 TALLOC_CTX *mem_ctx,
 +					 const uint8_t *data,
 +					 size_t len,
 +					 char **_target)
@@ -1656,6 +1779,12 @@ new file mode 100644
 +	}
 +	if (windows) {
 +		string_replace(target, '\\', '/');
++		status = tc_native_links_map_target(conn, mem_ctx, &target,
++						    vfs_translate_to_unix);
++		if (!NT_STATUS_IS_OK(status)) {
++			TALLOC_FREE(target);
++			return status;
++		}
 +	}
 +check:
 +	if (target[0] == '\0' || strlen(target) >= PATH_MAX) {
@@ -1701,7 +1830,8 @@ new file mode 100644
 +	if (!tc_native_links_enabled(fsp->conn)) {
 +		return NT_STATUS_OK;
 +	}
-+	status = tc_reparse_native_target(talloc_tos(), data, len, &target);
++	status = tc_reparse_native_target(fsp->conn, talloc_tos(), data, len,
++					  &target);
 +	TALLOC_FREE(target);
 +	if (!NT_STATUS_IS_OK(status)) {
 +		DBG_NOTICE("%s: reparse tag 0x%08" PRIx32 " has no native "
@@ -1825,8 +1955,8 @@ new file mode 100644
 +		if (!NT_STATUS_IS_OK(status)) {
 +			return false;
 +		}
-+		status = tc_reparse_native_target(mem_ctx, data, datalen,
-+						  _target);
++		status = tc_reparse_native_target(fsp->conn, mem_ctx, data,
++						  datalen, _target);
 +		TALLOC_FREE(data);
 +		return NT_STATUS_IS_OK(status);
 +	}
@@ -1948,10 +2078,21 @@ new file mode 100644
 +}
 +
 +/*
-+ * Put the file taken aside back under its name, but never over another
-+ * object. HFS supports hard links, but link + unlink is not safe here:
-+ * vfs_fruit removes a file's resource fork together with the name it is
-+ * unlinked by, which would strip it from the restored file.
++ * Put the file taken aside back under its name unless another object took
++ * the name while it was aside. HFS supports hard links, but link + unlink is
++ * not safe here: vfs_fruit removes a file's resource fork together with the
++ * name it is unlinked by, which would strip it from the restored file.
++ *
++ * Known race, accepted: the check below and the rename are two calls, and
++ * rename() replaces. An AFP or SSH writer that creates the name exactly
++ * between them loses that new file to the original. NetBSD has no
++ * renameat2(RENAME_NOREPLACE), so no atomic no-clobber rename exists here.
++ * The window is two back-to-back syscalls in one process on a rare error
++ * path; everything created while the name was aside is still caught by the
++ * check. smbd runs without pthreads, gen 1-4 Time Capsules have a single
++ * core and gen 5 has two, so another writer rarely gets to run in that gap.
++ * Keeping the file aside instead would hide the client's file (the aside
++ * name is vetoed) on every ordinary failure, so we live with the race.
 + */
 +static void tc_restore_aside(struct connection_struct *conn,
 +			     struct files_struct *dirfsp,

@@ -20,6 +20,10 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s errno=%d\n", __FILE__, __LINE__, #x, errno); exit(90); } } while (0)
 
 static bool feature_enabled = true;
+/* SMB_VFS_TRANSLATE_NAME: a catia module mapping ':' and '\\' is loaded, or none is. */
+static bool name_mapping = true;
+static NTSTATUS fail_translate;
+static unsigned translate_calls;
 static int fail_symlink, fail_rename, fail_readlink, fail_setxattr, fail_ntimes, fail_unlink_aside;
 static unsigned notifies;
 /* sync() commits the HFS journal after a conversion; see tc_native_links_close_commit(). */
@@ -286,6 +290,40 @@ static int test_fntimes(struct files_struct *fsp, struct smb_file_time *ft)
 	return 0;
 }
 
+/* What catia does with fruit:encoding = native, for two of its characters: the client's
+ * U+F022 and U+F026 (UTF-8 encoded) are ':' and '\\' on disk. '/' is never mapped. */
+static const struct { const char *wire, *disk; } name_map[] = {
+	{ "\xef\x80\xa2", ":" }, { "\xef\x80\xa6", "\\" },
+};
+
+static NTSTATUS test_translate_name(const char *name, enum vfs_translate_direction direction,
+	TALLOC_CTX *ctx, char **mapped)
+{
+	char *out = NULL;
+	size_t i;
+	translate_calls++;
+	if (!NT_STATUS_IS_OK(fail_translate)) return fail_translate;
+	if (!name_mapping) return NT_STATUS_NONE_MAPPED; /* vfs_default: nothing to map */
+	out = talloc_strdup(ctx, "");
+	while (*name != '\0') {
+		const char *from = NULL, *to = NULL;
+		for (i = 0; i < ARRAY_SIZE(name_map) && from == NULL; i++) {
+			from = direction == vfs_translate_to_unix ? name_map[i].wire : name_map[i].disk;
+			to = direction == vfs_translate_to_unix ? name_map[i].disk : name_map[i].wire;
+			if (strncmp(name, from, strlen(from)) != 0) from = NULL;
+		}
+		if (from != NULL) {
+			out = talloc_strdup_append(out, to);
+			name += strlen(from);
+		} else {
+			out = talloc_asprintf_append(out, "%c", *name++);
+		}
+		CHECK(out != NULL);
+	}
+	*mapped = out;
+	return NT_STATUS_OK;
+}
+
 /* The share-mode table as close_share_mode_lock_prepare() sees it. */
 static struct share_mode_entry entries[4];
 static size_t num_entries;
@@ -337,6 +375,7 @@ static bool test_stale(struct share_mode_entry *e)
 #undef SMB_VFS_FGETXATTR
 #undef SMB_VFS_FSETXATTR
 #undef SMB_VFS_FNTIMES
+#undef SMB_VFS_TRANSLATE_NAME
 #define SMB_VFS_FSTAT(fsp, st) test_fstat(fsp, st)
 #define SMB_VFS_PREAD(fsp, data, n, off) pread(fsp_get_io_fd(fsp), data, n, off)
 #define SMB_VFS_FSTATAT(conn, dirfsp, name, st, flags) test_fstatat(name, st)
@@ -348,6 +387,7 @@ static bool test_stale(struct share_mode_entry *e)
 #define SMB_VFS_FGETXATTR(fsp, name, value, size) test_fgetxattr(fsp, name, value, size)
 #define SMB_VFS_FSETXATTR(fsp, name, value, size, flags) test_fsetxattr(fsp, name, value, size, flags)
 #define SMB_VFS_FNTIMES(fsp, ft) test_fntimes(fsp, ft)
+#define SMB_VFS_TRANSLATE_NAME(conn, name, dir, ctx, out) test_translate_name(name, dir, ctx, out)
 #define fdos_mode test_fdos_mode
 #define fsctl_get_reparse_point test_get_reparse_point
 /* smbd_base links the production copy; exercise this one under distinct names. */
@@ -365,6 +405,7 @@ static bool test_stale(struct share_mode_entry *e)
 #define tc_native_links_fs_capabilities t_fs_capabilities
 #define tc_native_links_dos_mode t_dos_mode
 #define tc_native_links_stream_base t_stream_base
+#define tc_native_links_map_target t_map_target
 #include "smbd/tc_native_links.c"
 
 /* Digests the macOS client wrote on a Time Capsule share (2026-09-23 captures). */
@@ -509,6 +550,9 @@ static void reset_hooks(void)
 	fail_symlink = fail_rename = fail_readlink = fail_setxattr = fail_ntimes = fail_unlink_aside = 0;
 	resource_fork_size = 0;
 	stored_reparse_len = 0;
+	name_mapping = true;
+	fail_translate = NT_STATUS_OK;
+	translate_calls = 0;
 	notifies = ntimes_calls = syncs = 0;
 	num_pathref_reads = 0;
 	ZERO_STRUCT(xattrs);
@@ -1001,6 +1045,48 @@ int main(int argc, char **argv)
 		stored_reparse_len = lx_payload(2, "/abs/x y", 8, stored_reparse);
 		CHECK(convert(frame, "wsl", FILE_WAS_CREATED, NORMAL_CLOSE));
 		CHECK(is_link_to("wsl", "/abs/x y"));
+		/*
+		 * A symlink-tag target names files as the client sees them: its mapped
+		 * characters are the disk's ':' and '\\' ("a:b" is "a<U+F022>b" to it). The
+		 * separators turn into '/' first, so a mapped '\\' stays inside its name.
+		 */
+		put_file("win-map", "", 0);
+		stored_reparse_len = symlink_payload("sub\\a\xef\x80\xa2" "b\\c\xef\x80\xa6" "d", true,
+						     stored_reparse, sizeof(stored_reparse));
+		CHECK(convert(frame, "win-map", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(is_link_to("win-map", "sub/a:b/c\\d") && translate_calls > 0);
+		/* Absolute targets map the same way. */
+		put_file("win-abs", "", 0);
+		stored_reparse_len = symlink_payload("\\Volumes\\x\xef\x80\xa2y", false,
+						     stored_reparse, sizeof(stored_reparse));
+		CHECK(convert(frame, "win-abs", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(is_link_to("win-abs", "/Volumes/x:y"));
+		/* Without a mapping module (no catia) the target is kept as sent. */
+		name_mapping = false;
+		put_file("win-raw", "", 0);
+		stored_reparse_len = symlink_payload("a\xef\x80\xa2" "b", true, stored_reparse,
+						     sizeof(stored_reparse));
+		CHECK(convert(frame, "win-raw", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(is_link_to("win-raw", "a\xef\x80\xa2" "b"));
+		name_mapping = true;
+		/* NFS and WSL targets are POSIX bytes: never mapped, even the same code points. */
+		translate_calls = 0;
+		put_file("nfs-raw", "", 0);
+		stored_reparse_len = nfs_payload(NFS_SPECFILE_LNK, "a\xef\x80\xa2" "b", stored_reparse,
+						 sizeof(stored_reparse));
+		CHECK(convert(frame, "nfs-raw", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(is_link_to("nfs-raw", "a\xef\x80\xa2" "b"));
+		put_file("wsl-raw", "", 0);
+		stored_reparse_len = lx_payload(2, "a\xef\x80\xa2" "b", 5, stored_reparse);
+		CHECK(convert(frame, "wsl-raw", FILE_WAS_CREATED, NORMAL_CLOSE));
+		CHECK(is_link_to("wsl-raw", "a\xef\x80\xa2" "b") && translate_calls == 0);
+		/* A target that cannot be mapped is not converted; the placeholder stays. */
+		fail_translate = NT_STATUS_ILLEGAL_CHARACTER;
+		put_file("win-bad", "", 0);
+		stored_reparse_len = symlink_payload("a\xef\x80\xa2" "b", true, stored_reparse,
+						     sizeof(stored_reparse));
+		CHECK(!convert(frame, "win-bad", FILE_WAS_CREATED, NORMAL_CLOSE) && is_regular("win-bad"));
+		fail_translate = NT_STATUS_OK;
 		/* An empty file without a payload is just an empty file. */
 		stored_reparse_len = 0;
 		put_file("empty", "", 0);
@@ -1031,6 +1117,12 @@ int main(int argc, char **argv)
 		CHECK(NT_STATUS_IS_OK(t_check_set(&h.fsp, IO_REPARSE_TAG_NFS, buf, n)));
 		n = lx_payload(2, "t.txt", 5, buf);
 		CHECK(NT_STATUS_IS_OK(t_check_set(&h.fsp, TC_IO_REPARSE_TAG_LX_SYMLINK, buf, n)));
+		/* A symlink target the name mapping rejects is refused with its status. */
+		fail_translate = NT_STATUS_ILLEGAL_CHARACTER;
+		n = symlink_payload("t.txt", true, buf, sizeof(buf));
+		CHECK(NT_STATUS_EQUAL(t_check_set(&h.fsp, IO_REPARSE_TAG_SYMLINK, buf, n),
+				      NT_STATUS_ILLEGAL_CHARACTER));
+		fail_translate = NT_STATUS_OK;
 		for (i = 0; i < ARRAY_SIZE(windows_only); i++) {
 			n = symlink_payload(windows_only[i], false, buf, sizeof(buf));
 			CHECK(NT_STATUS_EQUAL(t_check_set(&h.fsp, IO_REPARSE_TAG_SYMLINK, buf, n),
