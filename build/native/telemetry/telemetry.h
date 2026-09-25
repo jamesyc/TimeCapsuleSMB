@@ -40,12 +40,17 @@
 #define TC_DEBUG_MAX 1048576
 #define TC_SIGNATURE_MAX 512
 #define TC_INTERVAL_SECONDS 43200
+/* An undelivered heartbeat (usually DNS not ready yet right after boot)
+ * retries after this delay, doubling up to TC_INTERVAL_SECONDS. */
+#ifndef TC_HEARTBEAT_RETRY_SECONDS
+#define TC_HEARTBEAT_RETRY_SECONDS 60
+#endif
 #ifndef TC_CLEANUP_INTERVAL_SECONDS
 #define TC_CLEANUP_INTERVAL_SECONDS 30
 #endif
 #define TC_EXIT_BUSY 75
 struct telemetry_response { int debug; char signature[129]; };
-struct telemetry_schedule { time_t next_due; int boot_sent; };
+struct telemetry_schedule { time_t next_due; int boot_sent; time_t retry_seconds; };
 extern volatile sig_atomic_t telemetry_stop;
 int telemetry_enabled(void);
 int telemetry_payload(char *json, size_t cap, const char *reason, const char *nonce);
@@ -53,11 +58,11 @@ int telemetry_response_parse(const char *json, size_t len, struct telemetry_resp
 int telemetry_verify(const unsigned char *data, size_t len, const unsigned char *signature, size_t sig_len);
 int telemetry_authorized(const struct telemetry_response *response, const char *payload);
 int telemetry_http(const char *url, const char *payload, unsigned char **out, size_t *len, size_t limit);
-int telemetry_cycle(const char *reason, int lock_fd);
+int telemetry_cycle(const char *reason, int lock_fd, int *delivered);
 int telemetry_debug_job(const char *reason, int lock_fd);
 int telemetry_nonce(char out[33]);
 int telemetry_schedule_due(struct telemetry_schedule *schedule, time_t now);
-void telemetry_schedule_started(struct telemetry_schedule *schedule, time_t now);
+void telemetry_schedule_finished(struct telemetry_schedule *schedule, time_t now, int delivered);
 int telemetry_lock(void);
 /* The caller must hold the workspace lock for these file mutations. */
 void telemetry_workspace_error(const char *operation, const char *path);

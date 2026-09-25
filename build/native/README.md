@@ -94,6 +94,9 @@ short critical-facts failure reason and is omitted on success. There is no
 This probe has no retained history and does not assert that services stopped.
 
 `service telemetry --daemon` sends a boot heartbeat and then one every 12 hours.
+A heartbeat that is not delivered (usually DNS not ready yet right after boot)
+retries after 60 seconds, doubling up to 12 hours, and keeps the `boot` reason
+until one is delivered.
 `--once [reason]` performs one cycle; `--print-payload [reason]` only prints.
 `--cleanup` removes stale debug files without collecting or posting telemetry.
 An existing cycle or inherited debug lock causes `--once` and `--cleanup` to

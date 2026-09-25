@@ -61,9 +61,9 @@ int main(int argc, char **argv) {
                 rc = telemetry_cleanup_locked();
                 if (rc == 0 && due && !telemetry_stop) {
                     const char *cycle_reason = daemon ? (schedule.boot_sent ? "scheduled" : "boot") : reason;
-                    int cleanup_rc;
-                    telemetry_schedule_started(&schedule, now);
-                    rc = telemetry_cycle(cycle_reason, lock);
+                    int cleanup_rc, delivered;
+                    rc = telemetry_cycle(cycle_reason, lock, &delivered);
+                    telemetry_schedule_finished(&schedule, time(NULL), delivered);
                     /* Closing this reference preserves an inherited child's
                      * lock. Never LOCK_UN a lock shared with a running job. */
                     close(lock);

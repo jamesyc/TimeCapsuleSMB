@@ -1559,12 +1559,12 @@ Current important outputs:
 
 Current active deploy artifact sizes (stripped bytes, v3.1.1):
 - NetBSD 6 `smbd`: about `9.8M`
-- NetBSD 6 `service`: `362,180`
+- NetBSD 6 `service`: `362,300`
 - NetBSD 6 `rsync`: about `1.0M`
 - NetBSD 4 little-endian `smbd`: about `9.8M`
 - NetBSD 4 big-endian `smbd`: about `9.8M`
-- NetBSD 4 little-endian `service`: `321,424`
-- NetBSD 4 big-endian `service`: `320,824`
+- NetBSD 4 little-endian `service`: `321,540`
+- NetBSD 4 big-endian `service`: `320,940`
 - NetBSD 4 little-endian `rsync`: about `878K`
 - NetBSD 4 big-endian `rsync`: about `872K`
 

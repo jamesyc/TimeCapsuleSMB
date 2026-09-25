@@ -16,16 +16,20 @@ int telemetry_nonce(char out[33]) {
     return 0;
 }
 
-int telemetry_cycle(const char *reason, int lock_fd) {
+int telemetry_cycle(const char *reason, int lock_fd, int *delivered) {
     char payload[HEARTBEAT_MAX_JSON], nonce[33];
     unsigned char *body = NULL;
     size_t len;
     struct telemetry_response response;
     int rc;
+    *delivered = 0;
     if (telemetry_nonce(nonce) || telemetry_payload(payload, sizeof(payload), reason, nonce) || telemetry_stop) return 1;
     if (telemetry_http(HEARTBEAT_ENDPOINT, payload, &body, &len, TC_RESPONSE_MAX)) {
         fputs("telemetry: POST failed\n", stderr); return 1;
     }
+    /* The server has the heartbeat; later response or debug-job failures
+     * must not resend it. */
+    *delivered = 1;
     rc = telemetry_response_parse((const char *)body, len, &response);
     free(body);
     if (rc) { fputs("telemetry: invalid response\n", stderr); return 1; }

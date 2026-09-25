@@ -102,6 +102,7 @@ def rig(tmp_path_factory):
         f'#define TC_DEBUG_BASE_URL "{base}/downloads/bin/debug"',
         '#define TC_DEBUG_QUERY ""',
         '#define TC_CLEANUP_INTERVAL_SECONDS 1',
+        '#define TC_HEARTBEAT_RETRY_SECONDS 1',
         f'#define TC_ACP_PATH "{acp}"',
         f'#define TC_TELEMETRY_WORK_ROOT "{root}/work"',
         f'#define HEARTBEAT_FLASH_CONFIG_PATH "{root}/config"',
@@ -368,6 +369,23 @@ def test_debug_crash_is_reaped_and_cleaned(cycle):
     run, _, marker, *_ = cycle
     assert run('true', TC_TEST_CRASH='1').returncode == 1
     assert marker.read_text().startswith('executed\n')
+
+
+def test_daemon_retries_an_undelivered_boot_heartbeat(cycle):
+    # Right after boot DNS is often not ready. An undelivered heartbeat must
+    # retry soon, still labelled boot, and stop once one is delivered.
+    _, state, _, binary, env = cycle
+    state['mode'] = 'http_error'
+    process = subprocess.Popen(telemetry_command(binary, '--daemon'), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_until(lambda: len(state['calls']) == 1)
+        state['mode'] = 'false'
+        wait_until(lambda: len(state['calls']) == 2)
+        time.sleep(3)
+        assert len(state['calls']) == 2
+        assert [p['reason'] for p in state['payloads']] == ['boot', 'boot']
+    finally:
+        process.terminate(); process.communicate(timeout=HANG_TIMEOUT)
 
 
 def test_daemon_housekeeping_cleans_between_heartbeats(cycle, rig):
