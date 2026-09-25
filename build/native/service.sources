@@ -4,8 +4,8 @@ native/service/network_commands.c
 native/service/nt_hash.c
 native/discovery/main.c
 native/discovery/wcifsnd.c
-native/mdns/adisk_txt.c
-native/mdns/registrant.c
+native/discovery/adisk_txt.c
+native/discovery/registrant.c
 native/dnssd/dnssd_clientstub.c
 native/dnssd/dnssd_ipc.c
 native/telemetry/device.c

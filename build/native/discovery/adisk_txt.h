@@ -1,5 +1,5 @@
-#ifndef TC_MDNS_ADISK_TXT_H
-#define TC_MDNS_ADISK_TXT_H
+#ifndef TC_DISCOVERY_ADISK_TXT_H
+#define TC_DISCOVERY_ADISK_TXT_H
 #include "types.h"
 int validate_single_dns_label(const char *value, const char *field_name);
 int build_adisk_system_txt(char *out, size_t out_len, const char *wama);

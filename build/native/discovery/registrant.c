@@ -1,4 +1,4 @@
-#include "mdns.h"
+#include "discovery.h"
 #include "../dnssd/dnssd_ipc.h"   /* MDNS_UDS_SERVERPATH only */
 
 const char *reg_service_regtype(enum reg_service service) {

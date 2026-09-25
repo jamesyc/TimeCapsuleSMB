@@ -1,4 +1,4 @@
-#include "../mdns/mdns.h"
+#include "discovery.h"
 #include "wcifsnd.h"
 #include "../common/loop.h"
 #include "../common/parent.h"

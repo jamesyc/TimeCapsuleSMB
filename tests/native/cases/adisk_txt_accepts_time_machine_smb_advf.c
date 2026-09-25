@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include "mdns/mdns.h"
+#include "discovery/discovery.h"
 
 int main(void) {
     char out[256];

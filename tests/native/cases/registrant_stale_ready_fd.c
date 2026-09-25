@@ -10,7 +10,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include "common/plan.h"
-#include "mdns/registrant.h"
+#include "discovery/registrant.h"
 
 int main(int argc, char **argv) {
     struct device_facts facts;

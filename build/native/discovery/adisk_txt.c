@@ -1,4 +1,4 @@
-#include "mdns.h"
+#include "discovery.h"
 /* ADisk TXT builders retain the v3.0 wire format. Share metadata arrives
  * as structured arguments from the manager. Their output is golden-tested:
  *   sys=waMA=<XX:XX:XX:XX:XX:XX>,adVF=0x1010

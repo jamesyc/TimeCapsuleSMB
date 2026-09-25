@@ -1,9 +1,7 @@
 #ifndef TC_SERVICE_H
 #define TC_SERVICE_H
 #include "../common/plan.h"
-#define EXIT_OK 0
-#define EXIT_USAGE 3
-#define EXIT_PLAN_FAILED 13
+#include "../common/exit_codes.h"
 #define NT_HASH_MAX_PASSWORD_BYTES 4096
 #ifndef TC_HOSTS_PATH
 #define TC_HOSTS_PATH "/etc/hosts"

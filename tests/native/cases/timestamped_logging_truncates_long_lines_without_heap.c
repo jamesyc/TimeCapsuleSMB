@@ -1,5 +1,5 @@
 #include <string.h>
-#include "mdns/mdns.h"
+#include "discovery/discovery.h"
 
 int main(void) {
     char message[5001];

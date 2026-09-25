@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <string.h>
-#include "mdns/mdns.h"
+#include "discovery/discovery.h"
 
 /* Drives discovery's production path for one --adisk-share row and the ACP
  * waMA fact: add_adisk_disk_config() exactly as discovery/main.c parses the

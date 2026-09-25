@@ -1,7 +1,6 @@
 #ifndef TC_LOOP_H
 #define TC_LOOP_H
 #include "plan.h"
-#include "process.h"
 
 /* Shared daemon loop shape (guide B.7 / C.4): select() with a monotonic
  * deadline, no sleep(). Inputs: a PF_ROUTE socket whose interface/address
@@ -23,15 +22,12 @@ struct plan_loop {
     long long next_poll_ms;
     long long recollect_at_ms;      /* 0 = nothing scheduled */
     int collecting;
-    int owned_collections;
-    struct tc_child collection_job;
     struct facts_collector collector;
     struct device_facts facts;
     struct device_plan last_validated;
     int have_validated;
     struct device_plan current;
     int logged_synthetic;       /* the C.11 parser-gap line is printed once */
-    int have_current;
 #ifdef TC_NATIVE_TEST
     const char *facts_file;         /* test-only replacement for live collection */
 #endif

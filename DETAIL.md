@@ -711,8 +711,7 @@ Device checks: `.venv/bin/python -m tests.samba.links_device --env .env --afp`
 The discovery controller is the `service discovery` role of `bin/service/service`.
 
 It is built from:
-- [build/native/discovery/](build/native/discovery/) (controller entry point and `wcifsnd` lifecycle/IPC)
-- [build/native/mdns/](build/native/mdns/) (Bonjour registrant and ADisk TXT generation)
+- [build/native/discovery/](build/native/discovery/) (controller entry point, Bonjour registrant, ADisk TXT generation, and `wcifsnd` lifecycle/IPC)
 - [build/native/common/](build/native/common/) (the shared device plan)
 - [build/native/dnssd/](build/native/dnssd/) (Apple's `dns_sd` client stub, tag `mDNSResponder-379.38.1`, BSD-licensed, compiled unchanged with `-D_DNS_SD_LIBDISPATCH=0`)
 - [build/native/service.sources](build/native/service.sources) and [build/service.sh](build/service.sh) (the unified runtime image)

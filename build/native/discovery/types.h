@@ -1,11 +1,11 @@
-#ifndef TC_MDNS_TYPES_H
-#define TC_MDNS_TYPES_H
+#ifndef TC_DISCOVERY_TYPES_H
+#define TC_DISCOVERY_TYPES_H
 #include "../common/plan.h"
 #include "../common/log.h"
-/* Constants that survive from the v3.0 responder: the adisk TXT vocabulary
- * (byte-identical items, golden-tested) and the service ports. Everything
- * about wire records, sockets and port 5353 is gone; Apple's mDNSResponder
- * owns the wire and we register through its dns_sd IPC. */
+#include "../common/exit_codes.h"
+/* The adisk TXT vocabulary (byte-identical items, golden-tested) and the
+ * service ports discovery registers. Apple's mDNSResponder owns the wire;
+ * we register through its dns_sd IPC. */
 #define MAX_NAME 256
 #define MAX_LABEL 63
 #define MAX_TXT_STRING 255
@@ -23,14 +23,6 @@
 #define ADISK_PORT 9
 #define AFP_REGTYPE "_afpovertcp._tcp"
 #define AFP_PORT 548
-
-enum exit_code {
-    EXIT_OK = 0,
-    EXIT_USAGE = 3,
-    EXIT_INVALID_ADISK_DISK = 8,
-    EXIT_PLAN_FAILED = 13,
-    EXIT_DAEMON_STALLED = 14    /* an IPC call to mDNSResponder did not return within the alarm */
-};
 
 struct adisk_disk {
     char share_name[MAX_NAME];

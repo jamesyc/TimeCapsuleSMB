@@ -1,5 +1,5 @@
-#ifndef TC_MDNS_REGISTRANT_H
-#define TC_MDNS_REGISTRANT_H
+#ifndef TC_DISCOVERY_REGISTRANT_H
+#define TC_DISCOVERY_REGISTRANT_H
 #include "types.h"
 #include "../dnssd/dns_sd.h"
 
