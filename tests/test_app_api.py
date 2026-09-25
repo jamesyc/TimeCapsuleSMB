@@ -57,6 +57,7 @@ from timecapsulesmb.services.flash import (
     STALE_BACKUP_AFTER_WRITE_MESSAGE,
     require_backup_fresh_for_plan,
 )
+from timecapsulesmb.services.maintenance import FSCK_NOT_UNMOUNTED_MESSAGE
 from timecapsulesmb.services.reboot import RebootFlowError
 from timecapsulesmb.services.repair_xattrs import RepairRunResult, RepairXattrsRequest
 from timecapsulesmb.services.set_ssh import SetSshResult, SetSshStatusResult, SetSshVerificationError
@@ -4710,6 +4711,24 @@ MaSt = (
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], "remote_error")
                 self.assertIn("fsck did not run", error["message"])
+
+    def test_fsck_on_a_volume_that_stayed_mounted_reports_it_without_waiting(self) -> None:
+        # The script refuses to repair a volume still in the mount table and
+        # stops before its reboot, so the error names the unmount, and
+        # nothing waits for SSH to drop.
+        for flags in ({}, {"no_reboot": True}):
+            with self.subTest(flags=flags):
+                rc, collector, observe = self._run_confirmed_fsck(
+                    "umount: /Volumes/Data: Device busy\ntcapsule-fsck: volume not unmounted\n",
+                    ssh_returncode=1,
+                    **flags,
+                )
+
+                self.assertEqual(rc, 1)
+                observe.assert_not_called()
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "remote_error")
+                self.assertEqual(error["message"], FSCK_NOT_UNMOUNTED_MESSAGE)
 
     def test_repair_xattrs_uses_structured_runner(self) -> None:
         collector = CollectingSink()

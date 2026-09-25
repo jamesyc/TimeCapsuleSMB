@@ -333,12 +333,12 @@ def fsck_operation(params: dict[str, object], context: AppOperationContext) -> O
         for line in proc.stdout.splitlines():
             context.log(line)
     fsck_status = fsck_exit_status(proc.stdout or "")
-    failure = fsck_failure_message(fsck_status)
+    failure = fsck_failure_message(fsck_status, proc.stdout or "")
     context.update_fields(returncode=fsck_status if fsck_status is not None else proc.returncode)
     # Without a status line the script stopped before fsck and before any
     # reboot, so there is no reboot to wait for.
     if fsck_status is None:
-        raise AppOperationError(FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
+        raise AppOperationError(failure or FSCK_DID_NOT_RUN_MESSAGE, code="remote_error")
     if failure is not None:
         context.set_error(failure)
     if no_reboot:

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 
 
@@ -52,6 +55,10 @@ PACKAGE_CACHE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
 # source edit used to leave another full copy behind. Keep the few most recently
 # used entries of each kind: native and universal builds use different keys.
 PACKAGE_CACHE_KEEP_ENTRIES = 4
+# Held for a whole packaging run: eviction deletes entries and replace_path
+# swaps them, so a second run sharing the cache could remove an entry this run
+# is still copying from.
+PACKAGE_CACHE_LOCK_FILE = ".lock"
 PYTHON_SUBPROCESS_BYTECODE_CACHE = "python-bytecode"
 APP_ICON_ENTRIES = [
     ("icon_16x16.png", 16),
@@ -290,6 +297,22 @@ def package_cache_dir(name: str) -> Path:
     path = PACKAGE_ROOT / ".build" / "package-app" / name
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+@contextlib.contextmanager
+def package_cache_lock() -> Iterator[None]:
+    root = PACKAGE_ROOT / ".build" / "package-app"
+    root.mkdir(parents=True, exist_ok=True)
+    # flock is released by the kernel when the process exits, so a crashed run
+    # cannot leave the cache locked. The lock file sits beside the cache kinds,
+    # outside every directory eviction scans.
+    with (root / PACKAGE_CACHE_LOCK_FILE).open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("Waiting for another packaging run to finish with the package cache.", file=sys.stderr)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 def _cache_entry_mtime(path: Path) -> float:
@@ -1936,6 +1959,13 @@ def notarize_app(app: Path, output_dir: Path, *, profile: str, timeout: str) -> 
 
 
 def package_app(args: argparse.Namespace) -> PackageResult:
+    # Cached inputs are copied long after they are looked up, so the lock must
+    # cover the whole run, not just eviction.
+    with package_cache_lock():
+        return build_app_package(args)
+
+
+def build_app_package(args: argparse.Namespace) -> PackageResult:
     architectures = resolve_architectures(args.arch)
     executable, resource_build_dir = build_swift(args.configuration, architectures)
     helper_executable = build_helper(args.configuration, architectures)

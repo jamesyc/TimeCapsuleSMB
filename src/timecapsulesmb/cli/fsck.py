@@ -118,7 +118,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if proc.stdout:
             print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
         fsck_status = fsck_exit_status(proc.stdout or "")
-        failure = fsck_failure_message(fsck_status)
+        failure = fsck_failure_message(fsck_status, proc.stdout or "")
         # Without a status line the script stopped before fsck, and therefore
         # before any reboot: there is nothing to wait for.
         if fsck_status is None or args.no_reboot:

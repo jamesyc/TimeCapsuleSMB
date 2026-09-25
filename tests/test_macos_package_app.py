@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -589,6 +591,121 @@ def test_evict_stale_cache_entries_keeps_everything_under_the_limit(tmp_path: Pa
     package_app.evict_stale_cache_entries(root / "c.icns")
 
     assert sorted(path.name for path in root.iterdir()) == ["a.icns", "b.icns"]
+
+
+PACKAGER_CHILD = """
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("package_app", sys.argv[1])
+package_app = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(package_app)
+package_app.PACKAGE_ROOT = Path(sys.argv[2])
+cache = package_app.package_cache_dir("native-tools")
+role = sys.argv[3]
+with package_app.package_cache_lock():
+    if role == "user":
+        # Stand in for a run that found its cached entry and is copying it.
+        print("using", flush=True)
+        sys.stdin.readline()
+        print("intact" if (cache / "a").exists() else "gone", flush=True)
+    elif role == "holder":
+        print("locked", flush=True)
+        sys.stdin.readline()
+    else:
+        package_app.evict_stale_cache_entries(cache / "new", keep=1)
+        print("evicted", flush=True)
+"""
+
+
+def start_packager(tmp_path: Path, role: str) -> subprocess.Popen[str]:
+    child = tmp_path / "packager_child.py"
+    child.write_text(PACKAGER_CHILD, encoding="utf-8")
+    return subprocess.Popen(
+        [sys.executable, str(child), str(PACKAGE_SCRIPT), str(tmp_path), role],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def package_cache_lock_is_held(root: Path) -> bool:
+    # flock conflicts between separate open files even within one process.
+    with (root / ".build" / "package-app" / ".lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
+
+
+def test_concurrent_packager_cannot_evict_an_entry_another_run_is_using(tmp_path: Path) -> None:
+    # Packager A found cached entry "a" and is copying from it. Packager B
+    # needs a different key and would evict "a" as the oldest entry: it must
+    # wait until A has finished, not delete A's input underneath it.
+    make_cache_entries(tmp_path / ".build" / "package-app" / "native-tools", ["b", "c", "a"])
+    user = start_packager(tmp_path, "user")
+    evictor = None
+    try:
+        assert user.stdout.readline() == "using\n"
+        evictor = start_packager(tmp_path, "evictor")
+        assert evictor.stderr.readline() == "Waiting for another packaging run to finish with the package cache.\n"
+
+        user.stdin.write("done\n")
+        user.stdin.flush()
+        assert user.stdout.readline() == "intact\n"
+        assert user.wait(timeout=30) == 0
+
+        # Once A releases the cache, B's eviction goes ahead as usual.
+        assert evictor.stdout.readline() == "evicted\n"
+        assert evictor.wait(timeout=30) == 0
+    finally:
+        for process in (user, evictor):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
+    assert sorted(path.name for path in (tmp_path / ".build" / "package-app" / "native-tools").iterdir()) == []
+
+
+def test_package_cache_lock_is_released_when_its_holder_dies(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    holder = start_packager(tmp_path, "holder")
+    try:
+        assert holder.stdout.readline() == "locked\n"
+        assert package_cache_lock_is_held(tmp_path)
+    finally:
+        holder.kill()
+        holder.wait()
+
+    with package_app.package_cache_lock():
+        assert package_cache_lock_is_held(tmp_path)
+    assert not package_cache_lock_is_held(tmp_path)
+    assert "Waiting" not in capsys.readouterr().err
+
+
+def test_package_cache_lock_does_not_touch_cache_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # The lock file lives beside the cache kinds, where eviction never looks.
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    root = tmp_path / ".build" / "package-app" / "native-tools"
+    make_cache_entries(root, ["old"])
+
+    with package_app.package_cache_lock():
+        package_app.evict_stale_cache_entries(root / "new", keep=1)
+
+    assert (tmp_path / ".build" / "package-app" / ".lock").is_file()
+    assert list(root.iterdir()) == []
 
 
 def test_site_packages_cache_evicts_entries_left_by_older_sources(
@@ -1381,6 +1498,45 @@ def test_package_app_signs_final_bundle_after_native_tools(
     assert result.app == tmp_path / "dist" / "TimeCapsuleSMB.app"
     assert result.zip_path is None
     assert result.notarization_archive is None
+
+
+def test_package_app_holds_the_cache_lock_for_the_whole_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+    args = SimpleNamespace()
+    expected = package_app.PackageResult(app=tmp_path / "dist" / "TimeCapsuleSMB.app", zip_path=None, notarization_archive=None)
+    seen: list[bool] = []
+
+    def build(received):
+        assert received is args
+        seen.append(package_cache_lock_is_held(tmp_path))
+        return expected
+
+    monkeypatch.setattr(package_app, "build_app_package", build)
+
+    assert package_app.package_app(args) is expected
+    assert seen == [True]
+    assert not package_cache_lock_is_held(tmp_path)
+
+
+def test_package_app_releases_the_cache_lock_when_the_build_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_app = load_package_app_module()
+    monkeypatch.setattr(package_app, "PACKAGE_ROOT", tmp_path)
+
+    def build(args):
+        raise RuntimeError("swift build failed")
+
+    monkeypatch.setattr(package_app, "build_app_package", build)
+
+    with pytest.raises(RuntimeError, match="swift build failed"):
+        package_app.package_app(SimpleNamespace())
+    assert not package_cache_lock_is_held(tmp_path)
 
 
 def test_package_app_result_includes_zip_and_notarization_archive(

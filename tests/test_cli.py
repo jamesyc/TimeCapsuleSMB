@@ -8951,6 +8951,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["reboot_was_attempted"], False)
 
+    def test_fsck_on_a_volume_that_stayed_mounted_names_the_unmount(self) -> None:
+        # The volume was still mounted after umount, so the script stopped
+        # before fsck_hfs and before its reboot.
+        rc, text, wait_mock = self._run_fsck_with_remote_output(
+            "umount: /Volumes/Data: Device busy\ntcapsule-fsck: volume not unmounted\n", 1, ["--yes"])
+
+        self.assertEqual(rc, 1)
+        wait_mock.assert_not_called()
+        self.assertIn("could not be confirmed unmounted", text)
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["reboot_was_attempted"], False)
+
     def test_fsck_status_line_wins_over_ssh_exit_status(self) -> None:
         # With --no-reboot the session ends normally, but a stale nonzero SSH
         # status must not override a clean fsck status line, nor vice versa.

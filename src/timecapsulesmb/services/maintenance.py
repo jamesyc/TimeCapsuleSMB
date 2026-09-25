@@ -19,6 +19,11 @@ FSCK_DID_NOT_RUN_MESSAGE = (
     "fsck did not run: file sharing could not be stopped, or the connection "
     "ended before fsck_hfs finished."
 )
+FSCK_NOT_UNMOUNTED_LINE = "tcapsule-fsck: volume not unmounted"
+FSCK_NOT_UNMOUNTED_MESSAGE = (
+    "fsck did not run: the volume could not be confirmed unmounted. "
+    "File sharing stays off until the device restarts; restart it, then retry fsck."
+)
 
 NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
 MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE = "multiple mounted HFS volumes found; specify --volume to select one"
@@ -124,10 +129,18 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
         f"( {command} ) || exit 1"
         for command in render_remote_actions(managed_stop_actions(stop_afpserver=True))
     ]
+    # umount can fail harmlessly when Apple already unmounted the disk to save
+    # power, so its status is not the test: the mount table is. A volume still
+    # mounted (anywhere) must never be repaired. Stopping here skips the reboot
+    # too, like the stop failure above; file sharing stays off until then.
     # The reboot drops SSH, so the session's exit status is unreliable on that
     # path; the status line in the output is what reports fsck's result.
     lines += [
-        f"/sbin/umount -f {shlex.quote(mountpoint)} >/dev/null 2>&1 || true",
+        f"/sbin/umount -f {shlex.quote(mountpoint)} 2>&1",
+        f"mounts=$(/sbin/mount) || {{ echo '{FSCK_NOT_UNMOUNTED_LINE}'; exit 1; }}",
+        'case "\n$mounts" in',
+        f'    *"\n"{shlex.quote(device + " on ")}*) echo \'{FSCK_NOT_UNMOUNTED_LINE}\'; exit 1 ;;',
+        "esac",
         f"echo '--- fsck_hfs {device} ---'",
         f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1",
         "fsck_status=$?",
@@ -157,8 +170,10 @@ def fsck_exit_status(output: str) -> int | None:
     return None
 
 
-def fsck_failure_message(status: int | None) -> str | None:
+def fsck_failure_message(status: int | None, output: str = "") -> str | None:
     if status is None:
+        if any(line.strip() == FSCK_NOT_UNMOUNTED_LINE for line in output.splitlines()):
+            return FSCK_NOT_UNMOUNTED_MESSAGE
         return FSCK_DID_NOT_RUN_MESSAGE
     if status != 0:
         return f"fsck_hfs exited with status {status}; the disk may still need repair."
