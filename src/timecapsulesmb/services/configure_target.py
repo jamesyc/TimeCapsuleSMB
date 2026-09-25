@@ -4,7 +4,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from timecapsulesmb.discovery.bonjour import BonjourResolvedService, discovered_record_root_host
+from timecapsulesmb.discovery.bonjour import (
+    BonjourResolvedService,
+    discovered_record_has_only_link_local_ips,
+    discovered_record_root_host,
+)
 from timecapsulesmb.services import configure as configure_service
 
 
@@ -65,6 +69,13 @@ def resolve_configure_target(
         target = discovered_record_root_host(record) if record is not None else None
         if target:
             source = "selected_record"
+        elif record is not None and discovered_record_has_only_link_local_ips(record):
+            # Falling back to the saved TC_HOST here would either report a blank
+            # target or silently configure whichever device was saved last.
+            raise ValueError(
+                "Selected device only advertised link-local addresses. "
+                "Connect it to your network so it gets a LAN IP, then add it by that IP."
+            )
         else:
             target = existing.get("TC_HOST", "")
             source = "existing_config"

@@ -102,6 +102,40 @@ class ConfigureTargetTests(unittest.TestCase):
         self.assertEqual(target.host, "root@10.0.0.2")
         self.assertEqual(target.source, "existing_config")
 
+    def test_link_local_only_selected_record_is_rejected_without_using_existing_config(self) -> None:
+        record = BonjourResolvedService(
+            "Office",
+            "office.local.",
+            "_airport._tcp.local.",
+            ipv4=["169.254.108.120"],
+            ipv6=["fe80::9272:40ff:fe07:36a2%7"],
+        )
+
+        for existing in ({}, {"TC_HOST": "root@10.0.0.2"}):
+            with self.subTest(existing=existing):
+                with self.assertRaises(ValueError) as raised:
+                    resolve_configure_target(
+                        explicit_host="",
+                        selected_record=record,
+                        existing=existing,
+                        ssh_opts="",
+                    )
+
+                self.assertIn("only advertised link-local addresses", str(raised.exception))
+
+    def test_explicit_host_is_used_for_link_local_only_selected_record(self) -> None:
+        record = BonjourResolvedService("Office", "office.local.", "_airport._tcp.local.", ipv4=["169.254.108.120"])
+
+        target = resolve_configure_target(
+            explicit_host="root@10.0.0.9",
+            selected_record=record,
+            existing={},
+            ssh_opts="",
+        )
+
+        self.assertEqual(target.host, "root@10.0.0.9")
+        self.assertEqual(target.source, "explicit_host")
+
     def test_jsonable_selected_record_is_parsed_for_resolution(self) -> None:
         record = bonjour_record_from_selected_record({
             "name": "Office",
