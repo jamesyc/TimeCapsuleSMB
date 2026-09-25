@@ -942,3 +942,52 @@
  }
 -
 -
+--- a/source3/modules/vfs_catia.c
++++ b/source3/modules/vfs_catia.c
+@@ -821,6 +821,38 @@
+ 	return ret;
+ }
+ 
++/*
++ * Time Capsule NetBSD 4 builds (patch 0003): libc has no fdopendir(), so
++ * vfs_default reopens the directory with opendir() on fsp's name. That name
++ * is the client's; map it like every other name-based call, or a directory
++ * whose on-disk name holds a mapped character (':' from a Finder '/') can
++ * never be listed. Where fdopendir() uses the fd, the swap changes nothing.
++ */
++static DIR *catia_fdopendir(vfs_handle_struct *handle,
++			    files_struct *fsp,
++			    const char *mask,
++			    uint32_t attributes)
++{
++	struct catia_cache *cc = NULL;
++	DIR *result = NULL;
++	int saved_errno;
++	int ret;
++
++	ret = CATIA_FETCH_FSP_PRE_NEXT(talloc_tos(), handle, fsp, &cc);
++	if (ret != 0) {
++		return NULL;
++	}
++
++	result = SMB_VFS_NEXT_FDOPENDIR(handle, fsp, mask, attributes);
++	/* OpenDir_fsp() maps a failure's errno; the name restore may log. */
++	saved_errno = errno;
++
++	CATIA_FETCH_FSP_POST_NEXT(&cc, fsp);
++
++	errno = saved_errno;
++	return result;
++}
++
+ static int catia_chdir(vfs_handle_struct *handle,
+ 			const struct smb_filename *smb_fname)
+ {
+@@ -1913,6 +1945,7 @@
+ 
+ 	/* Directory operations */
+ 	.mkdirat_fn = catia_mkdirat,
++	.fdopendir_fn = catia_fdopendir,
+ 
+ 	/* File operations */
+ 	.openat_fn = catia_openat,

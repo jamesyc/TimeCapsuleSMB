@@ -94,6 +94,20 @@ static int next_fremovexattr(vfs_handle_struct *h, struct files_struct *fsp, con
 	return 0;
 }
 
+/* What vfs_default's NetBSD 4 fdopendir() fallback would opendir(): fsp's name. */
+static int next_fdopendir_errno;
+static DIR *next_fdopendir(vfs_handle_struct *h, files_struct *fsp, const char *mask,
+	uint32_t attributes)
+{
+	(void)h; (void)mask; (void)attributes;
+	strlcpy(next_seen, fsp->fsp_name->base_name, sizeof(next_seen));
+	if (next_fdopendir_errno != 0) {
+		errno = next_fdopendir_errno;
+		return NULL;
+	}
+	return (DIR *)fsp; /* any non-NULL handle; never dereferenced */
+}
+
 /* vfs_default: nothing to map below catia. */
 static NTSTATUS next_translate_name(vfs_handle_struct *h, const char *name,
 	enum vfs_translate_direction direction, TALLOC_CTX *ctx, char **mapped)
@@ -148,6 +162,7 @@ static struct vfs_fn_pointers next_fns = {
 	.fsetxattr_fn = next_fsetxattr,
 	.fremovexattr_fn = next_fremovexattr,
 	.translate_name_fn = next_translate_name,
+	.fdopendir_fn = next_fdopendir,
 };
 
 static struct files_struct *test_fsp(TALLOC_CTX *ctx, connection_struct *conn, const char *name,
@@ -171,8 +186,48 @@ int main(int argc, char **argv)
 	TALLOC_CTX *frame = talloc_stackframe();
 
 	CHECK(argc == 2);
-	CHECK(strcmp(argv[1], "catia_links") == 0 || strcmp(argv[1], "all") == 0);
-	{
+	CHECK(strcmp(argv[1], "catia_links") == 0 || strcmp(argv[1], "catia_fdopendir") == 0 ||
+	      strcmp(argv[1], "all") == 0);
+	if (strcmp(argv[1], "catia_fdopendir") == 0 || strcmp(argv[1], "all") == 0) {
+		/*
+		 * A directory named "x:y" on disk ("x/y" in Finder) is "x<U+F022>y" to the
+		 * client. Opening it for listing must reach the name on disk: NetBSD 4 has
+		 * no fdopendir(), and vfs_default reopens the directory by name.
+		 */
+		connection_struct *conn = talloc_zero(frame, connection_struct);
+		struct vfs_handle_struct *next = talloc_zero(frame, struct vfs_handle_struct);
+		struct vfs_handle_struct *cat = talloc_zero(frame, struct vfs_handle_struct);
+		struct files_struct *dir = NULL;
+		CHECK(conn != NULL && next != NULL && cat != NULL);
+		conn->params = talloc_zero(conn, struct share_params);
+		CHECK(conn->params != NULL);
+		conn->params->service = 1;
+		next->conn = cat->conn = conn;
+		next->fns = &next_fns;
+		cat->fns = &vfs_catia_fns;
+		cat->next = next;
+		dir = test_fsp(conn, conn, "share/x\xef\x80\xa2y", S_IFDIR | 0755);
+		CHECK(catia_fdopendir(cat, dir, NULL, 0) == (DIR *)dir);
+		CHECK(strcmp(next_seen, "share/x:y") == 0);
+		/* The handle keeps the client's name for everything after the open. */
+		CHECK(strcmp(dir->fsp_name->base_name, "share/x\xef\x80\xa2y") == 0);
+		/* A plain name passes through unchanged. */
+		TALLOC_FREE(dir);
+		dir = test_fsp(conn, conn, "share/plain", S_IFDIR | 0755);
+		CHECK(catia_fdopendir(cat, dir, NULL, 0) == (DIR *)dir);
+		CHECK(strcmp(next_seen, "share/plain") == 0);
+		/* A failed open keeps its errno for OpenDir_fsp() and restores the name. */
+		TALLOC_FREE(dir);
+		dir = test_fsp(conn, conn, "share/gone\xef\x80\xa2", S_IFDIR | 0755);
+		next_fdopendir_errno = ENOENT;
+		errno = 0;
+		CHECK(catia_fdopendir(cat, dir, NULL, 0) == NULL && errno == ENOENT);
+		CHECK(strcmp(next_seen, "share/gone:") == 0);
+		CHECK(strcmp(dir->fsp_name->base_name, "share/gone\xef\x80\xa2") == 0);
+		next_fdopendir_errno = 0;
+		TALLOC_FREE(dir);
+	}
+	if (strcmp(argv[1], "catia_links") == 0 || strcmp(argv[1], "all") == 0) {
 		/* "x:y" and "a*b" as macOS sends them: U+F022 and U+F021, UTF-8 encoded. */
 		connection_struct *conn = talloc_zero(frame, connection_struct);
 		struct vfs_handle_struct *next = talloc_zero(frame, struct vfs_handle_struct);
