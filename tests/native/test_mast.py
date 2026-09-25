@@ -1,5 +1,6 @@
 """Apple MaSt observations drive topology; errors must not mean no disks."""
 import plistlib
+import re
 import subprocess
 
 import pytest
@@ -86,3 +87,51 @@ def test_native_annotation_and_quoted_structural_names_are_data(parser):
     assert fields[2] == b"01234567-89ab-cdef-0123-456789abcdef"
     assert fields[3:5] == [b"0", b"0"]
     assert bytes.fromhex(fields[5].decode()).decode() == "partitions = [ ] builtin=true"
+
+
+def spaced_empty_elements_mast():
+    """Apple's compact XML with every kind of empty element the reader handles."""
+    return plistlib.dumps([
+        {"deviceName": "sd1", "builtin": True, "info": "", "annotation": b"",
+         "partitions": [volume(tags=[], options={})]},
+        {"deviceName": "sd2", "builtin": False, "partitions": [volume(deviceName="dk5", name="Other")]},
+    ]).decode()
+
+
+def respace(text, sep):
+    text = text.replace("<string></string>", f"<string{sep}/>")
+    text = re.sub(r"<data>\s*</data>", f"<data{sep}/>", text)
+    for tag in ("array", "dict", "true", "false"):
+        text = text.replace(f"<{tag}/>", f"<{tag}{sep}/>")
+    return text
+
+
+@pytest.mark.parametrize("sep", [" ", "\t", "\n\t\t", "  "])
+def test_whitespace_before_empty_element_close_is_the_same_inventory(parser, sep):
+    compact = spaced_empty_elements_mast()
+    spaced = respace(compact, sep)
+    for tag in ("string", "data", "array", "dict", "true", "false"):
+        assert f"<{tag}{sep}/>" in spaced
+    expected = run(parser, compact)
+    assert expected.returncode == 0, expected.stderr
+    lines = expected.stdout.splitlines()
+    assert lines[0] == b"2"
+    assert [line.split()[3] for line in lines[1:]] == [b"1", b"0"]
+    result = run(parser, spaced)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected.stdout
+
+
+@pytest.mark.parametrize("broken", ["<true /", "<true/ >", "<truex/>", "<true >", "<tru/>", "<true / >"])
+def test_malformed_empty_elements_reject_whole_observation(parser, broken):
+    text = spaced_empty_elements_mast().replace("<true/>", broken, 1)
+    assert broken in text
+    assert run(parser, text).returncode == 2
+
+
+@pytest.mark.parametrize("cut", ["<true", "<true ", "<true /", "<array ", "<dict \t"])
+def test_empty_element_truncated_at_end_of_input_is_rejected(parser, cut):
+    compact = spaced_empty_elements_mast()
+    tag = cut.split()[0].rstrip("/")
+    text = compact[:compact.index(tag + "/>")] + cut
+    assert run(parser, text).returncode == 2

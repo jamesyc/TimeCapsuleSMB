@@ -101,6 +101,22 @@ static int xml_text(struct parser *p, const char *closing) {
     p->p += strlen(closing);
     return 0;
 }
+/* An empty element, "<name/>" or "<name />" as the v3.0.0 shell reader
+ * accepted; Apple itself writes the compact form. */
+static int empty_tag(struct parser *p, const char *name) {
+    const char *save = p->p;
+    size_t n = strlen(name);
+    if ((size_t)(p->end - p->p) > n && *p->p == '<' && !memcmp(p->p + 1, name, n)) {
+        p->p += n + 1;
+        whitespace(p);
+        if (at(p, "/>")) {
+            p->p += 2;
+            return 1;
+        }
+    }
+    p->p = save;
+    return 0;
+}
 static enum token_kind xml_token(struct parser *p) {
     static const struct {
         const char *open, *close;
@@ -108,28 +124,22 @@ static enum token_kind xml_token(struct parser *p) {
     } tags[] = {{"<key>", "</key>", STRING},         {"<string>", "</string>", STRING},
                 {"<integer>", "</integer>", STRING}, {"<real>", "</real>", STRING},
                 {"<data>", "</data>", DATA},         {"<date>", "</date>", STRING}};
+    static const struct {
+        const char *name, *value;
+        enum token_kind kind, then;
+    } empty[] = {{"array", "", ARRAY, END_ARRAY}, {"dict", "", DICT, END_DICT},
+                 {"string", "", STRING, END},     {"data", "", DATA, END},
+                 {"true", "true", STRING, END},   {"false", "false", STRING, END}};
     size_t i;
     whitespace(p);
     if (p->p == p->end)
         return END;
-    if (at(p, "<array/>") || at(p, "<array />")) {
-        p->p += at(p, "<array/>") ? 8 : 9;
-        p->pending = END_ARRAY;
-        return ARRAY;
-    }
-    if (at(p, "<dict/>") || at(p, "<dict />")) {
-        p->p += at(p, "<dict/>") ? 7 : 8;
-        p->pending = END_DICT;
-        return DICT;
-    }
-    if (at(p, "<string/>")) {
-        p->p += 9;
-        return STRING;
-    }
-    if (at(p, "<data/>")) {
-        p->p += 7;
-        return DATA;
-    }
+    for (i = 0; i < sizeof(empty) / sizeof(empty[0]); i++)
+        if (empty_tag(p, empty[i].name)) {
+            strcpy(p->value, empty[i].value);
+            p->pending = empty[i].then;
+            return empty[i].kind;
+        }
     if (at(p, "<dict>")) {
         p->p += 6;
         return DICT;
@@ -145,16 +155,6 @@ static enum token_kind xml_token(struct parser *p) {
     if (at(p, "</array>")) {
         p->p += 8;
         return END_ARRAY;
-    }
-    if (at(p, "<true/>")) {
-        p->p += 7;
-        strcpy(p->value, "true");
-        return STRING;
-    }
-    if (at(p, "<false/>")) {
-        p->p += 8;
-        strcpy(p->value, "false");
-        return STRING;
     }
     for (i = 0; i < sizeof(tags) / sizeof(tags[0]); i++)
         if (at(p, tags[i].open)) {
