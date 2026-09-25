@@ -608,7 +608,8 @@ def test_registration_after_the_wait_ignores_a_reused_ready_descriptor(rig, daem
             proc.wait(timeout=5)
     assert proc.returncode == 0, err
     assert out.strip() == "final status=1"  # REG_REGISTERED
-    assert daemon.registrations() == []  # shutdown deregistered it
+    # Shutdown closed the registration; the daemon observes that on its own thread.
+    assert daemon.wait_for(lambda _events: daemon.registrations() == [], timeout=3) is not None
 
 
 def test_dropped_connection_is_retried(rig, daemon):
