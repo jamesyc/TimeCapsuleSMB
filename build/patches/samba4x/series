@@ -8,6 +8,9 @@
 # NetBSD4 lacks newer libc symbols, and the runtime kernels are older than the
 # SDKs used to compile these binaries. Keep normal file serving on path-based
 # VFS fallbacks instead of relying on runtime *at/openat2/fdopendir support.
+# The fallbacks report NetBSD's EFTYPE for O_NOFOLLOW on a symlink as ELOOP,
+# which Samba expects, and vfs_catia gains an fdopendir hook so the fallback
+# opens directories under their on-disk (SFM-mapped) names.
 0002-netbsd4-libreplace-compat.patch|NetBSD4 libc compatibility shims
 0003-netbsd-vfs-runtime-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
 # NetBSD4 can lose Samba's cached is_directory flag even when stat still says

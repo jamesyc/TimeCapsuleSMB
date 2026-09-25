@@ -75,6 +75,14 @@ For Samba 4.x, build and validate one lane first when changing Samba source or b
 
 Do not run underscore-prefixed helper scripts directly.
 
+Run the downstream Samba regression tests on the devices before a release that changes Samba patches, the build flags or the linker layout. Some cases only prove anything on Apple's kernels: `nofollow_errno` (NetBSD's EFTYPE for `O_NOFOLLOW`) and `data_page_writes` (the UVM fault-ahead bug) pass on any host. The build copies each test to the device named in `build/.env` and stops before staging `smbd` if one fails; point the scratch directory at a mounted data volume:
+
+```bash
+SAMBA4X_CROSS_EXEC_REMOTE_DIR=/Volumes/dkN SAMBA4X_RUN_REGRESSION_TESTS=1 ./build/samba4x.sh
+```
+
+On NetBSD 4 LE, build the tests with `SAMBA4X_BUILD_REGRESSION_TESTS=1 ./build/samba4xoldle.sh` and run every case except the `tc_xattr_migrate_test` `tdb`, `resume`, `resource` and `all` cases (they need more space than NetBSD 4's root RAM disk has) through `./build/samba4-cross-exec.sh` with `CROSS_EXEC_REMOTE_DIR=/Volumes/dkN`. Check that the NetBSD 4 host, password and SSH ProxyCommand in the `.env` it uses are current first.
+
 ## Signing And Notarization
 
 The macOS app packaging flow supports Developer ID signing and notarization when the relevant signing environment is configured. A public release should state whether the attached app zip is notarized. When notarization is enabled, the package validation step should complete successfully before the release asset is uploaded.
@@ -83,6 +91,7 @@ The macOS app packaging flow supports Developer ID signing and notarization when
 
 - Update `version.json`, `pyproject.toml`, and `src/timecapsulesmb/core/release.py` to the release version.
 - Rebuild any changed NetBSD artifacts and update `artifact-manifest.json`.
+- For Samba changes, run the device regression tests on NetBSD 6 (full suite) and NetBSD 4 LE (the cases that fit).
 - Run the artifact manifest tests.
 - Run the Python and Swift test suites.
 - Package and validate the macOS app.
