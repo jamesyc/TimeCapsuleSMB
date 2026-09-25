@@ -5,7 +5,6 @@
 #define EXIT_USAGE 3
 #define EXIT_PLAN_FAILED 13
 #define NT_HASH_MAX_PASSWORD_BYTES 4096
-#define SERVICE_VERSION_CODE 30100
 #ifndef TC_HOSTS_PATH
 #define TC_HOSTS_PATH "/etc/hosts"
 #endif

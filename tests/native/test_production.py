@@ -14,14 +14,14 @@ def test_production_service_rejects_fixtures_and_keeps_role_entrypoints(tmp_path
     def run(*args):
         return subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=10)
 
-    assert run("--version").returncode == 0
-    assert run("discovery", "--version").returncode == 0
+    assert run("discovery", "--help").returncode == 0
     assert run("telemetry", "--version").returncode == 0
     assert run("--retain-policy").returncode == 3
 
     rejected = run("--print-link-plan", "--facts-file", str(tmp_path / "missing"))
     assert rejected.returncode == 3 and "Usage:" in rejected.stderr
-    for removed in (("discovery", "--print-link-plan"), ("discovery", "--print-mast")):
+    for removed in (("--version",), ("discovery", "--version"),
+                    ("discovery", "--print-link-plan"), ("discovery", "--print-mast")):
         rejected = run(*removed)
         assert rejected.returncode == 3 and "Usage:" in rejected.stderr
 

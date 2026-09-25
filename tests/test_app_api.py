@@ -3095,9 +3095,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3135,9 +3133,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3166,9 +3162,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
@@ -3196,9 +3190,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3234,9 +3226,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
@@ -3274,9 +3264,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
 
@@ -3314,9 +3302,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
 
@@ -3374,9 +3360,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3471,9 +3455,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3560,9 +3542,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3629,9 +3609,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3691,9 +3669,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4-netbsd4be/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery-netbsd4be/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service-netbsd4be/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry-netbsd4be/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync-netbsd4be/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3749,9 +3725,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3808,9 +3782,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
@@ -3987,9 +3959,7 @@ class AppApiTests(unittest.TestCase):
         artifacts = {
             "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
             "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
-            "discovery": SimpleNamespace(absolute_path=REPO_ROOT / "bin/discovery/discoveryd"),
             "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
-            "telemetry": SimpleNamespace(absolute_path=REPO_ROOT / "bin/telemetry/telemetry"),
             "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
         }
         params = {"dry_run": False}

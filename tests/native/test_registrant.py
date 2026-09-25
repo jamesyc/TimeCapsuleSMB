@@ -188,14 +188,17 @@ def test_service_discovery_unknown_option_returns_timestamped_usage(rig):
                for line in result.stderr.splitlines())
 
 
-def test_service_discovery_version(rig):
-    result = run_discovery(rig[2], "--version")
-    assert result.returncode == 0 and result.stdout == "30100\n" and result.stderr == ""
+def test_service_discovery_help_prints_usage_without_registering(rig, daemon):
+    result = run_discovery(rig[2], "--help")
+    assert result.returncode == 0 and result.stdout == ""
+    assert "Usage:" in result.stderr and "starting" not in result.stderr
+    assert daemon.transcript == []
 
 
-def test_service_discovery_accepts_debug_logging_before_version(rig):
-    result = run_discovery(rig[2], "--debug-logging", "--version")
-    assert result.returncode == 0 and result.stdout == "30100\n" and result.stderr == ""
+def test_service_discovery_accepts_debug_logging_before_help(rig):
+    # --debug-logging is a flag: it must not consume the option after it.
+    result = run_discovery(rig[2], "--debug-logging", "--help")
+    assert result.returncode == 0 and result.stdout == "" and "Usage:" in result.stderr
 
 
 @pytest.mark.parametrize("args", [
@@ -274,9 +277,10 @@ def test_invalid_share_arguments_fail_before_registration(rig, daemon, args, exi
 def test_share_argument_count_is_bounded(rig):
     _, _, binary = rig
     args = [arg for i in range(16) for arg in adisk_args(key=f"dk{i}")]
-    result = subprocess.run([str(binary), "discovery", *args, "--version"], capture_output=True, text=True, timeout=10)
+    # --help ends parsing after every share argument has been validated.
+    result = subprocess.run([str(binary), "discovery", *args, "--help"], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    result = subprocess.run([str(binary), "discovery", *args, *adisk_args(key="dk16"), "--version"],
+    result = subprocess.run([str(binary), "discovery", *args, *adisk_args(key="dk16"), "--help"],
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 8 and "too many adisk disks" in result.stderr
 
@@ -635,5 +639,6 @@ def test_print_link_plan_and_bad_share_arguments(rig):
     assert "link: name=bridge0 index=9 role=lan mask=smb,adisk" in result.stdout
     result = subprocess.run([str(binary), "discovery", "--netbios-name", "TESTCAPSULE", "--facts-file", str(facts), *adisk_args(uuid="bad-uuid")], capture_output=True, text=True, timeout=10)
     assert result.returncode == 8
-    assert subprocess.run([str(binary), "discovery", "--version"], capture_output=True, text=True, timeout=10).stdout == "30100\n"
-    assert subprocess.run([str(binary), "discovery", "--instance", "x"], capture_output=True, text=True, timeout=10).returncode == 3
+    # Removed options are usage errors: the service binary carries no version of its own.
+    for removed in (["--version"], ["--instance", "x"]):
+        assert subprocess.run([str(binary), "discovery", *removed], capture_output=True, text=True, timeout=10).returncode == 3

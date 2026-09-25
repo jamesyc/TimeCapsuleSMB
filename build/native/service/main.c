@@ -95,7 +95,7 @@ static int print_samba_identity(void) {
 }
 
 static void usage(void) {
-    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-mast [--timeout-seconds N] | --version\n", stderr);
+    fputs("Usage: service --print-nt-hash-from-stdin | --print-device-nt-hash | --print-samba-identity | --print-link-plan | --print-mast [--timeout-seconds N]\n", stderr);
 }
 int main(int argc, char **argv) {
     const char *facts_file = NULL;
@@ -123,7 +123,6 @@ int main(int argc, char **argv) {
         usage();
         return EXIT_USAGE;
     }
-    if (!strcmp(command, "--version")) { printf("%d\n", SERVICE_VERSION_CODE); return EXIT_OK; }
     if (!strcmp(command, "--print-samba-identity")) return print_samba_identity();
     if (!strcmp(command, "--print-device-nt-hash")) return print_device_nt_hash();
     if (!strcmp(command, "--print-nt-hash-from-stdin")) return print_nt_hash_from_stdin();

@@ -18,6 +18,8 @@ while IFS= read -r source; do set -- "$@" "$build_dir/$source"; done <"$build_di
 cc -D_GNU_SOURCE -DTC_SERVICE_MULTICALL -D_DNS_SD_LIBDISPATCH=0 $stub_flags \
     -Wall -Wextra -Werror -Wno-sign-compare -Wno-unterminated-string-initialization \
     -Wno-unused-but-set-variable "$@" -o "$work/service"
-"$work/service" --version
-"$work/service" discovery --version
+# Run each entry point on the host: the top-level helper on a known NT hash
+# ("password"), then the discovery and telemetry roles.
+test "$(printf password | "$work/service" --print-nt-hash-from-stdin)" = 8846F7EAEE8FB117AD06BDD830B7586C
+"$work/service" discovery --help 2>/dev/null
 "$work/service" telemetry --version

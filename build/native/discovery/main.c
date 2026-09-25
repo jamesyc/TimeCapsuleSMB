@@ -34,7 +34,7 @@ static void publish_readiness(const struct wcifsnd *nbns, const struct config *c
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s [--diskless] [--netbios-name NAME] [--adisk-share NAME KEY UUID FLAGS]... [--debug-logging]\n"
-            "       %s --version | --help\n"
+            "       %s --help\n"
             "Registers _smb/_adisk (and _afpovertcp when MDNS_ADVERTISE_AFP=1) with\n"
             "Apple's mDNSResponder on every link the device plan allows.\n"
             "When enabled, Apple's wcifsnd serves the canonical NetBIOS name.\n",
@@ -75,9 +75,6 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "--facts-file") && i + 1 < argc) {
             facts_file = argv[++i];
 #endif
-        } else if (!strcmp(argv[i], "--version")) {
-            printf("%d\n", ADVERTISER_VERSION_CODE);
-            return EXIT_OK;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             usage(argv[0]);
             return EXIT_OK;
@@ -103,7 +100,7 @@ int main(int argc, char **argv) {
         acp_set_scope(1, collect_cancelled);
     plan_loop_init(&loop, &options, facts_file);
     plan_loop_request(&loop, plan_loop_now_ms());
-    fprintf(stderr, "discoveryd %d starting%s%s\n", ADVERTISER_VERSION_CODE, cfg.diskless ? " (diskless)" : "",
+    fprintf(stderr, "discovery starting%s%s\n", cfg.diskless ? " (diskless)" : "",
             cfg.adisk_disks.count ? " with adisk rows" : "");
 
     while (!g_stop && !acp_stop_requested) {
@@ -137,7 +134,7 @@ int main(int argc, char **argv) {
         registrant_dispatch(&reg, &reads, now);
     }
 
-    fprintf(stderr, "discoveryd stopping; deregistering everything\n");
+    fprintf(stderr, "discovery stopping; deregistering everything\n");
     wcifsnd_shutdown(&nbns);
     registrant_shutdown(&reg);
     plan_loop_close(&loop);

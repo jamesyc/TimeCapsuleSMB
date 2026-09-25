@@ -24,7 +24,6 @@
 #define ADISK_PORT 9
 #define AFP_REGTYPE "_afpovertcp._tcp"
 #define AFP_PORT 548
-#define ADVERTISER_VERSION_CODE 30100
 
 enum exit_code {
     EXIT_OK = 0,

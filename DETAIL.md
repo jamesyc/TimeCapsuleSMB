@@ -740,7 +740,7 @@ Important properties:
 - talks to `/var/run/mDNSResponder` for Bonjour and to the owned `/sbin/wcifsnd` child over Apple's loopback UDP control protocol
 
 CLI: `service discovery [--diskless] [--netbios-name NAME] [--adisk-share NAME KEY UUID FLAGS]... [--debug-logging]`,
-plus `--version` (prints `30100`). `service --print-link-plan` and
+plus `--help`. `service --print-link-plan` and
 `service --print-mast` are top-level diagnostics, not discovery-role aliases.
 Host builds with `TC_NATIVE_TEST` additionally accept `--facts-file F` to
 replace live collection with a text snapshot. Device binaries omit this
@@ -1561,14 +1561,14 @@ Current important outputs:
 - [bin/rsync-netbsd4le/rsync](bin/rsync-netbsd4le/rsync)
 - [bin/rsync-netbsd4be/rsync](bin/rsync-netbsd4be/rsync)
 
-Current active deploy artifact sizes (stripped bytes, v3.1.0):
-- NetBSD 6 `smbd`: about `9.7M`
-- NetBSD 6 `service`: `360,684`
+Current active deploy artifact sizes (stripped bytes, v3.1.1):
+- NetBSD 6 `smbd`: about `9.8M`
+- NetBSD 6 `service`: `362,220`
 - NetBSD 6 `rsync`: about `1.0M`
-- NetBSD 4 little-endian `smbd`: about `9.7M`
-- NetBSD 4 big-endian `smbd`: about `9.7M`
-- NetBSD 4 little-endian `service`: `319,908`
-- NetBSD 4 big-endian `service`: `319,308`
+- NetBSD 4 little-endian `smbd`: about `9.8M`
+- NetBSD 4 big-endian `smbd`: about `9.8M`
+- NetBSD 4 little-endian `service`: `321,512`
+- NetBSD 4 big-endian `service`: `320,912`
 - NetBSD 4 little-endian `rsync`: about `878K`
 - NetBSD 4 big-endian `rsync`: about `872K`
 
