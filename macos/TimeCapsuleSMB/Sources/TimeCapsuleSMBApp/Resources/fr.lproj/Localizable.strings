@@ -244,7 +244,7 @@
 "install.state.idle" = "Créez un plan avant d'installer ou de mettre à jour Samba.";
 "install.timeline.title" = "Statut";
 "install.timeline.waiting" = "En attente de la progression de l’opération en arrière-plan.";
-"install.warning.awaiting_confirmation" = "Le backend attend une confirmation explicite.";
+"install.warning.awaiting_confirmation" = "L’opération en arrière-plan attend une confirmation explicite.";
 "runtime.state.unknown" = "Non installé.";
 "runtime.state.not_installed" = "Non installé.";
 "runtime.state.unhealthy" = "La vérification a détecté des problèmes avec les services.";
@@ -338,7 +338,7 @@
 "backend.summary.install_validation_failed" = "La validation de l'installation a échoué.";
 "backend.summary.install_validation_passed" = "Validation de l'installation réussie.";
 "backend.summary.operation_exited" = "Opération terminée.";
-"backend.summary.reachability.all_reachable" = "SSH joignable ; Port SMB accessible.";
+"backend.summary.reachability.all_reachable" = "SSH accessible ; port SMB accessible.";
 "backend.summary.reachability.partial" = "L'appareil est partiellement accessible.";
 "backend.summary.reachability.smb_only" = "Port SMB accessible, SSH fermé.";
 "backend.summary.reachability.ssh_only" = "SSH accessible, port SMB fermé.";
@@ -377,15 +377,15 @@
 "backend.summary.reachability.auth_failed" = "L'appareil a rejeté le mot de passe ou les identifiants SSH fournis.";
 "backend.summary.reachability.no_candidates" = "Aucun hôte enregistré n’était disponible.";
 "backend.summary.settings_synchronized" = "Réglages du profil de l’appareil synchronisés.";
-"backend.summary.ssh.acp_reachable_ssh_closed" = "AirPort ACP est joignable, mais SSH est fermé.";
+"backend.summary.ssh.acp_reachable_ssh_closed" = "AirPort ACP est accessible, mais SSH est fermé.";
 "backend.summary.ssh.already_disabled" = "SSH est déjà désactivé.";
 "backend.summary.ssh.already_enabled" = "SSH est déjà activé.";
 "backend.summary.ssh.configured" = "SSH est configuré.";
 "backend.summary.ssh.disable_requested" = "Désactivation de SSH demandée ; sans attendre le redémarrage ni vérifier que SSH reste fermé.";
 "backend.summary.ssh.disabled" = "SSH désactivé (reste fermé après le redémarrage).";
 "backend.summary.ssh.enable_requested" = "Activation de SSH demandée ; sans attendre l’ouverture de SSH.";
-"backend.summary.ssh.reachable" = "SSH est joignable.";
-"backend.summary.ssh.unreachable" = "AirPort ACP et SSH ne sont pas joignables.";
+"backend.summary.ssh.reachable" = "SSH est accessible.";
+"backend.summary.ssh.unreachable" = "AirPort ACP et SSH ne sont pas accessibles.";
 "field.firmware_template" = "Chemin du modèle de firmware, facultatif";
 "field.firmware_version" = "Version du firmware, facultative";
 "field.helper" = "Programme auxiliaire";
@@ -861,8 +861,8 @@
 "value.list_separator" = ", ";
 "value.no" = "non";
 "value.not_required" = "Non requis";
-"value.not_reachable" = "Injoignable";
-"value.reachable" = "Joignable";
+"value.not_reachable" = "Inaccessible";
+"value.reachable" = "Accessible";
 "value.required" = "Obligatoire";
 "value.unknown" = "Inconnu";
 "value.yes" = "oui";

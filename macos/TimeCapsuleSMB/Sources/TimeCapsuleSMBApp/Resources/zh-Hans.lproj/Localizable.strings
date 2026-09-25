@@ -189,7 +189,7 @@
 "dashboard.health.connection.not_refreshed" = "连接状态尚未刷新。";
 "dashboard.health.connection.password_invalid" = "保存的密码被设备拒绝。";
 "dashboard.health.connection.refreshing" = "正在检查 DNS、SSH 和 SMB 的可达性…";
-"dashboard.health.connection.running" = "后端操作正在使用此配置。";
+"dashboard.health.connection.running" = "后台操作正在使用此配置。";
 "dashboard.health.checkup" = "检查";
 "dashboard.health.runtime" = "服务状态";
 "dashboard.health.runtime.activation_needed" = "此 NetBSD4 设备重启后可能需要执行“启动 SMB”。";
@@ -244,7 +244,7 @@
 "install.state.idle" = "安装或更新 Samba 前请先创建计划。";
 "install.timeline.title" = "状态";
 "install.timeline.waiting" = "正在等待后台进度。";
-"install.warning.awaiting_confirmation" = "后端正在等待明确确认。";
+"install.warning.awaiting_confirmation" = "后台操作正在等待明确确认。";
 "runtime.state.unknown" = "未安装。";
 "runtime.state.not_installed" = "未安装。";
 "runtime.state.unhealthy" = "检查发现服务运行问题。";
@@ -301,7 +301,7 @@
 "backend.summary.activation_completed" = "NetBSD4 启动已完成。";
 "backend.summary.activation_completed_with_followup" = "NetBSD4 启动已完成。%@";
 "backend.summary.activation_followup" = "如果设备重启后没有自动启动 Samba，请运行 `activate`。";
-"backend.summary.configuration_saved" = "配置已保存，并已验证 SSH 身份认证。";
+"backend.summary.configuration_saved" = "配置已保存，并已验证 SSH 身份验证。";
 "backend.summary.deploy_completed" = "Samba 安装或更新已完成。";
 "backend.summary.discovered_devices" = "发现 %d 个设备。";
 "backend.summary.doctor_checks_passed" = "诊断检查通过。";

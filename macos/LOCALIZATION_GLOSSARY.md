@@ -1,6 +1,6 @@
 # macOS localization glossary
 
-Reviewed 2026-09-22. Applies to `en`, `de`, `nl`, `fr`, `es`, `it`, `pt`, and `ru`, plus Simplified Chinese (`zh-Hans`). Lithuanian is not covered by this glossary.
+Reviewed 2026-09-25. Applies to `en`, `de`, `nl`, `fr`, `es`, `it`, `pt`, `ru`, Simplified Chinese (`zh-Hans`), and Lithuanian (`lt`). The Lithuanian column follows the human translation contributed in [issue #195](https://github.com/jamesyc/TimeCapsuleSMB/issues/195) (commit `e3392bd5`) except where a row says otherwise.
 
 This is an editorial guide, not a global search-and-replace dictionary. Keep the meaning of each operation, the distinction between an action and a status, and the distinction between an application and the service/storage it manages.
 
@@ -11,6 +11,7 @@ This is an editorial guide, not a global search-and-replace dictionary. Keep the
 3. For our own UI, use natural technical language. The preferred translations below are project editorial choices unless marked as Apple application names. They are not all quotations from Apple.
 4. Preserve literal program names, filenames, paths, flags, environment variables, API fields, device identifiers, and user-supplied names. A translated label must not imply that a file or executable has been renamed.
 5. Portuguese currently mixes regions. This glossary **uses Brazilian Portuguese** for the existing `pt` catalog because much of its existing UI already uses Brazilian forms. Do not change locale routing or claim that `pt` is `pt-BR`; regional scope remains explicit; this does not introduce locale routing changes.
+6. A cell may hold two terms when one English word covers two concepts, written `term (context) / term (context)`. Pick by context; do not unify the two. A split cell is a decision, not an inconsistency to clean up.
 
 ## Protected names and tokens
 
@@ -38,6 +39,9 @@ Preserve `%@`, `%d`, `%lld`, positional specifiers, `%%`, URLs, backticks, and i
 | Portuguese (Brazil) | chaves | [Acesso às Chaves](https://support.apple.com/pt-br/guide/keychain-access/welcome/mac) | [Utilitário de Disco](https://support.apple.com/pt-br/guide/disk-utility/welcome/mac) |
 | Russian | связка ключей | [Связка ключей](https://support.apple.com/ru-ru/guide/keychain-access/welcome/mac) | [Дисковая утилита](https://support.apple.com/ru-ru/guide/disk-utility/welcome/mac) |
 | Simplified Chinese | 钥匙串 | [钥匙串访问](https://support.apple.com/zh-cn/guide/keychain-access/welcome/mac) | [磁盘工具](https://support.apple.com/zh-cn/guide/disk-utility/dskutl1027/mac) |
+| Lithuanian | Keychain | Keychain Access | Disk Utility |
+
+macOS has no Lithuanian localization, so Lithuanian keeps Apple application and product names in English, unquoted and uninflected: `iš Keychain`, `Atidaryti Finder`, `AirPort Utility`, `Time Machine`. The company name may take Lithuanian quotation marks (`„Apple“`), as in the human translation. Generic OS concepts are translated: System Settings is **sistemos nustatymai**.
 
 “Cannot read the password from Keychain” refers to the **store**, not to opening the Keychain Access app. Do not turn every storage error into an application error. The newer Passwords app is also not a replacement term for the keychain API.
 
@@ -53,12 +57,17 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Save profile | Profil speichern | Profiel opslaan | Enregistrer le profil | Guardar perfil |
 | Diagnostics | Diagnose | Diagnostiek | Diagnostic | Diagnóstico |
 | Helper program | Hilfsprogramm | hulpprogramma | programme auxiliaire | programa auxiliar |
-| Discovery | Erkennung | detectie | découverte | descubrimiento |
-| Running operation | Wird ausgeführt | Bezig | En cours d'exécution | En ejecución |
+| Discovery | Erkennung (process) / Gerätesuche (operation title) | detectie (process) / apparaatdetectie (operation title) | découverte | descubrimiento |
+| Running | Wird ausgeführt (operation) / läuft (service) | Bezig (operation) / actief (service) | En cours d'exécution | En ejecución |
 | Passed check | Bestanden | Geslaagd | Réussi | Aprobado |
 | Warning | Warnung | Waarschuwing | Avertissement | Advertencia |
-| Failed check | Fehlgeschlagen | Mislukt | Échec | Error |
-| Network share | Freigabe | share | partage | recurso compartido |
+| Failed | Fehlgeschlagen | Mislukt | Échec (label) / a échoué (sentence) | Error (label) / falló (sentence) |
+| Network share | Freigabe (noun) / freigeben (verb) | share (noun) / delen (verb) | partage (noun) / partager (verb) | recurso compartido (noun) / compartir (verb) |
+| Idle | Leerlauf | Inactief (status) / inactiviteit (ATA timer) | Inactif (status) / inactivité (ATA timer) | Inactivo (status) / inactividad (ATA timer) |
+| Enable / disable | aktivieren / deaktivieren | inschakelen / uitschakelen | activer / désactiver | habilitar / deshabilitar |
+| Reachable | erreichbar | bereikbaar | accessible | accesible |
+| Flash (NAND storage) | Flash-Speicher; Flash- in compounds | flashgeheugen | mémoire flash | memoria flash |
+| Host | Host | host | hôte | host |
 | Firmware | Firmware | firmware | firmware | firmware |
 | Metadata | Metadaten | metadata | métadonnées | metadatos |
 | Extended attributes | erweiterte Attribute | uitgebreide attributen | attributs étendus | atributos extendidos |
@@ -71,29 +80,43 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Standby | Standby | stand-by | veille | modo de espera |
 | Disk I/O | Festplatten-I/O | schijf-I/O | E/S disque | E/S de disco |
 
-| Concept | it | pt-BR | ru | zh-Hans |
-|---|---|---|---|---|
-| Device profile | profilo del dispositivo | perfil do dispositivo | профиль устройства | 设备配置 |
-| Save profile | Salva profilo | Salvar perfil | Сохранить профиль | 保存配置 |
-| Diagnostics | Diagnostica | Diagnóstico | Диагностика | 诊断 |
-| Helper program | programma ausiliario | programa auxiliar | вспомогательная программа | 辅助程序 |
-| Discovery | rilevamento | descoberta | обнаружение | 发现 |
-| Running operation | In esecuzione | Em execução | Выполняется | 运行中 |
-| Passed check | Superato | Aprovado | Пройдено | 通过 |
-| Warning | Avviso | Aviso | Предупреждение | 警告 |
-| Failed check | Non riuscito | Falha | Ошибка | 失败 |
-| Network share | condivisione | compartilhamento | общий ресурс | 共享 |
-| Firmware | firmware | firmware | прошивка | 固件 |
-| Metadata | metadati | metadados | метаданные | 元数据 |
-| Extended attributes | attributi estesi | atributos estendidos | расширенные атрибуты | 扩展属性 |
-| Authentication | autenticazione | autenticação | аутентификация | 身份验证 |
-| Encryption | crittografia | criptografia | шифрование | 加密 |
-| Signing | firma | assinatura | подпись | 签名 |
-| Disk mount | montare | montar | монтировать | 挂载 |
-| Snapshot | istantanea | snapshot | снимок | 快照 |
-| Permissions | permessi | permissões | права доступа | 权限 |
-| Standby | standby | modo de espera | режим ожидания | 待机 |
-| Disk I/O | I/O del disco | E/S de disco | дисковый ввод-вывод | 磁盘 I/O |
+| Concept | it | pt-BR | ru | zh-Hans | lt |
+|---|---|---|---|---|---|
+| Device profile | profilo del dispositivo | perfil do dispositivo | профиль устройства | 设备配置 | įrenginio profilis |
+| Save profile | Salva profilo | Salvar perfil | Сохранить профиль | 保存配置 | Išsaugoti profilį |
+| Diagnostics | Diagnostica | Diagnóstico | Диагностика | 诊断 | Diagnostika |
+| Helper program | programma ausiliario | programa auxiliar | вспомогательная программа | 辅助程序 | pagalbinė programa |
+| Discovery | rilevamento | descoberta | обнаружение | 发现 | paieška |
+| Running | In esecuzione | Em execução | Выполняется (operation) / работает (service) | 运行中 | Vykdoma (operation) / veikia (service) |
+| Passed check | Superato | Aprovado | Пройдено | 通过 | Pavyko |
+| Warning | Avviso | Aviso | Предупреждение | 警告 | Įspėjimas |
+| Failed | Non riuscito | Falha | Ошибка (label) / не удалось (sentence) | 失败 | Nepavyko |
+| Network share | condivisione (noun) / condividere (verb) | compartilhamento (noun) / compartilhar (verb) | общий ресурс (noun) / открыть общий доступ (verb) | 共享 | bendrinamas diskas (noun) / bendrinti (verb) |
+| Idle | Inattivo (status) / inattività (ATA timer) | Inativo (status) / inatividade (ATA timer) | В режиме ожидания (status) / простой (ATA timer) | 空闲 | Laukiama (status) / neveikla (ATA timer) |
+| Enable / disable | abilitare / disabilitare | ativar / desativar | включить / отключить | 启用 / 禁用 (a feature or setting) / 停用 (other software the user runs) | įjungti / išjungti |
+| Reachable | raggiungibile | acessível | доступен | 可达 (network status sentences) / 可访问 (short status value) | pasiekiamas |
+| Flash (NAND storage) | memoria flash | memória flash | флеш-память | 闪存 | flash atmintis |
+| Host | host | host | хост | 主机 | kompiuteris; kompiuterio pavadinimas (a name to type) |
+| Firmware | firmware | firmware | прошивка | 固件 | programinė įranga |
+| Metadata | metadati | metadados | метаданные | 元数据 | metaduomenys |
+| Extended attributes | attributi estesi | atributos estendidos | расширенные атрибуты | 扩展属性 | išplėstiniai atributai |
+| Authentication | autenticazione | autenticação | аутентификация | 身份验证 | autentifikacija |
+| Encryption | crittografia | criptografia | шифрование | 加密 | šifravimas |
+| Signing | firma | assinatura | подпись | 签名 | pasirašymas |
+| Disk mount | montare | montar | монтировать | 挂载 | prijungti |
+| Snapshot | istantanea | snapshot | снимок | 快照 | momentinė kopija |
+| Permissions | permessi | permissões | права доступа | 权限 | leidimai |
+| Standby | standby | modo de espera | режим ожидания | 待机 | budėjimas |
+| Disk I/O | I/O del disco | E/S de disco | дисковый ввод-вывод | 磁盘 I/O | disko įvestis ir išvestis |
+
+Notes on the new rows:
+
+- **Enable / disable:** use one pair per feature everywhere it appears (setting label, confirmation, result summary). Spanish and Italian use *habilitar/deshabilitar* and *abilitare/disabilitare* for SSH and other features; do not mix in *activar* or *attivare*, which are reserved for **Activate** (the NetBSD4 action).
+- **Reachable:** a network service or host answers on its port. It is not "available" (usable), "accessible" in the disability sense, or "connected".
+- **Authentication:** Chinese uses 身份验证, the usual macOS term for verifying a password or key. 双重认证 is only the brand name of Apple's two-factor feature; do not use 认证 or 身份认证 for SSH or ACP authentication.
+- **Flash:** the router's NAND flash storage, or writing to it. Never a camera flash, and not Adobe Flash.
+- **Host:** a network host, entered as a name or IP address. It is not a "server" in the client/server sense and not the person hosting.
+- **Lithuanian firmware:** the human translation uses *programinė įranga* for firmware, which also means "software" in general. Keep it for firmware (the flash screens need it), and say *įdiegta programinė įranga* or *diegimo failai* for our installed software so the two do not collide.
 
 Technical borrowings can be correct: Dutch `share`, Italian `log`, and Portuguese `snapshot` are acceptable in this app. Do not replace them with awkward literal inventions merely to remove English. Conversely, `Profile`, `Diagnostics`, `running`, and `bundled` are not protected names.
 
@@ -101,9 +124,9 @@ Technical borrowings can be correct: Dutch `share`, Italian `log`, and Portugues
 
 | Source term | Decision |
 |---|---|
-| payload | Deployment files: say “installation files” / “Samba files” in the local language. JSON response: say “response data”. Firmware image segment: preserve the technical distinction, e.g. “firmware payload”; do not describe it as a complete firmware image. No global replacement. |
+| payload | Deployment files: say “installation files” / “Samba files” in the local language. JSON response: say “response data”. Firmware image segment: preserve the technical distinction, e.g. “firmware payload”; do not describe it as a complete firmware image. No global replacement. Lithuanian: *diegimo failai* / *diegimo tomas* / *diegimo aplankas* for deployment, *programinės įrangos turinys* for the firmware segment; not *apkrova* (a physical load). |
 | runtime | User-facing service status: prefer “services” or “service status”. Technical execution environment: translate “runtime environment”. Do not turn a running process into an abstract “runtime” noun everywhere. |
-| backend | Prefer “background operation” in user-facing progress; retain `backend` where describing the actual app/helper architecture or raw events. |
+| backend | Prefer “background operation” in user-facing progress; retain `backend` where describing the actual app/helper architecture or raw events. Lithuanian: *foninė operacija* for progress, *pagalbinė programa* for raw events; not *serveris*, since the helper runs on the Mac. Chinese: 后台操作 for progress, 后端 only for raw events. |
 | boot hook | Describe as a startup hook / startup mechanism in the local language; retain `boot hook` parenthetically in specialist firmware UI if it helps recognition. This is not the bootloader itself. |
 | firmware bank | A firmware storage bank/slot, not a financial bank, disk partition, or hardware memory bank unless the source says so. Preserve primary/inactive/active distinctions. |
 | flash | Flash storage or the act of writing it; not a light flash. French “mémoire flash”, Russian “флеш-память”, Chinese “闪存”. |
@@ -143,6 +166,33 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 These are names of external OS applications. They need not dictate the name of this app's own Settings screen. Spanish terminology here follows Apple's Spain documentation for named OS UI; the general `es` catalog should avoid unnecessary regional slang. If the product chooses Latin American Spanish instead, verify those OS names against that locale rather than assuming they are identical.
 
 `Doctor` in prose describes this project's diagnostic checks, not a physician. Use the same localized concept as the Checkup screen. Keep the literal CLI command `doctor` intact. Similarly, “check” is a test, not a bank cheque; “plan” is an action plan, not a subscription; “directory” is a filesystem folder, not a telephone directory; “flush” means complete pending writes, not erase the disk; “settle” means allow startup to stabilize, not settle a bill.
+
+## Summary keys
+
+Helper results carry an English `summary` plus a stable `summary_key` and positional `summary_args` (progress logs: `message_key`, `message_args`). The app shows `backend.summary.<summary_key>` from the catalogs and falls back to the English text. The key registry is `src/timecapsulesmb/core/summaries.py`; `tests/test_summaries.py` checks every catalog against it.
+
+- Translate each key as a **whole sentence**. Keys are never assembled from fragments; a variant such as "with a firmware version" has its own key (`flash.apple_stock_match_version`) so each language can place the version where it reads naturally.
+- Placeholders must match the registry's argument types and count: `%d`/`%ld`/`%lld` for integers, `%@` for strings. Reorder with positional specifiers (`%2$@ … %1$lld`), never by swapping bare placeholders.
+- Arguments are values (counts, versions, paths, product IDs), never English words. If a sentence needs a word that depends on state, it needs another key.
+- A summary is a status line: past tense or state, no trailing ellipsis unless the English has one (the "Waiting…" progress logs).
+- Changing an English summary's shape (adding, removing or retyping an argument) requires a new key name, so older app builds never format a new sentence with the wrong arguments.
+
+## Plurals
+
+Summaries with a count currently use the English-style "(s)" pattern in every language, for example `Found %d mounted HFS volume(s).`. This is known debt, to be replaced with `.stringsdict` plural rules; until then keep the existing "(s)"-style forms rather than choosing one grammatical form, which would be wrong for other counts.
+
+When writing new strings with a count, keep the count a separate integer argument so it can move to a plural rule without changing the key. The registry already treats `%#@name@` plural variables as integers.
+
+| Language | CLDR categories for integer counts | Example |
+|---|---|---|
+| en, de, nl | one, other | 1 device / 2 devices |
+| es, it | one, many (millions), other | 1 dispositivo / 2 dispositivos |
+| fr, pt-BR | one (0 and 1), many (millions), other | 0 appareil, 1 appareil / 2 appareils |
+| ru | one, few, many, other | 1 устройство, 2 устройства, 5 устройств |
+| lt | one, few, many (fractions only), other | 1 įrenginys, 2 įrenginiai, 10 įrenginių, 21 įrenginys |
+| zh-Hans | other | 1 个设备 / 2 个设备 |
+
+The `many` category in Spanish, Italian, French and Portuguese covers round millions ("1 million d’appareils"); it must exist in a plural rule but rarely shows. Russian and Lithuanian choose the form from the last digits (21 takes the singular, 11–19 the plural genitive), so never special-case only 1. Lithuanian `many` applies only to fractional numbers; integer counts use one, few, or other.
 
 ## Maintainer wording decisions
 

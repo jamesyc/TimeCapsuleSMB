@@ -862,7 +862,7 @@
 "value.no" = "não";
 "value.not_required" = "Não obrigatório";
 "value.not_reachable" = "Não acessível";
-"value.reachable" = "Alcançável";
+"value.reachable" = "Acessível";
 "value.required" = "Obrigatório";
 "value.unknown" = "Desconhecido";
 "value.yes" = "sim";

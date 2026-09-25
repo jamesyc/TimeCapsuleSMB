@@ -248,7 +248,7 @@
 "runtime.state.unknown" = "Не установлено.";
 "runtime.state.not_installed" = "Не установлено.";
 "runtime.state.unhealthy" = "Проверка выявила проблемы в работе служб.";
-"diagnostics.backend_events" = "События серверной части";
+"diagnostics.backend_events" = "События фоновой службы";
 "diagnostics.copied" = "Диагностические данные скопированы.";
 "diagnostics.copy" = "Скопировать диагностику";
 "diagnostics.distribution" = "Дистрибутив";
@@ -338,7 +338,7 @@
 "backend.summary.install_validation_failed" = "Не удалось выполнить проверку установки.";
 "backend.summary.install_validation_passed" = "Проверка установки пройдена.";
 "backend.summary.operation_exited" = "Операция завершена.";
-"backend.summary.reachability.all_reachable" = "SSH доступен; Порт SMB доступен.";
+"backend.summary.reachability.all_reachable" = "SSH доступен; порт SMB доступен.";
 "backend.summary.reachability.partial" = "Устройство частично доступно.";
 "backend.summary.reachability.smb_only" = "Порт SMB доступен, SSH отключен.";
 "backend.summary.reachability.ssh_only" = "SSH доступен, порт SMB закрыт.";
