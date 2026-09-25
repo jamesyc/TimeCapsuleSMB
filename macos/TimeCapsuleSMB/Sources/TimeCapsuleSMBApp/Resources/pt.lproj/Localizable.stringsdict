@@ -123,6 +123,42 @@
 			<string>%lld são reparáveis</string>
 		</dict>
 	</dict>
+	<key>backend.summary.repair_xattrs_no_safe_repairs</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@issues@, mas nenhum reparo seguro conhecido está disponível.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>Foram encontrados %lld de problemas de metadados</string>
+			<key>one</key>
+			<string>Foi encontrado %lld problema de metadados</string>
+			<key>other</key>
+			<string>Foram encontrados %lld problemas de metadados</string>
+		</dict>
+	</dict>
+	<key>backend.summary.repair_xattrs_unresolved</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@issues@ após o reparo.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>many</key>
+			<string>Restam %lld de problemas de metadados</string>
+			<key>one</key>
+			<string>Resta %lld problema de metadados</string>
+			<key>other</key>
+			<string>Restam %lld problemas de metadados</string>
+		</dict>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

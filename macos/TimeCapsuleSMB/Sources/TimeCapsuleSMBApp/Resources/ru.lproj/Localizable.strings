@@ -360,6 +360,7 @@
 "backend.summary.ssh.enable_requested" = "Запрошено включение SSH; открытие SSH не ожидается.";
 "backend.summary.ssh.reachable" = "SSH доступен.";
 "backend.summary.ssh.unreachable" = "AirPort ACP и SSH недоступны.";
+"backend.summary.repair_xattrs_approval_required" = "Изменения не внесены; для исправления требуется подтверждение.";
 "field.firmware_template" = "Путь к шаблону прошивки, необязательно";
 "field.firmware_version" = "Версия прошивки, необязательно";
 "field.helper" = "Вспомогательная программа";

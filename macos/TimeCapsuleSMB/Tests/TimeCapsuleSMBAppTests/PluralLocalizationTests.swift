@@ -116,7 +116,16 @@ final class PluralLocalizationTests: XCTestCase {
             (.lithuanian, "backend.summary.flash.apple_some_match", [.int(1), .int(21)],
              "1 iš 21 tikrinamo programinės įrangos banko atitinka Apple originalią programinę įrangą."),
             (.simplifiedChinese, "backend.summary.flash.apple_some_match_version", [.int(1), .int(2), .string("7.8.1")],
-             "1/2 个候选固件区与苹果原厂固件 7.8.1 匹配。")
+             "1/2 个候选固件区与苹果原厂固件 7.8.1 匹配。"),
+            (.english, "backend.summary.repair_xattrs_no_safe_repairs", [.int(1)],
+             "Found 1 metadata issue, but no known-safe repair is available."),
+            (.russian, "backend.summary.repair_xattrs_no_safe_repairs", [.int(5)],
+             "Найдено 5 проблем с метаданными, но известного безопасного исправления нет."),
+            (.english, "backend.summary.repair_xattrs_unresolved", [.int(1)], "1 metadata issue remains after repair."),
+            (.english, "backend.summary.repair_xattrs_unresolved", [.int(2)], "2 metadata issues remain after repair."),
+            (.german, "backend.summary.repair_xattrs_unresolved", [.int(1)], "Nach der Reparatur bleibt 1 Metadatenproblem bestehen."),
+            (.russian, "backend.summary.repair_xattrs_unresolved", [.int(21)], "После исправления осталась 21 проблема с метаданными."),
+            (.lithuanian, "backend.summary.repair_xattrs_unresolved", [.int(12)], "Po pataisymo liko 12 metaduomenų problemų.")
         ]
 
         for (language, key, arguments, expected) in cases {
@@ -170,7 +179,7 @@ final class PluralLocalizationTests: XCTestCase {
 
     func testEveryPluralKeyRendersTheExpectedFormAtEveryBoundaryCount() throws {
         let english = try pluralEntries(.english)
-        XCTAssertEqual(english.count, 7)
+        XCTAssertEqual(english.count, 9)
         for language in Self.languages {
             let entries = try pluralEntries(language)
             XCTAssertEqual(Set(entries.keys), Set(english.keys), language.rawValue)

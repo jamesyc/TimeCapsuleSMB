@@ -98,6 +98,38 @@
 			<string>%lld metadata issues</string>
 		</dict>
 	</dict>
+	<key>backend.summary.repair_xattrs_no_safe_repairs</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>Found %#@issues@, but no known-safe repair is available.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld metadata issue</string>
+			<key>other</key>
+			<string>%lld metadata issues</string>
+		</dict>
+	</dict>
+	<key>backend.summary.repair_xattrs_unresolved</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@issues@ after repair.</string>
+		<key>issues</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>lld</string>
+			<key>one</key>
+			<string>%lld metadata issue remains</string>
+			<key>other</key>
+			<string>%lld metadata issues remain</string>
+		</dict>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

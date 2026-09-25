@@ -360,6 +360,7 @@
 "backend.summary.ssh.enable_requested" = "SSH įjungimas užklaustas; nelaukiama, kol SSH atsidarys.";
 "backend.summary.ssh.reachable" = "SSH pasiekiama.";
 "backend.summary.ssh.unreachable" = "AirPort ACP ir SSH nepasiekiami.";
+"backend.summary.repair_xattrs_approval_required" = "Pakeitimų neatlikta; taisymams reikia patvirtinimo.";
 "field.firmware_template" = "Programinės įrangos šablono kelias, neprivaloma";
 "field.firmware_version" = "Programinės įrangos versija, neprivaloma";
 "field.helper" = "Pagalbinė programa";

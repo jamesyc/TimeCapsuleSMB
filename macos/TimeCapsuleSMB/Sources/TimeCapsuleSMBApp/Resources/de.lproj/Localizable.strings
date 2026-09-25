@@ -360,6 +360,7 @@
 "backend.summary.ssh.enable_requested" = "SSH-Aktivierung angefordert; es wird nicht gewartet, bis SSH erreichbar ist.";
 "backend.summary.ssh.reachable" = "SSH ist erreichbar.";
 "backend.summary.ssh.unreachable" = "AirPort ACP und SSH sind nicht erreichbar.";
+"backend.summary.repair_xattrs_approval_required" = "Keine Änderungen vorgenommen; Reparaturen erfordern eine Bestätigung.";
 "field.firmware_template" = "Pfad zur Firmware-Vorlage, optional";
 "field.firmware_version" = "Firmware-Version, optional";
 "field.helper" = "Hilfsprogramm";

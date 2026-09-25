@@ -360,6 +360,7 @@
 "backend.summary.ssh.enable_requested" = "已请求启用 SSH；不等待 SSH 开放。";
 "backend.summary.ssh.reachable" = "SSH 可达。";
 "backend.summary.ssh.unreachable" = "AirPort ACP 和 SSH 均不可达。";
+"backend.summary.repair_xattrs_approval_required" = "未做任何更改；修复需要确认。";
 "flash.eligibility.disabled" = "此构建已禁用固件启动钩子分析。";
 "flash.eligibility.netbsd4_required" = "持久化启动钩子工具仅适用于 NetBSD4 设备。如果你的设备应该受支持，请在 https://github.com/jamesyc/TimeCapsuleSMB/issues/160 补充详细信息。";
 "flash.eligibility.read_only" = "此 NetBSD4 设备可先进行备份和检查，之后才能提供写入操作。";

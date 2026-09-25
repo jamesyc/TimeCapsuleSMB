@@ -358,6 +358,7 @@
 "backend.summary.ssh.enable_requested" = "SSH enable requested; not waiting for SSH to open.";
 "backend.summary.ssh.reachable" = "SSH is reachable.";
 "backend.summary.ssh.unreachable" = "AirPort ACP and SSH are not reachable.";
+"backend.summary.repair_xattrs_approval_required" = "No changes made; repairs need confirmation.";
 "field.firmware_template" = "Firmware template path (optional)";
 "field.firmware_version" = "Firmware version (optional)";
 "field.helper" = "Helper";

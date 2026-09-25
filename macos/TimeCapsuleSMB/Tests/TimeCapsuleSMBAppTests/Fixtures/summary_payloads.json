@@ -776,6 +776,92 @@
   },
   {
     "event": {
+      "ok": false,
+      "operation": "repair-xattrs",
+      "payload": {
+        "counts": {
+          "findings": 3,
+          "repairable": 0
+        },
+        "error": "report",
+        "failure": "no_safe_repairs",
+        "finding_count": 3,
+        "repairable_count": 0,
+        "returncode": 1,
+        "root": "/Volumes/Data",
+        "schema_version": 1,
+        "summary": "Found 3 metadata issues, but no known-safe repair is available.",
+        "summary_args": [
+          3
+        ],
+        "summary_key": "repair_xattrs_no_safe_repairs",
+        "summary_text": "Found 3 metadata issues, but no known-safe repair is available."
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "repair_xattrs_no_safe_repairs"
+  },
+  {
+    "event": {
+      "ok": false,
+      "operation": "repair-xattrs",
+      "payload": {
+        "counts": {
+          "findings": 3,
+          "repairable": 3
+        },
+        "error": "needs --yes",
+        "failure": "approval_required",
+        "finding_count": 3,
+        "repairable_count": 3,
+        "returncode": 1,
+        "root": "/Volumes/Data",
+        "schema_version": 1,
+        "summary": "No changes made; repairs need confirmation.",
+        "summary_args": [],
+        "summary_key": "repair_xattrs_approval_required",
+        "summary_text": "No changes made; repairs need confirmation."
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "repair_xattrs_approval_required"
+  },
+  {
+    "event": {
+      "ok": false,
+      "operation": "repair-xattrs",
+      "payload": {
+        "counts": {
+          "findings": 3,
+          "repairable": 3
+        },
+        "error": "report",
+        "failure": "unresolved",
+        "finding_count": 3,
+        "repairable_count": 3,
+        "returncode": 1,
+        "root": "/Volumes/Data",
+        "schema_version": 1,
+        "summary": "2 metadata issues remain after repair.",
+        "summary_args": [
+          2
+        ],
+        "summary_key": "repair_xattrs_unresolved",
+        "summary_text": "2 metadata issues remain after repair.",
+        "unresolved_count": 2
+      },
+      "request_id": "fixture",
+      "schema_version": 1,
+      "type": "result"
+    },
+    "name": "repair_xattrs_unresolved"
+  },
+  {
+    "event": {
       "ok": true,
       "operation": "doctor",
       "payload": {

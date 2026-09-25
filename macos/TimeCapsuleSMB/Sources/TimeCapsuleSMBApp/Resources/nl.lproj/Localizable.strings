@@ -360,6 +360,7 @@
 "backend.summary.ssh.enable_requested" = "SSH inschakelen aangevraagd; er wordt niet gewacht tot SSH opengaat.";
 "backend.summary.ssh.reachable" = "SSH is bereikbaar.";
 "backend.summary.ssh.unreachable" = "AirPort ACP en SSH zijn niet bereikbaar.";
+"backend.summary.repair_xattrs_approval_required" = "Er is niets gewijzigd; reparaties vereisen bevestiging.";
 "field.firmware_template" = "Pad naar firmwaresjabloon, optioneel";
 "field.firmware_version" = "Firmwareversie, optioneel";
 "field.helper" = "Hulpprogramma";

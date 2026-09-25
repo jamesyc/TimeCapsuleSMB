@@ -360,6 +360,7 @@
 "backend.summary.ssh.enable_requested" = "Se solicitó habilitar SSH; no se espera a que SSH esté disponible.";
 "backend.summary.ssh.reachable" = "SSH es accesible.";
 "backend.summary.ssh.unreachable" = "AirPort ACP y SSH no son accesibles.";
+"backend.summary.repair_xattrs_approval_required" = "No se realizaron cambios; las reparaciones requieren confirmación.";
 "field.firmware_template" = "Ruta de la plantilla de firmware, opcional";
 "field.firmware_version" = "Versión del firmware, opcional";
 "field.helper" = "Programa auxiliar";

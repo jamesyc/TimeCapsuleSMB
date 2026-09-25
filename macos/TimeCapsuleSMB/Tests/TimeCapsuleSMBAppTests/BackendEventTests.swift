@@ -144,6 +144,25 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(succeeded.localizedPayloadSummaryText, "已使用 fsck 完成磁盘修复。")
     }
 
+    func testFailedRepairShowsWhyItFailedInsteadOfItsFindingCounts() {
+        let originalLanguage = L10n.currentLanguage
+        defer { L10n.apply(language: originalLanguage) }
+        var payload = testRepairXattrsPayload(findings: 3, repairable: 3)
+        if case .object(var fields) = payload {
+            fields["summary"] = .string("2 metadata issues remain after repair.")
+            fields["summary_key"] = .string("repair_xattrs_unresolved")
+            fields["summary_args"] = .array([.number(2)])
+            fields["failure"] = .string("unresolved")
+            payload = .object(fields)
+        }
+        let event = BackendEvent(type: "result", operation: "repair-xattrs", ok: false, payload: payload)
+
+        L10n.apply(language: .english)
+        XCTAssertEqual(BackendErrorViewModel(event: event).message, "2 metadata issues remain after repair.")
+        L10n.apply(language: .german)
+        XCTAssertEqual(BackendErrorViewModel(event: event).message, "Nach der Reparatur bleiben 2 Metadatenprobleme bestehen.")
+    }
+
     func testFailedResultStillTranslatesItsOwnKnownSummary() {
         let originalLanguage = L10n.currentLanguage
         defer { L10n.apply(language: originalLanguage) }

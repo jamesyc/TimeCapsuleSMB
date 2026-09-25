@@ -781,6 +781,70 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertIn("No changes made.", result.text)
 
+    def run_service_payload(self, root: Path, commands: FakeXattrCommands, *, approve: bool) -> dict[str, object]:
+        from timecapsulesmb.app.contracts import repair_xattrs_payload
+
+        request = repair_xattrs_service.RepairXattrsRequest(path=root, dry_run=False, approve_repairs=approve)
+        with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=commands):
+            result = repair_xattrs_service.run_repair(request, self.app_config({}))
+        return repair_xattrs_payload(result.to_payload_fields())
+
+    def test_failed_runs_are_summarized_by_why_they_failed(self) -> None:
+        # A failed run keeps its finding counts; the summary must say why it
+        # failed instead of "Found N issues, N repairable."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "iphone-photo.jpg").write_text("data")
+            no_safe = self.run_service_payload(root, FakeXattrCommands(
+                xattr_stderr="xattr: [Errno 5] Input/output error: 'iphone-photo.jpg'", stat_stdout="-\n"), approve=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+            needs_approval = self.run_service_payload(root, FakeXattrCommands(), approve=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+            (root / "also-broken.txt").write_text("data")
+            unresolved = self.run_service_payload(
+                root, FakeXattrCommands(xattr_stderr="", readable_after_chflags=False), approve=True)
+
+        # The fake commands flag the scanned root folder too, so counts come from the payload.
+        self.assertEqual(no_safe["summary_key"], "repair_xattrs_no_safe_repairs")
+        self.assertEqual(no_safe["repairable_count"], 0)
+        self.assertEqual(no_safe["summary_args"], [no_safe["finding_count"]])
+        self.assertEqual(
+            no_safe["summary"],
+            f"Found {no_safe['finding_count']} metadata issues, but no known-safe repair is available.",
+        )
+        self.assertEqual(needs_approval["summary_key"], "repair_xattrs_approval_required")
+        self.assertEqual(needs_approval["summary_args"], [])
+        self.assertEqual(unresolved["summary_key"], "repair_xattrs_unresolved")
+        self.assertGreater(unresolved["unresolved_count"], 1)
+        self.assertEqual(unresolved["summary_args"], [unresolved["unresolved_count"]])
+        self.assertEqual(unresolved["summary"], f"{unresolved['unresolved_count']} metadata issues remain after repair.")
+        for payload in (no_safe, needs_approval, unresolved):
+            self.assertEqual(payload["returncode"], 1)
+            self.assertTrue(payload["error"])
+
+    def test_successful_and_preview_runs_keep_the_found_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+            repaired = self.run_service_payload(root, FakeXattrCommands(xattr_stderr=""), approve=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ok.txt").write_text("data")
+            clean = self.run_service_payload(root, FakeXattrCommands(xattr_returncode=0, xattr_stderr=""), approve=True)
+
+        self.assertEqual(repaired["returncode"], 0)
+        self.assertIsNone(repaired["failure"])
+        self.assertEqual(repaired["summary_key"], "repair_xattrs_found")
+        self.assertGreater(repaired["finding_count"], 0)
+        self.assertEqual(repaired["summary_args"], [repaired["finding_count"], repaired["repairable_count"]])
+        self.assertEqual(clean["summary_key"], "repair_xattrs_found")
+        self.assertEqual(clean["summary_args"], [0, 0])
+        self.assertEqual(clean["summary"], "Found 0 metadata issues, 0 repairable.")
+
     def test_no_candidates_does_not_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

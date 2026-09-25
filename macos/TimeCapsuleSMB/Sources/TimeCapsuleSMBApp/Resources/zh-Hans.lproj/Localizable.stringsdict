@@ -32,6 +32,16 @@
 		<key>NSStringLocalizedFormatKey</key>
 		<string>发现 %lld 个元数据问题，其中 %lld 个可修复。</string>
 	</dict>
+	<key>backend.summary.repair_xattrs_no_safe_repairs</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>发现 %lld 个元数据问题，但没有已知的安全修复方法。</string>
+	</dict>
+	<key>backend.summary.repair_xattrs_unresolved</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>修复后仍有 %lld 个元数据问题。</string>
+	</dict>
 	<key>bundle_issue.distribution_artifacts_missing_count.message</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>

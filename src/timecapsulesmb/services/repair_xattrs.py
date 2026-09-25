@@ -44,6 +44,11 @@ class RepairXattrsRequest:
     verbose: bool = False
 
 
+FAILURE_NO_SAFE_REPAIRS = "no_safe_repairs"
+FAILURE_APPROVAL_REQUIRED = "approval_required"
+FAILURE_UNRESOLVED = "unresolved"
+
+
 @dataclass(frozen=True)
 class RepairRunResult:
     returncode: int
@@ -54,6 +59,11 @@ class RepairRunResult:
     report: str | None = None
     telemetry_result: str = "success"
     error: str | None = None
+    # Why a run with returncode 1 failed: FAILURE_NO_SAFE_REPAIRS,
+    # FAILURE_APPROVAL_REQUIRED or FAILURE_UNRESOLVED. The result summary is
+    # chosen from it, never from the finding counts a failed run still has.
+    failure: str | None = None
+    unresolved_count: int = 0
 
     @property
     def ok(self) -> bool:
@@ -69,6 +79,8 @@ class RepairRunResult:
             "report": self.report,
             "telemetry_result": self.telemetry_result,
             "error": self.error,
+            "failure": self.failure,
+            "unresolved_count": self.unresolved_count,
         }
 
 
@@ -223,13 +235,19 @@ def run_repair(
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
         _emit_lines(emit, metadata_io_guidance_lines(findings))
         report = build_repair_report(findings)
-        return RepairRunResult(1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
+        return RepairRunResult(
+            1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report,
+            failure=FAILURE_NO_SAFE_REPAIRS,
+        )
 
     callbacks.stage("confirm_repair")
     if not request.approve_repairs and confirm is None:
         message = "Running `repair-xattrs` in non-interactive mode requires `--yes` to apply repairs."
         emit(message)
-        return RepairRunResult(1, root, findings, candidates, summary, report=message, telemetry_result="failure", error=message)
+        return RepairRunResult(
+            1, root, findings, candidates, summary, report=message, telemetry_result="failure", error=message,
+            failure=FAILURE_APPROVAL_REQUIRED,
+        )
     if not request.approve_repairs and not confirm(f"Repair {len(candidates)} paths with known-safe fixes?"):
         emit("No changes made.")
         _emit_lines(emit, render_summary_lines(summary, dry_run=True))
@@ -259,5 +277,8 @@ def run_repair(
     _emit_lines(emit, render_summary_lines(summary, dry_run=False))
     if unresolved:
         report = build_repair_report(findings, failed=unresolved)
-        return RepairRunResult(1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report)
+        return RepairRunResult(
+            1, root, findings, candidates, summary, report=report, telemetry_result="failure", error=report,
+            failure=FAILURE_UNRESOLVED, unresolved_count=len(unresolved),
+        )
     return RepairRunResult(0, root, findings, candidates, summary)

@@ -137,6 +137,11 @@ class SummaryProducerTests(unittest.TestCase):
         "fsck_completed": ("fsck_completed", [], "Disk repair completed with fsck."),
         "fsck_failed": ("fsck_failed", [8], "fsck_hfs exited with status 8; the disk may still need repair."),
         "repair_xattrs": ("repair_xattrs_found", [3, 2], "Found 3 metadata issues, 2 repairable."),
+        "repair_xattrs_no_safe_repairs": (
+            "repair_xattrs_no_safe_repairs", [3], "Found 3 metadata issues, but no known-safe repair is available."),
+        "repair_xattrs_approval_required": (
+            "repair_xattrs_approval_required", [], "No changes made; repairs need confirmation."),
+        "repair_xattrs_unresolved": ("repair_xattrs_unresolved", [2], "2 metadata issues remain after repair."),
         "doctor_fatal": ("doctor_found_fatal", [], "Doctor found one or more fatal problems."),
         "flash_backup": ("flash_backup_saved", ["/tmp/flash-backup"], "Flash backup saved to /tmp/flash-backup."),
         "flash_apple_stock_match": ("flash.apple_stock_match", [], "Active firmware bank matches Apple stock firmware."),

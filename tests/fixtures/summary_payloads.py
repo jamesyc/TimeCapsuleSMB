@@ -140,6 +140,15 @@ def cases() -> list[tuple[str, str, str, bool, object]]:
             verified=True, error=fsck_failure_message(8))),
         ("repair_xattrs", result, "repair-xattrs", True, contracts.repair_xattrs_payload(
             {"returncode": 0, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 2})),
+        ("repair_xattrs_no_safe_repairs", result, "repair-xattrs", False, contracts.repair_xattrs_payload(
+            {"returncode": 1, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 0,
+             "failure": "no_safe_repairs", "error": "report"})),
+        ("repair_xattrs_approval_required", result, "repair-xattrs", False, contracts.repair_xattrs_payload(
+            {"returncode": 1, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 3,
+             "failure": "approval_required", "error": "needs --yes"})),
+        ("repair_xattrs_unresolved", result, "repair-xattrs", False, contracts.repair_xattrs_payload(
+            {"returncode": 1, "root": "/Volumes/Data", "finding_count": 3, "repairable_count": 3,
+             "failure": "unresolved", "unresolved_count": 2, "error": "report"})),
         ("doctor_passed", result, "doctor", True, contracts.doctor_payload(fatal=False, results=[])),
         ("doctor_fatal", result, "doctor", False, contracts.doctor_payload(
             fatal=True, results=doctor_fail, error="Doctor failures:\nFAIL smbd is not running")),
