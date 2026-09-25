@@ -357,6 +357,37 @@ class AppApiTests(unittest.TestCase):
         self.assertTrue(stages[4]["cancellable"])
         self.assertIn("description", stages[4])
 
+    def test_legacy_metadata_and_software_replacement_stages_include_policy_metadata(self) -> None:
+        collector = CollectingSink()
+
+        collector.sink.stage("deploy", "inventory_legacy_metadata")
+        collector.sink.stage("deploy", "replace_software")
+        collector.sink.stage("deploy", "install_runtime_config")
+
+        stages = collector.events_of_type("stage")
+        self.assertEqual(stages[0]["risk"], "remote_read")
+        self.assertTrue(stages[0]["cancellable"])
+        self.assertEqual(stages[1]["risk"], "remote_write")
+        self.assertFalse(stages[1]["cancellable"])
+        self.assertEqual(stages[2]["risk"], "remote_write")
+        self.assertFalse(stages[2]["cancellable"])
+        for stage in stages:
+            self.assertTrue(stage["description"])
+        self.assertEqual(collector.sink.current_risk("deploy"), "remote_write")
+
+    def test_unknown_stage_omits_policy_metadata_and_keeps_previous_risk(self) -> None:
+        collector = CollectingSink()
+
+        collector.sink.stage("deploy", "reboot")
+        collector.sink.stage("deploy", "not_a_stage")
+
+        unknown = collector.events_of_type("stage")[1]
+        self.assertEqual(unknown["stage"], "not_a_stage")
+        self.assertNotIn("risk", unknown)
+        self.assertNotIn("cancellable", unknown)
+        self.assertNotIn("description", unknown)
+        self.assertEqual(collector.sink.current_risk("deploy"), "reboot")
+
     def test_contract_builders_keep_stable_representative_shapes(self) -> None:
         deploy_plan = contracts.deploy_plan_payload(
             {"host": "root@10.0.0.2", "reboot_required": True},
@@ -3588,6 +3619,89 @@ class AppApiTests(unittest.TestCase):
         )
 
         self.assertGreater(stages.index("enable_boot"), stages.index("migrate_xattrs_cleanup"))
+        # Every deploy stage carries its policy, so the app always has a risk,
+        # a cancel flag and a fallback description for the running stage.
+        for event in collector.events_of_type("stage"):
+            with self.subTest(stage=event["stage"]):
+                self.assertIn(event["risk"], {"local_read", "local_write", "remote_read", "remote_write", "destructive", "reboot"})
+                self.assertIsInstance(event["cancellable"], bool)
+                self.assertTrue(event["description"])
+        for stage in ("inventory_legacy_metadata", "replace_software", "install_runtime_config"):
+            self.assertIn(stage, stages)
+
+    def test_deploy_failure_reports_the_risk_of_the_failing_stage(self) -> None:
+        # The stage before each of these has a different risk (build_deployment_plan
+        # is local_read, migrate_xattrs_copy is remote_write and
+        # migrate_xattrs_cleanup is destructive), so a stage without its own policy
+        # would report the previous stage's risk.
+        cases = {
+            "inventory_legacy_metadata": "remote_read",
+            "replace_software": "remote_write",
+            "install_runtime_config": "remote_write",
+        }
+        for failing_stage, expected_risk in cases.items():
+            with self.subTest(stage=failing_stage):
+                self._telemetry_client.emit.reset_mock()
+                collector = CollectingSink()
+                connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+                target = SimpleNamespace(connection=connection, probe_state=probed_state())
+                artifacts = {
+                    "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+                    "xattr_migrator": SimpleNamespace(absolute_path=REPO_ROOT / "bin/xattr-migrate/xattr-hfs-migrate"),
+                    "service": SimpleNamespace(absolute_path=REPO_ROOT / "bin/service/service"),
+                    "rsync": SimpleNamespace(absolute_path=REPO_ROOT / "bin/rsync/rsync"),
+                }
+                payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
+                params = {"dry_run": False, "no_reboot": False}
+                params["confirmation_id"] = self.confirmation_id_for(
+                    "deploy",
+                    params,
+                    {
+                        "host": "root@10.0.0.2",
+                        "payload_family": "netbsd6_samba4",
+                        "netbsd4": False,
+                        "requires_reboot": True,
+                        "no_wait": False,
+                        "startup_mode": "reboot_then_verify",
+                    },
+                )
+
+                def fail_in_stage(*_args, **_kwargs):
+                    if collector.sink.current_stage("deploy") == failing_stage:
+                        raise RuntimeError(f"{failing_stage} failed")
+
+                from tests.test_xattr_migration import fake_inventory
+
+                def inventory(*_args):
+                    fail_in_stage()
+                    return fake_inventory()
+
+                with mock.patch("timecapsulesmb.app.ops.common.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+                    with mock.patch("timecapsulesmb.app.ops.common.resolve_validated_managed_target", return_value=target):
+                        with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                            with mock.patch("timecapsulesmb.services.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                                with mock.patch("timecapsulesmb.services.deploy.resolve_payload_artifacts", return_value=artifacts):
+                                    with mock.patch("timecapsulesmb.services.storage.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
+                                        with mock.patch("timecapsulesmb.services.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                            with mock.patch("timecapsulesmb.services.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
+                                                with mock.patch("timecapsulesmb.services.deploy.inventory_metadata", side_effect=inventory):
+                                                    with mock.patch("timecapsulesmb.services.deploy.upload_deployment_payload", side_effect=fail_in_stage):
+                                                        with mock.patch("timecapsulesmb.services.deploy.run_remote_actions", side_effect=fail_in_stage):
+                                                            with mock.patch("timecapsulesmb.services.deploy.request_reboot_and_wait") as reboot:
+                                                                rc = service.run_api_request(
+                                                                    {"operation": "deploy", "params": params},
+                                                                    collector.sink,
+                                                                )
+
+                self.assertNotEqual(rc, 0)
+                reboot.assert_not_called()
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertIn(f"{failing_stage} failed", json.dumps(error))
+                self.assertEqual(collector.events_of_type("stage")[-1]["stage"], failing_stage)
+                finished = self._telemetry_client.emit.call_args_list[-1]
+                self.assertEqual(finished.args, ("deploy_finished",))
+                self.assertEqual(finished.kwargs["stage"], failing_stage)
+                self.assertEqual(finished.kwargs["risk"], expected_risk)
 
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
         collector = CollectingSink()
