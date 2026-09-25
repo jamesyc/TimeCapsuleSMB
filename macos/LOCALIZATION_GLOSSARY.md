@@ -1,6 +1,6 @@
 # macOS localization glossary
 
-Reviewed 2026-09-22. Applies to `en`, `de`, `nl`, `fr`, `es`, `it`, `pt`, and `ru`, plus Simplified Chinese (`zh-Hans`). Lithuanian is intentionally excluded from this review; do not alter its catalog as part of the proposed cleanup.
+Reviewed 2026-09-22. Applies to `en`, `de`, `nl`, `fr`, `es`, `it`, `pt`, and `ru`, plus Simplified Chinese (`zh-Hans`). Lithuanian is not covered by this glossary.
 
 This is an editorial guide, not a global search-and-replace dictionary. Keep the meaning of each operation, the distinction between an action and a status, and the distinction between an application and the service/storage it manages.
 
@@ -53,11 +53,11 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Save profile | Profil speichern | Profiel opslaan | Enregistrer le profil | Guardar perfil |
 | Diagnostics | Diagnose | Diagnostiek | Diagnostic | Diagnóstico |
 | Helper program | Hilfsprogramm | hulpprogramma | programme auxiliaire | programa auxiliar |
-| Discovery | Erkennung | detectie | découverte | detección |
-| Running operation | Wird ausgeführt | Bezig | En cours | En ejecución |
-| Passed check | Bestanden | Geslaagd | Réussi | Correcto |
+| Discovery | Erkennung | detectie | découverte | descubrimiento |
+| Running operation | Wird ausgeführt | Bezig | En cours d'exécution | En ejecución |
+| Passed check | Bestanden | Geslaagd | Réussi | Aprobado |
 | Warning | Warnung | Waarschuwing | Avertissement | Advertencia |
-| Failed check | Fehlgeschlagen | Mislukt | Échec | Fallo |
+| Failed check | Fehlgeschlagen | Mislukt | Échec | Error |
 | Network share | Freigabe | share | partage | recurso compartido |
 | Firmware | Firmware | firmware | firmware | firmware |
 | Metadata | Metadaten | metadata | métadonnées | metadatos |
@@ -78,10 +78,10 @@ Inflect these terms naturally; entries below are base forms, not sentence fragme
 | Diagnostics | Diagnostica | Diagnóstico | Диагностика | 诊断 |
 | Helper program | programma ausiliario | programa auxiliar | вспомогательная программа | 辅助程序 |
 | Discovery | rilevamento | descoberta | обнаружение | 发现 |
-| Running operation | In esecuzione | Em execução | Выполняется | 正在运行 |
-| Passed check | Superato | Aprovado | Успешно | 通过 |
+| Running operation | In esecuzione | Em execução | Выполняется | 运行中 |
+| Passed check | Superato | Aprovado | Пройдено | 通过 |
 | Warning | Avviso | Aviso | Предупреждение | 警告 |
-| Failed check | Non superato | Falha | Ошибка | 失败 |
+| Failed check | Non riuscito | Falha | Ошибка | 失败 |
 | Network share | condivisione | compartilhamento | общий ресурс | 共享 |
 | Firmware | firmware | firmware | прошивка | 固件 |
 | Metadata | metadati | metadados | метаданные | 元数据 |
@@ -126,7 +126,7 @@ Chinese `挂载` is our general technical term; [Disk Utility calls its button �
 - Preserve meaning and severity in errors, especially “not”, “only”, “before”, “after”, “may”, and “must”. Do not strengthen “may help” into a guarantee.
 - Do not erase technical detail merely to shorten a warning. Conversely, do not insert new behavioral claims during translation.
 - Check key coverage, duplicate keys, format arguments, escapes, and literal tokens. Equality with English is not itself an error: names such as `Bonjour`, `Time Machine`, and naturally identical words are legitimate.
-- Relevant verification for an eventual copy patch: localization tests plus focused render checks for changed long labels. This glossary/review does not require a device deployment or a NetBSD rebuild.
+- Verify copy changes with localization tests plus focused render checks for changed long labels. Copy changes do not require a device deployment or a NetBSD rebuild.
 
 ## Additional verified OS application names
 
@@ -144,11 +144,11 @@ These are names of external OS applications. They need not dictate the name of t
 
 `Doctor` in prose describes this project's diagnostic checks, not a physician. Use the same localized concept as the Checkup screen. Keep the literal CLI command `doctor` intact. Similarly, “check” is a test, not a bank cheque; “plan” is an action plan, not a subscription; “directory” is a filesystem folder, not a telephone directory; “flush” means complete pending writes, not erase the disk; “settle” means allow startup to stabilize, not settle a bill.
 
-## Maintainer wording decisions implemented after review
+## Maintainer wording decisions
 
 The approved English source keeps **Activate** as the action name, including the NetBSD4 notices that say “may need Activate”. Translate these references using the corresponding localized action label, rather than changing their meaning to automatic startup.
 
-Keep the approved English claims “Enable insecure SMB1”, “Default setting”, both existing AFP help descriptions, and “Much slower”. Do not independently soften, expand, or reconcile these claims during translation. The earlier technical-source questions in the historical review are not instructions to change this approved wording.
+Keep the approved English claims “Enable insecure SMB1”, “Default setting”, both existing AFP help descriptions, and “Much slower”. Do not independently soften, expand, or reconcile these claims during translation.
 
 The path label is **Path for xattrs repair**. Keep the technical abbreviation `xattrs` in translations of that label. ATA error messages use **non-negative number of seconds**, not “whole number” or “integer”; the wording change does not alter the integer parsing behavior.
 

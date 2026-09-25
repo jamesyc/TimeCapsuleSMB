@@ -211,7 +211,7 @@ For more information, see https://github.com/jamesyc/TimeCapsuleSMB/issues/177
 
 #### I get a "MaSt" error
 
-We use ACP `MaSt` to check what hard drives are connected to the device. If you see the message `No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart`, that means we checked 10 times and the hard drive never loaded. 
+We use ACP `MaSt` to check what hard drives are connected to the device. If you see the message `No internal disk was detected after 10 MaSt queries spaced 3 seconds apart`, that means we checked 10 times and the hard drive never loaded. 
 
 - If you are using an AirPort Express with an external hard drive, make sure it is plugged in.
 - If you are using an external hard drive, make sure it's properly formatted with HFS+
@@ -321,7 +321,7 @@ In the macOS app, each saved device has advanced settings for the managed SMB ru
 - **Mount wait seconds**: default `30`. How long deploy, uninstall, fsck, and related operations wait for the AirPort disk to wake and mount.
 - **ATA idle seconds**: default `300`. Sets the built-in ATA disk idle timer when the managed runtime starts. Use `0` to disable the idle timer.
 - **ATA standby seconds**: default blank. Optionally sets the built-in ATA disk standby timer. Leave blank to avoid applying a standby timer; use `0` to disable the standby timer.
-- **Enable NBNS**: default on. Uses Apple's native NetBIOS name responder so older SMB/Windows-style network browsing can find the device.
+- **NBNS**: always on. Apple's native NetBIOS name responder runs automatically so older SMB/Windows-style network browsing can find the device.
 - **Internal Share Uses Disk Root**: default off. When off, the internal disk share points at the managed `ShareRoot` folder. When on, it shares the whole internal disk root. External disks still share their mounted root.
 - **Allow SMB Share Browsing**: default off. Relaxes anonymous browse restrictions so clients can enumerate shares more easily. Shares still require authentication.
 - **Advertise AFP over Bonjour**: default off — leave it off; macOS 26.x/27 hides Time Capsules that advertise AFP. When off, Time Machine ADisk records advertise SMB-only `adVF=0x82`. When on, `_afpovertcp` is registered too and ADisk records use AFP+SMB `adVF=0x83`. Apple's AFP server stays running with either setting; this option controls advertising only. Which interfaces get SMB/ADISK follows the AirPort Utility switches (LAN always; WAN and guest only in router mode with "share disks over WAN"), the same way Apple's own file servers did.

@@ -64,14 +64,12 @@ enum AppResourceBundle {
 
 public enum AppLaunchResourceValidation {
     public static func validate() -> String? {
-        guard let bundleURL = AppResourceBundle.bundleURL else {
+        guard AppResourceBundle.bundleURL != nil else {
             return "TimeCapsuleSMB resource bundle could not be located."
         }
 
-        let localizable = bundleURL
-            .appendingPathComponent("en.lproj", isDirectory: true)
-            .appendingPathComponent("Localizable.strings")
-        guard FileManager.default.isReadableFile(atPath: localizable.path) else {
+        guard let localizable = englishStringsURL(in: AppResourceBundle.bundle),
+              FileManager.default.isReadableFile(atPath: localizable.path) else {
             return "TimeCapsuleSMB resource bundle is missing en.lproj/Localizable.strings."
         }
 
@@ -82,5 +80,11 @@ public enum AppLaunchResourceValidation {
             return "TimeCapsuleSMB localized strings did not load from the resource bundle."
         }
         return nil
+    }
+
+    // Packaged apps copy a flat bundle; newer SwiftPM builds use Contents/Resources.
+    // Bundle resolves both layouts.
+    static func englishStringsURL(in bundle: Bundle) -> URL? {
+        bundle.url(forResource: "Localizable", withExtension: "strings", subdirectory: nil, localization: "en")
     }
 }

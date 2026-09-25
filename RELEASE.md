@@ -12,7 +12,7 @@ preserves lookup and I/O failures instead of reporting false success.
 
 The existing NetBSD SDKs are retained. A const-preserving charset fallback
 supports their older GCC versions, and the embedded srvsvc and durable-cookie
-patches are adapted to rc2's APIs. `streams_xattr:max xattrs per stream = 2`
+patches are adapted to rc2's APIs. `streams_xattr:max xattrs per stream = 35`
 remains necessary with this release candidate.
 
 Before switching to 4.25 final, reapply the series to the final tag, check whether
@@ -33,11 +33,11 @@ The digest printed by `shasum` should match the `sha256:` value shown for the as
 
 The deploy flow uses the binaries checked into `bin/`:
 
-| Device family | Samba binary | mDNS binary | NBNS binary |
-| --- | --- | --- | --- |
-| NetBSD 6 / 7 | `bin/samba4/smbd` | `bin/mdns/mdns-advertiser` | `bin/nbns/nbns-advertiser` |
-| NetBSD 4 little-endian | `bin/samba4-netbsd4le/smbd` | `bin/mdns-netbsd4le/mdns-advertiser` | `bin/nbns-netbsd4le/nbns-advertiser` |
-| NetBSD 4 big-endian | `bin/samba4-netbsd4be/smbd` | `bin/mdns-netbsd4be/mdns-advertiser` | `bin/nbns-netbsd4be/nbns-advertiser` |
+| Device family | Samba binary | Native service |
+| --- | --- | --- |
+| NetBSD 6 / 7 | `bin/samba4/smbd` | `bin/service/service` |
+| NetBSD 4 little-endian | `bin/samba4-netbsd4le/smbd` | `bin/service-netbsd4le/service` |
+| NetBSD 4 big-endian | `bin/samba4-netbsd4be/smbd` | `bin/service-netbsd4be/service` |
 
 Every checked-in device artifact must have a matching entry in `src/timecapsulesmb/assets/artifact-manifest.json`. The manifest stores the repo-relative path and SHA256 digest used by deploy-time validation.
 
@@ -59,10 +59,10 @@ python3 macos/TimeCapsuleSMB/tools/package_app.py --configuration release --arch
 
 When a change touches `build/`, rebuild the affected NetBSD artifact before release. Do not rebuild the NetBSD toolchains unless that is the explicit task. After a successful root build on the VM, copy the stripped binary back into `bin/`, wait a few seconds for filesystem state to settle, then update `src/timecapsulesmb/assets/artifact-manifest.json`.
 
-For mDNS and NBNS advertisers, run the helper scripts from the repo root on the NetBSD VM:
+For the unified native service, run the helper scripts from the repo root on the NetBSD VM:
 
 ```bash
-./build/mdns.sh && ./build/mdnsoldle.sh && ./build/mdnsoldbe.sh && ./build/nbns.sh && ./build/nbnsoldle.sh && ./build/nbnsoldbe.sh
+./build/service.sh && ./build/serviceoldle.sh && ./build/serviceoldbe.sh
 ```
 
 For Samba 4.x, build and validate one lane first when changing Samba source or build logic:
@@ -81,7 +81,7 @@ The macOS app packaging flow supports Developer ID signing and notarization when
 
 ## Release Checklist
 
-- Update `version.json` and `pyproject.toml` to the release version.
+- Update `version.json`, `pyproject.toml`, and `src/timecapsulesmb/core/release.py` to the release version.
 - Rebuild any changed NetBSD artifacts and update `artifact-manifest.json`.
 - Run the artifact manifest tests.
 - Run the Python and Swift test suites.

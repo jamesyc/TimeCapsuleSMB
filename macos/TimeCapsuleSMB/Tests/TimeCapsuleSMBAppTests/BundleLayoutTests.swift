@@ -20,6 +20,32 @@ final class BundleLayoutTests: XCTestCase {
         XCTAssertEqual(resolved?.standardizedFileURL, packaged.standardizedFileURL)
     }
 
+    func testEnglishStringsAreFoundInFlatAndContentsBundleLayouts() throws {
+        let temp = try TemporaryDirectory()
+        for resources in ["Flat.bundle", "Nested.bundle/Contents/Resources"] {
+            let english = temp.url.appendingPathComponent("\(resources)/en.lproj", isDirectory: true)
+            try FileManager.default.createDirectory(at: english, withIntermediateDirectories: true)
+            try Data("\"k\" = \"v\";\n".utf8).write(to: english.appendingPathComponent("Localizable.strings"))
+        }
+
+        for name in ["Flat.bundle", "Nested.bundle"] {
+            let bundle = try XCTUnwrap(Bundle(url: temp.url.appendingPathComponent(name, isDirectory: true)))
+            let url = try XCTUnwrap(AppLaunchResourceValidation.englishStringsURL(in: bundle), name)
+            XCTAssertEqual(url.lastPathComponent, "Localizable.strings")
+            XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "en.lproj")
+        }
+    }
+
+    func testEnglishStringsAreMissingFromBundleWithoutEnglishCatalog() throws {
+        let temp = try TemporaryDirectory()
+        let german = temp.url.appendingPathComponent("Other.bundle/de.lproj", isDirectory: true)
+        try FileManager.default.createDirectory(at: german, withIntermediateDirectories: true)
+        try Data("\"k\" = \"v\";\n".utf8).write(to: german.appendingPathComponent("Localizable.strings"))
+
+        let bundle = try XCTUnwrap(Bundle(url: temp.url.appendingPathComponent("Other.bundle", isDirectory: true)))
+        XCTAssertNil(AppLaunchResourceValidation.englishStringsURL(in: bundle))
+    }
+
     func testLaunchResourceValidationLoadsLocalizedStrings() {
         XCTAssertNil(AppLaunchResourceValidation.validate())
     }

@@ -13,7 +13,7 @@ The shell runtime tests moved with their behavior:
 | Share names, collisions, ADisk limits and Samba tuning | `test_samba_config.py`, exact-argv manager case |
 | Diskd claims, failed mounts, markers and payload choice | `test_storage_runtime.py` |
 | RAM copies, auth/config failures, retries and desired-state reversion | `test_worker.py`, `test_staging.py`, `test_manager.py` |
-| Bind retention and cold startup | `test_plan.py`, manager network-history case |
+| Bind retention and cold startup | `test_plan.py` |
 | Manager, discovery, rsync and telemetry ownership | `test_process.py`, `test_manager.py`, `test_inspect.py` |
 | Apple diskd recovery and CIFS/NBNS conflicts | Manager recovery cases; Apple AFP/mDNS exclusion in inspection cases |
 | Local hostname resolution and bounded logs | `test_hosts.py`, `test_log_trim.py`, existing timestamp cases |
@@ -38,8 +38,8 @@ must not inspect or claim healthy disks. Retry-only state changes must not
 restart Samba or discovery.
 
 `test_nested_owner.py` kills real setup workers while their commands and
-children remain alive. The manager's inventory/network collection tests exercise
-both owned collection completion and parent death. Standalone ACP cancellation
+children remain alive. The manager's inventory collection test exercises parent
+death (the MaSt `acp` job is killed with its group). Standalone ACP cancellation
 keeps its separate-group coverage, while managed reads share their job or role's
 cleanup boundary. Telemetry retains its protected diagnostic drain policy.
 

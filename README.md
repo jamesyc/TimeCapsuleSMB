@@ -126,10 +126,10 @@ At the start of `configure`, the tool first tries to discover your Time Capsule 
 
 The password you enter here is stored locally as `TC_PASSWORD` so the tool can keep using SSH and ACP. The managed Samba runtime reads the current device password on the Time Capsule at boot. In other words, after setup, you normally connect with:
 
-- username: `admin` (or any other password)
+- username: `admin` (or any other username)
 - password: the same Time Capsule password you entered during configuration
 
-Samba does not use Apple’s internal password backend directly. The boot script reads the AirPort `syPW` setting, asks `service` to generate the NT hash, and writes the RAM-only Samba auth files before `smbd` starts.
+Samba does not use Apple’s internal password backend directly. The native `service manager` reads the AirPort `syPW` setting, generates the NT hash, and writes the RAM-only Samba auth files before `smbd` starts.
 
 ## Step 3: Deploy It
 
@@ -150,7 +150,7 @@ On older Gen 1-4 NetBSD 4 devices, `deploy` also reboots to clear the RAM disk, 
 .venv/bin/tcapsule deploy --yes
 ```
 
-There are also other flags such as `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them. `--no-reboot` uploads the files, stops the manager process and `wcifsfs`, and starts the deployed runtime immediately by running `/mnt/Flash/rc.local`.
+There are also other flags such as `--no-wait` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
 
 If you want a machine-readable deployment plan without changing the device, use:
 
@@ -203,11 +203,11 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that your `.env` exists, is complete, and is valid
 - that the checked-in binaries are present and match the expected checksums
 - that SSH is reachable
-- that the configured remote network interface, detected device compatibility, and selected payload family look sane
+- that the detected device compatibility and selected payload family look sane
 - that the managed runtime is up:
   - `smbd` is running and bound to TCP 445
-  - the managed mDNS takeover is active
-  - the NBNS responder is checked unless disabled
+  - Apple's mDNSResponder is running and listening on UDP 5353
+  - native NBNS (Apple `wcifsnd`) resolves the NetBIOS name
 - what the box is currently advertising and serving for:
   - Bonjour instance name
   - Bonjour host label
@@ -233,7 +233,7 @@ Run:
 .venv/bin/tcapsule uninstall
 ```
 
-This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader scripts. If you delete the 7 payload files in `/mnt/Flash`, delete the `.samba4` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition.
+This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader scripts. If you delete the 5 payload files in `/mnt/Flash`, delete the `.samba4` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition.
 
 By default `uninstall` asks before rebooting the Time Capsule. If you want to skip the reboot confirmation prompt, use:
 

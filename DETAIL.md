@@ -20,10 +20,8 @@ What is working now:
 - Bonjour advertisement for:
   - managed `_smb._tcp`
   - managed `_adisk._tcp`
-  - generated `_device-info._tcp`
-  - generated `_airport._tcp`
-  - optional generated `_afpovertcp._tcp` when AFP advertisement is enabled
-  - generated USB printer records when applicable
+  - optional managed `_afpovertcp._tcp` when AFP advertisement is enabled
+  - Apple-published `_device-info._tcp`, `_airport._tcp`, and USB printer records, left untouched
 - authenticated SMB access using:
   - examples and docs use Samba username `admin`
   - boot-time generated RAM auth stores a `root` Samba account
@@ -43,10 +41,10 @@ Current validation status:
 Current user experience:
 - the Time Capsule advertises `_smb._tcp`
 - the Time Capsule advertises `_adisk._tcp` for Time Machine
-- the Time Capsule generates an Apple-compatible `_airport._tcp` record from live AirPort identity fields for AirPort Utility compatibility
-- the Time Capsule can optionally answer NBNS name queries for the active runtime NetBIOS name
+- Apple's ACPd publishes `_airport._tcp` for AirPort Utility; we never touch it
+- the Time Capsule answers NBNS name queries for the active runtime NetBIOS name through Apple's `wcifsnd` whenever eligible
 - the Bonjour instance name is managed by Apple's mDNSResponder, including conflict renaming; the Samba server string is derived from Apple `syNm`
-- the Bonjour host label and Samba NetBIOS name are derived from `/bin/hostname`, with `syNm` fallbacks
+- the Samba NetBIOS name is derived from `/bin/hostname`, with `syNm` fallbacks; the Bonjour hostname belongs to Apple's mDNSResponder
 - shares are derived from Apple `MaSt` volume metadata and are available as:
   - `smb://<advertised-host>.local/<sanitized and de-duplicated volume share name>`
 
@@ -150,6 +148,46 @@ Current naming split:
 
 ## Why Samba 4.8, Then 4.25.0rc2
 
+The project did not land on Samba 4.x by accident. Samba 4.8 was the first fully working Time Machine target on this hardware; the current checked-in deploy artifacts are Samba 4.25.0rc2.
+
+### Samba 3
+
+Samba 3.x worked well enough to prove the device could serve files, and was a small 6MB, but has issues with directory traversal with NetBSD 6. This meant `ls` would not work in the Samba share. As Samba 3.x was the first version with SMB2 support, it was rather incomplete and buggy.
+
+### Samba 4.0
+
+Tried 4.0 as it in theory had better SMB2 support than 3.x but it had the same directory traversal bug. It was significantly harder to compile than 3.x but a lot easier than 4.2-4.8, so it served well as a stepping stone in getting 4.8 to work as trying to compile 4.8 from scratch at first drove me crazy.
+
+### Samba 4.2
+
+Samba 4.2 was built successfully, but it hit a runtime bug on-device:
+- a `talloc` / `loadparm` use-after-free class issue on first client session
+
+Separately, the NetBSD 10-era toolchain path also exposed incompatible directory API behavior on the NetBSD 6 box.
+
+### Samba 4.3
+
+Samba 4.3 was an important stepping stone, but it was not enough. It did not run into any bugs as a network file share. It worked as a normal authenticated network share, but not as a real Time Machine target. 
+
+In practice, 4.3 proved the architecture and deployment model, while 4.8 was the version that first enabled the full Time Machine-oriented share behavior.
+
+### Samba 4.8
+
+Samba 4.8 was the first stable target because it gave the project a usable Time Machine stack through `vfs_fruit`.
+
+### Samba 4.25.0rc2
+
+Samba 4.25.0rc2 is the current shipped target. It keeps the same static-module deployment model, but uses the newer `samba4x` build lanes and checked-in artifacts.
+
+With the current static-module build, the shipped config supports:
+- `catia`
+- `fruit`
+- `streams_xattr`
+- `acl_xattr`
+- `xattr_tdb`
+- optional `aio_fork`, disabled by default and bounded to eight children per share when enabled
+- `fruit:time machine = yes`
+
 ## Native Mac Metadata Architecture
 
 Apple's HFS implementation stores the Mac concepts Samba must expose in three
@@ -236,12 +274,11 @@ written before their anchor so interrupted exports can be retried. Read failures
 are errors, never evidence of a conflict.
 
 Migration runs only during deploy, never during boot or disk hotplug. Each
-native operation stops after five minutes without progress and retains a
-15-minute host-side emergency cap. Diagnostics stay in
+native operation stops after five minutes without progress. Diagnostics stay in
 `.samba4/logs/xattr-migration-copy.log` or `xattr-migration-cleanup.log`.
 These logs include the UTC start time, selected metadata representation, TDB
 details, scanned roots, and native progress/error output. Deploy distinguishes
-native inactivity from the emergency timeout and retrieves a bounded saved-log
+native inactivity from SSH loss and retrieves a bounded saved-log
 snapshot for up to 30 seconds. The macOS diagnostics export
 retains the last deploy's stage, timestamps, operation ID and error code even
 after later operations displace its recent events.
@@ -287,46 +324,6 @@ The stream layer allows 3,803 logical bytes for canonical Apple xattrs on HFS:
 physical fragments. Larger canonical Apple values fail before modifying the
 existing attribute.
 
-The project did not land on Samba 4.x by accident. Samba 4.8 was the first fully working Time Machine target on this hardware; the current checked-in deploy artifacts are Samba 4.25.0rc2.
-
-### Samba 3
-
-Samba 3.x worked well enough to prove the device could serve files, and was a small 6MB, but has issues with directory traversal with NetBSD 6. This meant `ls` would not work in the Samba share. As Samba 3.x was the first version with SMB2 support, it was rather incomplete and buggy.
-
-### Samba 4.0
-
-Tried 4.0 as it in theory had better SMB2 support than 3.x but it had the same directory traversal bug. It was significantly harder to compile than 3.x but a lot easier than 4.2-4.8, so it served well as a stepping stone in getting 4.8 to work as trying to compile 4.8 from scratch at first drove me crazy.
-
-### Samba 4.2
-
-Samba 4.2 was built successfully, but it hit a runtime bug on-device:
-- a `talloc` / `loadparm` use-after-free class issue on first client session
-
-Separately, the NetBSD 10-era toolchain path also exposed incompatible directory API behavior on the NetBSD 6 box.
-
-### Samba 4.3
-
-Samba 4.3 was an important stepping stone, but it was not enough. It did not run into any bugs as a network file share. It worked as a normal authenticated network share, but not as a real Time Machine target. 
-
-In practice, 4.3 proved the architecture and deployment model, while 4.8 was the version that first enabled the full Time Machine-oriented share behavior.
-
-### Samba 4.8
-
-Samba 4.8 was the first stable target because it gave the project a usable Time Machine stack through `vfs_fruit`.
-
-### Samba 4.25.0rc2
-
-Samba 4.25.0rc2 is the current shipped target. It keeps the same static-module deployment model, but uses the newer `samba4x` build lanes and checked-in artifacts.
-
-With the current static-module build, the shipped config supports:
-- `catia`
-- `fruit`
-- `streams_xattr`
-- `acl_xattr`
-- `xattr_tdb`
-- optional `aio_fork`, disabled by default and bounded to eight children per share when enabled
-- `fruit:time machine = yes`
-
 ## NetBSD 6 build path
 
 As the Time Capsule ran NetBSD 6, initial attempts used the NetBSD 6 source code to attempt to build. This failed terribly, as it turns out the NetBSD 6 source did not support earmv4 build output. I presume Apple used some custom toolchain. 
@@ -361,10 +358,10 @@ Current maintainer build lanes:
   - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
   - [build/downloadoldbe.sh](build/downloadoldbe.sh)
   - [build/bootstrapoldbe.sh](build/bootstrapoldbe.sh)
-- NetBSD 7 current Samba 4.24 lane:
+- NetBSD 7 current Samba 4.25.0rc2 lane:
   - [build/downloadsamba4x.sh](build/downloadsamba4x.sh)
   - [build/samba4x.sh](build/samba4x.sh)
-- NetBSD 4 current Samba 4.24 lanes:
+- NetBSD 4 current Samba 4.25.0rc2 lanes:
   - [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh)
   - [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh)
   - [build/samba4xoldle.sh](build/samba4xoldle.sh)
@@ -408,7 +405,7 @@ Why this works now and did not before: Apple's `diskd` registers `_smb._tcp`,
 unconditionally, and Finder would follow those to Apple SMB/AFP rather than
 our Samba. `diskd` is also load-bearing: it populates `acp -q MaSt` (our
 volume/UUID source of truth) and serves `acp rpc diskd.useVolume` (how the
-manager mounts volumes). `boot.sh` therefore relaunches it as
+manager mounts volumes). The manager therefore relaunches it as
 `/sbin/diskd -i lo0 -d local.`: it keeps doing its real job while its own
 registrations never leave loopback. Our registrations use `name=NULL` and flags
 `0`, so Apple's mDNSResponder owns the shared default service name and resolves
@@ -422,7 +419,7 @@ on that device, rather than rejecting a suffix shared with an unrelated peer.
 | --- | --- | --- |
 | `/sbin/mDNSResponder -d` | Apple (child of ACPd) | the only responder: host `A`/`AAAA` per interface, `_airport` (via ACPd), `_device-info`, printers (via `printd`), and everything we register. Never killed. |
 | `ACPd` | Apple | registers `_airport._tcp` and follows the AirPort Utility WAN switches; serves `acp -q`/`acp rpc` |
-| `/sbin/diskd -i lo0 -d local.` | Apple binary, relaunched by `boot.sh` | disk topology (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
+| `/sbin/diskd -i lo0 -d local.` | Apple binary, relaunched by the manager | disk topology (`MaSt`), `diskd.useVolume`, spin-down; its `_smb`/`_adisk`/`_afpovertcp` stay on loopback |
 | `printd` | Apple | printer discovery and `_riousbprint`/`_pdl-datastream` registration |
 | `wcifsfs` | Apple | Apple SMB server, always stopped so Samba owns SMB |
 | `/sbin/wcifsnd` | Apple, child owned by `service discovery` | native NBNS registration, conflict handling, WINS behavior, and UDP `137`/`138`; present only while native NBNS is eligible |
@@ -449,7 +446,7 @@ compares host labels case-insensitively.
 
 The unified service's discovery, telemetry, and diagnostic paths share one collector in
 [build/native/common/](build/native/common/): `acp -q` for
-`raNA raDS waNM usbF laIP waIP waLL gnRo syNm laMA waMA bjSd`, the kernel
+`raNA raDS waNM usbF laIP waIP waLL gnRo syNm waMA`, the kernel
 interface table via our own `sysctl(NET_RT_IFLIST)` parser (libc
 `getifaddrs()` returns garbage names on Apple's NetBSD 4 kernel because its
 `struct if_msghdr` is 152 bytes while the SDK's is 144), and the flash config.
@@ -479,9 +476,9 @@ first two can move a role; an aborted `laIP`/`waIP`/`waLL`/`gnRo` is a failed
 re-read that keeps the last validated policy (`incomplete reason=<key>`), and an
 aborted `syNm`/`waMA` keeps the previous instance name and `waMA`
 (`identity … retained=1`) so a slow ACPd never renames the service or withdraws
-`_adisk`. When the mode keys cannot be read at cold start the old routing-table
-heuristic still decides LAN, but a link that owns a readable `gnRo` is GUEST with
-no permission regardless — the guest network never carries file sharing. And a
+`_adisk`. At cold start nothing is shared until the plan validates, and a link that owns a
+readable `gnRo` is GUEST with no permission regardless — the guest network never
+carries file sharing. And a
 link plan holds every address the interface table can (64), so a link with many
 IPv6 addresses is bound completely or the snapshot is marked incomplete, never
 published with a subset.
@@ -610,7 +607,6 @@ When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `etc/smb.conf`
 - optionally `etc/rsyncd.conf`
 - `var/`
-- `locks/`
 - `private/`
 
 Current auth files are generated during runtime staging and live only in RAM:
@@ -618,9 +614,6 @@ Current auth files are generated during runtime staging and live only in RAM:
 - `/mnt/Memory/samba4/private/username.map`
 
 The selected payload home still contains `/Volumes/dkX/.samba4/private/` for persistent Samba metadata such as `xattr.tdb`.
-
-NBNS runtime enablement lives in flash config:
-- `/mnt/Flash/tcapsulesmb.conf`
 
 Current persistent Time Machine metadata state also lives in the selected payload home:
 - `/Volumes/dkX/.samba4/private/xattr.tdb`
@@ -834,7 +827,7 @@ Current `.bootstrap` values include:
 
 The Advanced panel stores these choices in the local device profile. Run **Install / Update Samba** afterward to write the corresponding runtime values to `/mnt/Flash/tcapsulesmb.conf`; changing a checkbox alone does not reconfigure the device. The defaults below are new-profile defaults, not necessarily the checked state shown for an existing saved profile.
 
-### Enable NBNS
+### NBNS (always on, no checkbox)
 
 Always enabled when eligible. When the payload and an SMB-eligible IPv4 address are ready, `service discovery` owns Apple's `/sbin/wcifsnd` child and registers the Samba machine name plus `WORKGROUP`. Apple's daemon answers native NBNS traffic on UDP `137` and owns the NetBIOS datagram engine on UDP `138`. Its interface enumeration follows firmware policy after the coarse validated-plan gate; Bonjour-capable clients do not require it.
 
@@ -1020,7 +1013,7 @@ Use `configure` for normal first-time setup. Use `set-ssh` only when you intenti
 
 ### `deploy`
 
-`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs the scripts and configuration that generate Samba auth files in RAM during boot or activation, applies permissions, and reboots. On NetBSD 4 devices, deploy checks the runtime after SSH returns and activates it only when firmware startup has not already done so.
+`tcapsule deploy` installs or updates the managed Samba payload on the configured device. It validates the local artifacts, probes device compatibility, selects a writable HFS payload volume, uploads the payload and boot files, writes `/mnt/Flash/tcapsulesmb.conf`, installs the unified service and configuration that generate Samba auth files in RAM during boot or activation, applies permissions, and reboots. On NetBSD 4 devices, deploy checks the runtime after SSH returns and activates it only when firmware startup has not already done so.
 
 Arguments:
 - `--config PATH`: use a non-default config
@@ -1047,7 +1040,7 @@ Useful plan modes:
 
 ### `activate`
 
-`tcapsule activate` manually starts an already-deployed NetBSD 4 payload without uploading files again. It is intentionally conservative: if the managed runtime already appears active, or a managed startup script is already running, it skips re-running `/mnt/Flash/rc.local`.
+`tcapsule activate` manually starts an already-deployed NetBSD 4 payload without uploading files again. If the managed runtime is already ready, it skips re-running `/mnt/Flash/rc.local`; otherwise it stops any running launcher and reruns it.
 
 Arguments:
 - `--config PATH`: use a non-default config
@@ -1199,13 +1192,13 @@ Current defaults and fixed values:
 - docs and examples use SMB username `admin`
 - the managed payload directory is fixed at `.samba4`
 
-Samba NetBIOS, Samba server string, Bonjour instance, and Bonjour host labels are derived on the device at runtime from `/usr/bin/acp -q syNm` and `/bin/hostname`; they are not configured in `.env`.
+Samba NetBIOS and Samba server string are derived on the device at runtime from `/usr/bin/acp -q syNm` and `/bin/hostname`; they are not configured in `.env`.
 
 Current validation behavior:
 - `TC_HOST`: must be non-empty.
 - `TC_PASSWORD`: Doctor, flash, and non-status `set-ssh` operations require a configured value; deploy and activate can prompt interactively when it is absent, while fsck and uninstall allow passwordless SSH key/agent authentication.
 - `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
-- the managed share, binding, browsing, AFP, protocol/security, Netatalk metadata, `vfs_aio_fork`, and debug settings listed above must contain recognized boolean values.
+- the managed share, browsing, AFP, protocol/security, Netatalk metadata, `vfs_aio_fork`, and debug settings listed above must contain recognized boolean values.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: internal disks use `ShareRoot` by default, and external disks always use the disk root.
 - the protocol/security validator rejects required encryption combined with either `TC_ANY_PROTOCOL=true` or `TC_FORCE_DISABLE_SMB_SIGNING_AND_ENCRYPTION=true`.
 - `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
@@ -1428,13 +1421,13 @@ Current compatibility behavior:
 - `configure` reuses the same classification logic for compatibility and displayed device identity
 
 NetBSD 4 activation behavior:
-- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, watches for the current `service manager` role or an active Flash launcher (`rc.local`/`boot.sh`), and still recognizes legacy `manager.sh` during upgrades; it runs `/mnt/Flash/rc.local` only when startup is not already in progress, then verifies managed `smbd` plus the discovery role
+- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, reads `/etc/rc.d/LOGIN`, and runs `/mnt/Flash/rc.local` only when the firmware hook is missing; then it verifies managed `smbd` plus the discovery role
 - Deployment always reboots. It stops current and historical managed processes, removes owned software, copies directly to final paths, verifies and flushes the payload, completes metadata migration, then writes `rc.local` last and flushes again before rebooting. Rerunning an interrupted installation finishes it; user data, pending metadata, quarantines and logs are preserved. `--no-wait` returns after requesting reboot without claiming runtime verification. Legacy API `no_reboot=true` requests are rejected before mutation.
 - `tcapsule activate` starts an already installed runtime without re-uploading files
-- Apple `mDNSResponder` is never stopped; `boot.sh` moves Apple's `diskd` to loopback and `service discovery` registers through the daemon
+- Apple `mDNSResponder` is never stopped; the manager moves Apple's `diskd` to loopback and `service discovery` registers through the daemon
 - tested 1st-generation NetBSD 4 hardware without a firmware boot-hook patch does not persist an `/etc` hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
-- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and the discovery role is running, or if the Flash boot/service runtime is already active, it skips running `/mnt/Flash/rc.local`
+- `activate` skips running `/mnt/Flash/rc.local` when `smbd`, the discovery role, and any enabled rsync are already ready
 
 The current password flow is:
 - `TC_PASSWORD` is retained for app/CLI SSH and ACP access
@@ -1460,7 +1453,7 @@ The dry-run modes are intended for users who want to inspect the exact remote ac
 Hidden operator mode:
 - `tcapsule deploy --debug-logging` writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to flash config.
 - at runtime, Samba writes `log.smbd` under `<payload>/logs/`, sets `max log size = 0`, and enables `log level = 10`.
-- managed runtime logs under `<payload>/logs/` are normally capped around `128 KiB`; `--debug-logging` leaves them unbounded.
+- `log.smbd` is normally capped at `128 KiB` and other payload logs are trimmed to their last `16 KiB` past `32 KiB`; `--debug-logging` leaves them unbounded.
 - this flag is intentionally not documented in the normal command help because it is for active debugging, not normal installs.
 
 ## Client Telemetry
@@ -1560,6 +1553,9 @@ Current important outputs:
 - [bin/rsync/rsync](bin/rsync/rsync)
 - [bin/rsync-netbsd4le/rsync](bin/rsync-netbsd4le/rsync)
 - [bin/rsync-netbsd4be/rsync](bin/rsync-netbsd4be/rsync)
+- [bin/xattr-migrate/xattr-hfs-migrate](bin/xattr-migrate/xattr-hfs-migrate)
+- [bin/xattr-migrate-netbsd4le/xattr-hfs-migrate](bin/xattr-migrate-netbsd4le/xattr-hfs-migrate)
+- [bin/xattr-migrate-netbsd4be/xattr-hfs-migrate](bin/xattr-migrate-netbsd4be/xattr-hfs-migrate)
 
 Current active deploy artifact sizes (stripped bytes, v3.1.1):
 - NetBSD 6 `smbd`: about `9.8M`

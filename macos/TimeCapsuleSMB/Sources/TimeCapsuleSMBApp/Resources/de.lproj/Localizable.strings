@@ -325,7 +325,7 @@
 "bundle_issue.python_packages_missing.message" = "Die mitgelieferten Python-Pakete fehlen.";
 "bundle_issue.recovery.reinstall" = "Installieren Sie TimeCapsuleSMB neu.";
 "bundle_issue.state_directory_unavailable.message" = "TimeCapsuleSMB kann sein Verzeichnis für den Laufzeitstatus nicht schreiben.";
-"bundle_issue.state_directory_unavailable.recovery" = "Reparieren Sie die Berechtigungen für das konfigurierte Statusverzeichnis.";
+"bundle_issue.state_directory_unavailable.recovery" = "Reparieren Sie die Zugriffsrechte für das konfigurierte Statusverzeichnis.";
 "bundle_issue.tools_directory_missing.message" = "Mitgelieferte Befehlszeilenwerkzeuge fehlen.";
 "bundle_issue.tools_directory_missing.recovery" = "Einige Diagnosefunktionen sind möglicherweise erst nach Reparatur des App-Pakets verfügbar.";
 "bundle_issue.unsupported_version.message" = "Diese TimeCapsuleSMB-Version wird nicht unterstützt.";
@@ -830,7 +830,7 @@
 "timeline.deploy.title.post_reboot_activation" = "SMB nach dem Neustart starten";
 "timeline.deploy.title.post_reboot_boot_settle" = "Abschluss des Gerätestarts abwarten";
 "timeline.deploy.title.post_activation_settle" = "Warten, bis die Dienste bereit sind";
-"timeline.deploy.title.post_upload_actions" = "Dateiberechtigungen anwenden";
+"timeline.deploy.title.post_upload_actions" = "Zugriffsrechte anwenden";
 "timeline.deploy.title.pre_upload_actions" = "Vorhandene Dienste stoppen";
 "timeline.deploy.title.prepare_deployment_files" = "Dienstkonfiguration erstellen";
 "timeline.activate.title.probe_runtime" = "Vorhandene Dienste prüfen";
@@ -897,7 +897,7 @@
 "toggle.force_debug_logging" = "Debug-Protokollierung aktivieren";
 "toggle.no_reboot" = "Kein Neustart";
 "toggle.no_wait" = "Nicht warten";
-"toggle.repair_xattrs_fix_permissions" = "Berechtigungen korrigieren";
+"toggle.repair_xattrs_fix_permissions" = "Zugriffsrechte korrigieren";
 "toggle.repair_xattrs_include_hidden" = "Verborgene Pfade einbeziehen";
 "toggle.repair_xattrs_include_time_machine" = "Time-Machine-Pfade einbeziehen";
 "toggle.repair_xattrs_recursive" = "Rekursiv";
