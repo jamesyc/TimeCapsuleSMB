@@ -413,7 +413,7 @@ def migrate_phase(connection: SshConnection, plan, inventory: MigrationInventory
     if not inventory.sources:
         return f"migration_phase={phase} skipped reason=no_legacy_tdb"
     log = f"{plan.payload_dir}/logs/xattr-migration-{phase}.log"
-    run_ssh(connection, f"mkdir -p {shlex.quote(str(PurePosixPath(log).parent))} && printf '%s\\n' {shlex.quote(f'phase={phase} sources={len(inventory.sources)} stall_seconds={STALL_SECONDS} emergency_timeout_seconds={NATIVE_TIMEOUT_SECONDS}')} > {shlex.quote(log)} && /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ' >> {shlex.quote(log)}")
+    run_ssh(connection, f"mkdir -p {shlex.quote(str(PurePosixPath(log).parent))} && printf '%s\\n' {shlex.quote(f'phase={phase} sources={len(inventory.sources)} stall_seconds={STALL_SECONDS}')} > {shlex.quote(log)} && /bin/date -u '+started_at=%Y-%m-%dT%H:%M:%SZ' >> {shlex.quote(log)}")
     current = read_mast_volumes_conn(connection)
     available = {normalized_uuid(v.adisk_uuid): v for v in current}
     if len(available) != len(current):

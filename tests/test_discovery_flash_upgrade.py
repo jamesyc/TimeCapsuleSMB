@@ -3,7 +3,6 @@
 Apple can unmount HFS between writes, and an interrupted software install need
 not boot. Its metadata must survive and rc.local must only enable verified files.
 """
-from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
@@ -12,9 +11,9 @@ import pytest
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.deploy import executor
 from timecapsulesmb.deploy.commands import (
-    EnsureVolumeMountedAction, RemovePathAction, StopManagerAction,
+    EnsureVolumeMountedAction, RemovePathAction,
     StopProcessAction, StopServiceRuntimeAction, StopTelemetryAction,
-    StopWatchdogAction, WaitForIdleJobsAction, render_remote_action,
+    WaitForIdleJobsAction, render_remote_action,
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
@@ -125,7 +124,7 @@ class Device:
 
     def actions(self, connection, actions, on_action_done=None):
         for i, action in enumerate(actions, 1):
-            if isinstance(action, (StopManagerAction, StopServiceRuntimeAction, StopWatchdogAction,
+            if isinstance(action, (StopServiceRuntimeAction,
                                    StopProcessAction, StopTelemetryAction, WaitForIdleJobsAction)):
                 self.events.append('stop')
                 if self.failure == 'stop':

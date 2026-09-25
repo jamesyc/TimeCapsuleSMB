@@ -5,7 +5,7 @@ import shlex
 import subprocess
 import time
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Literal
@@ -27,7 +27,6 @@ from timecapsulesmb.core.config import (
     MAX_DNS_LABEL_BYTES,
     MAX_NETBIOS_NAME_BYTES,
 )
-from timecapsulesmb.core.net import endpoint_host, is_link_local_ipv4, is_loopback_ipv4
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -57,13 +56,14 @@ REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
     "remote_manager_log_tail": "/mnt/Memory/samba4/var/runtime.log",
     "remote_rsync_log_tail": "/mnt/Memory/samba4/var/rsync.log",
+    "remote_telemetry_log_tail": "/mnt/Memory/samba4/var/telemetry.log",
+    # Discovery logs here, not to the payload, whenever smbd is not ready.
+    "remote_diskless_discovery_log_tail": "/mnt/Memory/samba4/var/discovery.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
     "remote_smbd_log_tail": "log.smbd",
+    "remote_smbd_console_log_tail": "smbd-console.log",
     "remote_discovery_log_tail": "discovery.log",
-}
-REMOTE_RUNTIME_FALLBACK_LOG_PATHS = {
-    "remote_discovery_log_tail": "/mnt/Memory/samba4/var/discovery.log",
 }
 SMBD_STATUS_HELPERS = rf'''
     RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
@@ -152,30 +152,6 @@ runtime_volume_root_for_data_path() {{
     return 1
 }}
 
-runtime_volume_root() {{
-    share_paths=$(runtime_share_data_paths || true)
-    [ -n "$share_paths" ] || return 1
-    while IFS= read -r data_root; do
-        volume_root=$(runtime_volume_root_for_data_path "$data_root" || true)
-        if [ -n "$volume_root" ]; then
-            printf '%s\n' "$volume_root"
-            return 0
-        fi
-    done <<EOF
-$share_paths
-EOF
-    return 1
-}}
-
-runtime_volume_device() {{
-    volume_root=$(runtime_volume_root || true)
-    if [ -n "$volume_root" ]; then
-        printf '/dev/%s\n' "${{volume_root##*/}}"
-        return 0
-    fi
-    return 1
-}}
-
 runtime_share_volume_roots() {{
     seen_roots=""
     share_paths=$(runtime_share_data_paths || true)
@@ -199,20 +175,6 @@ EOF
 capture_df_for_volume_root() {{
     volume_root=$1
     /bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true
-}}
-
-runtime_volume_mounted() {{
-    volume_root=$(runtime_volume_root || true)
-    if [ -z "$volume_root" ]; then
-        return 1
-    fi
-    df_line=$(capture_df_for_volume_root "$volume_root")
-    case "$df_line" in
-        *" $volume_root")
-            return 0
-            ;;
-    esac
-    return 1
 }}
 
 runtime_share_volumes_mounted() {{
@@ -375,26 +337,10 @@ class SshCommandProbeResult:
 
 
 @dataclass(frozen=True)
-class RemoteInterfaceProbeResult:
-    iface: str
-    exists: bool
-    detail: str
-
-
-@dataclass(frozen=True)
 class DeployedVersionProbeResult:
     release_tag: str | None
     cli_version_code: int | None
     detail: str
-
-
-@dataclass(frozen=True)
-class RemoteInterfaceCandidate:
-    name: str
-    ipv4_addrs: tuple[str, ...]
-    up: bool
-    active: bool
-    loopback: bool
 
 
 ProbeStepStatus = Literal["pass", "fail", "timeout", "skip"]
@@ -850,139 +796,6 @@ printf 'hostname=%s\n' "$hostname"
     return _parse_runtime_naming_probe_output(proc.stdout or "")
 
 
-def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
-    script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    if proc.returncode == 0:
-        return RemoteInterfaceProbeResult(iface=iface, exists=True, detail=f"interface {iface} exists")
-    return RemoteInterfaceProbeResult(iface=iface, exists=False, detail=f"interface {iface} was not found on the device")
-
-
-def is_runtime_usable_ipv4(value: str) -> bool:
-    return (
-        bool(value)
-        and not re.search(r"[^0-9.]", value)
-        and value != "0.0.0.0"
-        and not is_loopback_ipv4(value)
-        and not is_link_local_ipv4(value)
-    )
-
-
-def runtime_usable_ipv4s(values: Iterable[str]) -> tuple[str, ...]:
-    return tuple(value for value in values if is_runtime_usable_ipv4(value))
-
-
-def _is_private_ipv4(value: str) -> bool:
-    if value.startswith("10.") or value.startswith("192.168."):
-        return True
-    if not value.startswith("172."):
-        return False
-    parts = value.split(".")
-    if len(parts) < 2:
-        return False
-    try:
-        second = int(parts[1])
-    except ValueError:
-        return False
-    return 16 <= second <= 31
-
-
-def _parse_ifconfig_candidates(output: str) -> tuple[RemoteInterfaceCandidate, ...]:
-    candidates: list[RemoteInterfaceCandidate] = []
-    current_name: str | None = None
-    current_ipv4: list[str] = []
-    current_up = False
-    current_active = False
-    current_loopback = False
-
-    def flush() -> None:
-        nonlocal current_name, current_ipv4, current_up, current_active, current_loopback
-        if current_name is not None:
-            candidates.append(
-                RemoteInterfaceCandidate(
-                    name=current_name,
-                    ipv4_addrs=tuple(current_ipv4),
-                    up=current_up,
-                    active=current_active,
-                    loopback=current_loopback,
-                )
-            )
-        current_name = None
-        current_ipv4 = []
-        current_up = False
-        current_active = False
-        current_loopback = False
-
-    for raw_line in output.splitlines():
-        line = raw_line.rstrip()
-        if not line:
-            continue
-        if not line.startswith((" ", "\t")) and ":" in line:
-            flush()
-            header, _sep, _rest = line.partition(":")
-            flags = line.partition("<")[2].partition(">")[0]
-            current_name = header.strip()
-            current_up = "UP" in flags.split(",")
-            current_loopback = "LOOPBACK" in flags.split(",")
-            continue
-        if current_name is None:
-            continue
-        stripped = line.strip()
-        if stripped.startswith("inet "):
-            parts = _ifconfig_inet_parts(stripped)
-            if len(parts) >= 2:
-                current_ipv4.append(parts[1])
-            continue
-        if stripped == "status: active":
-            current_active = True
-
-    flush()
-    return tuple(candidates)
-
-
-def _ifconfig_inet_parts(stripped: str) -> list[str]:
-    parts = stripped.split()
-    if len(parts) >= 2 and parts[1] == "alias":
-        return [parts[0], *parts[2:]]
-    return parts
-
-
-def _interface_preference_key(candidate: RemoteInterfaceCandidate, target_ips: Iterable[str] = ()) -> tuple[int, int, int, int, int, int, int]:
-    target_ip_tuple = tuple(value for value in target_ips if value)
-    target_ip_set = set(target_ip_tuple)
-    non_loopback_ipv4 = tuple(addr for addr in candidate.ipv4_addrs if not is_loopback_ipv4(addr))
-    non_link_local_ipv4 = tuple(addr for addr in non_loopback_ipv4 if not is_link_local_ipv4(addr))
-    private_non_link_local_ipv4 = tuple(addr for addr in non_link_local_ipv4 if _is_private_ipv4(addr))
-    bridge_bonus = 1 if candidate.name.startswith("bridge") else 0
-    ethernet_bonus = 1 if candidate.name.startswith(("bcmeth", "gec", "en", "eth", "wm", "re")) else 0
-    return (
-        1 if target_ip_set.intersection(candidate.ipv4_addrs) else 0,
-        1 if private_non_link_local_ipv4 else 0,
-        1 if non_link_local_ipv4 else 0,
-        1 if candidate.active else 0,
-        1 if candidate.up else 0,
-        bridge_bonus,
-        ethernet_bonus,
-    )
-
-
-def preferred_interface_name(
-    candidates: tuple[RemoteInterfaceCandidate, ...],
-    *,
-    target_ips: Iterable[str] = (),
-) -> str | None:
-    eligible = [
-        candidate
-        for candidate in candidates
-        if not candidate.loopback and runtime_usable_ipv4s(candidate.ipv4_addrs)
-    ]
-    if not eligible:
-        return None
-    target_ip_tuple = runtime_usable_ipv4s(target_ips)
-    best = max(eligible, key=lambda candidate: (_interface_preference_key(candidate, target_ip_tuple), candidate.name))
-    return best.name
-
-
 def read_active_smb_conf_conn(
     connection: SshConnection,
     *,
@@ -1114,10 +927,6 @@ def _parse_live_pids_for_ucomm(ps_out: str, ucomm: str) -> tuple[str, ...]:
         if pid.isdigit():
             pids.append(pid)
     return tuple(pids)
-
-
-def _process_present_for_ucomm(ps_out: str, ucomm: str) -> bool:
-    return bool(_parse_live_pids_for_ucomm(ps_out, ucomm))
 
 
 def _fstat_has_udp_port(fstat_out: str, proc_name: str, family: str, port: int) -> bool:
@@ -2056,127 +1865,7 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
                 logs[key] = f"(unavailable: {e})"
     else:
         logs.setdefault("remote_payload_log_dir", f"(unavailable from active {RUNTIME_SMB_CONF})")
-    for key, path in REMOTE_RUNTIME_FALLBACK_LOG_PATHS.items():
-        if key in logs:
-            continue
-        try:
-            logs[key] = read_remote_log_tail_conn(connection, path)
-        except Exception as e:
-            logs[key] = f"(unavailable: {e})"
     return logs
-
-
-def runtime_startup_failure_debug_fields(
-    logs: Mapping[str, object],
-    *,
-    verification_detail: str = "",
-) -> dict[str, object]:
-    combined = "\n".join(
-        str(value)
-        for value in (
-            logs.get("remote_manager_log_tail"),
-            logs.get("remote_discovery_log_tail"),
-            verification_detail,
-        )
-        if value
-    )
-    if any(
-        marker in combined
-        for marker in (
-            "mDNS startup deferred; no usable IPv4 has appeared yet",
-            "mDNS startup deferred; no usable address has appeared yet",
-            "mdns is waiting for auto-IP",
-            "mdns is waiting for a usable address",
-        )
-    ):
-        return {
-            "runtime_startup_failure": "network_auto_ip_unavailable",
-            "runtime_startup_waiting_for_auto_ip": True,
-        }
-    return {}
-
-
-def _parse_remote_diagnostic_sections(text: str) -> tuple[dict[str, str], dict[str, str]]:
-    values: dict[str, str] = {}
-    sections: dict[str, list[str]] = {}
-    current_section: str | None = None
-
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip("\n")
-        if line.startswith("TC_DIAG_BEGIN "):
-            current_section = line.partition(" ")[2].strip()
-            sections[current_section] = []
-            continue
-        if line.startswith("TC_DIAG_END "):
-            current_section = None
-            continue
-        if current_section is not None:
-            sections[current_section].append(line)
-            continue
-        if "=" in line:
-            key, value = line.split("=", 1)
-            values[key] = value
-
-    return values, {key: "\n".join(lines).strip() for key, lines in sections.items()}
-
-
-def _remote_interface_debug_summary(candidates: Iterable[RemoteInterfaceCandidate]) -> list[dict[str, object]]:
-    return [
-        {
-            "name": candidate.name,
-            "ipv4": list(candidate.ipv4_addrs),
-            "up": candidate.up,
-            "active": candidate.active,
-            "loopback": candidate.loopback,
-        }
-        for candidate in candidates
-    ]
-
-
-def read_remote_network_diagnostics_conn(connection: SshConnection) -> dict[str, object]:
-    script = r'''
-printf 'TC_DIAG_BEGIN ifconfig_a\n'
-/sbin/ifconfig -a 2>&1 | /usr/bin/sed -n '/ether /d;/address /d;p'
-printf 'TC_DIAG_END ifconfig_a\n'
-printf 'TC_DIAG_BEGIN routes\n'
-if [ -x /usr/bin/netstat ]; then
-    /usr/bin/netstat -rn -f inet 2>&1
-elif [ -x /bin/netstat ]; then
-    /bin/netstat -rn -f inet 2>&1
-else
-    echo "(route diagnostics unavailable)"
-fi
-printf 'TC_DIAG_END routes\n'
-'''
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS,
-    )
-    _values, sections = _parse_remote_diagnostic_sections(proc.stdout or "")
-    all_ifconfig = sections.get("ifconfig_a", "")
-    candidates = _parse_ifconfig_candidates(all_ifconfig)
-    target_host = endpoint_host(connection.host)
-    target_ip_matches = tuple(
-        candidate
-        for candidate in candidates
-        if target_host and target_host in candidate.ipv4_addrs and not candidate.loopback
-    )
-    diagnostics: dict[str, object] = {
-        "remote_network_config": {
-            "ssh_target_host": target_host,
-        },
-        "remote_network_probe_rc": proc.returncode,
-        "remote_network_ipv4_interfaces": _remote_interface_debug_summary(candidates),
-        "remote_network_preferred_iface": preferred_interface_name(candidates, target_ips=(target_host,)),
-        "remote_network_target_ip_matches": [candidate.name for candidate in target_ip_matches],
-        "remote_network_routes": _limit_remote_log_tail(sections.get("routes", "")),
-    }
-    stderr = (proc.stderr or "").strip()
-    if stderr:
-        diagnostics["remote_network_probe_stderr"] = _limit_remote_log_tail(stderr)
-    return diagnostics
 
 
 def read_remote_service_socket_diagnostics_conn(connection: SshConnection) -> str:
@@ -2224,18 +1913,13 @@ for runtime_path in \
     "$RUNTIME_RAM_PRIVATE" \
     "$RUNTIME_RAM_VAR" \
     "$RUNTIME_RAM_SBIN/smbd" \
-    $RUNTIME_RAM_SBIN/smbd.tmp.* \
     "$RUNTIME_RAM_SBIN/rsync" \
-    $RUNTIME_RAM_SBIN/rsync.tmp.* \
     "$RUNTIME_RAM_PRIVATE/smbpasswd" \
     "$RUNTIME_RAM_PRIVATE/username.map" \
     "$RUNTIME_RAM_ETC/smb.conf" \
     "$RUNTIME_RAM_ETC/rsyncd.conf" \
     "$RUNTIME_RAM_VAR/rsync.log"
 do
-    case "$runtime_path" in
-        *"*"*) continue ;;
-    esac
     if [ -e "$runtime_path" ]; then
         /bin/ls -ldn "$runtime_path" 2>&1 || true
     else

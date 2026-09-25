@@ -74,7 +74,6 @@ package-dir = {"" = "src"}
 timecapsulesmb = [
   "assets/artifact-manifest.json",
   "assets/boot/samba4/*",
-  "assets/boot/samba4/common.d/*",
 ]
 
 [tool.setuptools.packages.find]
@@ -102,4 +101,7 @@ select = [
   "F63",
   "F7",
   "F82",
+  # Unused imports and variables hid code left over from removed features.
+  "F401",
+  "F841",
 ]

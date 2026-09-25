@@ -47,7 +47,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.deploy.planner import GENERATED_FLASH_CONFIG_SOURCE
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
-from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError, ACPError
+from timecapsulesmb.integrations.acp import ACPAuthError
 from timecapsulesmb.services.app import AppOperationError, jsonable
 from timecapsulesmb.services.flash import (
     FLASH_UNSUPPORTED_DEVICE_MESSAGE,
@@ -271,12 +271,6 @@ class AppApiTests(unittest.TestCase):
                     ssh_reboot_attempted=True,
                     ssh_reboot_succeeded=True,
                 )
-
-    @staticmethod
-    def fake_reboot_request_and_wait(*_args, callbacks=None, **_kwargs) -> None:
-        AppApiTests.fake_reboot_request(callbacks=callbacks)
-        if callbacks is not None and callbacks.update_fields is not None:
-            callbacks.update_fields(device_came_back_after_reboot=True)
 
     def test_event_redacts_sensitive_fields(self) -> None:
         event = AppEvent("result", "configure", {
@@ -1342,7 +1336,6 @@ class AppApiTests(unittest.TestCase):
                 device_os_version="NetBSD 6.0 (earmv4)",
                 device_model="TimeCapsule8,119",
                 device_syap="119",
-                nbns_enabled=True,
                 reboot_was_attempted=True,
                 device_came_back_after_reboot=True,
             )
@@ -1366,7 +1359,7 @@ class AppApiTests(unittest.TestCase):
                             )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], True)
+        self.assertNotIn("nbns_enabled", self._telemetry_factory.call_args.kwargs)
         finished = self._telemetry_client.emit.call_args_list[1].kwargs
         self.assertEqual(finished["result"], "success")
         self.assertEqual(finished["stage"], "verify_runtime_reboot")
@@ -1374,7 +1367,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["device_os_version"], "NetBSD 6.0 (earmv4)")
         self.assertEqual(finished["device_model"], "TimeCapsule8,119")
         self.assertEqual(finished["device_syap"], "119")
-        self.assertEqual(finished["nbns_enabled"], True)
+        self.assertNotIn("nbns_enabled", finished)
         self.assertEqual(finished["reboot_was_attempted"], True)
         self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertEqual(finished["details"]["payload_family"], "netbsd6_samba4")
@@ -3212,7 +3205,6 @@ class AppApiTests(unittest.TestCase):
             {
                 "device_name": "Time Capsule",
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": False,
                 "startup_mode": "reboot_then_verify",
             },
@@ -3249,7 +3241,6 @@ class AppApiTests(unittest.TestCase):
             {
                 "device_name": "Time Capsule",
                 "netbsd4": True,
-                "no_reboot": False,
                 "no_wait": False,
                 "startup_mode": "reboot_then_activate",
             },
@@ -3287,7 +3278,6 @@ class AppApiTests(unittest.TestCase):
             {
                 "device_name": "Time Capsule",
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": True,
                 "startup_mode": "reboot_then_verify",
             },
@@ -3326,7 +3316,6 @@ class AppApiTests(unittest.TestCase):
                 "device_name": "Time Capsule",
                 "netbsd4": True,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": True,
                 "startup_mode": "reboot_then_activate",
             },
@@ -3481,7 +3470,6 @@ class AppApiTests(unittest.TestCase):
                 "payload_family": "netbsd6_samba4",
                 "netbsd4": False,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": False,
                 "startup_mode": "reboot_then_verify",
             },
@@ -3555,7 +3543,6 @@ class AppApiTests(unittest.TestCase):
                 "payload_family": "netbsd6_samba4",
                 "netbsd4": False,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": False,
                 "startup_mode": "reboot_then_verify",
             },
@@ -3622,7 +3609,6 @@ class AppApiTests(unittest.TestCase):
                 "payload_family": "netbsd6_samba4",
                 "netbsd4": False,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": True,
                 "startup_mode": "reboot_then_verify",
             },
@@ -3682,7 +3668,6 @@ class AppApiTests(unittest.TestCase):
                 "payload_family": "netbsd4be_samba4",
                 "netbsd4": True,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": True,
                 "startup_mode": "reboot_then_activate",
             },
@@ -3738,7 +3723,6 @@ class AppApiTests(unittest.TestCase):
                 "payload_family": "netbsd6_samba4",
                 "netbsd4": False,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": True,
                 "startup_mode": "reboot_then_verify",
             },
@@ -3795,7 +3779,6 @@ class AppApiTests(unittest.TestCase):
                 "payload_family": "netbsd6_samba4",
                 "netbsd4": False,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": False,
                 "startup_mode": "reboot_then_verify",
             },
@@ -3899,21 +3882,14 @@ class AppApiTests(unittest.TestCase):
                     "remote_discovery_log_tail": "mdns: before interface probe",
                 },
             ):
-                with mock.patch(
-                    "timecapsulesmb.services.runtime_verification.read_remote_network_diagnostics_conn",
-                    return_value={
-                        "remote_network_config": {"ssh_target_host": "169.254.44.9"},
-                        "remote_network_target_ip_matches": [],
-                    },
-                ):
-                    with self.assertRaises(AppOperationError) as raised:
-                        deploy_ops.verify_runtime(
-                            context,
-                            connection,
-                            stage="verify_runtime_activation",
-                            timeout_seconds=200,
-                            failure_message="NetBSD4 activation failed.",
-                        )
+                with self.assertRaises(AppOperationError) as raised:
+                    deploy_ops.verify_runtime(
+                        context,
+                        connection,
+                        stage="verify_runtime_activation",
+                        timeout_seconds=200,
+                        failure_message="NetBSD4 activation failed.",
+                    )
 
         self.assertEqual(raised.exception.code, "remote_error")
         self.assertEqual(
@@ -3921,11 +3897,11 @@ class AppApiTests(unittest.TestCase):
             "manager: mDNS startup deferred; no usable address has appeared yet",
         )
         self.assertEqual(context.diagnostics.debug_fields["remote_discovery_log_tail"], "mdns: before interface probe")
-        self.assertEqual(context.diagnostics.debug_fields["runtime_startup_failure"], "network_auto_ip_unavailable")
+        # The retired advertiser's auto-IP classification no longer runs.
+        self.assertNotIn("runtime_startup_failure", context.diagnostics.debug_fields)
         error = context.diagnostic_error(str(raised.exception))
         self.assertIn("remote_manager_log_tail=manager: mDNS startup deferred; no usable address has appeared yet", error)
         self.assertIn("remote_discovery_log_tail=mdns: before interface probe", error)
-        self.assertIn("remote_network_target_ip_matches=[]", error)
 
     def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
         from timecapsulesmb.services.reboot import request_reboot
@@ -3971,7 +3947,6 @@ class AppApiTests(unittest.TestCase):
                 "payload_family": "netbsd6_samba4",
                 "netbsd4": False,
                 "requires_reboot": True,
-                "no_reboot": False,
                 "no_wait": False,
                 "startup_mode": "reboot_then_verify",
             },
@@ -4031,7 +4006,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "deploy_no_disk_detected")
         self.assertEqual(error["recovery"]["title"], "No internal disk detected")
         self.assertEqual(error["recovery"]["action_ids"], [])
-        self.assertEqual(self._telemetry_factory.call_args.kwargs["nbns_enabled"], True)
+        self.assertNotIn("nbns_enabled", self._telemetry_factory.call_args.kwargs)
         finished = self._telemetry_client.emit.call_args_list[-1].kwargs
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["stage"], "read_mast")
@@ -4039,7 +4014,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(finished["device_os_version"], "NetBSD 6.0 (earmv4)")
         self.assertEqual(finished["device_model"], "TimeCapsule8,119")
         self.assertEqual(finished["device_syap"], "119")
-        self.assertEqual(finished["nbns_enabled"], True)
+        self.assertNotIn("nbns_enabled", finished)
         self.assertEqual(finished["reboot_was_attempted"], False)
         self.assertEqual(finished["device_came_back_after_reboot"], False)
         self.assertEqual(finished["deploy_startup_mode"], "reboot_then_verify")
@@ -4667,7 +4642,7 @@ MaSt = (
                 )
 
         self.assertEqual(rc, 1)
-        error = self.assert_confirmation(collector, "repair_xattrs", {"path": "/Volumes/Data"})
+        self.assert_confirmation(collector, "repair_xattrs", {"path": "/Volumes/Data"})
         self.assertEqual(collector.events_of_type("error")[0]["recovery"]["title"], "Repair confirmation required")
         runner.assert_not_called()
 

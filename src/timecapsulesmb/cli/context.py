@@ -14,8 +14,6 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import probe_connection_state, probe_remote_airport_identity_conn
 from timecapsulesmb.services.callbacks import OperationCallbacks
 from timecapsulesmb.services.context import (
-    COMMAND_FIELD_BLACKLIST,
-    COMMAND_VALUE_BLACKLIST,
     message_with_exception_cause,
     OperationContext,
 )
@@ -37,7 +35,7 @@ from timecapsulesmb.transport.errors import (
 if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.compat import DeviceCompatibility
-    from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
+    from timecapsulesmb.device.probe import ProbedDeviceState
     from timecapsulesmb.services.runtime import ManagedTargetState
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
@@ -67,7 +65,6 @@ class CommandContext:
         self.finished = False
         self.command_id = str(uuid.uuid4())
         self.result = "failure"
-        self.interface_probe: RemoteInterfaceProbeResult | None = None
         self.compatibility: DeviceCompatibility | None = None
         self._optional_airport_identity_thread: threading.Thread | None = None
         self._optional_airport_identity: tuple[str | None, str | None] | None = None
@@ -333,7 +330,6 @@ class CommandContext:
 
     def _apply_managed_target_state(self, target: ManagedTargetState) -> ManagedTargetState:
         self.connection = target.connection
-        self.interface_probe = target.interface_probe
         if target.probe_state is not None:
             self.probe_state = target.probe_state
             self.compatibility = target.probe_state.compatibility
@@ -348,11 +344,6 @@ class CommandContext:
                     device_family=self.compatibility.payload_family,
                 )
         return target
-
-    def inspect_managed_connection(self, *, iface: str, include_probe: bool = False) -> ManagedTargetState:
-        connection = self.connection if self.connection is not None else self.resolve_env_connection()
-        target = service_runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
-        return self._apply_managed_target_state(target)
 
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.config is None:

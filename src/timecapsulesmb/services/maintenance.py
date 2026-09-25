@@ -3,12 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shlex
 
+from timecapsulesmb.deploy.commands import managed_stop_actions, render_remote_actions
 from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
-from timecapsulesmb.device.processes import (
-    render_direct_pkill9_by_ucomm,
-    render_direct_pkill9_manager,
-    render_direct_pkill9_watchdog,
-)
 from timecapsulesmb.device.storage import MaStVolume
 
 
@@ -115,15 +111,13 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
 
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
+    # Never repair a volume the manager could remount or smbd could write:
+    # abort unless every managed process has stopped.
     lines = [
-        render_direct_pkill9_manager(),
-        render_direct_pkill9_watchdog(),
-        render_direct_pkill9_by_ucomm("smbd"),
-        render_direct_pkill9_by_ucomm("rsync"),
-        render_direct_pkill9_by_ucomm("afpserver"),
-        render_direct_pkill9_by_ucomm("wcifsnd"),
-        render_direct_pkill9_by_ucomm("wcifsfs"),
-        "sleep 2",
+        f"( {command} ) || exit 1"
+        for command in render_remote_actions(managed_stop_actions(stop_afpserver=True))
+    ]
+    lines += [
         f"/sbin/umount -f {shlex.quote(mountpoint)} >/dev/null 2>&1 || true",
         f"echo '--- fsck_hfs {device} ---'",
         f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1 || true",

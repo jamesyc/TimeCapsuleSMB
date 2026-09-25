@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,16 +18,12 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     SshAccessStatus,
     flash_runtime_config_present_conn,
-    preferred_interface_name,
     probe_manager_startup_age_conn,
     read_deployed_version_conn,
-    probe_remote_interface_conn,
-    read_remote_network_diagnostics_conn,
     read_runtime_ram_diagnostics_conn,
     read_runtime_payload_dir_conn,
     read_runtime_log_tails_conn,
     runtime_ram_root_present_conn,
-    runtime_startup_failure_debug_fields,
 )
 from timecapsulesmb.transport.errors import SshAlgorithmNegotiationError, SshAuthenticationError, SshNetworkError
 from timecapsulesmb.transport.ssh import SshConnection
@@ -236,6 +233,8 @@ class ProbeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
             if "rsync.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")
+            if "telemetry.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="telemetry log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
                 return subprocess.CompletedProcess(
                     args=["ssh"],
@@ -243,8 +242,12 @@ class ProbeTests(unittest.TestCase):
                     stdout="[global]\n    log file = /Volumes/dk2/.samba4/logs/log.smbd\n[Data]\n    path = /Volumes/dk2/ShareRoot\n",
                     stderr="",
                 )
-            if "discovery.log" in remote_cmd:
+            if "/mnt/Memory/samba4/var/discovery.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ram discovery log\n", stderr="")
+            if "/Volumes/dk2/.samba4/logs/discovery.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="discovery log\n", stderr="")
+            if "smbd-console.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="smbd console\n", stderr="")
             if "log.smbd" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="smbd log\n", stderr="")
             self.fail(f"unexpected remote command: {remote_cmd}")
@@ -256,19 +259,21 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
         self.assertEqual(logs["remote_manager_log_tail"], "manager log")
         self.assertEqual(logs["remote_rsync_log_tail"], "rsync log")
+        self.assertEqual(logs["remote_telemetry_log_tail"], "telemetry log")
+        # Both discovery logs: the payload one, and the RAM one it writes
+        # whenever smbd is not ready (the case a failure report cares about).
         self.assertEqual(logs["remote_discovery_log_tail"], "discovery log")
+        self.assertEqual(logs["remote_diskless_discovery_log_tail"], "ram discovery log")
         self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
-        self.assertEqual(run_ssh_mock.call_count, 6)
-        commands = [call.args[1] for call in run_ssh_mock.call_args_list]
-        self.assertTrue(any("/Volumes/dk2/.samba4/logs/discovery.log" in command for command in commands))
-        self.assertFalse(any("/mnt/Memory/samba4/var/discovery.log" in command for command in commands))
+        self.assertEqual(logs["remote_smbd_console_log_tail"], "smbd console")
+        self.assertEqual(run_ssh_mock.call_count, 9)
         for call in run_ssh_mock.call_args_list:
             args, kwargs = call
             self.assertEqual(args[0], connection)
             self.assertFalse(kwargs["check"])
             self.assertEqual(kwargs["timeout"], probe.REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
 
-    def test_read_runtime_log_tails_conn_falls_back_to_ram_advertiser_logs_without_payload_state(self) -> None:
+    def test_read_runtime_log_tails_conn_reads_ram_logs_without_payload_state(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
         def fake_run_ssh(
@@ -282,6 +287,8 @@ class ProbeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
             if "rsync.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rsync log\n", stderr="")
+            if "telemetry.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="telemetry log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="[global]\n[Data]\n    path = /Volumes/dk2/ShareRoot\n", stderr="")
             if "/mnt/Memory/samba4/var/discovery.log" in remote_cmd:
@@ -294,8 +301,10 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(logs["remote_payload_log_dir"], f"(unavailable from active {probe.RUNTIME_SMB_CONF})")
         self.assertEqual(logs["remote_manager_log_tail"], "manager log")
         self.assertEqual(logs["remote_rsync_log_tail"], "rsync log")
-        self.assertEqual(logs["remote_discovery_log_tail"], "ram discovery log")
-        self.assertEqual(run_ssh_mock.call_count, 5)
+        self.assertEqual(logs["remote_diskless_discovery_log_tail"], "ram discovery log")
+        self.assertNotIn("remote_discovery_log_tail", logs)
+        self.assertNotIn("remote_smbd_log_tail", logs)
+        self.assertEqual(run_ssh_mock.call_count, 6)
 
     def test_read_remote_service_socket_diagnostics_conn_scopes_fstat_to_service_processes(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
@@ -318,104 +327,34 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
 
-    def test_read_runtime_ram_diagnostics_conn_reports_stage_paths_and_tmp_files(self) -> None:
+    def test_read_runtime_ram_diagnostics_conn_lists_present_and_missing_staged_files(self) -> None:
+        # Run the real script against a fake RAM tree: staged files are listed,
+        # missing ones are named, and nothing aborts on a partial stage.
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        stdout = "df /mnt/Memory:\nFilesystem 1K-blocks Used Avail Capacity Mounted on\nruntime paths:\nmissing /mnt/Memory/samba4/sbin/smbd\n"
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=stdout, stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            ram = Path(tmp) / "samba4"
+            for sub in ("sbin", "etc", "private", "var"):
+                (ram / sub).mkdir(parents=True)
+            (ram / "sbin" / "smbd").write_text("smbd")
+            (ram / "etc" / "smb.conf").write_text("[global]\n")
 
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = read_runtime_ram_diagnostics_conn(connection)
+            def run_locally(_connection, command, **kwargs):
+                command = command.replace("/mnt/Memory/samba4", str(ram))
+                return subprocess.run(command, shell=True, executable="/bin/sh", text=True, capture_output=True)
 
-        self.assertEqual(result, stdout.strip())
-        args, kwargs = run_ssh_mock.call_args
-        self.assertEqual(args[0], connection)
-        self.assertIn("/bin/df -k /mnt/Memory", args[1])
-        self.assertIn("$RUNTIME_RAM_SBIN/smbd.tmp.*", args[1])
-        self.assertIn("$RUNTIME_RAM_SBIN/rsync.tmp.*", args[1])
-        self.assertIn("$RUNTIME_RAM_ETC/rsyncd.conf", args[1])
-        self.assertIn("$RUNTIME_RAM_VAR/rsync.log", args[1])
-        self.assertIn("$RUNTIME_RAM_PRIVATE/smbpasswd", args[1])
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=run_locally) as run_ssh_mock:
+                result = read_runtime_ram_diagnostics_conn(connection)
+
+        lines = result.splitlines()
+        self.assertIn("runtime paths:", lines)
+        self.assertTrue(any(line.endswith(f"{ram}/sbin/smbd") and not line.startswith("missing") for line in lines))
+        self.assertTrue(any(line.endswith(f"{ram}/etc/smb.conf") and not line.startswith("missing") for line in lines))
+        for missing in ("sbin/rsync", "private/smbpasswd", "private/username.map", "etc/rsyncd.conf", "var/rsync.log"):
+            self.assertIn(f"missing {ram}/{missing}", lines)
+        self.assertFalse(any(".tmp." in line for line in lines))
+        _args, kwargs = run_ssh_mock.call_args
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
-
-    def test_runtime_startup_failure_debug_fields_classifies_auto_ip_unavailable(self) -> None:
-        fields = runtime_startup_failure_debug_fields(
-            {
-                "remote_manager_log_tail": (
-                    "manager: mDNS auto-ip check: no usable address yet\n"
-                    "manager: mDNS startup deferred; no usable address has appeared yet\n"
-                )
-            }
-        )
-
-        self.assertEqual(
-            fields,
-            {
-                "runtime_startup_failure": "network_auto_ip_unavailable",
-                "runtime_startup_waiting_for_auto_ip": True,
-            },
-        )
-
-    def test_runtime_startup_failure_debug_fields_classifies_probe_auto_ip_waiting_detail(self) -> None:
-        fields = runtime_startup_failure_debug_fields(
-            {},
-            verification_detail="runtime verification timed out; mdns is waiting for auto-IP",
-        )
-
-        self.assertEqual(fields["runtime_startup_failure"], "network_auto_ip_unavailable")
-
-    def test_read_remote_network_diagnostics_conn_summarizes_live_candidates(self) -> None:
-        connection = SshConnection("root@169.254.44.9", "pw", "-o StrictHostKeyChecking=no")
-        stdout = """\
-TC_DIAG_BEGIN ifconfig_a
-bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-\tstatus: active
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tstatus: active
-TC_DIAG_END ifconfig_a
-TC_DIAG_BEGIN routes
-default 169.254.0.1
-TC_DIAG_END routes
-"""
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=stdout, stderr="")
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            diagnostics = read_remote_network_diagnostics_conn(connection)
-
-        self.assertEqual(diagnostics["remote_network_config"], {"ssh_target_host": "169.254.44.9"})
-        self.assertEqual(diagnostics["remote_network_probe_rc"], 0)
-        self.assertEqual(diagnostics["remote_network_target_ip_matches"], ["bcmeth1"])
-        self.assertIsNone(diagnostics["remote_network_preferred_iface"])
-        self.assertNotIn("remote_network_failure_hint", diagnostics)
-        self.assertEqual(
-            diagnostics["remote_network_ipv4_interfaces"],
-            [
-                {"name": "bcmeth1", "ipv4": ["169.254.44.9"], "up": True, "active": True, "loopback": False},
-                {"name": "bridge0", "ipv4": [], "up": True, "active": True, "loopback": False},
-            ],
-        )
-        self.assertIn("default 169.254.0.1", str(diagnostics["remote_network_routes"]))
-        args, kwargs = run_ssh_mock.call_args
-        self.assertEqual(args[0], connection)
-        self.assertIn("/sbin/ifconfig -a", args[1])
-        self.assertNotIn("/mnt/Flash/tcapsulesmb.conf", args[1])
-        self.assertFalse(kwargs["check"])
-        self.assertEqual(kwargs["timeout"], probe.REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS)
-
-    def test_probe_remote_interface_conn_uses_connection_wrapper_without_old_positional_shape(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="bridge0\n")
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = probe_remote_interface_conn(connection, "bridge0")
-
-        self.assertTrue(result.exists)
-        run_ssh_mock.assert_called_once()
-        args, kwargs = run_ssh_mock.call_args
-        self.assertEqual(args[0], connection)
-        self.assertEqual(len(args), 2)
-        self.assertFalse(kwargs["check"])
 
     def test_probe_device_conn_uses_connection_wrapper_for_remote_probe_sequence(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
@@ -581,134 +520,3 @@ TC_DIAG_END routes
         self.assertEqual(result.model, "AirPort7,120")
         self.assertEqual(result.syap, "120")
         self.assertIn("AirPort7,120", result.detail)
-
-    def test_preferred_interface_name_prefers_bridge0_with_private_ipv4(self) -> None:
-        ifconfig_output = """
-gec0: flags=eb43<UP,BROADCAST,RUNNING,PROMISC,ALLMULTI,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tstatus: active
-bridge0: flags=e043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 192.168.1.72 netmask 0xffffff00 broadcast 192.168.1.255
-\tinet 169.254.117.175 netmask 0xffff0000 broadcast 169.254.255.255
-\tstatus: active
-lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
-\tinet 127.0.0.1 netmask 0xff000000
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(preferred_interface_name(candidates), "bridge0")
-        self.assertEqual([candidate.name for candidate in candidates], ["gec0", "bridge0", "lo0"])
-
-    def test_parse_ifconfig_candidates_parses_netbsd_inet_alias(self) -> None:
-        ifconfig_output = """
-bridge0: flags=e043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet alias 10.0.1.13 netmask 0xffffff00 broadcast 10.0.1.255
-\tstatus: active
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(preferred_interface_name(candidates), "bridge0")
-        self.assertEqual(candidates[0].ipv4_addrs, ("10.0.1.13",))
-
-    def test_preferred_interface_name_prefers_bcmeth1_when_bridge0_has_no_ipv4(self) -> None:
-        ifconfig_output = """
-bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255
-\tstatus: active
-bcmeth0: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tstatus: active
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tstatus: active
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(preferred_interface_name(candidates), "bcmeth1")
-
-    def test_preferred_interface_name_ignores_loopback_only_output(self) -> None:
-        ifconfig_output = """
-lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
-\tinet 127.0.0.1 netmask 0xff000000
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertIsNone(preferred_interface_name(candidates))
-
-    def test_preferred_interface_name_uses_target_ip_before_generic_ranking(self) -> None:
-        ifconfig_output = """
-bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255
-\tstatus: active
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 192.168.1.217 netmask 0xffffff00 broadcast 192.168.1.255
-\tstatus: active
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(preferred_interface_name(candidates), "bridge0")
-        self.assertEqual(preferred_interface_name(candidates, target_ips=("10.0.1.1",)), "bcmeth1")
-
-    def test_parse_ifconfig_candidates_keeps_target_matchable_addresses(self) -> None:
-        ifconfig_output = """
-bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 192.168.168.111 netmask 0xffffff00 broadcast 192.168.168.255
-\tstatus: active
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 169.254.117.175 netmask 0xffff0000 broadcast 169.254.255.255
-\tstatus: active
-lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
-\tinet 127.0.0.1 netmask 0xff000000
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(preferred_interface_name(candidates, target_ips=("192.168.168.111",)), "bcmeth1")
-        self.assertEqual(
-            [
-                candidate.name
-                for candidate in candidates
-                if "192.168.168.111" in candidate.ipv4_addrs
-            ],
-            ["bcmeth1"],
-        )
-
-    def test_preferred_interface_name_private_ipv4_beats_link_local_without_target_ip(self) -> None:
-        ifconfig_output = """
-bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-\tstatus: active
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 192.168.1.217 netmask 0xffffff00 broadcast 192.168.1.255
-\tstatus: active
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(preferred_interface_name(candidates), "bridge0")
-
-    def test_preferred_interface_name_link_local_target_does_not_win(self) -> None:
-        ifconfig_output = """
-bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-\tstatus: active
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 192.168.1.217 netmask 0xffffff00 broadcast 192.168.1.255
-\tstatus: active
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(preferred_interface_name(candidates, target_ips=("169.254.44.9",)), "bridge0")
-
-    def test_probe_remote_interface_candidates_preserves_multiple_private_candidates(self) -> None:
-        ifconfig_output = """
-bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 10.0.1.1 netmask 0xffffff00 broadcast 10.0.1.255
-\tstatus: active
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet 192.168.1.217 netmask 0xffffff00 broadcast 192.168.1.255
-\tstatus: active
-"""
-        candidates = probe._parse_ifconfig_candidates(ifconfig_output)
-
-        self.assertEqual(
-            [(candidate.name, candidate.ipv4_addrs) for candidate in candidates],
-            [("bcmeth1", ("10.0.1.1",)), ("bridge0", ("192.168.1.217",))],
-        )
-        self.assertEqual(preferred_interface_name(candidates), "bridge0")
-        self.assertEqual(preferred_interface_name(candidates, target_ips=("10.0.1.1",)), "bcmeth1")

@@ -86,7 +86,6 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("deploy", "upload_payload"): StagePolicy(REMOTE_WRITE, False, "Upload managed Samba payload files."),
     ("deploy", "upload_smbd"): StagePolicy(REMOTE_WRITE, False, "Upload smbd."),
     ("deploy", "upload_xattr_migrator"): StagePolicy(REMOTE_WRITE, False, "Upload the one-shot HFS metadata migrator."),
-    ("deploy", "upload_discovery"): StagePolicy(REMOTE_WRITE, False, "Upload discovery service."),
     ("deploy", "upload_rsync"): StagePolicy(REMOTE_WRITE, False, "Upload rsync runtime files."),
     ("deploy", "upload_boot_files"): StagePolicy(REMOTE_WRITE, False, "Upload boot files."),
     ("deploy", "upload_runtime_config"): StagePolicy(REMOTE_WRITE, False, "Upload runtime config."),

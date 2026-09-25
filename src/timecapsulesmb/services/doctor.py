@@ -91,7 +91,7 @@ def build_discovery_context(results: list[CheckResult], debug_fields: Mapping[st
     if zeroconf_instance_count == 0:
         lines.append(
             "INFO Python zeroconf discovered 0 Bonjour instances during doctor; "
-            "mDNS advertiser/discovery path needs investigation"
+            "Bonjour registration path needs investigation"
         )
     elif zeroconf_instance_count is not None:
         lines.append(
@@ -103,8 +103,6 @@ def build_discovery_context(results: list[CheckResult], debug_fields: Mapping[st
     zeroconf_summary = _zeroconf_debug_summary(zeroconf)
     if zeroconf_summary:
         lines.append(f"INFO Python zeroconf diagnostics: {zeroconf_summary}")
-    lines.extend(_mdns_transport_context_from_debug(debug_fields))
-    lines.extend(_mdns_counter_context_from_debug(debug_fields))
     lines.extend(_native_dns_sd_context_from_debug(debug_fields, expected_instance=expected_instance))
     return lines
 
@@ -205,26 +203,6 @@ def _native_dns_sd_context_from_debug(
     return lines
 
 
-def _mdns_transport_context_from_debug(debug_fields: Mapping[str, object]) -> list[str]:
-    mdns_log = _mapping_value(debug_fields, "remote_discovery_log_tail")
-    if not isinstance(mdns_log, str):
-        return []
-    transport = _last_regex_group(r"mdns transport active: ([^\n]+)", mdns_log)
-    if not transport:
-        return []
-    return [f"INFO mdns transport state: {transport}"]
-
-
-def _mdns_counter_context_from_debug(debug_fields: Mapping[str, object]) -> list[str]:
-    mdns_log = _mapping_value(debug_fields, "remote_discovery_log_tail")
-    if not isinstance(mdns_log, str):
-        return []
-    counters = _last_regex_group(r"mdns counters: ([^\n]+)", mdns_log)
-    if not counters:
-        return []
-    return [f"INFO mdns counters: {counters}"]
-
-
 def _last_regex_group(pattern: str, text: str) -> str | None:
     matches = list(re.finditer(pattern, text))
     if not matches:
@@ -233,35 +211,24 @@ def _last_regex_group(pattern: str, text: str) -> str | None:
     return match.group(1) if match.groups() else match.group(0)
 
 
-def _extract_generated_service_types(mdns_log: str) -> list[str]:
-    service_types: list[str] = []
-    for match in re.finditer(r"serving service: type=([^ ]+)", mdns_log):
-        service_type = match.group(1)
-        if service_type not in service_types:
-            service_types.append(service_type)
-    return service_types
+def _discovery_log_text(debug_fields: Mapping[str, object]) -> str:
+    # Discovery writes the RAM log while smbd is not ready and the payload log
+    # afterwards. Lines start with "YYYY-MM-DD HH:MM:SS", so sorting both
+    # tails restores their order and "last match" means the latest event.
+    lines: list[str] = []
+    for key in ("remote_discovery_log_tail", "remote_diskless_discovery_log_tail"):
+        text = _mapping_value(debug_fields, key)
+        if isinstance(text, str):
+            lines.extend(text.splitlines())
+    return "\n".join(sorted(lines))
 
 
 def build_mdns_boot_context(debug_fields: Mapping[str, object]) -> list[str]:
-    rc_log = _mapping_value(debug_fields, "remote_rc_local_log_tail")
-    mdns_log = _mapping_value(debug_fields, "remote_discovery_log_tail")
-    rc_text = rc_log if isinstance(rc_log, str) else ""
-    mdns_text = mdns_log if isinstance(mdns_log, str) else ""
-    combined = f"{rc_text}\n{mdns_text}"
-    if not combined.strip():
+    mdns_text = _discovery_log_text(debug_fields)
+    if not mdns_text.strip():
         return []
 
     lines: list[str] = []
-    source = _last_regex_group(r"serving summary: source=([^\s]+)", mdns_text)
-    service_types = _extract_generated_service_types(mdns_text)
-    if source and service_types:
-        lines.append(
-            f"INFO mdns source={source}; generated services include {', '.join(service_types)}"
-        )
-    elif source:
-        lines.append(f"INFO mdns source={source}")
-
-    # v3.1.0 registrant log lines (Apple's daemon is the responder).
     plan = _last_regex_group(r"registrant: plan ((?:validated|incomplete) mode=[^\n]+)", mdns_text)
     if plan:
         lines.append(f"INFO mdns registrant {plan}")
@@ -275,12 +242,6 @@ def build_mdns_boot_context(debug_fields: Mapping[str, object]) -> list[str]:
     stalled = _last_regex_group(r"registrant: (mDNSResponder accepted the connection but did not answer)[^\n]*", mdns_text)
     if stalled:
         lines.append("WARN mdns registrant exited because Apple mDNSResponder stopped answering; the manager relaunches it, a wedged daemon needs a reboot")
-
-    # Pre-v3.1.0 responder logs (kept so old device logs still summarize).
-    takeover = _last_regex_group(r"mDNS takeover established after ([^\n]+)", mdns_text)
-    if takeover:
-        lines.append(f"INFO mDNS takeover established after {takeover}")
-
     return lines
 
 

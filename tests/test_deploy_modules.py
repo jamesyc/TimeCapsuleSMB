@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 import shlex
-import os
 import subprocess
 import sys
 import tempfile
-import textwrap
-import time
 import unittest
-import io
 from dataclasses import replace
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -28,10 +23,8 @@ from timecapsulesmb.deploy.commands import (
     RemoteSymlink,
     RemovePathAction,
     RunScriptAction,
-    StopManagerAction,
     StopServiceRuntimeAction,
     StopProcessAction,
-    StopWatchdogAction,
     remote_action_to_jsonable,
     render_remote_action,
 )
@@ -58,13 +51,9 @@ from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
-    FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_RSYNC_CONFIG_SOURCE,
-    PACKAGED_BOOT_SOURCE,
-    PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
     build_uninstall_plan,
 )
@@ -80,9 +69,7 @@ from timecapsulesmb.deploy.verify import (
 )
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.processes import (
-    render_manager_process_present,
     render_process_present_by_ucomm,
-    render_watchdog_process_present,
 )
 from timecapsulesmb.device.probe import (
     ElfEndiannessProbeResult,
@@ -241,20 +228,6 @@ class DeployModuleTests(unittest.TestCase):
             finish_fields,
         )
 
-    def _extract_shell_function(self, source: str, name: str) -> str:
-        marker = f"{name}()"
-        start = source.index(marker)
-        brace_start = source.index("{", start)
-        depth = 0
-        for offset, char in enumerate(source[brace_start:], start=brace_start):
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    return source[start : offset + 1]
-        self.fail(f"function {name} did not terminate")
-
     def test_remote_request_reboot_uses_explicit_reboot_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
@@ -287,7 +260,7 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_run_remote_actions_reports_completed_actions(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        actions = [StopManagerAction(), RemovePathAction("/tmp/tc-old")]
+        actions = [StopServiceRuntimeAction(), RemovePathAction("/tmp/tc-old")]
         completed = []
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             run_remote_actions(
@@ -602,7 +575,7 @@ class DeployModuleTests(unittest.TestCase):
                 message = str(caught.exception)
                 self.assertIn("phase=copy elapsed_seconds=", message)
                 self.assertIn("stall_seconds=300", message)
-                self.assertIn("emergency_timeout_seconds=None", message)
+                self.assertNotIn("emergency_timeout_seconds", message)
                 self.assertIn(f"stalled={str(stalled).lower()}", message)
                 self.assertIn(f"timed_out={str(timed_out).lower()}", message)
                 self.assertIn("xattr-migration-copy.log", message)
@@ -908,10 +881,8 @@ class DeployModuleTests(unittest.TestCase):
             + r'''
 zombie_smbd="100 1 Z 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
 live_smbd="101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
-zombie_mdns="200 1 Z 0:00.00 discoveryd /mnt/Flash/discoveryd"
-live_mdns="201 1 S 0:00.00 discoveryd /mnt/Flash/discoveryd"
-zombie_apple="300 1 Z 0:00.00 mDNSResponder /usr/sbin/mDNSResponder"
-live_apple="301 1 S 0:00.00 mDNSResponder /usr/sbin/mDNSResponder"
+zombie_discovery="200 1 Z 0:00.00 service service: role=discovery nbns=ready"
+live_discovery="201 1 S 0:00.00 service service: role=discovery nbns=ready"
 mixed_smbd=$(cat <<'EOF'
 100 1 Z 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd
 101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd
@@ -920,10 +891,8 @@ EOF
 
 smbd_parent_process_present "$zombie_smbd"; echo "zombie-smbd=$?"
 smbd_parent_process_present "$live_smbd"; echo "live-smbd=$?"
-mdns_process_present "$zombie_mdns"; echo "zombie-mdns=$?"
-mdns_process_present "$live_mdns"; echo "live-mdns=$?"
-apple_mdns_present "$zombie_apple"; echo "zombie-apple=$?"
-apple_mdns_present "$live_apple"; echo "live-apple=$?"
+native_service_role_present "$zombie_discovery" discovery; echo "zombie-discovery=$?"
+native_service_role_present "$live_discovery" discovery; echo "live-discovery=$?"
 capture_fstat_for_ucomm "$mixed_smbd" smbd
 '''
         )
@@ -933,10 +902,8 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("zombie-smbd=1", result.stdout)
         self.assertIn("live-smbd=0", result.stdout)
-        self.assertIn("zombie-mdns=1", result.stdout)
-        self.assertIn("live-mdns=0", result.stdout)
-        self.assertIn("zombie-apple=1", result.stdout)
-        self.assertIn("live-apple=0", result.stdout)
+        self.assertIn("zombie-discovery=1", result.stdout)
+        self.assertIn("live-discovery=0", result.stdout)
         self.assertNotIn("fstat:100", result.stdout)
         self.assertIn("fstat:101", result.stdout)
 
@@ -944,13 +911,15 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         script = (
             SMBD_STATUS_HELPERS
             + r'''
-real_manager="203 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
+real_manager="203 1 S 0:00.00 service service: role=manager"
+retired_shell_manager="204 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
 self_match_manager=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/manager.sh
-11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'
+3308 11745 S 0:00.01 sh /bin/sh -c probe='service: role=manager'
+11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=service: role=manager'
 EOF
 )
 manager_process_present_for_volume "$real_manager"; echo "manager=$?"
+manager_process_present_for_volume "$retired_shell_manager"; echo "retired=$?"
 manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
 '''
         )
@@ -959,6 +928,7 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("manager=0", result.stdout)
+        self.assertIn("retired=1", result.stdout)
         self.assertIn("self=1", result.stdout)
 
     def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_manager(self) -> None:
@@ -992,7 +962,7 @@ manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
             )
             ps_out = (
                 "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf\n"
-                "202 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh\n"
+                "202 1 S 0:00.00 service service: role=manager\n"
             )
             script = f"""
 RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
@@ -1313,7 +1283,7 @@ describe_managed_smbd_status "" ""
 
     def test_probe_managed_mdns_passes_when_apple_daemon_owns_5353_and_plan_grants_smb(self) -> None:
         result, run_ssh_mock = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -1338,10 +1308,10 @@ describe_managed_smbd_status "" ""
         ps_out = (
             "878 1 ZWa 0:00 (mDNSResponder) (mDNSResponder)\n"
             "232 1 S 0:00 diskd /sbin/diskd -i  -d local.\n"
-            "916 408 S 0:00 discoveryd /mnt/Flash/discoveryd\n"
+            "916 408 S 0:00 service service: role=discovery nbns=ready mode=payload\n"
         )
         result, run_ssh_mock = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
         ])
@@ -1353,16 +1323,16 @@ describe_managed_smbd_status "" ""
         self.assertIn("PASS:discovery process is running", result.lines)
 
     def test_probe_managed_mdns_fails_when_another_process_holds_5353_or_plan_grants_nothing(self) -> None:
-        fstat_out = self.FSTAT_V31 + "root     discoveryd 916    4* internet dgram udp *:5353\n"
+        fstat_out = self.FSTAT_V31 + "root     avahi-dae 916    4* internet dgram udp *:5353\n"
         plan = self.PLAN_V31.replace("role=lan mask=smb,adisk", "role=isolated mask=none").replace("status=validated", "status=incomplete reason=mode")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
         ])
         self.assertFalse(result.ready)
-        self.assertIn("FAIL:other processes hold UDP 5353: discoveryd", result.lines)
+        self.assertIn("FAIL:other processes hold UDP 5353: avahi-dae", result.lines)
         self.assertIn("FAIL:sharing facts are incomplete (mode); the registrant waits or retains its previous validated policy", result.lines)
 
     def test_probe_managed_mdns_accepts_diskless_registrant_without_smb_links(self) -> None:
@@ -1372,7 +1342,7 @@ describe_managed_smbd_status "" ""
         )
         plan = self.PLAN_V31.replace("mask=smb,adisk", "mask=none").replace("diskless=0", "diskless=1")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
@@ -1383,7 +1353,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_reports_missing_registrant_and_unparsable_plan(self) -> None:
         ps_out = "371 1 Sa 0:00 mDNSResponder /sbin/mDNSResponder -d\n559 1 S 0:00 diskd /sbin/diskd -i lo0 -d local.\n"
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout="garbage\n", stderr=""),
@@ -1395,7 +1365,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_rejects_controller_without_native_nbns_state(self) -> None:
         ps_out = self.PS_V31.replace("nbns=ready mode=payload ", "")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -1407,7 +1377,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_rejects_wcifsnd_sockets_owned_by_wrong_pid(self) -> None:
         wrong_pid_fstat = self.FSTAT_V31.replace("wcifsnd  917", "wcifsnd  999")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=wrong_pid_fstat, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -1437,7 +1407,7 @@ describe_managed_smbd_status "" ""
         fstat_out = "\n".join(line for line in self.FSTAT_V31.splitlines() if "wcifsnd" not in line) + "\n"
         plan = self.PLAN_V31.replace("addr=192.168.1.10", "addr=239.1.2.3")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=fstat_out, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
@@ -1446,7 +1416,7 @@ describe_managed_smbd_status "" ""
         self.assertTrue(result.ready, result.lines)
         self.assertIn("PASS:native NBNS is waiting", result.lines)
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=13, stdout="", stderr=""),
@@ -1458,7 +1428,7 @@ describe_managed_smbd_status "" ""
         next to ours still advertises on the LAN (the runtime calls that acpd)."""
         ps_out = self.PS_V31 + "640 1 S 0:00 diskd /sbin/diskd -i  -d local.\n" + "735 1 ZW 0:00 diskd (diskd)\n"
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -1472,7 +1442,7 @@ describe_managed_smbd_status "" ""
         # Token matching: `-i lo0` must be the argv pair, not a substring elsewhere.
         ps_out = self.PS_V31.replace("/sbin/diskd -i lo0 -d local.", "/sbin/diskd -d local.-i lo0")
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=ps_out, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -1484,7 +1454,7 @@ describe_managed_smbd_status "" ""
         still does not parse becomes a diagnostic, not an exception."""
         plan = self.PLAN_V31.replace('instance="AirPort Time Capsule"', 'instance="Capsule \\"A\\" \\\\ B"')
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=plan, stderr=""),
@@ -1492,7 +1462,7 @@ describe_managed_smbd_status "" ""
         self.assertTrue(result.ready, result.lines)
         broken = self.PLAN_V31.replace('instance="AirPort Time Capsule"', 'instance="Capsule "A"')
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=broken, stderr=""),
@@ -1503,7 +1473,7 @@ describe_managed_smbd_status "" ""
     def test_probe_managed_mdns_retries_binary_probe_timeout_and_reports_fstat_timeout(self) -> None:
         result, run_ssh_mock = self._run_mdns_probe([
             SshCommandTimeout("Timed out waiting for ssh command to finish: binary"),
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.FSTAT_V31, stderr=""),
             mock.Mock(returncode=0, stdout=self.PLAN_V31, stderr=""),
@@ -1512,7 +1482,7 @@ describe_managed_smbd_status "" ""
         self.assertEqual([call.kwargs["timeout"] for call in run_ssh_mock.call_args_list[:2]],
                          [MDNS_BINARY_PROBE_TIMEOUT_SECONDS, MDNS_BINARY_PROBE_TIMEOUT_SECONDS])
         result, _ = self._run_mdns_probe([
-            mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+            mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
             mock.Mock(returncode=0, stdout=self.PS_V31, stderr=""),
             SshCommandTimeout("Timed out waiting for ssh command to finish: fstat"),
         ])
@@ -1547,7 +1517,7 @@ describe_managed_smbd_status "" ""
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
             side_effect=[
-                mock.Mock(returncode=0, stdout="/mnt/Flash/discoveryd\n", stderr=""),
+                mock.Mock(returncode=0, stdout="/mnt/Flash/service\n", stderr=""),
                 SshCommandTimeout("Timed out waiting for ssh command to finish: ps"),
             ],
         ):
@@ -1946,7 +1916,7 @@ describe_managed_smbd_status "" ""
 
     def test_build_uninstall_plan_stops_supervisors_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
-        self.assertEqual(plan.remote_actions[:2], [StopServiceRuntimeAction(), StopWatchdogAction()])
+        self.assertEqual(plan.remote_actions[0], StopServiceRuntimeAction())
         first_remove = next(i for i, action in enumerate(plan.remote_actions) if isinstance(action, RemovePathAction))
         self.assertLess(plan.remote_actions.index(StopProcessAction("smbd")), first_remove)
         self.assertLess(plan.remote_actions.index(StopProcessAction("rsync")), first_remove)
@@ -2035,12 +2005,8 @@ describe_managed_smbd_status "" ""
             {"kind": "stop_process", "args": ["smbd"]},
         )
         self.assertEqual(
-            remote_action_to_jsonable(StopWatchdogAction()),
-            {"kind": "stop_watchdog", "args": []},
-        )
-        self.assertEqual(
-            remote_action_to_jsonable(StopManagerAction()),
-            {"kind": "stop_manager", "args": []},
+            remote_action_to_jsonable(StopServiceRuntimeAction()),
+            {"kind": "stop_service_runtime", "args": []},
         )
         self.assertEqual(
             remote_action_to_jsonable(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 30)),
@@ -2116,28 +2082,6 @@ describe_managed_smbd_status "" ""
 
         self.assertFalse(process_present(render_process_present_by_ucomm("wcifsnd"), ps_lines=["Z    wcifsnd         (wcifsnd)"]))
         self.assertTrue(process_present(render_process_present_by_ucomm("wcifsnd"), ps_lines=["S    wcifsnd         wcifsnd"]))
-        self.assertFalse(process_present(render_watchdog_process_present(), ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
-        self.assertTrue(process_present(render_watchdog_process_present(), ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
-        self.assertFalse(process_present(render_manager_process_present(), ps_lines=["Z    sh              /bin/sh /mnt/Flash/manager.sh"]))
-        self.assertTrue(process_present(render_manager_process_present(), ps_lines=["S    sh              /bin/sh /mnt/Flash/manager.sh"]))
-        self.assertFalse(
-            process_present(
-                render_watchdog_process_present(),
-                ps_lines=[
-                    "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
-                    "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
-                ],
-            )
-        )
-        self.assertFalse(
-            process_present(
-                render_manager_process_present(),
-                ps_lines=[
-                    "S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
-                    "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
-                ],
-            )
-        )
 
     def test_render_process_present_rejects_generic_full_substring_matches(self) -> None:
         with self.assertRaises(ValueError):
@@ -2158,32 +2102,6 @@ describe_managed_smbd_status "" ""
         self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
         self.assertIn("/usr/bin/pkill -9 '^smbd$' >/dev/null 2>&1 || true;", command)
         self.assertIn("echo 'process smbd did not stop' >&2; exit 1", command)
-
-    def test_render_stop_watchdog_action_waits_for_exit(self) -> None:
-        command = render_remote_action(StopWatchdogAction())
-        self.assertIn("tc_watchdog_pids() {", command)
-        self.assertIn("tc_kill_watchdog_pids TERM;", command)
-        self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
-        self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
-        self.assertIn('[ "$2" = sh ] || continue;', command)
-        self.assertIn("tc_kill_watchdog_pids KILL;", command)
-        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", command)
-        self.assertNotIn("/usr/bin/pkill -9 -f", command)
-
-    def test_render_stop_watchdog_action_kills_by_full_match(self) -> None:
-        command = render_remote_action(StopWatchdogAction())
-        self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
-        self.assertIn('/bin/kill -9 "$tc_watchdog_pid" >/dev/null 2>&1 || true', command)
-        self.assertIn("echo 'process watchdog did not stop' >&2; exit 1", command)
-
-    def test_render_stop_manager_action_kills_by_full_match(self) -> None:
-        command = render_remote_action(StopManagerAction())
-        self.assertIn("tc_manager_pids() {", command)
-        self.assertIn("tc_kill_manager_pids TERM;", command)
-        self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
-        self.assertIn('/bin/kill -9 "$tc_manager_pid" >/dev/null 2>&1 || true', command)
-        self.assertIn("echo 'process manager did not stop' >&2; exit 1", command)
-        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

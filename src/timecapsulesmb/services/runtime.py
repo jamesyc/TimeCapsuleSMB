@@ -19,9 +19,7 @@ from timecapsulesmb.core.paths import AppPaths, resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
-    RemoteInterfaceProbeResult,
     probe_connection_state,
-    probe_remote_interface_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 from timecapsulesmb.transport.local import tcp_open
@@ -32,7 +30,6 @@ PasswordProvider = Callable[[str], str]
 @dataclass(frozen=True)
 class ManagedTargetState:
     connection: SshConnection
-    interface_probe: RemoteInterfaceProbeResult | None
     probe_state: ProbedDeviceState | None
 
 
@@ -107,17 +104,6 @@ def resolve_env_connection(
     return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
 
 
-def inspect_managed_connection(
-    connection: SshConnection,
-    iface: str,
-    *,
-    include_probe: bool = False,
-) -> ManagedTargetState:
-    interface_probe = probe_remote_interface_conn(connection, iface)
-    probe_state = probe_connection_state(connection) if include_probe else None
-    return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
-
-
 def ssh_target_link_local_resolution_error(
     target: str,
     ssh_opts: str,
@@ -165,9 +151,9 @@ def resolve_validated_managed_target(
         password_provider=password_provider,
     )
     if profile == "flash":
-        return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
+        return ManagedTargetState(connection=connection, probe_state=None)
     probe_state = probe_connection_state(connection) if include_probe else None
-    return ManagedTargetState(connection=connection, interface_probe=None, probe_state=probe_state)
+    return ManagedTargetState(connection=connection, probe_state=probe_state)
 
 
 def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:

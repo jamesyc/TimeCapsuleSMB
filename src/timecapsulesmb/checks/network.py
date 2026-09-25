@@ -10,7 +10,7 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.net import ipv6_scope_index, scoped_ip_literal
 from timecapsulesmb.device.probe import probe_ssh_command_conn
 from timecapsulesmb.transport.local import tcp_connect_error
-from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshConnection
 
 
 RouteState = Literal["available", "unavailable", "unknown"]

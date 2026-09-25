@@ -7,7 +7,7 @@ from pathlib import Path
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget
 from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult, RuntimeNamingIdentityProbeResult
+from timecapsulesmb.device.probe import ProbedDeviceState, RuntimeNamingIdentityProbeResult
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -37,7 +37,6 @@ class DoctorInputs:
     config: AppConfig
     repo_root: Path
     connection: SshConnection | None
-    precomputed_interface_probe: RemoteInterfaceProbeResult | None
     precomputed_probe_state: ProbedDeviceState | None
     options: DoctorOptions
 

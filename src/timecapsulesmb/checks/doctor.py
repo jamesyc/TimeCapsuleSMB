@@ -9,7 +9,7 @@ from timecapsulesmb.checks.doctor_debug import (
     _doctor_add_fatal_runtime_log_tails,
     _doctor_add_mast_probe_on_disk_failure,
 )
-from timecapsulesmb.checks.doctor_state import DoctorBonjourResult, DoctorInputs, DoctorOptions, DoctorSink
+from timecapsulesmb.checks.doctor_state import DoctorInputs, DoctorOptions, DoctorSink
 from timecapsulesmb.checks.doctor_steps import (
     _add_active_smb_conf_results,
     _add_bonjour_results,
@@ -32,12 +32,11 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_ssh_login,
     _doctor_probe_startup_age,
     _doctor_validate_config,
-    check_xattr_tdb_persistence,
 )
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.smb_config import parse_active_share_names
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
+from timecapsulesmb.device.probe import ProbedDeviceState
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -46,7 +45,6 @@ def run_doctor_checks(
     *,
     repo_root: Path,
     connection: SshConnection | None = None,
-    precomputed_interface_probe: RemoteInterfaceProbeResult | None = None,
     precomputed_probe_state: ProbedDeviceState | None = None,
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
@@ -64,7 +62,6 @@ def run_doctor_checks(
         config=config,
         repo_root=repo_root,
         connection=connection,
-        precomputed_interface_probe=precomputed_interface_probe,
         precomputed_probe_state=precomputed_probe_state,
         options=options,
     )

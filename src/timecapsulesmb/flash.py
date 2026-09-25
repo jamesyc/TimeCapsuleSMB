@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import importlib
-import re
 import struct
 from typing import Mapping
 import zlib

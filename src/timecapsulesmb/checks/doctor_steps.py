@@ -43,8 +43,8 @@ from timecapsulesmb.checks.network import (
     check_ssh_login,
     local_interface_addresses,
     select_route_to_address,
-    ssh_opts_use_proxy,
 )
+from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import check_nbns_name_resolution
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
@@ -74,9 +74,7 @@ from timecapsulesmb.core.net import (
 from timecapsulesmb.device.compat import render_compatibility_message
 from timecapsulesmb.device.probe import (
     FLASH_RUNTIME_CONFIG,
-    ProbedDeviceState,
     ReadinessProbeResult,
-    RemoteInterfaceProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
@@ -88,7 +86,6 @@ from timecapsulesmb.device.probe import (
     probe_usb_printer_conn,
     probe_managed_smbd_conn,
     probe_manager_startup_age_conn,
-    probe_remote_interface_conn,
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
     read_active_smb_conf_conn,

@@ -17,16 +17,16 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli.context import (
+from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.services.context import (
     COMMAND_FIELD_BLACKLIST,
     COMMAND_VALUE_BLACKLIST,
-    CommandContext,
+    render_operation_debug_lines,
 )
-from timecapsulesmb.services.context import render_operation_debug_lines
 from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult, SshAccessStatus
+from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, SshAccessStatus
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
@@ -53,7 +53,6 @@ class TelemetryTests(unittest.TestCase):
                         "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
                         "TC_AIRPORT_SYAP": "119",
                     },
-                    nbns_enabled=True,
                     bootstrap_path=bootstrap_path,
                 )
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
@@ -67,7 +66,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(payload["configure_id"], "config-id")
         self.assertNotIn("device_model", payload)
         self.assertNotIn("device_syap", payload)
-        self.assertTrue(payload["nbns_enabled"])
+        # Retired: NBNS is always on, so clients no longer report it.
+        self.assertNotIn("nbns_enabled", payload)
         self.assertEqual(payload["host_os"], "macOS" if sys.platform == "darwin" else payload["host_os"])
         self.assertNotIn("command_id", payload)
 
@@ -252,7 +252,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(command.result, "success")
         self.assertEqual(telemetry.emit.call_count, 2)
 
-    def test_command_context_inspect_managed_connection_records_probe_state(self) -> None:
+    def test_command_context_resolved_target_records_probe_state(self) -> None:
         telemetry = mock.Mock()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         compatibility = DeviceCompatibility(
@@ -278,14 +278,8 @@ class TelemetryTests(unittest.TestCase):
             ),
             compatibility=compatibility,
         )
-        interface_probe = RemoteInterfaceProbeResult(
-            iface="bridge0",
-            exists=True,
-            detail="interface bridge0 exists",
-        )
         target = ManagedTargetState(
             connection=connection,
-            interface_probe=interface_probe,
             probe_state=probe_state,
         )
         config = AppConfig.from_values({
@@ -302,18 +296,13 @@ class TelemetryTests(unittest.TestCase):
             config=config,
         )
         with mock.patch(
-            "timecapsulesmb.cli.context.service_runtime.resolve_env_connection",
-            return_value=connection,
+            "timecapsulesmb.cli.context.service_runtime.resolve_validated_managed_target",
+            return_value=target,
         ) as resolve_mock:
-            with mock.patch(
-                "timecapsulesmb.cli.context.service_runtime.inspect_managed_connection",
-                return_value=target,
-            ) as inspect_mock:
-                result = context.inspect_managed_connection(iface="bridge0", include_probe=True)
+            result = context.resolve_validated_managed_target(profile="doctor", include_probe=True)
 
         self.assertIs(result, target)
         self.assertIs(context.connection, connection)
-        self.assertIs(context.interface_probe, interface_probe)
         self.assertIs(context.probe_state, probe_state)
         self.assertIs(context.compatibility, compatibility)
         self.assertEqual(context.finish_fields["device_family"], "netbsd6_samba4")
@@ -321,7 +310,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(context.finish_fields["device_model"], "TimeCapsule8,119")
         self.assertEqual(context.finish_fields["device_syap"], "119")
         resolve_mock.assert_called_once()
-        inspect_mock.assert_called_once_with(connection, "bridge0", include_probe=True)
+        self.assertEqual(resolve_mock.call_args.kwargs["profile"], "doctor")
+        self.assertTrue(resolve_mock.call_args.kwargs["include_probe"])
 
     def test_command_context_finish_harvests_fast_optional_airport_identity_probe(self) -> None:
         telemetry = mock.Mock()

@@ -68,7 +68,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             config,
             repo_root=app_paths.distribution_root,
             connection=command_context.connection,
-            precomputed_interface_probe=command_context.interface_probe,
             precomputed_probe_state=command_context.probe_state,
             skip_ssh=args.skip_ssh,
             skip_bonjour=args.skip_bonjour,

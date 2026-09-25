@@ -13,12 +13,9 @@ from timecapsulesmb.deploy.commands import (
     RemotePermission,
     RemoteSymlink,
     RunScriptAction,
-    StopManagerAction,
-    StopServiceRuntimeAction,
     WaitForIdleJobsAction,
     StopTelemetryAction,
-    StopProcessAction,
-    StopWatchdogAction,
+    managed_stop_actions,
 )
 from timecapsulesmb.device.storage import PayloadHome
 
@@ -150,12 +147,8 @@ def build_runtime_start_actions() -> list[RemoteAction]:
 
 def build_runtime_activation_actions() -> list[RemoteAction]:
     return [
-        # No-reboot activation runs while the old OS runtime is still alive.
-        # The native manager owns daemon cleanup; stop existing supervisors and
-        # Apple's CIFS service that can race startup.
-        StopServiceRuntimeAction(),
-        StopWatchdogAction(),
-        StopProcessAction("wcifsfs"),
+        # Activation does not reboot, so afpserver must survive it.
+        *managed_stop_actions(stop_afpserver=False),
         *build_runtime_start_actions(),
     ]
 
@@ -309,27 +302,9 @@ def build_deployment_plan(
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
         ],
         pre_upload_actions=[
-            # Existing installs run mdns directly from /mnt/Flash.
-            # Stop runtime supervisors first so they do not restart daemons while
-            # deploy is overwriting the payload and auth files.
-            StopServiceRuntimeAction(),
-            # Deployment is an offline migration window. ACPd does not respawn
-            # Apple's AFP server; the planned reboot restores it afterward.
-            StopProcessAction("afpserver"),
-            StopProcessAction("smbd"),
-            StopProcessAction("discoveryd"),
-            StopProcessAction("wcifsfs"),
-            StopProcessAction("wcifsnd"),
-            # Stop both canonical and interim short process names during upgrades.
-            StopProcessAction("mdns-advertiser"),
-            StopProcessAction("nbns-advertiser"),
-            StopProcessAction("mdns"),
-            StopProcessAction("nbns"),
-            # v1's longer executable name can be truncated in kernel ucomm.
-            StopProcessAction("mdns-smbd-advertiser"),
-            StopProcessAction("mdns-smbd-adverti"),
-            StopProcessAction("mdns-smbd-advert"),
-            StopProcessAction("rsync"),
+            # Deployment is an offline migration window that ends in a reboot,
+            # which restores Apple's AFP server.
+            *managed_stop_actions(stop_afpserver=True),
             StopTelemetryAction(),
             WaitForIdleJobsAction(),
             RemovePathAction(flash_targets["rc.local"]),
@@ -428,18 +403,7 @@ def build_uninstall_plan(
         flash_targets=flash_targets,
         verify_absent_targets=verify_absent_targets,
         remote_actions=[
-            StopServiceRuntimeAction(),
-            StopWatchdogAction(),
-            StopProcessAction("smbd"),
-            StopProcessAction("discoveryd"),
-            StopProcessAction("wcifsfs"),
-            StopProcessAction("wcifsnd"),
-            # Stop both canonical and interim short process names during upgrades.
-            StopProcessAction("mdns-advertiser"),
-            StopProcessAction("nbns-advertiser"),
-            StopProcessAction("mdns"),
-            StopProcessAction("nbns"),
-            StopProcessAction("rsync"),
+            *managed_stop_actions(stop_afpserver=False),
             StopTelemetryAction(cleanup=True),
             # A disconnected deployment can leave its standalone migrator
             # writing metadata inside a payload we are about to remove.

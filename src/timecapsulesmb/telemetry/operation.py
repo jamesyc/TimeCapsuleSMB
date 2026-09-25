@@ -39,7 +39,6 @@ OPTION_KEYS = frozenset({
     "mdns_advertise_afp",
     "mode",
     "mount_wait",
-    "nbns_enabled",
     "no_reboot",
     "no_wait",
     "persist_password",

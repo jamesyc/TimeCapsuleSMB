@@ -59,7 +59,8 @@ from timecapsulesmb.deploy.planner import (
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     is_netbsd4_payload_family,
-    payload_family_description,
+    # Re-exported: deploy adapters must not import device modules directly.
+    payload_family_description as payload_family_description,
     render_compatibility_message,
 )
 from timecapsulesmb.device.errors import DeviceError
@@ -80,7 +81,7 @@ from timecapsulesmb.device.storage import (
 from timecapsulesmb.services import storage as storage_service
 from timecapsulesmb.services.activation import decide_netbsd4_post_reboot_activation
 from timecapsulesmb.services.callbacks import OperationCallbacks
-from timecapsulesmb.services.reboot import RebootFlowError, request_reboot, request_reboot_and_wait
+from timecapsulesmb.services.reboot import request_reboot, request_reboot_and_wait
 from timecapsulesmb.services.runtime import ManagedTargetState
 from timecapsulesmb.services.runtime_verification import (
     verify_managed_runtime_ready,
@@ -809,7 +810,7 @@ def upload_and_verify_deployment_payload(
         timed_out = is_ssh_timeout_error(exc)
         diagnostic = (
             f"phase={phase} elapsed_seconds={elapsed} "
-            f"stall_seconds={STALL_SECONDS} emergency_timeout_seconds={NATIVE_TIMEOUT_SECONDS} "
+            f"stall_seconds={STALL_SECONDS} "
             f"stalled={str(stalled).lower()} timed_out={str(timed_out).lower()} "
             f"sources={len(inventory.sources)}\n"
             f"Migration log: {log or 'unavailable'}"
@@ -1451,7 +1452,6 @@ def render_flash_runtime_config(
     effective_debug_logging = parse_bool(configured_debug_logging) if debug_logging is None else debug_logging
 
     values: list[tuple[str, str | int]] = [
-        ("TC_CONFIG_VERSION", 3),
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
         ("TELEMETRY", "true" if telemetry_enabled else "false"),

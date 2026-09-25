@@ -206,7 +206,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
     )
     ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
     context.update_fields(
-        nbns_enabled=True,
         rsync_enabled=rsync_enabled,
         reboot_was_attempted=False,
         device_came_back_after_reboot=False,
@@ -302,7 +301,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
             "device_name": device_name,
             "netbsd4": is_netbsd4,
             "requires_reboot": preflight.requires_reboot,
-            "no_reboot": False,
             "no_wait": no_wait,
             "startup_mode": startup_mode,
             "rsync_enabled": rsync_enabled,
@@ -322,7 +320,6 @@ def deploy_operation(params: dict[str, object], context: AppOperationContext) ->
                     "payload_family": payload_family,
                     "netbsd4": is_netbsd4,
                     "requires_reboot": preflight.requires_reboot,
-                    "no_reboot": False,
                     "no_wait": no_wait,
                     "startup_mode": startup_mode,
                 },

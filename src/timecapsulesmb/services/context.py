@@ -34,7 +34,6 @@ COMMAND_FIELD_BLACKLIST = {
     "device_syap",
     "device_os_version",
     "device_family",
-    "nbns_enabled",
     "rsync_enabled",
     "reboot_was_attempted",
     "device_came_back_after_reboot",

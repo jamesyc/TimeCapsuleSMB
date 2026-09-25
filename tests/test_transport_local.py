@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 import unittest
 import errno
-import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock

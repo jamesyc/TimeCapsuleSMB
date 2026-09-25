@@ -31,10 +31,8 @@ from timecapsulesmb.checks.bonjour import (
     select_resolved_smb_record,
     select_smb_instance,
 )
-from timecapsulesmb.checks.doctor import (
-    check_xattr_tdb_persistence,
-    run_doctor_checks,
-)
+from timecapsulesmb.checks.doctor import run_doctor_checks
+from timecapsulesmb.checks.doctor_steps import check_xattr_tdb_persistence
 from timecapsulesmb.checks.doctor_debug import _data_disk_unresponsive_result
 from timecapsulesmb.checks.doctor_steps import (
     DOCTOR_CODE_DEVICE_STARTING_UP,
@@ -47,7 +45,8 @@ from timecapsulesmb.checks.doctor_steps import (
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.network import RouteSelection, check_smb_port, check_ssh_login, ssh_opts_use_proxy
+from timecapsulesmb.checks.network import RouteSelection, check_smb_port, check_ssh_login
+from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import build_nbns_query, check_nbns_name_resolution, extract_nbns_response_ip
 from timecapsulesmb.checks.smb import (
     SmbClientTarget,
@@ -65,7 +64,6 @@ from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     FLASH_RUNTIME_CONFIG,
     ManagerStartupAgeProbeResult,
-    RemoteInterfaceProbeResult,
     RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
@@ -207,9 +205,7 @@ class CheckTests(unittest.TestCase):
         xattr_result=None,
         smbd_probe=None,
         mdns_probe=None,
-        remote_interface_probe=None,
         connection=None,
-        precomputed_interface_probe=None,
         precomputed_probe_state=None,
         skip_ssh: bool = False,
         skip_bonjour: bool = False,
@@ -286,10 +282,6 @@ class CheckTests(unittest.TestCase):
                 mocks.probe_managed_mdns_conn = stack.enter_context(
                     mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_conn", return_value=mdns_probe)
                 )
-            if remote_interface_probe is not None:
-                mocks.probe_remote_interface_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_interface_conn", return_value=remote_interface_probe)
-                )
             mocks.probe_remote_runtime_naming_identity_conn = stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn",
@@ -337,7 +329,6 @@ class CheckTests(unittest.TestCase):
                 self.doctor_config(resolved_values, exists=exists),
                 repo_root=REPO_ROOT,
                 connection=connection,
-                precomputed_interface_probe=precomputed_interface_probe,
                 precomputed_probe_state=precomputed_probe_state,
                 skip_ssh=skip_ssh,
                 skip_bonjour=skip_bonjour,
@@ -411,12 +402,6 @@ class CheckTests(unittest.TestCase):
             mock.patch(
                 "timecapsulesmb.checks.doctor_steps.resolve_smb_instance",
                 return_value=(default_bonjour_record, None),
-            )
-        )
-        self._exit_stack.enter_context(
-            mock.patch(
-                "timecapsulesmb.checks.doctor_steps.probe_remote_interface_conn",
-                return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
             )
         )
         self._exit_stack.enter_context(
@@ -2175,70 +2160,26 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[],
-            remote_interface_probe=RemoteInterfaceProbeResult(
-                iface="bridge0",
-                exists=False,
-                detail="interface bridge0 was not found on the device",
-            ),
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
         )
         self.assertFalse(run.fatal)
         self.assertFalse(any("TC_NET_IFACE is invalid" in result.message for result in run.results))
-        run.mocks.probe_remote_interface_conn.assert_not_called()
 
-    def test_run_doctor_checks_uses_precomputed_connection_and_interface_probe(self) -> None:
+    def test_run_doctor_checks_uses_precomputed_connection(self) -> None:
         connection = SshConnection("root@10.0.0.9", "pw", "-o injected")
-        interface_probe = RemoteInterfaceProbeResult(
-            iface="bridge0",
-            exists=True,
-            detail="interface bridge0 exists",
-        )
         run = self.run_doctor_with_mocks(
             ssh_login=CheckResult("PASS", "ssh ok"),
             command_exists=True,
             read_active_smb_conf="",
             xattr_result=CheckResult("WARN", "xattr skipped"),
             smb_port=CheckResult("PASS", "445 ok"),
-            remote_interface_probe=RemoteInterfaceProbeResult(
-                iface="bridge0",
-                exists=True,
-                detail="unused interface probe",
-            ),
             connection=connection,
-            precomputed_interface_probe=interface_probe,
             skip_bonjour=True,
             skip_smb=True,
         )
         self.assertFalse(run.fatal)
         self.assertTrue(any(result.status == "PASS" and result.message == "ssh ok" for result in run.results))
         run.mocks.check_ssh_login.assert_called_once_with(connection)
-        run.mocks.probe_remote_interface_conn.assert_not_called()
-
-    def test_run_doctor_checks_does_not_reprobe_precomputed_interface(self) -> None:
-        connection = SshConnection("root@10.0.0.9", "pw", "-o injected")
-        stale_interface_probe = RemoteInterfaceProbeResult(
-            iface="bridge1",
-            exists=True,
-            detail="interface bridge1 exists",
-        )
-        fresh_interface_probe = RemoteInterfaceProbeResult(
-            iface="bridge0",
-            exists=True,
-            detail="interface bridge0 exists",
-        )
-        run = self.run_doctor_with_mocks(
-            ssh_login=CheckResult("PASS", "ssh ok"),
-            command_exists=True,
-            read_active_smb_conf="",
-            xattr_result=CheckResult("WARN", "xattr skipped"),
-            smb_port=CheckResult("PASS", "445 ok"),
-            remote_interface_probe=fresh_interface_probe,
-            connection=connection,
-            precomputed_interface_probe=stale_interface_probe,
-            skip_bonjour=True,
-            skip_smb=True,
-        )
-        run.mocks.probe_remote_interface_conn.assert_not_called()
 
     def test_run_doctor_checks_reports_managed_mdns_takeover_state(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -5289,7 +5230,6 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[mock.Mock(status="PASS", message="file ops ok")],
-            remote_interface_probe=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(
@@ -5321,7 +5261,6 @@ class CheckTests(unittest.TestCase):
             smb_instance=[],
             smb_listing=self.smb_listing_result(),
             smb_file_ops=[mock.Mock(status="PASS", message="file ops ok")],
-            remote_interface_probe=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS registrant active"),
             extra_patches={
                 "timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution": mock.Mock(side_effect=SshError("ssh failed")),
@@ -5428,3 +5367,37 @@ class CheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiscoveryLogMergeTests(unittest.TestCase):
+    # Discovery logs to RAM while smbd is not ready and to the payload after,
+    # so the latest registrant plan can be in either file.
+    RAM = "remote_diskless_discovery_log_tail"
+    PAYLOAD = "remote_discovery_log_tail"
+    INCOMPLETE = "registrant: plan incomplete mode=bridge reason=mode"
+    VALIDATED = "registrant: plan validated mode=bridge desired=1 [if=9 _smb._tcp]"
+
+    def _plan_line(self, fields: dict[str, str]) -> str:
+        from timecapsulesmb.services.doctor import build_mdns_boot_context
+        return next(line for line in build_mdns_boot_context(fields) if "registrant" in line)
+
+    def test_newest_plan_wins_when_it_is_in_the_payload_log(self) -> None:
+        line = self._plan_line({
+            self.RAM: f"2026-09-16 07:35:21 {self.INCOMPLETE}",
+            self.PAYLOAD: f"2026-09-16 07:40:00 {self.VALIDATED}",
+        })
+        self.assertIn("validated", line)
+
+    def test_newest_plan_wins_when_it_is_in_the_ram_log(self) -> None:
+        line = self._plan_line({
+            self.RAM: f"2026-09-16 07:45:00 {self.INCOMPLETE}",
+            self.PAYLOAD: f"2026-09-16 07:40:00 {self.VALIDATED}",
+        })
+        self.assertIn("incomplete", line)
+
+    def test_either_log_alone_is_summarized_and_no_logs_give_nothing(self) -> None:
+        from timecapsulesmb.services.doctor import build_mdns_boot_context
+        self.assertIn("validated", self._plan_line({self.RAM: f"2026-09-16 07:40:00 {self.VALIDATED}"}))
+        self.assertIn("validated", self._plan_line({self.PAYLOAD: f"2026-09-16 07:40:00 {self.VALIDATED}"}))
+        self.assertEqual(build_mdns_boot_context({}), [])
+        self.assertEqual(build_mdns_boot_context({self.RAM: None, self.PAYLOAD: 7}), [])

@@ -197,10 +197,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
-    telemetry = TelemetryClient.from_config(config, nbns_enabled=True)
+    telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
-            nbns_enabled=True,
             rsync_enabled=rsync_enabled,
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,

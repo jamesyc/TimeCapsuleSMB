@@ -23,7 +23,6 @@ from timecapsulesmb.services.set_ssh import (
     SetSshStatusResult,
     SetSshVerificationError,
     disable_set_ssh,
-    disable_ssh_over_ssh,
     enable_set_ssh,
     probe_set_ssh_status,
     select_set_ssh_action,

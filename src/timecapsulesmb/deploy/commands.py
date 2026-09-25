@@ -6,8 +6,6 @@ from typing import Union
 
 from timecapsulesmb.device.processes import (
     render_pkill_wait_pkill9_by_ucomm,
-    render_pkill_wait_pkill9_manager,
-    render_pkill_wait_pkill9_watchdog,
     render_stop_service_runtime,
     render_wait_for_idle_jobs,
 )
@@ -51,16 +49,6 @@ class StopProcessAction:
 
 
 @dataclass(frozen=True)
-class StopWatchdogAction:
-    pass
-
-
-@dataclass(frozen=True)
-class StopManagerAction:
-    pass
-
-
-@dataclass(frozen=True)
 class StopServiceRuntimeAction:
     pass
 
@@ -90,14 +78,46 @@ RemoteAction = Union[
     PrepareDirsAction,
     InstallPermissionsAction,
     StopProcessAction,
-    StopWatchdogAction,
-    StopManagerAction,
     StopServiceRuntimeAction,
     WaitForIdleJobsAction,
     StopTelemetryAction,
     RemovePathAction,
     RunScriptAction,
 ]
+
+
+# Executables of older releases; v1's long name is truncated in kernel ucomm.
+LEGACY_PROCESS_NAMES = (
+    "discoveryd",
+    "mdns-advertiser",
+    "nbns-advertiser",
+    "mdns",
+    "nbns",
+    "mdns-smbd-advertiser",
+    "mdns-smbd-adverti",
+    "mdns-smbd-advert",
+)
+
+
+def managed_stop_actions(*, stop_afpserver: bool) -> list[RemoteAction]:
+    """Stop our runtime from this or any older release, and Apple's SMB daemons.
+
+    Every caller that needs the file-sharing stack down (deploy, uninstall,
+    activate, fsck) uses this one list.
+    """
+    return [
+        # Supervisors first, so nothing restarts the daemons stopped below.
+        StopServiceRuntimeAction(),
+        # ACPd does not respawn Apple's AFP server; only callers that reboot
+        # afterwards may stop it.
+        *([StopProcessAction("afpserver")] if stop_afpserver else []),
+        StopProcessAction("smbd"),
+        StopProcessAction("wcifsfs"),
+        # Discovery is already stopped, so any remaining wcifsnd is an orphan.
+        StopProcessAction("wcifsnd"),
+        StopProcessAction("rsync"),
+        *(StopProcessAction(name) for name in LEGACY_PROCESS_NAMES),
+    ]
 
 
 def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
@@ -141,10 +161,6 @@ def render_remote_action(action: RemoteAction) -> str:
         return f"/bin/sh -c {shlex.quote(script)}"
     if isinstance(action, StopProcessAction):
         return render_pkill_wait_pkill9_by_ucomm(action.name, attempts=5)
-    if isinstance(action, StopWatchdogAction):
-        return render_pkill_wait_pkill9_watchdog(attempts=5)
-    if isinstance(action, StopManagerAction):
-        return render_pkill_wait_pkill9_manager(attempts=5)
     if isinstance(action, StopTelemetryAction):
         entrypoint = "tc_cleanup_telemetry_for_uninstall" if action.cleanup else "tc_prepare_telemetry_reset"
         script = load_boot_asset_text("telemetry-cleanup.sh") + "\n" + entrypoint
@@ -178,10 +194,6 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
         }
     if isinstance(action, StopProcessAction):
         return {"kind": "stop_process", "args": [action.name]}
-    if isinstance(action, StopWatchdogAction):
-        return {"kind": "stop_watchdog", "args": []}
-    if isinstance(action, StopManagerAction):
-        return {"kind": "stop_manager", "args": []}
     if isinstance(action, StopTelemetryAction):
         return {"kind": "stop_telemetry", "cleanup": action.cleanup}
     if isinstance(action, PrepareDirsAction):

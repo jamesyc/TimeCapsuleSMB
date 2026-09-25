@@ -5,10 +5,6 @@ import base64
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.apple_firmware import (
-    APPLE_FIRMWARE_CATALOG_URL,
-    FirmwareTemplateCandidate,
-)
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import (
     LogCallback,
@@ -26,15 +22,12 @@ from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP
 from timecapsulesmb.flash import (
     FlashAnalysisError,
     STOCK_LOGIN_NETBSD4_DUMMY,
-    analyze_flash_banks,
     inspect_flash_banks,
     require_zopfli_gzip_available,
     sha256_hex,
 )
-from timecapsulesmb.flash_payloads import build_patch_payload_for_active_bank as build_acp_flash_payload_for_active_bank
 from timecapsulesmb.flash_workflow import (
     FlashPlan,
-    require_patch_ready as require_write_ready,
 )
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services import flash as flash_service
@@ -45,7 +38,6 @@ from timecapsulesmb.services.flash import (
     FLASH_UNSUPPORTED_DEVICE_MESSAGE,
     apply_flash_plan_to_manifest,
     build_flash_backup_dir,
-    default_flash_backup_root,
     manifest_from_inspection,
     plan_from_operation,
     record_write_outcome,

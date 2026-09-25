@@ -37,7 +37,6 @@ class TelemetryContext:
     configure_id: str | None = None
     device_model: str | None = None
     device_syap: str | None = None
-    nbns_enabled: bool | None = None
 
 
 class TelemetryClient:
@@ -52,7 +51,6 @@ class TelemetryClient:
         cls,
         config: AppConfig,
         *,
-        nbns_enabled: bool | None = None,
         bootstrap_path: Path | None = None,
         include_device_identity: bool = True,
     ) -> "TelemetryClient":
@@ -71,7 +69,6 @@ class TelemetryClient:
             configure_id=config.get("TC_CONFIGURE_ID") or None,
             device_model=None,
             device_syap=None,
-            nbns_enabled=nbns_enabled,
         )
         return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)
 
@@ -123,8 +120,6 @@ class TelemetryClient:
                 payload["device_model"] = self.context.device_model
             if self.context.device_syap:
                 payload["device_syap"] = self.context.device_syap
-            if self.context.nbns_enabled is not None:
-                payload["nbns_enabled"] = self.context.nbns_enabled
             if options is not None:
                 payload["options"] = options
             if details is not None:

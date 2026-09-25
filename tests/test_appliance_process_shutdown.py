@@ -1,6 +1,5 @@
 """Host-packaged shutdown must work even when every old script is missing."""
 import json
-from pathlib import Path
 import subprocess
 
 import pytest
@@ -201,3 +200,105 @@ def test_role_observation_ignores_one_shot_diagnostics_and_zombies():
     assert [line.split()[0] for line in service_role_lines(rows,'manager')]==['10']
     assert [line.split()[0] for line in service_role_lines(rows,'discovery')]==['11','12']
     assert [line.split()[0] for line in service_role_lines(rows,'telemetry')]==['16']
+
+
+@pytest.mark.parametrize('stuck_row,expected_label,manager_timeout', [
+    ('30 S service service: role=manager', 'manager', True),
+    ('31 S service /mnt/Flash/service manager', 'manager', True),
+    ('32 S sh /bin/sh /mnt/Flash/manager.sh', 'manager', True),
+    ('33 S service service: role=discovery nbns=ready', 'service', False),
+    ('34 S sh /bin/sh /mnt/Flash/boot.sh', 'boot', False),
+])
+def test_stuck_process_is_named_so_deploy_can_classify_a_stuck_manager(tmp_path, stuck_row, expected_label, manager_timeout):
+    # Deploy maps "process manager did not stop" to its manager_stop_timeout
+    # error. That text must come from the stop script deploy actually runs.
+    import shlex
+    import sys
+    from timecapsulesmb.services.deploy import _manager_stop_timed_out
+
+    tool = tmp_path / 'tool.py'
+    tool.write_text(f'''
+import sys
+if sys.argv[1] == 'ps':
+    print({stuck_row!r})
+''')
+    script = render_stop_service_runtime(attempts=0)
+    script = script.replace('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', shlex.join([sys.executable, str(tool), 'ps']))
+    script = script.replace('/bin/kill', shlex.join([sys.executable, str(tool), 'kill']))
+    result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert f'process {expected_label} did not stop' in result.stderr
+    assert _manager_stop_timed_out(RuntimeError(result.stderr)) is manager_timeout
+
+
+@pytest.mark.parametrize('stubborn', [None, '30', '41'])
+def test_fsck_repairs_only_after_every_managed_process_stopped(tmp_path, stubborn):
+    # The native manager restarts smbd and can remount the volume, so fsck
+    # must stop it (and everything else deploy stops) before unmounting, and
+    # must not touch the disk at all if anything is still running.
+    import shlex
+    import sys
+    from timecapsulesmb.services.maintenance import build_remote_fsck_script
+
+    state = tmp_path / 'rows.json'
+    rows = {
+        '30': '30 S service service: role=manager',
+        '31': '31 S service service: role=discovery nbns=ready',
+        '40': '40 S smbd /mnt/Memory/samba4/sbin/smbd -F',
+        '41': '41 S afpserver /sbin/afpserver',
+        '42': '42 S wcifsfs /sbin/wcifsfs',
+        '90': '90 S mDNSResponder /sbin/mDNSResponder -d',
+    }
+    state.write_text(json.dumps(rows))
+    log = tmp_path / 'log'
+    tool = tmp_path / 'tool.py'
+    tool.write_text(f'''
+import json, sys
+from pathlib import Path
+state = Path({str(state)!r})
+rows = json.loads(state.read_text())
+cmd = sys.argv[1]
+def drop(pid):
+    if pid != {stubborn!r}:
+        rows.pop(pid, None)
+if cmd == 'ps-full':
+    print('\\n'.join(rows.values()))
+elif cmd == 'ps-short':
+    print('\\n'.join(' '.join(r.split()[1:]) for r in rows.values()))
+elif cmd == 'kill':
+    drop(sys.argv[-1])
+elif cmd == 'pkill':
+    name = sys.argv[-1].strip('^$')
+    for pid, row in list(rows.items()):
+        if row.split()[2] == name:
+            drop(pid)
+else:
+    with open({str(log)!r}, 'a') as out:
+        out.write(' '.join(sys.argv[1:]) + '\\n')
+state.write_text(json.dumps(rows))
+''')
+    fake = lambda name: shlex.join([sys.executable, str(tool), name])
+    script = build_remote_fsck_script('/dev/dk2', '/Volumes/dk2', reboot=False)
+    for real, name in (
+        ('/bin/ps axww -o pid= -o stat= -o ucomm= -o command=', 'ps-full'),
+        ('ps axww -o stat= -o ucomm= -o command=', 'ps-short'),
+        ('/usr/bin/pkill', 'pkill'),
+        ('/bin/kill', 'kill'),
+        ('/sbin/umount', 'umount'),
+        ('/sbin/fsck_hfs', 'fsck_hfs'),
+    ):
+        script = script.replace(real, fake(name))
+    script = script.replace('sleep 1', ':').replace('/tmp/tcapsule-ps.', f'{tmp_path}/ps.')
+    result = subprocess.run(['/bin/sh', '-c', script], capture_output=True, text=True)
+
+    remaining = set(json.loads(state.read_text()))
+    if stubborn is None:
+        assert result.returncode == 0, result.stderr
+        assert remaining == {'90'}  # Apple's mDNSResponder is never ours to stop.
+        assert log.read_text().splitlines() == ['umount -f /Volumes/dk2', 'fsck_hfs -fy /dev/dk2']
+    else:
+        assert result.returncode == 1
+        assert 'did not stop' in result.stderr
+        assert stubborn in remaining
+        assert not log.exists()

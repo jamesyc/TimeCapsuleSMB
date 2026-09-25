@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import shlex
 import subprocess
-import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -12,15 +10,9 @@ from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.services.deploy import render_flash_runtime_config, render_rsync_daemon_config
 from timecapsulesmb.services.deploy import render_flash_runtime_config as render_gui_flash_runtime_config
-from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     build_deployment_plan,
-)
-from timecapsulesmb.device.probe import (
-    normalize_runtime_mdns_host_label,
-    normalize_runtime_mdns_instance_name,
-    normalize_runtime_netbios_name,
 )
 from timecapsulesmb.device.storage import (
     MAST_PROBE_COMMAND,
@@ -45,7 +37,7 @@ from timecapsulesmb.device.storage import (
     wait_for_mast_volumes_conn,
 )
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
-from tests.storage_fixtures import EXTERNAL_BACKUP, INTERNAL_DATA, MAST_FIXTURES, SHELL_MAST_FIXTURES, MaStFixture
+from tests.storage_fixtures import MAST_FIXTURES, SHELL_MAST_FIXTURES
 
 
 class StorageRuntimeTests(unittest.TestCase):
@@ -527,7 +519,7 @@ MaSt = (
         self.assertIn("RSYNC_ENABLED=0\n", rendered)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertNotIn("SMB_NETBIOS_NAME", rendered)
-        self.assertIn("TC_CONFIG_VERSION=3\n", rendered)
+        self.assertNotIn("TC_CONFIG_VERSION", rendered)
         # Name overrides travel only when the user set them (v3.1.0: the native
         # helpers read them from this file).
         self.assertNotIn("TC_MDNS_INSTANCE_NAME", rendered)

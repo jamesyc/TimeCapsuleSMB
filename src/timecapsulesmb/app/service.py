@@ -211,7 +211,6 @@ def _api_telemetry_session(operation: str, params: dict[str, object]) -> Operati
         telemetry = TelemetryClient.from_config(
             config,
             bootstrap_path=app_paths.bootstrap_path,
-            nbns_enabled=True if operation == "deploy" else None,
         )
         return OperationTelemetrySession(
             telemetry,

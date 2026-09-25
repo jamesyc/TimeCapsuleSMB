@@ -771,8 +771,8 @@ Each native plan loop keeps its latest validated policy in memory. Environment
 bind strings are not treated as validated history, and no policy file or text
 transport is used.
 
-Router heartbeats include `nbns_enabled` (always true: enabled policy, not daemon health), `debug_logging` (Samba or mDNS),
-and `advertise_afp`. A short `plan_error` is sent only when the fresh sharing
+Router heartbeats include `debug_logging` (Samba or mDNS) and `advertise_afp`;
+they no longer send `nbns_enabled`, because NBNS is always on. A short `plan_error` is sent only when the fresh sharing
 facts do not validate; a valid plan adds no error field. This is not a live
 service-health assertion. The old `ps` registration-status probe and constant
 daemon label are removed; registration failures remain in the local logs.
@@ -1098,7 +1098,7 @@ Arguments:
 
 ### `fsck`
 
-`tcapsule fsck` runs remote `fsck_hfs` against a mounted HFS volume. It mounts/wakes the Apple volumes, selects or prompts for a volume, stops file sharing through the generated remote script, unmounts the selected disk, runs `fsck_hfs`, and reboots by default.
+`tcapsule fsck` runs remote `fsck_hfs` against a mounted HFS volume. It mounts/wakes the Apple volumes, selects or prompts for a volume, stops the managed runtime and Apple's file sharing with the same stop actions deploy uses (and aborts if anything will not stop), unmounts the selected disk, runs `fsck_hfs`, and reboots by default.
 
 Arguments:
 - `--config PATH`: use a non-default config
@@ -1559,12 +1559,12 @@ Current important outputs:
 
 Current active deploy artifact sizes (stripped bytes, v3.1.1):
 - NetBSD 6 `smbd`: about `9.8M`
-- NetBSD 6 `service`: `362,220`
+- NetBSD 6 `service`: `362,180`
 - NetBSD 6 `rsync`: about `1.0M`
 - NetBSD 4 little-endian `smbd`: about `9.8M`
 - NetBSD 4 big-endian `smbd`: about `9.8M`
-- NetBSD 4 little-endian `service`: `321,512`
-- NetBSD 4 big-endian `service`: `320,912`
+- NetBSD 4 little-endian `service`: `321,424`
+- NetBSD 4 big-endian `service`: `320,824`
 - NetBSD 4 little-endian `rsync`: about `878K`
 - NetBSD 4 big-endian `rsync`: about `872K`
 

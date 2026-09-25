@@ -12,7 +12,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli import set_ssh
+from timecapsulesmb.services import set_ssh
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.transport.ssh import SshAuthenticationError, SshCommandTimeout, SshConnection
 

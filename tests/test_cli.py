@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import argparse
 import io
+import shlex
 import json
 import os
 import plistlib
@@ -29,6 +30,11 @@ if str(SRC_ROOT) not in sys.path:
 import timecapsulesmb.cli.main as cli_main_module
 from timecapsulesmb import apple_firmware
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
+from timecapsulesmb.apple_firmware import APPLE_FIRMWARE_CATALOG_URL, FirmwareTemplateCandidate
+from timecapsulesmb.flash import analyze_flash_banks
+from timecapsulesmb.flash_payloads import build_patch_payload_for_active_bank
+from timecapsulesmb.flash_workflow import require_patch_ready
+from timecapsulesmb.services.flash import default_flash_backup_root
 from timecapsulesmb.basebinary import (
     BasebinaryHeader,
     BasebinaryKey,
@@ -53,7 +59,6 @@ from timecapsulesmb.cli import (
 )
 from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.main import main
-from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.services import flash as flash_service
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
 from timecapsulesmb.services import runtime as service_runtime
@@ -76,7 +81,6 @@ from timecapsulesmb.device.probe import (
     ProbeStepResult,
     ProbedDeviceState,
     ReadinessProbeResult,
-    RemoteInterfaceProbeResult,
     SshAccessStatus,
 )
 from timecapsulesmb.device.storage import (
@@ -92,10 +96,10 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
-    StopServiceRuntimeAction,
     render_remote_action,
     StopProcessAction,
-    StopWatchdogAction,
+    managed_stop_actions,
+    render_remote_actions,
 )
 from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
@@ -160,7 +164,6 @@ class FakeCommandContext:
         self.stages: list[str] = []
         self.finish = mock.Mock()
         self.connection = connection or SshConnection("root@10.0.0.2", "pw", "-o foo")
-        self.interface_probe = None
         self.probe_state = None
         self.compatibility = compatibility or DeviceCompatibility(
             os_name="NetBSD",
@@ -183,9 +186,6 @@ class FakeCommandContext:
                 self.set_error("Cancelled by user")
         self.finish(result=self.result, error=None if self.result == "success" else "\n".join(self.error_lines) if self.error_lines else None, **self.finish_fields)
         return False
-
-    def set_result(self, result: str) -> None:
-        self.result = result
 
     def succeed(self) -> None:
         self.result = "success"
@@ -242,25 +242,8 @@ class FakeCommandContext:
     def set_error(self, message: str) -> None:
         self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
 
-    def add_error_line(self, message: str) -> None:
-        line = message.strip()
-        if line:
-            self.error_lines.append(line)
-
     def resolve_env_connection(self, **_kwargs):
         return self.connection
-
-    def inspect_managed_connection(self, **_kwargs):
-        self.interface_probe = RemoteInterfaceProbeResult(
-            iface="bridge0",
-            exists=True,
-            detail="interface bridge0 exists",
-        )
-        return mock.Mock(
-            connection=self.connection,
-            interface_probe=self.interface_probe,
-            probe_state=self.probe_state,
-        )
 
     def resolve_validated_managed_target(self, **_kwargs):
         return mock.Mock(connection=self.connection, probe_state=None)
@@ -369,12 +352,6 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.validate_install.TelemetryClient.from_config",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
-        self._exit_stack.enter_context(
-            mock.patch(
-                "timecapsulesmb.services.runtime.probe_remote_interface_conn",
-                return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
-            )
-        )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=None))
         def fake_configure_acp_probe(_connection, *, callbacks=None, **_kwargs):
@@ -547,14 +524,14 @@ class CliTests(unittest.TestCase):
     def make_patched_flash_bank(self, bank: bytes, secondary: bytes | None = None) -> bytes:
         fallback_secondary = secondary or self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
         with self.flash_zopfli_available():
-            analysis = cli_flash.analyze_flash_banks(
+            analysis = analyze_flash_banks(
                 primary_data=bank,
                 secondary_data=fallback_secondary,
                 cks1=self.flash_bank_checksum(bank),
                 cks2=self.flash_bank_checksum(fallback_secondary),
                 os_release="4.0_STABLE",
             )
-        active = cli_flash.require_write_ready(analysis)
+        active = require_patch_ready(analysis)
         assert active.patch is not None
         return active.patch.target_bank
 
@@ -677,16 +654,6 @@ class CliTests(unittest.TestCase):
             elf_endianness="big",
             airport_model="TimeCapsule6,106",
             airport_syap="106",
-        )
-
-    def make_probe_result_netbsd4_unknown(self) -> ProbeResult:
-        return ProbeResult(
-            ssh_status=SshAccessStatus.OPEN_AUTHENTICATED,
-            error=None,
-            os_name="NetBSD",
-            os_release="4.0_STABLE",
-            arch="evbarm",
-            elf_endianness="unknown",
         )
 
     def make_probe_result_netbsd5(self) -> ProbeResult:
@@ -938,7 +905,6 @@ class CliTests(unittest.TestCase):
             )
             deploy_target = SimpleNamespace(
                 connection=SshConnection("root@10.0.0.2", "pw", "-o foo"),
-                interface_probe=None,
                 probe_state=deploy_probe_state,
             )
 
@@ -4326,7 +4292,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertIn(
             "INFO Python zeroconf discovered 0 Bonjour instances during doctor; "
-            "mDNS advertiser/discovery path needs investigation",
+            "Bonjour registration path needs investigation",
             telemetry_error,
         )
         self.assertIn(
@@ -4447,31 +4413,12 @@ class CliTests(unittest.TestCase):
                         "expected_share_found": True,
                     },
                 ],
-                "remote_discovery_log_tail": (
-                    "mdns transport active: reason=startup status=degraded ipv4=off ipv6=bridge0 "
-                    "required_ipv4=1 required_ipv6=0 missing_required_ipv4=1 missing_required_ipv6=0 "
-                    "last_ipv4_errno=48 last_ipv6_errno=0\n"
-                    "mdns counters: reason=ipv6_packet ipv4_rx=0 ipv6_rx=3 query_matches=2 "
-                    "responses_sent=2 send_failures=1 last_send_failure=query_response errno=65 (No route to host)\n"
-                ),
             },
         )
         self.assertIsNotNone(error)
         assert error is not None
         self.assertIn("Discovery context:", error)
         self.assertIn("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records", error)
-        self.assertIn(
-            "INFO mdns transport state: reason=startup status=degraded ipv4=off ipv6=bridge0 "
-            "required_ipv4=1 required_ipv6=0 missing_required_ipv4=1 missing_required_ipv6=0 "
-            "last_ipv4_errno=48 last_ipv6_errno=0",
-            error,
-        )
-        self.assertIn(
-            "INFO mdns counters: reason=ipv6_packet ipv4_rx=0 ipv6_rx=3 query_matches=2 "
-            "responses_sent=2 send_failures=1 last_send_failure=query_response errno=65 (No route to host)",
-            error,
-        )
-        self.assertNotIn("INFO mdns IPv4 transport active:", error)
 
     def test_doctor_error_ignores_legacy_mdns_transport_logs(self) -> None:
         results = [
@@ -4489,6 +4436,8 @@ class CliTests(unittest.TestCase):
                 ],
                 "remote_discovery_log_tail": (
                     "mdns auto-ip active: link[0] iface=bridge0 mdns_ipv4=1 mdns_ipv6=1\n"
+                    "mdns transport active: reason=startup status=degraded ipv4=off ipv6=bridge0\n"
+                    "mdns counters: reason=ipv6_packet ipv4_rx=0 ipv6_rx=3\n"
                 ),
             },
         )
@@ -4496,6 +4445,7 @@ class CliTests(unittest.TestCase):
         assert error is not None
         self.assertIn("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records", error)
         self.assertNotIn("INFO mdns transport state:", error)
+        self.assertNotIn("INFO mdns counters:", error)
         self.assertNotIn("INFO mdns IPv4 transport active:", error)
 
     def test_doctor_failure_telemetry_includes_derived_mdns_boot_context(self) -> None:
@@ -4508,26 +4458,19 @@ class CliTests(unittest.TestCase):
         ]
 
         def fake_run_doctor_checks(*_args, **kwargs):
-            kwargs["debug_fields"]["remote_rc_local_log_tail"] = "\n".join(
+            # smbd was not ready at first, so the early lines are in the RAM log.
+            kwargs["debug_fields"]["remote_diskless_discovery_log_tail"] = "\n".join(
                 [
-                    "mDNS auto-ip is available; starting advertiser",
-                    "manager mDNS recovery: starting mdns advertiser in auto-ip mode",
+                    "2026-09-16 07:35:21 registrant: plan validated mode=bridge desired=2 [if=9 _smb._tcp] [if=9 _adisk._tcp,_airport]",
+                    "2026-09-16 07:35:22 registrant: name conflict if=9 _smb._tcp \"Home\"; retrying with backoff",
                 ]
             )
             kwargs["debug_fields"]["remote_discovery_log_tail"] = "\n".join(
                 [
-                    "serving summary: source=generated",
-                    "serving service: type=_smb._tcp.local. instance=Home port=445 host=home.local.",
-                    "serving service: type=_adisk._tcp.local. instance=Home share=Data disk_key=dk2 uuid=1234",
-                    "serving service: type=_device-info._tcp.local. instance=Home model=TimeCapsule6,116",
-                    "serving service: type=_airport._tcp.local. instance=Home port=5009 host=home.local.",
-                    "serving service: type=_riousbprint._tcp.local. instance=Canon MP490 series port=10000 host=home.local. cmd=BJL,BJRaster3",
-                    "serving service: type=_pdl-datastream._tcp.local. instance=Canon MP490 series port=9100 host=home.local. cmd=BJL,BJRaster3",
-                    "mDNS takeover established after SIGTERM + 0ms using exclusive bind",
-                    "2026-09-16 07:35:21 registrant: plan validated mode=bridge desired=2 [if=9 _smb._tcp] [if=9 _adisk._tcp,_airport]",
-                    "2026-09-16 07:35:22 registrant: name conflict if=9 _smb._tcp \"Home\"; retrying with backoff",
                     "2026-09-16 07:35:30 registrant: mDNSResponder unreachable; registrations degraded until it answers (never started by us; reboot recovers)",
-                    "registrant: mDNSResponder accepted the connection but did not answer; exiting for relaunch",
+                    "2026-09-16 07:35:31 registrant: mDNSResponder accepted the connection but did not answer; exiting for relaunch",
+                    # A retired v3.0 responder line must not be summarized.
+                    "2026-09-16 07:35:32 mDNS takeover established after SIGTERM + 0ms using exclusive bind",
                 ]
             )
             return results, True
@@ -4539,43 +4482,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("mDNS boot context:", telemetry_error)
-        self.assertIn(
-            "INFO mdns source=generated; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local., _airport._tcp.local., _riousbprint._tcp.local., _pdl-datastream._tcp.local.",
-            telemetry_error,
-        )
-        self.assertIn("INFO mDNS takeover established after SIGTERM + 0ms using exclusive bind", telemetry_error)
+        boot_context = telemetry_error.split("mDNS boot context:", 1)[1].split("Debug context:", 1)[0]
+        self.assertNotIn("mDNS takeover", boot_context)
         self.assertIn("INFO mdns registrant validated mode=bridge desired=2 [if=9 _smb._tcp] [if=9 _adisk._tcp,_airport]", telemetry_error)
         self.assertIn("WARN mdns registrant: name conflict if=9 _smb._tcp \"Home\"; retrying with backoff", telemetry_error)
         self.assertIn("WARN Apple mDNSResponder is unreachable; nothing respawns it, reboot the device", telemetry_error)
         self.assertIn("WARN mdns registrant exited because Apple mDNSResponder stopped answering; the manager relaunches it, a wedged daemon needs a reboot", telemetry_error)
 
-    def test_doctor_includes_soft_preinspection_error_in_failure_telemetry(self) -> None:
+    def test_doctor_failure_telemetry_reports_failures_without_a_preinspection_error(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         fake_result = doctor.CheckResult("FAIL", "SSH command works failed")
         with tempfile.NamedTemporaryFile() as env_file:
             env_path = Path(env_file.name)
             with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config(values, path=env_path)):
-                with mock.patch(
-                    "timecapsulesmb.cli.context.CommandContext.inspect_managed_connection",
-                    side_effect=SshError("Connecting to the device failed, SSH error: bind failed"),
-                ):
-                    with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], True)):
-                        with redirect_stdout(output):
-                            rc = doctor.main([])
+                with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], True)):
+                    with redirect_stdout(output):
+                        rc = doctor.main([])
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("Doctor failures:", telemetry_error)
         self.assertNotIn("preflight_error=doctor pre-inspection failed", telemetry_error)
 
-    def test_doctor_does_not_preinspect_runtime_interface(self) -> None:
+    def test_doctor_passes_its_connection_and_probe_state_to_checks(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         command_context = FakeCommandContext()
         probe_state = self.make_probe_state(self.make_probe_result_netbsd6())
         command_context.probe_state = probe_state
-        original_inspect = command_context.inspect_managed_connection
-        command_context.inspect_managed_connection = mock.Mock(side_effect=original_inspect)
 
         with tempfile.NamedTemporaryFile() as env_file:
             env_path = Path(env_file.name)
@@ -4586,10 +4520,8 @@ class CliTests(unittest.TestCase):
                             rc = doctor.main([])
 
         self.assertEqual(rc, 0)
-        command_context.inspect_managed_connection.assert_not_called()
         checks_kwargs = checks_mock.call_args.kwargs
         self.assertIs(checks_kwargs["connection"], command_context.connection)
-        self.assertIsNone(checks_kwargs["precomputed_interface_probe"])
         self.assertIs(checks_kwargs["precomputed_probe_state"], probe_state)
 
     def test_doctor_streams_results_in_human_mode(self) -> None:
@@ -5195,7 +5127,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("generated:adisk.uuid", captured["source_ids"])
         self.assertNotIn("generated:nbns.enabled", captured["source_ids"])
         flash_config = str(captured["flash_config"])
-        self.assertIn("TC_CONFIG_VERSION=3\n", flash_config)
+        self.assertNotIn("TC_CONFIG_VERSION", flash_config)
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", flash_config)
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", flash_config)
         self.assertIn("TELEMETRY=true\n", flash_config)
@@ -6000,14 +5932,10 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_not_called()
         text = output.getvalue()
         self.assertIn("Dry run: NetBSD4 activation plan", text)
-        self.assertIn(render_remote_action(StopServiceRuntimeAction()), text)
-        self.assertIn("tc_kill_watchdog_pids TERM", text)
-        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
-        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
-        self.assertNotIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
-        self.assertNotIn("/usr/bin/pkill '^mdns$' >/dev/null 2>&1 || true", text)
-        self.assertNotIn("/usr/bin/pkill '^nbns$' >/dev/null 2>&1 || true", text)
-        self.assertIn("/usr/bin/pkill '^wcifsfs$' >/dev/null 2>&1 || true", text)
+        for action in managed_stop_actions(stop_afpserver=False):
+            self.assertIn(render_remote_action(action), text)
+        # Activation does not reboot, and ACPd never respawns afpserver.
+        self.assertNotIn(render_remote_action(StopProcessAction("afpserver")), text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("skip rc.local if the NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
@@ -6040,9 +5968,9 @@ class CliTests(unittest.TestCase):
                     activate.main(["--dry-run"])
         self.assertIn("only supported for NetBSD4", str(cm.exception))
 
-    def test_managed_target_does_not_probe_runtime_interface(self) -> None:
+    def test_managed_target_resolves_connection_without_probing(self) -> None:
         config = self.make_app_config(self.make_valid_env())
-        with mock.patch("timecapsulesmb.services.runtime.probe_remote_interface_conn", side_effect=AssertionError("interface should not be probed")):
+        with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", side_effect=AssertionError("should not probe")):
             target = service_runtime.resolve_validated_managed_target(
                 config,
                 command_name="deploy",
@@ -6051,23 +5979,19 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(target.connection.host, config.require("TC_HOST"))
-        self.assertIsNone(target.interface_probe)
+        self.assertIsNone(target.probe_state)
 
     def test_managed_target_rejects_hostname_that_resolves_link_local(self) -> None:
         config = self.make_app_config(self.make_valid_env(TC_HOST="root@capsule.local"))
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
-            with mock.patch(
-                "timecapsulesmb.services.runtime.probe_remote_interface_conn",
-                side_effect=AssertionError("should fail before SSH probing"),
-            ):
-                with self.assertRaises(ConfigError) as ctx:
-                    service_runtime.resolve_validated_managed_target(
-                        config,
-                        command_name="deploy",
-                        profile="deploy",
-                        include_probe=False,
-                    )
+            with self.assertRaises(ConfigError) as ctx:
+                service_runtime.resolve_validated_managed_target(
+                    config,
+                    command_name="deploy",
+                    profile="deploy",
+                    include_probe=False,
+                )
 
         self.assertIn("TC_HOST host capsule.local resolves to link-local address 169.254.44.9", str(ctx.exception))
 
@@ -6079,16 +6003,12 @@ class CliTests(unittest.TestCase):
             )
         )
         with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=AssertionError("should not resolve")):
-            with mock.patch(
-                "timecapsulesmb.services.runtime.probe_remote_interface_conn",
-                return_value=RemoteInterfaceProbeResult("bridge0", True, "interface bridge0 exists"),
-            ):
-                target = service_runtime.resolve_validated_managed_target(
-                    config,
-                    command_name="deploy",
-                    profile="deploy",
-                    include_probe=False,
-                )
+            target = service_runtime.resolve_validated_managed_target(
+                config,
+                command_name="deploy",
+                profile="deploy",
+                include_probe=False,
+            )
 
         self.assertEqual(target.connection.host, "root@capsule.local")
 
@@ -6173,9 +6093,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args.args[1],
             [
-                StopServiceRuntimeAction(),
-                StopWatchdogAction(),
-                StopProcessAction("wcifsfs"),
+                *managed_stop_actions(stop_afpserver=False),
                 RunScriptAction("/mnt/Flash/rc.local"),
             ],
         )
@@ -6209,19 +6127,17 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "not-a-syap",
             "TC_MDNS_DEVICE_MODEL": "not-a-model",
         })
-        with mock.patch("timecapsulesmb.services.runtime.probe_remote_interface_conn", side_effect=AssertionError("flash should not probe TC_NET_IFACE")):
-            with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", side_effect=AssertionError("flash target resolution should not probe the device")):
-                target = service_runtime.resolve_validated_managed_target(
-                    config,
-                    command_name="flash",
-                    profile="flash",
-                    include_probe=True,
-                )
+        with mock.patch("timecapsulesmb.services.runtime.probe_connection_state", side_effect=AssertionError("flash target resolution should not probe the device")):
+            target = service_runtime.resolve_validated_managed_target(
+                config,
+                command_name="flash",
+                profile="flash",
+                include_probe=True,
+            )
 
         self.assertEqual(target.connection.host, "root@10.0.0.2")
         self.assertEqual(target.connection.password, "pw")
         self.assertEqual(target.connection.ssh_opts, "-o foo")
-        self.assertIsNone(target.interface_probe)
         self.assertIsNone(target.probe_state)
 
     def test_flash_backup_dir_sanitizes_dot_only_path_parts(self) -> None:
@@ -6229,7 +6145,7 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             backup_dir = cli_flash.build_flash_backup_dir(base_dir=None, host="..", syap=".")
 
-        self.assertEqual(backup_dir.parent, cli_flash.default_flash_backup_root())
+        self.assertEqual(backup_dir.parent, default_flash_backup_root())
         self.assertIn("-device-syAPdevice", backup_dir.name)
         self.assertNotIn("..", backup_dir.parts)
         self.assertNotIn(".", backup_dir.parts)
@@ -6387,8 +6303,6 @@ class CliTests(unittest.TestCase):
 
     def test_flash_refuses_when_probed_syap_is_missing(self) -> None:
         output = io.StringIO()
-        primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
-        secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
         command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env(TC_AIRPORT_SYAP="113"))):
@@ -6877,16 +6791,16 @@ class CliTests(unittest.TestCase):
             template_path = Path(tmp) / "7.8.1.basebinary"
             template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
             with self.flash_zopfli_available():
-                analysis = cli_flash.analyze_flash_banks(
+                analysis = analyze_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
                 )
-            active = cli_flash.require_write_ready(analysis)
+            active = require_patch_ready(analysis)
 
-            payload = cli_flash.build_acp_flash_payload_for_active_bank(
+            payload = build_patch_payload_for_active_bank(
                 active,
                 syap="113",
                 firmware_template=template_path,
@@ -6917,24 +6831,24 @@ class CliTests(unittest.TestCase):
         })
 
         def fake_download(url: str, **_kwargs: object) -> bytes:
-            if url == cli_flash.APPLE_FIRMWARE_CATALOG_URL:
+            if url == APPLE_FIRMWARE_CATALOG_URL:
                 return catalog
             self.assertEqual(url, "http://example.invalid/113/7.8.1.basebinary")
             return template
 
         with tempfile.TemporaryDirectory() as tmp:
             with self.flash_zopfli_available():
-                analysis = cli_flash.analyze_flash_banks(
+                analysis = analyze_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
                 )
-            active = cli_flash.require_write_ready(analysis)
+            active = require_patch_ready(analysis)
 
             with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download) as download_mock:
-                payload = cli_flash.build_acp_flash_payload_for_active_bank(
+                payload = build_patch_payload_for_active_bank(
                     active,
                     syap="113",
                     firmware_template=None,
@@ -6969,7 +6883,7 @@ class CliTests(unittest.TestCase):
 
         def fake_download(url: str, **_kwargs: object) -> bytes:
             calls.append(url)
-            if url == cli_flash.APPLE_FIRMWARE_CATALOG_URL:
+            if url == APPLE_FIRMWARE_CATALOG_URL:
                 return catalog
             self.assertEqual(url, template_url)
             return template
@@ -6985,17 +6899,17 @@ class CliTests(unittest.TestCase):
             cached_path.parent.mkdir(parents=True)
             cached_path.write_bytes(b"\x00" * len(template))
             with self.flash_zopfli_available():
-                analysis = cli_flash.analyze_flash_banks(
+                analysis = analyze_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
                 )
-            active = cli_flash.require_write_ready(analysis)
+            active = require_patch_ready(analysis)
 
             with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
-                payload = cli_flash.build_acp_flash_payload_for_active_bank(
+                payload = build_patch_payload_for_active_bank(
                     active,
                     syap="113",
                     firmware_template=None,
@@ -7003,7 +6917,7 @@ class CliTests(unittest.TestCase):
                 )
             refreshed_cache = cached_path.read_bytes()
 
-        self.assertEqual(calls, [cli_flash.APPLE_FIRMWARE_CATALOG_URL, template_url])
+        self.assertEqual(calls, [APPLE_FIRMWARE_CATALOG_URL, template_url])
         self.assertEqual(refreshed_cache, template)
         self.assertEqual(payload.template_sha256, sha256_hex(template))
 
@@ -7027,7 +6941,7 @@ class CliTests(unittest.TestCase):
 
         def fake_download(url: str, **_kwargs: object) -> bytes:
             calls.append(url)
-            if url == cli_flash.APPLE_FIRMWARE_CATALOG_URL:
+            if url == APPLE_FIRMWARE_CATALOG_URL:
                 return catalog
             self.assertEqual(url, template_url)
             return template
@@ -7043,14 +6957,14 @@ class CliTests(unittest.TestCase):
             cached_path.parent.mkdir(parents=True)
             cached_path.write_bytes(b"\x00" * len(template))
             with self.flash_zopfli_available():
-                analysis = cli_flash.analyze_flash_banks(
+                analysis = analyze_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
                 )
-            active = cli_flash.require_write_ready(analysis)
+            active = require_patch_ready(analysis)
 
             with mock.patch("timecapsulesmb.apple_firmware.download_url", side_effect=fake_download):
                 match = find_apple_firmware_match(
@@ -7061,7 +6975,7 @@ class CliTests(unittest.TestCase):
                 )
             refreshed_cache = cached_path.read_bytes()
 
-        self.assertEqual(calls, [cli_flash.APPLE_FIRMWARE_CATALOG_URL, template_url])
+        self.assertEqual(calls, [APPLE_FIRMWARE_CATALOG_URL, template_url])
         self.assertEqual(refreshed_cache, template)
         self.assertTrue(match.matched)
         self.assertEqual(match.template_sha256, sha256_hex(template))
@@ -7076,17 +6990,17 @@ class CliTests(unittest.TestCase):
             modified_inner = compose_basebinary(template.inner.header, modified_payload, key=template.inner.key)
             template_path.write_bytes(compose_basebinary(template.outer.header, modified_inner, key=template.outer.key))
             with self.flash_zopfli_available():
-                analysis = cli_flash.analyze_flash_banks(
+                analysis = analyze_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
                 )
-            active = cli_flash.require_write_ready(analysis)
+            active = require_patch_ready(analysis)
 
             with self.assertRaises(cli_flash.FlashAnalysisError) as raised:
-                cli_flash.build_acp_flash_payload_for_active_bank(
+                build_patch_payload_for_active_bank(
                     active,
                     syap="113",
                     firmware_template=template_path,
@@ -7103,17 +7017,17 @@ class CliTests(unittest.TestCase):
             template_path = Path(tmp) / "7.8.1.basebinary"
             template_path.write_bytes(self.make_firmware_template(primary, product_id=113, key=unknown_key))
             with self.flash_zopfli_available():
-                analysis = cli_flash.analyze_flash_banks(
+                analysis = analyze_flash_banks(
                     primary_data=primary,
                     secondary_data=secondary,
                     cks1=self.flash_bank_checksum(primary),
                     cks2=self.flash_bank_checksum(secondary),
                     os_release="4.0_STABLE",
                 )
-            active = cli_flash.require_write_ready(analysis)
+            active = require_patch_ready(analysis)
 
             with self.assertRaises(cli_flash.FlashAnalysisError) as raised:
-                cli_flash.build_acp_flash_payload_for_active_bank(
+                build_patch_payload_for_active_bank(
                     active,
                     syap="113",
                     firmware_template=template_path,
@@ -7129,7 +7043,7 @@ class CliTests(unittest.TestCase):
         secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
         command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
         unknown_key = BasebinaryKey.from_hex("unknown-test", "00112233445566778899aabbccddeeff")
-        unsupported_template = cli_flash.FirmwareTemplateCandidate(
+        unsupported_template = FirmwareTemplateCandidate(
             data=self.make_firmware_template(primary, product_id=113, key=unknown_key),
             source="test-unsupported.basebinary",
             path=None,
@@ -8698,15 +8612,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
         self.assertEqual(fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS, 10800)
         remote_cmd = run_ssh_mock.call_args.args[1]
-        self.assertIn("tc_kill_manager_pids KILL", remote_cmd)
-        self.assertIn("/mnt/Flash/manager.sh", remote_cmd)
-        self.assertIn("tc_kill_watchdog_pids KILL", remote_cmd)
-        self.assertIn("/mnt/Flash/watchdog.sh", remote_cmd)
-        self.assertNotIn("pkill -9 -f", remote_cmd)
-        self.assertIn("^smbd$", remote_cmd)
-        self.assertIn("^afpserver$", remote_cmd)
-        self.assertIn("^wcifsnd$", remote_cmd)
-        self.assertIn("^wcifsfs$", remote_cmd)
+        # fsck stops the stack through the same actions deploy uses.
+        stop_lines = [
+            f"( {command} ) || exit 1"
+            for command in render_remote_actions(managed_stop_actions(stop_afpserver=True))
+        ]
+        self.assertTrue(shlex.split(remote_cmd)[-1].startswith("\n".join(stop_lines) + "\n"))
         self.assertIn("umount -f /Volumes/dk2", remote_cmd)
         self.assertIn("fsck_hfs -fy /dev/dk2", remote_cmd)
         self.assertIn("exec </dev/null >/dev/null 2>&1", remote_cmd)

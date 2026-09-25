@@ -65,10 +65,6 @@ class SSHTransportTests(unittest.TestCase):
         return REAL_IMPORT(name, *args, **kwargs)
 
     @staticmethod
-    def write_client_log(command: list[str], text: str) -> None:
-        Path(command[command.index("-E") + 1]).write_text(text)
-
-    @staticmethod
     def authenticated_spawn(returncode: int = 0, output: str = "ok\n"):
         def spawn(_cmd, _password, *, client_log, timeout, timeout_message):
             Path(client_log).write_text('Authenticated to device ([192.0.2.1]:22) using "password".\n')

@@ -490,42 +490,6 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.debug_fields["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(command_context.debug_fields["remote_discovery_log_tail"], "mdns log")
 
-    def test_verify_managed_runtime_flow_collects_network_diagnostics_after_auto_ip_unavailable(self) -> None:
-        command_context = FakeCommandContext()
-        output = io.StringIO()
-        with (
-            mock.patch("timecapsulesmb.services.runtime_verification.probe_managed_runtime_conn", return_value=self.managed_runtime_probe(False)),
-            mock.patch(
-                "timecapsulesmb.services.runtime_verification.read_runtime_log_tails_conn",
-                return_value={
-                    "remote_manager_log_tail": "manager: mDNS startup deferred; no usable address has appeared yet",
-                },
-            ),
-            mock.patch(
-                "timecapsulesmb.services.runtime_verification.read_remote_network_diagnostics_conn",
-                return_value={
-                    "remote_network_config": {"ssh_target_host": "169.254.44.9"},
-                    "remote_network_target_ip_matches": [],
-                },
-            ) as network_mock,
-        ):
-            with redirect_stdout(output):
-                ok = verify_managed_runtime_flow(
-                    self.make_connection(),
-                    command_context,
-                    stage="verify_runtime",
-                    timeout_seconds=123,
-                    heading="Checking runtime",
-                    failure_message="runtime failed",
-                )
-
-        self.assertFalse(ok)
-        network_mock.assert_called_once()
-        self.assertEqual(command_context.debug_fields["runtime_startup_failure"], "network_auto_ip_unavailable")
-        self.assertTrue(command_context.debug_fields["runtime_startup_waiting_for_auto_ip"])
-        self.assertEqual(command_context.debug_fields["remote_network_config"], {"ssh_target_host": "169.254.44.9"})
-        self.assertEqual(command_context.debug_fields["remote_network_target_ip_matches"], [])
-
     def test_verify_managed_runtime_flow_keeps_original_failure_when_log_tail_fails(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
